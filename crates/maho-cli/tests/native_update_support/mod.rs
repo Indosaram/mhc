@@ -20,7 +20,7 @@ pub const NEWER_VERSION: &str = "9999.2.1";
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-const SIBLINGS: [&str; 4] = ["mhc-lsp", "senpi-desktop-engine", "mhc-git-bash", "mhc-ast-grep"];
+const SIBLINGS: [&str; 4] = ["ast-grep-mcp", "lsp-daemon", "omo-git-bash", "senpi-desktop-engine"];
 
 pub fn real_version() -> String {
     static VERSION: OnceLock<String> = OnceLock::new();
@@ -88,12 +88,15 @@ pub fn build_package(out_parent: &Path, payload: Payload) -> PathBuf {
         ));
     }
     let license = write_data(&package, "licenses/LICENSE", b"licensed\n");
+    let schema = write_data(&package, "omo.schema.json", b"{}\n");
     let skill = write_data(&package, "skills/s/SKILL.md", b"# s\n");
     let mut manifest = json!({
         "schemaVersion": 1,
         "executables": executables,
         "licenses": [license],
+        "schema": schema,
         "skills": { "files": [skill] },
+        "conditionalSkills": { "files": [] },
     });
     if let Payload::Probe { version, fail_when_installed } = payload {
         manifest["probeVersion"] = Value::String(version);

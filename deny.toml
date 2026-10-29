@@ -75,12 +75,13 @@ allow = [
     "OpenSSL",
     "CDLA-Permissive-2.0",
     "0BSD",
+    "LicenseRef-SUL-1.0",
 ]
 confidence-threshold = 0.8
 exceptions = []
 
 [licenses.private]
-# Ignore workspace crates that have publish = false (licensed MIT)
+# Ignore workspace crates that have publish = false (licensed under LicenseRef-SUL-1.0 / MIT)
 ignore = true
 
 # [[licenses.clarify]]

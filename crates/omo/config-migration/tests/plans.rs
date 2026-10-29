@@ -1,0 +1,595 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use config_migration::{
+    CONFIG_JSONC_MIGRATION_ID, ConfigMigrationDiscoveryOptions,
+    CreateLegacyConfigMigrationPlansOptions, ExecuteLegacyConfigMigrationPlanOptions,
+    LegacyConfigMigrationPlan, OPENCODE_CONFIG_MIGRATION_ID, PathOperations, Platform,
+    REASONING_UNIFICATION_MIGRATION_ID, create_legacy_config_migration_plans,
+    execute_legacy_config_migration_plan, transform_reasoning_unification,
+};
+use omo_config_core::{MigrationBoundary, MigrationSourceDescriptor, MigrationStatus};
+use pretty_assertions::assert_eq;
+use serde_json::{Map, Value, json};
+
+const FIXTURE_INPUT: &str =
+    include_str!("fixtures/2026-08-reasoning-unification/fixture-input.json");
+const FIXTURE_EXPECTED: &str =
+    include_str!("fixtures/2026-08-reasoning-unification/fixture-expected.json");
+const REASONING_CONFLICT: &str =
+    r#"conflict: categories.conflict dropped variant="high" kept reasoningEffort="xhigh""#;
+
+fn fixture(name: &str) -> Value {
+    serde_json::from_str(name).expect("fixture json")
+}
+
+fn text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+fn write(path: &Path, content: &str) {
+    fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    fs::write(path, content).expect("write");
+}
+
+fn home_env(home_dir: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("HOME".to_string(), home_dir.to_string()),
+        ("USERPROFILE".to_string(), home_dir.to_string()),
+    ])
+}
+
+fn canonical_text(path: &Path) -> String {
+    let canonical = fs::canonicalize(path).expect("canonicalize").to_string_lossy().into_owned();
+    if let Some(rest) = canonical.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = canonical.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        canonical
+    }
+}
+
+fn parse_jsonc(path: &Path) -> Value {
+    let content = fs::read_to_string(path).expect("read target");
+    omo_config_core::parse_jsonc_safe(&content)
+        .data
+        .expect("jsonc data")
+}
+
+fn execute(
+    plan: &LegacyConfigMigrationPlan,
+    home_dir: &str,
+    dry_run: bool,
+) -> omo_config_core::MigrationRunResult {
+    execute_legacy_config_migration_plan(
+        plan,
+        ExecuteLegacyConfigMigrationPlanOptions {
+            dry_run,
+            env: Some(home_env(home_dir)),
+            ..Default::default()
+        },
+    )
+    .expect("migration runs")
+}
+
+fn plans_for(
+    home_dir: &str,
+    cwd: &str,
+    xdg: Option<&str>,
+    timestamp: &str,
+) -> Vec<LegacyConfigMigrationPlan> {
+    let mut environment = home_env(home_dir);
+    if let Some(xdg) = xdg {
+        environment.insert("XDG_CONFIG_HOME".into(), xdg.into());
+    }
+    create_legacy_config_migration_plans(&CreateLegacyConfigMigrationPlansOptions {
+        backup_timestamp: Some(timestamp),
+        discovery: ConfigMigrationDiscoveryOptions {
+            cwd,
+            environment: &environment,
+            file_system: None,
+            home_dir,
+            path_operations: PathOperations::Posix,
+            platform: Some(Platform::Linux),
+            tauri_config_dirs: None,
+        },
+    })
+    .expect("planning succeeds")
+}
+
+fn tree(root: &Path) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).expect("read_dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                pending.push(path.clone());
+            }
+            entries.push(path);
+        }
+    }
+    entries.sort();
+    entries
+}
+
+fn backup_paths(plan: &LegacyConfigMigrationPlan) -> Vec<String> {
+    plan.sources
+        .iter()
+        .map(|source| source.backup_path.clone().unwrap_or_default())
+        .collect()
+}
+
+#[test]
+fn executor_with_a_false_predicate_creates_no_directories_or_files() {
+    // given
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let root = fixture_root.path();
+    let home_dir = root.join("home");
+    let source_path = root.join("legacy").join("config.jsonc");
+    let target_path = home_dir.join(".omo").join("omo.jsonc");
+    let backup_path = root.join("backup").join("config.jsonc");
+    write(&source_path, "{}");
+    write(&target_path, r#"{"_migrations":["already-migrated"]}"#);
+    let entries_before = tree(root);
+    let transform: config_migration::LegacyConfigMigrationTransform = std::rc::Rc::new(|_| {
+        Ok(config_migration::ConfigMigrationTransformResult {
+            diagnostics: Vec::new(),
+            document: Map::new(),
+        })
+    });
+    let plan = LegacyConfigMigrationPlan {
+        id: "already-migrated".into(),
+        inspect: transform.clone(),
+        mode: omo_config_core::MigrationMode::Merge,
+        should_run: None,
+        sources: vec![MigrationSourceDescriptor::with_backup(
+            text(&source_path),
+            text(&backup_path),
+        )],
+        target_path: text(&target_path),
+        transform,
+    };
+
+    // when
+    let result = execute(&plan, &text(&home_dir), false);
+
+    // then
+    assert_eq!(result.status, MigrationStatus::Skipped);
+    assert!(!root.join("backup").exists());
+    assert_eq!(tree(root), entries_before);
+}
+
+#[test]
+fn user_profile_config_jsonc_project_and_sidecar_fixtures_keep_distinct_markers_and_exact_backups()
+{
+    // given
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let project = fixture_root.path().join("project");
+    let root_path = home.join(".config/opencode/oh-my-openagent.jsonc");
+    let sidecar_path = PathBuf::from(format!("{}.migrations.json", text(&root_path)));
+    let profile_path = home.join(".config/opencode/profiles/kimi/oh-my-openagent.jsonc");
+    let config_jsonc_path = home.join(".omo/config.jsonc");
+    let config_sidecar_path =
+        PathBuf::from(format!("{}.migrations.json", text(&config_jsonc_path)));
+    let project_path = project.join(".opencode/oh-my-opencode.json");
+    let unrelated_path = PathBuf::from(format!("{}.bak.unrelated", text(&root_path)));
+    let timestamp = "2026-07-27T12-34-56-789Z";
+    write(
+        &root_path,
+        r#"{"agents":{"oracle":{"model":"reverted-old-model"}}}"#,
+    );
+    write(
+        &sidecar_path,
+        r#"{"appliedMigrations":["model-version:reverted-old-model->new-model"]}"#,
+    );
+    write(
+        &profile_path,
+        r#"{"agents":{"oracle":{"model":"kimi-model"}}}"#,
+    );
+    write(
+        &config_jsonc_path,
+        r#"{"codegraph":{"excluded_roots":["/generated"]}}"#,
+    );
+    write(
+        &config_sidecar_path,
+        r#"{"appliedMigrations":["legacy-config-jsonc"]}"#,
+    );
+    write(
+        &project_path,
+        r#"{"agents":{"oracle":{"model":"project-model"}}}"#,
+    );
+    write(&unrelated_path, "keep");
+    let canonical_home = canonical_text(&home);
+    let canonical_project = canonical_text(&project);
+    let canonical_root = canonical_text(&root_path);
+    let canonical_config_jsonc = canonical_text(&config_jsonc_path);
+    let home_dir = text(&home);
+    let xdg = text(&home.join(".config"));
+
+    // when
+    let plans = plans_for(&home_dir, &text(&project), Some(&xdg), timestamp);
+    let find = |id: &str, predicate: &dyn Fn(&MigrationSourceDescriptor) -> bool| {
+        plans
+            .iter()
+            .find(|plan| plan.id == id && plan.sources.iter().any(predicate))
+            .expect("expected plan")
+    };
+    let opencode_user_plan = find(OPENCODE_CONFIG_MIGRATION_ID, &|s| s.path == canonical_root);
+    let config_jsonc_plan = find(CONFIG_JSONC_MIGRATION_ID, &|s| {
+        s.path == canonical_config_jsonc
+    });
+    let project_plan = find(OPENCODE_CONFIG_MIGRATION_ID, &|s| {
+        s.path.ends_with("oh-my-opencode.json")
+    });
+    let config_result = execute(config_jsonc_plan, &home_dir, false);
+    let opencode_result = execute(opencode_user_plan, &home_dir, false);
+    let project_result = execute(project_plan, &home_dir, false);
+
+    // then
+    assert_eq!(config_result.status, MigrationStatus::Migrated);
+    assert_eq!(opencode_result.status, MigrationStatus::Migrated);
+    assert_eq!(project_result.status, MigrationStatus::Migrated);
+    let user_document = parse_jsonc(&home.join(".omo/omo.jsonc"));
+    assert_eq!(
+        user_document["_migrations"],
+        json!([CONFIG_JSONC_MIGRATION_ID, OPENCODE_CONFIG_MIGRATION_ID])
+    );
+    assert_eq!(
+        user_document["[opencode]"],
+        json!({ "agents": { "oracle": { "model": "reverted-old-model" } } })
+    );
+    assert_eq!(
+        user_document["legacy_migrations"][canonical_root.as_str()],
+        json!(["model-version:reverted-old-model->new-model"])
+    );
+    assert_eq!(
+        user_document["legacy_migrations"][canonical_config_jsonc.as_str()],
+        json!(["legacy-config-jsonc"])
+    );
+    let user_backup = if cfg!(windows) {
+        Path::new(&canonical_home)
+            .join(".omo")
+            .join(format!("migration-backup-{timestamp}-opencode-config"))
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        format!("{canonical_home}/.omo/migration-backup-{timestamp}-opencode-config")
+    };
+    let join_sub = |base: &str, sub: &str| -> String {
+        if cfg!(windows) {
+            Path::new(base).join(sub.replace('/', "\\")).to_string_lossy().into_owned()
+        } else {
+            format!("{base}/{sub}")
+        }
+    };
+    assert_eq!(
+        backup_paths(opencode_user_plan),
+        vec![
+            join_sub(&user_backup, ".config/opencode/oh-my-openagent.jsonc"),
+            join_sub(&user_backup, ".config/opencode/oh-my-openagent.jsonc.migrations.json"),
+            join_sub(&user_backup, ".config/opencode/profiles/kimi/oh-my-openagent.jsonc"),
+        ]
+    );
+    assert_eq!(
+        backup_paths(config_jsonc_plan),
+        vec![
+            join_sub(&user_backup, ".omo/config.jsonc"),
+            join_sub(&user_backup, ".omo/config.jsonc.migrations.json"),
+        ]
+    );
+    let project_backup = if cfg!(windows) {
+        Path::new(&canonical_project)
+            .join(".omo")
+            .join(format!("migration-backup-{timestamp}"))
+            .join("oh-my-opencode.json")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        format!("{canonical_project}/.omo/migration-backup-{timestamp}/oh-my-opencode.json")
+    };
+    assert_eq!(backup_paths(project_plan), vec![project_backup.clone()]);
+    assert!(
+        Path::new(&join_sub(
+            &user_backup,
+            ".config/opencode/oh-my-openagent.jsonc"
+        ))
+        .exists()
+    );
+    assert!(Path::new(&project_backup).exists());
+    assert!(unrelated_path.exists());
+}
+
+#[test]
+fn overlapping_omo_and_senpi_blocks_report_the_conflict_in_preview_and_migration() {
+    // given
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    write(
+        &home.join(".omo/config.jsonc"),
+        r#"{"[omo]":{"agents":{"oracle":{"model":"legacy"}}},"[senpi]":{"agents":{"oracle":{"model":"current"}}}}"#,
+    );
+    let home_dir = text(&home);
+    let xdg = text(&home.join(".config"));
+    let plans = plans_for(&home_dir, &home_dir, Some(&xdg), "2026-07-27T12-34-56-789Z");
+    let plan = plans
+        .iter()
+        .find(|candidate| candidate.id == CONFIG_JSONC_MIGRATION_ID)
+        .expect("config.jsonc plan");
+
+    // when
+    let dry_run = execute(plan, &home_dir, true);
+    let migrated = execute(plan, &home_dir, false);
+
+    // then
+    let conflict = "conflict: [native] legacy [omo] kept [native]".to_string();
+    assert!(
+        dry_run.diagnostics.contains(&conflict),
+        "{:?}",
+        dry_run.diagnostics
+    );
+    assert!(
+        migrated.diagnostics.contains(&conflict),
+        "{:?}",
+        migrated.diagnostics
+    );
+}
+
+#[test]
+fn canonical_legacy_fixture_matches_expected_output_for_rules_one_through_eight() {
+    // given
+    let input = fixture(FIXTURE_INPUT);
+
+    // when
+    let result = transform_reasoning_unification(Some(&input)).expect("transform");
+
+    // then
+    assert_eq!(
+        REASONING_UNIFICATION_MIGRATION_ID,
+        "2026-08-reasoning-unification"
+    );
+    assert_eq!(Value::Object(result.document), fixture(FIXTURE_EXPECTED));
+    assert!(result.diagnostics.contains(&REASONING_CONFLICT.to_string()));
+}
+
+#[test]
+fn canonical_reasoning_outranking_legacy_keys_is_reported_as_the_winner() {
+    // given
+    let input = json!({ "categories": { "odd": {
+        "model": "a/m", "reasoning": "low", "reasoningEffort": "xhigh", "variant": "high"
+    } } });
+
+    // when
+    let result = transform_reasoning_unification(Some(&input)).expect("transform");
+
+    // then
+    assert_eq!(
+        result.document["categories"]["odd"]["reasoning"],
+        json!("low")
+    );
+    let journal = result
+        .diagnostics
+        .iter()
+        .find(|entry| entry.contains("conflict"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !journal.contains(r#"kept reasoningEffort="xhigh""#),
+        "{journal}"
+    );
+}
+
+#[test]
+fn existing_user_omo_config_runs_dry_run_backup_journal_and_marker_through_the_engine() {
+    // given
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target_path = home.join(".omo/omo.jsonc");
+    let input = fixture(FIXTURE_INPUT);
+    write(
+        &target_path,
+        &serde_json::to_string_pretty(&input).expect("json"),
+    );
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-08-01T00-00-00-000Z");
+    let plan = plans
+        .iter()
+        .find(|candidate| candidate.id == REASONING_UNIFICATION_MIGRATION_ID)
+        .expect("reasoning plan");
+    let journal_path = home.join(".omo/.migration-journal.json");
+    let journal_diagnostics: RefCell<Option<Value>> = RefCell::new(None);
+
+    // when
+    let dry_run = execute(plan, &home_dir, true);
+    let migrated = execute_legacy_config_migration_plan(
+        plan,
+        ExecuteLegacyConfigMigrationPlanOptions {
+            env: Some(home_env(&home_dir)),
+            on_boundary: Some(Box::new(|boundary| {
+                if boundary == MigrationBoundary::JournalWritten {
+                    let journal: Value =
+                        serde_json::from_str(&fs::read_to_string(&journal_path).expect("journal"))
+                            .expect("journal json");
+                    *journal_diagnostics.borrow_mut() = journal.get("diagnostics").cloned();
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        },
+    )
+    .expect("migration runs");
+    let document: Value =
+        serde_json::from_str(&fs::read_to_string(&target_path).expect("target")).expect("json");
+
+    // then
+    assert_eq!(dry_run.status, MigrationStatus::Planned);
+    assert_eq!(
+        dry_run.preview.map(|preview| preview.transform),
+        Some(fixture(FIXTURE_EXPECTED))
+    );
+    assert_eq!(migrated.status, MigrationStatus::Migrated);
+    let mut expected = fixture(FIXTURE_EXPECTED);
+    expected.as_object_mut().expect("object").insert(
+        "_migrations".into(),
+        json!([REASONING_UNIFICATION_MIGRATION_ID]),
+    );
+    assert_eq!(document, expected);
+    let journal_diagnostics = journal_diagnostics
+        .into_inner()
+        .expect("journal diagnostics");
+    assert!(
+        journal_diagnostics
+            .as_array()
+            .is_some_and(|entries| entries.contains(&json!(REASONING_CONFLICT))),
+        "{journal_diagnostics}"
+    );
+    let has_backup = fs::read_dir(home.join(".omo"))
+        .expect("read .omo")
+        .any(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with("omo.jsonc.bak.")
+        });
+    assert!(has_backup);
+}
+
+#[test]
+fn typed_harness_blocks_and_profiles_recurse_while_opencode_rewrites_only_known_keys() {
+    // given
+    let input = json!({
+        "[senpi]": { "categories": { "deep": { "model": "p/m high", "variant": "low" } } },
+        "[codex]": { "agents": { "oracle": { "model": "p/m", "reasoningEffort": "none" } } },
+        "[opencode]": {
+            "agents": { "oracle": { "variant": "high", "native": { "variant": "untouched" } } },
+            "categories": { "quick": { "textVerbosity": "low" } },
+            "provider": { "variant": "untouched" },
+        },
+        "profiles": {
+            "focused": { "categories": { "deep": { "model": "p/m(xhigh)", "maxTokens": 1 } } },
+        },
+    });
+
+    // when
+    let result = transform_reasoning_unification(Some(&input)).expect("transform");
+
+    // then
+    assert_eq!(
+        Value::Object(result.document),
+        json!({
+            "[senpi]": { "categories": { "deep": { "model": "p/m:high", "reasoning": "low" } } },
+            "[codex]": { "agents": { "oracle": { "model": "p/m", "reasoning": "off" } } },
+            "[opencode]": {
+                "agents": { "oracle": { "reasoning": "high", "native": { "variant": "untouched" } } },
+                "categories": { "quick": { "textVerbosity": "low" } },
+                "provider": { "variant": "untouched" },
+            },
+            "profiles": {
+                "focused": { "categories": { "deep": { "model": "p/m:xhigh", "max_tokens": 1 } } },
+            },
+        })
+    );
+}
+
+fn since_pin_ids() -> [&'static str; 3] {
+    [
+        config_migration::CATEGORY_DEEP_SPLIT_MIGRATION_ID,
+        config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID,
+        config_migration::SUBSCRIPTION_PROVIDER_RENAME_MIGRATION_ID,
+    ]
+}
+
+#[test]
+fn since_pin_plans_are_registered_for_an_existing_omo_target() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".omo/omo.jsonc");
+    write(
+        &target,
+        r#"{"categories":{"deep":{"model":"legacy/model"}},"[senpi]":{"model_profile":"kimi"},"default_model":"openai-codex/gpt-6-astra"}"#,
+    );
+    let canonical_target = canonical_text(&target);
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    for id in since_pin_ids() {
+        let plan = plans
+            .iter()
+            .find(|plan| plan.id == id)
+            .unwrap_or_else(|| panic!("expected {id} plan"));
+        assert_eq!(plan.target_path, canonical_target);
+        assert!(plan.should_run.is_some(), "{id} must be content gated");
+    }
+}
+
+#[test]
+fn since_pin_plans_skip_a_clean_target_without_writing() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".omo/omo.jsonc");
+    let clean = json!({
+        "categories": { "quick": { "model": "a/b" } },
+        "default_model": "anthropic-subscription/",
+    });
+    write(&target, &serde_json::to_string(&clean).expect("json"));
+    let before = tree(fixture_root.path());
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    for id in since_pin_ids() {
+        let plan = plans.iter().find(|plan| plan.id == id).expect("plan");
+        let result = execute(plan, &home_dir, false);
+        assert_eq!(result.status, MigrationStatus::Skipped, "{id}");
+    }
+    assert_eq!(tree(fixture_root.path()), before);
+    assert_eq!(parse_jsonc(&target), clean);
+}
+
+#[test]
+fn harness_native_rename_plan_rewrites_an_existing_target_through_the_engine() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".omo/omo.jsonc");
+    write(&target, r#"{"[senpi]":{"model_profile":"kimi"}}"#);
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID)
+        .expect("harness rename plan");
+    let result = execute(plan, &home_dir, false);
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    let document = parse_jsonc(&target);
+    assert_eq!(document["[native]"], json!({ "model_profile": "kimi" }));
+    assert_eq!(
+        document["_migrations"],
+        json!([config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID])
+    );
+}
+
+#[test]
+fn category_deep_split_plan_rewrites_an_existing_target_through_the_engine() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".omo/omo.jsonc");
+    write(
+        &target,
+        r#"{"categories":{"deep":{"model":"legacy/model"}}}"#,
+    );
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == config_migration::CATEGORY_DEEP_SPLIT_MIGRATION_ID)
+        .expect("category plan");
+    let result = execute(plan, &home_dir, false);
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    let document = parse_jsonc(&target);
+    assert_eq!(
+        document["categories"],
+        json!({ "deep-low": { "model": "legacy/model" } })
+    );
+}

@@ -258,3 +258,46 @@ async fn telemetry_defaults_to_disabled_recording_zero_requests() {
 
 // Telemetry is recorded by the omo telemetry component; the MIT profile sends none (the
 // disabled-by-default test above still holds there).
+#[cfg(feature = "omo")]
+#[tokio::test]
+async fn telemetry_enabled_records_requests_with_geoip_disabled() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let llm = MockLlmServer::start().await;
+    let recorder = PosthogRecorder::start().await;
+
+    setup_fixture(temp.path(), llm.address, true);
+
+    let output = run_mhc_print(temp.path(), recorder.address).await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stderr: {stderr}\nstdout: {stdout}");
+
+    // Telemetry flushes on shutdown and the process has exited, so assert immediately.
+    let recorded = recorder.requests.lock().expect("test").clone();
+    assert!(
+        !recorded.is_empty(),
+        "expected at least 1 telemetry request when enabled, got 0"
+    );
+
+    // Verify every recorded body is a batch and every event carries $geoip_disable: true
+    let mut seen_events = 0usize;
+    for req in &recorded {
+        let batch = req
+            .get("batch")
+            .and_then(|b| b.as_array())
+            .unwrap_or_else(|| panic!("recorded body has no batch array: {req:?}"));
+        for item in batch {
+            let props = item.get("properties").expect("event properties");
+            assert_eq!(
+                props.get("$geoip_disable"),
+                Some(&serde_json::Value::Bool(true)),
+                "expected $geoip_disable: true in properties: {props:?}"
+            );
+            seen_events += 1;
+        }
+    }
+    assert!(seen_events > 0, "expected at least one batch event, got: {recorded:?}");
+
+    let _ = llm.shutdown.send(());
+    let _ = recorder.shutdown.send(());
+}

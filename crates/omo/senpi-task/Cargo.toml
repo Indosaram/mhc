@@ -1,0 +1,49 @@
+[package]
+name = "maho-senpi-task"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "senpi_task"
+path = "src/lib.rs"
+
+[dependencies]
+maho-ai = { path = "../../maho-ai" }
+maho-delegate-core.workspace = true
+maho-isolation-core.workspace = true
+maho-omo-config-core.workspace = true
+maho-model-core.workspace = true
+maho-team-core.workspace = true
+maho-utils.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+# Versions match entries already present in the workspace Cargo.lock.
+chrono = { workspace = true, features = ["default"] }
+libc.workspace = true
+regex.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "=1.52.3", features = ["time", "sync", "macros", "rt"] }
+unicode-width.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["process"] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-omo-ultrawork = { path = "../components/maho-omo-ultrawork" }
+maho-omo-mass-ulw = { path = "../components/maho-omo-mass-ulw" }
+
+# Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"

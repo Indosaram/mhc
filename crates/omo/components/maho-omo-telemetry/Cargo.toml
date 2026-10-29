@@ -1,0 +1,35 @@
+[package]
+name = "maho-omo-telemetry"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "LicenseRef-SUL-1.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json.workspace = true
+indexmap.workspace = true
+maho-ext-api = { path = "../../../maho-ext-api" }
+maho-telemetry-core = { path = "../../telemetry-core" }
+maho-senpi-task = { path = "../../senpi-task" }
+maho-omo-task = { path = "../maho-omo-task" }
+maho-omo-ultrawork = { path = "../maho-omo-ultrawork" }
+maho-omo-agent-home = { path = "../maho-omo-agent-home" }
+maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
+maho-omo-config-core = { path = "../../omo-config-core" }
+maho-ai = { path = "../../../maho-ai" }
+chrono = { workspace = true, features = ["clock", "std"] }
+tokio = { workspace = true, features = ["rt", "time", "macros", "sync"] }
+futures.workspace = true
+sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+getrandom = "=0.4.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
+maho-core = { path = "../../../maho-core" }
+maho-ai = { path = "../../../maho-ai" }

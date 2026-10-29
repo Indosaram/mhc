@@ -20,6 +20,7 @@ pub mod nearest_parent_config;
 pub mod package_manager_cli;
 pub mod pi_dir_restore;
 pub mod process_crash_record;
+pub mod senpi_install;
 pub mod tool_child_role;
 pub mod utils;
 pub mod valid_cwd;

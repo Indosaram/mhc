@@ -1,0 +1,24 @@
+mod claim;
+mod concurrency;
+mod continue_outcome;
+mod core;
+mod facts;
+pub(crate) mod fakes;
+mod fallback;
+mod leaf_policies;
+mod names;
+mod parent_registry;
+mod residency_unlimited;
+mod respawn;
+mod respawn_spec;
+mod run_stats_wiring;
+mod runner;
+mod spawn_facts;
+mod start_failure_security;
+mod start_owned;
+mod steering_race;
+mod stop_settlement;
+mod transcript_log;
+mod wiring_seams;
+#[path = "../workpool_rebind_tests.rs"]
+mod workpool_rebind;

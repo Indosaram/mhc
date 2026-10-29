@@ -1,0 +1,2 @@
+use ulw_loop_core::quality_gate_fields::{throw_quality_gate_defects,QualityGateDefect};
+#[test] fn duplicate_defects_dedupe_before_cap(){let d=(0..30).map(|i|QualityGateDefect{field:if i<10{"duplicate".into()}else{format!("field-{}",i-10)},message:if i<10{"same defect".into()}else{format!("defect-{}",i-10)}}).collect::<Vec<_>>();let e=throw_quality_gate_defects(&d).expect_err("invalid");let f=e.details.unwrap();assert_eq!(f["fields"].as_array().unwrap().len(),21);assert!(!f.contains_key("truncated"));}

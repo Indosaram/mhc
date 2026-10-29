@@ -24,17 +24,18 @@ message; every other positional argument is a message.
 | `mhc auth print-api-key --provider <p>` | Print the resolved API key for an external client. |
 | `mhc auth print-bearer-token --provider <p>` | Print an OAuth bearer token, refreshing it when expired (`--min-expiry <duration>`). |
 | `mhc auth consent <provider> [--rotation] [--revoke] [--yes]` | Record (or with `--revoke` remove) user risk acknowledgement for first-party-impersonating providers (`anthropic` with OAuth subscription tokens, `anthropic-subscription`, `chatgpt-subscription`, `github-copilot`, `kimi-coding`, `devin`, `cursor`) or for automatic multi-account rotation (`--rotation`). Stored as `providerRiskConsent.<provider>` in global settings. In non-interactive environments, `--yes` is required. |
-| `mhc doctor` | Read-only diagnostics: config sources (`~/.omo/omo.jsonc` and project `.omo/omo.jsonc`), config problems and the model profile resolution. |
-| `mhc gateway list [--json]` / `mhc gateway send <session> <message…> [--steer] [--from <user>]` | List the live sessions that accept gateway messages, or deliver a message into one (session id, name or unique id prefix). See [features.md](features.md). |
-| `mhc usage [--json] [--sessions] [--days N] [--status]` | Report the local usage ledger (requests, tokens, cost estimate, latency). |
-| `mhc memory <status\|search\|remember\|import-legacy\|mcp>` | Long-term memory from the shell; `mcp` serves the memory MCP server over stdio. |
-| `mhc home [init\|repair] [--json]` | Report, create or repair the agent home layout. |
-| `mhc setup` | First-run setup: provider, API key and default model (`--provider ... --yes` for non-interactive use, `--check`). |
-| `mhc init-deep` | Generate `AGENTS.md` files for the repository root and significant directories. |
+| `mhc import-omo [--from <dir>] [--force]` | Copy `settings.json`, `models.json`, `keybindings.json`, `auth.json`, `sessions/` and linked user-extension markers from an OmO agent directory (default `~/.omo/agent`) into the active agent directory. Only needed when the active directory is not `~/.omo/agent` (for example with `MAHO_CODING_AGENT_DIR` set); source and destination must differ. |
+| `mhc doctor` | Read-only diagnostics: omo config load, project trust, category models and packaged resources. |
+| `mhc ulw-loop <command>` | The ulw-loop goal ledger (`create-goals`, `status`, `criteria`, `record-evidence`, `checkpoint`, ...). `mhc ulw-loop help` prints the full usage. |
+| `mhc gateway list [--json]` / `mhc gateway send <session> <message…> [--steer] [--from <user>]` | MIT profile only (`--no-default-features`): list the live sessions that accept gateway messages, or deliver a message into one (session id, name or unique id prefix). See docs/MIT-PROFILE.md. |
+| `mhc schedule <command>` | Schedule and manage background task executions. |
 | `mhc models discover` | Discover and test available model provider endpoints. |
+| `mhc senpi-install` | Install or uninstall the Senpi companion plugin for editor integration. |
+| `mhc host <ensure\|status\|stop\|handoff>` | Get, inspect or end the shared RPC host daemon; one JSON line per call. |
 | `mhc mini [-c]` | Experimental minimal TUI client. |
 
-`install`, `remove`, `update`, `list`, `config`, `auth` and `doctor` accept `--help`.
+`install`, `remove`, `update`, `list`, `config`, `auth`, `import-omo` and `doctor` accept `--help`;
+`host` prints its usage on an unknown argument.
 
 `app-server` has been removed. Use `mhc --mode rpc` for process integration over stdin/stdout.
 This is not a drop-in replacement for the Codex app-server protocol; clients must use the mhc RPC protocol.

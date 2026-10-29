@@ -424,15 +424,15 @@ async function scenarioInstall(ctx) {
 	const stageDir = dirname(ctx.installed);
 	const verify = await run("bun", [join(REPO, "tools", "package-native.mjs"), "--verify-only", stageDir], {
 		cwd: REPO,
-		env: { PATH: process.env.PATH },
+		env: { PATH: process.env.PATH, OMO_SRC: process.env.OMO_SRC ?? "/home/indo/code/oh-my-openagent" },
 		timeoutMs: 120_000,
 	});
 	writeFileSync(join(ctx.qaRoot, "install-verify.log"), verify.stdout + verify.stderr);
 	artifacts.push("install-verify.log");
 
 	// Real surface (plan task 3): verify the staged runtime against its verified manifest provenance.
-	// We read the verified manifest to derive the staged skill vocabulary, asserting all declared skills
-	// are present on disk.
+	// We read the verified manifest to derive the exact selected skill vocabulary (whether pinned baseline
+	// or selected latest overlay), asserting all declared skills are present on disk.
 	let skillNames = [];
 	let manifestParseOk = false;
 	const manifestPath = join(stageDir, "manifest.json");
@@ -450,7 +450,7 @@ async function scenarioInstall(ctx) {
 	const skillsDir = join(stageDir, "skills");
 	const missingSkills = skillNames.filter((name) => !existsSync(join(skillsDir, name, "SKILL.md")));
 
-	const helper = join(stageDir, "mhc-ast-grep");
+	const helper = join(stageDir, "ast-grep-mcp");
 	const hadHelper = existsSync(helper);
 	let handshakeOk = false;
 	if (hadHelper) {
@@ -520,12 +520,12 @@ async function scenarioInstall(ctx) {
 	let detail = "";
 	try {
 		cpSync(stageDir, scratch, { recursive: true });
-		const scratchHelper = join(scratch, "mhc-ast-grep");
+		const scratchHelper = join(scratch, "ast-grep-mcp");
 		if (existsSync(scratchHelper)) rmSync(scratchHelper, { force: true });
 		const negative = await run("bun", [join(REPO, "tools", "package-native.mjs"), "--verify-only", scratch], { cwd: REPO, env: { PATH: process.env.PATH }, timeoutMs: 120_000 });
 		writeFileSync(join(ctx.qaRoot, "install-missing-helper.log"), negative.stdout + negative.stderr);
 		artifacts.push("install-missing-helper.log");
-		const diagnosed = negative.exitCode !== 0 && /mhc-ast-grep|missing|helper/i.test(negative.stdout + negative.stderr);
+		const diagnosed = negative.exitCode !== 0 && /ast-grep-mcp|missing|helper/i.test(negative.stdout + negative.stderr);
 		ok = verify.exitCode === 0 && manifestParseOk && skillNames.length > 0 && missingSkills.length === 0 && hadHelper && handshakeOk && diagnosed;
 		detail = `verifyExit=${verify.exitCode} manifestParseOk=${manifestParseOk} skills=${skillNames.length - missingSkills.length}/${skillNames.length} helper=${hadHelper} handshake=${handshakeOk} diagnosed=${diagnosed}`;
 	} finally {
