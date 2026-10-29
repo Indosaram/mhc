@@ -135,7 +135,7 @@ const SCHEMA_ASSET_SOURCE = `assets/${SCHEMA_ASSET_NAME}`;
 const GIT_BASH_MCP_NAME = `omo-git-bash${EXE_SUFFIX}`;
 
 // Binary sibling: the native desktop engine. Upstream resolves it via desktop-service child
-// (`crates/desktop/senpi-desktop-service/src/child.rs`), which looks for `senpi-desktop-engine` beside
+// (`crates/omo/senpi-desktop-service/src/child.rs`), which looks for `senpi-desktop-engine` beside
 // the running executable. It is staged from `--desktop-engine-binary` (default: <binary dir>/senpi-desktop-engine):
 // in the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
 // the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
