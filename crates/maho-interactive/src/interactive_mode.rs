@@ -225,6 +225,9 @@ type ParkedFuture = Pin<Box<dyn Future<Output = ParkedApply>>>;
 /// from a completion is already past the paint barrier (`applying_parked`).
 struct ParkedAction {
     painted: bool,
+    /// Settles on its own, outside park order: a clipboard paste only touches the editor, so it
+    /// must not wait behind (or hold up) a slow enqueue, reload, or settings write.
+    independent: bool,
     future: ParkedFuture,
 }
 
@@ -272,7 +275,7 @@ enum CopyFlash {
 }
 
 enum PasteOutcome {
-    Image(Vec<u8>, String),
+    Image(maho_ai::types::ImageContent),
     Text(Option<String>),
 }
 
@@ -5257,9 +5260,8 @@ impl InteractiveMode {
     }
 
     /// senpi's `attachClipboardImage`: the `blockImages` gate, the compaction drop, and the marker
-    /// pair. senpi's `processImage` resize/conversion is skipped here, so only an already-supported
-    /// format reaches here.
-    fn attach_clipboard_image(&mut self, bytes: Vec<u8>, mime_type: String) -> bool {
+    /// pair. The image was already run through senpi's `processImage` off the UI task.
+    fn attach_clipboard_image(&mut self, image: maho_ai::types::ImageContent) -> bool {
         if self
             .session
             .with_settings_manager(|settings| settings.get_block_images())
@@ -5271,11 +5273,7 @@ impl InteractiveMode {
             self.show_status("Image paste dropped: messages sent during compaction cannot carry images - paste again after compaction finishes".into());
             return true;
         }
-        let data = {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
-        };
-        self.attach_image(maho_ai::types::ImageContent { data, mime_type });
+        self.attach_image(image);
         self.show_status("Attached image from clipboard".into());
         true
     }
@@ -5384,6 +5382,25 @@ impl InteractiveMode {
             // senpi `onPasteImage` -> `handleClipboardPaste` (image first, text fallback); a
             // replacement editor has no image markers, so it keeps the plain-text paste.
             self.park_clipboard_paste(self.custom_editor.is_some());
+            return Ok(());
+        }
+        // A terminal paste (Shift+Insert, Omarchy's Super+V) of an image-only clipboard arrives as
+        // an empty bracketed paste: read the clipboard image the way the paste key does.
+        if data == "\x1b[200~\x1b[201~" {
+            self.park_clipboard_paste(self.custom_editor.is_some());
+            return Ok(());
+        }
+        if self.custom_editor.is_none()
+            && let Some(path) = data
+                .strip_prefix("\x1b[200~")
+                .and_then(|rest| rest.strip_suffix("\x1b[201~"))
+                .and_then(crate::interactive_clipboard::pasted_image_path)
+            && !self.host_is_compacting()
+            && !self
+                .session
+                .with_settings_manager(|settings| settings.get_block_images())
+        {
+            self.park_pasted_image_path(path, data.to_owned());
             return Ok(());
         }
         if keys.matches(data, "app.history.search") {
@@ -6522,9 +6539,29 @@ impl InteractiveMode {
         F: Future<Output = T> + 'static,
         A: FnOnce(&mut InteractiveMode, T) + 'static,
     {
+        self.push_parked_action(work, apply, false);
+    }
+
+    /// [`Self::park_action`] for work that settles outside park order (see [`ParkedAction`]).
+    fn park_independent_action<T, F, A>(&mut self, work: F, apply: A)
+    where
+        T: 'static,
+        F: Future<Output = T> + 'static,
+        A: FnOnce(&mut InteractiveMode, T) + 'static,
+    {
+        self.push_parked_action(work, apply, true);
+    }
+
+    fn push_parked_action<T, F, A>(&mut self, work: F, apply: A, independent: bool)
+    where
+        T: 'static,
+        F: Future<Output = T> + 'static,
+        A: FnOnce(&mut InteractiveMode, T) + 'static,
+    {
         let painted = self.applying_parked;
         self.parked_actions.push_back(ParkedAction {
             painted,
+            independent,
             future: Box::pin(async move {
                 let value = work.await;
                 Box::new(move |mode: &mut InteractiveMode| apply(mode, value)) as ParkedApply
@@ -7404,13 +7441,19 @@ impl InteractiveMode {
     }
 
     fn park_clipboard_paste(&mut self, text_only: bool) {
-        self.park_action(
+        let auto_resize = self
+            .session
+            .with_settings_manager(|settings| settings.get_image_auto_resize());
+        self.park_independent_action(
             async move {
                 if !text_only
                     && let Some((bytes, mime_type)) =
                         crate::interactive_clipboard::read_image().await
+                    && let Some(image) =
+                        crate::interactive_clipboard::process_image(&bytes, &mime_type, auto_resize)
+                            .await
                 {
-                    return PasteOutcome::Image(bytes, mime_type);
+                    return PasteOutcome::Image(image);
                 }
                 PasteOutcome::Text(crate::interactive_clipboard::read_text().await)
             },
@@ -7418,11 +7461,28 @@ impl InteractiveMode {
         );
     }
 
+    /// A bracketed paste that is only an image file path (a terminal that saved the clipboard
+    /// bitmap to a file) attaches that image; a file that does not decode keeps the pasted text.
+    fn park_pasted_image_path(&mut self, path: std::path::PathBuf, pasted: String) {
+        let auto_resize = self
+            .session
+            .with_settings_manager(|settings| settings.get_image_auto_resize());
+        self.park_independent_action(
+            async move { crate::interactive_clipboard::read_image_file(&path, auto_resize).await },
+            move |mode, image| match image {
+                Some(image) => {
+                    mode.attach_clipboard_image(image);
+                }
+                None => mode.handle_editor_input(&pasted),
+            },
+        );
+    }
+
     fn apply_clipboard_paste(&mut self, outcome: PasteOutcome, text_only: bool) {
         match outcome {
-            PasteOutcome::Image(bytes, mime_type) => {
+            PasteOutcome::Image(image) => {
                 if !text_only {
-                    self.attach_clipboard_image(bytes, mime_type);
+                    self.attach_clipboard_image(image);
                 }
             }
             PasteOutcome::Text(None) => {}
@@ -7760,25 +7820,50 @@ impl InteractiveMode {
     }
 
     fn poll_parked(&mut self, context: &mut std::task::Context<'_>) {
+        // Ordered work settles in park order; independent work settles whenever it is ready.
         loop {
-            let apply = {
-                let Some(front) = self.parked_actions.front_mut() else {
-                    return;
+            let (index, apply) = {
+                let Some(index) = self
+                    .parked_actions
+                    .iter()
+                    .position(|action| !action.independent)
+                else {
+                    break;
                 };
+                let front = &mut self.parked_actions[index];
                 if !front.painted {
-                    return;
+                    break;
                 }
                 match front.future.as_mut().poll(context) {
-                    std::task::Poll::Pending => return,
-                    std::task::Poll::Ready(apply) => apply,
+                    std::task::Poll::Pending => break,
+                    std::task::Poll::Ready(apply) => (index, apply),
                 }
             };
-            self.parked_actions.pop_front();
-            self.applying_parked = true;
-            self.frame_dirty = true;
-            apply(self);
-            self.applying_parked = false;
+            self.parked_actions.remove(index);
+            self.apply_parked(apply);
         }
+        let mut index = 0;
+        while index < self.parked_actions.len() {
+            let action = &mut self.parked_actions[index];
+            if !action.independent || !action.painted {
+                index += 1;
+                continue;
+            }
+            match action.future.as_mut().poll(context) {
+                std::task::Poll::Pending => index += 1,
+                std::task::Poll::Ready(apply) => {
+                    self.parked_actions.remove(index);
+                    self.apply_parked(apply);
+                }
+            }
+        }
+    }
+
+    fn apply_parked(&mut self, apply: ParkedApply) {
+        self.applying_parked = true;
+        self.frame_dirty = true;
+        apply(self);
+        self.applying_parked = false;
     }
 
     /// Direct `submit` observes parked work to completion. Does not poll a newly started turn;

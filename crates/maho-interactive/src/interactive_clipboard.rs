@@ -99,9 +99,6 @@ fn select_preferred_image_mime_type(types: &[String]) -> Option<String> {
     types.iter().find(|value| base_mime_type(value).starts_with("image/")).cloned()
 }
 
-/// senpi `isSupportedImageMimeType`.
-fn is_supported_image_mime_type(mime_type: &str) -> bool { SUPPORTED_IMAGE_MIME_TYPES.contains(&base_mime_type(mime_type).as_str()) }
-
 /// Run a clipboard helper and capture stdout, bounded like the text path (5 s, 50 MiB).
 async fn run_capture(command: &str, args: &[&str]) -> Option<Vec<u8>> {
     let mut child = tokio::process::Command::new(command).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().ok()?;
@@ -145,13 +142,14 @@ async fn read_image_via_xclip() -> Option<(Vec<u8>, String)> {
 fn read_image_via_native() -> Option<(Vec<u8>, String)> {
     let bytes = maho_tui::native_platform::get_native_clipboard()?.get_image().ok().flatten()?;
     if bytes.is_empty() { return None; }
-    Some((bytes, "application/octet-stream".to_owned()))
+    let mime_type = maho_tools::read::detect_supported_image_mime_type(&bytes).unwrap_or("application/octet-stream");
+    Some((bytes, mime_type.to_owned()))
 }
 
 /// senpi `readClipboardImage`: the platform clipboard bitmap as (bytes, mimeType), or `None`.
 ///
-/// The WSL PowerShell backend and the Photon conversion of unsupported formats are omitted here,
-/// so an unsupported payload is reported as no image rather than attached mislabelled.
+/// An unsupported format (BMP, TIFF, ...) is returned as-is; [`process_image`] converts it to PNG.
+/// The WSL PowerShell backend is omitted.
 pub async fn read_image() -> Option<(Vec<u8>, String)> {
     if std::env::var("TERMUX_VERSION").is_ok_and(|value| !value.is_empty()) { return None; }
     let mut image = None;
@@ -163,7 +161,52 @@ pub async fn read_image() -> Option<(Vec<u8>, String)> {
     } else {
         image = read_image_via_native();
     }
-    image.filter(|(_, mime_type)| is_supported_image_mime_type(mime_type))
+    image
+}
+
+/// senpi `processImage`: convert an unsupported format to PNG, then (unless disabled) resize it
+/// under the inline image limits. `None` when the bytes cannot be decoded.
+pub async fn process_image(bytes: &[u8], mime_type: &str, auto_resize: bool) -> Option<maho_ai::types::ImageContent> {
+    let options = maho_core::utils::image_process::ProcessImageOptions { auto_resize_images: Some(auto_resize), ..Default::default() };
+    let processed = maho_core::utils::image_process::process_image(bytes, mime_type, options).await.ok()?;
+    Some(maho_ai::types::ImageContent { data: processed.data, mime_type: processed.mime_type })
+}
+
+/// The largest image file a pasted path may attach; matches the clipboard read bound.
+const MAX_PASTED_IMAGE_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// The image file a paste names, when the whole paste is one path to an existing image file.
+///
+/// Terminals that cannot forward a bitmap (Ferryx remote panes, drag-and-drop) save the image and
+/// paste its path, optionally shell-quoted and followed by a space. Such a paste is attached as an
+/// image instead of inserted as text.
+pub fn pasted_image_path(pasted: &str) -> Option<std::path::PathBuf> {
+    let trimmed = pasted.trim();
+    if trimmed.is_empty() || trimmed.contains(['\n', '\r']) { return None; }
+    let unquoted = if let Some(inner) = trimmed.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')) {
+        inner.replace("'\\''", "'")
+    } else if let Some(inner) = trimmed.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) {
+        inner.to_owned()
+    } else {
+        trimmed.replace("\\ ", " ")
+    };
+    let unquoted = unquoted.strip_prefix("file://").unwrap_or(&unquoted);
+    let path = match unquoted.strip_prefix("~/") {
+        Some(rest) => maho_core::config::home_dir_path().join(rest),
+        None => std::path::PathBuf::from(unquoted),
+    };
+    if !path.is_absolute() { return None; }
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff") { return None; }
+    let metadata = std::fs::metadata(&path).ok()?;
+    (metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_PASTED_IMAGE_FILE_BYTES).then_some(path)
+}
+
+/// Read and process the image file [`pasted_image_path`] found. `None` when it does not decode.
+pub async fn read_image_file(path: &std::path::Path, auto_resize: bool) -> Option<maho_ai::types::ImageContent> {
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let mime_type = maho_tools::read::detect_supported_image_mime_type(&bytes).unwrap_or("application/octet-stream");
+    process_image(&bytes, mime_type, auto_resize).await
 }
 
 #[cfg(test)]
@@ -179,11 +222,43 @@ mod tests {
     }
 
     #[test]
-    fn base_and_supported_mime_types_normalize_parameters() {
+    fn base_mime_type_normalizes_parameters() {
         assert_eq!(base_mime_type("image/png;charset=binary"), "image/png");
-        assert!(is_supported_image_mime_type("image/jpeg"));
-        assert!(is_supported_image_mime_type("IMAGE/PNG"));
-        assert!(!is_supported_image_mime_type("image/bmp"), "an unsupported format is not attached without a codec");
-        assert!(!is_supported_image_mime_type("application/octet-stream"));
+        assert_eq!(base_mime_type("IMAGE/PNG"), "image/png");
+    }
+
+    /// A 1x1 RGBA PNG.
+    const TINY_PNG: [u8; 70] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+        0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[tokio::test]
+    async fn process_image_converts_an_unsupported_format_to_png() {
+        let processed = process_image(&TINY_PNG, "image/bmp", false).await.expect("decodes");
+        assert_eq!(processed.mime_type, "image/png");
+        assert!(process_image(b"not an image", "image/bmp", false).await.is_none());
+    }
+
+    #[test]
+    fn pasted_image_path_accepts_only_one_existing_image_file() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let image = directory.path().join("shot one.png");
+        std::fs::write(&image, TINY_PNG).expect("write image");
+        let text = directory.path().join("notes.txt");
+        std::fs::write(&text, b"text").expect("write text");
+        let display = image.display().to_string();
+        assert_eq!(pasted_image_path(&format!("'{display}' ")), Some(image.clone()), "a quoted path with the trailing space Ferryx adds");
+        assert_eq!(pasted_image_path(&format!("\"{display}\"")), Some(image.clone()));
+        assert_eq!(pasted_image_path(&display.replace(' ', "\\ ")), Some(image.clone()), "a backslash-escaped path");
+        assert_eq!(pasted_image_path(&format!("file://{display}")), Some(image));
+        assert_eq!(pasted_image_path(&text.display().to_string()), None, "not an image extension");
+        assert_eq!(pasted_image_path(&directory.path().join("missing.png").display().to_string()), None);
+        assert_eq!(pasted_image_path(&format!("look at {display}")), None, "a sentence is text");
+        assert_eq!(pasted_image_path("shot.png"), None, "a relative path is text");
+        assert_eq!(pasted_image_path(""), None);
     }
 }
