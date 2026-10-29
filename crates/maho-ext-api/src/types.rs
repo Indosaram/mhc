@@ -2353,8 +2353,9 @@ pub struct IdleInjection {
     pub on_flushed: Option<IdleInjectionCallback>,
     pub on_delivery_failed: Option<IdleInjectionFailureCallback>,
 }
-/// The single idle-edge injection queue. ext-api defines only the contract so `ExtensionContext`
-/// can carry a host-provided implementation. `None` means "no coordinator" and every consumer
+/// The single idle-edge injection queue. The concrete implementation lives in the composition
+/// (`crates/omo/maho-omo`, todo 47); ext-api defines only the contract so `ExtensionContext` can
+/// carry it without depending on that crate. `None` means "no coordinator" and every consumer
 /// falls back to a direct send, matching upstream's optional `ComponentContext.idleCoordinator`.
 pub trait IdleInjectionCoordinator: Send + Sync {
     /// Accept an injection into the batch window. Returns `false` when the coordinator is retired:

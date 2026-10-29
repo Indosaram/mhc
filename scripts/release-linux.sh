@@ -25,7 +25,7 @@ trap 'rm -rf "$work"' EXIT
 export MHC_BUILD_VERSION="$version"
 rustup target add x86_64-unknown-linux-gnu >/dev/null 2>&1 || true
 cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 \
-  -p maho-cli -p maho-senpi-desktop-engine --bins
+  -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
 rel="$target_dir/x86_64-unknown-linux-gnu/release"
 test "$("$rel/mhc" --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
 test -f "$rel/mhc-launcher"

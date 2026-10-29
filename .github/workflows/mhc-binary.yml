@@ -35,7 +35,7 @@ jobs:
       - name: build release binaries
         run: |
           export MHC_BUILD_VERSION="${GITHUB_REF_NAME#build/}"
-          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 -p maho-cli -p maho-senpi-desktop-engine --bins
+          cargo zigbuild --release --locked --target x86_64-unknown-linux-gnu.2.28 -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
           mkdir -p target/release
           for bin in mhc mhc-launcher ast-grep-mcp lsp-daemon omo-git-bash senpi-desktop-engine; do
             if [ -f "target/x86_64-unknown-linux-gnu/release/$bin" ]; then cp "target/x86_64-unknown-linux-gnu/release/$bin" target/release/; fi

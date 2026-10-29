@@ -58,7 +58,8 @@ jobs:
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true
 
-  # MIT build of `mhc` (docs/MIT-PROFILE.md): license policy, clippy, binaries, smoke and tests.
+  # MIT build profile of `mhc` (docs/MIT-PROFILE.md): maho-cli without its default `omo` feature
+  # links no crate under crates/omo/** (LicenseRef-SUL-1.0) and still chats and runs builtin tools.
   mit-profile:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -69,19 +70,23 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-key: mit-profile
+      - name: check-mit-profile self-test
+        run: python3 scripts/check-mit-profile.py --self-test
+      - name: no crates/omo package or SUL license in the MIT dependency graph
+        run: python3 scripts/check-mit-profile.py
       - name: install cargo-deny
         run: |
           curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar xz -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
-      - name: cargo deny licenses (MIT profile)
+      - name: cargo deny licenses (MIT profile, LicenseRef-SUL-1.0 forbidden)
         run: |
-          cargo deny --manifest-path crates/maho-cli/Cargo.toml --config deny-mit.toml check licenses
+          cargo deny --manifest-path crates/maho-cli/Cargo.toml --no-default-features --config deny-mit.toml check licenses
           cargo deny --manifest-path crates/desktop/senpi-desktop-engine/Cargo.toml --config deny-mit.toml check licenses
       - name: cargo clippy (MIT profile)
-        run: cargo clippy -p maho-cli --lib --bins --locked -- -D warnings
+        run: cargo clippy -p maho-cli --no-default-features --lib --bins --locked -- -D warnings
       - name: build MIT-profile binaries
-        run: cargo build -p maho-cli --bins --locked && cargo build -p maho-senpi-desktop-engine --locked
-      - name: smoke (chat + builtin tools, removed omo entries unavailable)
+        run: cargo build -p maho-cli --no-default-features --bins --locked && cargo build -p maho-senpi-desktop-engine --locked
+      - name: smoke (chat + builtin tools, omo entries unavailable)
         run: python3 scripts/mit-profile-smoke.py target/debug/mhc
       - name: install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -89,7 +94,7 @@ jobs:
           tool: cargo-nextest
       - name: maho-cli tests (MIT profile)
         timeout-minutes: 40
-        run: python3 scripts/annotate-nextest.py maho-cli-mit-tests -- cargo nextest run --locked --no-fail-fast -p maho-cli
+        run: python3 scripts/annotate-nextest.py maho-cli-mit-tests -- cargo nextest run --locked --no-fail-fast -p maho-cli --no-default-features
       - name: disk usage
         if: always()
         run: df -h / && du -sh target 2>/dev/null || true

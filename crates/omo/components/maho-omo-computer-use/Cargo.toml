@@ -1,0 +1,47 @@
+[package]
+name = "maho-omo-computer-use"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "LicenseRef-SUL-1.0"
+autotests = false
+
+[lib]
+name = "maho_omo_computer_use"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+futures = { workspace = true }
+maho-ai = { version = "=0.0.0", path = "../../../maho-ai" }
+maho-ext-api = { path = "../../../maho-ext-api" }
+maho-omo-bundled-skills = { path = "../maho-omo-bundled-skills" }
+maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
+maho-tools = { version = "=0.0.0", path = "../../../maho-tools" }
+maho-tui = { path = "../../../maho-tui" }
+omo-config-core = { package = "maho-omo-config-core", path = "../../omo-config-core" }
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../../../desktop/senpi-desktop-core" }
+senpi-desktop-protocol = { package = "maho-senpi-desktop-protocol", path = "../../../desktop/senpi-desktop-protocol" }
+senpi-desktop-run = { package = "maho-senpi-desktop-run", path = "../../../desktop/senpi-desktop-run" }
+senpi-desktop-service = { package = "maho-senpi-desktop-service", path = "../../../desktop/senpi-desktop-service" }
+senpi-desktop-tool = { package = "maho-senpi-desktop-tool", path = "../../../desktop/senpi-desktop-tool" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha2 = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal", "process"] }
+
+[dev-dependencies]
+maho-ext-host = { path = "../../../maho-ext-host" }
+tempfile = "=3.27.0"
+tokio = { version = "=1.52.3", features = ["macros", "rt", "test-util"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

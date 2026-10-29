@@ -1,0 +1,58 @@
+use std::{path::Path,sync::OnceLock};
+use crate::{git_helpers::{git_is_repo,run},runtime::AdvisorPreflight};
+static PROCESS_START_TIME:OnceLock<f64>=OnceLock::new();
+pub fn process_start_time()->f64 {*PROCESS_START_TIME.get_or_init(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0)}
+pub fn advisor_preflight(has_ui:bool,disabled:bool,cwd:&Path,onboarding_state_dir:&Path,marker_mtime:Option<f64>,process_start:f64)->std::io::Result<Option<AdvisorPreflight>> {
+    if !has_ui || disabled || !git_is_repo(cwd) {return Ok(None);}
+    let root=run(cwd,&["rev-parse","--show-toplevel"])?;
+    if marker_mtime.is_none_or(|mtime|mtime>=process_start) {return Ok(None);}
+    let root_path=std::path::PathBuf::from(root.trim().replace('/',std::path::MAIN_SEPARATOR_STR));
+    Ok(Some(AdvisorPreflight {root:root_path,state_dir:onboarding_state_dir.join("init-deep-advisor-state")}))
+}
+pub type OnboardingMarkerMtime=std::sync::Arc<dyn Fn(&Path)->Option<f64>+Send+Sync>;
+pub struct InitDeepAdvisorComponent {pub state_dir:std::path::PathBuf,pub skills_root:std::path::PathBuf,pub marker_mtime:OnboardingMarkerMtime,pub process_start:f64}
+impl InitDeepAdvisorComponent {
+    pub fn new(skills_root:std::path::PathBuf)->Self {
+        let env=std::env::vars().collect();
+        Self {state_dir:maho_omo_telemetry::product_identity::get_omo_native_state_dir(&env),skills_root,marker_mtime:std::sync::Arc::new(maho_omo_onboarding::state::get_onboarding_marker_mtime),process_start:process_start_time()}
+    }
+}
+impl maho_ext_api::Extension for InitDeepAdvisorComponent {
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+        use maho_ext_api::{EventKind,EventResult,ExtensionEvent,FlagValue,SessionReason};
+        let state_dir=self.state_dir.clone();let skills=self.skills_root.clone();let marker=std::sync::Arc::clone(&self.marker_mtime);let start=self.process_start;
+        let runtime=api.runtime.clone();let profile=api.profile.clone();let events=api.events.clone();let registered=api.registered.clone();
+        api.on(EventKind::SessionStart,std::sync::Arc::new(move |event,ctx| {
+            if let ExtensionEvent::SessionStart(event)=event && event.reason==SessionReason::Startup {
+                let deferred=ctx.defer_macrotask.clone();
+                let ctx=ctx.clone();let runtime=runtime.clone();let registered=registered.clone();let profile=profile.clone();let events=events.clone();
+                let state_dir=state_dir.clone();let skills=skills.clone();let marker=std::sync::Arc::clone(&marker);
+                let run=move || {
+                let preflight=advisor_preflight(ctx.has_ui,runtime.get_flag("omo-senpi-init-deep-advisor-disabled")==Some(FlagValue::Boolean(true)),&ctx.cwd,&state_dir,marker(&state_dir),start);
+                match preflight {Ok(Some(preflight))=>{let mut api=maho_ext_api::ExtensionApi::new(registered.clone(),profile.clone(),events.clone(),runtime.clone());api.cwd=ctx.cwd.clone();let ctx=ctx.clone();let skills=skills.clone();tokio::spawn(async move {let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0;if let Err(error)=crate::runtime::run_advisor_after_preflight(&api,&ctx,&preflight,&skills,now).await {match &ctx.logger {Some(logger)=>logger.warn(&format!("init-deep-advisor failed: {error}"),None),None=>maho_ext_api::diagnostic(&format!("init-deep-advisor failed: {error}"))};}});},Ok(None)=>{},Err(error)=>match &ctx.logger {Some(logger)=>logger.warn(&format!("init-deep-advisor failed: {error}"),None),None=>maho_ext_api::diagnostic(&format!("init-deep-advisor failed: {error}"))}}
+                };
+                // The preflight forks `git` twice; with no macrotask hook it would run inside this poll
+                // and stall the input loop that drives the binding, so it moves to a blocking thread.
+                match deferred {
+                    Some(defer) => defer(Box::new(run)),
+                    None => match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => { let entered = handle.clone(); drop(handle.spawn_blocking(move || { let _guard = entered.enter(); run(); })); }
+                        Err(_) => run(),
+                    },
+                }
+            }
+            Box::pin(async {Ok(EventResult::None)})
+        }));
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn default_component_binds_owner_marker_reader() {let t=tempfile::tempdir().unwrap();let component=InitDeepAdvisorComponent::new(t.path().join("skills"));assert!((component.marker_mtime)(t.path()).is_none());assert!(maho_omo_onboarding::state::claim_onboarding(t.path()));assert_eq!((component.marker_mtime)(t.path()),maho_omo_onboarding::state::get_onboarding_marker_mtime(t.path()));}
+    #[test] fn non_ui_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(false,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
+    #[test] fn disabled_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,true,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
+    #[test] fn missing_onboarding_marker_suppresses() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,false,t.path(),t.path(),None,2.0).unwrap().is_none());}
+    #[test] fn onboarding_must_predate_process() {let (t,_)=crate::git_helpers::tests::repo();let root=t.path().canonicalize().unwrap();
+        #[cfg(windows)] let root=std::path::PathBuf::from(root.to_string_lossy().trim_start_matches(r"\\?\"));for marker in [Some(2.0),Some(3.0)] {assert!(advisor_preflight(true,false,&root,&root,marker,2.0).unwrap().is_none());}let p=advisor_preflight(true,false,&root,&root,Some(1.0),2.0).unwrap().unwrap();assert_eq!(p.root,root);assert_eq!(p.state_dir,root.join("init-deep-advisor-state"));}
+    #[test] fn nonrepo_skips() {let t=tempfile::tempdir().unwrap();assert!(advisor_preflight(true,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());}
+}

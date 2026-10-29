@@ -1,3 +1,6 @@
+#[cfg(feature = "omo-core")]
+pub use comment_checker_core as checker;
+#[cfg(not(feature = "omo-core"))]
 pub use maho_comment_checker as checker;
 
 pub mod core;
