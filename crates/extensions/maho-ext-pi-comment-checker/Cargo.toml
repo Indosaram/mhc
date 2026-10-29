@@ -5,9 +5,17 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+# `omo-core` keeps the default (omo) build on the SUL comment-checker-core helpers. Without it the
+# extension uses the MIT `maho-comment-checker` crate (MIT profile).
+[features]
+default = []
+omo-core = ["dep:maho-comment-checker-core"]
+
 [dependencies]
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-comment-checker = { path = "../../maho-comment-checker" }
+# SUL (crates/omo); only the `omo-core` feature (enabled by maho-cli `omo`) links it.
+maho-comment-checker-core = { path = "../../omo/comment-checker-core", optional = true }
 serde_json = "=1.0.149"
 tokio = { version = "=1.52.3", features = ["process", "io-util", "time", "macros", "rt"] }
 

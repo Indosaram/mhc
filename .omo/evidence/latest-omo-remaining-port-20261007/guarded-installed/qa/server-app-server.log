@@ -1,0 +1,208 @@
+{
+  "objective": "residual-server-goal-probe",
+  "status": "fail",
+  "detail": "initialize=true threadId=true goalRoundTrip=true updatedNotification=true",
+  "exchange": [
+    {
+      "direction": "out",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "clientInfo": {
+            "name": "residual-qa",
+            "title": "residual gate",
+            "version": "1.0.0"
+          }
+        }
+      }
+    },
+    {
+      "direction": "in",
+      "message": {
+        "id": 1,
+        "result": {
+          "userAgent": "residual-qa/0.0.0 (Linux ; x64) senpi_app_server",
+          "codexHome": "/tmp/residual-server-home-pYHGRF/agent",
+          "platformFamily": "unix",
+          "platformOs": "linux"
+        }
+      }
+    },
+    {
+      "direction": "out",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/start",
+        "params": {
+          "cwd": "/tmp/residual-server-home-pYHGRF"
+        }
+      }
+    },
+    {
+      "direction": "in",
+      "message": {
+        "id": 2,
+        "result": {
+          "thread": {
+            "id": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "sessionId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "forkedFromId": null,
+            "parentThreadId": null,
+            "preview": "",
+            "ephemeral": false,
+            "modelProvider": "offline",
+            "createdAt": 1791423980.868,
+            "updatedAt": 1791423980.868,
+            "recencyAt": 1791423980.868,
+            "status": {
+              "type": "idle"
+            },
+            "path": "/tmp/residual-server-home-pYHGRF/agent/sessions/--tmp-residual-server-home-pYHGRF--/2026-10-08T01-46-18-387Z_01a11930-9b92-72f3-9c89-d25fc12cbf37.jsonl",
+            "cwd": "/tmp/residual-server-home-pYHGRF",
+            "cliVersion": "0.0.0",
+            "source": "appServer",
+            "threadSource": null,
+            "agentNickname": null,
+            "agentRole": null,
+            "gitInfo": null,
+            "name": null,
+            "turns": []
+          },
+          "model": "offline",
+          "modelProvider": "offline",
+          "serviceTier": null,
+          "cwd": "/tmp/residual-server-home-pYHGRF",
+          "runtimeWorkspaceRoots": [
+            "/tmp/residual-server-home-pYHGRF"
+          ],
+          "instructionSources": [],
+          "approvalPolicy": "never",
+          "approvalsReviewer": "user",
+          "sandbox": {
+            "type": "dangerFullAccess"
+          },
+          "activePermissionProfile": null,
+          "reasoningEffort": "off",
+          "multiAgentMode": "explicitRequestOnly"
+        }
+      }
+    },
+    {
+      "direction": "out",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "thread/goal/set",
+        "params": {
+          "threadId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+          "objective": "residual-server-goal-probe"
+        }
+      }
+    },
+    {
+      "direction": "in",
+      "message": {
+        "method": "thread/started",
+        "params": {
+          "thread": {
+            "id": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "sessionId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "forkedFromId": null,
+            "parentThreadId": null,
+            "preview": "",
+            "ephemeral": false,
+            "modelProvider": "offline",
+            "createdAt": 1791423980.868,
+            "updatedAt": 1791423980.868,
+            "recencyAt": 1791423980.868,
+            "status": {
+              "type": "idle"
+            },
+            "path": "/tmp/residual-server-home-pYHGRF/agent/sessions/--tmp-residual-server-home-pYHGRF--/2026-10-08T01-46-18-387Z_01a11930-9b92-72f3-9c89-d25fc12cbf37.jsonl",
+            "cwd": "/tmp/residual-server-home-pYHGRF",
+            "cliVersion": "0.0.0",
+            "source": "appServer",
+            "threadSource": null,
+            "agentNickname": null,
+            "agentRole": null,
+            "gitInfo": null,
+            "name": null,
+            "turns": []
+          }
+        },
+        "emittedAtMs": 1791423980870
+      }
+    },
+    {
+      "direction": "in",
+      "message": {
+        "id": 3,
+        "result": {
+          "goal": {
+            "threadId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "objective": "residual-server-goal-probe",
+            "status": "active",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "createdAt": 1791423980870,
+            "updatedAt": 1791423980870
+          }
+        }
+      }
+    },
+    {
+      "direction": "out",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "thread/goal/get",
+        "params": {
+          "threadId": "01a11930-9b92-72f3-9c89-d25fc12cbf37"
+        }
+      }
+    },
+    {
+      "direction": "in",
+      "message": {
+        "method": "thread/goal/updated",
+        "params": {
+          "threadId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+          "turnId": null,
+          "goal": {
+            "threadId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "objective": "residual-server-goal-probe",
+            "status": "active",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "createdAt": 1791423980870,
+            "updatedAt": 1791423980870
+          }
+        },
+        "emittedAtMs": 1791423982415
+      }
+    },
+    {
+      "direction": "in",
+      "message": {
+        "id": 4,
+        "result": {
+          "goal": {
+            "threadId": "01a11930-9b92-72f3-9c89-d25fc12cbf37",
+            "objective": "residual-server-goal-probe",
+            "status": "blocked",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "createdAt": 1791423980870,
+            "updatedAt": 1791423980879
+          }
+        }
+      }
+    }
+  ]
+}

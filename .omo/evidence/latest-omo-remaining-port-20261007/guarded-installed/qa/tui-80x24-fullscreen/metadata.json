@@ -1,0 +1,10 @@
+{
+  "binary": "/home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/guarded-installed/install/mhc",
+  "binarySha256": "1f25161b5d9041a5ce309d1bd675c06cb30bfe170989c7189e2c32603ffd08b9",
+  "cols": 80,
+  "rows": 24,
+  "mode": "fullscreen",
+  "loopback": true,
+  "ansiSha256": "1948981d8157bd584b10629142e311abbe28ec31376a510bd5458dc4aef63549",
+  "exitCode": 0
+}

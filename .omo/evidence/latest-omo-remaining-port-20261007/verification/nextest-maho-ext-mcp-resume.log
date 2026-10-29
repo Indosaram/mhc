@@ -1,0 +1,327 @@
+   Compiling indexmap v2.14.0
+   Compiling tokio v1.52.3
+   Compiling tracing v0.1.44
+   Compiling serde v1.0.228
+   Compiling icu_normalizer v2.3.0
+   Compiling serde_json v1.0.149
+   Compiling idna_adapter v1.2.1
+   Compiling idna v1.1.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling url v2.5.8
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling h2 v0.4.19
+   Compiling tokio-rustls v0.26.4
+   Compiling tower-http v0.6.8
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling icu_segmenter v2.3.0
+   Compiling crossterm v0.29.0
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling rusqlite v0.40.2
+   Compiling plist v1.10.1
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling bincode v1.3.3
+   Compiling syntect v5.3.0
+   Compiling icu_collator v2.3.1
+   Compiling axum-core v0.5.6
+   Compiling axum v0.8.9
+   Compiling yasna v0.6.0
+   Compiling rcgen v0.14.10
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+   Compiling maho-ext-tool-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-search)
+   Compiling maho-ext-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-mcp)
+    Finished `test` profile [unoptimized] target(s) in 1m 44s
+────────────
+ Nextest run ID 8a790769-0a20-42f4-9ef8-cd4bfb1cc1f8 with nextest profile: default
+    Starting 277 tests across 49 binaries
+        PASS [   0.007s] (  1/277) maho-ext-mcp::auth numeric_status_strings_accept_javascript_radix_notation
+        PASS [   0.007s] (  2/277) maho-ext-mcp::auth held_auth_lock_reports_its_path_without_mutating_tokens
+        PASS [   0.008s] (  3/277) maho-ext-mcp::auth csrf_state_is_single_use
+        PASS [   0.007s] (  4/277) maho-ext-mcp::auth clear_removes_record_and_index
+        PASS [   0.007s] (  5/277) maho-ext-mcp::auth oauth_machine_code_overrides_incidental_text
+        PASS [   0.008s] (  6/277) maho-ext-mcp::auth injected_redirect_handler_runs_after_authorization_url_is_retained
+        PASS [   0.009s] (  7/277) maho-ext-mcp::auth disabling_lock_allows_explicit_single_process_access
+        PASS [   0.009s] (  8/277) maho-ext-mcp::auth nested_numeric_and_text_signals_classify_retry
+        PASS [   0.009s] (  9/277) maho-ext-mcp::auth locked_updates_preserve_existing_fields
+        PASS [   0.011s] ( 10/277) maho-ext-mcp::auth provider_persists_url_bound_tokens_without_sdk_fields
+        PASS [   0.006s] ( 11/277) maho-ext-mcp::auth session_expiry_classification_distinguishes_protocol_errors
+        PASS [   0.007s] ( 12/277) maho-ext-mcp::auth token_save_without_expiry_clears_stale_expiry
+        PASS [   0.007s] ( 13/277) maho-ext-mcp::auth status_text_uses_ascii_javascript_word_boundaries
+        PASS [   0.007s] ( 14/277) maho-ext-mcp::auth traversal_names_do_not_escape_auth_directory
+        PASS [   0.008s] ( 15/277) maho-ext-mcp::callback occupied_fixed_port_fails_before_flow_start
+        PASS [   0.011s] ( 16/277) maho-ext-mcp::auth token_record_permissions_and_index_are_restricted
+        PASS [   0.008s] ( 17/277) maho-ext-mcp::callback override_uses_paste_channel_without_listener
+        PASS [   0.005s] ( 18/277) maho-ext-mcp::config boolean_direct_tools_is_supported
+        PASS [   0.013s] ( 19/277) maho-ext-mcp::callback timeout_closes_listener
+        PASS [   0.011s] ( 20/277) maho-ext-mcp::commands quoted_endpoints_preserve_arguments_and_receive_production_defaults
+        PASS [   0.008s] ( 21/277) maho-ext-mcp::config claude_config_requires_opt_in
+        PASS [   0.016s] ( 22/277) maho-ext-mcp::config callback_port_must_fit_tcp_range
+        PASS [   0.008s] ( 23/277) maho-ext-mcp::config command_substitution_is_rejected
+        PASS [   0.007s] ( 24/277) maho-ext-mcp::config default_timeouts_are_normalized
+        PASS [   0.011s] ( 25/277) maho-ext-mcp::config declaration_schema_paths_are_relative_but_endpoint_paths_name_the_server
+        PASS [   0.039s] ( 26/277) maho-ext-mcp::auth parallel_updates_are_not_lost
+        PASS [   0.038s] ( 27/277) maho-ext-mcp::auth saved_oauth_tokens_log_only_the_fingerprint
+        PASS [   0.009s] ( 28/277) maho-ext-mcp::config disabled_global_wins_over_extension
+        PASS [   0.009s] ( 29/277) maho-ext-mcp::config disabled_placeholder_is_valid
+        PASS [   0.006s] ( 30/277) maho-ext-mcp::config extension_server_preserves_exposure_and_defaults_cwd
+        PASS [   0.006s] ( 31/277) maho-ext-mcp::config future_fields_round_trip
+        PASS [   0.006s] ( 32/277) maho-ext-mcp::config hashes_ignore_key_order_and_startup_policy
+        PASS [   0.012s] ( 33/277) maho-ext-mcp::config extension_replaces_untrusted_placeholder
+        PASS [   0.017s] ( 34/277) maho-ext-mcp::config empty_interpolated_command_is_rejected
+        PASS [   0.006s] ( 35/277) maho-ext-mcp::config keep_alive_is_supported
+        PASS [   0.006s] ( 36/277) maho-ext-mcp::config invalid_arrays_are_rejected
+        PASS [   0.017s] ( 37/277) maho-ext-mcp::config empty_interpolated_url_is_rejected
+        PASS [   0.007s] ( 38/277) maho-ext-mcp::config malformed_untrusted_config_is_diagnostic
+        PASS [   0.008s] ( 39/277) maho-ext-mcp::config identical_declarations_have_stable_hashes
+        PASS [   0.006s] ( 40/277) maho-ext-mcp::config multiple_invalid_fields_follow_typebox_schema_order_not_input_order
+        PASS [   0.006s] ( 41/277) maho-ext-mcp::config missing_endpoints_are_rejected
+        PASS [   0.006s] ( 42/277) maho-ext-mcp::config skill_server_starts_with_zero_active_tools
+        PASS [   0.012s] ( 43/277) maho-ext-mcp::config output_guard_fields_round_trip
+        PASS [   0.006s] ( 44/277) maho-ext-mcp::config typebox_boundary_errors_preserve_machine_consumed_paths_and_kinds
+        PASS [   0.011s] ( 45/277) maho-ext-mcp::config stable_config_hash_uses_javascript_utf16_key_order
+        PASS [   0.013s] ( 46/277) maho-ext-mcp::config trusted_project_can_spawn
+        PASS [   0.014s] ( 47/277) maho-ext-mcp::config trusted_global_wins_over_extension
+        PASS [   0.009s] ( 48/277) maho-ext-mcp::connection disable_clears_error_and_rejects_connect
+        PASS [   0.017s] ( 49/277) maho-ext-mcp::config untrusted_project_is_not_interpolated_or_spawnable
+        PASS [   0.089s] ( 50/277) maho-ext-mcp::auth auth_dependencies_bind_provider_logger_before_refresh_clones_it
+        PASS [   0.078s] ( 51/277) maho-ext-mcp::callback replayed_state_is_rejected
+        PASS [   0.076s] ( 52/277) maho-ext-mcp::callback valid_redirect_delivers_code_and_closes_listener
+        PASS [   0.083s] ( 53/277) maho-ext-mcp::callback missing_state_is_rejected_even_with_permissive_validator
+        PASS [   0.024s] ( 54/277) maho-ext-mcp::config untrusted_sources_cannot_shadow_global
+        PASS [   0.006s] ( 55/277) maho-ext-mcp::control_inventory transient_oauth_errors_do_not_require_reauthentication
+        PASS [   0.087s] ( 56/277) maho-ext-mcp::callback callback_server_starts_lazily_and_reuses_its_listener
+        PASS [   0.011s] ( 57/277) maho-ext-mcp::connection invalid_transport_configuration_releases_single_flight
+        PASS [   0.008s] ( 58/277) maho-ext-mcp::control_inventory wire_auth_status_and_inventory_fields_match_the_rpc_contract
+        PASS [   0.007s] ( 59/277) maho-ext-mcp::elicitation form_accepts_typed_answers
+        PASS [   0.007s] ( 60/277) maho-ext-mcp::elicitation capability_is_an_empty_object
+        PASS [   0.008s] ( 61/277) maho-ext-mcp::elicitation hanging_form_is_cancelled_by_the_deadline
+        PASS [   0.005s] ( 62/277) maho-ext-mcp::elicitation missing_required_answer_and_invalid_number_decline
+        PASS [   0.005s] ( 63/277) maho-ext-mcp::elicitation headless_and_url_mode_requests_decline
+        PASS [   0.006s] ( 64/277) maho-ext-mcp::elicitation numeric_answers_accept_javascript_radix_forms_and_whitespace
+        PASS [   0.062s] ( 65/277) maho-ext-mcp::config trusted_configs_merge_and_interpolate
+        PASS [   0.010s] ( 66/277) maho-ext-mcp::host_registry duplicate_owner_attach_is_reference_counted
+        PASS [   0.021s] ( 67/277) maho-ext-mcp::faux_session faux_mcp_command_attaches_native_service_without_provider_turn
+        PASS [   0.012s] ( 68/277) maho-ext-mcp::host_registry sharing_preserves_the_connection_until_the_last_owner_detaches
+        PASS [   0.012s] ( 69/277) maho-ext-mcp::idle cancellation_releases_the_in_flight_lifecycle_guard
+        PASS [   0.010s] ( 70/277) maho-ext-mcp::index crate_level_factory_registers_the_mcp_lifecycle
+        PASS [   0.007s] ( 71/277) maho-ext-mcp::instructions duplicate_injection_is_suppressed
+        PASS [   0.010s] ( 72/277) maho-ext-mcp::index native_entrypoint_registers_session_shutdown_and_instruction_handlers
+        PASS [   0.006s] ( 73/277) maho-ext-mcp::instructions empty_instructions_do_not_change_prompt
+        PASS [   0.006s] ( 74/277) maho-ext-mcp::instructions instructions_are_escaped_and_capped_before_xml_expansion
+        PASS [   0.140s] ( 75/277) maho-ext-mcp::callback unrelated_path_does_not_complete_callback
+        PASS [   0.032s] ( 76/277) maho-ext-mcp::log basic_header_value_is_redacted
+        PASS [   0.079s] ( 77/277) maho-ext-mcp::log failed_rotation_disables_sink_and_warns_once
+        PASS [   0.083s] ( 78/277) maho-ext-mcp::log known_secret_is_removed_from_other_error_fields
+        PASS [   0.008s] ( 79/277) maho-ext-mcp::log rfc_severity_mapping_matches_aliases
+        PASS [   0.040s] ( 80/277) maho-ext-mcp::log malformed_secret_bearing_text_is_masked
+        PASS [   0.229s] ( 81/277) maho-ext-mcp::connection failed_connect_retains_degraded_error
+        PASS [   0.007s] ( 82/277) maho-ext-mcp::notifications below_threshold_messages_are_filtered
+        PASS [   0.007s] ( 83/277) maho-ext-mcp::notifications burst_notifications_coalesce_into_one_refresh
+        PASS [   0.008s] ( 84/277) maho-ext-mcp::notifications catalog_diff_is_sorted_and_deduplicated
+        PASS [   0.193s] ( 85/277) maho-ext-mcp::lifecycle_registration session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe
+        PASS [   0.022s] ( 86/277) maho-ext-mcp::notifications catalog_diff_uses_javascript_utf16_order
+        PASS [   0.211s] ( 87/277) maho-ext-mcp::lifecycle_registration session_start_registers_direct_mode_mcp_tools_into_the_real_session
+        PASS [   0.009s] ( 88/277) maho-ext-mcp::notifications dispose_cancels_pending_refresh
+        PASS [   0.025s] ( 89/277) maho-ext-mcp::notifications delta_reports_additions_as_inactive
+        PASS [   0.008s] ( 90/277) maho-ext-mcp::notifications flood_bucket_refills_on_exact_clock
+        PASS [   0.007s] ( 91/277) maho-ext-mcp::notifications malformed_notifications_are_rejected
+        PASS [   0.008s] ( 92/277) maho-ext-mcp::notifications notification_envelope_strips_unknown_keys_and_preserves_meta
+        PASS [   0.008s] ( 93/277) maho-ext-mcp::notifications removed_tool_definition_rejects_stale_execution
+        PASS [   0.010s] ( 94/277) maho-ext-mcp::notifications refresh_errors_reach_sink_and_next_burst_still_runs
+        PASS [   0.007s] ( 95/277) maho-ext-mcp::notifications rfc_levels_map_to_logger_methods
+        PASS [   0.012s] ( 96/277) maho-ext-mcp::notifications second_refresh_obeys_minimum_interval
+        PASS [   0.116s] ( 97/277) maho-ext-mcp::log ring_and_file_are_redacted_before_write
+        PASS [   0.300s] ( 98/277) maho-ext-mcp::diagnose missing_command_diagnostic_reports_spawn_environment
+        PASS [   0.008s] ( 99/277) maho-ext-mcp::oauth expiry_leeway_includes_exact_boundary
+        PASS [   0.008s] (100/277) maho-ext-mcp::oauth malformed_failed_and_empty_redirects_are_rejected
+        PASS [   0.316s] (101/277) maho-ext-mcp::diagnose diagnostic_overflow_kills_the_child_even_when_the_other_stream_stays_open
+        PASS [   0.010s] (102/277) maho-ext-mcp::oauth proof_key_support_must_be_explicit
+        PASS [   0.007s] (103/277) maho-ext-mcp::oauth redirect_parsing_preserves_first_query_value
+        PASS [   0.076s] (104/277) maho-ext-mcp::notifications subscriptions_drop_malformed_notifications_before_callbacks
+        PASS [   0.079s] (105/277) maho-ext-mcp::oauth concurrent_failed_refreshes_share_one_request_and_later_calls_retry
+        PASS [   0.068s] (106/277) maho-ext-mcp::oauth injected_discover_replaces_sdk_discovery_on_the_cache_miss_path
+        PASS [   0.072s] (107/277) maho-ext-mcp::oauth missing_refresh_token_is_reported_before_discovery
+        PASS [   0.370s] (108/277) maho-ext-mcp::elicitation stdio_server_request_with_colliding_client_id_reaches_native_form
+        PASS [   0.070s] (109/277) maho-ext-mcp::oauth refresh_does_not_retry_unclassified_token_errors
+        PASS [   0.072s] (110/277) maho-ext-mcp::oauth_client_auth discovery_reports_the_protected_resource_status
+        PASS [   0.076s] (111/277) maho-ext-mcp::oauth_client_auth discovery_probes_the_origin_protected_resource_path
+        PASS [   0.083s] (112/277) maho-ext-mcp::oauth refresh_returns_fresh_tokens_without_discovery_or_registration
+        PASS [   0.010s] (113/277) maho-ext-mcp::oauth_client_auth resource_indicator_normalizes_the_server_url
+        PASS [   0.071s] (114/277) maho-ext-mcp::oauth_client_auth discovery_requires_the_authorization_and_token_endpoints
+        PASS [   0.156s] (115/277) maho-ext-mcp::oauth injected_discover_takes_precedence_over_the_process_discovery_cache
+        PASS [   0.080s] (116/277) maho-ext-mcp::oauth_client_auth discovery_requires_authorization_servers_in_protected_resource_metadata
+        PASS [   0.011s] (117/277) maho-ext-mcp::oauth_discovery_cache a_legacy_discovery_state_record_is_migrated_out
+        PASS [   0.080s] (118/277) maho-ext-mcp::oauth_client_auth discovery_retries_the_origin_authorization_server_metadata
+        PASS [   0.077s] (119/277) maho-ext-mcp::oauth_client_auth dynamic_client_registration_body_matches_the_pinned_shape
+        PASS [   0.079s] (120/277) maho-ext-mcp::oauth_discovery_cache a_failed_discovery_is_not_cached
+        PASS [   0.090s] (121/277) maho-ext-mcp::oauth_client_auth token_endpoint_authentication_matches_server_metadata_and_registration
+        PASS [   0.071s] (122/277) maho-ext-mcp::oauth_discovery_cache the_cache_key_is_the_normalized_resource_url
+        PASS [   0.078s] (123/277) maho-ext-mcp::oauth_discovery_cache reset_discovery_cache_forces_a_refetch
+        PASS [   0.092s] (124/277) maho-ext-mcp::oauth_discovery_cache concurrent_misses_coalesce_onto_one_discovery
+        PASS [   0.076s] (125/277) maho-ext-mcp::oauth_discovery_cache the_cache_serves_a_repeat_without_a_second_request
+        PASS [   0.021s] (126/277) maho-ext-mcp::oauth_step_up merged_scopes_keep_the_existing_order_and_deduplicate
+        PASS [   0.008s] (127/277) maho-ext-mcp::oauth_step_up www_authenticate_challenges_parse_to_the_pinned_step_up_info
+        PASS [   0.015s] (128/277) maho-ext-mcp::oauth_step_up step_up_is_required_only_for_403_with_a_parseable_challenge
+        PASS [   0.007s] (129/277) maho-ext-mcp::oauth_step_up www_authenticate_requires_bearer_and_a_non_empty_scope
+        PASS [   0.051s] (130/277) maho-ext-mcp::oauth_step_up_trace transport_trace_records_the_pinned_401_and_403_challenges
+        PASS [   0.144s] (131/277) maho-ext-mcp::oauth_step_up a_failed_step_up_login_never_retries_with_stale_auth
+        PASS [   0.136s] (132/277) maho-ext-mcp::oauth_step_up forbidden_challenge_escalates_the_scopes_and_retries
+        PASS [   0.012s] (133/277) maho-ext-mcp::oauth_transport_hardening https_is_required_for_every_pinned_oauth_url_label
+        PASS [   0.068s] (134/277) maho-ext-mcp::oauth_transport_hardening discovery_rejects_an_http_resource_url_in_production
+        PASS [   0.012s] (135/277) maho-ext-mcp::oauth_transport_hardening metadata_endpoints_are_validated_and_normalized
+        PASS [   0.150s] (136/277) maho-ext-mcp::oauth_step_up post_request_401_refreshes_once_and_retries
+        PASS [   0.007s] (137/277) maho-ext-mcp::oauth_transport_hardening production_default_requires_https
+        PASS [   0.008s] (138/277) maho-ext-mcp::oauth_transport_hardening redact_url_masks_sensitive_query_params
+        PASS [   0.010s] (139/277) maho-ext-mcp::oauth_transport_hardening redact_urls_in_text_masks_every_embedded_url
+        PASS [   0.009s] (140/277) maho-ext-mcp::output_guard binary_spills_accept_node_style_base64
+        PASS [   0.012s] (141/277) maho-ext-mcp::output_guard owner_cleanup_removes_its_spills
+        PASS [   0.019s] (142/277) maho-ext-mcp::output_guard image_spill_preserves_binary_and_extension
+        PASS [   0.006s] (143/277) maho-ext-mcp::output_guard small_content_passes_through_unchanged
+        PASS [   0.019s] (144/277) maho-ext-mcp::output_guard spills_have_unique_paths
+        PASS [   0.748s] (145/277) maho-ext-mcp::diagnose stderr_diagnostics_are_redacted_and_retained
+        PASS [   0.079s] (146/277) maho-ext-mcp::oauth_transport_hardening http_transport_errors_do_not_leak_url_query_secrets
+        PASS [   0.008s] (147/277) maho-ext-mcp::policy_cache atomic_cache_write_round_trips_catalog
+        PASS [   0.012s] (148/277) maho-ext-mcp::output_guard write_failure_returns_inline_preview
+        PASS [   0.009s] (149/277) maho-ext-mcp::policy_cache auto_never_selects_proxy
+        PASS [   0.007s] (150/277) maho-ext-mcp::policy_cache cache_rejects_expiry_and_hash_mismatch
+        PASS [   0.774s] (151/277) maho-ext-mcp::connection list_changed_after_call_reaches_connection
+        PASS [   0.011s] (152/277) maho-ext-mcp::policy_cache disconnected_server_exposure_returns_unknown_without_connecting
+        PASS [   0.011s] (153/277) maho-ext-mcp::policy_cache empty_filter_match_is_not_an_error
+        PASS [   0.020s] (154/277) maho-ext-mcp::policy_cache corrupt_cache_is_empty
+        PASS [   0.007s] (155/277) maho-ext-mcp::policy_cache invalid_tools_invalidate_server_entry
+        PASS [   0.007s] (156/277) maho-ext-mcp::policy_cache large_catalog_has_no_default_active_tools
+        PASS [   0.012s] (157/277) maho-ext-mcp::policy_cache exclude_filter_wins_over_include
+        PASS [   0.028s] (158/277) maho-ext-mcp::policy_cache direct_tools_in_search_are_sorted
+        PASS [   0.061s] (159/277) maho-ext-mcp::output_guard unicode_preview_matches_utf16_chunk_truncation
+        PASS [   0.089s] (160/277) maho-ext-mcp::output_guard huge_text_spills_exact_bytes_with_bounded_preview
+        PASS [   0.007s] (161/277) maho-ext-mcp::policy_cache policy_catalog_order_matches_locale_compare_for_case_and_accents
+        PASS [   0.007s] (162/277) maho-ext-mcp::policy_cache threshold_boundary_selects_search_at_eleven
+        PASS [   0.820s] (163/277) maho-ext-mcp::connection concurrent_connects_share_one_client_and_transitions
+        PASS [   0.011s] (164/277) maho-ext-mcp::policy_cache picomatch_question_mark_does_not_cross_slash_but_bash_star_does
+        PASS [   0.006s] (165/277) maho-ext-mcp::prompts multiple_prompt_messages_keep_roles_and_nontext_content
+        PASS [   0.005s] (166/277) maho-ext-mcp::prompts one_prompt_message_does_not_add_a_role_prefix
+        PASS [   0.015s] (167/277) maho-ext-mcp::policy_cache picomatch_negation_and_literal_character_classes_match_pinned_behavior
+        PASS [   0.008s] (168/277) maho-ext-mcp::proxy auto_exposure_never_selects_proxy
+        PASS [   0.275s] (169/277) maho-ext-mcp::oauth_step_up bound_step_up_logs_in_reconnects_and_retries_on_the_renewed_client
+        PASS [   0.013s] (170/277) maho-ext-mcp::reconnect repeated_failures_open_the_breaker_and_manual_reconnect_resets_it
+        PASS [   0.012s] (171/277) maho-ext-mcp::register terminal_auth_refresh_blocks_cached_connect_and_marks_needs_auth
+        PASS [   0.015s] (172/277) maho-ext-mcp::register transient_auth_refresh_does_not_trigger_failed_send_reconnect
+        PASS [   0.010s] (173/277) maho-ext-mcp::registration active_set_registration_sorts_definitions_without_activating_them
+        PASS [   0.506s] (174/277) maho-ext-mcp::oauth_step_up_interactive interactive_step_up_logs_in_reconnects_and_retries_on_the_renewed_connection
+        PASS [   0.013s] (175/277) maho-ext-mcp::registration cloned_native_gate_observes_settings_changes_and_reset
+        PASS [   0.011s] (176/277) maho-ext-mcp::registration direct_and_proxy_registration_does_not_require_the_shared_service
+        PASS [   0.012s] (177/277) maho-ext-mcp::registration direct_mode_registers_catalog_and_keeps_it_active_after_base
+        PASS [   0.023s] (178/277) maho-ext-mcp::registration empty_generation_removes_managed_tools_and_shared_search_feed
+        PASS [   0.020s] (179/277) maho-ext-mcp::registration proxy_mode_registers_only_the_gateway_and_hides_the_catalog
+        PASS [   0.023s] (180/277) maho-ext-mcp::registration repeated_registration_does_not_drop_base_tools_from_the_active_set
+        PASS [   0.010s] (181/277) maho-ext-mcp::registration retained_registrar_publishes_replacements_and_rejects_stale_sdk_scope
+        PASS [   0.016s] (182/277) maho-ext-mcp::registration search_mode_re_registration_restores_base_and_direct_tools
+        PASS [   0.010s] (183/277) maho-ext-mcp::registration search_mode_registers_catalog_but_leaves_it_inactive_and_feeds_documents
+        PASS [   0.010s] (184/277) maho-ext-mcp::registration search_mode_without_the_shared_service_is_an_explicit_error
+        PASS [   0.010s] (185/277) maho-ext-mcp::resources binary_resource_preserves_placeholder_size
+        PASS [   0.011s] (186/277) maho-ext-mcp::resources malformed_mentions_pass_through
+        PASS [   0.011s] (187/277) maho-ext-mcp::resources unknown_mentions_remain_unchanged_with_notice
+        PASS [   0.009s] (188/277) maho-ext-mcp::resources utility_read_rejects_unknown_servers
+        PASS [   0.593s] (189/277) maho-ext-mcp::register native_tool_registration_calls_the_real_fixture_and_rejects_errors_before_spill
+        PASS [   0.594s] (190/277) maho-ext-mcp::register cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts
+        PASS [   0.007s] (191/277) maho-ext-mcp::schema_compat all_content_types_and_structured_content_are_preserved
+        PASS [   0.007s] (192/277) maho-ext-mcp::schema_compat empty_and_error_results_remain_visible
+        PASS [   1.399s] (193/277) maho-ext-mcp::diagnose second_session_expiry_suspends_after_exactly_one_renewal
+        PASS [   0.604s] (194/277) maho-ext-mcp::proxy proxy_describe_and_call_use_real_catalog_and_guide_invalid_arguments
+        PASS [   0.006s] (195/277) maho-ext-mcp::schema_compat output_retry_strips_only_top_level_keys
+        PASS [   0.006s] (196/277) maho-ext-mcp::schema_compat naming_sanitizes_caps_and_disambiguates
+        PASS [   0.006s] (197/277) maho-ext-mcp::schema_compat null_type_is_removed_recursively
+        PASS [   0.008s] (198/277) maho-ext-mcp::schema_compat pagination_stops_at_thousand_pages
+        PASS [   0.006s] (199/277) maho-ext-mcp::schema_compat supported_schema_keywords_survive_local_ref_resolution
+        PASS [   0.006s] (200/277) maho-ext-mcp::schema_compat pagination_stops_on_duplicate_cursor
+        PASS [   0.007s] (201/277) maho-ext-mcp::schema_compat pinned_nasty_schema_matches_upstream_typebox_golden
+        PASS [   0.006s] (202/277) maho-ext-mcp::schema_compat unresolvable_ref_uses_permissive_schema
+        PASS [   0.014s] (203/277) maho-ext-mcp::service native_tool_search_setting_and_gate_follow_the_resolved_config
+        PASS [   0.655s] (204/277) maho-ext-mcp::register real_error_tool_execution_never_spills_output
+        PASS [   1.011s] (205/277) maho-ext-mcp::oauth_flow real_idp_authorization_persists_tokens_and_rejects_replayed_state
+        PASS [   0.723s] (206/277) maho-ext-mcp::registration cached_service_registration_connects_on_first_call_and_reads_current_client
+        PASS [   0.800s] (207/277) maho-ext-mcp::register native_tool_runtime_suspends_when_reinitialized_session_expires_again
+        PASS [   0.853s] (208/277) maho-ext-mcp::registered_command_auth registered_command_auth
+        PASS [   0.158s] (209/277) maho-ext-mcp::service_lifecycle lazy_server_with_a_valid_cache_skips_the_startup_race
+        PASS [   0.590s] (210/277) maho-ext-mcp::resources utility_tools_list_and_read_the_real_server
+        PASS [   0.024s] (211/277) maho-ext-mcp::service_snapshot removed_server_has_no_connection_or_counters
+        PASS [   0.223s] (212/277) maho-ext-mcp::service_register service_registration_preserves_artifact_owner_and_optional_auth_refresh
+        PASS [   0.019s] (213/277) maho-ext-mcp::service_snapshot status_collection_preserves_input_order_under_concurrent_completion
+        PASS [   0.016s] (214/277) maho-ext-mcp::session_exposure empty_catalog_preserves_active_set_unless_refresh_requested
+        PASS [   0.012s] (215/277) maho-ext-mcp::session_exposure mixed_modes_keep_proxy_catalog_separate_and_only_direct_tools_active
+        PASS [   0.063s] (216/277) maho-ext-mcp::session_exposure filtered_empty_server_warns_and_does_not_trigger_registration
+        PASS [   0.051s] (217/277) maho-ext-mcp::shared_connection last_owner_idle_disposal_waits_for_in_flight_request_cancellation
+        PASS [   1.211s] (218/277) maho-ext-mcp::register native_tool_runtime_reconnects_after_idle_generation_change
+        PASS [   0.010s] (219/277) maho-ext-mcp::sharing_policy identity_tracks_credentials_and_agent_directory_not_owner_policies
+        PASS [   0.052s] (220/277) maho-ext-mcp::sharing_policy cwd_template_provenance_survives_resolution
+        PASS [   0.032s] (221/277) maho-ext-mcp::sharing_policy project_cwd_template_provenance_survives_resolution
+        PASS [   0.031s] (222/277) maho-ext-mcp::sharing_policy session_template_provenance_survives_resolution
+        PASS [   0.009s] (223/277) maho-ext-mcp::sharing_policy shared_identity_uses_pinned_locale_key_order
+        PASS [   0.010s] (224/277) maho-ext-mcp::skills array_wrapped_server_map_uses_numeric_entry_names
+        PASS [   0.008s] (225/277) maho-ext-mcp::skills auth_mode_respects_overrides_headers_and_transport
+        PASS [   0.012s] (226/277) maho-ext-mcp::skills frontmatter_only_servers_are_discovered
+        PASS [   0.013s] (227/277) maho-ext-mcp::skills secret_warning_contains_fingerprint_not_header_value
+        PASS [   0.007s] (228/277) maho-ext-mcp::skills sidecar_wins_over_frontmatter
+        PASS [   0.021s] (229/277) maho-ext-mcp::skills shared_server_preserves_first_config_and_per_skill_filters
+        PASS [   0.027s] (230/277) maho-ext-mcp::skills skill_targets_use_javascript_utf16_order
+        PASS [   0.023s] (231/277) maho-ext-mcp::startup_race clearing_deferred_attach_does_not_cancel_the_connect
+        PASS [   0.048s] (232/277) maho-ext-mcp::skills skill_wildcards_exclude_javascript_line_terminators
+        PASS [   0.021s] (233/277) maho-ext-mcp::startup_race deadline_does_not_cancel_background_connection
+        PASS [   0.026s] (234/277) maho-ext-mcp::startup_race deferred_attach_timeout_preserves_the_completion_signal
+        PASS [   0.019s] (235/277) maho-ext-mcp::startup_race settled_failure_is_not_hidden
+        PASS [   0.015s] (236/277) maho-ext-mcp::startup_race timeout_override_matches_numeric_precedence
+        PASS [   0.786s] (237/277) maho-ext-mcp::service_connection session_connection_refreshes_catalog_and_disposes_registry_owner
+        PASS [   0.842s] (238/277) maho-ext-mcp::service session_instructions_prefer_live_values_and_fall_back_only_when_disconnected
+        PASS [   0.087s] (239/277) maho-ext-mcp::stdio_environment only_ambient_secrets_are_stripped_and_declared_env_wins
+        PASS [   0.008s] (240/277) maho-ext-mcp::tier_b active_order_preserves_base_and_sorts_catalog_across_promotions
+        PASS [   0.007s] (241/277) maho-ext-mcp::tier_b failed_stub_promotion_does_not_execute_full_tool
+        PASS [   0.093s] (242/277) maho-ext-mcp::stdio_environment pinned_excluded_patterns_match_the_package_manager_and_secret_conventions
+        PASS [   0.007s] (243/277) maho-ext-mcp::tier_b stub_promotes_before_executing_full_definition_with_original_arguments
+        PASS [   0.006s] (244/277) maho-ext-mcp::tier_b unpromotable_stub_returns_guidance_without_details
+        PASS [   0.007s] (245/277) maho-ext-mcp::transport auth_false_does_not_resolve_bearer_variable
+        PASS [   0.011s] (246/277) maho-ext-mcp::transport bearer_environment_is_resolved_per_creation
+        PASS [   0.069s] (247/277) maho-ext-mcp::stdio_environment the_pinned_entry_point_keeps_declared_env_intact
+        PASS [   0.815s] (248/277) maho-ext-mcp::service_lifecycle list_changed_reregisters_and_records_the_delta
+        PASS [   0.118s] (249/277) maho-ext-mcp::transport http_get_stream_delivers_unsolicited_notifications
+        PASS [   0.022s] (250/277) maho-ext-mcp::transport invalid_endpoints_fail_with_create_phase
+        PASS [   0.923s] (251/277) maho-ext-mcp::service_lifecycle lazy_server_without_a_cache_races_at_attach
+        PASS [   0.101s] (252/277) maho-ext-mcp::transport http_post_sse_accepts_bom_and_carriage_return_delimiters
+        PASS [   0.292s] (253/277) maho-ext-mcp::transport cancellation_notifies_the_server_with_the_inflight_request_id
+        PASS [   0.087s] (254/277) maho-ext-mcp::transport shutdown_preserves_pinned_grace_before_completing
+        PASS [   0.927s] (255/277) maho-ext-mcp::service_register service_registration_snapshot_refreshes_the_original_entry_catalog
+        PASS [   0.371s] (256/277) maho-ext-mcp::stdio_environment stdio_children_inherit_the_cleaned_environment
+        PASS [   1.188s] (257/277) maho-ext-mcp::service two_services_share_the_transport_and_detach_independently
+        PASS [   1.211s] (258/277) maho-ext-mcp::service skill_attachment_retains_matching_connections_and_system_precedence
+        PASS [   0.014s] (259/277) maho-ext-mcp::wrap callback_error_reaches_logger_and_notify_without_rejection
+        PASS [   0.015s] (260/277) maho-ext-mcp::wrap event_subscription_contains_errors_and_finishes_when_emitter_closes
+        PASS [   0.015s] (261/277) maho-ext-mcp::wrap notification_failure_is_logged_under_notify_scope
+        PASS [   0.679s] (262/277) maho-ext-mcp::shared_connection renewing_one_lease_never_replaces_the_other_owners_process
+        PASS [   0.024s] (263/277) maho-ext-mcp::wrap event_subscription_dispatches_next_event_while_previous_callback_is_pending
+        PASS [   0.027s] (264/277) maho-ext-mcp::wrap interval_waits_for_first_tick_and_continues_after_error
+        PASS [   0.018s] (265/277) maho-ext-mcp::wrap panicking_callback_is_reported_without_rejecting_the_task
+        PASS [   0.016s] (266/277) maho-ext-mcp::wrap panicking_notification_is_reported_under_notify_scope
+        PASS [   0.014s] (267/277) maho-ext-mcp::wrap timer_errors_are_guarded_and_observable
+        PASS [   0.047s] (268/277) maho-ext-mcp::wrap panicking_logger_does_not_prevent_error_notification
+        PASS [   0.100s] (269/277) maho-ext-mcp::transport stdio_config_env_overrides_caller_without_ambient_expansion
+        PASS [   0.090s] (270/277) maho-ext-mcp::wrap production_logger_records_wrapped_error
+        PASS [   0.559s] (271/277) maho-ext-mcp::transport concurrent_shutdowns_coalesce_and_wait_for_the_child
+        PASS [   1.495s] (272/277) maho-ext-mcp::service repeated_attach_retains_connections_and_disabled_config_detaches_them
+        PASS [   0.308s] (273/277) maho-ext-mcp::transport stdio_oauth_materialization_passes_current_token_to_child
+        PASS [   0.552s] (274/277) maho-ext-mcp::transport native_http_connects_lists_and_calls_pinned_fixture
+        PASS [   0.544s] (275/277) maho-ext-mcp::transport shutdown_reaps_fixture_process_tree
+        PASS [   0.890s] (276/277) maho-ext-mcp::transport native_stdio_connects_to_pinned_senpi_fixture
+        PASS [   5.178s] (277/277) maho-ext-mcp::log ring_is_capped_and_private_file_rotates
+────────────
+     Summary [   5.452s] 277 tests run: 277 passed, 0 skipped

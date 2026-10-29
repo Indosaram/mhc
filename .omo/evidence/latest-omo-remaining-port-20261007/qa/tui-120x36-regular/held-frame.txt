@@ -1,0 +1,36 @@
+omo mount: packaged skills directory is missing: /home/indo/.cargo-target/maho-code/remaining-maho-cli/debug/skills
+maho-omo info: no bundled skills found; bare skill commands disabled {"component":"skill-commands"}
+maho-omo info: omo-senpi ulw-loop inactive; omo binary not found
+memory: Reflection orphan sweep failed: ReflectionSweepDetails { kind: None, target: None, detail: Some("fatal: cannot c
+hange to '/tmp/residual-tui-home-FTXPaf/.maho/memory/agents/residual-tui-cwd-8bmrke-12133abb/repo': No such file or dire
+ctory") }
+
+ maho v0.0.0                                                                                                            
+ esc interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more                                           
+ Press ctrl+o to show full startup help and loaded resources.                                                           
+                                                                                                                        
+ maho can explain its own features and look up its docs. Ask it how to use or extend maho.                              
+
+ Tip: Use shift+tab to cycle the model's thinking level.                                                                
+ ↳ Want the full story on any tip? Ask about it — the give-me-tips skill has the tour.                                  
+
+
+ omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs:                                                
+ https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1   
+                                                                                                                        
+ hello                                                                                                                  
+                                                                                                                        
+
+ offline                                                                                                                
+
+── ⠙ Working (1s • Esc to interrupt) ───────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                       
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/tmp/residual-tui-cwd-8bmrkE • 2/128K (0.0%) (auto)                                                              offline
+(😺 OmO Native)
+
+
+
+
+
+

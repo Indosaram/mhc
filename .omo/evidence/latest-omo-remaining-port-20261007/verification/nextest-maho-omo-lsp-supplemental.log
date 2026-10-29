@@ -1,0 +1,86 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling tokio v1.52.3
+   Compiling tokio-util v0.7.18
+   Compiling tokio-rustls v0.26.4
+   Compiling tower v0.5.3
+   Compiling h2 v0.4.19
+   Compiling tower-http v0.6.8
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+    Finished `test` profile [unoptimized] target(s) in 1m 32s
+────────────
+ Nextest run ID d76542d6-1dfc-40e3-a31d-f05de53d4b83 with nextest profile: default
+    Starting 36 tests across 2 binaries
+        PASS [   0.005s] ( 1/36) maho-omo-lsp adapter::renderers_common::tests::kinds
+        PASS [   0.005s] ( 2/36) maho-omo-lsp adapter::migration_notices::tests::commands_and_environment_warn
+        PASS [   0.005s] ( 3/36) maho-omo-lsp adapter::render_format::tests::shorten_uses_upstream_budget
+        PASS [   0.005s] ( 4/36) maho-omo-lsp adapter::render_format::tests::uri_decodes_spaces
+        PASS [   0.005s] ( 5/36) maho-omo-lsp adapter::renderers_common::tests::dedupe_preserves_order
+        PASS [   0.005s] ( 6/36) maho-omo-lsp adapter::renderers_common::tests::location_line_one_based
+        PASS [   0.005s] ( 7/36) maho-omo-lsp adapter::migration_notices::tests::no_lsp_no_notice
+        PASS [   0.006s] ( 8/36) maho-omo-lsp adapter::descriptors::tests::required_schema_fields
+        PASS [   0.006s] ( 9/36) maho-omo-lsp adapter::descriptors::tests::six_descriptors
+        PASS [   0.006s] (10/36) maho-omo-lsp adapter::migration_notices::tests::malformed_entries_reject_whole_config
+        PASS [   0.005s] (11/36) maho-omo-lsp daemon_tool_client::tests::context_uses_pi_config_and_disables_install
+        PASS [   0.005s] (12/36) maho-omo-lsp daemon_tool_client::tests::maps_all_six_tools
+        PASS [   0.005s] (13/36) maho-omo-lsp index::tests::disabled_tools_register_flags_only
+        PASS [   0.005s] (14/36) maho-omo-lsp index::tests::structured_daemon_errors_keep_content_and_details
+        PASS [   0.006s] (15/36) maho-omo-lsp index::tests::adapter_has_no_vendored_engine_or_project_trust_override
+        PASS [   0.006s] (16/36) maho-omo-lsp daemon_tool_client::tests::unsupported_tool_rejected
+        PASS [   0.006s] (17/36) maho-omo-lsp index::tests::exact_six_tools
+        PASS [   0.006s] (18/36) maho-omo-lsp index::tests::descriptor_fields_preserved
+        PASS [   0.006s] (19/36) maho-omo-lsp lsp_security_tests::arbitrary_project_command_not_selected
+        PASS [   0.006s] (20/36) maho-omo-lsp index::tests::missing_server_still_registers
+        PASS [   0.015s] (21/36) maho-omo-lsp daemon_runtime::tests::paired_override_contract
+        PASS [   0.015s] (22/36) maho-omo-lsp adapter::schema::tests::optional_not_required
+        PASS [   0.005s] (23/36) maho-omo-lsp lsp_security_tests::builtin_command_survives_override
+        PASS [   0.006s] (24/36) maho-omo-lsp lsp_security_tests::project_custom_server_ignored
+        PASS [   0.006s] (25/36) maho-omo-lsp lsp_security_tests::safe_fields_keep_builtin_command_env
+        PASS [   0.005s] (26/36) maho-omo-lsp post_edit_diagnostics::tests::clean_no_injection
+        PASS [   0.005s] (27/36) maho-omo-lsp post_edit_diagnostics::tests::extracts_patch_and_arrays
+        PASS [   0.005s] (28/36) maho-omo-lsp lsp_security_tests::unsafe_configs_one_notice
+        PASS [   0.006s] (29/36) maho-omo-lsp post_edit_diagnostics::tests::diagnostics_concurrency_is_four
+        PASS [   0.006s] (30/36) maho-omo-lsp lsp_security_tests::user_command_and_environment_preserved
+        PASS [   0.005s] (31/36) maho-omo-lsp post_edit_diagnostics::tests::injects_errors
+        PASS [   0.007s] (32/36) maho-omo-lsp post_edit_diagnostics::tests::failed_mutation_skipped
+        PASS [   0.005s] (33/36) maho-omo-lsp post_edit_diagnostics::tests::non_mutation_skipped
+        PASS [   0.004s] (34/36) maho-omo-lsp post_edit_diagnostics::tests::session_cache_reset_delete
+        PASS [   0.008s] (35/36) maho-omo-lsp post_edit_diagnostics::tests::failures_isolated_order_preserved
+        FAIL [   0.027s] (36/36) maho-omo-lsp::faux_session faux_component_runs_real_session_startup_and_turn
+  stdout ───
+
+    running 1 test
+    test faux_component_runs_real_session_startup_and_turn ... FAILED
+
+    failures:
+
+    failures:
+        faux_component_runs_real_session_startup_and_turn
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'faux_component_runs_real_session_startup_and_turn' (2449152) panicked at crates/omo/components/maho-omo-lsp/tests/faux_session.rs:50:5:
+    assertion `left == right` failed
+      left: ["session_start", "turn_end", "session_shutdown"]
+     right: ["session_start", "turn_end"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 
+────────────
+     Summary [   0.046s] 36 tests run: 35 passed, 1 failed, 0 skipped
+        FAIL [   0.027s] (36/36) maho-omo-lsp::faux_session faux_component_runs_real_session_startup_and_turn
+error: test run failed

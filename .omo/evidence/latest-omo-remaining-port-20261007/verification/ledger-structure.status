@@ -1,0 +1,11 @@
+check=JSON parse, unique domain::row_id, action counts, normalized consumer matrix
+unique_rows=1844
+closed_complete=1
+closed_scope=1291
+verification_required=552
+normalized_verification_targets=142
+verification_matrix_sum=552
+verification_matrix_mismatches=0
+duplicate_rows=0
+unclassified_rows=0
+behavioral_verification_closed_by_this_check=0

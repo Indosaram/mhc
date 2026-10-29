@@ -1,0 +1,203 @@
+   Compiling maho-ext-terminal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-terminal)
+    Finished `test` profile [unoptimized] target(s) in 4.48s
+────────────
+ Nextest run ID ccd762f1-9485-47f5-a943-49c3c9a480c9 with nextest profile: default
+    Starting 196 tests across 4 binaries
+        PASS [   0.009s] (  1/196) maho-ext-terminal durable_file::filesystem_tests::restore_reports_detached_change_once_and_rebinds_kill_identity
+        PASS [   0.009s] (  2/196) maho-ext-terminal durable_file::filesystem_tests::snapshot_hashes_regular_files_and_rejects_symlinks
+        PASS [   0.010s] (  3/196) maho-ext-terminal extension::tests::native_companions_register_flat_schemas_and_shutdown
+        PASS [   0.011s] (  4/196) maho-ext-terminal extension::tests::registered_file_monitor_accessor_error_creates_no_registration
+        PASS [   0.012s] (  5/196) maho-ext-terminal durable_file::tests::detached_change_precedence_and_digest_only_modification
+        PASS [   0.012s] (  6/196) maho-ext-terminal durable_file::filesystem_tests::restored_mute_and_fire_window_use_fresh_file_runtime_id
+        PASS [   0.012s] (  7/196) maho-ext-terminal durable_command::tests::invalid_targets_do_not_spawn
+        PASS [   0.017s] (  8/196) maho-ext-terminal extension::tests::monitor_ending_reaches_native_event_bus_and_rpc
+        PASS [   0.007s] (  9/196) maho-ext-terminal file_monitor::tests::a_parent_retargeted_after_approval_is_refused_with_the_approval_reason
+        PASS [   0.017s] ( 10/196) maho-ext-terminal durable_command::tests::configured_restore_preserves_shell_and_geometry
+        PASS [   0.017s] ( 11/196) maho-ext-terminal durable_command::tests::restored_runtime_is_observed_by_live_registry
+        PASS [   0.009s] ( 12/196) maho-ext-terminal extension::tests::registry_state_reaches_native_event_bus_and_rpc
+        PASS [   0.009s] ( 13/196) maho-ext-terminal extension::tests::registered_file_monitor_stable_id_kill_releases_shared_capacity
+        PASS [   0.008s] ( 14/196) maho-ext-terminal file_monitor::tests::a_relative_symlink_target_is_spliced_before_its_own_dot_dot
+        PASS [   0.007s] ( 15/196) maho-ext-terminal file_monitor::tests::a_target_whose_identity_changed_is_refused
+        PASS [   0.008s] ( 16/196) maho-ext-terminal file_monitor::tests::approval_and_regular_file_guards_fail_closed
+        PASS [   0.021s] ( 17/196) maho-ext-terminal durable_command::tests::restores_once_with_stable_identity_and_fresh_muted_runtime
+        PASS [   0.006s] ( 18/196) maho-ext-terminal file_monitor::tests::dot_dot_is_applied_after_the_queued_parts_that_precede_it
+        PASS [   0.011s] ( 19/196) maho-ext-terminal file_monitor::tests::changed_identity_with_multiple_links_is_rejected
+        PASS [   0.007s] ( 20/196) maho-ext-terminal file_monitor::tests::create_watch_keeps_original_identity_until_absent_to_present
+        PASS [   0.007s] ( 21/196) maho-ext-terminal file_monitor::tests::realpath_without_open_resolves_symlinked_parents_and_keeps_missing_tails_verbatim
+        PASS [   0.008s] ( 22/196) maho-ext-terminal file_monitor::tests::create_only_fires_for_appearance_after_registration
+        PASS [   0.008s] ( 23/196) maho-ext-terminal file_monitor::tests::parent_symlink_retargeting_is_rejected_before_reading_target
+        PASS [   0.009s] ( 24/196) maho-ext-terminal file_monitor::tests::pause_keeps_baseline_and_resume_detects_change
+        PASS [   0.007s] ( 25/196) maho-ext-terminal manager::tests::reservation_counts_until_release
+        PASS [   0.006s] ( 26/196) maho-ext-terminal manifest_lease::tests::eperm_is_alive
+        PASS [   0.010s] ( 27/196) maho-ext-terminal manifest_lease::tests::corrupt_lease_reclaimed
+        PASS [   0.012s] ( 28/196) maho-ext-terminal manager::tests::capacity_stop_and_monitor_bindings
+        PASS [   0.012s] ( 29/196) maho-ext-terminal manager::tests::configured_capacity_and_zero_scrollback_reach_new_sessions
+        PASS [   0.009s] ( 30/196) maho-ext-terminal manifest_lease::tests::default_probe_observes_current_process
+        PASS [   0.009s] ( 31/196) maho-ext-terminal manifest_lease::tests::old_live_holder_is_not_reclaimed
+        PASS [   0.008s] ( 32/196) maho-ext-terminal manifest_lease::tests::release_matches_pid_only
+        PASS [   0.010s] ( 33/196) maho-ext-terminal manifest_lease::tests::reclaims_dead_pid
+        PASS [   0.012s] ( 34/196) maho-ext-terminal manifest_lease::tests::first_acquire_writes_pid
+        PASS [   0.008s] ( 35/196) maho-ext-terminal monitor_file_digest::tests::cancelled_registration_does_not_read_file
+        PASS [   0.012s] ( 36/196) maho-ext-terminal manifest_lease::tests::second_acquire_retains_live_holder
+        PASS [   0.042s] ( 37/196) maho-ext-terminal extension::tests::registered_bash_runs_real_pty_and_companion_peeks
+        PASS [   0.011s] ( 38/196) maho-ext-terminal monitor_file_watch::tests::resume_checks_once_and_stopped_loop_never_restarts
+        PASS [   0.012s] ( 39/196) maho-ext-terminal monitor_line_buffer::tests::chunks_preserve_tail_and_strip_crlf
+        PASS [   0.014s] ( 40/196) maho-ext-terminal monitor_notify::tests::delivery_disabled_before_flush_discards_queue_and_recovers
+        PASS [   0.018s] ( 41/196) maho-ext-terminal monitor_file_digest::tests::empty_digest_and_small_file
+        PASS [   0.006s] ( 42/196) maho-ext-terminal monitor_permission::tests::approval_is_not_a_model_supplied_json_field
+        PASS [   0.016s] ( 43/196) maho-ext-terminal monitor_notify::tests::completion_bypasses_rate_limit_and_wake_budget_mutes_only_updates
+        PASS [   0.016s] ( 44/196) maho-ext-terminal monitor_notify::tests::omitted_lines_and_pause_notice_survive_body_clipping
+        PASS [   0.017s] ( 45/196) maho-ext-terminal monitor_notify::tests::event_format_groups_by_runtime_and_sanitizes_newlines
+        PASS [   0.009s] ( 46/196) maho-ext-terminal monitor_registry::registry_tests::detached_delivery_bounds_and_rebinds_events_in_order
+        PASS [   0.019s] ( 47/196) maho-ext-terminal monitor_notify::tests::rate_limit_and_duplicate_batches_do_not_consume_wake_budget
+        PASS [   0.007s] ( 48/196) maho-ext-terminal monitor_registry::registry_tests::file_disposal_emits_summary_once_after_releasing_capacity
+        PASS [   0.015s] ( 49/196) maho-ext-terminal monitor_registry::registry_tests::command_completion_emits_one_ended_event_with_exit_reason
+        PASS [   0.008s] ( 50/196) maho-ext-terminal monitor_registry::registry_tests::file_rearm_callbacks_can_read_command_records
+        PASS [   0.020s] ( 51/196) maho-ext-terminal monitor_notify::tests::scheduled_delivery_wakes_through_exact_injection_signal
+        PASS [   0.007s] ( 52/196) maho-ext-terminal monitor_registry::registry_tests::file_timeout_starts_at_registration_not_task_first_poll
+        PASS [   0.012s] ( 53/196) maho-ext-terminal monitor_registry::registry_tests::dispose_emits_disposed_ending_for_every_live_record
+        PASS [   0.011s] ( 54/196) maho-ext-terminal monitor_registry::registry_tests::disposed_registry_rejects_new_file_and_command_watches
+        PASS [   0.006s] ( 55/196) maho-ext-terminal monitor_registry::registry_tests::paused_file_preserves_checkpoint_and_resume_checks_immediately
+        PASS [   0.008s] ( 56/196) maho-ext-terminal monitor_registry::registry_tests::parked_files_do_not_read_changes_and_unpark_preserves_explicit_mute
+        PASS [   0.007s] ( 57/196) maho-ext-terminal monitor_registry::registry_tests::state_subscription_observes_registration_pause_rearm_and_stop
+        PASS [   0.012s] ( 58/196) maho-ext-terminal monitor_registry::registry_tests::native_watch_emits_lines_then_exactly_one_completion
+        PASS [   0.032s] ( 59/196) maho-ext-terminal monitor_line_buffer::tests::unterminated_line_retains_last_utf16_units
+        PASS [   0.006s] ( 60/196) maho-ext-terminal monitor_status::tests::backwards_clock_clamps
+        PASS [   0.009s] ( 61/196) maho-ext-terminal monitor_registry::registry_tests::snapshot_preserves_registration_order_beyond_nine_file_ids
+        PASS [   0.007s] ( 62/196) maho-ext-terminal monitor_registry::tests::filtering_buffers_partial_lines_and_counts_only_muted_matches
+        PASS [   0.008s] ( 63/196) maho-ext-terminal monitor_registry::tests::durable_budget_mutes_at_limit_and_rearm_preserves_window_start
+        PASS [   0.006s] ( 64/196) maho-ext-terminal monitor_status::tests::durable_days_left_quiet
+        PASS [   0.008s] ( 65/196) maho-ext-terminal monitor_registry::tests::stable_identity_encodes_eighty_random_bits
+        PASS [   0.039s] ( 66/196) maho-ext-terminal monitor_file_digest::tests::large_file_samples_middle_and_end
+        PASS [   0.006s] ( 67/196) maho-ext-terminal monitor_status::tests::empty_clears_status
+        PASS [   0.008s] ( 68/196) maho-ext-terminal monitor_status::tests::durable_under_day_warns
+        PASS [   0.007s] ( 69/196) maho-ext-terminal monitor_status::tests::elapsed_advances_same_snapshot
+        PASS [   0.006s] ( 70/196) maho-ext-terminal monitor_status::tests::longer_elapsed_labels
+        PASS [   0.008s] ( 71/196) maho-ext-terminal monitor_status::tests::ephemeral_no_expiry
+        PASS [   0.008s] ( 72/196) maho-ext-terminal monitor_status::tests::first_name_overflow_keeps_count
+        PASS [   0.006s] ( 73/196) maho-ext-terminal monitor_status::tests::paused_marker_survives_truncation
+        PASS [   0.006s] ( 74/196) maho-ext-terminal monitor_status::tests::single_watch_elapsed
+        PASS [   0.007s] ( 75/196) maho-ext-terminal monitor_status::tests::overflow_counter_keeps_whole_names
+        PASS [   0.007s] ( 76/196) maho-ext-terminal monitor_status::tests::whole_names_oldest_watch
+        PASS [   0.007s] ( 77/196) maho-ext-terminal monitor_status::tests::status_is_plain_outside_tui_and_themed_inside_it
+        PASS [   0.007s] ( 78/196) maho-ext-terminal monitor_status_ticker::tests::registry_transitions_update_and_clear_bound_status
+        PASS [   0.007s] ( 79/196) maho-ext-terminal monitor_status_ticker::tests::scheduled_elapsed_refresh_has_exact_timer_cadence
+        PASS [   0.007s] ( 80/196) maho-ext-terminal notify::tests::guards_and_modes
+        PASS [   0.009s] ( 81/196) maho-ext-terminal monitor_status_ticker::tests::live_tick_deduplicates_and_stop_drops_snapshot
+        PASS [   0.006s] ( 82/196) maho-ext-terminal output_format::tests::leading_and_trailing_notices_rejoin_exactly
+        PASS [   0.011s] ( 83/196) maho-ext-terminal notify::tests::once_only_after_deliverable
+        PASS [   0.011s] ( 84/196) maho-ext-terminal output_format::tests::backspace_overwrites
+        PASS [   0.012s] ( 85/196) maho-ext-terminal output_format::tests::carriage_return_per_line
+        PASS [   0.007s] ( 86/196) maho-ext-terminal output_format::tests::no_applicable_notice_keeps_whole_text
+        PASS [   0.014s] ( 87/196) maho-ext-terminal output_format::tests::final_spinner_frame_survives
+        PASS [   0.017s] ( 88/196) maho-ext-terminal output_format::tests::controls_removed_tabs_kept
+        PASS [   0.012s] ( 89/196) maho-ext-terminal output_format::tests::plain_text_passthrough
+        PASS [   0.014s] ( 90/196) maho-ext-terminal output_format::tests::normalizes_crlf
+        PASS [   0.010s] ( 91/196) maho-ext-terminal output_format::tests::strips_osc_hyperlinks_and_titles
+        PASS [   0.012s] ( 92/196) maho-ext-terminal output_format::tests::shorter_redraw_keeps_tail
+        PASS [   0.018s] ( 93/196) maho-ext-terminal output_format::tests::marker_separate_from_body
+        PASS [   0.011s] ( 94/196) maho-ext-terminal output_format::tests::strips_csi_colors_and_cursor
+        PASS [   0.020s] ( 95/196) maho-ext-terminal output_format::tests::line_budget_keeps_tail
+        PASS [   0.007s] ( 96/196) maho-ext-terminal output_format::tests::trailing_notice_is_model_only
+        PASS [   0.012s] ( 97/196) maho-ext-terminal output_format::tests::strips_private_modes_and_keypad
+        PASS [   0.006s] ( 98/196) maho-ext-terminal restore::tests::digest_required_but_empty_valid
+        PASS [   0.006s] ( 99/196) maho-ext-terminal restore::tests::expiry_precedes_durability_handler
+        PASS [   0.009s] (100/196) maho-ext-terminal restore::tests::corrupt_and_missing_store_restore_nothing
+        PASS [   0.007s] (101/196) maho-ext-terminal restore::tests::mute_uses_fresh_runtime_id
+        PASS [   0.011s] (102/196) maho-ext-terminal output_format::tests::within_budget_sanitizes
+        PASS [   0.007s] (103/196) maho-ext-terminal restore::tests::strict_fields_ignore_unknown_keys
+        PASS [   0.034s] (104/196) maho-ext-terminal output_format::tests::byte_budget_bounds_output
+        PASS [   0.012s] (105/196) maho-ext-terminal runtime_session::tests::atomic_subscription_covers_history_and_future_without_cursor_interference
+        PASS [   0.013s] (106/196) maho-ext-terminal runtime_session::tests::disposed_output_observer_stops_receiving_after_history_drain
+        PASS [   0.010s] (107/196) maho-ext-terminal runtime_session::tests::real_pty_output_exit_and_delta_are_observable
+        PASS [   0.011s] (108/196) maho-ext-terminal runtime_session::tests::resize_preserves_screen_history_even_when_log_buffer_is_empty
+        PASS [   0.011s] (109/196) maho-ext-terminal runtime_session::tests::split_utf8_and_delta_cursor
+        PASS [   0.013s] (110/196) maho-ext-terminal runtime_session::tests::resize_updates_geometry_and_retains_prior_screen_content
+        PASS [   0.014s] (111/196) maho-ext-terminal runtime_session::tests::resize_replays_retained_history_at_the_new_geometry
+        PASS [   0.006s] (112/196) maho-ext-terminal session_bundle::tests::claim_transfers_the_same_bundle_only_once
+        PASS [   0.035s] (113/196) maho-ext-terminal output_format::tests::sanitize_before_truncating
+        PASS [   0.011s] (114/196) maho-ext-terminal session_bundle::tests::adopt_moves_live_state_between_generation_arcs
+        PASS [   0.015s] (115/196) maho-ext-terminal runtime_session::tests::snapshot_exposes_scrollback_and_restores_visible_view
+        PASS [   0.006s] (116/196) maho-ext-terminal settings::tests::absent_block_fills_defaults
+        PASS [   0.006s] (117/196) maho-ext-terminal settings::tests::project_layer_overrides_global_and_fractions_truncate
+        PASS [   0.010s] (118/196) maho-ext-terminal session_bundle::tests::parked_monitor_completion_flushes_into_new_owner
+        PASS [   0.007s] (119/196) maho-ext-terminal settings::tests::monitor_delivery_settings_are_bounded
+        PASS [   0.007s] (120/196) maho-ext-terminal settings::tests::valid_values_override_invalid_values_default
+        PASS [   0.012s] (121/196) maho-ext-terminal session_bundle::tests::parked_background_exit_republishes_state_and_flushes_to_new_owner
+        PASS [   0.006s] (122/196) maho-ext-terminal shared::tests::encoding_preserves_key_order_and_unknowns
+        PASS [   0.012s] (123/196) maho-ext-terminal session_bundle::tests::parked_monitor_ending_flushes_to_new_owner_and_publishes_state
+        PASS [   0.006s] (124/196) maho-ext-terminal shared::tests::named_keys_and_unicode_passthrough
+        PASS [   0.010s] (125/196) maho-ext-terminal shared::tests::invalid_regex_is_absent
+        PASS [   0.007s] (126/196) maho-ext-terminal terminal_manifest::tests::missing_stable_identity_is_an_error
+        PASS [   0.012s] (127/196) maho-ext-terminal terminal_manifest::tests::registration_checkpoint_shutdown_and_adoption_preserve_deadline
+        PASS [   0.015s] (128/196) maho-ext-terminal terminal_manifest::debounce_tests::drain_cancels_timer_and_persists_last_checkpoint
+        PASS [   0.014s] (129/196) maho-ext-terminal terminal_manifest::tests::expired_and_ephemeral_store_entries_never_spawn_or_adopt
+        PASS [   0.018s] (130/196) maho-ext-terminal terminal_manifest::tests::background_records_follow_insertion_order
+        PASS [   0.020s] (131/196) maho-ext-terminal terminal_manifest::tests::configured_store_restore_delivers_real_shell_geometry
+        PASS [   0.018s] (132/196) maho-ext-terminal terminal_state::tests::lease_gates_restore_and_release_transfers_ownership
+        PASS [   0.008s] (133/196) maho-ext-terminal tools::bash::tests::pre_aborted_foreground_does_not_spawn
+        PASS [   0.024s] (134/196) maho-ext-terminal terminal_manifest::tests::restore_store_adopts_live_file_and_preserves_mute_deadline_and_checkpoint
+        PASS [   0.009s] (135/196) maho-ext-terminal tools::bash_output::tests::muted_log_metadata_reports_burned_lines_only_while_paused
+        PASS [   0.013s] (136/196) maho-ext-terminal tools::bash_input::tests::missing_input_and_real_pty_resize
+        PASS [   0.019s] (137/196) maho-ext-terminal tools::bash_input::tests::literal_input_and_enter_reach_live_pty_without_polling
+        PASS [   0.025s] (138/196) maho-ext-terminal tools::bash::tests::session_context_metadata_reaches_real_pty_children
+        PASS [   0.008s] (139/196) maho-ext-terminal tools::context::tests::resolve_keeps_runtime_ids_and_falls_back_for_unseen_monitor_ids
+        PASS [   0.026s] (140/196) maho-ext-terminal tools::bash::tests::subscribed_progress_reports_output_before_child_is_released
+        PASS [   0.020s] (141/196) maho-ext-terminal tools::bash_output::tests::live_output_filter_consumes_delta_once_and_invalid_regex_keeps_output
+        PASS [   0.017s] (142/196) maho-ext-terminal tools::bash_output::tests::screen_projection_applies_cursor_edits_without_consuming_log
+        PASS [   0.008s] (143/196) maho-ext-terminal tools::foreground_detach::tests::already_settled_exit_and_abort_win_over_detach
+        PASS [   0.017s] (144/196) maho-ext-terminal tools::bash_resize::tests::resized_geometry_is_visible_inside_live_pty
+        PASS [   0.007s] (145/196) maho-ext-terminal tools::foreground_detach::tests::settled_exit_and_abort_win_over_timeout_grace
+        PASS [   0.045s] (146/196) maho-ext-terminal tools::bash::tests::abort_kills_a_shell_that_ignores_sigterm_after_ready_signal
+        PASS [   0.010s] (147/196) maho-ext-terminal tools::foreground_detach::tests::live_session_commits_detach_at_deadline
+        PASS [   0.011s] (148/196) maho-ext-terminal tools::foreground_window::tests::invalid_windows_default
+        PASS [   0.012s] (149/196) maho-ext-terminal tools::foreground_detach::tests::timeout_grace_releases_a_reader_that_never_settles
+        PASS [   0.011s] (150/196) maho-ext-terminal tools::foreground_window::tests::js_float_prefixes_are_preserved
+        PASS [   0.007s] (151/196) maho-ext-terminal tools::monitor::tests::an_absent_context_is_an_error_for_a_file_watch
+        PASS [   0.049s] (152/196) maho-ext-terminal tools::bash::tests::foreground_window_detaches_live_read_without_killing_runtime
+        PASS [   0.006s] (153/196) maho-ext-terminal tools::monitor::tests::command_and_rearm_branches_never_consult_the_carrier
+        PASS [   0.010s] (154/196) maho-ext-terminal tools::kill_bash::tests::stable_monitor_id_kills_live_runtime_and_all_clears_bindings
+        PASS [   0.007s] (155/196) maho-ext-terminal tools::monitor::tests::an_erroring_accessor_propagates_and_registers_nothing
+        PASS [   0.008s] (156/196) maho-ext-terminal tools::monitor::tests::configured_file_monitor_uses_the_approved_parent_and_refuses_a_mismatch
+        PASS [   0.007s] (157/196) maho-ext-terminal tools::monitor::tests::persistent_file_has_expiry_without_ephemeral_deadline
+        PASS [   0.007s] (158/196) maho-ext-terminal tools::monitor::tests::recorded_file_monitor_preserves_approved_parent
+        PASS [   0.010s] (159/196) maho-ext-terminal tools::monitor::tests::durable_admission_rejects_before_file_registration
+        PASS [   0.009s] (160/196) maho-ext-terminal tools::monitor::tests::file_watch_holds_shared_capacity_until_killed
+        PASS [   0.010s] (161/196) maho-ext-terminal tools::monitor::tests::live_command_snapshot_records_registration_epoch
+        PASS [   0.011s] (162/196) maho-ext-terminal tools::monitor::tests::configured_monitor_geometry_reaches_real_shell
+        PASS [   0.010s] (163/196) maho-ext-terminal tools::monitor::tests::schema_is_flat_and_invalid_branch_does_not_spawn
+        PASS [   0.010s] (164/196) maho-ext-terminal tools::render::tests::partial_results_keep_last_eight_visual_rows_and_full_results_keep_raw_rows
+        PASS [   0.007s] (165/196) maho-ext-terminal tools::render::tests::renderer_omits_model_only_parts
+        PASS [   0.008s] (166/196) maho-ext-terminal tools::render::tests::themed_call_components_keep_tool_title_color_and_bold
+        PASS [   0.015s] (167/196) maho-ext-terminal tools::monitor::tests::tool_spawns_and_delivers_native_monitor_completion
+        PASS [   0.098s] (168/196) maho-ext-terminal runtime_session::tests::retained_output_cap_reports_dropped_units
+        PASS [   0.005s] (169/196) maho-ext-terminal tools::sleep_wait::tests::power_management_guard
+        PASS [   0.025s] (170/196) maho-ext-terminal tools::sleep_wait::tests::and_chain
+        PASS [   0.018s] (171/196) maho-ext-terminal tools::sleep_wait::tests::ordinary_command
+        PASS [   0.024s] (172/196) maho-ext-terminal tools::sleep_wait::tests::env_shell_wrapper
+        PASS [   0.027s] (173/196) maho-ext-terminal tools::sleep_wait::tests::bash_wrapper
+        PASS [   0.026s] (174/196) maho-ext-terminal tools::sleep_wait::tests::exact_threshold
+        PASS [   0.028s] (175/196) maho-ext-terminal tools::sleep_wait::tests::canonical_leading_check
+        PASS [   0.026s] (176/196) maho-ext-terminal tools::sleep_wait::tests::for_loop_poll
+        PASS [   0.007s] (177/196) maho-ext-terminal tools::spawn::tests::exit_priority
+        PASS [   0.030s] (178/196) maho-ext-terminal tools::sleep_wait::tests::longest_sleep_selected
+        PASS [   0.032s] (179/196) maho-ext-terminal tools::sleep_wait::tests::long_trailing
+        PASS [   0.018s] (180/196) maho-ext-terminal tools::sleep_wait::tests::sleep_like_token
+        PASS [   0.007s] (181/196) maho-ext-terminal tools::spawn::tests::explicit_shell_kind_controls_arguments_and_missing_path_fails
+        PASS [   0.029s] (182/196) maho-ext-terminal tools::sleep_wait::tests::pure_long_sleep
+        PASS [   0.023s] (183/196) maho-ext-terminal tools::sleep_wait::tests::short_trailing_settle
+        PASS [   0.024s] (184/196) maho-ext-terminal tools::sleep_wait::tests::short_leading_settle
+        PASS [   0.024s] (185/196) maho-ext-terminal tools::sleep_wait::tests::while_poll
+        PASS [   0.026s] (186/196) maho-ext-terminal tools::sleep_wait::tests::subsecond_loop
+        PASS [   0.031s] (187/196) maho-ext-terminal tools::sleep_wait::tests::short_settle_sleep
+        PASS [   0.008s] (188/196) maho-ext-terminal::terminal_lifecycle a_context_without_a_session_dir_keeps_no_durable_terminal_state
+        PASS [   0.008s] (189/196) maho-ext-terminal::terminal_lifecycle session_start_acquires_the_lease_and_shutdown_records_then_releases_it
+        PASS [   0.011s] (190/196) maho-ext-terminal::terminal_lifecycle a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit
+        PASS [   0.118s] (191/196) maho-ext-terminal tools::bash::tests::huge_foreground_output_has_model_only_truncation_notice
+        PASS [   0.048s] (192/196) maho-ext-terminal::faux_terminal faux_terminal_background_command_reports_a_running_session_id
+        PASS [   0.053s] (193/196) maho-ext-terminal::faux_terminal faux_terminal_executes_registered_tool_and_returns_real_output
+        PASS [   0.258s] (194/196) maho-ext-terminal monitor_registry::registry_tests::native_file_registration_emits_once_and_releases_live_snapshot
+        PASS [   0.268s] (195/196) maho-ext-terminal::reload reload_preserves_live_pty_and_monitor_ids_until_new_owner_quits
+        PASS [   0.298s] (196/196) maho-ext-terminal::faux_terminal faux_terminal_kill_all_tears_down_the_background_session
+────────────
+     Summary [   0.530s] 196 tests run: 196 passed, 0 skipped

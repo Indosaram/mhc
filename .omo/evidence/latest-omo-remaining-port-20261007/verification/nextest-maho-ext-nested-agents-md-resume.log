@@ -1,0 +1,24 @@
+   Compiling maho-ext-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-nested-agents-md)
+    Finished `test` profile [unoptimized] target(s) in 1.80s
+────────────
+ Nextest run ID f18ab609-795e-446d-a43e-781c353c991b with nextest profile: default
+    Starting 17 tests across 4 binaries
+        PASS [   0.005s] ( 1/17) maho-ext-nested-agents-md::core missing_target_is_not_contained
+        PASS [   0.005s] ( 2/17) maho-ext-nested-agents-md::core injection_excludes_root_and_orders_parent_first
+        PASS [   0.005s] ( 3/17) maho-ext-nested-agents-md::core symlink_target_outside_project_is_not_injected
+        PASS [   0.005s] ( 4/17) maho-ext-nested-agents-md::core per_read_budget_limits_injected_content
+        PASS [   0.005s] ( 5/17) maho-ext-nested-agents-md::core outside_target_is_not_contained
+        PASS [   0.005s] ( 6/17) maho-ext-nested-agents-md::core root_itself_is_not_contained
+        PASS [   0.005s] ( 7/17) maho-ext-nested-agents-md::core truncation_keeps_complete_utf8
+        PASS [   0.005s] ( 8/17) maho-ext-nested-agents-md::core cache_preserves_insertion_order_without_duplicates
+        PASS [   0.007s] ( 9/17) maho-ext-nested-agents-md::core cache_is_scoped_by_session
+        PASS [   0.006s] (10/17) maho-ext-nested-agents-md::core repeated_reads_do_not_inject_cached_directory
+        PASS [   0.007s] (11/17) maho-ext-nested-agents-md::core truncated_content_removes_trailing_replacement_character
+        PASS [   0.004s] (12/17) maho-ext-nested-agents-md::core untruncated_content_preserves_replacement_character
+        PASS [   0.004s] (13/17) maho-ext-nested-agents-md::hooks extension_registers_nested_command_and_lifecycle_hooks
+        PASS [   0.005s] (14/17) maho-ext-nested-agents-md::hooks failed_read_does_not_inject_context
+        PASS [   0.005s] (15/17) maho-ext-nested-agents-md::hooks read_hook_appends_model_only_directory_context
+        PASS [   0.011s] (16/17) maho-ext-nested-agents-md::core unreadable_instruction_is_recorded_without_caching
+        PASS [   0.022s] (17/17) maho-ext-nested-agents-md::faux_session faux_registered_builtin_completes_headless_turn
+────────────
+     Summary [   0.027s] 17 tests run: 17 passed, 0 skipped

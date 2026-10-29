@@ -1,0 +1,2 @@
+provider           model           context  max-out  thinking  images
+residual-registry  residual-model  128K     4.1K     no        no    

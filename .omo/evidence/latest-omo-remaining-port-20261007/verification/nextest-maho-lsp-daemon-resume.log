@@ -1,0 +1,136 @@
+   Compiling tokio v1.52.3
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+   Compiling maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+    Finished `test` profile [unoptimized] target(s) in 8.00s
+────────────
+ Nextest run ID 2691d18e-bb84-4488-a41e-0df0efa729cb with nextest profile: default
+    Starting 127 tests across 7 binaries
+        PASS [   0.005s] (  1/127) maho-lsp-daemon daemon_failure_result::tests::timed_out_request_reports_the_timeout_budget
+        PASS [   0.005s] (  2/127) maho-lsp-daemon ensure_daemon::tests::existing_cached_node_is_preserved
+        PASS [   0.006s] (  3/127) maho-lsp-daemon daemon_failure_result::tests::authentication_rejection_reports_unreachable
+        PASS [   0.006s] (  4/127) maho-lsp-daemon ensure_daemon::tests::another_candidate_winning_is_observed_by_polling
+        PASS [   0.007s] (  5/127) maho-lsp-daemon ensure_daemon::tests::never_reachable_spawn_throws_unreachable
+        PASS [   0.007s] (  6/127) maho-lsp-daemon ensure_daemon::tests::no_absolute_launcher_uses_path_node
+        PASS [   0.007s] (  7/127) maho-lsp-daemon ensure_daemon::tests::native_binary_and_node_script_launch_commands
+        PASS [   0.008s] (  8/127) maho-lsp-daemon daemon_failure_result::tests::caller_cancelled_request_reports_cancellation
+        PASS [   0.009s] (  9/127) maho-lsp-daemon daemon_failure_result::tests::non_error_cause_is_stringified_into_unreachable_report
+        PASS [   0.009s] ( 10/127) maho-lsp-daemon daemon_failure_result::tests::error_names_match_ts_classes
+        PASS [   0.011s] ( 11/127) maho-lsp-daemon ensure_daemon::tests::aborted_probe_with_missing_socket_stays_contained
+        PASS [   0.011s] ( 12/127) maho-lsp-daemon daemon_failure_result::tests::genuine_transport_failure_reports_unreachable
+        PASS [   0.006s] ( 13/127) maho-lsp-daemon ensure_daemon::tests::not_running_spawns_without_owning_the_lock_and_waits
+        PASS [   0.006s] ( 14/127) maho-lsp-daemon ensure_daemon::tests::removed_cached_node_falls_back_to_argv0
+        PASS [   0.005s] ( 15/127) maho-lsp-daemon ipc_protocol::tests::auth_token_is_created_once_rotated_and_private
+        PASS [   0.006s] ( 16/127) maho-lsp-daemon ensure_daemon::tests::reachable_daemon_is_not_spawned
+        PASS [   0.005s] ( 17/127) maho-lsp-daemon ipc_protocol::tests::valid_envelope_is_stripped_and_forwarded
+        PASS [   0.007s] ( 18/127) maho-lsp-daemon ipc_protocol::tests::private_directory_rejects_symlink_file_and_foreign_owner
+        PASS [   0.006s] ( 19/127) maho-lsp-daemon ipc_protocol::tests::wrong_protocol_version_is_rejected_before_token_check
+        PASS [   0.009s] ( 20/127) maho-lsp-daemon ensure_daemon::tests::pending_probe_abort_settles_without_spawning
+        PASS [   0.005s] ( 21/127) maho-lsp-daemon lock::tests::current_process_is_alive
+        PASS [   0.009s] ( 22/127) maho-lsp-daemon ipc_protocol::tests::loose_current_user_directory_is_accepted_and_made_private
+        PASS [   0.007s] ( 23/127) maho-lsp-daemon ipc_protocol::tests::wrong_token_and_missing_envelope_are_auth_errors
+        PASS [   0.006s] ( 24/127) maho-lsp-daemon lock::tests::dead_and_invalid_pids_are_not_alive
+        PASS [   0.005s] ( 25/127) maho-lsp-daemon lock::tests::parse_leading_int_matches_number_parse_int
+        PASS [   0.006s] ( 26/127) maho-lsp-daemon lock::tests::free_path_writes_owner_pid_and_holds_lock
+        PASS [   0.008s] ( 27/127) maho-lsp-daemon lock::tests::stale_lock_owned_by_dead_pid_is_reaped_and_acquired
+        PASS [   0.008s] ( 28/127) maho-lsp-daemon paths::tests::absolute_directory_override_is_normalized
+        PASS [   0.006s] ( 29/127) maho-lsp-daemon paths::tests::neither_override_preserves_packaged_runtime
+        PASS [   0.005s] ( 30/127) maho-lsp-daemon paths::tests::relative_directory_override_is_rejected
+        PASS [   0.008s] ( 31/127) maho-lsp-daemon paths::tests::default_base_is_influenced_only_by_the_user_home
+        PASS [   0.008s] ( 32/127) maho-lsp-daemon paths::tests::both_overrides_preserve_the_explicit_pair
+        PASS [   0.008s] ( 33/127) maho-lsp-daemon paths::tests::every_artifact_is_isolated_under_the_version_dir
+        PASS [   0.007s] ( 34/127) maho-lsp-daemon paths::tests::pair_validation_wins_before_directory_lookup
+        PASS [   0.009s] ( 35/127) maho-lsp-daemon paths::tests::long_unix_version_dir_uses_the_short_hash_fallback
+        PASS [   0.009s] ( 36/127) maho-lsp-daemon paths::tests::public_environment_names_are_exactly_the_three_omo_variables
+        PASS [   0.005s] ( 37/127) maho-lsp-daemon paths::tests::version_grammar_accepts_and_rejects_the_ts_table
+        PASS [   0.006s] ( 38/127) maho-lsp-daemon paths::tests::stamped_version_is_the_crate_version
+        PASS [   0.016s] ( 39/127) maho-lsp-daemon lock::tests::garbage_lock_contents_are_reclaimed
+        PASS [   0.006s] ( 40/127) maho-lsp-daemon paths::tests::windows_pipe_digest_binds_version_dir_and_user
+        PASS [   0.011s] ( 41/127) maho-lsp-daemon paths::tests::singleton_and_invalid_cli_overrides_are_rejected
+        PASS [   0.008s] ( 42/127) maho-lsp-daemon request_routing::tests::authenticated_cancellation_aborts_and_removes_the_active_request
+        PASS [   0.008s] ( 43/127) maho-lsp-daemon request_routing::tests::non_tools_call_has_no_context_and_input_unchanged
+        PASS [   0.008s] ( 44/127) maho-lsp-daemon request_routing::tests::ping_reports_protocol_version_and_owner
+        PASS [   0.009s] ( 45/127) maho-lsp-daemon request_routing::tests::omitted_context_returns_invalid_request_before_dispatch
+        PASS [   0.010s] ( 46/127) maho-lsp-daemon request_routing::tests::missing_config_below_symlinked_parent_canonicalizes_nearest_ancestor
+        PASS [   0.008s] ( 47/127) maho-lsp-daemon request_routing::tests::symlinked_project_config_escaping_cwd_is_rejected
+        PASS [   0.008s] ( 48/127) maho-lsp-daemon request_routing::tests::symlinked_project_config_inside_cwd_is_canonicalized
+        PASS [   0.008s] ( 49/127) maho-lsp-daemon request_routing::tests::tools_call_context_is_parsed_and_stripped_from_arguments
+        PASS [   0.008s] ( 50/127) maho-lsp-daemon request_routing::tests::tools_call_with_empty_or_non_object_context_is_rejected
+        PASS [   0.005s] ( 51/127) maho-lsp-daemon socket_jsonrpc::tests::encode_json_line_appends_a_newline
+        PASS [   0.007s] ( 52/127) maho-lsp-daemon socket_jsonrpc::tests::blank_lines_are_ignored
+        PASS [   0.008s] ( 53/127) maho-lsp-daemon request_routing::tests::tools_call_without_context_is_rejected
+        PASS [   0.005s] ( 54/127) maho-lsp-daemon socket_jsonrpc::tests::malformed_line_reports_parse_error_and_keeps_going
+        PASS [   0.006s] ( 55/127) maho-lsp-daemon socket_jsonrpc::tests::chunks_split_mid_line_are_reassembled
+        PASS [   0.006s] ( 56/127) maho-lsp-daemon socket_jsonrpc::tests::two_messages_in_one_chunk_are_both_emitted
+        PASS [   0.006s] ( 57/127) maho-lsp-daemon version_reap::tests::darwin_unrelated_ps_line_is_rejected
+        PASS [   0.011s] ( 58/127) maho-lsp-daemon request_routing::tests::unauthenticated_cancellation_does_not_abort
+        PASS [   0.007s] ( 59/127) maho-lsp-daemon version_reap::tests::darwin_node_cli_daemon_ps_line_is_proven
+        PASS [   0.005s] ( 60/127) maho-lsp-daemon version_reap::tests::invalid_entry_names_are_ignored
+        PASS [   0.006s] ( 61/127) maho-lsp-daemon version_reap::tests::failed_attestation_spares_and_logs
+        PASS [   0.007s] ( 62/127) maho-lsp-daemon version_reap::tests::linux_node_cli_daemon_cmdline_is_proven
+        PASS [   0.008s] ( 63/127) maho-lsp-daemon version_reap::tests::dead_owner_dir_is_removed_without_signaling
+        PASS [   0.007s] ( 64/127) maho-lsp-daemon version_reap::tests::linux_unrelated_cmdline_is_rejected
+        PASS [   0.007s] ( 65/127) maho-lsp-daemon version_reap::tests::live_attested_older_daemon_is_terminated_and_dir_removed
+        PASS [   0.006s] ( 66/127) maho-lsp-daemon version_reap::tests::survivor_of_sigkill_is_deferred_and_dir_kept
+        PASS [   0.005s] ( 67/127) maho-lsp-daemon version_reap::tests::win32_cannot_prove_ownership
+        PASS [   0.010s] ( 68/127) maho-lsp-daemon version_reap::tests::missing_owner_metadata_dir_is_removed
+        PASS [   0.007s] ( 69/127) maho-lsp-daemon version_reap::tests::survivor_of_sigterm_is_escalated_to_sigkill
+        PASS [   0.009s] ( 70/127) maho-lsp-daemon version_reap::tests::own_version_dir_is_never_touched
+        PASS [   0.008s] ( 71/127) maho-lsp-daemon version_reap::tests::symlinked_version_dir_is_not_followed
+        PASS [   0.008s] ( 72/127) maho-lsp-daemon version_reap::tests::unreadable_process_table_is_rejected
+        PASS [   0.012s] ( 73/127) maho-lsp-daemon version_reap::tests::missing_owner_but_live_lock_holder_is_spared
+        PASS [   0.006s] ( 74/127) maho-lsp-daemon::daemon_client current_request_context_builds_exact_codex_defaults
+        PASS [   0.006s] ( 75/127) maho-lsp-daemon::daemon_client current_request_context_without_lsp_env_is_still_complete
+        PASS [   0.013s] ( 76/127) maho-lsp-daemon version_reap::tests::win32_defers_with_logged_reason
+        PASS [   0.010s] ( 77/127) maho-lsp-daemon::cli singleton_runtime_override_fails_with_invalid_runtime_override
+        PASS [   0.009s] ( 78/127) maho-lsp-daemon::daemon_client close_after_write_is_not_retried
+        PASS [   0.014s] ( 79/127) maho-lsp-daemon::cli default_subcommand_is_the_mcp_proxy
+        PASS [   0.011s] ( 80/127) maho-lsp-daemon::cli unknown_subcommand_prints_usage_and_exits_2
+        PASS [   0.010s] ( 81/127) maho-lsp-daemon::daemon_client auth_rejection_refreshes_the_token_once_and_retries
+        PASS [   0.015s] ( 82/127) maho-lsp-daemon::cli mcp_subcommand_serves_initialize_locally
+        PASS [   0.013s] ( 83/127) maho-lsp-daemon::daemon_client caller_abort_after_write_sends_cancel_and_reports_cancelled
+        PASS [   0.011s] ( 84/127) maho-lsp-daemon::daemon_client invalid_response_after_write_is_not_retried
+        PASS [   0.008s] ( 85/127) maho-lsp-daemon::daemon_client omitted_context_rejects_before_daemon_dispatch
+        PASS [   0.010s] ( 86/127) maho-lsp-daemon::daemon_client rename_that_cannot_connect_is_not_retried
+        PASS [   0.010s] ( 87/127) maho-lsp-daemon::daemon_server closing_removes_socket_and_pid_files
+        PASS [   0.025s] ( 88/127) maho-lsp-daemon::cli daemon_subcommand_reclaims_a_crashed_owner_and_exits_cleanly_on_sigterm
+        PASS [   0.012s] ( 89/127) maho-lsp-daemon::daemon_server auth_is_required_and_tokens_are_never_forwarded
+        PASS [   0.012s] ( 90/127) maho-lsp-daemon::daemon_server crashed_owner_leftovers_are_reclaimed_and_auth_rotated
+        PASS [   0.014s] ( 91/127) maho-lsp-daemon::daemon_client socket_appearing_after_first_connect_failure_is_retried_once
+        PASS [   0.011s] ( 92/127) maho-lsp-daemon::daemon_server existing_authenticated_owner_makes_candidate_exit_cleanly
+        PASS [   0.009s] ( 93/127) maho-lsp-daemon::daemon_server live_unreachable_owner_defers_without_unlinking
+        PASS [   0.009s] ( 94/127) maho-lsp-daemon::daemon_server loose_current_user_state_directory_is_accepted_and_made_private
+        PASS [   0.014s] ( 95/127) maho-lsp-daemon::daemon_server idle_daemon_shuts_itself_down
+        PASS [   0.009s] ( 96/127) maho-lsp-daemon::daemon_server regular_file_at_state_directory_fails_closed
+        PASS [   0.009s] ( 97/127) maho-lsp-daemon::daemon_server symlinked_state_directory_fails_before_binding
+        PASS [   0.011s] ( 98/127) maho-lsp-daemon::daemon_server stale_close_from_old_owner_keeps_winner_metadata
+        PASS [   0.011s] ( 99/127) maho-lsp-daemon::daemon_server two_contexts_through_one_daemon_keep_their_cwd_scopes
+        PASS [   0.009s] (100/127) maho-lsp-daemon::daemon_server unreachable_daemon_returns_structured_error
+        PASS [   0.011s] (101/127) maho-lsp-daemon::daemon_server state_paths_use_private_modes
+        PASS [   0.006s] (102/127) maho-lsp-daemon::legacy_path_vectors characterization_metadata_stays_pinned
+        PASS [   0.005s] (103/127) maho-lsp-daemon::legacy_path_vectors windows_vector_retains_the_exact_named_pipe
+        PASS [   0.005s] (104/127) maho-lsp-daemon::legacy_path_vectors unix_vectors_retain_exact_natural_and_hashed_paths
+        PASS [   0.012s] (105/127) maho-lsp-daemon::daemon_server wrong_protocol_is_rejected_before_dispatch
+        PASS [   0.009s] (106/127) maho-lsp-daemon::proxy initialize_server_info_and_capabilities_are_pinned
+        PASS [   0.022s] (107/127) maho-lsp-daemon::daemon_server status_tool_returns_content_over_the_socket
+        PASS [   0.022s] (108/127) maho-lsp-daemon::daemon_server two_racing_calls_both_receive_responses
+        PASS [   0.013s] (109/127) maho-lsp-daemon::proxy idle_proxy_keeps_serving_after_a_long_pause
+        PASS [   0.010s] (110/127) maho-lsp-daemon::proxy input_end_during_pending_startup_cancels_without_retrying
+        PASS [   0.011s] (111/127) maho-lsp-daemon::proxy malformed_line_parse_error_envelope_includes_parser_data
+        PASS [   0.012s] (112/127) maho-lsp-daemon::proxy malformed_line_returns_parse_error
+        PASS [   0.008s] (113/127) maho-lsp-daemon::proxy opencode_config_paths_infer_the_project_cwd
+        PASS [   0.022s] (114/127) maho-lsp-daemon::proxy initialize_is_local_and_tools_call_goes_to_the_daemon
+        PASS [   0.038s] (115/127) maho-lsp-daemon::daemon_server project_config_in_request_context_is_honored_per_request
+        PASS [   0.011s] (116/127) maho-lsp-daemon::proxy opencode_env_produces_the_env_derived_typed_context
+        PASS [   0.012s] (117/127) maho-lsp-daemon::proxy parent_input_close_cancels_in_flight_request_and_closes_its_socket
+        PASS [   0.010s] (118/127) maho-lsp-daemon::proxy several_unreachable_tools_each_get_errors_and_proxy_keeps_serving
+        PASS [   0.007s] (119/127) maho-lsp-daemon::proxy synchronous_setup_failure_rejects_without_leaking_lifecycle_state
+        PASS [   0.006s] (120/127) maho-lsp-daemon::proxy unreachable_daemon_tool_gets_structured_error_not_local_execution
+        PASS [   0.059s] (121/127) maho-lsp-daemon::daemon_client written_request_that_times_out_is_not_retried
+        PASS [   0.032s] (122/127) maho-lsp-daemon::proxy partial_frame_does_not_disable_the_startup_watchdog
+        PASS [   0.036s] (123/127) maho-lsp-daemon::proxy parent_death_exits_the_proxy_while_stdin_stays_open
+        PASS [   0.029s] (124/127) maho-lsp-daemon::proxy silent_parent_startup_expiry_exits_the_proxy
+        PASS [   0.026s] (125/127) maho-lsp-daemon::proxy throwing_diagnostic_stream_cannot_prevent_shutdown
+        PASS [   0.082s] (126/127) maho-lsp-daemon::daemon_client timeout_sends_authenticated_cancel_for_the_proxy_id
+        PASS [   0.111s] (127/127) maho-lsp-daemon::proxy first_request_before_expiry_disables_the_startup_watchdog
+────────────
+     Summary [   0.192s] 127 tests run: 127 passed, 0 skipped

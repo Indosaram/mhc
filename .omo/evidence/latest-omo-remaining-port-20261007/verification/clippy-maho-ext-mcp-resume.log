@@ -1,0 +1,45 @@
+    Checking indexmap v2.14.0
+    Checking tokio v1.52.3
+    Checking tracing v0.1.44
+    Checking serde v1.0.228
+    Checking icu_normalizer v2.3.0
+    Checking serde_json v1.0.149
+    Checking idna_adapter v1.2.1
+    Checking idna v1.1.0
+    Checking serde_urlencoded v0.7.1
+    Checking url v2.5.8
+    Checking tokio-util v0.7.18
+    Checking tower v0.5.3
+    Checking h2 v0.4.19
+    Checking tokio-rustls v0.26.4
+    Checking tower-http v0.6.8
+    Checking serde_yaml v0.9.34+deprecated
+    Checking icu_segmenter v2.3.0
+    Checking crossterm v0.29.0
+    Checking maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+    Checking hyper v1.8.1
+    Checking hyper-util v0.1.20
+    Checking hyper-rustls v0.27.7
+    Checking reqwest v0.12.28
+    Checking rusqlite v0.40.2
+    Checking maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+    Checking plist v1.10.1
+    Checking bincode v1.3.3
+    Checking syntect v5.3.0
+    Checking icu_collator v2.3.1
+    Checking axum-core v0.5.6
+    Checking axum v0.8.9
+    Checking yasna v0.6.0
+    Checking rcgen v0.14.10
+    Checking maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+    Checking maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+    Checking maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+    Checking maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+    Checking maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+    Checking maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+    Checking maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+    Checking maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+    Checking maho-ext-tool-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-search)
+    Checking maho-ext-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-mcp)
+    Finished `dev` profile [unoptimized] target(s) in 1m 01s

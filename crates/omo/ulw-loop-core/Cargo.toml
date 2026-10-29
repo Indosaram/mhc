@@ -1,0 +1,51 @@
+[package]
+name = "ulw-loop-core"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+autotests = false
+
+[lib]
+name = "ulw_loop_core"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
+indexmap = { workspace = true, features = ["serde"] }
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
+rustix = { version = "=1.1.4", features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+filetime.workspace = true
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"
+collapsible_if = "allow"
+large_enum_variant = "allow"
+needless_update = "allow"
+needless_borrow = "allow"
+manual_pattern_char_comparison = "allow"
+let_and_return = "allow"
+unnecessary_unwrap = "allow"
+useless_vec = "allow"
+needless_lifetimes = "allow"
+double_ended_iterator_last = "allow"
+io_other_error = "allow"
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Gate the MIT-only license of the whole mhc workspace.
+"""Gate the MIT build profile of the `mhc` binary (maho-cli built with `--no-default-features`).
 
-Two checks over the normal (linked) dependency graph of every workspace member, for every target
+Two checks over the normal (linked) dependency graph of each MIT-profile binary package (maho-cli
+without default features, and the MIT sibling binary maho-senpi-desktop-engine), for every target
 platform:
 
-1. no package resolves to a path under crates/omo/ (the retired oh-my-openagent port);
-2. no package carries a license expression naming SUL, and every package states a license.
+1. no package resolves to a path under crates/omo/ (the oh-my-openagent port, LicenseRef-SUL-1.0);
+2. no package carries a license expression naming SUL (LicenseRef-SUL-1.0), and every package
+   states a license (workspace crates included: no `[licenses.private] ignore`).
 
 Usage: python3 scripts/check-mit-profile.py [--self-test]
-Exit 0 = pass, 1 = SUL code in the workspace, 2 = tooling error.
+Exit 0 = pass, 1 = SUL code in the MIT profile, 2 = tooling error.
 See docs/MIT-PROFILE.md.
 """
 
@@ -21,6 +23,11 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# (package, cargo feature arguments) for every binary the MIT profile builds and stages.
+PROFILE = [
+    ("maho-cli", ["--no-default-features"]),
+    ("maho-senpi-desktop-engine", []),
+]
 FORBIDDEN_LICENSE = re.compile(r"SUL", re.IGNORECASE)
 # `{p}` prints `name vX.Y.Z (path-or-source)`; `{l}` the package's license expression.
 TREE_FORMAT = "{p}\t{l}"
@@ -29,9 +36,9 @@ LINE = re.compile(r"^(?P<name>\S+) v(?P<version>\S+)(?: \((?P<source>[^)]*)\))?\
 ANNOTATIONS = (" (*)", " (proc-macro)")
 
 
-def cargo_tree() -> list[str]:
+def cargo_tree(package: str, feature_args: list[str]) -> list[str]:
     command = [
-        "cargo", "tree", "--locked", "--workspace",
+        "cargo", "tree", "--locked", "-p", package, *feature_args,
         "-e", "normal", "--target", "all", "--prefix", "none", "--format", TREE_FORMAT,
     ]
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
@@ -110,14 +117,18 @@ def main() -> int:
     if sys.argv[1:]:
         sys.stderr.write(__doc__ or "")
         return 2
-    errors, count = audit(cargo_tree())
-    if errors:
-        print("The mhc workspace links SUL code:")
-        for error in errors:
-            print(f"  - {error}")
-        return 1
-    print(f"mhc workspace: {count} linked packages, none under crates/omo/, no SUL license")
-    return 0
+    failed = False
+    for package, feature_args in PROFILE:
+        profile = " ".join([package, *feature_args])
+        errors, count = audit(cargo_tree(package, feature_args))
+        if errors:
+            failed = True
+            print(f"MIT profile ({profile}) links SUL code:")
+            for error in errors:
+                print(f"  - {error}")
+        else:
+            print(f"MIT profile ({profile}): {count} linked packages, none under crates/omo/, no SUL license")
+    return 1 if failed else 0
 
 if __name__ == "__main__":
     raise SystemExit(main())

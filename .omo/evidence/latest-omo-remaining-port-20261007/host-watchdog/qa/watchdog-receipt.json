@@ -1,0 +1,44 @@
+{
+  "home": "/tmp/host-qa-home-cfDeEe",
+  "socket": "/tmp/host-qa-home-cfDeEe/rpc.sock",
+  "agent": "/tmp/host-qa-home-cfDeEe/agent",
+  "supervisorPid": 2347237,
+  "hostChildPid": 2347238,
+  "aliveBeforeKill": true,
+  "pointerGoneAfterKill": true,
+  "cleanup": {
+    "pointerGone": true,
+    "socketGone": true,
+    "homeRemoved": true
+  },
+  "ensure": {
+    "exitCode": 0,
+    "timedOut": false,
+    "streamsComplete": true,
+    "line": {
+      "socket": "/tmp/host-qa-home-cfDeEe/rpc.sock",
+      "pid": 2347237,
+      "instanceId": "0a7f613b-380b-4963-8347-a4f1e2d0a85f",
+      "generation": 0,
+      "engineVersion": "0.0.0",
+      "engineOrdinal": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "capabilities": [
+        "extension_events",
+        "custom_unsupported",
+        "generation_handoff"
+      ],
+      "launchProfileId": "d7e649f443589d51453f8f07d796e8c9900a953cd6ed32ccd564ff8571fb8eb7",
+      "upgradeable": false,
+      "action": "start",
+      "reused": false
+    },
+    "stderr": ""
+  },
+  "hostDeath": "pidfd-exit"
+}

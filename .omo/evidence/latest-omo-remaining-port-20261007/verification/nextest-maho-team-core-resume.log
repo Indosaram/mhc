@@ -1,0 +1,167 @@
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+   Compiling maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+    Finished `test` profile [unoptimized] target(s) in 6.09s
+────────────
+ Nextest run ID d895783e-7985-4c11-99d9-76194004f617 with nextest profile: default
+    Starting 157 tests across 7 binaries
+        PASS [   0.006s] (  1/157) maho-team-core::layout_tmux close_pane_both_closes_fail_returns_false
+        PASS [   0.006s] (  2/157) maho-team-core::layout_tmux layout_skips_all_panes_when_lead_member_missing
+        PASS [   0.006s] (  3/157) maho-team-core::layout_tmux layout_returns_null_and_makes_no_tmux_calls_when_visualization_unavailable
+        PASS [   0.006s] (  4/157) maho-team-core::layout_tmux layout_never_steals_focus_or_mutates_window_border_options
+        PASS [   0.006s] (  5/157) maho-team-core::layout_tmux layout_given_no_password_attach_command_has_no_env_prefix
+        PASS [   0.007s] (  6/157) maho-team-core::layout_tmux close_pane_both_ids_closes_both_and_returns_true_when_either_succeeds
+        PASS [   0.007s] (  7/157) maho-team-core::layout_tmux layout_given_4_or_more_teammates_keeps_every_teammate_in_caller_window
+        PASS [   0.008s] (  8/157) maho-team-core::layout_tmux layout_given_tmux_path_lookup_throws_non_error_falls_back_to_null
+        PASS [   0.009s] (  9/157) maho-team-core::layout_tmux layout_creates_teammate_panes_in_caller_window_and_sends_attach_via_send_keys
+        PASS [   0.009s] ( 10/157) maho-team-core::layout_tmux layout_returns_null_when_server_health_check_fails
+        PASS [   0.010s] ( 11/157) maho-team-core::layout_tmux close_pane_only_pane_id_closes_once
+        PASS [   0.007s] ( 12/157) maho-team-core::layout_tmux rebalance_select_layout_fails_returns_false_and_logs_once
+        PASS [   0.008s] ( 13/157) maho-team-core::layout_tmux layout_split_window_always_carries_detach_flag
+        PASS [   0.010s] ( 14/157) maho-team-core::layout_tmux layout_uses_caller_window_main_vertical_layout_with_caller_pane_as_primary
+        PASS [   0.008s] ( 15/157) maho-team-core::layout_tmux remove_layout_not_owned_kills_both_windows_and_never_the_session
+        PASS [   0.010s] ( 16/157) maho-team-core::layout_tmux rebalance_main_vertical_selects_sets_width_and_reselects
+        PASS [   0.008s] ( 17/157) maho-team-core::layout_tmux remove_layout_not_owned_with_pane_ids_kills_panes_instead_of_caller_window
+        PASS [   0.006s] ( 18/157) maho-team-core::layout_tmux layout_given_env_auth_send_keys_omit_secrets_while_split_window_forwards_pane_env
+        PASS [   0.014s] ( 19/157) maho-team-core::layout_tmux rebalance_tiled_only_selects_layout
+        PASS [   0.015s] ( 20/157) maho-team-core::layout_tmux rebalance_focus_window_after_shrink_uses_main_vertical
+        PASS [   0.013s] ( 21/157) maho-team-core::layout_tmux remove_layout_pane_cleanup_throwing_non_error_continues
+        PASS [   0.014s] ( 22/157) maho-team-core::layout_tmux remove_layout_owned_session_kills_target_session
+        PASS [   0.010s] ( 23/157) maho-team-core::layout_tmux resolve_caller_garbage_session_returns_null
+        PASS [   0.018s] ( 24/157) maho-team-core::layout_tmux remove_layout_first_kill_window_fails_second_still_fires
+        PASS [   0.010s] ( 25/157) maho-team-core::layout_tmux resolve_caller_tmux_pane_unset_returns_null_without_calls
+        PASS [   0.011s] ( 26/157) maho-team-core::layout_tmux sweep_all_candidates_active_kills_none
+        PASS [   0.014s] ( 27/157) maho-team-core::layout_tmux resolve_caller_display_non_success_returns_null
+        PASS [   0.014s] ( 28/157) maho-team-core::layout_tmux resolve_caller_display_returns_session_and_window
+        PASS [   0.013s] ( 29/157) maho-team-core::layout_tmux sweep_empty_suffix_candidate_is_skipped
+        PASS [   0.009s] ( 30/157) maho-team-core::layout_tmux sweep_list_candidates_throws_returns_empty_and_logs
+        PASS [   0.008s] ( 31/157) maho-team-core::layout_tmux sweep_no_team_candidates_returns_empty_without_kills
+        PASS [   0.010s] ( 32/157) maho-team-core::layout_tmux sweep_kills_only_sessions_whose_run_id_is_not_active
+        PASS [   0.008s] ( 33/157) maho-team-core::layout_tmux sweep_preserves_non_uuid_team_like_session_names
+        PASS [   0.006s] ( 34/157) maho-team-core::layout_tmux topology_layout_records_focus_panes_only
+        PASS [   0.011s] ( 35/157) maho-team-core::layout_tmux sweep_kill_session_throws_for_one_continues
+        PASS [   0.007s] ( 36/157) maho-team-core::layout_tmux topology_caller_session_resolved_owned_session_is_false
+        PASS [   0.006s] ( 37/157) maho-team-core::layout_tmux topology_three_members_get_three_distinct_pane_ids
+        PASS [   0.008s] ( 38/157) maho-team-core::layout_tmux topology_first_teammate_splits_caller_pane_horizontally
+        PASS [   0.008s] ( 39/157) maho-team-core::layout_tmux topology_uses_the_caller_window_without_a_new_session
+        PASS [   0.006s] ( 40/157) maho-team-core::mailbox consumer_lease_dead_pid_lease_with_zero_stale_after_is_reacquired_immediately
+        PASS [   0.005s] ( 41/157) maho-team-core::mailbox list_unread_messages_returns_fifo_skipping_malformed_processed_and_dot_files
+        PASS [   0.006s] ( 42/157) maho-team-core::mailbox mailbox_barrel_exports_consumed_and_lease_helpers
+        PASS [   0.011s] ( 43/157) maho-team-core::mailbox ack_messages_moves_inbox_files_into_processed_and_stays_idempotent
+        PASS [   0.009s] ( 44/157) maho-team-core::mailbox is_message_consumed_false_for_unread_message_without_committed_reservation
+        PASS [   0.007s] ( 45/157) maho-team-core::mailbox poll_injects_only_new_unread_messages_when_older_are_pending_ack
+        PASS [   0.009s] ( 46/157) maho-team-core::mailbox consumer_lease_serializes_two_callers_for_one_inbox
+        PASS [   0.009s] ( 47/157) maho-team-core::mailbox is_message_consumed_true_after_committed_delivery_reservation
+        PASS [   0.009s] ( 48/157) maho-team-core::mailbox poll_does_not_reinject_a_pending_message_on_a_later_turn
+        PASS [   0.007s] ( 49/157) maho-team-core::mailbox poll_records_pending_ids_without_acking_or_moving_files
+        PASS [   0.009s] ( 50/157) maho-team-core::mailbox poll_prevents_duplicate_injection_in_the_same_turn_marker
+        PASS [   0.005s] ( 51/157) maho-team-core::mailbox send_rejects_duplicate_message_ids_for_the_same_recipient
+        PASS [   0.007s] ( 52/157) maho-team-core::mailbox send_gates_broadcasts_to_leads_and_fans_out_to_each_active_member
+        PASS [   0.007s] ( 53/157) maho-team-core::mailbox send_counts_in_flight_delivering_reservations_toward_backpressure
+        PASS [   0.008s] ( 54/157) maho-team-core::mailbox poll_wraps_hostile_message_bodies_in_a_literal_peer_message_envelope
+        PASS [   0.006s] ( 55/157) maho-team-core::mailbox send_to_configured_lead_recipient_remains_unread_and_visible
+        PASS [   0.006s] ( 56/157) maho-team-core::mailbox send_rejects_when_recipient_unread_bytes_exceed_backpressure_limit
+        PASS [   0.006s] ( 57/157) maho-team-core::mailbox send_to_non_member_recipient_creates_no_inbox_directory
+        PASS [   0.006s] ( 58/157) maho-team-core::mailbox send_to_non_member_that_is_not_the_configured_lead_is_invalid
+        PASS [   0.006s] ( 59/157) maho-team-core::mailbox send_to_reserved_but_inactive_member_is_allowed
+        PASS [   0.009s] ( 60/157) maho-team-core::mailbox send_rejects_payloads_larger_than_32_kb
+        PASS [   0.005s] ( 61/157) maho-team-core::registry ensure_base_dirs_creates_all_dirs_with_mode_0700
+        PASS [   0.006s] ( 62/157) maho-team-core::registry ensure_base_dirs_swallows_eperm_from_chmod_and_logs_warning
+        PASS [   0.006s] ( 63/157) maho-team-core::registry loader_auto_assigns_missing_member_names_for_specs_on_disk
+        PASS [   0.008s] ( 64/157) maho-team-core::mailbox send_writes_distinct_files_for_concurrent_writers_targeting_same_recipient
+        PASS [   0.005s] ( 65/157) maho-team-core::registry loader_defaults_created_at_from_now_when_omitted
+        PASS [   0.005s] ( 66/157) maho-team-core::registry loader_defaults_version_when_omitted
+        PASS [   0.005s] ( 67/157) maho-team-core::registry loader_derives_lead_agent_id_and_prepends_lead_shorthand
+        PASS [   0.007s] ( 68/157) maho-team-core::registry discover_team_specs_prefers_project_scope
+        PASS [   0.005s] ( 69/157) maho-team-core::registry loader_injects_caller_as_lead_for_preset_specs_without_lead_metadata
+        PASS [   0.006s] ( 70/157) maho-team-core::registry loader_derives_lead_agent_id_from_the_only_member
+        PASS [   0.005s] ( 71/157) maho-team-core::registry loader_loads_and_validates_a_valid_3_member_team_spec
+        PASS [   0.005s] ( 72/157) maho-team-core::registry loader_rejects_multi_member_specs_without_lead_indicator
+        PASS [   0.006s] ( 73/157) maho-team-core::registry loader_rejects_specs_with_more_than_8_members
+        PASS [   0.007s] ( 74/157) maho-team-core::registry loader_prefers_project_scoped_spec_when_both_scopes_define_the_same_name
+        PASS [   0.006s] ( 75/157) maho-team-core::registry loader_rejects_oracle_subagent_members_with_exact_message
+        PASS [   0.006s] ( 76/157) maho-team-core::registry loader_returns_malformed_specs_as_data_during_load_all
+        PASS [   0.006s] ( 77/157) maho-team-core::registry normalizer_keeps_explicit_lead_agent_id_unchanged
+        PASS [   0.006s] ( 78/157) maho-team-core::registry normalizer_injects_the_caller_as_lead_when_no_lead_is_specified
+        PASS [   0.007s] ( 79/157) maho-team-core::registry normalizer_normalizes_natural_inline_names_to_schema_safe_names
+        PASS [   0.005s] ( 80/157) maho-team-core::registry normalizer_still_requires_eligible_caller_or_explicit_lead_for_8_inline_members
+        PASS [   0.005s] ( 81/157) maho-team-core::registry normalizer_prefers_is_lead_over_the_caller
+        PASS [   0.006s] ( 82/157) maho-team-core::registry normalizer_strips_empty_string_optional_fields_injected_by_tool_host
+        PASS [   0.005s] ( 83/157) maho-team-core::registry normalizer_treats_an_all_empty_lead_object_as_absent
+        PASS [   0.006s] ( 84/157) maho-team-core::registry normalizer_throws_when_caller_is_not_eligible_and_no_lead_is_specified
+        PASS [   0.005s] ( 85/157) maho-team-core::registry resolve_base_dir_expands_leading_tilde
+        PASS [   0.005s] ( 86/157) maho-team-core::registry resolve_base_dir_defaults_to_home_omo
+        PASS [   0.005s] ( 87/157) maho-team-core::registry validator_accepts_hephaestus_subagent_members
+        PASS [   0.006s] ( 88/157) maho-team-core::registry resolve_base_dir_honors_override
+        PASS [   0.006s] ( 89/157) maho-team-core::registry runtime_paths_reject_traversal_ids
+        PASS [   0.008s] ( 90/157) maho-team-core::registry normalizer_uses_default_category_for_role_only_natural_members
+        PASS [   0.005s] ( 91/157) maho-team-core::registry validator_accepts_hyperplan_teams_with_required_categories
+        PASS [   0.008s] ( 92/157) maho-team-core::registry normalizer_uses_first_generated_member_as_lead_when_8_inline_members_leave_no_room
+        PASS [   0.005s] ( 93/157) maho-team-core::registry validator_accepts_teams_with_exactly_8_members
+        PASS [   0.005s] ( 94/157) maho-team-core::registry validator_rejects_hyperplan_teams_missing_adversarial_categories
+        PASS [   0.005s] ( 95/157) maho-team-core::registry validator_rejects_duplicate_member_names
+        PASS [   0.005s] ( 96/157) maho-team-core::registry validator_rejects_lead_agent_id_not_matching_a_member
+        PASS [   0.005s] ( 97/157) maho-team-core::registry validator_rejects_category_prompts_that_collapse_to_empty_text
+        PASS [   0.005s] ( 98/157) maho-team-core::registry validator_rejects_prometheus_subagent_members_with_exact_message
+        PASS [   0.005s] ( 99/157) maho-team-core::registry validator_rejects_members_with_both_category_and_subagent_type
+        PASS [   0.006s] (100/157) maho-team-core::registry validator_rejects_members_that_omit_the_kind_discriminator
+        PASS [   0.005s] (101/157) maho-team-core::state_store atomic_write_leaves_no_partial_file_when_rename_fails
+        PASS [   0.006s] (102/157) maho-team-core::state_store atomic_write_syncs_temp_files_through_a_writable_handle
+        PASS [   0.006s] (103/157) maho-team-core::registry validator_rejects_teams_exceeding_the_8_member_cap
+        PASS [   0.006s] (104/157) maho-team-core::state_store create_runtime_state_persists_creating_state_with_computed_bounds
+        PASS [   0.004s] (105/157) maho-team-core::state_store detects_and_reaps_stale_lock_entries
+        PASS [   0.005s] (106/157) maho-team-core::state_store list_active_teams_removes_deleting_runtimes_stuck_past_the_stale_timeout
+        PASS [   0.006s] (107/157) maho-team-core::state_store list_active_teams_removes_deleted_runtime_directories
+        PASS [   0.006s] (108/157) maho-team-core::state_store list_active_teams_skips_malformed_runtime_states
+        PASS [   0.005s] (109/157) maho-team-core::state_store load_runtime_state_ignores_crash_left_tmp_files
+        PASS [   0.005s] (110/157) maho-team-core::state_store load_runtime_state_throws_runtime_state_error_for_malformed_state
+        PASS [   0.006s] (111/157) maho-team-core::state_store list_active_teams_summary_carries_lead_session_id
+        PASS [   0.006s] (112/157) maho-team-core::state_store load_runtime_state_accepts_legacy_member_delegate_counters_without_preserving_them
+        PASS [   0.005s] (113/157) maho-team-core::state_store lock_open_rethrows_eperm_when_lock_path_does_not_exist
+        PASS [   0.005s] (114/157) maho-team-core::state_store lock_open_treats_eperm_as_contention_when_lock_path_exists
+        PASS [   0.006s] (115/157) maho-team-core::state_store lock_open_treats_eperm_access_probes_as_possible_contention
+        PASS [   0.007s] (116/157) maho-team-core::state_store lock_open_rethrows_windows_eperm_when_lock_parent_does_not_exist
+        PASS [   0.005s] (117/157) maho-team-core::state_store lock_open_treats_windows_eperm_with_existing_parent_as_possible_contention
+        PASS [   0.005s] (118/157) maho-team-core::state_store lock_release_retries_transient_eperm_before_removing_the_lock_file
+        PASS [   0.006s] (119/157) maho-team-core::state_store resume_clears_pending_state_for_reclaimed_reservation_absent_from_session_history
+        PASS [   0.006s] (120/157) maho-team-core::state_store resume_finishes_deleting_teams_and_removes_the_runtime_directory
+        PASS [   0.006s] (121/157) maho-team-core::state_store resume_leaves_fresh_delivering_reservations_in_place
+        PASS [   0.008s] (122/157) maho-team-core::state_store resume_leaves_fresh_creating_teams_pending
+        PASS [   0.007s] (123/157) maho-team-core::state_store resume_marks_active_teams_orphaned_when_lead_session_no_longer_exists
+        PASS [   0.006s] (124/157) maho-team-core::state_store resume_preserves_active_teams_when_lead_session_is_still_alive
+        PASS [   0.007s] (125/157) maho-team-core::state_store resume_marks_dead_worker_members_errored_while_keeping_the_team_active
+        PASS [   0.007s] (126/157) maho-team-core::state_store resume_marks_stuck_creating_teams_failed_after_reload_recovery
+        PASS [   0.007s] (127/157) maho-team-core::state_store resume_orphans_active_teams_when_every_worker_session_has_died
+        PASS [   0.008s] (128/157) maho-team-core::state_store resume_orphans_active_teams_when_last_live_worker_died_after_another_errored
+        PASS [   0.008s] (129/157) maho-team-core::state_store resume_reclaims_stale_delivering_reservations_of_an_active_team
+        PASS [   0.006s] (130/157) maho-team-core::state_store resume_removes_hidden_reservation_of_accepted_delivery_without_losing_the_message
+        PASS [   0.006s] (131/157) maho-team-core::state_store transition_runtime_state_allows_active_to_shutdown_requested
+        PASS [   0.005s] (132/157) maho-team-core::state_store transition_runtime_state_rejects_reverse_transition
+        PASS [   0.005s] (133/157) maho-team-core::tasklist can_claim_returns_false_when_a_blocker_is_not_completed
+        PASS [   0.006s] (134/157) maho-team-core::tasklist can_claim_ignores_missing_blockers_and_completed_blockers
+        PASS [   0.006s] (135/157) maho-team-core::tasklist claim_task_reaps_a_stale_claim_lock_before_claiming
+        PASS [   0.007s] (136/157) maho-team-core::tasklist claim_task_allows_exactly_one_concurrent_claimant
+        PASS [   0.005s] (137/157) maho-team-core::tasklist create_task_rejects_traversal_team_run_id_without_escaping
+        PASS [   0.005s] (138/157) maho-team-core::tasklist claim_task_rejects_traversal_task_id_before_creating_escaped_lock
+        PASS [   0.005s] (139/157) maho-team-core::tasklist get_task_rejects_traversal_task_id
+        PASS [   0.008s] (140/157) maho-team-core::tasklist claim_task_rejects_blocked_tasks_until_blockers_complete
+        PASS [   0.005s] (141/157) maho-team-core::tasklist get_task_throws_when_the_task_file_is_missing
+        PASS [   0.007s] (142/157) maho-team-core::tasklist get_task_returns_a_persisted_task
+        PASS [   0.006s] (143/157) maho-team-core::tasklist list_tasks_returns_tasks_sorted_ascending_and_honors_filters
+        PASS [   0.005s] (144/157) maho-team-core::tasklist list_tasks_skips_malformed_task_files
+        PASS [   0.005s] (145/157) maho-team-core::tasklist update_task_status_rejects_reverse_transitions
+        PASS [   0.006s] (146/157) maho-team-core::tasklist update_task_status_auto_claims_when_a_member_starts_a_pending_task_directly
+        PASS [   0.005s] (147/157) maho-team-core::tasklist update_task_status_rejects_non_owner_updates_except_deletion
+        PASS [   0.005s] (148/157) maho-team-core::tasklist update_task_status_rejects_traversal_task_id
+        PASS [   0.005s] (149/157) maho-team-core::tasklist update_task_status_supports_the_one_way_claim_to_complete_flow
+        PASS [   0.004s] (150/157) maho-team-core::worktree given_runtime_mismatch_when_find_orphan_worktrees_then_returns_orphan_paths
+        PASS [   0.004s] (151/157) maho-team-core::worktree validate_worktree_spec_rejects_bare_name
+        PASS [   0.013s] (152/157) maho-team-core::worktree given_git_unavailable_when_create_worktree_then_throws_unavailable_error
+        PASS [   0.021s] (153/157) maho-team-core::worktree given_tmp_git_repo_when_create_worktree_then_registers_detached_worktree
+        PASS [   0.025s] (154/157) maho-team-core::worktree given_created_worktree_when_remove_worktree_then_directory_disappears
+        PASS [   0.055s] (155/157) maho-team-core::state_store with_lock_serializes_concurrent_work
+        PASS [   0.108s] (156/157) maho-team-core::mailbox poll_concurrent_transforms_for_one_turn_inject_only_once
+        PASS [   0.055s] (157/157) maho-team-core::tasklist create_task_assigns_distinct_ids_during_concurrent_creation
+────────────
+     Summary [   0.141s] 157 tests run: 157 passed, 0 skipped

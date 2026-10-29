@@ -1,0 +1,100 @@
+   Compiling rustix v1.1.4
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling tempfile v3.27.0
+   Compiling crossterm v0.29.0
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+   Compiling gethostname v1.1.0
+   Compiling maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+   Compiling maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+   Compiling maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+   Compiling maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/comment-checker-core)
+   Compiling maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ultrawork)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-omo-fallback-architect v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-fallback-architect)
+   Compiling maho-omo-start-work-continuation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-start-work-continuation)
+   Compiling maho-omo-telemetry v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-telemetry)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+   Compiling maho-omo-onboarding v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-onboarding)
+   Compiling maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+   Compiling maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+   Compiling maho-omo-init-deep-advisor v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-init-deep-advisor)
+   Compiling maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-skill-commands)
+   Compiling maho-omo-ulw-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ulw-loop)
+   Compiling maho-omo-todo-fanout-reminder v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-todo-fanout-reminder)
+   Compiling maho-omo-git-master v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-git-master)
+   Compiling maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-startup)
+   Compiling maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+   Compiling maho-omo-comment-checker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-comment-checker)
+   Compiling maho-omo-mass-ulw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-mass-ulw)
+   Compiling maho-omo-builtin-mcps v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-builtin-mcps)
+   Compiling maho-omo-native-badge v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-native-badge)
+   Compiling maho-omo-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ast-grep)
+   Compiling maho-omo-model-profile v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-model-profile)
+   Compiling maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+   Compiling maho-omo v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/maho-omo)
+    Finished `test` profile [unoptimized] target(s) in 51.40s
+────────────
+ Nextest run ID 529f499d-cc10-4a42-ad96-c14ec1f3637c with nextest profile: default
+    Starting 49 tests across 2 binaries
+        PASS [   0.006s] ( 1/49) maho-omo component_list::tests::an_unset_or_empty_env_root_falls_back_to_the_packaged_skills_dir
+        PASS [   0.007s] ( 2/49) maho-omo::all capture::an_empty_registration_set_captures_nothing
+        PASS [   0.007s] ( 3/49) maho-omo::all capture::every_registered_tool_is_captured_with_its_execute_closure_in_order
+        PASS [   0.007s] ( 4/49) maho-omo::all compose::disabled_reregistration_clears_the_previous_runtime
+        PASS [   0.008s] ( 5/49) maho-omo::all compose::components_receive_one_runtime_and_see_earlier_captured_tools
+        PASS [   0.008s] ( 6/49) maho-omo component_list::tests::a_set_non_empty_env_root_overrides_the_packaged_skills_dir
+        PASS [   0.008s] ( 7/49) maho-omo::all component_list::a_missing_slot_is_an_explicit_error_not_a_short_list
+        PASS [   0.008s] ( 8/49) maho-omo::all component_list::every_registered_component_has_a_distinct_name
+        PASS [   0.008s] ( 9/49) maho-omo::all component_list::the_registration_order_is_the_full_upstream_list
+        PASS [   0.009s] (10/49) maho-omo::all component_list::the_registered_loop_component_logs_through_the_shared_runtime_logger
+        PASS [   0.010s] (11/49) maho-omo::all compose::a_failed_component_registration_keeps_its_error_identity_without_duplicating_the_mount
+        PASS [   0.011s] (12/49) maho-omo::all component_list::skill_commands_precede_every_input_handler_component
+        PASS [   0.007s] (13/49) maho-omo::all compose_reload::a_plain_extension_slot_registers_again_on_a_second_register
+        PASS [   0.006s] (14/49) maho-omo::all coordinator::a_passive_only_queue_is_retained_and_delivers_nothing
+        PASS [   0.007s] (15/49) maho-omo::all coordinator::a_deferred_schedule_flush_delivers_on_the_idle_tick_not_synchronously
+        PASS [   0.007s] (16/49) maho-omo::all coordinator::a_nonpassive_entry_carries_the_passive_batch_out_in_source_order
+        PASS [   0.007s] (17/49) maho-omo::all coordinator::an_async_delivery_rejection_notifies_the_producer_and_skips_on_flushed
+        PASS [   0.009s] (18/49) maho-omo::all coordinator::a_synchronous_delivery_failure_notifies_every_failure_callback
+        PASS [   0.011s] (19/49) maho-omo::all compose_reload::a_factory_slot_registers_again_on_a_second_register
+        PASS [   0.007s] (20/49) maho-omo::all coordinator::completion_and_continuation_on_one_edge_deliver_once_in_deterministic_order
+        PASS [   0.011s] (21/49) maho-omo::all compose_reload::a_second_register_retains_the_runtime_for_late_callbacks
+        PASS [   0.010s] (22/49) maho-omo::all coordinator::an_empty_queue_delivers_nothing
+        PASS [   0.010s] (23/49) maho-omo::all coordinator::a_synchronous_wake_drains_first_and_the_deferred_pass_no_ops
+        PASS [   0.008s] (24/49) maho-omo::all coordinator::details_preserve_only_injections_that_supply_a_custom_type
+        PASS [   0.006s] (25/49) maho-omo::all coordinator::one_task_completion_steers_immediately
+        PASS [   0.006s] (26/49) maho-omo::all coordinator::hidden_metadata_survives_one_merged_custom_message
+        PASS [   0.007s] (27/49) maho-omo::all coordinator::on_flushed_runs_synchronously_after_a_synchronous_delivery
+        PASS [   0.009s] (28/49) maho-omo::all coordinator::flush_soon_defers_through_one_microtask
+        PASS [   0.008s] (29/49) maho-omo::all coordinator::remove_by_key_reports_true_once_and_the_flush_no_ops
+        PASS [   0.006s] (30/49) maho-omo::all coordinator::repeated_schedule_flush_requests_coalesce_to_one_flush
+        PASS [   0.006s] (31/49) maho-omo::all coordinator::retire_hands_a_still_passive_queue_back_and_refuses_later_enqueues
+        PASS [   0.008s] (32/49) maho-omo::all coordinator::repeated_continuation_enqueues_collapse_to_one_keyed_injection
+        PASS [   0.007s] (33/49) maho-omo::all coordinator::two_task_completions_on_one_edge_share_one_steer
+        PASS [   0.009s] (34/49) maho-omo::all coordinator::removing_the_only_passive_entry_leaves_nothing_to_deliver
+        PASS [   0.008s] (35/49) maho-omo::all entry::the_entry_registers_the_disabled_flag_and_one_flag_per_component
+        PASS [   0.006s] (36/49) maho-omo::all provisioning::an_absent_toolkit_dir_leaves_the_environment_untouched
+        PASS [   0.007s] (37/49) maho-omo::all provisioning::a_preset_bin_is_kept_while_the_dir_is_still_prepended
+        PASS [   0.007s] (38/49) maho-omo::all provisioning::a_bare_path_with_no_preset_bin_prepends_the_dir_and_sets_the_bin
+        PASS [   0.009s] (39/49) maho-omo::all entry::a_disabled_component_emits_no_registration_and_one_info_log
+        PASS [   0.006s] (40/49) maho-omo::all provisioning::dag_sdk_root_is_published_only_for_an_existing_directory
+        PASS [   0.006s] (41/49) maho-omo::all provisioning::default_options_leave_every_injection_unset
+        PASS [   0.007s] (42/49) maho-omo::all provisioning::an_empty_preset_bin_is_treated_as_unset
+        PASS [   0.006s] (43/49) maho-omo::all provisioning::running_twice_keeps_exactly_one_leading_toolkit_entry
+        PASS [   0.006s] (44/49) maho-omo::all scheduler::consecutive_producers_in_one_turn_deliver_one_batch
+        PASS [   0.006s] (45/49) maho-omo::all scheduler::manual_scheduler_drains_one_snapshot_and_retains_reentrant_work
+        PASS [   0.006s] (46/49) maho-omo::all scheduler::deferred_pass_waits_for_the_whole_turn
+        PASS [   0.006s] (47/49) maho-omo::all task_coordinator::deferred_wake_rejection_settles_completion_liveness_and_team_failure
+        PASS [   0.005s] (48/49) maho-omo::all task_coordinator::deferred_wake_success_acknowledges_only_after_resolution
+        PASS [   0.005s] (49/49) maho-omo::all task_coordinator::task_team_and_continuation_share_one_delivery_and_acknowledge_after_flush
+────────────
+     Summary [   0.033s] 49 tests run: 49 passed, 0 skipped

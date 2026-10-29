@@ -1,0 +1,6 @@
+command=bun tools/omo-schema.mjs --check
+exit=0
+native_projection_bytes=497755
+log=omo-schema-check.log
+native_producer=crates/omo/omo-config-core/examples/omo_schema.rs
+asset=assets/omo.schema.json

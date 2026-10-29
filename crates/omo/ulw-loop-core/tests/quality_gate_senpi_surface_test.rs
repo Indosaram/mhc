@@ -1,0 +1,8 @@
+use serde_json::json;
+use ulw_loop_core::quality_gate::{validate_quality_gate,ValidateQualityGateOptions};
+use ulw_loop_core::surface::UlwLoopToolkitSurface;
+fn gate()->serde_json::Value{json!({"manualQa":{"by":"main-session","status":"passed","evidence":"qa","surfaceEvidence":[{"id":"s","criterionRef":"C1","surface":"cli","invocation":"true","verdict":"passed","artifactRefs":["a"]}],"adversarialCases":[{"id":"adv","criterionRef":"C2","scenario":"edge","expectedBehavior":"reject","verdict":"passed","artifactRefs":["a"]}],"artifactRefs":[{"id":"a","kind":"cli-transcript","description":"a","path":"qa.txt"}]},"gateReview":{"by":"category:deep","recommendation":"APPROVE","reportPath":"gate.md","evidence":"review","blockers":[]},"iteration":{"fullRerun":true,"status":"passed","rerunCommands":["test"],"evidence":"rerun"},"criteriaCoverage":{"totalCriteria":2,"passCount":2,"originalIntent":"i","desiredOutcome":"d","userOutcomeReview":"u","adversarialClassesCovered":[]}})}
+fn opts()->ValidateQualityGateOptions<'static>{ValidateQualityGateOptions{repo_root:None,fs:None,current_attempt_dir:None,reviewer_surface:Some(UlwLoopToolkitSurface::OmoSenpi)}}
+#[test]fn accepts_four_section_senpi_gate(){assert!(validate_quality_gate(&gate(),Some(&opts())).is_ok());}
+#[test]fn rejects_code_review_lane(){let mut g=gate();g["codeReview"]=json!({"by":"anything"});let e=validate_quality_gate(&g,Some(&opts())).unwrap_err();assert!(e.message.contains("no codeReview lane"));}
+#[test]fn accepts_category_gate_roles(){for by in ["category:deep","category:unspecified-high","category:unspecified-low"]{let mut g=gate();g["gateReview"]["by"]=json!(by);assert!(validate_quality_gate(&g,Some(&opts())).is_ok());}}

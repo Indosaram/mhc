@@ -1,0 +1,5 @@
+    Blocking waiting for file lock on build directory
+    Checking maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+    Checking maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+    Checking maho-ext-terminal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-terminal)
+    Finished `dev` profile [unoptimized] target(s) in 8.58s

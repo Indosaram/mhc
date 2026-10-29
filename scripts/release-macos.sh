@@ -24,23 +24,22 @@ trap 'rm -rf "$work"' EXIT
 
 export MHC_BUILD_VERSION="$version"
 cargo build --release --locked \
-  -p maho-cli -p maho-lsp -p maho-senpi-desktop-engine -p maho-git-bash -p maho-ast-grep --bins
+  -p maho-cli -p maho-ast-grep-mcp -p maho-lsp-daemon -p maho-git-bash-mcp -p maho-senpi-desktop-engine --bins
 rel="$target_dir/release"
 test "$("$rel/mhc" --version | tr -d '\r')" = "$MHC_BUILD_VERSION"
 test -f "$rel/mhc-launcher"
 
-commit=$(bun -e 'console.log((await Bun.file("assets/skills/manifest.json").json()).browserRuntime.dependency.commit)')
+commit=$(bun -e 'console.log((await Bun.file("assets/omo-latest/manifest.json").json()).browserRuntime.dependency.commit)')
 git init -q "$work/omowright"
 git -C "$work/omowright" fetch -q --depth 1 https://github.com/code-yeongyu/omowright.git "$commit"
 git -C "$work/omowright" checkout -q FETCH_HEAD
 (cd "$work/omowright" && bun install --frozen-lockfile --ignore-scripts --production)
-node tools/stage-omowright-runtime.mjs --source "$work/omowright" --target "$work/omowright-runtime"
+node assets/omo-latest/stage-omowright-runtime.mjs --source "$work/omowright" --target "$work/omowright-runtime"
 
 stage="$work/dist/$name"
 mkdir -p "$work/dist"
-bun tools/package-native.mjs --binary "$rel/mhc" --launcher-binary "$rel/mhc-launcher" --output "$stage" \
-  --mhc-lsp-binary "$rel/mhc-lsp" --desktop-engine-binary "$rel/senpi-desktop-engine" \
-  --git-bash-binary "$rel/mhc-git-bash" --ast-grep-binary "$rel/mhc-ast-grep" \
+bun tools/package-native.mjs --binary "$rel/mhc" --launcher-binary "$rel/mhc-launcher" --output "$stage" --skill-source latest \
+  --git-bash-binary "$rel/omo-git-bash" --desktop-engine-binary "$rel/senpi-desktop-engine" \
   --omowright-runtime "$work/omowright-runtime"
 test -x "$stage/senpi-desktop-engine"
 test -x "$stage/mhc-launcher"

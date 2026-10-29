@@ -1,0 +1,8 @@
+COMP 93b78ac ".omo" total: 34 (expected 34)
+crates/omo ".omo" (keep) total: 22 (expected 17)
+crates/omo ".maho" (rename) total: 17 (expected 17)
+FAIL crates/omo/senpi-task/src/team/registry.rs: ".omo"=1 ".maho"=0 but file is not listed in omo-sites.json
+FAIL crates/omo/senpi-task/src/team/storage.rs: ".omo"=1 ".maho"=0 but file is not listed in omo-sites.json
+FAIL crates/omo/senpi-task/src/tools/task/plan_review_contract.rs: ".omo"=1 ".maho"=0 but file is not listed in omo-sites.json
+FAIL crates/omo/senpi-task/src/isolation/runtime.rs: ".omo"=2 ".maho"=0 but file is not listed in omo-sites.json
+FAIL keep total 22 != 17

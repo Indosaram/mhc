@@ -1,0 +1,49 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+    Finished `test` profile [unoptimized] target(s) in 9.42s
+────────────
+ Nextest run ID b99fd7ea-33a6-4625-b3a8-2059cf7d6450 with nextest profile: default
+    Starting 38 tests across 8 binaries
+        PASS [   0.006s] ( 1/38) maho-omo-config-watch::index keeps_one_active_registration_when_ready_is_emitted_repeatedly
+        PASS [   0.007s] ( 2/38) maho-omo-config-watch::index emits_one_wire_valid_omo_registration_immediately
+        PASS [   0.009s] ( 3/38) maho-omo-config-watch::index registers_with_minimal_capabilities_because_the_shared_bus_is_mandatory
+        PASS [   0.010s] ( 4/38) maho-omo-config-watch::index caps_deferred_reregistration_retries_when_the_host_rejects_deterministically
+        PASS [   0.011s] ( 5/38) maho-omo-config-watch::baseline unreadable_changed_config_returns_rejection
+        PASS [   0.011s] ( 6/38) maho-omo-config-watch::index refreshes_targets_after_rejection_without_replacing_the_sticky_validator
+        PASS [   0.012s] ( 7/38) maho-omo-config-watch::config_reload_harness shutdown_retires_ready_republication
+        PASS [   0.014s] ( 8/38) maho-omo-config-watch::config_reload_harness registry_validate_callback_rejects_then_repairs_the_reload
+        PASS [   0.007s] ( 9/38) maho-omo-config-watch::index releases_subscriptions_on_shutdown_and_replaces_them_on_repeated_register
+        PASS [   0.007s] (10/38) maho-omo-config-watch::index resets_the_rejection_retry_budget_when_the_registration_payload_changes
+        PASS [   0.017s] (11/38) maho-omo-config-watch::index logs_reload_and_rejection_outcomes_with_paths_and_errors
+        PASS [   0.011s] (12/38) maho-omo-config-watch::baseline valid_change_advances_baseline
+        PASS [   0.005s] (13/38) maho-omo-config-watch::loader injected_loader_preserves_rejection_order_until_each_source_is_repaired
+        PASS [   0.020s] (14/38) maho-omo-config-watch::baseline invalid_ancestor_does_not_reject_valid_nearer_change
+        PASS [   0.020s] (15/38) maho-omo-config-watch::config_reload_harness published_registration_carries_the_real_resolved_targets
+        PASS [   0.006s] (16/38) maho-omo-config-watch::paths every_ancestor_creation_target_is_root_anchored
+        PASS [   0.007s] (17/38) maho-omo-config-watch::paths creation_target_contains_repair_filters
+        PASS [   0.008s] (18/38) maho-omo-config-watch::loader injected_loader_baselines_existing_error_and_attributes_sibling_deletion
+        PASS [   0.010s] (19/38) maho-omo-config-watch::paths default_agent_protected_paths_are_never_covered
+        PASS [   0.010s] (20/38) maho-omo-config-watch::index warns_when_user_config_creation_requires_reload
+        PASS [   0.007s] (21/38) maho-omo-config-watch::paths existing_user_config_watched
+        PASS [   0.009s] (22/38) maho-omo-config-watch::paths existing_project_directory_watched
+        PASS [   0.008s] (23/38) maho-omo-config-watch::paths user_creation_reports_reload_required
+        PASS [   0.009s] (24/38) maho-omo-config-watch::paths symlink_project_directory_not_watched
+        PASS [   0.015s] (25/38) maho-omo-config-watch::native_registration ready_and_retry_publish_same_callable_with_refreshed_targets
+        PASS [   0.008s] (26/38) maho-omo-config-watch::paths nested_targets_and_user_creation_are_root_anchored
+        PASS [   0.008s] (27/38) maho-omo-config-watch::paths user_creation_target_has_only_the_user_root_filter
+        PASS [   0.011s] (28/38) maho-omo-config-watch::paths explicit_agent_under_home_excludes_covering_root
+        PASS [   0.009s] (29/38) maho-omo-config-watch::paths runtime_subtrees_do_not_expand_config_filters
+        PASS [   0.008s] (30/38) maho-omo-config-watch::validation deprecated_key_notices_never_reject_a_reload
+        PASS [   0.010s] (31/38) maho-omo-config-watch::validation accepted_non_attributable_error_becomes_baseline
+        PASS [   0.012s] (32/38) maho-omo-config-watch::validation baseline_errors_do_not_reject_unrelated_changes
+        PASS [   0.012s] (33/38) maho-omo-config-watch::validation catalog_cycle_and_unreadable_file_rejected
+        PASS [   0.009s] (34/38) maho-omo-config-watch::validation missing_optional_user_config_accepted
+        PASS [   0.013s] (35/38) maho-omo-config-watch::validation directory_changes_and_sibling_deletion_attributed
+        PASS [   0.010s] (36/38) maho-omo-config-watch::validation rejects_parse_error_and_stays_sticky_until_repair
+        PASS [   0.011s] (37/38) maho-omo-config-watch::validation schema_error_rejected_and_valid_change_accepted
+        PASS [   0.015s] (38/38) maho-omo-config-watch::validation merged_team_diagnostic_rejected_and_preexisting_baselined
+────────────
+     Summary [   0.044s] 38 tests run: 38 passed, 0 skipped

@@ -1,0 +1,14 @@
+{
+  "frames": {
+    "response": true,
+    "reply": true,
+    "settled": true
+  },
+  "providerSawPrompt": true,
+  "replyText": "mini-loopback-transcript-ack"
+}
+omo mount: packaged skills directory is missing: /home/indo/.cargo-target/maho-code/remaining-maho-cli/debug/skills
+maho-omo info: no bundled skills found; bare skill commands disabled {"component":"skill-commands"}
+maho-omo info: omo-senpi ulw-loop inactive; omo binary not found
+memory: Reflection orphan sweep failed: ReflectionSweepDetails { kind: None, target: None, detail: Some("fatal: cannot change to '/tmp/residual-registry-home-tbGrQj/.maho/memory/agents/residual-registry-home-tbgrqj-08785429/repo': No such file or directory") }
+maho-omo info: omo-senpi ulw-execute-continuation skipped {"reason":"not-continuable"}

@@ -1,0 +1,369 @@
+   Compiling syn v2.0.117
+   Compiling syn v3.0.3
+   Compiling libc v0.2.186
+   Compiling aho-corasick v1.1.4
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling regex-automata v0.4.18
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling getrandom v0.4.2
+   Compiling chrono v0.4.43
+   Compiling serde v1.0.228
+   Compiling thiserror v2.0.18
+   Compiling futures-executor v0.3.34
+   Compiling regex v1.12.3
+   Compiling tempfile v3.27.0
+   Compiling futures v0.3.34
+   Compiling maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+    Finished `test` profile [unoptimized] target(s) in 8.89s
+────────────
+ Nextest run ID b96c49b2-1082-4a34-9fc9-eaa54232a1be with nextest profile: default
+    Starting 345 tests across 2 binaries
+        PASS [   0.005s] (  1/345) maho-model-core::parity context_limit_resolver::returns_cached_limit_for_non_anthropic_providers
+        PASS [   0.006s] (  2/345) maho-model-core::parity category_routing_policy::unspecified_low_follows_the_approved_6_rung_chain_headed_by_grok_4_6_xhigh
+        PASS [   0.006s] (  3/345) maho-model-core::parity category_routing_policy::unspecified_high_artistry_and_writing_follow_the_approved_kimi_for_coding_chains
+        PASS [   0.006s] (  4/345) maho-model-core::parity category_routing_policy::deep_is_limited_to_a_single_sol_family_medium_rung
+        PASS [   0.008s] (  5/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_anthropic_claude_opus_4_8_high_without_explicit_1m_mode
+        PASS [   0.008s] (  6/345) maho-model-core::parity context_limit_resolver::returns_1m_when_anthropic_1m_context_is_true_regardless_of_model
+        PASS [   0.008s] (  7/345) maho-model-core::parity context_limit_resolver::returns_cached_limit_for_gemini_models_served_by_google
+        PASS [   0.008s] (  8/345) maho-model-core::parity category_routing_policy::visual_engineering_prioritizes_opus_max_kimi_k3_max_glm_5_2_max_then_sol_medium
+        PASS [   0.009s] (  9/345) maho-model-core::parity category_routing_policy::quick_prioritizes_kimi_high_speed_luna_low_deepseek_off_then_the_speed_tier
+        PASS [   0.009s] ( 10/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_anthropic_claude_opus_4_8_without_explicit_1m_mode
+        PASS [   0.007s] ( 11/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_claude_fable_5_on_google_vertex_anthropic
+        PASS [   0.012s] ( 12/345) maho-model-core::parity context_limit_resolver::returns_1m_when_vertex_anthropic_1m_context_is_true_for_anthropic_aliases
+        PASS [   0.007s] ( 13/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_antigravity_claude_models_served_by_google
+        PASS [   0.006s] ( 14/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_claude_opus_4_8
+        PASS [   0.013s] ( 15/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_anthropic_4_6_4_7_models_without_explicit_1m_mode
+        PASS [   0.008s] ( 16/345) maho-model-core::parity context_limit_resolver::returns_ga_1m_for_claude_fable_5_and_claude_mythos_5
+        PASS [   0.006s] ( 17/345) maho-model-core::parity context_limit_resolver::uses_cached_limit_for_ga_anthropic_models_when_cache_exists
+        PASS [   0.008s] ( 18/345) maho-model-core::parity gpt_5_6_copilot_resolution::copilot_is_never_included_in_a_gpt_5_6_xhigh_rung
+        PASS [   0.010s] ( 19/345) maho-model-core::parity gpt_5_6_copilot_resolution::each_requirement_selects_its_copilot_gpt_5_6_model_with_its_configured_variant
+        PASS [   0.010s] ( 20/345) maho-model-core::parity gpt_5_6_copilot_resolution::momus_uses_high_for_its_copilot_sol_fallback_when_terra_is_unavailable
+        PASS [   0.008s] ( 21/345) maho-model-core::parity gpt_5_6_copilot_resolution::warm_cache_keeps_transformed_vercel_terra_ahead_of_copilot_terra
+        PASS [   0.007s] ( 22/345) maho-model-core::parity luna_deepseek_chain_policy::quick_places_non_reasoning_deepseek_v4_flash_immediately_after_luna
+        PASS [   0.008s] ( 23/345) maho-model-core::parity luna_deepseek_chain_policy::explore_and_librarian_place_max_reasoning_deepseek_v4_flash_immediately_after_luna
+        PASS [   0.010s] ( 24/345) maho-model-core::parity model_availability::glm_dash_and_dot_variants_normalize_symmetrically
+        PASS [   0.010s] ( 25/345) maho-model-core::parity gpt_5_6_copilot_resolution::warm_cache_resolves_transformed_vercel_gpt_5_6_with_high
+        PASS [   0.015s] ( 26/345) maho-model-core::parity gpt_5_6_copilot_resolution::requirements_ignore_gpt_5_5_when_their_gpt_5_6_rungs_are_unavailable
+        PASS [   0.011s] ( 27/345) maho-model-core::parity model_availability::kimi_dash_and_dot_variants_normalize_symmetrically
+        PASS [   0.010s] ( 28/345) maho-model-core::parity model_capabilities::accepts_runtime_variant_arrays_without_corrupting_them_into_numeric_keys
+        PASS [   0.011s] ( 29/345) maho-model-core::parity model_availability::gpt_dash_and_dot_variants_normalize_symmetrically
+        PASS [   0.009s] ( 30/345) maho-model-core::parity model_capabilities::canonicalizes_provider_prefixed_claude_thinking_aliases_to_bare_snapshot_ids
+        PASS [   0.011s] ( 31/345) maho-model-core::parity model_capabilities::detects_prefixed_o_series_model_ids_through_the_heuristic_fallback
+        PASS [   0.011s] ( 32/345) maho-model-core::parity model_capabilities::canonicalizes_provider_prefixed_gemini_aliases_without_changing_the_transport_facing_request
+        PASS [   0.012s] ( 33/345) maho-model-core::parity model_capabilities::exposes_glm_max_reasoning_effort_through_heuristic_capabilities
+        PASS [   0.011s] ( 34/345) maho-model-core::parity model_capabilities::falls_back_to_heuristic_family_rules_when_no_snapshot_entry_exists
+        PASS [   0.011s] ( 35/345) maho-model-core::parity model_capabilities::prefers_snapshot_reasoning_over_heuristic_supports_thinking_false
+        PASS [   0.013s] ( 36/345) maho-model-core::parity model_capabilities::normalizes_the_legacy_claude_opus_thinking_alias_before_snapshot_lookup
+        PASS [   0.015s] ( 37/345) maho-model-core::parity model_capabilities::maps_local_gemini_aliases_to_canonical_models_dev_entries
+        PASS [   0.010s] ( 38/345) maho-model-core::parity model_capabilities::reads_structured_runtime_capabilities_from_the_sdk_v2_shape
+        PASS [   0.015s] ( 39/345) maho-model-core::parity model_capabilities::marks_non_thinking_kimi_k2_6_as_not_supporting_thinking
+        PASS [   0.011s] ( 40/345) maho-model-core::parity model_capabilities::prefers_snapshot_reasoning_over_heuristic_supports_thinking_for_minimax_m2_7
+        PASS [   0.015s] ( 41/345) maho-model-core::parity model_capabilities::prefers_runtime_models_dev_cache_over_bundled_snapshot
+        PASS [   0.016s] ( 42/345) maho-model-core::parity model_capabilities::prefers_runtime_thinking_over_heuristic_supports_thinking_false
+        PASS [   0.013s] ( 43/345) maho-model-core::parity model_capabilities::respects_root_level_thinking_flags_when_providers_do_not_nest_them_under_capabilities
+        PASS [   0.020s] ( 44/345) maho-model-core::parity model_capabilities::keeps_thinking_flavored_kimi_k2_6_models_as_supporting_thinking
+        PASS [   0.010s] ( 45/345) maho-model-core::parity model_capabilities_openai_fast_aliases::inherits_canonical_capabilities_for_suffixed_fast_aliases
+        PASS [   0.007s] ( 46/345) maho-model-core::parity model_capabilities_snapshot::fetches_snapshot_using_injected_fetch_implementation
+        PASS [   0.006s] ( 47/345) maho-model-core::parity model_capabilities_snapshot::ignores_malformed_provider_entries_and_missing_fields
+        PASS [   0.011s] ( 48/345) maho-model-core::parity model_capabilities_openai_fast_aliases::keeps_canonical_and_unrelated_provider_behavior_unchanged
+        PASS [   0.021s] ( 49/345) maho-model-core::parity model_capabilities::uses_runtime_metadata_before_snapshot_data
+        PASS [   0.013s] ( 50/345) maho-model-core::parity model_capabilities_openai_fast_aliases::inherits_each_canonical_snapshot_entry_without_changing_the_requested_model_id
+        PASS [   0.012s] ( 51/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::colon_suffixed_request_still_resolves_bare_provider_metadata
+        PASS [   0.014s] ( 52/345) maho-model-core::parity model_capabilities_snapshot::builds_a_normalized_snapshot_from_models_dev_provider_data
+        PASS [   0.020s] ( 53/345) maho-model-core::parity model_capabilities_heuristics::detects_opencode_go_qwen_max_models_through_the_heuristic_fallback
+        PASS [   0.011s] ( 54/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::different_provider_prefix_is_not_stripped
+        PASS [   0.021s] ( 55/345) maho-model-core::parity model_capabilities_openai_fast_aliases::inherits_canonical_capabilities_through_a_vercel_openai_subprovider_prefix
+        PASS [   0.012s] ( 56/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::no_matching_entry_in_either_form_leaves_temperature_unresolved
+        PASS [   0.011s] ( 57/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::provider_specific_snapshot_metadata_wins_over_conflicting_bare_entry
+        PASS [   0.010s] ( 58/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::snapshot_backed_bare_model_resolves_same_provider_prefixed_suffixed_id
+        PASS [   0.016s] ( 59/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::exact_suffixed_entry_wins_over_the_bare_model
+        PASS [   0.006s] ( 60/345) maho-model-core::parity model_capability_aliases::does_not_pattern_match_nearby_canonical_claude_ids_incorrectly
+        PASS [   0.012s] ( 61/345) maho-model-core::parity model_capability_aliases::does_not_normalize_gpt_5_6_fast_suffixes_for_unrelated_providers_or_nearby_ids
+        PASS [   0.006s] ( 62/345) maho-model-core::parity model_capability_aliases::does_not_resolve_prototype_keys_as_aliases
+        PASS [   0.006s] ( 63/345) maho-model-core::parity model_capability_aliases::keeps_canonical_model_ids_unchanged
+        PASS [   0.017s] ( 64/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::parenthesized_or_spaced_suffix_still_resolves_bare_provider_metadata
+        PASS [   0.014s] ( 65/345) maho-model-core::parity model_capability_aliases::does_not_normalize_openai_subprovider_aliases_for_unrelated_top_level_providers
+        PASS [   0.018s] ( 66/345) maho-model-core::parity model_capabilities_suffixed_provider_lookup::same_provider_prefixed_suffixed_id_resolves_bare_cache_entry
+        PASS [   0.012s] ( 67/345) maho-model-core::parity model_capability_aliases::does_not_pattern_match_canonical_gemini_preview_ids_incorrectly
+        PASS [   0.006s] ( 68/345) maho-model-core::parity model_capability_aliases::normalizes_legacy_claude_thinking_aliases_through_a_pattern_rule
+        PASS [   0.007s] ( 69/345) maho-model-core::parity model_capability_aliases::leaves_discontinued_kimi_k2pb_ids_unaliased
+        PASS [   0.008s] ( 70/345) maho-model-core::parity model_capability_aliases::keeps_exceptional_gemini_preview_aliases_as_exact_rules
+        PASS [   0.007s] ( 71/345) maho-model-core::parity model_capability_aliases::normalizes_gemini_tier_aliases_through_a_pattern_rule
+        PASS [   0.053s] ( 72/345) maho-model-core::parity model_capabilities::keeps_every_built_in_omo_requirement_model_snapshot_backed
+        PASS [   0.006s] ( 73/345) maho-model-core::parity model_capability_aliases::normalizes_provider_prefixed_gemini_tier_aliases_to_bare_canonical_ids
+        PASS [   0.007s] ( 74/345) maho-model-core::parity model_capability_aliases::normalizes_provider_prefixed_claude_thinking_aliases_through_a_pattern_rule
+        PASS [   0.008s] ( 75/345) maho-model-core::parity model_capability_aliases::treats_github_copilot_dotted_claude_opus_4_7_as_canonical
+        PASS [   0.008s] ( 76/345) maho-model-core::parity model_capability_aliases::strips_provider_prefixes_when_the_input_is_already_canonical
+        PASS [   0.012s] ( 77/345) maho-model-core::parity model_capability_aliases::normalizes_openai_gpt_5_6_fast_service_tier_aliases
+        PASS [   0.008s] ( 78/345) maho-model-core::parity model_capability_aliases::treats_claude_opus_4_6_thinking_as_canonical_not_as_a_legacy_alias
+        PASS [   0.006s] ( 79/345) maho-model-core::parity model_capability_guardrails::requires_built_in_requirement_models_to_stay_unique_and_sorted
+        PASS [   0.009s] ( 80/345) maho-model-core::parity model_error_classifier::does_not_treat_unrelated_403_messages_as_retryable
+        PASS [   0.007s] ( 81/345) maho-model-core::parity model_error_classifier::glm_503_service_unavailable_with_status_code_triggers_fallback
+        PASS [   0.008s] ( 82/345) maho-model-core::parity model_error_classifier::glm_429_with_status_code_and_no_message_triggers_fallback
+        PASS [   0.010s] ( 83/345) maho-model-core::parity model_error_classifier::does_not_treat_unrelated_forbidden_messages_as_retryable
+        PASS [   0.006s] ( 84/345) maho-model-core::parity model_error_classifier::glm_529_overloaded_with_status_code_triggers_fallback
+        PASS [   0.055s] ( 85/345) maho-model-core::parity model_capabilities_bundled_snapshot::keeps_gpt_4_1_openai_variants_marked_as_supporting_tool_calls
+        PASS [   0.008s] ( 86/345) maho-model-core::parity model_error_classifier::glm_account_in_arrears_429_does_not_trigger_fallback
+        PASS [   0.014s] ( 87/345) maho-model-core::parity model_error_classifier::glm_429_with_status_code_and_chinese_message_triggers_fallback
+        PASS [   0.008s] ( 88/345) maho-model-core::parity model_error_classifier::glm_daily_quota_429_does_not_trigger_fallback
+        PASS [   0.007s] ( 89/345) maho-model-core::parity model_error_classifier::glm_fair_use_policy_violation_429_does_not_trigger_fallback
+        PASS [   0.007s] ( 90/345) maho-model-core::parity model_error_classifier::http_401_with_status_code_does_not_trigger_fallback
+        PASS [   0.006s] ( 91/345) maho-model-core::parity model_error_classifier::rate_limit_message_without_status_code_still_works
+        PASS [   0.008s] ( 92/345) maho-model-core::parity model_error_classifier::http_400_with_status_code_does_not_trigger_fallback_via_status_code_alone
+        PASS [   0.006s] ( 93/345) maho-model-core::parity model_error_classifier::select_fallback_provider_falls_back_to_next_connected_provider_when_first_is_disconnected
+        PASS [   0.006s] ( 94/345) maho-model-core::parity model_error_classifier::select_fallback_provider_prefers_first_connected_provider_in_preference_order
+        PASS [   0.007s] ( 95/345) maho-model-core::parity model_error_classifier::select_fallback_provider_uses_connected_preferred_provider_when_fallback_providers_are_unavailable
+        PASS [   0.006s] ( 96/345) maho-model-core::parity model_error_classifier::treats_bad_request_message_as_retryable
+        PASS [   0.009s] ( 97/345) maho-model-core::parity model_error_classifier::select_fallback_provider_uses_provider_preference_order_when_cache_is_missing
+        PASS [   0.009s] ( 98/345) maho-model-core::parity model_error_classifier::treats_bad_request_lowercase_as_retryable
+        PASS [   0.008s] ( 99/345) maho-model-core::parity model_error_classifier::treats_cooling_down_auto_retry_messages_as_retryable
+        PASS [   0.007s] (100/345) maho-model-core::parity model_error_classifier::treats_free_usage_limit_error_lowercase_name_as_non_retryable_stop_error
+        PASS [   0.008s] (101/345) maho-model-core::parity model_error_classifier::treats_forbidden_provider_message_as_retryable
+        PASS [   0.012s] (102/345) maho-model-core::parity model_error_classifier::stop_message_pattern_takes_precedence_over_429_status_code
+        PASS [   0.006s] (103/345) maho-model-core::parity model_error_classifier::treats_http_429_rate_limit_message_as_retryable
+        PASS [   0.006s] (104/345) maho-model-core::parity model_error_classifier::treats_free_usage_limit_error_pascal_case_name_as_non_retryable_stop_error
+        PASS [   0.005s] (105/345) maho-model-core::parity model_error_classifier::treats_insufficient_credits_error_lowercase_name_as_non_retryable_stop_error
+        PASS [   0.008s] (106/345) maho-model-core::parity model_error_classifier::treats_insufficient_credits_error_pascal_case_name_as_non_retryable_stop_error
+        PASS [   0.009s] (107/345) maho-model-core::parity model_error_classifier::treats_insufficient_credits_message_as_non_retryable_stop_error
+        PASS [   0.009s] (108/345) maho-model-core::parity model_error_classifier::treats_localized_quota_exhaustion_messages_as_non_retryable_stop_errors
+        PASS [   0.008s] (109/345) maho-model-core::parity model_error_classifier::treats_openai_prose_an_error_occurred_while_processing_message_as_retryable
+        PASS [   0.012s] (110/345) maho-model-core::parity model_error_classifier::treats_localized_transient_provider_messages_as_retryable
+        PASS [   0.007s] (111/345) maho-model-core::parity model_error_classifier::treats_provider_usage_limit_reached_message_as_retryable_fallback_signal
+        PASS [   0.011s] (112/345) maho-model-core::parity model_error_classifier::treats_overloaded_retry_messages_as_retryable
+        PASS [   0.050s] (113/345) maho-model-core::parity model_capability_guardrails::flags_exact_aliases_when_models_dev_gains_a_canonical_entry_for_the_alias_itself
+        PASS [   0.007s] (114/345) maho-model-core::parity model_error_classifier::treats_quota_exceeded_error_pascal_case_name_as_non_retryable_stop_error
+        PASS [   0.008s] (115/345) maho-model-core::parity model_error_classifier::treats_quota_exceeded_error_lowercase_name_as_non_retryable_stop_error
+        PASS [   0.018s] (116/345) maho-model-core::parity model_error_classifier::treats_openai_streaming_server_error_envelopes_as_retryable
+        PASS [   0.007s] (117/345) maho-model-core::parity model_error_classifier::treats_subscription_quota_message_as_non_retryable
+        PASS [   0.009s] (118/345) maho-model-core::parity model_error_classifier::treats_quota_reset_message_as_non_retryable_stop_error
+        PASS [   0.053s] (119/345) maho-model-core::parity model_capability_guardrails::flags_pattern_aliases_when_models_dev_gains_a_canonical_entry_for_the_alias_itself
+        PASS [   0.007s] (120/345) maho-model-core::parity model_error_classifier::treats_upstream_request_failed_provider_error_as_retryable
+        PASS [   0.054s] (121/345) maho-model-core::parity model_capability_guardrails::keeps_luna_fast_aligned_with_its_bundled_canonical_model
+        PASS [   0.013s] (122/345) maho-model-core::parity model_error_classifier::treats_quota_exceeded_message_as_non_retryable_stop_error
+        PASS [   0.008s] (123/345) maho-model-core::parity model_error_classifier_openai_usage_limit::treats_openai_usage_limit_reached_response_bodies_as_retryable_provider_exhaustion
+        PASS [   0.009s] (124/345) maho-model-core::parity model_family_detectors::claude_fable_5_model_ids_detect_fable_5_only
+        PASS [   0.009s] (125/345) maho-model-core::parity model_family_detectors::claude_fable_or_mythos_model_ids_detect_fable_and_mythos_families
+        PASS [   0.005s] (126/345) maho-model-core::parity model_family_detectors::claude_opus_4_8_model_ids_detect_opus_4_8_only
+        PASS [   0.007s] (127/345) maho-model-core::parity model_family_detectors::claude_opus_4_6_model_ids_detect_opus_4_6_only
+        PASS [   0.006s] (128/345) maho-model-core::parity model_family_detectors::claude_opus_5_model_ids_detect_opus_5_only
+        PASS [   0.006s] (129/345) maho-model-core::parity model_family_detectors::devin_swe2_model_ids_detect_swe2_effort_lanes_only
+        PASS [   0.008s] (130/345) maho-model-core::parity model_family_detectors::claude_opus_4_7_or_later_model_ids_detect_4_7_and_later_only
+        PASS [   0.007s] (131/345) maho-model-core::parity model_family_detectors::devin_selectors_only_an_explicit_devin_swe2_id_outside_the_served_lanes_is_unserved
+        PASS [   0.006s] (132/345) maho-model-core::parity model_family_detectors::gemini_model_ids_detect_gemini_family_only
+        PASS [   0.010s] (133/345) maho-model-core::parity model_family_detectors::claude_opus_4_7_model_ids_detect_opus_4_7_only
+        PASS [   0.007s] (134/345) maho-model-core::parity model_family_detectors::glm_model_ids_detect_glm_family_only
+        PASS [   0.006s] (135/345) maho-model-core::parity model_family_detectors::kimi_k2_7_model_ids_detect_k2_7_only_not_k2_6
+        PASS [   0.007s] (136/345) maho-model-core::parity model_family_detectors::grok_4_6_model_ids_detect_grok_4_6_only
+        PASS [   0.006s] (137/345) maho-model-core::parity model_family_detectors::kimi_k3_model_ids_detect_k3_only_not_k2_x
+        PASS [   0.005s] (138/345) maho-model-core::parity model_format_normalizer::passes_object_format_through_unchanged
+        PASS [   0.007s] (139/345) maho-model-core::parity model_family_detectors::kimi_k2_model_ids_detect_kimi_k2_family_only
+        PASS [   0.006s] (140/345) maho-model-core::parity model_format_normalizer::handles_provider_with_multiple_slashes
+        PASS [   0.011s] (141/345) maho-model-core::parity model_family_detectors::grok_4_5_model_ids_detect_grok_4_5_only
+        PASS [   0.012s] (142/345) maho-model-core::parity model_family_detectors::gpt_model_ids_detect_gpt_family_only
+        PASS [   0.070s] (143/345) maho-model-core::parity model_capability_guardrails::flags_exact_aliases_whose_canonical_target_disappears_from_the_snapshot
+        PASS [   0.074s] (144/345) maho-model-core::parity model_capability_guardrails::flags_built_in_requirement_models_that_rely_on_aliases_instead_of_canonical_ids
+        PASS [   0.009s] (145/345) maho-model-core::parity model_family_detectors::minimax_model_ids_detect_minimax_family_only
+        PASS [   0.006s] (146/345) maho-model-core::parity model_format_normalizer::returns_none_for_null
+        PASS [   0.007s] (147/345) maho-model-core::parity model_format_normalizer::returns_none_for_empty_string
+        PASS [   0.007s] (148/345) maho-model-core::parity model_format_normalizer::returns_none_for_malformed_string_without_separator
+        PASS [   0.005s] (149/345) maho-model-core::parity model_normalization::normalize_model_id_leaves_models_without_dots_unchanged
+        PASS [   0.005s] (150/345) maho-model-core::parity model_normalization::normalize_model_id_replaces_dots_in_version_numbers
+        PASS [   0.006s] (151/345) maho-model-core::parity model_format_normalizer::returns_none_for_undefined
+        PASS [   0.007s] (152/345) maho-model-core::parity model_format_normalizer::splits_provider_model_format_correctly
+        PASS [   0.006s] (153/345) maho-model-core::parity model_normalization::normalize_model_returns_none_for_only_spaces
+        PASS [   0.006s] (154/345) maho-model-core::parity model_normalization::normalize_model_returns_none_for_empty_string
+        PASS [   0.006s] (155/345) maho-model-core::parity model_normalization::normalize_model_id_replaces_multiple_dot_numbers
+        PASS [   0.006s] (156/345) maho-model-core::parity model_normalization::normalize_model_returns_none_for_whitespace_only_string
+        PASS [   0.006s] (157/345) maho-model-core::parity model_normalization::normalize_model_trims_leading_and_trailing_spaces
+        PASS [   0.006s] (158/345) maho-model-core::parity model_normalization::normalize_model_returns_same_string_for_valid_model
+        PASS [   0.006s] (159/345) maho-model-core::parity model_requirements_agents::hephaestus_has_one_merged_gpt_5_6_sol_medium_rung
+        PASS [   0.006s] (160/345) maho-model-core::parity model_requirements_agents::hephaestus_supports_openai_github_copilot_opencode_and_vercel_providers
+        PASS [   0.010s] (161/345) maho-model-core::parity model_normalization::normalize_model_returns_none_for_undefined
+        PASS [   0.007s] (162/345) maho-model-core::parity model_requirements_agents::explore_keeps_fast_openai_primary_before_qwen_minimax_haiku_and_nano_fallbacks
+        PASS [   0.006s] (163/345) maho-model-core::parity model_requirements_agents::librarian_keeps_fast_openai_primary_before_qwen_minimax_haiku_and_nano_fallbacks
+        PASS [   0.010s] (164/345) maho-model-core::parity model_requirements_agents::atlas_keeps_sonnet_kimi_sol_and_minimax_fallback_order
+        PASS [   0.006s] (165/345) maho-model-core::parity model_requirements_agents::oracle_has_gpt_5_6_sol_xhigh_as_primary
+        PASS [   0.006s] (166/345) maho-model-core::parity model_requirements_agents::sisyphus_junior_keeps_sonnet_kimi_minimax_and_big_pickle_fallbacks
+        PASS [   0.009s] (167/345) maho-model-core::parity model_requirements_agents::metis_uses_opus_5_high_before_kimi_k3_low
+        PASS [   0.009s] (168/345) maho-model-core::parity model_requirements_agents::multimodal_looker_keeps_vision_capable_fallback_order
+        PASS [   0.005s] (169/345) maho-model-core::parity model_requirements_categories::deep_and_artistry_no_longer_hard_require_primary_models
+        PASS [   0.006s] (170/345) maho-model-core::parity model_requirements_agents::sisyphus_keeps_opus_primary_before_kimi_k3_sol_glm_5_2_and_big_pickle_fallbacks
+        PASS [   0.006s] (171/345) maho-model-core::parity model_requirements_categories::artistry_follows_the_approved_3_rung_chain
+        PASS [   0.010s] (172/345) maho-model-core::parity model_requirements_agents::momus_keeps_native_gpt_5_6_terra_high_before_gpt_5_6_sol_xhigh
+        PASS [   0.008s] (173/345) maho-model-core::parity model_requirements_agents::prometheus_uses_fable_5_xhigh_before_kimi_k3_max
+        PASS [   0.006s] (174/345) maho-model-core::parity model_requirements_categories::quick_follows_the_approved_8_rung_chain
+        PASS [   0.006s] (175/345) maho-model-core::parity model_requirements_categories::deep_is_a_single_sol_family_medium_rung
+        PASS [   0.005s] (176/345) maho-model-core::parity model_requirements_categories::ultrabrain_is_gpt_5_6_sol_max_on_every_rung
+        PASS [   0.005s] (177/345) maho-model-core::parity model_requirements_categories::unspecified_high_follows_the_approved_3_rung_chain
+        PASS [   0.007s] (178/345) maho-model-core::parity model_requirements_categories::unspecified_low_follows_the_approved_6_rung_chain_headed_by_grok_4_6_xhigh
+        PASS [   0.006s] (179/345) maho-model-core::parity model_requirements_categories::visual_engineering_follows_the_approved_4_rung_chain
+        PASS [   0.006s] (180/345) maho-model-core::parity model_requirements_deprecated_routing::no_deprecated_haiku_or_gpt_nano_fallback_entry_routes_through_opencode
+        PASS [   0.006s] (181/345) maho-model-core::parity model_requirements_categories::writing_follows_the_approved_3_rung_chain
+        PASS [   0.008s] (182/345) maho-model-core::parity model_requirements_invariants::all_builtin_agents_have_non_empty_fallback_chains_with_valid_entries
+        PASS [   0.006s] (183/345) maho-model-core::parity model_requirements_invariants::builtin_kimi_fallback_entries_use_kimi_k3_instead_of_retired_k2_ids
+        PASS [   0.005s] (184/345) maho-model-core::parity model_resolution_pipeline::does_not_return_unused_explicit_user_config_metadata_in_override_result
+        PASS [   0.009s] (185/345) maho-model-core::parity model_requirements_invariants::all_categories_have_non_empty_fallback_chains_with_valid_entries
+        PASS [   0.006s] (186/345) maho-model-core::parity model_resolution_pipeline::inherits_the_fallback_variant_for_an_explicit_matching_user_model
+        PASS [   0.007s] (187/345) maho-model-core::parity model_resolution_pipeline::inherits_the_fallback_variant_for_an_explicit_transformed_gateway_model
+        PASS [   0.010s] (188/345) maho-model-core::parity model_resolution_pipeline::does_not_resolve_provider_fallback_entries_through_a_different_provider_with_the_same_model_name
+        PASS [   0.012s] (189/345) maho-model-core::parity model_requirements_invariants::builtin_fallback_chains_contain_no_gpt_5_5_entries
+        PASS [   0.007s] (190/345) maho-model-core::parity model_resolver::applies_fuzzy_matching_to_category_default_model_when_user_model_not_provided
+        PASS [   0.012s] (191/345) maho-model-core::parity model_requirements_invariants::fallback_chain_model_ids_do_not_include_provider_prefixes
+        PASS [   0.008s] (192/345) maho-model-core::parity model_resolver::case_insensitive_fuzzy_matching
+        PASS [   0.007s] (193/345) maho-model-core::parity model_resolver::category_default_model_uses_exact_match_when_available
+        PASS [   0.006s] (194/345) maho-model-core::parity model_resolver::empty_string_ui_selected_model_falls_through_to_config_override
+        PASS [   0.007s] (195/345) maho-model-core::parity model_resolver::does_not_double_transform_category_default_model_already_containing_preview
+        PASS [   0.009s] (196/345) maho-model-core::parity model_resolver::cross_provider_match_tries_next_entry_if_no_match_found_anywhere
+        PASS [   0.005s] (197/345) maho-model-core::parity model_resolver::falls_through_to_system_default_when_no_cache_and_system_default_model_is_provided
+        PASS [   0.006s] (198/345) maho-model-core::parity model_resolver::passes_through_non_gemini_3_models_for_google_connected_provider
+        PASS [   0.013s] (199/345) maho-model-core::parity model_resolver::category_default_model_works_when_available_models_is_empty_but_connected_provider_exists
+        PASS [   0.008s] (200/345) maho-model-core::parity model_resolver::override_takes_priority_even_if_model_not_in_available_models
+        PASS [   0.009s] (201/345) maho-model-core::parity model_resolver::falls_through_to_system_default_when_no_provider_in_fallback_is_connected
+        PASS [   0.006s] (202/345) maho-model-core::parity model_resolver::result_has_correct_model_resolution_result_shape
+        PASS [   0.009s] (203/345) maho-model-core::parity model_resolver::falls_through_to_system_default_when_none_match_availability
+        PASS [   0.007s] (204/345) maho-model-core::parity model_resolver::respects_provider_priority_order_within_entry
+        PASS [   0.017s] (205/345) maho-model-core::parity model_resolver::category_default_model_falls_through_to_fallback_chain_when_no_match_in_available_models
+        PASS [   0.009s] (206/345) maho-model-core::parity model_resolver::resolves_to_claude_opus_when_openai_unavailable_but_anthropic_available
+        PASS [   0.007s] (207/345) maho-model-core::parity model_resolver::returns_inherited_model_when_user_model_is_undefined
+        PASS [   0.013s] (208/345) maho-model-core::parity model_resolver::empty_string_user_model_is_treated_as_not_provided
+        PASS [   0.009s] (209/345) maho-model-core::parity model_resolver::returns_first_matching_entry_even_if_later_entries_have_better_matches
+        PASS [   0.006s] (210/345) maho-model-core::parity model_resolver::returns_none_when_no_fallback_chain_and_system_default_model_is_undefined
+        PASS [   0.006s] (211/345) maho-model-core::parity model_resolver::returns_none_when_available_models_empty_and_no_connected_providers_cache_exists
+        PASS [   0.005s] (212/345) maho-model-core::parity model_resolver::returns_system_default_when_both_user_model_and_inherited_model_are_undefined
+        PASS [   0.005s] (213/345) maho-model-core::parity model_resolver::returns_ui_selected_model_with_override_source_when_provided
+        PASS [   0.006s] (214/345) maho-model-core::parity model_resolver::returns_user_model_when_all_three_are_set
+        PASS [   0.008s] (215/345) maho-model-core::parity model_resolver::returns_none_when_system_default_model_is_undefined_and_no_fallback_found
+        PASS [   0.006s] (216/345) maho-model-core::parity model_resolver::returns_user_model_with_override_source_when_user_model_is_provided
+        PASS [   0.007s] (217/345) maho-model-core::parity model_resolver::skips_fallback_chain_when_empty
+        PASS [   0.009s] (218/345) maho-model-core::parity model_resolver::returns_system_default_when_no_availability_match_found_in_fallback_chain
+        PASS [   0.005s] (219/345) maho-model-core::parity model_resolver::still_returns_override_when_user_model_provided_even_if_system_default_model_undefined
+        PASS [   0.009s] (220/345) maho-model-core::parity model_resolver::same_input_returns_same_output
+        PASS [   0.010s] (221/345) maho-model-core::parity model_resolver::returns_system_default_when_fallback_chain_is_not_provided
+        PASS [   0.006s] (222/345) maho-model-core::parity model_resolver::treats_empty_string_as_unset_and_uses_fallback
+        PASS [   0.007s] (223/345) maho-model-core::parity model_resolver::still_returns_fallback_match_when_system_default_model_undefined
+        PASS [   0.005s] (224/345) maho-model-core::parity model_resolver::treats_whitespace_only_string_as_unset_and_uses_fallback
+        PASS [   0.008s] (225/345) maho-model-core::parity model_resolver::transforms_gemini_3_1_pro_in_fallback_chain_for_google_connected_provider
+        PASS [   0.010s] (226/345) maho-model-core::parity model_resolver::skips_fallback_chain_when_not_provided
+        PASS [   0.011s] (227/345) maho-model-core::parity model_resolver::transforms_gemini_3_flash_in_category_default_model_for_google_connected_provider
+        PASS [   0.008s] (228/345) maho-model-core::parity model_resolver::tries_next_provider_when_first_provider_has_no_match
+        PASS [   0.005s] (229/345) maho-model-core::parity model_resolver::whitespace_only_ui_selected_model_is_treated_as_not_provided
+        PASS [   0.006s] (230/345) maho-model-core::parity model_resolver::uses_github_copilot_when_google_not_connected
+        PASS [   0.010s] (231/345) maho-model-core::parity model_resolver::tries_all_providers_in_first_entry_before_moving_to_second_entry
+        PASS [   0.008s] (232/345) maho-model-core::parity model_resolver::ui_selection_takes_priority_over_config_override
+        PASS [   0.008s] (233/345) maho-model-core::parity model_resolver::uses_fuzzy_matching_within_provider
+        PASS [   0.011s] (234/345) maho-model-core::parity model_resolver::tries_providers_in_order_within_entry_and_returns_first_match
+        PASS [   0.007s] (235/345) maho-model-core::parity model_resolver_provider_scope::does_not_preserve_variant_from_an_unmatched_provider_scoped_entry
+        PASS [   0.009s] (236/345) maho-model-core::parity model_resolver::whitespace_only_user_model_is_treated_as_not_provided
+        PASS [   0.013s] (237/345) maho-model-core::parity model_resolver::uses_connected_provider_from_fallback_when_available_models_empty_but_cache_exists
+        PASS [   0.013s] (238/345) maho-model-core::parity model_resolver::user_model_takes_priority_over_category_default_model
+        PASS [   0.009s] (239/345) maho-model-core::parity model_resolver_provider_scope::skips_same_name_models_from_other_providers_when_preferred_provider_unavailable
+        PASS [   0.010s] (240/345) maho-model-core::parity model_settings_compatibility::clamps_max_tokens_to_the_model_output_limit
+        PASS [   0.009s] (241/345) maho-model-core::parity model_settings_compatibility::detects_claude_3_opus_via_any_provider
+        PASS [   0.012s] (242/345) maho-model-core::parity model_settings_compatibility::deepseek_maps_generic_reasoning_effort_levels_to_canonical_api_values
+        PASS [   0.011s] (243/345) maho-model-core::parity model_settings_compatibility::deepseek_maps_generic_reasoning_effort_levels_when_capabilities_come_from_heuristics
+        PASS [   0.013s] (244/345) maho-model-core::parity model_resolver_provider_scope::prefers_specified_provider_over_same_name_model_from_another_provider
+        PASS [   0.012s] (245/345) maho-model-core::parity model_settings_compatibility::detects_claude_via_any_provider
+        PASS [   0.012s] (246/345) maho-model-core::parity model_settings_compatibility::detects_k2p_models_as_kimi_thinking_family_with_thinking_and_variants
+        PASS [   0.016s] (247/345) maho-model-core::parity model_settings_compatibility::deepseek_keeps_canonical_high_and_max_reasoning_effort_values
+        PASS [   0.010s] (248/345) maho-model-core::parity model_settings_compatibility::does_not_record_case_only_normalization_as_a_compatibility_downgrade
+        PASS [   0.011s] (249/345) maho-model-core::parity model_settings_compatibility::downgrades_unsupported_claude_sonnet_max_variant_to_high_when_metadata_is_absent
+        PASS [   0.011s] (250/345) maho-model-core::parity model_settings_compatibility::drops_reasoning_effort_for_claude_family
+        PASS [   0.015s] (251/345) maho-model-core::parity model_settings_compatibility::does_not_classify_kimi_p_style_ids_as_kimi_thinking
+        PASS [   0.010s] (252/345) maho-model-core::parity model_settings_compatibility::drops_temperature_for_claude_opus_4_8_without_capability_metadata
+        PASS [   0.019s] (253/345) maho-model-core::parity model_settings_compatibility::detects_openai_reasoning_models_without_requiring_openai_provider
+        PASS [   0.012s] (254/345) maho-model-core::parity model_settings_compatibility::drops_reasoning_effort_for_standard_gpt_models
+        PASS [   0.012s] (255/345) maho-model-core::parity model_settings_compatibility::drops_temperature_for_a_reasoning_suffixed_claude_opus_4_8_id_with_no_capability_metadata
+        PASS [   0.012s] (256/345) maho-model-core::parity model_settings_compatibility::drops_thinking_for_non_thinking_kimi_k2_6_capabilities_resolved_from_heuristics
+        PASS [   0.011s] (257/345) maho-model-core::parity model_settings_compatibility::drops_thinking_when_model_capabilities_say_it_is_unsupported
+        PASS [   0.015s] (258/345) maho-model-core::parity model_settings_compatibility::drops_temperature_for_reasoning_suffixed_o_series_models
+        PASS [   0.015s] (259/345) maho-model-core::parity model_settings_compatibility::drops_thinking_for_minimax_m2_7_capabilities_resolved_from_heuristics
+        PASS [   0.015s] (260/345) maho-model-core::parity model_settings_compatibility::drops_unsupported_temperature_when_capability_metadata_disables_it
+        PASS [   0.013s] (261/345) maho-model-core::parity model_settings_compatibility::family_deepseek_downgrades_unsupported_variant
+        PASS [   0.014s] (262/345) maho-model-core::parity model_settings_compatibility::family_codestral_keeps_supported_variant
+        PASS [   0.015s] (263/345) maho-model-core::parity model_settings_compatibility::family_codestral_downgrades_unsupported_variant
+        PASS [   0.012s] (264/345) maho-model-core::parity model_settings_compatibility::family_deepseek_keeps_reasoning_effort
+        PASS [   0.016s] (265/345) maho-model-core::parity model_settings_compatibility::family_codestral_drops_reasoning_effort
+        PASS [   0.012s] (266/345) maho-model-core::parity model_settings_compatibility::family_glm_downgrades_unsupported_variant
+        PASS [   0.012s] (267/345) maho-model-core::parity model_settings_compatibility::family_gemini_drops_reasoning_effort
+        PASS [   0.016s] (268/345) maho-model-core::parity model_settings_compatibility::family_deepseek_keeps_supported_variant
+        PASS [   0.014s] (269/345) maho-model-core::parity model_settings_compatibility::family_gemini_keeps_supported_variant
+        PASS [   0.011s] (270/345) maho-model-core::parity model_settings_compatibility::family_glm_keeps_supported_variant
+        PASS [   0.016s] (271/345) maho-model-core::parity model_settings_compatibility::family_glm_keeps_reasoning_effort
+        PASS [   0.011s] (272/345) maho-model-core::parity model_settings_compatibility::family_grok_keeps_reasoning_effort
+        PASS [   0.021s] (273/345) maho-model-core::parity model_settings_compatibility::family_gemini_downgrades_unsupported_variant
+        PASS [   0.012s] (274/345) maho-model-core::parity model_settings_compatibility::family_grok_downgrades_unsupported_variant
+        PASS [   0.012s] (275/345) maho-model-core::parity model_settings_compatibility::family_kimi_k2_downgrades_unsupported_variant
+        PASS [   0.011s] (276/345) maho-model-core::parity model_settings_compatibility::family_kimi_k2_keeps_supported_variant
+        PASS [   0.011s] (277/345) maho-model-core::parity model_settings_compatibility::family_kimi_kimi_drops_reasoning_effort
+        PASS [   0.016s] (278/345) maho-model-core::parity model_settings_compatibility::family_grok_keeps_supported_variant
+        PASS [   0.012s] (279/345) maho-model-core::parity model_settings_compatibility::family_kimi_kimi_keeps_supported_variant
+        PASS [   0.016s] (280/345) maho-model-core::parity model_settings_compatibility::family_kimi_kimi_downgrades_unsupported_variant
+        PASS [   0.011s] (281/345) maho-model-core::parity model_settings_compatibility::family_llama_drops_reasoning_effort
+        PASS [   0.019s] (282/345) maho-model-core::parity model_settings_compatibility::family_kimi_k2_drops_reasoning_effort
+        PASS [   0.014s] (283/345) maho-model-core::parity model_settings_compatibility::family_llama_downgrades_unsupported_variant
+        PASS [   0.012s] (284/345) maho-model-core::parity model_settings_compatibility::family_minimax_keeps_supported_variant
+        PASS [   0.015s] (285/345) maho-model-core::parity model_settings_compatibility::family_minimax_downgrades_unsupported_variant
+        PASS [   0.014s] (286/345) maho-model-core::parity model_settings_compatibility::family_mistral_downgrades_unsupported_variant
+        PASS [   0.012s] (287/345) maho-model-core::parity model_settings_compatibility::family_mistral_keeps_supported_variant
+        PASS [   0.018s] (288/345) maho-model-core::parity model_settings_compatibility::family_llama_keeps_supported_variant
+        PASS [   0.012s] (289/345) maho-model-core::parity model_settings_compatibility::github_copilot_gpt_5_high_tier_variants_downgrade_to_high
+        PASS [   0.018s] (290/345) maho-model-core::parity model_settings_compatibility::family_minimax_drops_reasoning_effort
+        PASS [   0.015s] (291/345) maho-model-core::parity model_settings_compatibility::family_mistral_drops_reasoning_effort
+        PASS [   0.009s] (292/345) maho-model-core::parity model_settings_compatibility::gpt_5_downgrades_unsupported_max_variant_to_xhigh
+        PASS [   0.013s] (293/345) maho-model-core::parity model_settings_compatibility::glm_maps_generic_reasoning_effort_levels_to_zai_high_and_max_values
+        PASS [   0.012s] (294/345) maho-model-core::parity model_settings_compatibility::gpt_5_keeps_minimal_reasoning_effort
+        PASS [   0.012s] (295/345) maho-model-core::parity model_settings_compatibility::gpt_5_keeps_xhigh_reasoning_effort
+        PASS [   0.016s] (296/345) maho-model-core::parity model_settings_compatibility::gpt_5_keeps_none_reasoning_effort
+        PASS [   0.008s] (297/345) maho-model-core::parity model_settings_compatibility::keeps_temperature_for_the_deep_research_exceptions
+        PASS [   0.010s] (298/345) maho-model-core::parity model_settings_compatibility::keeps_supported_gpt_reasoning_effort_unchanged
+        PASS [   0.011s] (299/345) maho-model-core::parity model_settings_compatibility::handles_combined_variant_and_reasoning_effort_normalization
+        PASS [   0.009s] (300/345) maho-model-core::parity model_settings_compatibility::keeps_temperature_when_capability_metadata_explicitly_supports_it
+        PASS [   0.010s] (301/345) maho-model-core::parity model_settings_compatibility::keeps_supported_openai_reasoning_family_effort_for_o_series_models
+        PASS [   0.014s] (302/345) maho-model-core::parity model_settings_compatibility::gpt_5_keeps_xhigh_variant_and_reasoning_effort
+        PASS [   0.010s] (303/345) maho-model-core::parity model_settings_compatibility::keeps_temperature_when_capability_metadata_explicitly_enables_it
+        PASS [   0.012s] (304/345) maho-model-core::parity model_settings_compatibility::keeps_supported_claude_opus_variant_unchanged
+        PASS [   0.009s] (305/345) maho-model-core::parity model_settings_compatibility::no_op_when_desired_settings_are_empty
+        PASS [   0.012s] (306/345) maho-model-core::parity model_settings_compatibility::negative_max_output_tokens_preserves_max_tokens_unchanged
+        PASS [   0.012s] (307/345) maho-model-core::parity model_settings_compatibility::o_series_downgrades_unsupported_variant_to_high
+        PASS [   0.010s] (308/345) maho-model-core::parity model_settings_compatibility::prefers_metadata_over_family_heuristics_even_when_family_would_allow_a_higher_level
+        PASS [   0.011s] (309/345) maho-model-core::parity model_settings_compatibility::o_series_keeps_none_reasoning_effort
+        PASS [   0.008s] (310/345) maho-model-core::parity model_string_parser::legacy_paren_and_space_syntaxes_still_extract_the_variant
+        PASS [   0.012s] (311/345) maho-model-core::parity model_settings_compatibility::treats_unknown_model_families_conservatively_by_dropping_unsupported_settings
+        PASS [   0.012s] (312/345) maho-model-core::parity model_settings_compatibility::preserves_thinking_for_kimi_for_coding_k2p_model_ids_not_matched_by_generic_kimi_heuristic
+        PASS [   0.011s] (313/345) maho-model-core::parity model_settings_compatibility::zero_desired_max_tokens_is_dropped
+        PASS [   0.007s] (314/345) maho-model-core::parity model_string_parser::non_level_colon_suffix_stays_part_of_the_model_id
+        PASS [   0.010s] (315/345) maho-model-core::parity model_settings_compatibility::zero_max_output_tokens_preserves_max_tokens_unchanged
+        PASS [   0.013s] (316/345) maho-model-core::parity model_settings_compatibility::uses_model_metadata_first_for_variant_support
+        PASS [   0.016s] (317/345) maho-model-core::parity model_settings_compatibility::o_series_downgrades_xhigh_reasoning_effort_to_high
+        PASS [   0.015s] (318/345) maho-model-core::parity model_settings_compatibility::resolves_variant_for_k2p_models_via_kimi_thinking_heuristic_family
+        PASS [   0.007s] (319/345) maho-model-core::parity model_string_parser::provider_prefixed_max_suffix_extracts_the_level
+        PASS [   0.008s] (320/345) maho-model-core::parity model_string_parser::provider_prefixed_high_suffix_extracts_the_level
+        PASS [   0.008s] (321/345) maho-model-core::parity parse_model_suggestion::returns_none_for_object_payloads_without_messages
+        PASS [   0.005s] (322/345) maho-model-core::parity provider_model_id_transform::transforms_kimi_models_for_kimi_coding_providers
+        PASS [   0.010s] (323/345) maho-model-core::parity parse_model_suggestion::extracts_suggestions_from_nested_openai_errors
+        PASS [   0.012s] (324/345) maho-model-core::parity parse_model_suggestion::extracts_suggestions_from_bedrock_style_model_not_found_messages
+        PASS [   0.008s] (325/345) maho-model-core::parity provider_model_id_transform::passes_through_unrelated_models_unchanged
+        PASS [   0.005s] (326/345) maho-model-core::parity reasoning_level::max_suffix_with_provider_prefix_is_extracted
+        PASS [   0.005s] (327/345) maho-model-core::parity reasoning_level::max_suffix_without_provider_prefix_and_no_option_stays_attached
+        PASS [   0.011s] (328/345) maho-model-core::parity parse_model_suggestion::extracts_suggestions_from_structured_anthropic_provider_model_not_found_error
+        PASS [   0.013s] (329/345) maho-model-core::parity parse_model_suggestion::returns_none_for_unrelated_errors
+        PASS [   0.007s] (330/345) maho-model-core::parity reasoning_level::max_suffix_without_provider_prefix_stays_attached
+        PASS [   0.007s] (331/345) maho-model-core::parity reasoning_level::provider_suffix_extracts_reasoning_level
+        PASS [   0.018s] (332/345) maho-model-core::parity parse_model_suggestion::extracts_suggestions_from_plain_string_message_payloads
+        PASS [   0.010s] (333/345) maho-model-core::parity reasoning_level::max_suffix_without_provider_prefix_is_extracted_when_allowed
+        PASS [   0.008s] (334/345) maho-model-core::parity reasoning_level::requested_reasoning_downgrades_within_one_ladder
+        PASS [   0.008s] (335/345) maho-model-core::parity reasoning_level::none_normalizes_to_off
+        PASS [   0.009s] (336/345) maho-model-core::parity reasoning_level::unknown_token_passes_through
+        PASS [   0.008s] (337/345) maho-model-core::parity runtime_fallback_error_classifier::extracts_provider_auto_retry_signals_from_status_summary_or_details
+        PASS [   0.007s] (338/345) maho-model-core::parity runtime_fallback_error_classifier::leaves_opencode_context_overflow_to_native_compaction
+        PASS [   0.030s] (339/345) maho-model-core::parity provider_exhaustion_fallback_policy::hard_stop_runtime_errors_stay_ineligible
+        PASS [   0.032s] (340/345) maho-model-core::parity provider_exhaustion_fallback_policy::quota_subscription_and_billing_exhaustion_are_eligible_without_weakening_legacy_stop_semantics
+        PASS [   0.032s] (341/345) maho-model-core::parity runtime_fallback_auto_retry_signal::free_usage_exhaustion_message_returns_the_provider_message
+        PASS [   0.050s] (342/345) maho-model-core::parity runtime_fallback_error_classifier::classifies_representative_anthropic_provider_payloads_without_adapter_state
+        PASS [   0.045s] (343/345) maho-model-core::parity runtime_fallback_error_classifier::treats_free_usage_exceeded_messages_as_retryable_runtime_fallback_errors
+        PASS [   0.057s] (344/345) maho-model-core::parity runtime_fallback_error_classifier::honors_retryable_ai_sdk_signals_only_for_safe_status_codes
+        PASS [   0.058s] (345/345) maho-model-core::parity runtime_fallback_error_classifier::preserves_malformed_provider_payload_classification_behavior
+────────────
+     Summary [   0.365s] 345 tests run: 345 passed, 0 skipped

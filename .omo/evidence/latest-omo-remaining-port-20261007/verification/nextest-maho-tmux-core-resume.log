@@ -1,0 +1,103 @@
+   Compiling maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+    Finished `test` profile [unoptimized] target(s) in 2.47s
+────────────
+ Nextest run ID 57649376-33be-4182-8ac3-2d5b2876cdad with nextest profile: default
+    Starting 96 tests across 17 binaries
+        PASS [   0.006s] ( 1/96) maho-tmux-core::layout applies_main_vertical_with_main_pane_width_option
+        PASS [   0.006s] ( 2/96) maho-tmux-core::cmux_detect standard_tmux_without_cmuxterm_returns_false
+        PASS [   0.006s] ( 3/96) maho-tmux-core::layout applies_main_horizontal_with_main_pane_height_option
+        PASS [   0.006s] ( 4/96) maho-tmux-core::layout does_not_set_main_pane_option_for_non_main_layouts
+        PASS [   0.006s] ( 5/96) maho-tmux-core::pane_auth_cmux authenticated_cmux_spawning_pane_fails_before_credentials_reach_runner
+        PASS [   0.009s] ( 6/96) maho-tmux-core::cmux_detect cmux_socket_path_without_tmux_returns_true
+        PASS [   0.009s] ( 7/96) maho-tmux-core::pane_auth_cmux authenticated_cmux_with_fake_tmux_spawning_window_fails_before_credentials_reach_runner
+        PASS [   0.009s] ( 8/96) maho-tmux-core::pane_auth_cmux authenticated_cmux_activating_pane_fails_before_credentials_reach_runner
+        PASS [   0.010s] ( 9/96) maho-tmux-core::missing_tmux tmux_resolver_returns_none_spawn_fails_without_running_tmux
+        PASS [   0.010s] (10/96) maho-tmux-core::pane_auth_cmux authenticated_cmux_replacing_pane_fails_before_credentials_reach_runner
+        PASS [   0.011s] (11/96) maho-tmux-core::cmux_detect tmux_contains_cmuxterm_returns_true
+        PASS [   0.007s] (12/96) maho-tmux-core::pane_auth_env auth_env_every_lifecycle_call_site_receives_env_args
+        PASS [   0.015s] (13/96) maho-tmux-core::pane_auth_cmux authenticated_cmux_with_fake_tmux_spawning_session_fails_before_credentials_reach_runner
+        PASS [   0.009s] (14/96) maho-tmux-core::pane_auth_env auth_env_with_spaces_activate_respawns_attach_with_env_args_and_quoted_values
+        PASS [   0.006s] (15/96) maho-tmux-core::pane_command attach_escapes_session_id_shell_metacharacters
+        PASS [   0.012s] (16/96) maho-tmux-core::pane_close not_inside_tmux_returns_false_without_runner_calls
+        PASS [   0.015s] (17/96) maho-tmux-core::pane_close cmux_eager_pane_exited_naturally_is_graceful_success
+        PASS [   0.008s] (18/96) maho-tmux-core::pane_command attach_falls_back_to_cwd_when_directory_omitted
+        PASS [   0.006s] (19/96) maho-tmux-core::pane_command attach_places_server_url_before_session_and_dir
+        PASS [   0.015s] (20/96) maho-tmux-core::pane_auth_env auth_env_unset_pane_spawn_receives_no_auth_env_args
+        PASS [   0.015s] (21/96) maho-tmux-core::pane_close kill_pane_fails_with_unknown_error_returns_false
+        PASS [   0.011s] (22/96) maho-tmux-core::pane_close pane_exists_returns_true_and_sends_keys_then_kills_in_order
+        PASS [   0.011s] (23/96) maho-tmux-core::pane_command attach_directory_with_spaces_stays_one_argument
+        PASS [   0.012s] (24/96) maho-tmux-core::pane_close tmux_not_found_returns_false_without_runner_calls
+        PASS [   0.006s] (25/96) maho-tmux-core::pane_command attach_places_session_id_after_session_flag
+        PASS [   0.014s] (26/96) maho-tmux-core::pane_close pane_already_closed_by_ctrl_c_returns_true
+        PASS [   0.005s] (27/96) maho-tmux-core::pane_command placeholder_keeps_single_quotes_and_percent_signs_inside_printf_arguments
+        PASS [   0.006s] (28/96) maho-tmux-core::pane_replace empty_directory_keeps_placeholder_detached_from_attach
+        PASS [   0.006s] (29/96) maho-tmux-core::pane_dimensions delegates_display_to_injected_runner
+        PASS [   0.007s] (30/96) maho-tmux-core::pane_command placeholder_uses_bin_sh_instead_of_inheriting_shell
+        PASS [   0.007s] (31/96) maho-tmux-core::pane_replace description_with_shell_metacharacters_escapes_placeholder
+        PASS [   0.007s] (32/96) maho-tmux-core::pane_command attach_uses_bin_sh_instead_of_inheriting_shell
+        PASS [   0.011s] (33/96) maho-tmux-core::pane_command attach_server_url_metacharacters_stay_one_literal_argument
+        PASS [   0.007s] (34/96) maho-tmux-core::pane_replace description_with_spaces_is_included_in_placeholder
+        PASS [   0.008s] (35/96) maho-tmux-core::pane_command placeholder_is_inert_instead_of_immediate_attach
+        PASS [   0.009s] (36/96) maho-tmux-core::pane_replace existing_pane_delegates_send_keys_respawn_and_select_pane_to_runner
+        PASS [   0.009s] (37/96) maho-tmux-core::pane_spawn normal_server_url_works_correctly
+        PASS [   0.005s] (38/96) maho-tmux-core::pane_spawn server_url_with_pipe_is_escaped
+        PASS [   0.007s] (39/96) maho-tmux-core::pane_spawn server_url_with_metacharacters_replace_command_is_escaped
+        PASS [   0.006s] (40/96) maho-tmux-core::pane_spawn_runner cmux_compat_split_window_uses_attach_command_not_placeholder
+        PASS [   0.008s] (41/96) maho-tmux-core::pane_spawn server_url_with_dollar_sign_is_escaped
+        PASS [   0.006s] (42/96) maho-tmux-core::pane_spawn unescaped_semicolon_detector_flags_raw_injection
+        PASS [   0.011s] (43/96) maho-tmux-core::pane_spawn server_url_with_backticks_is_escaped
+        PASS [   0.006s] (44/96) maho-tmux-core::pane_spawn_runner cmux_directory_with_spaces_is_shell_escaped
+        PASS [   0.007s] (45/96) maho-tmux-core::pane_spawn_runner cmux_compat_false_uses_placeholder
+        PASS [   0.007s] (46/96) maho-tmux-core::pane_spawn_runner cmux_socket_without_tmux_reaches_eager_split_window_attach
+        PASS [   0.005s] (47/96) maho-tmux-core::pane_spawn_runner description_with_spaces_is_included_in_placeholder
+        PASS [   0.009s] (48/96) maho-tmux-core::pane_spawn server_url_with_metacharacters_spawn_command_is_escaped
+        PASS [   0.008s] (49/96) maho-tmux-core::pane_spawn_runner description_with_shell_metacharacters_escapes_placeholder
+        PASS [   0.006s] (50/96) maho-tmux-core::pane_spawn_runner headless_without_tmux_or_cmux_skips_without_tmux_commands
+        PASS [   0.006s] (51/96) maho-tmux-core::pane_spawn_runner headless_cmux_socket_without_tmux_runs_attach_eagerly
+        PASS [   0.006s] (52/96) maho-tmux-core::pane_spawn_runner healthy_tmux_delegates_split_window_and_select_pane_to_runner
+        PASS [   0.008s] (53/96) maho-tmux-core::pane_spawn_runner empty_directory_keeps_placeholder_detached_from_attach
+        PASS [   0.007s] (54/96) maho-tmux-core::runner backward_compat_success_and_output_fields_are_present
+        PASS [   0.008s] (55/96) maho-tmux-core::runner exit_one_with_stderr_populates_stderr
+        PASS [   0.008s] (56/96) maho-tmux-core::runner exit_zero_with_stdout_returns_trimmed_success
+        PASS [   0.008s] (57/96) maho-tmux-core::runner retry_two_with_cant_find_pane_does_not_retry
+        PASS [   0.009s] (58/96) maho-tmux-core::runner cmux_environment_delegates_through_tmux_compat_command
+        PASS [   0.005s] (59/96) maho-tmux-core::session_spawn description_with_shell_metacharacters_escapes_placeholder
+        PASS [   0.006s] (60/96) maho-tmux-core::session_spawn description_with_spaces_is_included_in_placeholder
+        PASS [   0.006s] (61/96) maho-tmux-core::session_spawn source_pane_available_delegates_display_has_session_new_session_and_select_pane
+        PASS [   0.008s] (62/96) maho-tmux-core::runner trailing_newlines_are_trimmed_from_output
+        PASS [   0.007s] (63/96) maho-tmux-core::session_spawn empty_directory_keeps_placeholder_detached_from_attach
+        PASS [   0.015s] (64/96) maho-tmux-core::runner cmux_socket_with_real_tmux_session_uses_requested_executable
+        PASS [   0.005s] (65/96) maho-tmux-core::stale_session_sweep kill_session_false_is_not_counted
+        PASS [   0.006s] (66/96) maho-tmux-core::stale_session_sweep empty_candidate_list_returns_zero_and_kills_nothing
+        PASS [   0.006s] (67/96) maho-tmux-core::stale_session_sweep not_inside_tmux_returns_zero_without_listing
+        PASS [   0.007s] (68/96) maho-tmux-core::stale_session_sweep custom_predicate_kills_only_matching_team_sessions
+        PASS [   0.005s] (69/96) maho-tmux-core::stale_session_sweep only_supported_omo_agents_names_are_considered
+        PASS [   0.005s] (70/96) maho-tmux-core::stale_session_sweep session_matching_current_pid_is_not_killed
+        PASS [   0.006s] (71/96) maho-tmux-core::stale_session_sweep tmux_not_found_returns_zero_without_listing
+        PASS [   0.006s] (72/96) maho-tmux-core::tmux_utils is_inside_tmux_returns_false_when_tmux_env_is_not_set
+        PASS [   0.009s] (73/96) maho-tmux-core::stale_session_sweep sessions_with_dead_pids_are_each_killed_once
+        PASS [   0.007s] (74/96) maho-tmux-core::tmux_utils is_inside_tmux_returns_true_when_tmux_env_is_set
+        PASS [   0.020s] (75/96) maho-tmux-core::runner retry_two_with_nonzero_exit_runs_three_times
+        PASS [   0.009s] (76/96) maho-tmux-core::stale_session_sweep session_with_live_pid_is_not_killed
+        PASS [   0.007s] (77/96) maho-tmux-core::tmux_utils is_server_running_caches_successful_result
+        PASS [   0.009s] (78/96) maho-tmux-core::stale_session_sweep suffixed_sessions_with_dead_pids_are_also_killed
+        PASS [   0.011s] (79/96) maho-tmux-core::tmux_utils is_inside_tmux_returns_false_when_only_cmux_socket_path_is_set
+        PASS [   0.011s] (80/96) maho-tmux-core::tmux_utils is_inside_tmux_returns_false_when_tmux_env_is_empty_string
+        PASS [   0.006s] (81/96) maho-tmux-core::tmux_utils is_server_running_returns_true_when_server_responds_ok
+        PASS [   0.005s] (82/96) maho-tmux-core::tmux_utils pane_compatibility_returns_true_when_cmux_socket_path_is_set_without_tmux
+        PASS [   0.006s] (83/96) maho-tmux-core::tmux_utils is_server_running_uses_different_cache_for_different_urls
+        PASS [   0.006s] (84/96) maho-tmux-core::tmux_utils mark_server_running_skips_http_fetch_when_marked_running_in_process
+        PASS [   0.006s] (85/96) maho-tmux-core::tmux_utils mark_server_running_sets_process_global_flag
+        PASS [   0.007s] (86/96) maho-tmux-core::tmux_utils reset_server_check_allows_re_checking_after_reset
+        PASS [   0.005s] (87/96) maho-tmux-core::tmux_utils tmux_pane_functions_are_exported
+        PASS [   0.006s] (88/96) maho-tmux-core::tmux_utils reset_server_check_clears_cache_without_panicking
+        PASS [   0.004s] (89/96) maho-tmux-core::window_spawn description_with_shell_metacharacters_escapes_placeholder
+        PASS [   0.004s] (90/96) maho-tmux-core::window_spawn description_with_spaces_is_included_in_placeholder
+        PASS [   0.004s] (91/96) maho-tmux-core::window_spawn healthy_tmux_delegates_new_window_and_select_pane_to_runner
+        PASS [   0.005s] (92/96) maho-tmux-core::window_spawn empty_directory_keeps_placeholder_detached_from_attach
+        PASS [   0.087s] (93/96) maho-tmux-core::runner timeout_fifty_ms_with_sleeping_command_returns_timeout_failure
+        PASS [   0.255s] (94/96) maho-tmux-core::tmux_utils is_server_running_returns_false_when_server_not_reachable
+        PASS [   0.256s] (95/96) maho-tmux-core::tmux_utils is_server_running_returns_false_when_fetch_returns_not_ok
+        PASS [   0.506s] (96/96) maho-tmux-core::tmux_utils is_server_running_does_not_cache_failed_result
+────────────
+     Summary [   0.558s] 96 tests run: 96 passed, 0 skipped

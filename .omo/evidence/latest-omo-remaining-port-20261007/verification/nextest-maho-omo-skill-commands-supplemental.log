@@ -1,0 +1,46 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+   Compiling maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+   Compiling maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ultrawork)
+   Compiling maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-skill-commands)
+   Compiling maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+    Finished `test` profile [unoptimized] target(s) in 20.63s
+────────────
+ Nextest run ID 22f6f11a-33df-478d-b4ba-ccce5867fc61 with nextest profile: default
+    Starting 29 tests across 6 binaries
+        PASS [   0.005s] ( 1/29) maho-omo-skill-commands::autocomplete given_senpi_has_no_suggestion_page_when_the_user_types_a_prefix_then_the_alias_alone_is_offered_with_the_typed_prefix
+        PASS [   0.005s] ( 2/29) maho-omo-skill-commands::autocomplete given_senpi_lists_skill_rows_when_the_user_types_a_prefix_then_each_loaded_alias_sits_above_its_own_skill_row
+        PASS [   0.005s] ( 3/29) maho-omo-skill-commands::autocomplete given_the_skill_row_carries_an_argument_hint_when_the_user_types_a_prefix_then_the_alias_shows_the_same_description
+        PASS [   0.005s] ( 4/29) maho-omo-skill-commands::autocomplete given_inputs_outside_a_leading_command_token_when_suggestions_are_requested_then_senpis_page_is_returned_unchanged
+        PASS [   0.005s] ( 5/29) maho-omo-skill-commands::bare_skill_command given_a_host_without_get_commands_when_resolved_then_the_command_still_expands
+        PASS [   0.006s] ( 6/29) maho-omo-skill-commands::autocomplete given_the_wrapped_provider_when_other_members_are_used_then_they_are_the_base_providers_own
+        PASS [   0.004s] ( 7/29) maho-omo-skill-commands::bare_skill_command given_a_text_that_names_no_bundled_skill_when_resolved_then_it_is_not_a_bare_skill
+        PASS [   0.004s] ( 8/29) maho-omo-skill-commands::bare_skill_command given_another_command_owns_the_name_when_resolved_then_the_alias_is_shadowed
+        PASS [   0.005s] ( 9/29) maho-omo-skill-commands::bare_skill_command given_a_text_that_is_not_a_bare_bundled_skill_command_when_parsed_then_it_is_not_a_command
+        PASS [   0.004s] (10/29) maho-omo-skill-commands::bare_skill_command given_no_or_missing_skills_root_when_read_then_no_bundled_skill_is_named
+        PASS [   0.005s] (11/29) maho-omo-skill-commands::bare_skill_command given_a_skills_root_when_read_then_only_directories_holding_a_skill_md_are_named
+        PASS [   0.010s] (12/29) maho-omo-skill-commands::autocomplete given_a_bundled_skill_is_disabled_when_the_user_types_its_prefix_then_its_alias_is_not_offered
+        PASS [   0.004s] (13/29) maho-omo-skill-commands::bare_skill_command given_the_skill_command_is_not_loaded_when_resolved_then_it_is_unavailable
+        PASS [   0.013s] (14/29) maho-omo-skill-commands::argument_hints given_a_name_staged_from_both_pools_when_the_selected_overlay_resolves_it_then_the_senpi_native_copy_wins
+        PASS [   0.015s] (15/29) maho-omo-skill-commands::bare_skill_command given_a_bundled_skill_command_when_parsed_then_the_name_and_every_argument_are_split
+        PASS [   0.006s] (16/29) maho-omo-skill-commands::skill_commands given_a_host_without_get_commands_when_a_bare_skill_command_is_submitted_then_it_is_still_rewritten
+        PASS [   0.005s] (17/29) maho-omo-skill-commands::skill_commands given_a_ui_when_the_session_starts_then_the_bare_skill_autocomplete_provider_is_registered
+        PASS [   0.005s] (18/29) maho-omo-skill-commands::skill_commands given_a_user_prompt_template_or_another_command_owns_the_name_when_submitted_then_the_alias_steps_aside
+        PASS [   0.005s] (19/29) maho-omo-skill-commands::skill_commands given_an_attached_image_when_a_bare_skill_command_is_rewritten_then_the_image_rides_along
+        PASS [   0.005s] (20/29) maho-omo-skill-commands::skill_commands given_inputs_that_do_not_name_a_bundled_skill_command_when_submitted_then_they_pass_through_untouched
+        PASS [   0.016s] (21/29) maho-omo-skill-commands::bare_skill_command given_a_loaded_bundled_skill_when_resolved_then_the_command_expands_to_the_skill_form
+        PASS [   0.005s] (22/29) maho-omo-skill-commands::skill_commands given_no_bundled_skills_directory_when_registered_then_no_handler_is_installed
+        PASS [   0.005s] (23/29) maho-omo-skill-commands::skill_commands given_ulw_execute_is_loaded_when_the_user_submits_a_bare_command_then_it_becomes_the_skill_form_with_args_intact
+        PASS [   0.005s] (24/29) maho-omo-skill-commands::skill_commands given_the_bundled_skill_is_disabled_when_its_bare_command_is_submitted_then_nothing_reaches_the_model_and_a_warning_names_the_skill
+        PASS [   0.020s] (25/29) maho-omo-skill-commands::argument_hints given_a_shipped_skill_whose_body_consumes_the_typed_text_when_its_frontmatter_is_parsed_then_it_declares_a_hint
+        PASS [   0.011s] (26/29) maho-omo-skill-commands::documented_commands given_the_shipped_skills_and_guides_when_they_name_a_slash_command_then_that_command_dispatches
+        PASS [   0.005s] (27/29) maho-omo-skill-commands::skill_commands given_the_real_component_order_when_a_bare_skill_is_submitted_then_ultrawork_does_not_arm_while_plain_ulw_still_does
+        PASS [   0.012s] (28/29) maho-omo-skill-commands::documented_commands given_the_scan_inputs_when_resolved_then_each_source_is_populated_so_an_empty_set_cannot_pass_vacuously
+        PASS [   0.021s] (29/29) maho-omo-skill-commands::argument_hints given_every_shipped_skill_when_its_frontmatter_is_parsed_then_exactly_the_argument_reading_skills_declare_a_hint
+────────────
+     Summary [   0.021s] 29 tests run: 29 passed, 0 skipped

@@ -1,0 +1,10 @@
+use super::errors::{EvalHandleErrorCode, EvalHandleHostError};
+use super::host::{snapshot, HandleOutcome, HandleRef, HandleSnapshot, TaskStatus};
+
+#[derive(Debug, Clone)] pub struct TaskRecord { pub id: String, pub owner_session_id: String, pub status: TaskStatus, pub run_epoch: i64, pub final_response: Option<String>, pub error_message: Option<String> }
+/// A paused task is still a live run: its handle keeps projecting to the pending phase.
+pub fn settled(record: &TaskRecord) -> bool { !matches!(record.status, TaskStatus::Pending|TaskStatus::Running|TaskStatus::Paused) }
+pub fn load_fenced<'a>(tasks: &'a [TaskRecord], reference: &HandleRef, owner: &str) -> Result<&'a TaskRecord, EvalHandleHostError> { let record = tasks.iter().find(|r| r.id == reference.id).ok_or_else(|| EvalHandleHostError::new(EvalHandleErrorCode::NotFound, format!("no task {}", reference.id)))?; if record.owner_session_id != owner { return Err(EvalHandleHostError::new(EvalHandleErrorCode::Forbidden, format!("{} belongs to another session", reference.id))); } assert_current(record, reference)?; Ok(record) }
+pub fn assert_current(record: &TaskRecord, reference: &HandleRef) -> Result<(), EvalHandleHostError> { if reference.run_epoch < record.run_epoch { Err(EvalHandleHostError::new(EvalHandleErrorCode::Stale, format!("{} started a newer run (epoch {})", reference.id, record.run_epoch))) } else if reference.run_epoch > record.run_epoch { Err(EvalHandleHostError::new(EvalHandleErrorCode::NotFound, format!("{} never reached epoch {}", reference.id, reference.run_epoch))) } else { Ok(()) } }
+pub fn task_snapshot(record: &TaskRecord, reference: HandleRef, status: impl Into<String>) -> HandleSnapshot { snapshot(reference, record.status, status, record.run_epoch) }
+pub fn task_outcome(record: &TaskRecord, reference: HandleRef) -> HandleOutcome { match record.status { TaskStatus::Completed => HandleOutcome::Fulfilled { reference, value: record.final_response.clone().unwrap_or_default() }, status => HandleOutcome::Rejected { reference, code: EvalHandleErrorCode::Cancelled, message: record.error_message.clone().unwrap_or_else(|| format!("ended {status:?}")) } } }

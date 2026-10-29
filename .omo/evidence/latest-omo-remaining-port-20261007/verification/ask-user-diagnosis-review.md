@@ -1,0 +1,7 @@
+# Ask-user diagnosis review
+
+Worker st_01a11914 identified repeated UI wrapper allocation during duplicate binds as the source of context pointer drift in the three failing tests. Parent confirmed rebind_extension_ui creates a fresh LifecycleUi Arc for every bind (maho-core/src/agent_session.rs:5581-5590), while recovered Asked events retain the earlier bound context and duplicate SessionStart updates owners to the later context. Reload CaptureStart similarly overwrites its captured context on a second bind after settlement was already emitted.
+
+The worker's proposed suppression of duplicate SessionStart is rejected: pinned senpi agent-session.ts:7399-7432 unconditionally emits its session-start event on bindExtensions. Native parity requires preserving that behavior. A repair must preserve stable lifecycle-wrapper identity for the same underlying UI and runner while still replacing it for a genuinely new connection or runner. No production patch has been applied yet; the three failing tests remain the regression gate.
+
+Parent authored the minimal stable-identity repair in maho-core: retain the source UI and its bound lifecycle wrapper, reuse the wrapper for the same source Arc, and invalidate the cache when installing a replacement runner. Repeated SessionStart emission remains unchanged. Existing ask-user tests supply the failure-before and pass-after gate; acceptance is running. LSP diagnostics twice timed out and are unavailable; compiler and Clippy acceptance remain required.

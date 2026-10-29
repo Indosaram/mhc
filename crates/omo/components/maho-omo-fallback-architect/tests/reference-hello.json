@@ -1,0 +1,653 @@
+{
+ "scenario": "hello",
+ "omo": true,
+ "model": "faux/faux-1",
+ "events": [
+  {
+   "type": "message_start",
+   "message": {
+    "role": "custom",
+    "customType": "senpi-task.usage",
+    "content": "<omo-senpi-task>\nBackground task results are automatically delivered: an idle session is always woken, and a running turn receives them at its next tool boundary.\n- /tasks shows this session's children; task_output is for one midpoint status or transcript peek (mode:\"tail\" for recent output).\n- task_send always steers a message into the addressed child, while task_cancel ends it.\n- Team mail is steered into the recipient's running turn. Use task_send for updates; team mail never queues as editable follow-up work.\nIf no independent work remains, end your turn.\n</omo-senpi-task>",
+    "display": false,
+    "details": {},
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "custom",
+    "customType": "senpi-task.usage",
+    "content": "<omo-senpi-task>\nBackground task results are automatically delivered: an idle session is always woken, and a running turn receives them at its next tool boundary.\n- /tasks shows this session's children; task_output is for one midpoint status or transcript peek (mode:\"tail\" for recent output).\n- task_send always steers a message into the addressed child, while task_cancel ends it.\n- Team mail is steered into the recipient's running turn. Use task_send for updates; team mail never queues as editable follow-up work.\nIf no independent work remains, end your turn.\n</omo-senpi-task>",
+    "display": false,
+    "details": {},
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "entry_appended",
+   "entry": {
+    "type": "custom",
+    "customType": "omo-memory:accepted-turns",
+    "data": {
+     "version": 1,
+     "sessionId": "<id>",
+     "priorUserTurns": 1,
+     "sessionBaselineTurns": 0
+    },
+    "id": "<id>",
+    "parentId": "<id>",
+    "timestamp": "<time>"
+   }
+  },
+  {
+   "type": "agent_start"
+  },
+  {
+   "type": "turn_start"
+  },
+  {
+   "type": "message_start",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Say hello."
+     }
+    ],
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Say hello."
+     }
+    ],
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_start",
+   "message": {
+    "role": "assistant",
+    "content": [],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_start",
+    "contentIndex": 0,
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello from the faux provider."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 19443,
+      "output": 8,
+      "cacheRead": 0,
+      "cacheWrite": 19443,
+      "totalTokens": 38894,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_delta",
+    "contentIndex": 0,
+    "delta": "Hello from t",
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello from the faux provider."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 19443,
+      "output": 8,
+      "cacheRead": 0,
+      "cacheWrite": 19443,
+      "totalTokens": 38894,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_delta",
+    "contentIndex": 0,
+    "delta": "he faux prov",
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello from the faux provider."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 19443,
+      "output": 8,
+      "cacheRead": 0,
+      "cacheWrite": 19443,
+      "totalTokens": 38894,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_delta",
+    "contentIndex": 0,
+    "delta": "ider.",
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello from the faux provider."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 19443,
+      "output": 8,
+      "cacheRead": 0,
+      "cacheWrite": 19443,
+      "totalTokens": 38894,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_end",
+    "contentIndex": 0,
+    "content": "Hello from the faux provider.",
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello from the faux provider."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 19443,
+      "output": 8,
+      "cacheRead": 0,
+      "cacheWrite": 19443,
+      "totalTokens": 38894,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "turn_end",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "timestamp": 0
+   },
+   "toolResults": []
+  },
+  {
+   "type": "entry_appended",
+   "entry": {
+    "type": "custom",
+    "customType": "senpi.hooks.stop-state",
+    "data": {
+     "count": 0,
+     "sessionId": "<id>",
+     "turnKey": "<id>"
+    },
+    "id": "<id>",
+    "parentId": "<id>",
+    "timestamp": "<time>"
+   }
+  },
+  {
+   "type": "agent_end",
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Say hello."
+      }
+     ],
+     "timestamp": 0
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello from the faux provider."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 19443,
+      "output": 8,
+      "cacheRead": 0,
+      "cacheWrite": 19443,
+      "totalTokens": 38894,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "stop",
+     "timestamp": 0
+    }
+   ],
+   "willRetry": false
+  },
+  {
+   "type": "agent_settled"
+  },
+  {
+   "type": "agent_idle"
+  }
+ ],
+ "entries": [
+  {
+   "type": "model_change",
+   "id": "<id>",
+   "parentId": null,
+   "timestamp": "<time>",
+   "provider": "faux",
+   "modelId": "faux-1"
+  },
+  {
+   "type": "thinking_level_change",
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>",
+   "thinkingLevel": "off"
+  },
+  {
+   "type": "custom_message",
+   "customType": "senpi-task.usage",
+   "content": "<omo-senpi-task>\nBackground task results are automatically delivered: an idle session is always woken, and a running turn receives them at its next tool boundary.\n- /tasks shows this session's children; task_output is for one midpoint status or transcript peek (mode:\"tail\" for recent output).\n- task_send always steers a message into the addressed child, while task_cancel ends it.\n- Team mail is steered into the recipient's running turn. Use task_send for updates; team mail never queues as editable follow-up work.\nIf no independent work remains, end your turn.\n</omo-senpi-task>",
+   "display": false,
+   "details": {},
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "custom",
+   "customType": "omo-memory:accepted-turns",
+   "data": {
+    "version": 1,
+    "sessionId": "<id>",
+    "priorUserTurns": 1,
+    "sessionBaselineTurns": 0
+   },
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "message",
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Say hello."
+     }
+    ],
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message",
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello from the faux provider."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 19443,
+     "output": 8,
+     "cacheRead": 0,
+     "cacheWrite": 19443,
+     "totalTokens": 38894,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "custom",
+   "customType": "senpi.hooks.stop-state",
+   "data": {
+    "count": 0,
+    "sessionId": "<id>",
+    "turnKey": "<id>"
+   },
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  }
+ ],
+ "toolResults": []
+}

@@ -1,0 +1,5 @@
+startup: idle editor prompt + offline footer
+held: working indicator + partial "offline " rendered before completion
+steer: queued line echoed while the turn stayed busy
+abort: Escape (app.interrupt) cleared the working indicator and returned the editor
+FAIL: timeout waiting for reply rendered and idle

@@ -1,0 +1,20 @@
+   Compiling regex-automata v0.4.18
+   Compiling regex v1.12.3
+   Compiling maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+   Compiling maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+    Finished `test` profile [unoptimized] target(s) in 3.34s
+────────────
+ Nextest run ID 4a13f0bd-ba22-4124-8714-d82eabe9c727 with nextest profile: default
+    Starting 10 tests across 2 binaries
+        PASS [   0.006s] ( 1/10) maho-delegate-core::parity model_selection::no_provider_cache_without_user_override_returns_skipped_sentinel
+        PASS [   0.006s] ( 2/10) maho-delegate-core::parity model_selection::connected_providers_cache_selects_first_connected_fallback_provider
+        PASS [   0.007s] ( 3/10) maho-delegate-core::parity retry_patterns::unknown_category_output_retry_guidance_preserves_available_options
+        PASS [   0.008s] ( 4/10) maho-delegate-core::parity model_selection::custom_and_later_rung_providers_same_model_custom_keeps_earlier_variant
+        PASS [   0.008s] ( 5/10) maho-delegate-core::parity model_selection::transformed_vercel_and_copilot_gpt56_sol_vercel_xhigh_wins
+        PASS [   0.008s] ( 6/10) maho-delegate-core::parity model_selection::only_transformed_vercel_gpt56_sol_keeps_native_xhigh_rung
+        PASS [   0.008s] ( 7/10) maho-delegate-core::parity model_selection::only_copilot_gpt56_sol_dedicated_high_rung_wins
+        PASS [   0.008s] ( 8/10) maho-delegate-core::parity model_selection::fallback_model_through_unlisted_provider_keeps_cross_provider_matching
+        PASS [   0.008s] ( 9/10) maho-delegate-core::parity model_selection::gpt56_unavailable_with_copilot_gpt55_keeps_legacy_fallback
+        PASS [   0.009s] (10/10) maho-delegate-core::parity model_selection::unreachable_user_primary_promotes_reachable_fallback_with_variant
+────────────
+     Summary [   0.009s] 10 tests run: 10 passed, 0 skipped

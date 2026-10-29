@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "active_work_id": "company-onboarding-messenger-notion",
+  "works": {
+    "company-onboarding-messenger-notion": {
+      "work_id": "company-onboarding-messenger-notion",
+      "active_plan": ".omo/plans/company-onboarding-messenger-notion.md",
+      "plan_name": "company-onboarding-messenger-notion",
+      "session_ids": [
+        "senpi:01a0d321-f242-7f51-bb98-3cb6977b6e43"
+      ],
+      "status": "completed",
+      "worktree_path": null,
+      "worktree_note": "N/A for this work: /Users/indo/code/project is NOT a git repo and the deliverable is user-level machine configuration (global npm installs, ~/.config credential stores, memory repo files, Obsidian vault notes, gateway cron rows). The ONLY git repo this plan may edit is omon-gateway (Rust source, todo 9/21) - if source edits are needed, that lane gets a task-owned worktree per the skill.",
+      "completed_note": "All 27 implementation checkboxes closed (4 dropped by explicit user directive) and all 4 final-verification checkboxes APPROVE/confirmed. Handoff at .omo/evidence/company-onboarding/HANDOFF.md."
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "binary": "/home/indo/.cargo-target/maho-code/remaining-maho-cli/debug/mhc",
+  "binarySha256": "9d21883c01694e7deb1f63b95eb298c144bb86da935560a063df9d17e9afed0f",
+  "cols": 80,
+  "rows": 24,
+  "mode": "regular",
+  "loopback": true,
+  "ansiSha256": "885e8137dc29d098e7d07a3ec805f718db9997e88224b1deb197dc80ba0aad94",
+  "exitCode": 137
+}

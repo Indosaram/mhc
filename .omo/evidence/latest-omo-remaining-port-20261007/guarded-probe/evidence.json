@@ -1,0 +1,16 @@
+{
+  "geometry": "80x24",
+  "mode": "regular",
+  "theme": null,
+  "onboarding_pre_completed": true,
+  "startup_predicate": true,
+  "prompt_echo_observed": true,
+  "gated_stream_visible_while_held": true,
+  "working_indicator_present_while_held": true,
+  "steer_echoed_while_working": true,
+  "abort_cleared_busy": true,
+  "reply_after_prompt": true,
+  "working_indicator_absent_at_reply": true,
+  "resize_reflowed": true,
+  "exit_code": 0
+}

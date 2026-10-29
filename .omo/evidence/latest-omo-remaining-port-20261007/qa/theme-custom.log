@@ -1,0 +1,4 @@
+startup: idle editor prompt + offline footer
+held: working indicator + partial "offline " rendered before completion
+steer: queued line echoed while the turn stayed busy
+FAIL: timeout waiting for abort clears busy and returns the editor

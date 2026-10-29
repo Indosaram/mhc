@@ -1,0 +1,56 @@
+    Checking libc v0.2.186
+    Checking zerofrom v0.1.6
+    Checking stable_deref_trait v1.2.1
+    Checking yoke v0.8.3
+    Checking zerovec v0.11.8
+    Checking smallvec v1.15.1
+    Checking tinystr v0.8.4
+    Checking litemap v0.8.1
+    Checking writeable v0.6.4
+    Checking serde_json v1.0.149
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.4
+    Checking zerotrie v0.2.5
+    Checking aho-corasick v1.1.4
+    Checking icu_collections v2.3.0
+    Checking icu_provider v2.3.1
+    Checking regex-automata v0.4.18
+    Checking num-traits v0.2.19
+    Checking chrono v0.4.43
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking regex v1.12.3
+    Checking getrandom v0.3.4
+    Checking parking_lot_core v0.9.12
+    Checking errno v0.3.14
+    Checking simd-adler32 v0.3.8
+    Checking signal-hook-registry v1.4.8
+    Checking miniz_oxide v0.8.9
+    Checking dirs-sys v0.5.0
+    Checking idna_adapter v1.2.1
+    Checking parking_lot v0.12.5
+    Checking uuid v1.20.0
+    Checking mio v1.2.0
+    Checking socket2 v0.6.3
+    Checking percent-encoding v2.3.2
+    Checking tokio v1.52.3
+    Checking form_urlencoded v1.2.2
+    Checking maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+    Checking flate2 v1.1.8
+    Checking idna v1.1.0
+    Checking dirs v6.0.0
+    Checking fancy-regex v0.16.2
+    Checking url v2.5.8
+    Checking regress v0.12.0
+    Checking maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+    Checking maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+    Checking maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+    Checking maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+    Checking filetime v0.2.27
+    Checking maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+    Checking maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+    Checking getrandom v0.4.2
+    Checking tempfile v3.27.0
+    Checking maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+    Checking maho-senpi-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/senpi-task)
+    Finished `dev` profile [unoptimized] target(s) in 29.74s
