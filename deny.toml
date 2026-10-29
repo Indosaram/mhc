@@ -78,10 +78,13 @@ allow = [
     "LicenseRef-SUL-1.0",
 ]
 confidence-threshold = 0.8
+# The workspace crates are private (ignored below), so LicenseRef-SUL-1.0 matches no package here.
+unused-allowed-license = "allow"
 exceptions = []
 
 [licenses.private]
-# Ignore workspace crates that have publish = false (licensed under LicenseRef-SUL-1.0 / MIT)
+# Ignore workspace crates that have publish = false (licensed under LicenseRef-SUL-1.0 / MIT).
+# Their licenses are enforced by tools/license-audit.mjs and scripts/check-mit-profile.py.
 ignore = true
 
 # [[licenses.clarify]]

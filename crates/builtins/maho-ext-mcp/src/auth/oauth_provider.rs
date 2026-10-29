@@ -39,10 +39,10 @@ pub struct McpOAuthProvider {
 pub enum CredentialScope { All, Client, Tokens, Verifier, Discovery }
 impl McpOAuthProvider {
     pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,logger:None,on_redirect:None,expected_state:None,last_authorization_url:None,require_https:true,escalated_scopes:std::sync::Mutex::new(Vec::new()) } }
-    /// The DCR request body: exactly the pinned `ClientRegistrationRequest` shape. The pin sends
-    /// `client_name: PLUGIN_NAME` ("oh-my-openagent") and no `scope` field.
+    /// The DCR request body: the `ClientRegistrationRequest` shape, registering as the `mhc` client
+    /// with no `scope` field.
     pub fn client_metadata(&self) -> Value {
-        json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"oh-my-openagent"})
+        json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"mhc"})
     }
     /// The RFC 8707 resource indicator, normalized by the pinned `getResourceIndicator`.
     pub fn resource_indicator(&self) -> String {

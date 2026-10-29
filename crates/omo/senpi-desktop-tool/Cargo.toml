@@ -2,7 +2,7 @@
 name = "maho-senpi-desktop-tool"
 version.workspace = true
 edition.workspace = true
-license = "MIT"
+license = "LicenseRef-SUL-1.0"
 autotests = false
 
 [lib]
@@ -17,7 +17,7 @@ maho-codemode = { version = "=0.0.0", path = "../../maho-codemode" }
 maho-ext-api = { version = "=0.0.0", path = "../../maho-ext-api" }
 maho-tools = { version = "=0.0.0", path = "../../maho-tools" }
 schemars = "=1.2.2"
-senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../../desktop/senpi-desktop-core" }
 senpi-desktop-prelude = { package = "maho-senpi-desktop-prelude", path = "../senpi-desktop-prelude" }
 senpi-desktop-protocol = { package = "maho-senpi-desktop-protocol", path = "../senpi-desktop-protocol" }
 senpi-desktop-run = { package = "maho-senpi-desktop-run", path = "../senpi-desktop-run" }

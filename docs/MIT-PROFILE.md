@@ -35,7 +35,9 @@ Everything outside the omo port:
 - builtin extensions under `crates/builtins` (MCP, hooks, codemode, websearch/webfetch, todo,
   compaction, goal, rules, permission system, ...) and the native user ports under
   `crates/extensions` (`pi-comment-checker` uses the MIT `maho-comment-checker` crate here);
-- `crates/desktop/senpi-desktop-*` (MIT; moved out of `crates/omo` so that path checks are exact).
+- `crates/desktop/senpi-desktop-*` (MIT engine and platform backends; moved out of `crates/omo` so that
+  path checks are exact). The computer-use tool layer (`senpi-desktop-{protocol,prelude,service,run,tool}`)
+  ports omo packages and lives in `crates/omo` (SUL-1.0).
 
 ## Clean-room replacements (Phase 1)
 

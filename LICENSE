@@ -12,7 +12,7 @@ Full text: `LICENSES/MIT.txt`
 
 ## Sustainable Use License 1.0 (SUL-1.0)
 
-Applies to `crates/omo/**` except `crates/omo/senpi-desktop-*` (MIT, ports senpi), which ports
+Applies to `crates/omo/**`, which ports
 [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
 Full text: `LICENSES/SUL-1.0.md`
 

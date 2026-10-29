@@ -5,7 +5,7 @@ use senpi_desktop_protocol::{
 };
 
 fn load_engine_schema() -> Value {
-    let schema_str = include_str!("../../senpi-desktop-core/schema/engine.schema.json");
+    let schema_str = include_str!("../../../desktop/senpi-desktop-core/schema/engine.schema.json");
     serde_json::from_str(schema_str).expect("Valid engine.schema.json")
 }
 

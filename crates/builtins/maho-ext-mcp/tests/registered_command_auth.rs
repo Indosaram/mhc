@@ -605,7 +605,7 @@ async fn run_scenario(
     );
     assert_eq!(dcr[0]["response_types"], json!(["code"]));
     assert_eq!(dcr[0]["token_endpoint_auth_method"], json!("none"));
-    assert_eq!(dcr[0]["client_name"], json!("oh-my-openagent"));
+    assert_eq!(dcr[0]["client_name"], json!("mhc"));
     assert!(
         dcr[0].get("scope").is_none(),
         "the pinned DCR body carries no scope field"
