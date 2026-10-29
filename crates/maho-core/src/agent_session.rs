@@ -8759,7 +8759,8 @@ impl AgentSession {
             if let Err(error) =
                 Box::pin(self.agent.continue_with_queued_messages(Default::default())).await
             {
-                return Ok(self.settle_refused_continuation(error));
+                self.settle_refused_continuation(error);
+                return Ok(());
             }
         }
     }
@@ -8835,7 +8836,8 @@ impl AgentSession {
                             Box::pin(self.agent.continue_with_queued_messages(Default::default()))
                                 .await
                         {
-                            return Ok(self.settle_refused_continuation(error));
+                            self.settle_refused_continuation(error);
+                            return Ok(());
                         }
                         continue;
                     }
@@ -8966,7 +8968,8 @@ impl AgentSession {
                 ))
                 .await
                 {
-                    return Ok(self.settle_refused_continuation(error));
+                    self.settle_refused_continuation(error);
+                    return Ok(());
                 }
                 continue;
             }
@@ -9006,7 +9009,8 @@ impl AgentSession {
                         Box::pin(self.agent.continue_with_queued_messages(Default::default()))
                             .await
                     {
-                        return Ok(self.settle_refused_continuation(error));
+                        self.settle_refused_continuation(error);
+                        return Ok(());
                     }
                     continue;
                 }
@@ -9105,7 +9109,8 @@ impl AgentSession {
                             Box::pin(self.agent.continue_with_queued_messages(Default::default()))
                                 .await
                         {
-                            return Ok(self.settle_refused_continuation(error));
+                            self.settle_refused_continuation(error);
+                            return Ok(());
                         }
                         continue;
                     }
@@ -9586,7 +9591,8 @@ impl AgentSession {
                 continuation.await
             };
             if let Err(error) = started {
-                return Ok(self.settle_refused_continuation(error));
+                self.settle_refused_continuation(error);
+                return Ok(());
             }
         }
     }

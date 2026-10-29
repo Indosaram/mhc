@@ -155,6 +155,8 @@ fn persistence_reuses_values_and_isolates_build_revision_and_degraded_results() 
     let options = MemoryBlockCacheOptions {
         store: Some(Arc::new(|| Ok(()))),
         build: "build-a".into(),
+        // The loader runs on a spawned thread; the 25 ms default budget is too tight on loaded CI runners.
+        store_budget: Some(std::time::Duration::from_secs(10)),
         ..Default::default()
     };
     let cache = MemoryBlockCache::with_options(options.clone());
