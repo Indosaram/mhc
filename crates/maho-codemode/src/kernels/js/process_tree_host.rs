@@ -121,16 +121,27 @@ pub async fn is_process_alive(pid: u32) -> bool {
                 Err(error) => error == rustix::io::Errno::PERM,
             })
     }
+    // PERF-DIVERGENCE(senpi process-tree): Windows has no kill(pid, 0); upstream's
+    // process.kill(pid, 0) opens the process handle, and this port asks tasklist for the pid.
     #[cfg(not(unix))]
     {
-        tokio::process::Command::new("kill")
-            .args(["-0", "--", &pid.to_string()])
-            .stdout(Stdio::null())
+        tokio::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .stderr(Stdio::null())
-            .status()
+            .output()
             .await
-            .is_ok_and(|status| status.success())
+            .is_ok_and(|output| tasklist_lists_pid(&String::from_utf8_lossy(&output.stdout), pid))
     }
+}
+
+/// Whether `tasklist /FO CSV /NH` output has a row for `pid` (the second CSV column). A missing
+/// process prints an `INFO:` line instead of a row.
+#[cfg_attr(unix, allow(dead_code))]
+fn tasklist_lists_pid(stdout: &str, pid: u32) -> bool {
+    let wanted = format!("\"{pid}\"");
+    stdout
+        .lines()
+        .any(|line| line.split(',').nth(1) == Some(wanted.as_str()))
 }
 
 #[cfg(unix)]
@@ -379,6 +390,17 @@ pub async fn terminate_process_trees(roots: &[u32], options: TerminateProcessTre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tasklist_rows_decide_windows_liveness() {
+        let row = "\"bun.exe\",\"4242\",\"Console\",\"1\",\"10,240 K\"\r\n";
+        assert!(tasklist_lists_pid(row, 4242));
+        assert!(!tasklist_lists_pid(row, 42));
+        assert!(!tasklist_lists_pid(
+            "INFO: No tasks are running which match the specified criteria.\r\n",
+            4242
+        ));
+    }
 
     #[tokio::test]
     async fn process_output_is_bounded_and_preserves_nonzero_partial_output() {
