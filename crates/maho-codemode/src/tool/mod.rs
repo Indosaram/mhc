@@ -30,6 +30,7 @@ pub mod managed_cell;
 pub mod render;
 pub mod run_eval_cell;
 pub mod runtime_label;
+pub mod settled_image_spill;
 pub mod status_events;
 pub mod terminal_snapshot_store;
 pub mod tool_result_marshal;

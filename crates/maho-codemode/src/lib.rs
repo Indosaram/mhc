@@ -462,6 +462,14 @@ fn create_extension_cells(
             hard_limit_seconds: settings.hard_limit_seconds,
             run_budget_seconds: settings.run_budget_seconds,
             max_detached_cells: settings.max_detached_cells.ceil() as usize,
+            retained_results_bytes: config::memory_settings::resolve_retained_results_bytes(
+                settings,
+                &maho_ext_api::process_env::vars().into_iter().collect(),
+            ),
+            retained_images_bytes: config::memory_settings::resolve_retained_images_bytes(
+                settings,
+                &maho_ext_api::process_env::vars().into_iter().collect(),
+            ),
             on_status_change: Some(Arc::new(move |entries| {
                 ticker.lock().expect("ticker").sync(entries)
             })),
