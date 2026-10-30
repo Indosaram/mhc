@@ -410,6 +410,8 @@ impl ExtensionSessionActions for RecordingSessionActions {
 #[derive(Default)]
 pub struct RecordingActions {
     pub messages: Mutex<Vec<CustomMessage>>,
+    /// Session entries (`append_entry`): where a profile outcome is recorded.
+    pub entries: Mutex<Vec<(String, Option<JsonValue>)>>,
 }
 impl ExtensionActions for RecordingActions {
     fn send_message(
@@ -430,8 +432,16 @@ impl ExtensionActions for RecordingActions {
     ) -> Result<(), ExtensionFailure> {
         Err("unused".into())
     }
-    fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
-        Err("unused".into())
+    fn append_entry(
+        &self,
+        custom_type: &str,
+        data: Option<JsonValue>,
+    ) -> Result<(), ExtensionFailure> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((custom_type.to_owned(), data));
+        Ok(())
     }
     fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
         Ok(Vec::new())
@@ -665,12 +675,34 @@ impl Harness {
             .clone()
     }
 
+    /// Profile outcomes as recorded session entries, shaped like the messages they replaced. A
+    /// outcome never goes through `send_message`: that would hand it to the model as input.
     pub fn messages(&self) -> Vec<CustomMessage> {
+        assert!(
+            self.actions
+                .messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "a profile outcome must not be sent into the model input"
+        );
         self.actions
-            .messages
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .iter()
+            .map(|(custom_type, data)| CustomMessage {
+                custom_type: custom_type.clone(),
+                content: vec![maho_ext_api::ToolContent::text(
+                    data.as_ref()
+                        .and_then(|data| data.get("content"))
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default(),
+                )],
+                display: true,
+                details: data.as_ref().and_then(|data| data.get("details")).cloned(),
+            })
+            .collect()
     }
 
     pub fn first_details(&self) -> JsonValue {
