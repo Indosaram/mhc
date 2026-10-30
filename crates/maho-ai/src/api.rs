@@ -22,6 +22,8 @@ pub mod cursor_conversation_rotation;
 pub mod cursor_task_args;
 pub mod devin_agent;
 pub mod devin_agent_lazy;
+#[cfg(test)]
+mod devin_agent_producer_capture_tests;
 pub mod github_copilot_headers;
 pub mod google_generative_ai;
 pub mod google_generative_ai_lazy;
