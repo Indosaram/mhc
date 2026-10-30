@@ -22,31 +22,6 @@ fn pattern_matches(pattern: &std::sync::LazyLock<Option<regex::Regex>>, text: &s
     pattern.as_ref().is_some_and(|pattern| pattern.is_match(text))
 }
 
-// senpi credential-pool/usage-limit.ts: an account-scoped usage limit that reaches the pool as text alone
-// (senpi#1768). Anchored on exhaustion verbs: "You are approaching your usage limit" is a warning, and overflow
-// prose (token or context limit) is excluded by the caller.
-static ACCOUNT_USAGE_LIMIT_TEXT: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
-    let mut alternatives: Vec<String> =
-        maho_ai::utils::retry::USAGE_LIMIT_EXHAUSTION.markers.iter().map(|marker| regex::escape(marker)).collect();
-    alternatives.extend(
-        [
-            r"\b(?:hit|reached)\s+your\b[^.]*?\blimit\b",
-            r"\busage\s+limit\s+reached\b",
-            r"\b(?:Go|Free)UsageLimitError\b",
-            r"\bblocking_limit\b",
-            r"\brapid_refill_breaker\b",
-            r"\bquota\s+exceeded\b",
-        ]
-        .map(str::to_owned),
-    );
-    regex::Regex::new(&format!("(?i){}", alternatives.join("|"))).ok()
-});
-
-/// senpi `isAccountUsageLimitText`.
-pub fn is_account_usage_limit_text(text: &str) -> bool {
-    pattern_matches(&ACCOUNT_USAGE_LIMIT_TEXT, text)
-}
-
 /// senpi `usageLimitScope(errorMessage)`: who a usage limit named only in prose binds. `Model`: the provider
 /// refused this model only; `Account`: the credential itself is spent.
 pub fn usage_limit_scope_text(error_message: Option<&str>) -> Option<UsageLimitScope> {
@@ -117,23 +92,6 @@ pub fn describe_usage_limit_entry(mut entry: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn account_usage_limit_text_matches_exhaustion_and_not_warnings() {
-        for text in [
-            "The usage limit has been reached",
-            "You've hit your session limit",
-            "You've reached your 5-hour limit",
-            "Monthly usage limit reached",
-            "GoUsageLimitError",
-            "blocking_limit",
-            "Quota exceeded for this key",
-        ] {
-            assert!(is_account_usage_limit_text(text), "{text}");
-        }
-        assert!(!is_account_usage_limit_text("You are approaching your usage limit"));
-        assert!(!is_account_usage_limit_text("rate limit exceeded"));
-    }
 
     #[test]
     fn classifies_usage_limit_prose_by_scope() {
