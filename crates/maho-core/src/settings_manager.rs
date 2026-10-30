@@ -29,7 +29,7 @@ pub const DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS: u64 = 10_000;
 /// Total wait across every `session_shutdown` handler when the process quits (senpi#3711).
 pub const DEFAULT_SESSION_SHUTDOWN_QUIT_BUDGET_MS: u64 = 2_000;
 /// senpi `MAX_ENGINE_TURNS_PER_USER_INPUT`.
-pub const MAX_ENGINE_TURNS_PER_USER_INPUT: i64 = 150;
+pub const MAX_ENGINE_TURNS_PER_USER_INPUT: i64 = 0;
 /// senpi `MAX_ENGINE_TURNS_PER_RESUME_WINDOW`.
 pub const MAX_ENGINE_TURNS_PER_RESUME_WINDOW: i64 = 8;
 /// senpi `MAX_TOOL_FREE_ENGINE_TURNS_PER_WINDOW`.

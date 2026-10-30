@@ -5546,11 +5546,9 @@ impl AgentSession {
     pub fn note_automatic_input(&self, text: &str) -> bool {
         let mut hold = lock(&self.engine_turn_hold);
         if !hold.holds().iter().any(|record| {
-            matches!(
-                record.kind,
-                crate::engine_turn_hold::HoldKind::SessionHold
-                    | crate::engine_turn_hold::HoldKind::InheritedHold
-            )
+            (record.kind == crate::engine_turn_hold::HoldKind::SessionHold
+                && record.key != crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
+                || record.kind == crate::engine_turn_hold::HoldKind::InheritedHold
         }) {
             return false;
         }
@@ -5641,6 +5639,21 @@ impl AgentSession {
         }
         Ok(answer)
     }
+    /// senpi `_resumeCause`: only the interruption gate held (no user Stop) resumes as "interrupted".
+    pub fn resume_cause(&self) -> crate::stop_resume_directive::ResumeCause {
+        let holds = self.holds();
+        let session_hold = |interrupted: bool| {
+            holds.iter().any(|hold| {
+                hold.kind == crate::engine_turn_hold::HoldKind::SessionHold
+                    && (hold.key == crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY) == interrupted
+            })
+        };
+        if session_hold(true) && !session_hold(false) {
+            crate::stop_resume_directive::ResumeCause::Interrupted
+        } else {
+            crate::stop_resume_directive::ResumeCause::Stop
+        }
+    }
     pub async fn resume_session(&self) -> Result<(), String> {
         self.human_input_admitted(HumanInputKind::Resume);
         let mut hold =
@@ -5729,7 +5742,7 @@ impl AgentSession {
     /// running engine turn.
     fn observe_engine_turn_message(&self, message: &AgentMessage) {
         let user_directed = matches!(message, AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom))
-            if crate::engine_turn_limit::is_user_directed_turn(&custom.custom_type));
+            if crate::engine_turn_limit::resets_engine_turn_history(&custom.custom_type, custom.details.as_ref()));
         if message.role() == "user" || user_directed {
             lock(&self.engine_turn_starts).clear();
             self.engine_resume_window.store(false, Ordering::SeqCst);
@@ -19502,7 +19515,7 @@ impl AgentSession {
 
     // Stop resume directive (senpi stop-resume-directive.ts)
     pub fn stop_resume_directive(&self) -> crate::stop_resume_directive::StopResumeDirective {
-        crate::stop_resume_directive::stop_resume_directive()
+        crate::stop_resume_directive::stop_resume_directive(self.resume_cause())
     }
 }
 
