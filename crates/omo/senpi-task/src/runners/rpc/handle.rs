@@ -20,6 +20,9 @@ use crate::runners::input_effects::{
 };
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::classify_child_exit;
+use crate::runners::rpc::heartbeat::{
+    HEARTBEAT_DEADLINE_MS, HeartbeatMachine, MissVerdict, unresponsive_message,
+};
 use crate::runners::rpc::native_run_pause::RpcRunPause;
 use crate::runners::rpc::protocol_client::{RpcClientError, RpcClientPort};
 use crate::runners::rpc::turn_claim::{TurnClaim, create_turn_claim};
@@ -64,6 +67,9 @@ struct HandleState {
 }
 
 struct HandleShared {
+    /// `startHeartbeat`'s miss accounting; events feed its `activity()`.
+    heartbeat: Mutex<HeartbeatMachine>,
+    clock: Clock,
     claims: TurnClaim,
     resumed_listeners: ResumedListenersCallback,
     next_listener: std::sync::atomic::AtomicU64,
@@ -74,6 +80,11 @@ struct HandleShared {
 impl HandleShared {
     fn lock(&self) -> MutexGuard<'_, HandleState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn live(&self) -> bool {
+        let state = self.lock();
+        !state.disposed && state.exit.is_none()
     }
 
     fn settle_turn(&self, state: &mut HandleState, settled: RunnerOutcome) {
@@ -88,6 +99,10 @@ impl HandleShared {
     }
 
     fn on_event(&self, event: &Value) {
+        self.heartbeat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .activity((self.clock)());
         let mut state = self.lock();
         if event["type"] == "agent_start" && state.turn_outcome.is_some() && state.exit.is_none() {
             state.turn_generation += 1;
@@ -168,6 +183,8 @@ pub struct RpcChildHandle {
 impl RpcChildHandle {
     pub fn new(options: RpcChildHandleOptions) -> Arc<Self> {
         let shared = Arc::new(HandleShared {
+            heartbeat: Mutex::new(HeartbeatMachine::default()),
+            clock: Arc::clone(&options.now),
             claims: create_turn_claim(),
             resumed_listeners: Mutex::new(Vec::new()),
             next_listener: std::sync::atomic::AtomicU64::new(0),
@@ -714,6 +731,9 @@ fn host_error(error: RpcClientError) -> HostError {
     }
 }
 
+/// `startHeartbeat` driver: one `get_state` in flight at a time on its own thread; this loop owns
+/// the deadline. Three consecutive misses (no answer and no session event for the deadline) end
+/// the child as `child-unresponsive` and terminate it.
 fn spawn_heartbeat(
     shared: Weak<HandleShared>,
     client: Arc<dyn RpcClientPort>,
@@ -721,42 +741,139 @@ fn spawn_heartbeat(
     interval: Duration,
     now: Clock,
 ) {
+    let deadline = Duration::from_millis(HEARTBEAT_DEADLINE_MS as u64);
     thread::spawn(move || {
         loop {
+            if !wait_while_live(&shared, interval) {
+                return;
+            }
+            let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+            let probe_client = Arc::clone(&client);
+            thread::spawn(move || {
+                let _ = answer_tx.send(probe_client.send(json!({ "type": "get_state" })));
+            });
+            let mut missed = false;
+            let mut wait = deadline;
+            let answer = loop {
+                match answer_rx.recv_timeout(wait) {
+                    Ok(answer) => break Some(answer),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                let Some(strong) = shared.upgrade() else {
+                    return;
+                };
+                if !strong.live() {
+                    return;
+                }
+                let verdict = strong
+                    .heartbeat
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .miss(now());
+                match verdict {
+                    MissVerdict::Rearm(ms) => wait = Duration::from_millis(ms.max(1) as u64),
+                    MissVerdict::Missed => {
+                        missed = true;
+                        wait = deadline;
+                    }
+                    MissVerdict::Unresponsive => {
+                        declare_unresponsive(&strong, client.as_ref(), &task_id);
+                        return;
+                    }
+                }
+            };
             let Some(strong) = shared.upgrade() else {
                 return;
             };
-            {
-                let state = strong.lock();
-                let (state, _) = strong
-                    .changed
-                    .wait_timeout_while(state, interval, |state| {
-                        !state.disposed && state.exit.is_none()
-                    })
-                    .unwrap_or_else(PoisonError::into_inner);
-                if state.disposed || state.exit.is_some() {
-                    return;
-                }
+            if !strong.live() {
+                return;
             }
-            drop(strong);
-            match client.send(json!({ "type": "get_state" })) {
-                Ok(response) => {
-                    let Some(strong) = shared.upgrade() else {
-                        return;
-                    };
+            match answer {
+                Some(Ok(response))
+                    if response.get("success").and_then(Value::as_bool) != Some(false) =>
+                {
+                    strong
+                        .heartbeat
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .answered();
                     let mut state = strong.lock();
                     state.last_seen_at = Some(now());
                     if let Some(session_id) = read_session_id(&response) {
                         state.session_id = Some(session_id);
                     }
                 }
-                Err(error) => utils::logger::log(
-                    "senpi-task heartbeat get_state failed",
-                    Some(&json!({ "taskId": task_id, "error": error.to_string() })),
-                ),
+                failed => {
+                    let error = match failed {
+                        Some(Ok(response)) => response
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("get_state refused")
+                            .to_string(),
+                        Some(Err(error)) => error.to_string(),
+                        None => "get_state probe ended".to_string(),
+                    };
+                    utils::logger::log(
+                        "senpi-task heartbeat get_state failed",
+                        Some(&json!({ "taskId": task_id, "error": error })),
+                    );
+                    let verdict = strong
+                        .heartbeat
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .refused(missed);
+                    if verdict == Some(MissVerdict::Unresponsive) {
+                        declare_unresponsive(&strong, client.as_ref(), &task_id);
+                        return;
+                    }
+                }
             }
         }
     });
+}
+
+/// Waits one interval; false once the child exited or the handle was disposed.
+fn wait_while_live(shared: &Weak<HandleShared>, interval: Duration) -> bool {
+    let Some(strong) = shared.upgrade() else {
+        return false;
+    };
+    let state = strong.lock();
+    let (state, _) = strong
+        .changed
+        .wait_timeout_while(state, interval, |state| {
+            !state.disposed && state.exit.is_none()
+        })
+        .unwrap_or_else(PoisonError::into_inner);
+    !state.disposed && state.exit.is_none()
+}
+
+/// `onUnresponsive`: settle the turn and the exit, then terminate the silent child.
+fn declare_unresponsive(shared: &HandleShared, client: &dyn RpcClientPort, task_id: &str) {
+    {
+        let mut state = shared.lock();
+        shared.settle_turn(
+            &mut state,
+            RunnerOutcome::error(
+                crate::runners::RunnerFailureKind::ChildUnresponsive,
+                unresponsive_message(task_id),
+            ),
+        );
+    }
+    shared.on_exit(ChildExitOutcome::Crashed {
+        facts: crate::runners::types::ChildExitFacts {
+            pid: client.pid().map(i64::from),
+            code: None,
+            signal: None,
+            stderr_tail: "child-unresponsive".to_string(),
+        },
+    });
+    if let Err(error) = client.terminate(TerminateOptions::default()) {
+        utils::logger::log(
+            "senpi-task unresponsive child termination failed",
+            Some(&json!({ "taskId": task_id, "error": error.to_string() })),
+        );
+    }
 }
 
 fn read_session_id(response: &Value) -> Option<String> {

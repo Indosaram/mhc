@@ -111,6 +111,18 @@ pub fn map_send_outcome(outcome: SendOutcome) -> Result<SendToolResult, SendInva
                 },
             )
         }
+        SendOutcome::Unresponsive {
+            task_id,
+            retryable,
+            reason,
+        } => tool_result(
+            &reason,
+            SendResultDetails::Unresponsive {
+                task_id,
+                retryable,
+                reason: reason.clone(),
+            },
+        ),
         SendOutcome::Revived { task_id, run_epoch } => tool_result(
             &format!("Revived {task_id} (run epoch {run_epoch})."),
             SendResultDetails::Revived { task_id, run_epoch },

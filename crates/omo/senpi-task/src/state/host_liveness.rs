@@ -1,8 +1,8 @@
 //! `state/host-liveness.ts`: a host-session child's liveness, overlaid on its record (not persisted).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state")]
 pub enum HostLivenessStatus {
     #[serde(rename = "running")]
