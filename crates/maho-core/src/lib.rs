@@ -205,6 +205,7 @@ pub mod model_change_origin;
 pub mod model_config_thinking_schema;
 pub mod model_switch_auth_error;
 pub mod pending_input;
+pub mod process_crash_record;
 pub mod process_footprint;
 pub mod pending_input_mutations;
 pub mod pending_input_projection;
