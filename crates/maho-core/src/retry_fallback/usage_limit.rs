@@ -2,7 +2,11 @@ use maho_ai::types::{AssistantErrorCause, AssistantMessage, UsageLimitScope};
 use serde_json::Value;
 
 pub fn usage_limit_scope(message: &AssistantMessage) -> Option<UsageLimitScope> {
-    message.error_cause.as_ref().map(|AssistantErrorCause::UsageLimit { scope }| *scope)
+    // Only a usage_limit cause carries a scope; a model_config cause has none (senpi c2bef0ffa4).
+    message.error_cause.as_ref().and_then(|cause| match cause {
+        AssistantErrorCause::UsageLimit { scope } => Some(*scope),
+        _ => None,
+    })
 }
 
 // Subscription limit prose that carries no quota/billing keyword, e.g. Claude's "You've hit your session
@@ -135,6 +139,16 @@ mod tests {
         assert!(usage_limit_scope(&message).is_none());
         assert_eq!(describe_usage_limit_message(&message), message);
         message.error_cause = Some(AssistantErrorCause::UsageLimit { scope: UsageLimitScope::Model });
+        assert_eq!(describe_usage_limit_message(&message), message);
+    }
+
+    /// senpi c2bef0ffa4: a model_config cause is not a usage limit and yields no scope.
+    #[test]
+    fn a_model_config_cause_yields_no_scope() {
+        let mut message = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        message.error_message = Some("unknown model".into());
+        message.error_cause = Some(AssistantErrorCause::ModelConfig { model: "m".into() });
+        assert!(usage_limit_scope(&message).is_none());
         assert_eq!(describe_usage_limit_message(&message), message);
     }
 }

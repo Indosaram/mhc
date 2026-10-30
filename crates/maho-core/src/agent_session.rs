@@ -637,6 +637,8 @@ struct AgentSessionState {
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
     retry_attempt: u32,
+    /// senpi `_modelConfigErrors`: one `model_config_error` warning per model and session (senpi#4282).
+    model_config_errors: crate::retry_fallback::model_config_error::ModelConfigErrorReporter,
     retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     user_aborted: bool,
     abort_source: Option<maho_ext_api::AbortSource>,
@@ -956,8 +958,17 @@ pub struct AgentSessionInner {
     observed_held_inputs: Mutex<BTreeSet<String>>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
+    /// Mirrors `state.disposed` for the lifecycle write gate: lifecycle records are written while the
+    /// caller may hold the state lock (the AgentStart arm), so the gate must not lock state again.
+    lifecycle_disposed: std::sync::atomic::AtomicBool,
+    /// senpi agent_end `failure`: the structured provider failure of the last agent_end, naming the selected
+    /// model when the failing request ran on another one (senpi#4328). `None` after a success or an abort.
+    last_provider_failure: Mutex<Option<crate::provider_failure::ProviderFailure>>,
     lifecycle_goal: Mutex<Option<Value>>,
     lifecycle_turn_facts: Mutex<Option<Value>>,
+    /// senpi `RunStopFacts` of the run whose agent_end was bound, and the run restored from disk, which keeps exactly
+    /// the stop its record carries (senpi#3864).
+    lifecycle_stop_facts: Mutex<(Option<crate::lifecycle_stop::RunStopFacts>, Option<String>)>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -1095,6 +1106,52 @@ struct SessionFallbackDeps(
 );
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
+
+/// senpi `SessionLifecycleController.lastStop`: derived only from the current run's own bound end; an end processed
+/// after a later run started sets nothing, and an unchanged stop keeps its first `at`. A run restored from disk keeps
+/// exactly the stop its record carries. No turn deadline is captured here: maho has no turn-deadline tracker.
+fn lifecycle_last_stop(
+    ledger: &crate::lifecycle_ledger::LifecycleLedger,
+    restored_run_id: Option<&str>,
+    facts: Option<&crate::lifecycle_stop::RunStopFacts>,
+    input: Option<&Value>,
+    stalled: bool,
+) -> Option<Value> {
+    let existing_value = ledger.current.get("lastStop").cloned();
+    let run_id = ledger.run_id.as_deref()?;
+    if Some(run_id) == restored_run_id {
+        return existing_value;
+    }
+    let Some(facts) = facts.filter(|facts| facts.run_id.as_deref() == Some(run_id)) else {
+        return existing_value;
+    };
+    let Some(detail) = crate::lifecycle_stop::stop_detail(input, Some(facts), None, stalled) else {
+        return existing_value;
+    };
+    let existing = existing_value.as_ref().and_then(|stop| {
+        serde_json::from_value::<crate::session_lifecycle_types::LifecycleStop>(stop.clone()).ok()
+    });
+    if existing
+        .as_ref()
+        .is_some_and(|existing| crate::lifecycle_stop::same_stop(existing, &detail))
+    {
+        return existing_value;
+    }
+    let stop = crate::session_lifecycle_types::LifecycleStop {
+        cause: detail.cause,
+        run_id: run_id.to_owned(),
+        at: detail.at.unwrap_or_else(|| {
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        }),
+        epoch: ledger.current["epoch"].as_u64().unwrap_or(0),
+        deadline: detail.deadline,
+        guard: detail.guard,
+        todo: detail.todo,
+        abort_source: detail.abort_source,
+        persisted: detail.persisted,
+    };
+    serde_json::to_value(stop).ok()
+}
 
 /// senpi `_bindExtensionCore` provider callbacks: registration updates the catalog, then the live
 /// session model is replaced so a reload does not keep the pre-reload context window.
@@ -2646,6 +2703,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 .map(|file| maho_ext_api::ContextFile {
                     path: file.path,
                     content: file.content,
+                    scope: file.scope,
                 })
                 .collect(),
         }
@@ -4038,6 +4096,7 @@ impl AgentSession {
             turn_index: 0,
             message_replacements: Vec::new(),
             retry_attempt: 0,
+            model_config_errors: Default::default(),
             retry_abort_controller: None,
             user_aborted: false,
             abort_source: None,
@@ -4102,6 +4161,7 @@ impl AgentSession {
                 .session_manager
                 .reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY),
         );
+        let restored_run_id = lifecycle.run_id.clone();
         let held_inputs = crate::held_inputs::HeldInputs::new(&config.session_manager.entries());
         let session = Self {
             inner: Arc::new(AgentSessionInner {
@@ -4115,8 +4175,11 @@ impl AgentSession {
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
+                lifecycle_disposed: std::sync::atomic::AtomicBool::new(false),
+                last_provider_failure: Mutex::new(None),
                 lifecycle_goal: Mutex::new(None),
                 lifecycle_turn_facts: Mutex::new(None),
+                lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
                 session_manager: Mutex::new(config.session_manager),
                 settings_manager: Arc::new(Mutex::new(config.settings_manager)),
                 model_registry,
@@ -4231,6 +4294,7 @@ impl AgentSession {
             Some(crate::work_obligations::SessionWorkObligations::new(
                 Box::new(SessionCustodyStore(Arc::downgrade(&session.inner))),
             ));
+        session.restore_queued_external_deliveries();
         let initial_model = session.agent.state().model;
         let scoped_tier = lock(&session.state)
             .scoped_models
@@ -4375,7 +4439,9 @@ impl AgentSession {
                         "automatic"
                     };
                     ledger.start_run(origin);
-                    ledger.checkpoint(|record| self.persist_lifecycle_record(record));
+                    lock(&self.lifecycle_stop_facts).0 = None;
+                    // The run's opening record carries the admitted input and the epoch (senpi#3980).
+                    ledger.publish_unwritten(|record| self.persist_lifecycle_record(record));
                     state.required_compaction_turn_error = None;
                     state.turn_index = 0;
                     state.message_replacements.clear();
@@ -4516,6 +4582,30 @@ impl AgentSession {
                 self.emit_queue_update();
             }
         }
+        // senpi `_endSelectedModels`: frozen when the end arrives, before any await lets a queued run or a
+        // fallback switch replace the selection the failing request was dispatched under.
+        let selected_model = if let AgentEvent::AgentEnd { messages } = &event
+            && messages
+                .iter()
+                .rev()
+                .find_map(AgentMessage::as_assistant)
+                .is_some_and(|message| message.stop_reason == StopReason::Error)
+        {
+            let original_selector = self
+                .retry_fallback
+                .lock()
+                .await
+                .as_ref()
+                .and_then(|controller| controller.state.as_ref())
+                .map(|state| state.original_selector.clone());
+            crate::provider_failure::selected_model_of(
+                original_selector.as_deref(),
+                &self.model_registry.get_all(),
+                Some(&self.model()),
+            )
+        } else {
+            None
+        };
         let will_retry = if let AgentEvent::AgentEnd { messages } = &event {
             self.will_retry(messages.iter().rev().find_map(AgentMessage::as_assistant))
                 .await
@@ -4604,8 +4694,29 @@ impl AgentSession {
                 }),
             }
         } else {
+            // Bound at emission: the run this end belonged to, and the leaf before its handlers ran, so only a
+            // guard that this end's handlers appended is attributed to it (senpi#3864).
+            let bound_end = matches!(event, AgentEvent::AgentEnd { .. }).then(|| {
+                (
+                    lock(&self.lifecycle).run_id.clone(),
+                    self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
+                )
+            });
             self.dispatch_agent_extension_event(&event, end_boundary.as_ref(), will_retry)
                 .await;
+            if let Some((run_id, guard_start_leaf)) = bound_end {
+                let guard = self.with_session_manager(|manager| {
+                    crate::lifecycle_stop::goal_guard_after(
+                        &manager.branch(None),
+                        guard_start_leaf.as_deref(),
+                    )
+                });
+                lock(&self.lifecycle_stop_facts).0 = Some(crate::lifecycle_stop::RunStopFacts {
+                    run_id,
+                    guard,
+                    todo: None,
+                });
+            }
         }
         if let Some(boundary) = &end_boundary {
             self.state().abort_provenance.end_agent_end(boundary);
@@ -4706,6 +4817,10 @@ impl AgentSession {
                     );
                 }
             }
+            *lock(&self.last_provider_failure) = crate::provider_failure::provider_failure_of(
+                &boundary.messages,
+                selected_model.as_ref(),
+            );
             self.emit(AgentSessionEvent::AgentEnd {
                 messages: boundary.messages.clone(),
                 aborted,
@@ -5014,8 +5129,15 @@ impl AgentSession {
         &self.external_admission
     }
 
+    /// The provider failure of the last agent_end (senpi agent_end `failure`). The maho-ext-api agent_end
+    /// envelope has no failure field, so subscribers read it here once the end is delivered.
+    pub fn last_provider_failure(&self) -> Option<crate::provider_failure::ProviderFailure> {
+        lock(&self.last_provider_failure).clone()
+    }
+
+    /// Reads the lifecycle; every fact that feeds it raises its own change edge, so a read never writes
+    /// (senpi#3980).
     pub fn lifecycle_snapshot(&self) -> Value {
-        self.refresh_lifecycle();
         lock(&self.lifecycle).snapshot().clone()
     }
 
@@ -5151,6 +5273,10 @@ impl AgentSession {
     }
 
     fn refresh_lifecycle(&self) {
+        // Work aborted by dispose() still unwinds afterwards; its edges must not write to the released session file.
+        if self.lifecycle_disposed.load(Ordering::SeqCst) {
+            return;
+        }
         let activity = self.activity_snapshot();
         let entries = self.with_session_manager(|manager| {
             manager.reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY)
@@ -5196,7 +5322,24 @@ impl AgentSession {
                 .unwrap_or(0)
                 .max(child_obligations)
         );
-        waits["background"] = json!(active.iter().filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background).map(|r| json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64})).collect::<Vec<_>>());
+        // Each wait source names the items it waits on (senpi#4106).
+        let project = |r: &crate::work_custody_record::WorkCustodyRecord| {
+            let mut wait = json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64});
+            let named = crate::lifecycle_wait_items::project_wait_items(
+                &crate::lifecycle_wait_items::WaitSourceItems {
+                    items: r.items.clone(),
+                    omitted_items: r.omitted_items,
+                },
+            );
+            if let Some(items) = named.items {
+                wait["items"] = json!(items);
+            }
+            if let Some(omitted) = named.omitted_items {
+                wait["omittedItems"] = json!(omitted);
+            }
+            wait
+        };
+        waits["background"] = json!(active.iter().filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background).map(project).collect::<Vec<_>>());
         if !custody_persisted {
             ledger.custody_write_failed();
         }
@@ -5259,9 +5402,36 @@ impl AgentSession {
         {
             return;
         }
-        let changed = ledger.update(&state, waits, holds, failure, |record| {
-            self.persist_lifecycle_record(record)
-        });
+        let last_stop = {
+            let stop_facts = lock(&self.lifecycle_stop_facts);
+            let mut facts = stop_facts.0.clone();
+            if let Some(facts) = facts.as_mut() {
+                facts.todo = input
+                    .as_ref()
+                    .and_then(|input| input["todoOutcome"].as_str())
+                    .map(str::to_owned);
+            }
+            lifecycle_last_stop(
+                &ledger,
+                stop_facts.1.as_deref(),
+                facts.as_ref(),
+                input.as_ref(),
+                ledger.attention.synthetic().as_array().is_some_and(|waits| {
+                    waits.iter().any(|wait| wait["wait"]["kind"] == "stalled")
+                }),
+            )
+        };
+        let changed = ledger.update_with(
+            crate::lifecycle_ledger::LedgerUpdate {
+                state: state.clone(),
+                waits,
+                holds,
+                failure,
+                last_stop,
+                activity: None,
+            },
+            |record| self.persist_lifecycle_record(record),
+        );
         let snapshot = ledger.snapshot().clone();
         drop(ledger);
         if changed {
@@ -5270,6 +5440,10 @@ impl AgentSession {
     }
 
     fn persist_lifecycle_record(&self, record: &Value) -> Result<(), String> {
+        // Writes and emits nothing once disposed: the session file is no longer this session's (senpi#4149).
+        if self.lifecycle_disposed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         self.with_session_manager_mut(|manager| {
             manager.append_custom("session-lifecycle", Some(record.clone()));
             manager
@@ -5545,11 +5719,9 @@ impl AgentSession {
     pub fn note_automatic_input(&self, text: &str) -> bool {
         let mut hold = lock(&self.engine_turn_hold);
         if !hold.holds().iter().any(|record| {
-            matches!(
-                record.kind,
-                crate::engine_turn_hold::HoldKind::SessionHold
-                    | crate::engine_turn_hold::HoldKind::InheritedHold
-            )
+            (record.kind == crate::engine_turn_hold::HoldKind::SessionHold
+                && record.key != crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
+                || record.kind == crate::engine_turn_hold::HoldKind::InheritedHold
         }) {
             return false;
         }
@@ -5640,6 +5812,21 @@ impl AgentSession {
         }
         Ok(answer)
     }
+    /// senpi `_resumeCause`: only the interruption gate held (no user Stop) resumes as "interrupted".
+    pub fn resume_cause(&self) -> crate::stop_resume_directive::ResumeCause {
+        let holds = self.holds();
+        let session_hold = |interrupted: bool| {
+            holds.iter().any(|hold| {
+                hold.kind == crate::engine_turn_hold::HoldKind::SessionHold
+                    && (hold.key == crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY) == interrupted
+            })
+        };
+        if session_hold(true) && !session_hold(false) {
+            crate::stop_resume_directive::ResumeCause::Interrupted
+        } else {
+            crate::stop_resume_directive::ResumeCause::Stop
+        }
+    }
     pub async fn resume_session(&self) -> Result<(), String> {
         self.human_input_admitted(HumanInputKind::Resume);
         let mut hold =
@@ -5728,7 +5915,7 @@ impl AgentSession {
     /// running engine turn.
     fn observe_engine_turn_message(&self, message: &AgentMessage) {
         let user_directed = matches!(message, AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom))
-            if crate::engine_turn_limit::is_user_directed_turn(&custom.custom_type));
+            if crate::engine_turn_limit::resets_engine_turn_history(&custom.custom_type, custom.details.as_ref()));
         if message.role() == "user" || user_directed {
             lock(&self.engine_turn_starts).clear();
             self.engine_resume_window.store(false, Ordering::SeqCst);
@@ -6620,9 +6807,10 @@ impl AgentSession {
         );
         let mut messages = self.engine_turn_input_messages();
         messages.extend(options.held_messages.clone());
+        let prompt_index = messages.len();
         messages.push(user_message);
         messages.extend(consumed.clone());
-        self.apply_before_agent_start_result(&mut messages, before)?;
+        self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
         if let Err(error) = self.enforce_final_provider_admission(&messages).await {
             self.state()
                 .pending_next_turn_messages
@@ -6713,7 +6901,15 @@ impl AgentSession {
                 .prompt(maho_agent::agent::AgentPromptInput::Messages(messages)),
         )
         .await;
-        Box::pin(self.finish_provider_turn()).await?;
+        if let Err(error) = Box::pin(self.finish_provider_turn()).await {
+            // A turn the engine refused never ran, so it releases the barrier it armed (senpi#4106).
+            if let Some(spec) = &options.tool_barrier
+                && self.agent.signal().is_none()
+            {
+                self.release_tool_barrier(&spec.id);
+            }
+            return Err(error);
+        }
         let transcript_failure = lock(&self.transcript_write_failures).take_report();
         self.flush_pending_bash_messages();
         let required_compaction_error = self.state().required_compaction_admission_error.take();
@@ -6748,8 +6944,21 @@ impl AgentSession {
         &self,
         messages: &mut Vec<AgentMessage>,
         result: Option<maho_ext_api::BeforeAgentStartCombinedResult>,
+        prompt_index: usize,
     ) -> Result<(), String> {
         if let Some(before) = result {
+            // `placement: "before-prompt"` messages land just before the triggering prompt, in handler order.
+            for (offset, message) in before.before_prompt_messages.into_iter().enumerate() {
+                messages.insert(
+                    prompt_index + offset,
+                    session_message_from_value(
+                        serde_json::json!({"role":"custom", "customType":message.custom_type,
+                    "content":message.content, "display":message.display, "details":message.details,
+                    "timestamp":maho_ai::utils::diagnostics::now_ms()}),
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+            }
             for message in before.messages {
                 messages.push(
                     session_message_from_value(
@@ -8152,6 +8361,10 @@ impl AgentSession {
         if Self::is_local_failure(message) {
             return false;
         }
+        // A route that does not serve the model fails the same way on every attempt, whatever status wraps it.
+        if crate::retry_fallback::model_config_error::is_model_config_failure(message) {
+            return false;
+        }
         if message.error_message.as_deref().is_some_and(|error| {
             error.starts_with(
                 maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX,
@@ -8200,7 +8413,9 @@ impl AgentSession {
         {
             return false;
         }
-        if Self::is_local_failure(message) {
+        if Self::is_local_failure(message)
+            || crate::retry_fallback::model_config_error::is_model_config_failure(message)
+        {
             return false;
         }
         message.stop_reason == StopReason::Error
@@ -8217,7 +8432,20 @@ impl AgentSession {
                 .content
                 .iter()
                 .any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
-            && self.can_try_fallback().await
+            && self.can_try_fallback_refused(
+                crate::provider_failure::is_request_level_refusal(message)
+                    .then_some(message.provider.as_str()),
+            )
+            .await
+    }
+
+    /// senpi `canTryFallback(refusedProvider)` (senpi#2491).
+    async fn can_try_fallback_refused(&self, refused_provider: Option<&str>) -> bool {
+        self.retry_fallback
+            .lock()
+            .await
+            .as_mut()
+            .is_some_and(|controller| controller.can_try_fallback_refused(refused_provider))
     }
 
     /// `_takeNativeToolSearchInjectionFailure`: consumes the tool-search service's pending flag.
@@ -8551,6 +8779,23 @@ impl AgentSession {
             return Ok(estimate_messages_tokens(&messages));
         }
         Ok(estimate.tokens)
+    }
+
+    /// senpi `_modelConfigErrors.report`: logs `model_config_error` once per model and session (senpi#4282).
+    fn report_model_config_error(&self, message: &maho_ai::types::AssistantMessage) {
+        let session_id = self.session_id();
+        let Some(event) = self.state().model_config_errors.report(message, &session_id) else {
+            return;
+        };
+        let mut data = Map::new();
+        data.insert("model".to_owned(), Value::String(event.model));
+        data.insert("provider".to_owned(), Value::String(event.provider));
+        data.insert(
+            "errorMessage".to_owned(),
+            Value::String(message.error_message.clone().unwrap_or_default()),
+        );
+        crate::retry_fallback::log::FallbackLogger::new(std::path::Path::new(&self.agent_dir()), None)
+            .warn("model_config_error", Some(&data));
     }
 
     /// senpi `agent_end`: an unhandled Cursor quota `resource_exhausted` names the likely cause.
@@ -9086,6 +9331,9 @@ impl AgentSession {
                 }
             }
             if !request_shape_recover && !Box::pin(self.retry_can_admit_provider(&message)).await {
+                if crate::retry_fallback::model_config_error::is_model_config_failure(&message) {
+                    self.report_model_config_error(&message);
+                }
                 if let Some(error) = message.error_message.clone()
                     && maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(
                         &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message),
@@ -9355,6 +9603,9 @@ impl AgentSession {
                 };
                 let mut controller = self.retry_fallback.lock().await;
                 if let Some(controller) = controller.as_mut() {
+                    if crate::provider_failure::is_request_level_refusal(&message) {
+                        controller.note_refused_provider(&message.provider);
+                    }
                     switched = controller
                         .try_fallback(
                             reason,
@@ -9710,6 +9961,7 @@ impl AgentSession {
                             max_tokens: Some(1),
                             request: maho_ai::types::ProviderRequestOptions {
                                 signal: Some(ticket.signal.clone()),
+                                cwd: Some(session.cwd()),
                                 ..Default::default()
                             },
                             ..Default::default()
@@ -11277,7 +11529,11 @@ impl AgentSession {
         });
         let controller = maho_ai::utils::abort::AbortController::new();
         let navigation_signal = controller.signal();
+        // Only the end of a tree navigation is a lifecycle edge: a record written while it runs would become the leaf
+        // under it (senpi#4120). It is session work: a prompt, tick or delivery arriving meanwhile waits for it
+        // instead of starting a run on the leaf it is moving (senpi#4154).
         self.state().branch_summary_abort_controller = Some(controller);
+        let session_work = self.work_barrier.begin();
         let signal = maho_ext_api::AbortSignal::default();
         let hook_signal = signal.clone();
         let abort_signal = navigation_signal.clone();
@@ -11461,7 +11717,10 @@ impl AgentSession {
             })
         }
         .await;
+        // The navigation's two busy facts end together, then raise the one lifecycle edge (senpi#4154).
         self.state().branch_summary_abort_controller = None;
+        session_work.finish();
+        self.refresh_lifecycle();
         result
     }
 
@@ -12038,6 +12297,8 @@ impl AgentSession {
         self.state()
             .bash_abort_signals
             .insert(key.clone(), signal.clone());
+        // A running user bash is a lifecycle fact: its start and end are edges (senpi#3980).
+        self.refresh_lifecycle();
         let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
         let shell = self.with_settings_manager(|manager| manager.get_shell_path());
         let local = self.tool_dispatcher.bash_operations(shell.as_deref());
@@ -12065,11 +12326,14 @@ impl AgentSession {
                 })),
                 on_chunk_async: None,
                 env: Some(crate::utils::shell::get_shell_env()),
+                redact_secrets_in_output: self
+                    .with_settings_manager(|manager| manager.get_bash_redact_secrets_in_output()),
             },
         )
         .await
         .map_err(|error| error.to_string());
         self.state().bash_abort_signals.remove(&key);
+        self.refresh_lifecycle();
         if let Ok(result) = &result {
             self.record_bash_result(command, result, exclude_from_context);
         }
@@ -12306,6 +12570,7 @@ impl AgentSession {
                 .map(|file| maho_ext_api::ContextFile {
                     path: file.path,
                     content: file.content,
+                    scope: file.scope,
                 })
                 .collect(),
             cwd: self.cwd().into(),
@@ -13513,8 +13778,27 @@ impl AgentSession {
         if let Some(files) = self.state().loaded_context_files.clone() {
             return files;
         }
-        let files =
-            crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir());
+        let agent_dir = self.agent_dir();
+        let mut files = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir);
+        // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
+        // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
+        // lane owns, so the scope is applied here until it produces it itself.
+        let directory_key = |path: &std::path::Path| {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        };
+        let user_dirs = [
+            directory_key(std::path::Path::new(&agent_dir)),
+            directory_key(&crate::config::home_dir_path()),
+        ];
+        for file in &mut files {
+            if file.scope.is_none()
+                && std::path::Path::new(&file.path)
+                    .parent()
+                    .is_some_and(|dir| user_dirs.contains(&directory_key(dir)))
+            {
+                file.scope = Some(crate::system_prompt::ContextFileScope::User);
+            }
+        }
         self.state().loaded_context_files = Some(files.clone());
         files
     }
@@ -15526,7 +15810,12 @@ impl AgentSession {
                             } else {
                                 crate::work_custody_record::ObligationKind::Background
                             };
-                            registry.sync_source(source, kind, count);
+                            registry.sync_source(
+                                source,
+                                kind,
+                                count,
+                                crate::lifecycle_wait_items::wake_source_items(data),
+                            );
                         }
                     AgentSession { inner }.refresh_lifecycle();
                 }
@@ -17229,13 +17518,17 @@ impl AgentSession {
         }
         let source = ui.clone();
         let bound: Arc<dyn ExtensionUi> = match sender {
-            Some(events) => Arc::new(maho_ext_host::ui::LifecycleUi::new(
-                ui,
-                runner.runtime.clone(),
-                Arc::new(move |event| {
-                    let _ = events.send(event);
-                }),
-            )),
+            // The wrapper keeps the host's MCP presentation (and private forms) (senpi#d61b732).
+            Some(events) => crate::mcp_mrtr_presentations::inherit_mcp_mrtr_presentation(
+                &ui,
+                Arc::new(maho_ext_host::ui::LifecycleUi::new(
+                    ui.clone(),
+                    runner.runtime.clone(),
+                    Arc::new(move |event| {
+                        let _ = events.send(event);
+                    }),
+                )),
+            ),
             None => ui,
         };
         runner
@@ -17737,6 +18030,7 @@ impl AgentSession {
         }
         self.state().user_aborted = false;
         let mut messages = held_messages;
+        let prompt_index = messages.len();
         messages.push(app_message.clone());
         self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
         let admitted: Result<bool, String> = async {
@@ -17788,7 +18082,7 @@ impl AgentSession {
             if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) {
                 return Ok(false);
             }
-            self.apply_before_agent_start_result(&mut messages, before)?;
+            self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
             self.enforce_final_provider_admission(&messages).await?;
             Ok::<bool, String>(
                 user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst),
@@ -17875,6 +18169,13 @@ impl AgentSession {
         }) = &mut event
         {
             **message = crate::retry_fallback::usage_limit::describe_usage_limit_message(message);
+        }
+        // Compaction start and end are lifecycle edges: the lifecycle getter no longer recomputes (senpi#3980).
+        if matches!(
+            event,
+            AgentSessionEvent::CompactionStart { .. } | AgentSessionEvent::CompactionEnd { .. }
+        ) {
+            self.refresh_lifecycle();
         }
         self.log_session_event(&event);
         // PERF-DIVERGENCE(senpi agent-session.ts): upstream iterates its listener array; the port cloned the whole listener Vec per event, so we snapshot one copy-on-write Arc instead. Snapshot-at-emit semantics are unchanged.
@@ -18235,6 +18536,7 @@ impl AgentSession {
         }
         self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         self.state().disposed = true;
+        self.lifecycle_disposed.store(true, Ordering::SeqCst);
         lock(&self.engine_turn_hold).invalidate();
         lock(&self.settled_delivery).cancel();
         self.fail_all_queued_custom_receipts("session disposed before custom message delivery");
@@ -18378,7 +18680,10 @@ impl AgentSession {
         let cleared_deliveries = self.queued_delivery_tickets();
         self.agent.clear_all_queues();
         self.release_queued_deliveries(&cleared_deliveries, "cleared");
-        self.audit_queued_custom_receipts("queued custom message cleared before delivery");
+        // A removed queued message is never written: every send waiting on it settles now as cleared (senpi#4106).
+        self.audit_queued_custom_receipts(
+            &crate::itemized_send::QueuedDeliveryCleared { item_ids: Vec::new() }.to_string(),
+        );
         self.emit_queue_update();
         ClearedQueue {
             steering,
@@ -19464,7 +19769,7 @@ impl AgentSession {
 
     // Stop resume directive (senpi stop-resume-directive.ts)
     pub fn stop_resume_directive(&self) -> crate::stop_resume_directive::StopResumeDirective {
-        crate::stop_resume_directive::stop_resume_directive()
+        crate::stop_resume_directive::stop_resume_directive(self.resume_cause())
     }
 }
 
@@ -19793,6 +20098,66 @@ impl AgentSession {
 }
 
 impl AgentSession {
+    /// senpi `LifecycleSessionBinding` constructor (senpi#11209): a crashed receiver may hold durable custody but no
+    /// transcript entry yet. Recovery owns that delivery already, so it is reserved before session_start can let the
+    /// gateway enqueue a second carrier; consumed work marks the ledger interrupted first.
+    fn restore_queued_external_deliveries(&self) {
+        let deliveries = self.with_session_manager(|manager| {
+            crate::lifecycle_delivery::lifecycle_delivery_entries(&manager.entries())
+        });
+        let active: Vec<crate::work_custody_record::WorkCustodyRecord> = lock(&self.work_obligations)
+            .as_ref()
+            .map(|registry| registry.active().into_iter().cloned().collect())
+            .unwrap_or_default();
+        for record in active {
+            let Some(ticket) = record.ticket_id.clone() else {
+                continue;
+            };
+            if record.state == crate::work_custody_record::CustodyState::Consumed
+                || deliveries.contains_key(&ticket)
+            {
+                lock(&self.lifecycle).interrupted = true;
+            }
+            if record.state != crate::work_custody_record::CustodyState::Queued {
+                continue;
+            }
+            let Some(payload) = &record.payload else {
+                continue;
+            };
+            let mut message = payload.message.clone();
+            message["role"] = json!("custom");
+            message["timestamp"] = json!(0);
+            let Some(delivery_id) = crate::external_admission::delivery_id_of(&message).map(str::to_owned)
+            else {
+                continue;
+            };
+            if deliveries.contains_key(&ticket) {
+                self.external_admission.observe_persisted(&message);
+                continue;
+            }
+            let weak = Arc::downgrade(&self.inner);
+            self.external_admission.restore_queued(
+                &delivery_id,
+                Arc::new(move || {
+                    let Some(inner) = weak.upgrade() else {
+                        return false;
+                    };
+                    let session = AgentSession { inner };
+                    // Consumption writes the entry before message_end observes it in external admission.
+                    session.with_session_manager(|manager| {
+                        crate::lifecycle_delivery::lifecycle_delivery_entries(&manager.entries())
+                            .contains_key(&ticket)
+                    }) || lock(&session.work_obligations).as_ref().is_some_and(|registry| {
+                        registry.active().iter().any(|current| {
+                            current.ticket_id.as_deref() == Some(ticket.as_str())
+                                && current.state == crate::work_custody_record::CustodyState::Queued
+                        })
+                    })
+                }),
+            );
+        }
+    }
+
     /// Ticket admission precedes every write. Delivery is acknowledged only by the transcript receipt.
     pub fn send_work_ticket(
         &self,
@@ -19804,7 +20169,19 @@ impl AgentSession {
         if admission != crate::work_obligations::TicketAdmission::Admitted {
             return Err(crate::work_obligations::DeliveryTicketRefused {
                 ticket_id: ticket.into(),
-                reason: admission,
+                reason: crate::work_obligations::DeliveryTicketRefusal::Admission(admission),
+            }
+            .to_string());
+        }
+        // A re-send of a queued ticket must not replace the batch that queued message will write (senpi#4106).
+        if let Some(items) = &payload.item_ids
+            && let Some(queued) =
+                self.with_work_obligations(|registry| registry.queued_item_ids(ticket))
+            && !crate::itemized_send::same_items(&queued, items)
+        {
+            return Err(crate::work_obligations::DeliveryTicketRefused {
+                ticket_id: ticket.into(),
+                reason: crate::work_obligations::DeliveryTicketRefusal::DifferentItems,
             }
             .to_string());
         }
@@ -22277,6 +22654,51 @@ mod tests {
 
     fn test_session() -> AgentSession {
         test_session_with_stream_function(true)
+    }
+
+    struct Recorder(std::sync::Mutex<Vec<String>>);
+    impl crate::lifecycle_session_binding::LifecycleBindingHost for Recorder {
+        fn event(&self, name: &str, _: Value) {
+            self.0.lock().unwrap().push(name.to_owned());
+        }
+        fn facts_failed(&self, _: String) {}
+    }
+    /// senpi test/suite/regressions/4149-disposed-binding.test.ts: a disposed binding writes and emits nothing.
+    #[test]
+    fn a_disposed_binding_writes_and_emits_nothing() {
+        let session = Arc::new(test_session());
+        let host = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
+        let mut binding = crate::lifecycle_session_binding::LifecycleSessionBinding::new(session, host.clone());
+        binding.start_run();
+        binding.dispose();
+        binding.start_run();
+        binding.idle();
+        binding.refresh_facts(Value::Null);
+        assert_eq!(*host.0.lock().unwrap(), vec!["start_run".to_owned()]);
+        assert!(binding.consume(&json!({"role":"custom","details":{"ticketId":"t"}}), "r").is_none());
+    }
+
+    struct CustodyProbe(std::sync::Mutex<Vec<(bool, bool)>>);
+    impl crate::lifecycle_session_binding::LifecycleBindingHost for CustodyProbe {
+        fn event(&self, _: &str, _: Value) {}
+        fn facts_failed(&self, _: String) {}
+        fn mark_interrupted_from_custody(&self, delivered: &dyn Fn(&str) -> bool) {
+            self.0.lock().unwrap().push((delivered("t1"), delivered("t2")));
+        }
+    }
+    /// senpi#4204: binding restore asks the controller to mark consumed custody interrupted, once, with the
+    /// transcript's delivered tickets.
+    #[tokio::test]
+    async fn restore_marks_interrupted_from_custody_with_delivered_tickets() {
+        let session = Arc::new(test_session());
+        session.with_session_manager_mut(|manager| {
+            manager.append_custom_message("wake", json!("hi"), false, Some(json!({"ticketId":"t1"})));
+        });
+        let host = Arc::new(CustodyProbe(std::sync::Mutex::new(Vec::new())));
+        let mut binding = crate::lifecycle_session_binding::LifecycleSessionBinding::new(session, host.clone());
+        binding.restore().await.expect("restore");
+        binding.restore().await.expect("second restore is a no-op");
+        assert_eq!(*host.0.lock().unwrap(), vec![(true, false)]);
     }
 
     fn test_session_with_manager(manager: SessionManager) -> AgentSession {
@@ -26660,6 +27082,109 @@ mod tests {
         )));
     }
 
+    /// senpi test/suite/regressions/3228-agent-end-provider-failure.test.ts and 4328-provider-failure-route:
+    /// the agent_end projection names the failing route and, when a fallback ran it, the selected model.
+    #[tokio::test]
+    async fn agent_end_failure_names_the_selected_model_of_an_active_fallback() {
+        use maho_ai::providers::faux::{
+            FauxAssistantMessageOptions, FauxModelDefinition, RegisterFauxProviderOptions,
+            faux_assistant_message, faux_provider, faux_streams,
+        };
+        let failed = || {
+            faux_assistant_message(
+                "",
+                FauxAssistantMessageOptions {
+                    stop_reason: Some(StopReason::Error),
+                    error_message: Some("provider failed".into()),
+                    ..Default::default()
+                },
+            )
+        };
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            models: Some(
+                ["faux-1", "faux-2"]
+                    .into_iter()
+                    .map(|id| FauxModelDefinition {
+                        id: id.to_owned(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(vec![failed().into(), failed().into()]);
+        let streams = faux_streams(provider.core.clone());
+        let session = test_session_with_stream_function(false);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        session
+            .agent
+            .set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session
+            .agent
+            .set_stream_function(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            }));
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global, &serde_json::from_value(
+            serde_json::json!({"retry":{"enabled":false,"maxRetries":0,"modelFallback":false,"fallbackRevertPolicy":"never"}})
+        ).expect("settings")).expect("save settings"));
+        let prompt = |text: &'static str| {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                session.prompt(text, PromptOptions::default()),
+            )
+        };
+        // The request ran on the selected model: no selection is reported beside it.
+        prompt("first")
+            .await
+            .expect("bounded prompt")
+            .expect("prompt");
+        let failure = session.last_provider_failure().expect("failure");
+        assert_eq!(
+            (failure.provider.as_str(), failure.model.as_deref()),
+            ("faux", Some("faux-1"))
+        );
+        assert_eq!(
+            (failure.selected_provider, failure.selected_model),
+            (None, None)
+        );
+        // A fallback rung ran the request: the chain original is the selection.
+        session
+            .retry_fallback
+            .lock()
+            .await
+            .as_mut()
+            .expect("controller")
+            .state = Some(crate::retry_fallback::controller::ActiveFallbackState {
+            chain_key: "fixture".to_owned(),
+            original_selector: "faux/faux-2".to_owned(),
+            original_thinking_level: None,
+            last_applied_thinking_level: None,
+            pinned_by_refusal: false,
+            pinned_by_billing: false,
+            pinned: false,
+        });
+        prompt("second")
+            .await
+            .expect("bounded prompt")
+            .expect("prompt");
+        let failure = session.last_provider_failure().expect("failure");
+        assert_eq!(failure.model.as_deref(), Some("faux-1"));
+        assert_eq!(
+            (
+                failure.selected_provider.as_deref(),
+                failure.selected_model.as_deref()
+            ),
+            (Some("faux"), Some("faux-2"))
+        );
+        assert!(
+            crate::provider_failure::format_provider_failure(&failure)
+                .starts_with("faux-1 on faux (selected: faux-2 on faux) failed: ")
+        );
+    }
+
     #[tokio::test]
     async fn begin_compaction_bridges_the_controller_abort_to_the_extension_signal() {
         let session = retry_session(Vec::new(), 0);
@@ -27535,7 +28060,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27628,7 +28153,7 @@ mod tests {
                 "stalled-summary",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("stalled-fixture".to_owned()),
+                        api_key: Some("stalled-fixture".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27721,7 +28246,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27795,7 +28320,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27885,7 +28410,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28022,7 +28547,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28230,7 +28755,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28329,7 +28854,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28408,7 +28933,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -30492,7 +31017,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -30548,7 +31073,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -31214,7 +31739,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
