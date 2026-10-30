@@ -143,7 +143,10 @@ mod tests {
     #[test]
     fn floors_the_own_start_to_the_second_so_it_never_lands_after_now() {
         let fixed = 1_790_000_000_600.0 + process_uptime_ms();
-        let started = own_process_started_at_ms(Some(&|| fixed));
+        let started = {
+            let clock = || fixed;
+            own_process_started_at_ms(Some(&clock))
+        };
         assert_eq!(started % 1000.0, 0.0);
         assert!(started <= fixed);
     }

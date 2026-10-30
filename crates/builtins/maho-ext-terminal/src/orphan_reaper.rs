@@ -332,8 +332,8 @@ mod tests {
     fn probes(platform: Platform, alive: bool, evidence: Option<ProcessEvidence>) -> OwnerProbes {
         OwnerProbes {
             platform: Some(platform),
-            is_process_alive: Some(Box::new(move |_| alive)),
-            read_process_evidence: Some(Box::new(move |_| {
+            is_process_alive: Some(Box::new(move |_: u32| alive)),
+            read_process_evidence: Some(Box::new(move |_: u32| -> EvidenceFuture {
                 let evidence = evidence.clone();
                 Box::pin(async move { Ok(evidence) })
             })),
@@ -468,7 +468,7 @@ mod tests {
             confirm_owner(&runtime(&["x"]), Some("mon_1"), &probe).await,
             OwnerVerdict::Unverifiable
         );
-        probe.read_process_evidence = Some(Box::new(|_| {
+        probe.read_process_evidence = Some(Box::new(|_: u32| -> EvidenceFuture {
             Box::pin(async { Err(std::io::Error::other("boom")) })
         }));
         assert_eq!(
@@ -503,7 +503,7 @@ mod tests {
         let seen = probed.clone();
         let mut probe = probes(Platform::Linux, true, None);
         probe.boot_at_ms = Some(Box::new(|| BOOT + 600_000.0));
-        probe.is_process_alive = Some(Box::new(move |_| {
+        probe.is_process_alive = Some(Box::new(move |_: u32| {
             *seen.lock().unwrap() = true;
             true
         }));
@@ -520,7 +520,7 @@ mod tests {
         let killed = Arc::new(Mutex::new(Vec::new()));
         let log = killed.clone();
         let options = KillTreeOptions {
-            kill: Some(Box::new(move |target, signal| {
+            kill: Some(Box::new(move |target: i64, signal: Signal| {
                 log.lock().unwrap().push((target, signal));
                 Ok(())
             })),
@@ -541,8 +541,8 @@ mod tests {
         let log = killed.clone();
         let options = KillTreeOptions {
             grace_ms: Some(5),
-            is_process_alive: Some(Box::new(|_| false)),
-            kill: Some(Box::new(move |target, signal| {
+            is_process_alive: Some(Box::new(|_: u32| false)),
+            kill: Some(Box::new(move |target: i64, signal: Signal| {
                 log.lock().unwrap().push((target, signal));
                 Ok(())
             })),
@@ -557,7 +557,9 @@ mod tests {
     #[tokio::test]
     async fn kill_tree_reports_already_dead_when_sigterm_hits_esrch() {
         let options = KillTreeOptions {
-            kill: Some(Box::new(|_, _| Err(std::io::ErrorKind::NotFound.into()))),
+            kill: Some(Box::new(|_: i64, _: Signal| {
+                Err(std::io::ErrorKind::NotFound.into())
+            })),
             ..Default::default()
         };
         assert_eq!(

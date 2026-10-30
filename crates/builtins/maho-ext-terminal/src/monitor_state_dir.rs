@@ -12,7 +12,9 @@ pub fn terminal_state_dir(ctx: Option<&maho_ext_api::ExtensionContext>) -> Optio
     ) {
         return None;
     }
-    terminal_state_dir_for(ctx.session_manager.get_session_dir().as_deref())
+    terminal_state_dir_for(
+        maho_ext_api::SessionManager::get_session_dir(ctx.session_manager.as_ref()).as_deref(),
+    )
 }
 
 /// The path half of `terminalStateDir`, for callers that already hold the session dir.
