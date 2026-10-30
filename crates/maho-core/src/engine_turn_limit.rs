@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::manual_continue::MANUAL_CONTINUE_CUSTOM_TYPE;
 
-pub const MAX_ENGINE_TURNS_PER_USER_INPUT: usize = 150;
+pub const MAX_ENGINE_TURNS_PER_USER_INPUT: usize = 0;
 pub const MAX_ENGINE_TURNS_PER_RESUME_WINDOW: usize = 8;
 pub const MAX_TOOL_FREE_ENGINE_TURNS_PER_WINDOW: usize = 12;
 pub const ENGINE_TURN_WINDOW_MS: i64 = 60_000;
@@ -79,6 +79,14 @@ pub fn is_user_directed_turn(custom_type: &str) -> bool {
     custom_type == MANUAL_CONTINUE_CUSTOM_TYPE || custom_type == CONTINUE_FROM_LEAF_CUSTOM_TYPE || custom_type == "session-resumed"
 }
 
+/// Recovering an interrupted run is not a new message that resets the unattended turn budget (senpi#4204).
+pub fn resets_engine_turn_history(custom_type: &str, details: Option<&Value>) -> bool {
+    is_user_directed_turn(custom_type)
+        && !(custom_type == crate::stop_resume_directive::STOP_RESUME_CUSTOM_TYPE
+            && details.and_then(|details| details.get("resumeCause")).and_then(Value::as_str)
+                == Some("interrupted"))
+}
+
 fn entry_type(entry: &Value) -> Option<&str> {
     entry.get("type").and_then(Value::as_str)
 }
@@ -88,7 +96,7 @@ fn is_user_message(entry: &Value) -> bool {
         Some("custom_message") => entry
             .get("customType")
             .and_then(Value::as_str)
-            .is_some_and(is_user_directed_turn),
+            .is_some_and(|custom_type| resets_engine_turn_history(custom_type, entry.get("details"))),
         Some("message") => entry.pointer("/message/role").and_then(Value::as_str) == Some("user"),
         _ => false,
     }
@@ -297,6 +305,31 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// senpi test/suite/regressions/4150-engine-turns-default-off.test.ts: the per-message cap is off by default.
+    #[test]
+    fn per_user_input_cap_is_off_by_default() {
+        let history = EngineTurnHistory {
+            starts: (0..500)
+                .map(|i| EngineTurnStartRecord { at: i, tool_used: true })
+                .collect(),
+        };
+        assert_eq!(MAX_ENGINE_TURNS_PER_USER_INPUT, 0);
+        assert_eq!(engine_turn_stop(&history, 1_000_000, &limits(None), &[]), None);
+    }
+
+    /// senpi test/suite/regressions/4204-interrupted-resume.test.ts: an interrupted-run resume directive does not
+    /// reset the unattended turn budget; a Stop resume still does.
+    #[test]
+    fn interrupted_resume_keeps_the_turn_history() {
+        let mut history = EngineTurnHistory::from_entries(&[start("2026-01-01T00:00:00.000Z")]);
+        history.add(&json!({"type": "custom_message", "customType": "session-resumed", "details": {"resumeCause": "interrupted"}}));
+        assert_eq!(history.starts.len(), 1);
+        history.add(&json!({"type": "custom_message", "customType": "session-resumed"}));
+        assert!(history.starts.is_empty());
+        assert!(!resets_engine_turn_history("session-resumed", Some(&json!({"resumeCause": "interrupted"}))));
+        assert!(resets_engine_turn_history("session-resumed", None));
     }
 
     #[test]

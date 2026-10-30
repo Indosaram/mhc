@@ -7,8 +7,12 @@ use std::os::unix::fs::{OpenOptionsExt,PermissionsExt};
 static REDACTION_PATTERN:LazyLock<Result<Regex,regex::Error>>=LazyLock::new(||Regex::new(r#"(?i)((?:authorization\s*[:=]\s*(?:bearer|basic)\s+)|(?:bearer\s+)|(?:[?&](?:api[_-]?key|token|secret|password|auth(?:orization)?)=))[^\s&,"'}\]]+"#));
 fn safe_text(value:&str)->Result<String,regex::Error> {
     let pattern=REDACTION_PATTERN.as_ref().map_err(Clone::clone)?;
-    let redacted=pattern.replace_all(value,"${1}[redacted]");
-    if redacted.encode_utf16().count()<=200 {Ok(redacted.into_owned())} else {Ok(format!("{}...",redacted.chars().take(197).collect::<String>()))}
+    // senpi `redactSecrets(text, "[redacted]")`: the session rules (environment assignments, resolved config
+    // references, credential shapes) after the key regex.
+    let keyed=pattern.replace_all(value,"${1}[redacted]");
+    let session=crate::sensitive_output::redact_sensitive_output(&crate::config_reference_redaction::redact_resolved_reference_values(&keyed,"[redacted]")).replace("[REDACTED]","[redacted]");
+    let redacted=maho_ai::utils::secret_redaction::redact_secrets_with(&session,"[redacted]");
+    if redacted.encode_utf16().count()<=200 {Ok(redacted)} else {Ok(format!("{}...",redacted.chars().take(197).collect::<String>()))}
 }
 fn blocked(key:&str)->bool {matches!(key.to_ascii_lowercase().as_str(),"__proto__"|"constructor"|"prototype"|"header"|"headers"|"env"|"environment"|"authorization"|"credential"|"credentials"|"password"|"secret"|"token"|"apikey"|"api_key"|"clientsecret"|"client_secret")}
 fn serialize_value(value:&Value)->Result<Value,regex::Error> {
@@ -22,7 +26,7 @@ fn serialize_value(value:&Value)->Result<Value,regex::Error> {
 pub fn format_line(timestamp:&str,level:&str,event:&str,data:Option<&Map<String,Value>>)->Result<String,Box<dyn std::error::Error+Send+Sync>> {
     let mut entry=Map::new();entry.insert("ts".into(),timestamp.into());entry.insert("level".into(),level.into());entry.insert("event".into(),safe_text(event)?.into());
     for (key,value) in data.into_iter().flatten() {
-        if ["selector","candidate","currentSelector","originalSelector","from","to","model","chainKey","reason","skipReason","classification","thinkingLevel","durationMs","retryAfterMs","error","errorMessage","warning","trigger"].contains(&key.as_str())&&!blocked(key){entry.insert(key.clone(),serialize_value(value)?);}
+        if ["selector","candidate","currentSelector","originalSelector","from","to","model","provider","chainKey","reason","skipReason","classification","thinkingLevel","durationMs","retryAfterMs","error","errorMessage","warning","trigger"].contains(&key.as_str())&&!blocked(key){entry.insert(key.clone(),serialize_value(value)?);}
     }
     Ok(serde_json::to_string(&entry)?)
 }
@@ -68,5 +72,14 @@ mod tests {
         let line=format_line("fixed","info","event",data.as_object()).expect("format");
         let parsed:Value=serde_json::from_str(&line).expect("parse");
         assert!(parsed.get("headers").is_none());assert!(parsed["error"].get("token").is_none());assert_eq!(parsed["selector"],"p/m");assert!(!line.contains("test-secret"));
+    }
+    /// senpi test/suite/retry-fallback-log.test.ts: `provider` is logged and credential shapes are redacted.
+    #[test]
+    fn logs_keep_provider_and_redact_credential_shapes() {
+        let data=serde_json::json!({"provider":"openai","error":"failed with ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"});
+        let line=format_line("fixed","info","event",data.as_object()).expect("format");
+        let parsed:Value=serde_json::from_str(&line).expect("parse");
+        assert_eq!(parsed["provider"],"openai");
+        assert!(!line.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123"),"{line}");
     }
 }
