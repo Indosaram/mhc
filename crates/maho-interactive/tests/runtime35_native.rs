@@ -82,7 +82,7 @@ fn native_mode_with_session_and_provider(
     (mode, directory)
 }
 
-fn native_mode_with_session_and_provider_retaining_session(
+pub(crate) fn native_mode_with_session_and_provider_retaining_session(
     cwd_override: Option<&str>,
     session_manager: impl FnOnce(&str) -> maho_core::session_manager::SessionManager,
     provider_id: &str,

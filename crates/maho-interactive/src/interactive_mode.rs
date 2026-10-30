@@ -1014,6 +1014,16 @@ pub struct InteractiveMode {
     /// The `session_lifecycle` bus subscription of the bound session and its record channel.
     lifecycle_subscription: Option<maho_core::event_bus::EventSubscription>,
     lifecycle_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>>,
+    /// senpi `sessionControlHost`: lets an extension expose this session on a control endpoint.
+    session_control_host: crate::session_control_host::TuiSessionControlHost,
+    /// What the endpoint reads from this pane, and the actions it queues for it.
+    session_control_surface: Arc<crate::session_control_surface::InteractiveControlSurface>,
+    session_control_actions:
+        tokio::sync::mpsc::UnboundedReceiver<crate::session_control_surface::ControlSurfaceAction>,
+    /// Tickets a typed submission claimed (senpi `claimHandoff`): released once the main loop hands
+    /// that text to the runtime.
+    submission_tickets:
+        Rc<RefCell<std::collections::VecDeque<crate::session_control_host::SubmissionTicket>>>,
     side_column_widget_bounds: Option<(usize, usize)>,
     mounted_side_column: Option<crate::side_column::MountedSideColumn>,
     terminal_dimensions: Rc<std::cell::Cell<(u16, u16)>>,
@@ -2624,7 +2634,60 @@ impl InteractiveMode {
         let question_actions: QuestionActions =
             Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let empty_submit_actions = question_actions.clone();
+        let control_surface_slot: Arc<
+            std::sync::OnceLock<Arc<crate::session_control_surface::InteractiveControlSurface>>,
+        > = Arc::default();
+        let control_session = session.clone();
+        let control_surface = control_surface_slot.clone();
+        let session_control_host =
+            crate::session_control_host::TuiSessionControlHost::new(Arc::new(move || {
+                // Set right after the host is built, before any extension can register.
+                let surface = control_surface.get().cloned().map(
+                    |surface| -> Arc<dyn crate::session_control_commands::TuiControlSurface> {
+                        surface
+                    },
+                );
+                (
+                    control_session.clone(),
+                    control_session.agent_dir(),
+                    surface,
+                )
+            }));
+        let in_flight_host = session_control_host.clone();
+        let (session_control_surface, session_control_actions) =
+            crate::session_control_surface::InteractiveControlSurface::new(Box::new(move || {
+                in_flight_host.submission_in_flight()
+            }));
+        drop(control_surface_slot.set(session_control_surface.clone()));
+        let submission_tickets: Rc<
+            RefCell<std::collections::VecDeque<crate::session_control_host::SubmissionTicket>>,
+        > = Rc::default();
+        // senpi `sessionControlHost.attachEditor`: the change and submit edges.
+        let change_host = session_control_host.clone();
+        let change_images = pending_images.clone();
+        editor.editor.on_change = Some(Box::new(move |text| {
+            change_host
+                .editor_changed(!change_images.borrow().is_empty() || !text.trim().is_empty());
+        }));
+        let submit_host = session_control_host.clone();
+        let submit_tickets = submission_tickets.clone();
+        let submit_on = Rc::new(RefCell::new(None::<Box<dyn FnMut(&str)>>));
+        let wrapped_submit = submit_on.clone();
         editor.editor.on_submit = Some(Box::new(move |text| {
+            let mut submit = wrapped_submit.borrow_mut();
+            submit_host.editor_submitted(|| {
+                // Typed text is buffered for the main loop, so its ticket waits for the hand-off.
+                if !text.trim().is_empty()
+                    && let Some(ticket) = submit_host.claim_handoff()
+                {
+                    submit_tickets.borrow_mut().push_back(ticket);
+                }
+                if let Some(submit) = submit.as_mut() {
+                    submit(text);
+                }
+            });
+        }));
+        *submit_on.borrow_mut() = Some(Box::new(move |text: &str| {
             // senpi `onSubmit`: Enter on an empty editor opens the pending async question.
             if text.trim().is_empty() {
                 empty_submit_actions
@@ -2647,6 +2710,7 @@ impl InteractiveMode {
                 captured.borrow_mut().push_back(text.trim().into());
             }
         }));
+        drop(submit_on);
         let (auth_ui_sender, auth_ui_events) = tokio::sync::mpsc::unbounded_channel();
         let (auth_lifecycle_events, _) = tokio::sync::broadcast::channel(32);
         let mermaid_session = session.clone();
@@ -2710,6 +2774,10 @@ impl InteractiveMode {
             lifecycle_subscription_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             lifecycle_subscription: None,
             lifecycle_rx: None,
+            session_control_host,
+            session_control_surface,
+            session_control_actions,
+            submission_tickets,
             mounted_side_column: None,
             keyword_turn_glow: false,
             theme_rebuild_pending: false,
@@ -4758,6 +4826,11 @@ impl InteractiveMode {
         self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
 
         self.subscribe_to_lifecycle();
+        // senpi `bindCurrentSessionExtensions`: the previous binding's endpoint goes first, then this
+        // session can register one through the host.
+        self.session_control_host.dispose_active().await;
+        self.session
+            .set_control_endpoint_host(Some(Arc::new(self.session_control_host.clone())));
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
         loop {
@@ -4837,6 +4910,144 @@ impl InteractiveMode {
                 );
             }
         }
+    }
+
+    /// senpi's surface reads, published for the control endpoint (see `session_control_surface`).
+    fn publish_control_surface(&self) {
+        let composer_hold = if !self.pending_images.borrow().is_empty() {
+            Some("attachment".to_owned())
+        } else if self.editor.editor.get_text().trim().is_empty() {
+            None
+        } else {
+            Some("draft".to_owned())
+        };
+        let pending_questions = self
+            .questions
+            .order()
+            .iter()
+            .filter_map(|id| {
+                self.questions.get(id).map(|entry| {
+                    let questions = entry
+                        .request
+                        .questions
+                        .iter()
+                        .map(|question| {
+                            serde_json::json!({
+                                "id": question.id,
+                                "header": question.header,
+                                "question": question.question,
+                                "multiSelect": question.multi_select,
+                                "options": question.options.iter().map(|option| serde_json::json!({
+                                    "label": option.label,
+                                    "description": option.description,
+                                })).collect::<Vec<_>>(),
+                            })
+                        })
+                        .collect();
+                    (id.clone(), questions)
+                })
+            })
+            .collect();
+        let blocking_question = self.question.is_some();
+        self.session_control_surface.publish(|published| {
+            published.composer_hold = composer_hold;
+            published.blocking_question = blocking_question;
+            published.pending_questions = pending_questions;
+        });
+        self.session_control_host.note_buffered_elsewhere(
+            !self.compaction_queue.borrow().queued.is_empty()
+                || !self.compaction_queue.borrow().in_flight.is_empty(),
+        );
+    }
+
+    /// Runs what the control endpoint asked this pane to do (senpi's surface closures).
+    fn drain_control_surface_actions(&mut self) {
+        use crate::session_control_surface::ControlSurfaceAction;
+        while let Ok(action) = self.session_control_actions.try_recv() {
+            match action {
+                ControlSurfaceAction::AnswerQuestion {
+                    request_id,
+                    response,
+                    reply,
+                } => {
+                    let pending = self.questions.get(&request_id).is_some();
+                    if pending {
+                        self.finish_question(&request_id, response);
+                    }
+                    drop(reply.send(pending));
+                }
+                ControlSurfaceAction::Notice(line) => self.show_warning(&line),
+                ControlSurfaceAction::SelectModel { model, reply } => {
+                    // senpi `applyModelSelection(this, model, {source: "control"})`.
+                    let session = self.session.clone();
+                    let selected = model.clone();
+                    self.park_action(
+                        async move {
+                            session
+                                .set_session_model(selected)
+                                .await
+                                .map(|change| change.and_then(|change| change.system_prompt_name))
+                        },
+                        move |mode, result: Result<Option<String>, String>| {
+                            mode.finish_model_select(model, result.clone());
+                            drop(reply.send(result));
+                        },
+                    );
+                }
+                ControlSurfaceAction::SelectThinkingLevel { level, remember } => {
+                    // senpi `applyThinkingLevel(this, level, remember)`.
+                    if remember {
+                        self.session.set_thinking_level(level);
+                        let current = self.session.thinking_level();
+                        if current != maho_ai::types::ModelThinkingLevel::Off
+                            || self.session.supports_thinking()
+                        {
+                            let values: maho_core::settings_manager::Settings = [(
+                                "defaultThinkingLevel".into(),
+                                serde_json::json!(current.as_str()),
+                            )]
+                            .into_iter()
+                            .collect();
+                            if let Err(error) = self.session.with_settings_manager_mut(|settings| {
+                                settings.set(
+                                    maho_core::settings_manager::SettingsScope::Global,
+                                    &values,
+                                )
+                            }) {
+                                self.show_error(&error);
+                            }
+                        }
+                    } else {
+                        self.session.set_session_thinking_level(level);
+                    }
+                    if let Some(footer) = &mut self.footer {
+                        footer.invalidate();
+                    }
+                    self.update_editor_border_color();
+                    self.show_status(if remember {
+                        format!("Default thinking level: {}", level.as_str())
+                    } else {
+                        format!("Thinking level: {}", level.as_str())
+                    });
+                }
+                ControlSurfaceAction::InterruptTurn { reply } => {
+                    // senpi `abortAndFireQueuedMessages`: queued input returns to the editor, then the
+                    // turn stops.
+                    self.restore_queued_messages_to_editor(true);
+                    let session = self.session.clone();
+                    self.park_independent_action(
+                        async move { session.stop().await },
+                        move |_mode, ()| drop(reply.send(())),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Releases the control endpoint before the process exits (senpi `shutdown` ->
+    /// `sessionControlHost.disposeActive()`).
+    pub async fn dispose_session_control(&self) {
+        self.session_control_host.dispose_active().await;
     }
 
     /// The session-side half of `bind_extensions`. It does not borrow the mode, so the caller can
@@ -5197,6 +5408,12 @@ impl InteractiveMode {
         }
         let text = self.submissions.borrow_mut().pop_front();
         let text = text?;
+        // senpi releases a claimed ticket once the runtime took the input: the main loop takes it here.
+        if !split_internal_command(&text).1
+            && let Some(ticket) = self.submission_tickets.borrow_mut().pop_front()
+        {
+            ticket.release();
+        }
         // senpi `onSubmit`: built-in commands return before `addToHistory`, and the selector/dialog
         // continuations the port queues internally are never typed text.
         let (typed, internal) = split_internal_command(&text);
@@ -10448,6 +10665,8 @@ impl InteractiveMode {
         self.drain_remote_models();
         self.drain_remote_stats();
         self.drain_lifecycle_records();
+        self.publish_control_surface();
+        self.drain_control_surface_actions();
         while let Ok(event) = self.events.try_recv() {
             self.handle_session_event(&event);
         }
@@ -12896,6 +13115,8 @@ impl InteractiveMode {
     /// senpi's `refreshAsyncWidget`: the collapsed widget shows the shown question, and nothing
     /// while the expanded component owns the surface.
     fn refresh_async_question_widget(&mut self) {
+        self.publish_control_surface();
+        self.session_control_host.questions_changed();
         if self.questions.surface == crate::question_registry::QuestionSurface::Expanded {
             self.async_question_widget = None;
             return;
@@ -14561,6 +14782,9 @@ impl Component for InteractiveMode {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(crate::lifecycle_status::LIFECYCLE_STATUS_KEY);
+        // The endpoint itself is released by `dispose_session_control` (it needs an await); the
+        // session no longer offers this host to a new registration.
+        self.session.set_control_endpoint_host(None);
         self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets {
             widget.dispose();
