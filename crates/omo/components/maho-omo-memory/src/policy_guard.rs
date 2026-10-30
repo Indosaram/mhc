@@ -37,7 +37,7 @@ pub enum MemoryPolicyRegistration {Registered,Unbound,Unsupported}
 pub fn register_memory_filesystem_policy(api:Option<&mut dyn FilesystemPolicyRegistration>,context:Option<&MemoryIdentityContext>)->std::io::Result<MemoryPolicyRegistration>{let Some(context)=context else{return Ok(MemoryPolicyRegistration::Unbound);};let Some(api)=api else{return Ok(MemoryPolicyRegistration::Unsupported);};api.register_filesystem_policy(build_memory_filesystem_policy(context)?);Ok(MemoryPolicyRegistration::Registered)}
 pub fn build_memory_filesystem_policy(context:&MemoryIdentityContext)->std::io::Result<FilesystemPolicy>{
     let own=resolve_path(&context.identity_paths.root)?;let agents=own.parent().unwrap_or(Path::new("/")).to_path_buf();
-    let mut foreign=Vec::new();match std::fs::read_dir(&agents){Ok(entries)=>{for entry in entries{let entry=entry?;if entry.file_name()!=std::ffi::OsStr::new(&context.identity){foreign.push(entry.path());}}},Err(error) if missing(&error)=>{},Err(error)=>return Err(error)}
+    let mut foreign=Vec::new();match std::fs::read_dir(&agents){Ok(entries)=>{for entry in entries{let entry=entry?;if entry.file_name()!=std::ffi::OsStr::new(&context.identity){foreign.push(entry.path());}}},Err(error) if missing(&error)||error.kind()==std::io::ErrorKind::NotADirectory=>{},Err(error)=>return Err(error)}
     Ok(FilesystemPolicy{denied_roots:stable_roots(&foreign),own_roots:stable_roots(&[own]),agents_roots:stable_roots(&[agents]),context:Some(context.clone())})
 }
 impl FilesystemPolicy {
@@ -58,7 +58,7 @@ impl FilesystemPolicy {
     }
 }
 pub(crate) fn resolve_path(path:&Path)->std::io::Result<PathBuf>{let absolute=if path.is_absolute(){path.to_path_buf()}else{std::env::current_dir()?.join(path)};let mut result=PathBuf::new();for part in absolute.components(){match part{Component::CurDir=>{},Component::ParentDir=>{result.pop();},other=>result.push(other.as_os_str())}}Ok(result)}
-fn missing(error:&std::io::Error)->bool{matches!(error.kind(),std::io::ErrorKind::NotFound|std::io::ErrorKind::NotADirectory)}
+fn missing(error:&std::io::Error)->bool{error.kind()==std::io::ErrorKind::NotFound}
 pub(crate) fn canonicalize_from_nearest_existing(target:&Path)->Option<PathBuf>{let mut candidate=target.to_path_buf();let mut segments=Vec::new();loop{match std::fs::symlink_metadata(&candidate){Ok(_)=>{let mut result=std::fs::canonicalize(&candidate).ok()?;for segment in segments.iter().rev(){result.push(segment);}return resolve_path(&result).ok();},Err(error) if missing(&error)=>{segments.push(candidate.file_name()?.to_os_string());candidate=candidate.parent()?.to_path_buf();},Err(_)=>return None}}}
 pub(crate) fn stable_roots(paths:&[PathBuf])->Vec<PathBuf>{let mut roots=Vec::new();for path in paths{for root in [Some(path.clone()),canonicalize_from_nearest_existing(path)].into_iter().flatten(){if !roots.contains(&root){roots.push(root);}}}roots}
 pub(crate) fn within(root:&Path,target:&Path)->bool{let Ok(relative)=target.strip_prefix(root)else{return false;};!relative.to_string_lossy().starts_with("..")}

@@ -1,5 +1,5 @@
-use std::{collections::BTreeSet,path::Path};
-use crate::{context::MemoryIdentityContext,policy_guard::{resolve_path,stable_roots,within}};
+use std::{collections::BTreeSet,path::{Path,PathBuf}};
+use crate::{context::MemoryIdentityContext,policy_guard::{canonicalize_from_nearest_existing,resolve_path,stable_roots,within}};
 #[derive(Debug,PartialEq,Eq)]
 pub enum MemoryGuardDecision { Allow, Block {reason:String}, AdviseBash }
 #[derive(Default)]
@@ -61,9 +61,15 @@ impl MemoryGuard {
         let recursive=matches!(operation,Some("ls"|"find"|"grep"|"glob"));let agents_roots=stable_roots(&[agents]);let own_roots=stable_roots(&[own]);let foreign_roots=stable_roots(&foreign);
         for raw in target_paths(input,patch){
             if raw.contains('\0'){continue;}
-            let lexical=resolve_path(&cwd.join(&raw))?;
-            if operation == Some("read") && crate::project_memory_grants::is_granted_project_memory_read(context, &lexical) { continue; }
-            for candidate in stable_roots(&[lexical]){
+            // Built-ins open resolved targets; suffix-classified external tools may open raw strings.
+            let name=normalized(tool_name);
+            let builtin=Some(name.as_str())==operation||name=="apply_patch";
+            let target=if builtin{resolve_path(&cwd.join(&raw))?}else if Path::new(&raw).is_absolute(){PathBuf::from(&raw)}else{PathBuf::from(format!("{}/{}",cwd.display(),raw))};
+            if operation == Some("read") && crate::project_memory_grants::is_granted_project_memory_read(context, &target) { continue; }
+            let lexical=resolve_path(&target)?;
+            let mut candidates=vec![lexical];
+            if let Some(canonical)=canonicalize_from_nearest_existing(&target)&&!candidates.contains(&canonical){candidates.push(canonical);}
+            for candidate in candidates{
                 if own_roots.iter().any(|root|within(root,&candidate)){continue;}
                 if agents_roots.contains(&candidate)||(recursive&&agents_roots.iter().any(|root|within(&candidate,root)))||foreign_roots.iter().any(|root|within(root,&candidate)){return Ok(MemoryGuardDecision::Block{reason:format!("cross-identity memory access denied: {tool_name} to {raw} belongs to another memory identity")});}
             }
