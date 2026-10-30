@@ -449,6 +449,9 @@ impl HostSessionHandle {
     }
 }
 impl ManagedChildHandle for HostSessionHandle {
+    fn reconcile_inputs(&self) {
+        HostSessionHandle::reconcile_inputs(self);
+    }
     fn transport_recovering(&self) -> bool {
         self.recovering.load(std::sync::atomic::Ordering::Acquire)
     }

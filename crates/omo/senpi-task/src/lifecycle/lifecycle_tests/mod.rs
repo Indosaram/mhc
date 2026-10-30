@@ -10,6 +10,7 @@ mod reconcile;
 mod reconcile_multi_session;
 mod reconcile_reattach;
 mod reconcile_revival;
+mod reconcile_startup;
 mod residency;
 mod shutdown;
 mod single_writer_audit;
