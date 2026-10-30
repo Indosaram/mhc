@@ -270,3 +270,59 @@ a few short phrases stay close to the source.
   `visual-qa` item mapping. Left out because this skill disagrees: blur and
   `backdrop-filter` as general motion materials, one theme per product category,
   decorative custom scrollbars, a blanket bounce-easing ban, and banning common typefaces.
+
+---
+
+## 7. frontend-detect SDK (SUL-1.0 subtree): Impeccable detector logic and a StyleGallery reflow check
+
+`frontend/scripts/detect/` (SDK, rules, CLI) and `frontend/references/perfection/detect.md`
+are **not MIT**. They are copied unchanged from oh-my-openagent v5.1.52
+(`354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9`) and stay under SUL-1.0; see
+`scripts/detect/LICENSE.md`. Upstream tests are not shipped.
+
+Upstream they reimplement in TypeScript the rule logic of the Impeccable detector (rule ids,
+thresholds, exemptions and the `data-impeccable-ignore` waiver follow it; no Impeccable source
+is copied). The Impeccable notice, copyright line and Apache-2.0 pointer in section 6 apply
+to that derived logic too. Upstream's recorded changes (Apache-2.0 section 4(b)): a
+TypeScript implementation over a browser-captured page snapshot instead of Impeccable's Rust
+engine; rewritten rule descriptions and fix hints; `low-contrast` raised to an error; project
+allowlists and design tokens as configuration; an added `data-detect-ignore` waiver.
+
+The `viewport-reflow` rule and the reflow pass (render at 320, 375, 768, 1024 and 1440 px,
+append an unbroken stress string at 320 px, report horizontal overflow) follow the layout
+verification matrix of StyleGallery.
+
+- Source: https://github.com/changeroa/StyleGallery
+- Adapted from upstream commit: 0bf928f6269b1cb6cf24f04e0bf28a8ce2bbc0ff
+- Code licensed under the MIT License (Copyright (c) 2026 IYEN); documentation under CC BY 4.0.
+
+```
+MIT License
+
+Copyright (c) 2026 IYEN
+
+This license applies to the source code in this repository: scripts, CLI and
+MCP server implementations, the website and server code under `site/`,
+validators, and test code. The Markdown documentation, pattern and recipe
+prose, and domain documents are licensed separately under CC BY 4.0; see
+LICENSE-DOCS. Third-party material adapted into this repository keeps its
+original rights; see NOTICE.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

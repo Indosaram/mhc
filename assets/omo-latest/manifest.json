@@ -710,14 +710,14 @@
     "frontend": [
       {
         "path": "ATTRIBUTION.md",
-        "bytes": 15935,
-        "sha256": "6b5f73840207f59f1af712b34c3ed45de3da42920269d336ccbb1d23c34c74c9",
+        "bytes": 18890,
+        "sha256": "b68ded8c054ed3f2918ce6f3a85fe2de754258e641799fcecef8698e2bf4021f",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/ATTRIBUTION.md"
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 10491,
-        "sha256": "1d5bf9ecc322ff942c194f66a7eb9a706a187e2dea82f35537ad2ebda8d446e9",
+        "bytes": 10509,
+        "sha256": "9b43e38f6aea79ec69e3b0374cc858f215d4e1a1318c550d1cd3b50f03629e9a",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/CLEANROOM.md"
       },
       {
@@ -728,8 +728,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 32170,
-        "sha256": "c1cc725e9af62c66ff2187629c06063b5a1863921eca96a7fc149e8dcdfcad9b",
+        "bytes": 33023,
+        "sha256": "3e668af339e333edcbc0c5905df9693f0856649cfbb3b6692615585f4521c81c",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/SKILL.md"
       },
       {
@@ -1603,6 +1603,12 @@
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/perfection/craft-floor.md"
       },
       {
+        "path": "references/perfection/detect.md",
+        "bytes": 4013,
+        "sha256": "525aa16cbedbf466282fd46df8dc8b649be09b5cb674edc9680d94f276f9212b",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/references/perfection/detect.md (SUL-1.0)"
+      },
+      {
         "path": "references/perfection/react-perf-tooling.md",
         "bytes": 7898,
         "sha256": "0ddf4845f9a772ea018eb6d44d46407efa3e96371e41eaecb774595412f50bf6",
@@ -1775,6 +1781,978 @@
         "bytes": 5525,
         "sha256": "d60109a67e11cb1cc569fcdeff68f25cffb03326dc84d1336e05dad9de821ade",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/ui-ux-db/scripts/search.py"
+      },
+      {
+        "path": "scripts/detect/LICENSE.md",
+        "bytes": 737,
+        "sha256": "d6ae929c72e72771b51333a1e999819ba3c766ee8f977e145411eb957be9277e",
+        "source": "mhc notice for the SUL-1.0 detect subtree (omo@354bcf9fc4)"
+      },
+      {
+        "path": "scripts/detect/cli.ts",
+        "bytes": 2927,
+        "sha256": "6b48ac18b98d6a6e6875ff573a3ac4e47c80424e7946cb2ef7568f8bfb48c620",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/cli.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/config.ts",
+        "bytes": 3035,
+        "sha256": "0cc8e671912561ed3afb092aee08d85225b9aabc2aef07e501810caf27a1e3a7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/config.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/characters.ts",
+        "bytes": 157,
+        "sha256": "ada286bfd5928ba0ab5a23e416e0dd7fd11fc12d7fc9634d2e825413b203ddb7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/characters.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/color.ts",
+        "bytes": 7081,
+        "sha256": "2110c32aac6a5b92a86370f9c06211b0491a5ae19e73501274e1b4ddf5c66880",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/page.ts",
+        "bytes": 3722,
+        "sha256": "b4f4b223d7018296f84a34132e96af339808f34ecd176563c58434e3e9670176",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/page.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/shadow.ts",
+        "bytes": 1472,
+        "sha256": "d0410798490d2659bee5a056655314a440569b88681f84cb3b3d5d6a32b73bdb",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/source.ts",
+        "bytes": 1386,
+        "sha256": "ee2f0d77a1ce9de35beb881cec47000e0b341c1d1cfd6c09fa98b7daede4f985",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/source.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/detect.ts",
+        "bytes": 3412,
+        "sha256": "aee961f51d9bb58e0c956a1b32cc0923e677c225057b39040da7133febe49d38",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/detect.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/index.ts",
+        "bytes": 1154,
+        "sha256": "4bab3940a1d79e03dd9b83407408bd1b76b2f68d64deadbd5ce0fbed6ce15122",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/lint.ts",
+        "bytes": 3919,
+        "sha256": "8812f241a100e5a42017d446d35a493f6fa730c0c4a80afc9d9a8d5b4e2c69fc",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/lint.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/render/renderer.ts",
+        "bytes": 1444,
+        "sha256": "6f583be783b0bf999ae115e21ccb8c7e61de801ba2256ddda784ec14059c4270",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/render/renderer.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/render/webview.ts",
+        "bytes": 3374,
+        "sha256": "3896434ce9e144bc99bc98813593170a9c4d412a0c0da2c1adfcbc598554f6a8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/render/webview.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/report.ts",
+        "bytes": 1014,
+        "sha256": "afb9ebf69b5964e625548f4e4c0e69595eaecbf4ead36c2cd4b96600f110ee09",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/report.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rule.ts",
+        "bytes": 1140,
+        "sha256": "568a864cf3a1386bd0af43e22ff5beef5a7eb264962b4bddb6ad5fc7c1e11471",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rule.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/ai-color-palette.ts",
+        "bytes": 5919,
+        "sha256": "a531fd02750ac58dc38921d626cfd4a60a94844ae0dc059f3da714a4500a08f3",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/ai-color-palette.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/cream-palette.ts",
+        "bytes": 2208,
+        "sha256": "a4310c00abbee684bf5f6d630d1a929d00374aaaa3c4fdd71c4abd6090be34c2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/cream-palette.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/dark-glow.ts",
+        "bytes": 2648,
+        "sha256": "8043ff947c4d522eb73861809c575b5e8cbd3bcaeddb886c12f09be5faef0401",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/dark-glow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/design-system-color.ts",
+        "bytes": 1720,
+        "sha256": "b1dea7c532758fe12adb0e53da90684d99e7c3b8e715bb3bd3a3259d77512f38",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/design-system-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/gradient-text.ts",
+        "bytes": 3194,
+        "sha256": "fbc74539252aab942c4774ce7e35d66eca654c74b96acbafd366defb2a8dd3cd",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/gradient-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/gray-on-color.ts",
+        "bytes": 2077,
+        "sha256": "663607fa9d59c1a98dbb59f2a7ed8b944c781179a1dfab295f81ca4fee359b0c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/gray-on-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/index.ts",
+        "bytes": 669,
+        "sha256": "7a0e4cfeb3a813c4ddbb114e9a1cb0f9c7444c6174bbae7d0b95eb6f49f18c95",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/low-contrast.ts",
+        "bytes": 4181,
+        "sha256": "e9ecf2a8d8f23eb6f957dca67452f796e03c3f732db73af199cc349730c49f6c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/low-contrast.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/radial-halo.ts",
+        "bytes": 1894,
+        "sha256": "c780def16aad2ee361f8b6eeb0a09e5fef0be52670fb535fad93a24df5985c50",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/radial-halo.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/radial-spotlight-glow.ts",
+        "bytes": 1909,
+        "sha256": "9bac5ebc3b1515a7c6f09194d3bfd0bf44733a61bddbb16b9a75a581608febd1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/radial-spotlight-glow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/animation-opacity.ts",
+        "bytes": 4190,
+        "sha256": "a3502ef93997170ecf81a19c8461dea33e636def6a86f431267fd9b835a1f71f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/animation-opacity.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/color-path.ts",
+        "bytes": 781,
+        "sha256": "b99584ad2be5818d68a6ed286ca205bf6c653d2623a7d7a96493c4ef6ab8ad47",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/color-path.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/contrast-pairs.ts",
+        "bytes": 2886,
+        "sha256": "6feaca4dd9e95d075393bfc5036cbeb3965bb755025611f22adb9a0010381c63",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/contrast-pairs.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/contrast-role.ts",
+        "bytes": 5183,
+        "sha256": "0879bb8c9e9490e358c6de41466769a610eee32914f0d727d3edd47048c104c7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/contrast-role.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/glow-forms.ts",
+        "bytes": 3249,
+        "sha256": "10172041a1ab15d50dc6cb7593df8018a7494e0852a8c4fef0fb137160709ba1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/glow-forms.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/gradient-samples.ts",
+        "bytes": 6384,
+        "sha256": "3063a723bd2f74b5a5b06e5612b61ac44e93201406b8b78fd729a332780c2ae1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/gradient-samples.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/gradients.ts",
+        "bytes": 4041,
+        "sha256": "b9aad9475c9d9d3bfb3c59881daa01efd5a4a584a2f3d4c3db8c3a59016ce750",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/gradients.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/mockup-roots.ts",
+        "bytes": 5151,
+        "sha256": "fc71293951c6f867dacfc4bb33aadaf9332c47df60702188cd240d3320f3ccfa",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/mockup-roots.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/page-ignore.ts",
+        "bytes": 432,
+        "sha256": "0003739038ff98d5126a5a7edca01150e29e47be6e46e89bc900f8d0ebb546b3",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/page-ignore.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/painted-text.ts",
+        "bytes": 7970,
+        "sha256": "550d08bd08beb9cb22966a6e3da82ad8c90a4611f4e6f43318a266b6f5df7c7c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/painted-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/palette-roles.ts",
+        "bytes": 3477,
+        "sha256": "c1e4ba09e8c9e68e134d4ec46eb9edb96a7810351976c3f4b0f72a4aef84af60",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/palette-roles.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/placeholder-contrast.ts",
+        "bytes": 1956,
+        "sha256": "acd170b63cb32a91ecccec82b3b9e4137c2a782dce4d096951d1183ca91af1cb",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/placeholder-contrast.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/stock-accent.ts",
+        "bytes": 2251,
+        "sha256": "5e09edf9487e0c7b77a17c10e74df0f374ab51ad3c25cba9f4a5a1277bb3d3b8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/stock-accent.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/text-colors.ts",
+        "bytes": 4528,
+        "sha256": "4d39f4fc91d91ffa7005c7b9829ddee851272f8f9f5367f0b90ceeb41127cf57",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/text-colors.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/aphoristic-cadence.ts",
+        "bytes": 879,
+        "sha256": "7debd91f3a13d8982ee000a12de4cd19b1db81abd8f08456faa81a0a04041d8d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/aphoristic-cadence.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/broken-image.ts",
+        "bytes": 821,
+        "sha256": "9111c5259e550b30b29f7b57935f327edc8dd9f64afb927e346edcdf389afc35",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/broken-image.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/em-dash-overuse.ts",
+        "bytes": 2577,
+        "sha256": "fead8c8ecd340b14c89a202e04fc99a342a7380139a67bf5791b293100e70bae",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/em-dash-overuse.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/index.ts",
+        "bytes": 752,
+        "sha256": "eb265da1c2e69562a857253c9bc3f1ab2ddc6477aa3aabab6089f030b3901aba",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/marketing-buzzword.ts",
+        "bytes": 1561,
+        "sha256": "832b7dbfdaa6d1cdddcab28998a6676d7d0b03e0689ad5bd4f9eb1e399eaf964",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/marketing-buzzword.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/numbered-section-labels.ts",
+        "bytes": 2213,
+        "sha256": "d9f48d17b73d2618f362e54535d07be84ec21dc3e027a076dc5e98cb960aedf3",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/numbered-section-labels.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/repeated-container-text.ts",
+        "bytes": 3213,
+        "sha256": "1f33e104d7b270ab5ddafa08bf109d6c36d633498cfe46c08797a61efa5352a8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/repeated-container-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/script-error.ts",
+        "bytes": 1583,
+        "sha256": "4061aa9ea257f42363ed80880e0ca3580915106cac0a93f496cfd0b0736a60e4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/script-error.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/skipped-heading.ts",
+        "bytes": 6538,
+        "sha256": "0e57ddd67c954ca08528afcc1178e95abd9d73c51d79a30b374e610f6c2a8e16",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/skipped-heading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/support/numbered-label.ts",
+        "bytes": 5131,
+        "sha256": "79fb6dfe9189110c5f69199f575a41414e2ab207d80cfbed7f5eef812b62cc1e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/support/numbered-label.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/support/page-text.ts",
+        "bytes": 1729,
+        "sha256": "17ae4eaaac39e3ea513b22652fb77372931d2b24f85545d2c54f87bf71208b16",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/support/page-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/theater-slop-phrase.ts",
+        "bytes": 1098,
+        "sha256": "f9b670611cc9c0a192e926848268a2887a5e24ce8896fa164e4f6742703c1653",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/theater-slop-phrase.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/blinking-cursor.ts",
+        "bytes": 2109,
+        "sha256": "d05d7ef68bfd8368adc63ed639defb5e3e5dbb55ec012c5f9a97d100b65aee2e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/blinking-cursor.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/border-accent-on-rounded.ts",
+        "bytes": 539,
+        "sha256": "6cf5c64d862deb9d4f8601c4abfdf4a540c7bc32640c80005658a0f37ad5f0da",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/border-accent-on-rounded.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/bounce-easing.ts",
+        "bytes": 4723,
+        "sha256": "49693fcc3d68abeec6c665cb47de0b2684d70029147ad2f724c1c72f75bd50b4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/bounce-easing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/buried-raster.ts",
+        "bytes": 3163,
+        "sha256": "fc36d5ee43abe2cd11be0a0bd100c79e180601db400ff8e83abeadac0faf2f32",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/buried-raster.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/codex-grid-background.ts",
+        "bytes": 1226,
+        "sha256": "b2f42d8f38c9af660ec4f912386da717fc9add4d3fd882d4e80fca3546d1afda",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/codex-grid-background.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/design-system-radius.ts",
+        "bytes": 1167,
+        "sha256": "754f488d8b10f4a515d9e22a042e14b367f8f8b488f629452f491bc603c6d627",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/design-system-radius.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/gpt-thin-border-wide-shadow.ts",
+        "bytes": 2732,
+        "sha256": "bbf5a69cbf159c3beddea270ee3a194e16d003c73b8c7e51f3fc86a898476477",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/gpt-thin-border-wide-shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/hard-offset-shadow.ts",
+        "bytes": 1176,
+        "sha256": "302602d1feb2a1276a0e584f733c4e8b8cc3e534b4846289ccfcc312d29490f7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/hard-offset-shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/hero-eyebrow-chip.ts",
+        "bytes": 711,
+        "sha256": "b9eeab90edfd0745c1afc5cd8ced1e5fd1bffc910572ab7843210ef26f60ebf5",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/hero-eyebrow-chip.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/icon-tile-stack.ts",
+        "bytes": 3208,
+        "sha256": "3680653360da49474d5c200e1b918e97696361f57c3b6eed42f72bd90f46f2d4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/icon-tile-stack.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/index.ts",
+        "bytes": 1358,
+        "sha256": "1faa57a4c7817dcba4311236ee71131db5bc1a60dc61e094401c2e9a6132202c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/kicker-above-heading.ts",
+        "bytes": 2534,
+        "sha256": "3f8cfe67d913d9f1040eb84abeb6b6e8ff099b569d560f1841d5ca4eed19355c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/kicker-above-heading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/marquee.ts",
+        "bytes": 2631,
+        "sha256": "17c32998dc9aad7987b24cc8d16cccd1f95729ebdf9272f14588abfb1695188d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/marquee.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/organic-clip-path.ts",
+        "bytes": 1897,
+        "sha256": "885904675bcbdce4f65d8f25eea52ddcc4e939566c47d8e63d1e4e5818c2a2f8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/organic-clip-path.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/pulsing-dot.ts",
+        "bytes": 4038,
+        "sha256": "53122a8eb365dc9c3981c2f4477726ec8d7f5aa7bd199ee505958a3c07d1836f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/pulsing-dot.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/repeating-stripes-gradient.ts",
+        "bytes": 929,
+        "sha256": "732720af18f5c19339f6eb61d4faff952593674674ca67d5b1c2e17917417d69",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/repeating-stripes-gradient.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/shape-assembled-illustration.ts",
+        "bytes": 2867,
+        "sha256": "ad1ebcc4929a6932fdb68119364771fe349f848d588f4cb9696dd73da10420eb",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/shape-assembled-illustration.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/side-tab.ts",
+        "bytes": 703,
+        "sha256": "ed395f5f8bfba21b16a3d72de6b5f88f2a252124e6060c405dd1f1188e31153b",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/side-tab.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/appearance.ts",
+        "bytes": 3880,
+        "sha256": "20d54908da639339d2cf7be4cba84b84cd887c20f4bf458296a85d7c743f7ff6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/appearance.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/assert-cases.ts",
+        "bytes": 1248,
+        "sha256": "0f2821cac3ddd1eaf17cf0ae075d36e44d3476e49524821d1136d9b77f23091d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/assert-cases.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/borders.ts",
+        "bytes": 6469,
+        "sha256": "e28c2d8bb1b616825901e154c0c1daba2806782fc68e86c3776fcb2893f18794",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/borders.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/clip-geometry.ts",
+        "bytes": 5646,
+        "sha256": "a6a984f4b3c665090e98739c875caf55798a4912738f72a40b27def22a545133",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/clip-geometry.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/css-candidates.ts",
+        "bytes": 2597,
+        "sha256": "c9c5744f080d532d3ecb2edb26a6fac5417aca7c3c1ff44d6d9edde6b3a612c6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/css-candidates.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/curve-samples.ts",
+        "bytes": 2011,
+        "sha256": "71c0ebdf4311a9202befdd21542fd9616e31b2804a905dfb60bd7bf9b55b0051",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/curve-samples.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/gradient-pattern.ts",
+        "bytes": 1597,
+        "sha256": "3b245ea85d57dff9643d738ebba7ed4df1717030d2cba4c3635abcff856cdb26",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/gradient-pattern.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/keyframes.ts",
+        "bytes": 5614,
+        "sha256": "17b07146c3cd099cab26c1058091f6eac31f229835bff21db63f208d043fdb0a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/keyframes.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/labels.ts",
+        "bytes": 4119,
+        "sha256": "b1da51c6ab6926172f6706bf0a8e9590ec3410c3fd2889eb2278c3d20ce43dc6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/labels.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/raster-state.ts",
+        "bytes": 3170,
+        "sha256": "6b99c72af630089340750df2b9328d9262ab7dd5089640b404b569b28aebe55d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/raster-state.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/index.ts",
+        "bytes": 446,
+        "sha256": "7aad8dca0f79795a06a263176a4e23c24a27aed2626bc253e37f687077dfe390",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/body-text-viewport-edge.ts",
+        "bytes": 3890,
+        "sha256": "20cecd234abec082b7b025ffbef684e888d3dd4b4a2c66de7e5dc851bb3131a4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/body-text-viewport-edge.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/clipped-overflow-container.ts",
+        "bytes": 809,
+        "sha256": "01c59043abdb6ed48f0f9465101799a65d1ddc5c7b378f470906b9ec33069f2a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/clipped-overflow-container.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/content-hidden-at-rest.ts",
+        "bytes": 4532,
+        "sha256": "b1abeb5dac217c5227f41b105a79a3de0e3198618311923a8cbc57b219219673",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/content-hidden-at-rest.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/cramped-padding.ts",
+        "bytes": 5866,
+        "sha256": "b9e67cd862056ee55ace7a0e4b0c262acff21d1200b08b40b06ed54c8de5c3cf",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/cramped-padding.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/edge-flush-cards.ts",
+        "bytes": 2902,
+        "sha256": "0fb8dadbdf824d86667c55cbb19a71c58cd1388d7ea31c842621a163239f1803",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/edge-flush-cards.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/first-viewport-column-overflow.ts",
+        "bytes": 2731,
+        "sha256": "bafb653227f8a28d641090a1d066f8d2c9cd52afe215d03dc77fbf35a0e1a280",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/first-viewport-column-overflow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/heading-rhythm.ts",
+        "bytes": 1765,
+        "sha256": "b813e5981b7bdbace6400b414470a671b720a4e4376f101bb5d1a4d33e66861a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/heading-rhythm.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/index.ts",
+        "bytes": 1121,
+        "sha256": "24c425a8dd36bf0027f4fdd9ab537af1c7dbd854c337ee80782f98af95b14ac2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/monotonous-spacing.ts",
+        "bytes": 1863,
+        "sha256": "f7274ecd75f50b8d6590aaa96a1665a1a5df429d7fa74c734d7dbe24ad683f97",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/monotonous-spacing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/nested-cards.ts",
+        "bytes": 2396,
+        "sha256": "b8a4e71ee060c500b1ecd7436926a425ccffc029035c4201fbec0b91d6869035",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/nested-cards.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/straggler.ts",
+        "bytes": 1562,
+        "sha256": "c28b7f379fef67289384316c9e226949c6bd76fffa0d96a6e40ab4c0408233f7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/straggler.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/cards.ts",
+        "bytes": 6892,
+        "sha256": "9e9eedb500b992113b323225255ff43792b5fb9f43e11ad3abb01bb8e4238090",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/cards.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/clipping.ts",
+        "bytes": 4501,
+        "sha256": "c50ea6a0ef8086b1f6888b5eb92928d1805515c402ed3f7b4145ce7ddfeea801",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/clipping.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/declared-mockups.ts",
+        "bytes": 4298,
+        "sha256": "e690868f13a62674f822436cd7d6f8033c0166ebcb5c76a38e4003a8939b7ad7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/declared-mockups.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/geometry.ts",
+        "bytes": 4790,
+        "sha256": "2443f63b88d63d218a8fbc5524b9eaedd386f2b44942c420f037b1bd2d8549bc",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/geometry.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/hidden-interface.ts",
+        "bytes": 2274,
+        "sha256": "ffbb9f0f5973da20fb5d68ec4fc68731a311bf1d31f5ee2f0c7db4210a76a3a9",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/hidden-interface.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/layout-cases.ts",
+        "bytes": 1319,
+        "sha256": "98ce7e47ad01baad1509f9356eb57733f1eff2bbc9c8297b3fcf0a7ba8ea6df2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/layout-cases.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/line-breaks.ts",
+        "bytes": 1684,
+        "sha256": "72d8035ec24507bd5f0582508764284fb4a03dfaf1e3bfc2724b12c8a5ce6499",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/line-breaks.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/motion.ts",
+        "bytes": 3775,
+        "sha256": "f378ee8be42dc53106d6a3e5616bd24f6183e401806f75b106d699b22f8aa922",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/motion.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/padding.ts",
+        "bytes": 4815,
+        "sha256": "91644157224f98dbef4fe20684ebde702c5901f748d6de6872677248f0785420",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/padding.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/rhythm.ts",
+        "bytes": 8525,
+        "sha256": "808957783df37593dd00ed56869e580b195da2380b72a94b29da996043ac28bd",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/rhythm.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/text-occlusion.ts",
+        "bytes": 4745,
+        "sha256": "5c412cbdcc73caa4791ed1bdd49970ec2a7ec3f56975adfcda5af0de5294e86e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/text-occlusion.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/text-overflow.ts",
+        "bytes": 4557,
+        "sha256": "79a9519d405d2c8584f6d5fa1dcf6429bf86c5ffd5fb6166df8af4e79814ab55",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/text-overflow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/unbalanced-heading.ts",
+        "bytes": 1235,
+        "sha256": "d5ab7e4178c1833b29cea59185b496b90adade47ac5cf51d3fea39f5106e108a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/unbalanced-heading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/viewport-reflow.ts",
+        "bytes": 1703,
+        "sha256": "76f9a442f8b493eea199c815afa79ba1d358f0c8a2319ea7a8e1a5364854ed7f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/viewport-reflow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/ai-color-palette.ts",
+        "bytes": 830,
+        "sha256": "50c8877b63151cbdc0e57deb0175fce845cbd5d8fc83f2f21060116d41ecd99f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/ai-color-palette.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/aphoristic-cadence.ts",
+        "bytes": 927,
+        "sha256": "0f3bbb5dc29fc5ffa3d4c7a68fb58b911a98d0200f4d0d73987dbc432137d5d5",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/aphoristic-cadence.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/border-accent-on-rounded.ts",
+        "bytes": 1410,
+        "sha256": "02040190e862c444195fc8ac6c36f21c2666be4b9dee5b8a5b9607e3a7a2ba79",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/border-accent-on-rounded.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/bounce-easing.ts",
+        "bytes": 1589,
+        "sha256": "d9569768c00ee01ca42c962d0a56756155f414f0a2288c92d3fa21a5131d9a34",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/bounce-easing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/broken-image.ts",
+        "bytes": 1024,
+        "sha256": "7f8cf14c4ab4b1fc62394e01c9a86cec4141028fadc5dace2c066b30e7aacc6a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/broken-image.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/codex-grid-background.ts",
+        "bytes": 1379,
+        "sha256": "1ba3f7cf0bc685528110bef54d579ee6e820a0b3856925aae8b3ece1abb0c59e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/codex-grid-background.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/dark-glow.ts",
+        "bytes": 1164,
+        "sha256": "a7deae796576098c9a77f7271a5fc94016593cbc311976dcfc841c4247e51061",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/dark-glow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/em-dash-overuse.ts",
+        "bytes": 892,
+        "sha256": "ff0de5989f149370e9afe9b49890da1602ce4c616b95364abe1534089b984458",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/em-dash-overuse.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/gradient-text.ts",
+        "bytes": 727,
+        "sha256": "d8117f2b0bfabf2d45e302b17e13d1085392eb66f141138e20d039207830acce",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/gradient-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/gray-on-color.ts",
+        "bytes": 945,
+        "sha256": "ac6a89df1d216e4969875f899bb21606bcfa4b4b29a6f7a6afd327515de14005",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/gray-on-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/index.ts",
+        "bytes": 1127,
+        "sha256": "9ed3b306405fbffd10e0b4ae3130bfd4653cce7b1cd965d9d0a73e2f6a9887fa",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/marketing-buzzword.ts",
+        "bytes": 1396,
+        "sha256": "fd06307416178263e20f629bbd643feefa7d07a1a68e882aa09d1e14a11bd9f6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/marketing-buzzword.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/marquee.ts",
+        "bytes": 707,
+        "sha256": "61b07ec5a5cef5070bf8dd0127c5b1e58e4a017520bb1326e066d6c5722fd7f9",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/marquee.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/monotonous-spacing.ts",
+        "bytes": 1633,
+        "sha256": "6dd5b8fc944bfea3a75ea444ff746c58986fe5967755eb07497ba9fdb9cea39c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/monotonous-spacing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/overused-font.ts",
+        "bytes": 1438,
+        "sha256": "06a5c0e3a3ed8c21459392ad35895e427b0d222a610e5419be2d2e778ae995b2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/overused-font.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/radial-halo.ts",
+        "bytes": 755,
+        "sha256": "8246aef06fd4825eb820469d03589494aab2ebb2a262b8108183026c8474c3af",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/radial-halo.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/side-tab.ts",
+        "bytes": 3824,
+        "sha256": "1920f8839ab0c30a33df6143129dfd325102902f1543fc18a1508c801e48d111",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/side-tab.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/accent-scans.ts",
+        "bytes": 4701,
+        "sha256": "a46fe790d5c4c487248221fc39034b05e83d14cb17092944006742659eda9990",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/accent-scans.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/check-source.ts",
+        "bytes": 377,
+        "sha256": "9bedad3fbf21919d60359df2cf61f033466f9ed3f324086b85618d9a58f919a7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/check-source.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/corners.ts",
+        "bytes": 5531,
+        "sha256": "939dfa78b3d2135d481699be9d2074bc74194c0081bc4afd67a135a33343b528",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/corners.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/css-effects.ts",
+        "bytes": 3707,
+        "sha256": "4c85f0260dacc68d4001c942118d5614c5de86edca4694b907145542962f47f0",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/css-effects.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/css-scopes.ts",
+        "bytes": 5401,
+        "sha256": "4dc1c9e7101cf6cf0f60f66ae744cc8f8c5bb353c93cc8dbc41a2b36a11bd4ae",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/css-scopes.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/image-tags.ts",
+        "bytes": 3949,
+        "sha256": "a8024bd6a2e2f170e30962db77e7e0275844db12633802c1164fdf40217898e1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/image-tags.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/js-punctuation.ts",
+        "bytes": 1077,
+        "sha256": "c4211ea1d64b6896ce1e57e34b69af322e92e4f21029de1accf36daf546e4530",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/js-punctuation.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/markup-scope.ts",
+        "bytes": 1964,
+        "sha256": "01ef1913439e853270521ef60e58dae7621aee44a26010ef6f13c432dad2f821",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/markup-scope.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/source-color.ts",
+        "bytes": 2555,
+        "sha256": "ac78b9b246ca890d29200582ccf2bdb5e1f9f74a9ea33b37fa9a403c81d2d601",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/source-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/source-shadow.ts",
+        "bytes": 923,
+        "sha256": "fbb970146442ee0f1c4551ab891733858606e20845b403471dba6e04c01dd62d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/source-shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/source-text.ts",
+        "bytes": 4661,
+        "sha256": "ee8f7617744722481d185c0caa98c7f90539968a4ae0ec364c530b2191a7808a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/source-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/all-caps-body.ts",
+        "bytes": 848,
+        "sha256": "a515b9e11cdb37cb974420e42c403db6472a30d5111c13afc53706295b3244d2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/all-caps-body.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/design-system-font-size.ts",
+        "bytes": 1098,
+        "sha256": "9036c2a6e49369d88bea690a2ff62f66dd5abca31470a8ebf2413d729ff44f7f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/design-system-font-size.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/design-system-font.ts",
+        "bytes": 1185,
+        "sha256": "576ff0d7554bb81e1350721e445f4e7e7af334576141a8b46cdf4ea1f47aaba6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/design-system-font.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/extreme-negative-tracking.ts",
+        "bytes": 1053,
+        "sha256": "5b8834be2dabd0a7c49853b98a0ee60dbc5856480257b30b8b910842ddbfdf68",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/extreme-negative-tracking.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/flat-type-hierarchy.ts",
+        "bytes": 1564,
+        "sha256": "6e70e3d806825985c0183fbd9baada191418a382629a38cc2d0ec03b7cdad337",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/flat-type-hierarchy.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/index.ts",
+        "bytes": 1051,
+        "sha256": "2348938d9f5d9e739b16ffcb1d2edaca26c903b32993930033d013e2cda8a415",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/italic-serif-display.ts",
+        "bytes": 1912,
+        "sha256": "24ddb43ac52991d2f52bd159e0a2533e7543f978147025699d664de8df49d0e6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/italic-serif-display.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/justified-text.ts",
+        "bytes": 1958,
+        "sha256": "4339ad8ea5f1bf89768b217ef596fd8852ee51cb1516a90f5508cfc2d6bafde9",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/justified-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/line-length.ts",
+        "bytes": 1824,
+        "sha256": "f8e6ee5a00227ed8936680cc8c4ea99621c5c192619f4817a372c0f9915875d0",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/line-length.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/oversized-h1.ts",
+        "bytes": 1301,
+        "sha256": "d79cb30f3f4133fad1a9e18a7b2acde0f1d3adb3f4a67119f3211684b5ee63f8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/oversized-h1.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/overused-font.ts",
+        "bytes": 2559,
+        "sha256": "ec6baf6cd4bc967c9e482c4ee19dc53f780f4e153dbf4932bccf18b2386f2b19",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/overused-font.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/drawn-enlargement.ts",
+        "bytes": 2445,
+        "sha256": "2f05361724295e302469e3d176ca0714a463c181a2186fb453ad771726542af2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/drawn-enlargement.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/fading-text.ts",
+        "bytes": 2486,
+        "sha256": "f498bda2434475d7d35775838a4f33edfe4b72cf4b8cfae5ffbafdba5122bf01",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/fading-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/flex-runs.ts",
+        "bytes": 1232,
+        "sha256": "83f507fe6e272d4186c78b08b686c0ba62ab1620f6c421ab5c86232eba3bab50",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/flex-runs.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/font-family.ts",
+        "bytes": 1789,
+        "sha256": "f6b6f1cffc0850fab79ae5aa0d150d30c1aba386ef5c0c1e2fd984c0db3891ca",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/font-family.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/painted-text.ts",
+        "bytes": 5885,
+        "sha256": "4900bd79b3e8c57afa3268c9685a9363dbcd4c1121240859ad38f071f5a5a4a0",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/painted-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/svg-size.ts",
+        "bytes": 2691,
+        "sha256": "732b48fd74d79a410e6ff0bcbda53ad5a27951b061de9c3c65d263d16860fba6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/svg-size.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/text-context.ts",
+        "bytes": 6600,
+        "sha256": "d18980fdf6e5061272ab943fff117ee0edfb7dc1366f832ec4f6e8ab87c07e42",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/text-context.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/text-lines.ts",
+        "bytes": 1833,
+        "sha256": "f054fa8eb1f2ff2941af9a3fda7aca3b8af4e7f3e6133b42b06fa58f69e0742f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/text-lines.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/type-hierarchy.ts",
+        "bytes": 1916,
+        "sha256": "55d65aea7c932dc02386c06b6c194d427a2b32ce18c78e71b4e875a5bd8ac98f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/type-hierarchy.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/tight-leading.ts",
+        "bytes": 2670,
+        "sha256": "4fea257f9d19f628d197cedfc23a511e6569201d36785bc6909e47d46729b412",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/tight-leading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/tiny-text.ts",
+        "bytes": 1441,
+        "sha256": "eee5f9c2601fbebddbce38a9b4a7ec8eb0104384631b5fb8cb1598d3580686dd",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/tiny-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/undersized-ui-text.ts",
+        "bytes": 1947,
+        "sha256": "b7e32cc73b72c6e3d12fb3e0e0a43f456c48277f0dd5901aebf3a76436c8b302",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/undersized-ui-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/wide-tracking.ts",
+        "bytes": 1697,
+        "sha256": "a5cdc314e1bcff4ce6098836c4edfcb7000ddd39fe124cf813457080a2925153",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/wide-tracking.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/snapshot/collect.ts",
+        "bytes": 6571,
+        "sha256": "9a47037d16ebb7705f3b5ecdaa31c6a4fd56c3b371a3c8b24cfa28211291b081",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/snapshot/collect.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/snapshot/style-props.ts",
+        "bytes": 2278,
+        "sha256": "6a5fc36d6a28d363de64d7fb3331244eaf7b22d4ab52c97026ecc1e42a31e244",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/snapshot/style-props.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/testing/build-snapshot.ts",
+        "bytes": 5314,
+        "sha256": "a894652259a2467a5bd4f193f4e8a5265cca37d58108b5cfedba727113dece51",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/testing/build-snapshot.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/tsconfig.json",
+        "bytes": 522,
+        "sha256": "c1bcde2e3ad977777e0c84a3c2fe4f8fc6e9ba59d93183371d6cb97bf4c2aa82",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/tsconfig.json (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/types.ts",
+        "bytes": 5051,
+        "sha256": "a052bf64522480343ec55f6f6c075274ae94cfa6f7d606ee622aedb3552a5a05",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/types.ts (SUL-1.0)"
       },
       {
         "path": "scripts/perfection/accent-stripes/color.ts",
@@ -3904,14 +4882,14 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 3463,
-        "sha256": "7234a01a851bb59357586fcb3891bf9b72939a358d5e2ca8ff50dab7be229729",
+        "bytes": 3442,
+        "sha256": "9f3c1e921669a5b3a2ad63aae8e4e67cfab37c3f120b1222a4f6f66b9e34c2a1",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 48388,
-        "sha256": "24eb7d230b4e59ea09bbb38198c8ab6ae9a396554193230da85f774ca9fc8a05",
+        "bytes": 49336,
+        "sha256": "ca0dc27da4560fff166f89c700593051573ab53cd1ed3e03fa25a19ea3a13476",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
@@ -7078,8 +8056,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 652,
-    "declaredSha256": 652,
+    "files": 815,
+    "declaredSha256": 815,
     "unbound": 0,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }

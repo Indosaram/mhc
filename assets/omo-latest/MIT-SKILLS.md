@@ -53,7 +53,7 @@ Written by implementers who were given only a functional spec and the MIT base
 
 ## Still SUL-1.0
 
-No skill under `assets/omo-latest/skills` is SUL-1.0 any more. Out of scope
+No whole skill under `assets/omo-latest/skills` is SUL-1.0. One subtree is: `frontend/scripts/detect/**` and `frontend/references/perfection/detect.md` (the detect SDK) are copied unchanged from oh-my-openagent v5.1.52 (`354bcf9fc4`) and stay SUL-1.0 (`frontend/scripts/detect/LICENSE.md`, `frontend/ATTRIBUTION.md` section 7). The MIT profile (`package-native --mit`) stages no skills, so they never ship there. Out of scope
 for this file: the runtime crates under `crates/omo/**` (for example
 `maho-omo-mass-ulw`, `maho-omo-ultrawork`, `maho-omo-skill-pointers`,
 `maho-omo-onboarding`, `maho-omo-init-deep-advisor`) remain
