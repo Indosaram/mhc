@@ -116,9 +116,9 @@
       },
       {
         "path": "README.md",
-        "bytes": 7675,
-        "sha256": "eb4d54eeb38d3d2449dc1eacc89c4da4d53227c153c299afe3e599428c05cd30",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/README.md (MIT)"
+        "bytes": 7791,
+        "sha256": "e8ea5cb1b853e8220e2bed3cb3a1cfb3ca06597e4ad6c234d4d35810314af41e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/README.md (MIT)"
       },
       {
         "path": "SKILL.md",
@@ -134,15 +134,15 @@
       },
       {
         "path": "install.ps1",
-        "bytes": 7165,
-        "sha256": "e61f32729a8b54dc7bcc27adcafd91511cbbd0ea963493e1d2e79a221b683bbf",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/install.ps1 (MIT)"
+        "bytes": 7384,
+        "sha256": "af1eb0456dd5e089cfa0fa540941eb7d15c4b2f6c517ce606ec22046826fe2c8",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/install.ps1 (MIT)"
       },
       {
         "path": "install.sh",
-        "bytes": 7581,
-        "sha256": "ac2abfc4e4b5991c6aed09babd6fd1e6b87663a036949c65540542d4f6b0faa1",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/install.sh (MIT)"
+        "bytes": 7663,
+        "sha256": "440410f94fb26474d523759bfc724e51a78bd520dcddfd3a1a9074e761923695",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/install.sh (MIT)"
       },
       {
         "path": "references/cli.md",
@@ -152,9 +152,9 @@
       },
       {
         "path": "references/install.md",
-        "bytes": 5597,
-        "sha256": "0f17ac284c977d68fc4432e6013e4ce1039551a66d2bc4a374939331acbab931",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/references/install.md (MIT)"
+        "bytes": 5829,
+        "sha256": "4a6ce77b0a54ceab7d3117a0c06a2d667e02c4268f595160d03fa56433d4d973",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/references/install.md (MIT)"
       },
       {
         "path": "references/patterns.md",
@@ -188,9 +188,9 @@
       },
       {
         "path": "scripts/ast_grep_helper.py",
-        "bytes": 26972,
-        "sha256": "0ca189f5b0fe873f8d5f3de0f9ff76b13953f19ca3e51b3a744af0ab7b30fe52",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/scripts/ast_grep_helper.py (MIT)"
+        "bytes": 27452,
+        "sha256": "645f64e4bfeeb8fe8a3a727f3b1d7e32f9c4dfdc78e2c0ca2bfc7eb57d39a3cb",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/scripts/ast_grep_helper.py (MIT)"
       },
       {
         "path": "tests/smoke.ps1",
