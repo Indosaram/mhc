@@ -1,5 +1,5 @@
 use maho_ext_api::{ExtensionContext, ExtensionFailure};
-fn kinds(ctx: &ExtensionContext) -> Vec<String> {
+fn keyed_kinds(ctx: &ExtensionContext) -> Vec<(String, String)> {
     let mut holds = std::collections::BTreeMap::new();
     for entry in ctx.session_manager.get_entries() {
         if entry.kind != "custom" || entry.data["customType"] != "session-hold" {
@@ -25,11 +25,16 @@ fn kinds(ctx: &ExtensionContext) -> Vec<String> {
             _ => (),
         }
     }
-    holds.into_values().collect()
+    holds.into_iter().collect()
+}
+fn kinds(ctx: &ExtensionContext) -> Vec<String> {
+    keyed_kinds(ctx).into_iter().map(|(_, kind)| kind).collect()
 }
 pub fn session_held(ctx: &ExtensionContext) -> Result<bool, ExtensionFailure> {
     Ok(kinds(ctx).iter().any(|kind| kind != "run_fence") || ctx.engine_turns_held()?)
 }
 pub fn user_stopped(ctx: &ExtensionContext) -> bool {
-    kinds(ctx).iter().any(|kind| kind == "session_hold")
+    keyed_kinds(ctx)
+        .iter()
+        .any(|(key, kind)| kind == "session_hold" && key != "interrupted-run")
 }
