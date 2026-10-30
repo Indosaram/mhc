@@ -223,6 +223,7 @@ pub mod session_title_reasoning;
 pub mod session_write_recovery;
 pub mod settings_retired_keys;
 pub mod stale_extension_containment;
+pub mod skills_prompt;
 pub mod startup_model_pick;
 pub mod tool_result_user_words;
 pub mod turn_deadline;
