@@ -352,3 +352,210 @@ fn keeps_tab_containing_overlays_on_one_physical_terminal_row() {
     );
     assert!(!terminal.out.contains('\t'));
 }
+
+/// Port of senpi `sgr-row-clear.test.ts`, `tui-render-sgr-reset.test.ts` and
+/// `tui-overlay-style-leak.test.ts`: row clears are followed by a style reset, and styles do not
+/// leak past a line whose trailing reset sits beyond the visible width.
+mod sgr_row_clear {
+    use super::*;
+
+    const ROW_CLEAR: &str = "\x1b[2K";
+    const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07";
+
+    struct SharedLines(Rc<RefCell<Vec<String>>>);
+
+    impl Component for SharedLines {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            self.0.borrow().clone()
+        }
+    }
+
+    fn lines(rows: &[&str]) -> Vec<String> {
+        rows.iter().map(|row| row.to_string()).collect()
+    }
+
+    fn screen(
+        columns: u16,
+        rows: u16,
+        initial: Vec<String>,
+    ) -> (TuiMainScreen, RecordingTerminal, Rc<RefCell<Vec<String>>>) {
+        let content = Rc::new(RefCell::new(initial));
+        let mut screen = TuiMainScreen::new();
+        screen.base.set_mux_detector(Box::new(|| false));
+        screen
+            .base
+            .add_child(Rc::new(RefCell::new(SharedLines(Rc::clone(&content)))));
+        let terminal = RecordingTerminal {
+            columns,
+            rows,
+            out: String::new(),
+        };
+        (screen, terminal, content)
+    }
+
+    fn render(screen: &mut TuiMainScreen, terminal: &mut RecordingTerminal) {
+        screen.base.reset_forced_render_state();
+        screen.base.do_render(terminal);
+    }
+
+    fn assert_every_row_clear_resets(frame: &str, scenario: &str) {
+        let clears: Vec<usize> = frame.match_indices(ROW_CLEAR).map(|(at, _)| at).collect();
+        assert!(
+            !clears.is_empty(),
+            "{scenario} should exercise at least one row clear"
+        );
+        for at in clears {
+            let after = &frame[at + ROW_CLEAR.len()..];
+            assert!(
+                after.starts_with(SEGMENT_RESET),
+                "{scenario} emitted a row clear without an immediate SGR reset at byte {at}"
+            );
+        }
+    }
+
+    fn expandable_transcript(expanded: bool) -> Vec<String> {
+        let mut rows = lines(&["session title", "tools"]);
+        if expanded {
+            rows.extend((0..16).map(|index| format!("expanded tool detail {index}")));
+        }
+        rows.extend((0..6).map(|index| format!("tail row {index}")));
+        rows
+    }
+
+    #[test]
+    fn resets_after_row_clears_on_full_render() {
+        let (mut screen, mut terminal, _content) = screen(40, 5, lines(&["full render"]));
+        render(&mut screen, &mut terminal);
+        assert_every_row_clear_resets(&terminal.out, "full render");
+    }
+
+    #[test]
+    fn resets_after_row_clears_on_scrollback_replay() {
+        let (mut screen, mut terminal, content) = screen(72, 6, expandable_transcript(true));
+        render(&mut screen, &mut terminal);
+        terminal.out.clear();
+
+        *content.borrow_mut() = expandable_transcript(false);
+        screen.base.do_render(&mut terminal);
+        assert!(
+            terminal.out.contains("\x1b[3J"),
+            "scenario should use scrollback replay"
+        );
+        assert_every_row_clear_resets(&terminal.out, "scrollback replay");
+    }
+
+    #[test]
+    fn resets_after_row_clears_for_deleted_lines() {
+        let (mut screen, mut terminal, content) = screen(40, 6, lines(&["a", "b", "c", "d"]));
+        render(&mut screen, &mut terminal);
+        terminal.out.clear();
+
+        *content.borrow_mut() = lines(&["a", "b"]);
+        screen.base.do_render(&mut terminal);
+        assert_every_row_clear_resets(&terminal.out, "deleted lines");
+    }
+
+    #[test]
+    fn resets_after_row_clears_for_viewport_insert_scroll() {
+        let tail = ["tail0", "tail1", "tail2", "tail3", "tail4"];
+        let mut initial = lines(&["p0", "p1", "p2"]);
+        initial.extend(lines(&tail));
+        let (mut screen, mut terminal, content) = screen(40, 5, initial);
+        render(&mut screen, &mut terminal);
+        terminal.out.clear();
+
+        *content.borrow_mut() = lines(&[
+            "p0", "p1", "p2", "tail0", "tail1", "tail2", "tail3", "inserted", "tail4",
+        ]);
+        screen.base.do_render(&mut terminal);
+        assert!(
+            terminal.out.contains("\x1b[1;4r"),
+            "scenario should use insert-scroll"
+        );
+        assert_every_row_clear_resets(&terminal.out, "viewport insert-scroll");
+    }
+
+    #[test]
+    fn resets_sgr_state_before_clearing_and_repainting_changed_rows() {
+        let (mut screen, mut terminal, content) = screen(
+            72,
+            6,
+            lines(&[
+                "header",
+                "\x1b[38;2;9;131;232mWorking\x1b[0m",
+                "footer",
+                "input",
+            ]),
+        );
+        render(&mut screen, &mut terminal);
+        terminal.out.clear();
+
+        *content.borrow_mut() = lines(&[
+            "header",
+            "\x1b[38;2;9;131;232mWorking harder\x1b[0m",
+            "footer",
+            "input",
+        ]);
+        screen.base.do_render(&mut terminal);
+        assert!(
+            terminal
+                .out
+                .contains("\x1b[2K\x1b[0m\x1b]8;;\x07\x1b[38;2;9;131;232mWorking harder"),
+            "changed-row repaint should reset terminal style state immediately after clearing the row"
+        );
+        assert!(
+            !terminal.out.contains("\x1b[2K\x1b[38;2;9;131;232m"),
+            "repaint should not write truecolor text directly after CSI 2K"
+        );
+    }
+
+    struct StaticOverlay;
+
+    impl Component for StaticOverlay {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            vec!["OVR".to_string()]
+        }
+    }
+
+    fn cell_italic(stream: &str, columns: u16, rows: u16, row: usize, col: usize) -> bool {
+        let mut vt = VirtualTerminal::new(columns, rows);
+        vt.start();
+        vt.write(stream);
+        vt.snapshot().cells[row][col]
+            .attrs
+            .iter()
+            .any(|attr| attr == "italic")
+    }
+
+    fn italic_base_line(width: usize) -> String {
+        format!("\x1b[3m{}\x1b[23m", "X".repeat(width))
+    }
+
+    #[test]
+    fn should_not_leak_styles_when_a_trailing_reset_sits_beyond_the_last_visible_column_no_overlay()
+    {
+        let (mut screen, mut terminal, _content) =
+            screen(20, 6, vec![italic_base_line(20), "INPUT".to_string()]);
+        render(&mut screen, &mut terminal);
+        assert!(!cell_italic(&terminal.out, 20, 6, 1, 0));
+    }
+
+    #[test]
+    fn should_not_leak_styles_when_overlay_slicing_drops_trailing_sgr_resets() {
+        use maho_tui::tui::{OverlayOptions, SizeValue};
+
+        let (mut screen, mut terminal, _content) =
+            screen(20, 6, vec![italic_base_line(20), "INPUT".to_string()]);
+        let _overlay = screen.base.show_overlay(
+            Rc::new(RefCell::new(StaticOverlay)),
+            Some(OverlayOptions {
+                row: Some(SizeValue::Absolute(0)),
+                col: Some(SizeValue::Absolute(5)),
+                width: Some(SizeValue::Absolute(3)),
+                ..OverlayOptions::default()
+            }),
+        );
+        render(&mut screen, &mut terminal);
+        assert!(!cell_italic(&terminal.out, 20, 6, 1, 0));
+    }
+}
