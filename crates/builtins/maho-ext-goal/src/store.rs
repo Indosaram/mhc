@@ -59,6 +59,7 @@ fn fresh_goal(
         time_used_seconds: 0.0,
         consecutive_continuations: Some(0),
         unattended_continuations: Some(0),
+        no_progress_continuations: Some(0),
         last_continuation_signature: None,
         continuation_stopped_at: None,
         created_at: now,
@@ -153,12 +154,14 @@ pub async fn update_goal(
             if next.status != previous_status {
                 next.consecutive_continuations = Some(0);
                 next.unattended_continuations = Some(0);
+                next.no_progress_continuations = Some(0);
                 next.last_continuation_signature = None;
                 next.continuation_stopped_at = None;
             }
             if source == GoalUpdateSource::User && requested_status == Some(GoalStatus::Active) {
                 next.consecutive_continuations = Some(0);
                 next.unattended_continuations = Some(0);
+                next.no_progress_continuations = Some(0);
                 next.last_continuation_signature = None;
                 next.continuation_stopped_at = None;
                 next.last_started_at.get_or_insert(now);
@@ -259,6 +262,11 @@ pub async fn record_continuation_delivered(
                 .unwrap_or(0)
                 .saturating_add(u64::from(count_unattended)),
         );
+        goal.no_progress_continuations = Some(
+            goal.no_progress_continuations
+                .unwrap_or(0)
+                .saturating_add(u64::from(count_unattended)),
+        );
         goal.last_continuation_signature = Some(signature.into());
         goal.continuation_stopped_at = None;
         held.write(Some(&goal))?;
@@ -266,9 +274,18 @@ pub async fn record_continuation_delivered(
     })
     .await
 }
+/// `resetContinuationStreak(ref, { unattended, progress })`: `unattended` (human input) clears both
+/// the unattended and no-progress counters; `progress` clears only the no-progress counter.
 pub async fn reset_continuation_streak(
     reference: &GoalStoreRef,
     unattended: bool,
+) -> Result<Option<Goal>, GoalError> {
+    reset_continuation_streak_with_progress(reference, unattended, false).await
+}
+pub async fn reset_continuation_streak_with_progress(
+    reference: &GoalStoreRef,
+    unattended: bool,
+    progress: bool,
 ) -> Result<Option<Goal>, GoalError> {
     with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
@@ -277,6 +294,9 @@ pub async fn reset_continuation_streak(
         goal.consecutive_continuations = Some(0);
         if unattended {
             goal.unattended_continuations = Some(0);
+        }
+        if unattended || progress {
+            goal.no_progress_continuations = Some(0);
         }
         goal.last_continuation_signature = None;
         goal.continuation_stopped_at = None;
@@ -325,6 +345,7 @@ pub async fn record_goal_continuation_stopped(
                 )?;
                 next.consecutive_continuations = Some(0);
                 next.unattended_continuations = Some(0);
+                next.no_progress_continuations = Some(0);
                 next.last_continuation_signature = None;
                 next
             }
@@ -919,5 +940,54 @@ mod tests {
             fs::read_to_string(objective_full_text_file_path(&reference)).unwrap(),
             objective
         );
+    }
+    #[tokio::test]
+    async fn no_progress_counter_counts_deliveries_and_resets_on_progress_or_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = reference(&dir);
+        let goal = create_goal(&reference, "Work", None, 1).await.unwrap();
+        assert_eq!(goal.no_progress_continuations, Some(0));
+        record_continuation_delivered(&reference, "a", None, true)
+            .await
+            .unwrap();
+        let exempt = record_continuation_delivered(&reference, "b", None, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exempt.no_progress_continuations, Some(1));
+        let narration = reset_continuation_streak(&reference, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(narration.no_progress_continuations, Some(1));
+        let progress = reset_continuation_streak_with_progress(&reference, false, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(progress.no_progress_continuations, Some(0));
+        assert_eq!(progress.unattended_continuations, Some(1));
+        record_continuation_delivered(&reference, "c", None, true)
+            .await
+            .unwrap();
+        let input = reset_continuation_streak(&reference, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(input.no_progress_continuations, Some(0));
+        assert_eq!(input.unattended_continuations, Some(0));
+        record_continuation_delivered(&reference, "d", None, true)
+            .await
+            .unwrap();
+        let current = read_goal(&reference).unwrap().unwrap();
+        let (blocked, recorded) = record_goal_continuation_stopped(
+            &reference,
+            &current,
+            5_000,
+            Some(crate::continuation_recovery::NO_PROGRESS_BLOCKED_REASON),
+        )
+        .await
+        .unwrap();
+        assert!(recorded);
+        assert_eq!(blocked.unwrap().no_progress_continuations, Some(0));
     }
 }
