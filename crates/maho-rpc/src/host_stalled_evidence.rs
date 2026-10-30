@@ -110,7 +110,8 @@ pub fn host_child_alive(
         return Some(false);
     }
     let observed = crate::host_reservations::read_process_start_time(pid);
-    if !crate::host_reservations::process_is_live(pid) {
+    // An exited, unreaped child (state Z) is absent, read right after the identity snapshot (senpi#4119).
+    if !crate::host_reservations::process_is_running(pid) {
         return Some(false);
     }
     if let (Some(recorded), Some(observed)) = (

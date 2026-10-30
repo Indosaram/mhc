@@ -43,8 +43,22 @@ fn ids(paths: &HostDaemonPaths) -> Vec<String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect()
 }
+/// Senpi `PruneOptions`: `before_pointer_removal` is the deterministic race seam that runs after the pointer
+/// was read and before it is removed.
+#[derive(Default)]
+pub struct PruneOptions<'a> {
+    pub before_pointer_removal: Option<&'a dyn Fn()>,
+}
 pub fn prune_dead_generations(paths: &HostDaemonPaths) -> std::io::Result<PrunedDaemonState> {
-    let pointed = current_id(paths);
+    prune_dead_generations_with(paths, &PruneOptions::default())
+}
+pub fn prune_dead_generations_with(
+    paths: &HostDaemonPaths,
+    options: &PruneOptions<'_>,
+) -> std::io::Result<PrunedDaemonState> {
+    let pointer_text = read_file_or_undefined(&paths.pointer_file).ok().flatten();
+    let pointed = parse_json(pointer_text.as_deref())
+        .and_then(|pointer| pointer.get("instance_id")?.as_str().map(str::to_owned));
     let mut pruned = PrunedDaemonState::default();
     for id in ids(paths) {
         let generation = generation_paths(paths, &id);
@@ -71,11 +85,38 @@ pub fn prune_dead_generations(paths: &HostDaemonPaths) -> std::io::Result<Pruned
     for id in &pruned.generations {
         let _ = fs::remove_dir_all(generation_paths(paths, id).dir);
     }
-    pruned.pointer = pointed.is_some_and(|id| pruned.generations.contains(&id));
-    if pruned.pointer {
-        let _ = fs::remove_file(&paths.pointer_file);
-    }
+    // The pointer outliving its generation is what makes a client probe a socket nobody serves.
+    let names_dead = pointed.is_some_and(|id| pruned.generations.contains(&id));
+    pruned.pointer = match pointer_text {
+        Some(read) if names_dead => {
+            if let Some(hook) = options.before_pointer_removal {
+                hook();
+            }
+            remove_pointer_if_unchanged(paths, &read)
+        }
+        _ => false,
+    };
     Ok(pruned)
+}
+/// Removes the pointer only while it is still the one this prune read (senpi#1911). Prune runs outside the
+/// ensure lock (`host status`), so a registration may have renamed a new pointer in since: the file is moved
+/// aside atomically, compared, and a replacement is linked back unless an even newer one landed.
+fn remove_pointer_if_unchanged(paths: &HostDaemonPaths, read: &str) -> bool {
+    let parked = std::path::PathBuf::from(format!(
+        "{}.prune-{}-{}.tmp",
+        paths.pointer_file.display(),
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    if fs::rename(&paths.pointer_file, &parked).is_err() {
+        return false;
+    }
+    let unchanged = read_file_or_undefined(&parked).ok().flatten().as_deref() == Some(read);
+    if !unchanged {
+        let _ = fs::hard_link(&parked, &paths.pointer_file);
+    }
+    let _ = fs::remove_file(&parked);
+    unchanged
 }
 /// Removes every claim whose owner is gone, and every claim of a generation in `ended` (being removed by the caller)
 /// whose owner identity cannot be proven. Returns the session paths released. Every path that removes a generation
@@ -241,5 +282,36 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].instance_id, "live");
         assert!(!rows[0].current);
+    }
+    #[test]
+    fn prune_keeps_a_pointer_a_registration_replaced_after_it_was_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::host_daemon_paths::create_host_daemon_paths("socket", temp.path());
+        crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+        crate::host_daemon_paths::create_generation_directory(&generation_paths(&paths, "dead"))
+            .unwrap();
+        fs::write(generation_paths(&paths, "dead").pid_file, r#"{"pid":0}"#).unwrap();
+        fs::write(&paths.pointer_file, r#"{"instance_id":"dead"}"#).unwrap();
+        let replacement = r#"{"instance_id":"fresh"}"#;
+        let replace = || fs::write(&paths.pointer_file, replacement).unwrap();
+        let pruned = prune_dead_generations_with(
+            &paths,
+            &PruneOptions {
+                before_pointer_removal: Some(&replace),
+            },
+        )
+        .unwrap();
+        assert_eq!(pruned.generations, vec!["dead"]);
+        assert!(!pruned.pointer);
+        assert_eq!(
+            fs::read_to_string(&paths.pointer_file).unwrap(),
+            replacement
+        );
+        let leftovers = fs::read_dir(&paths.dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".prune-"))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 }
