@@ -35,6 +35,12 @@ pub mod instructions;
 pub mod lifecycle_registration;
 #[path = "log.rs"]
 pub mod log;
+#[path = "modern_era.rs"]
+pub mod modern_era;
+#[path = "modern_mrtr_privacy.rs"]
+pub mod modern_mrtr_privacy;
+#[path = "modern_wire.rs"]
+pub mod modern_wire;
 #[path = "notifications.rs"]
 pub mod notifications;
 #[path = "oauth.rs"]

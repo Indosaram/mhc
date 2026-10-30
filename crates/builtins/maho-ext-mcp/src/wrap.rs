@@ -82,3 +82,107 @@ where T:Clone+Send+'static,F:FnMut(T)->Fut+Send+'static,Fut:Future<Output=Result
         }
     })
 }
+
+/// Upstream `McpClock`: the modern operation uses one injectable monotonic clock and scheduler.
+pub trait McpClock: Send + Sync {
+    /// Monotonic milliseconds.
+    fn now(&self) -> f64;
+    /// Resolves after `ms` monotonic milliseconds (upstream `schedule`; cancel = drop).
+    fn sleep(&self, ms: f64) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+static ELAPSED_BASE: std::sync::LazyLock<tokio::time::Instant> = std::sync::LazyLock::new(tokio::time::Instant::now);
+/// Upstream `mcpElapsedClock` (`performance.now()` + `setTimeout`), on tokio time so paused-clock tests drive it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct McpElapsedClock;
+impl McpClock for McpElapsedClock {
+    fn now(&self) -> f64 {
+        tokio::time::Instant::now().saturating_duration_since(*ELAPSED_BASE).as_secs_f64() * 1000.0
+    }
+    fn sleep(&self, ms: f64) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let ms = if ms.is_finite() { ms.max(0.0) } else { f64::from(u32::MAX) };
+        Box::pin(tokio::time::sleep(Duration::from_secs_f64(ms / 1000.0)))
+    }
+}
+pub static MCP_ELAPSED_CLOCK: McpElapsedClock = McpElapsedClock;
+
+/// The awaited work lost to its abort signal (upstream rejects with `signal.reason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("MCP operation aborted")]
+pub struct McpInterrupted;
+
+pub async fn mcp_abortable_delay(clock: &dyn McpClock, ms: f64, signal: &maho_ext_api::AbortSignal) -> Result<(), McpInterrupted> {
+    if signal.is_aborted() {
+        return Err(McpInterrupted);
+    }
+    tokio::select! {
+        biased;
+        () = signal.cancelled() => Err(McpInterrupted),
+        () = clock.sleep(ms) => Ok(()),
+    }
+}
+
+pub async fn mcp_interrupted<T>(work: impl Future<Output = T>, signal: &maho_ext_api::AbortSignal) -> Result<T, McpInterrupted> {
+    if signal.is_aborted() {
+        return Err(McpInterrupted);
+    }
+    tokio::select! {
+        biased;
+        () = signal.cancelled() => Err(McpInterrupted),
+        value = work => Ok(value),
+    }
+}
+
+/// Upstream `AbortSignal.any`: a signal aborted by the first of its sources. The forwarder ends with the handle.
+pub struct McpLinkedSignal {
+    pub signal: maho_ext_api::AbortSignal,
+    task: Option<JoinHandle<()>>,
+}
+impl McpLinkedSignal {
+    pub fn new(sources: Vec<maho_ext_api::AbortSignal>) -> Self {
+        let signal = maho_ext_api::AbortSignal::default();
+        if sources.iter().any(maho_ext_api::AbortSignal::is_aborted) {
+            signal.abort();
+            return Self { signal, task: None };
+        }
+        if sources.is_empty() {
+            return Self { signal, task: None };
+        }
+        let target = signal.clone();
+        let task = tokio::spawn(async move {
+            let waits = sources.iter().map(|source| Box::pin(source.cancelled())).collect::<Vec<_>>();
+            futures::future::select_all(waits).await;
+            target.abort();
+        });
+        Self { signal, task: Some(task) }
+    }
+}
+impl Drop for McpLinkedSignal {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+/// Upstream `onMcpClientClose`: observe client close without replacing another request's observer.
+/// Dropping the observer unsubscribes.
+pub struct McpCloseObserver(JoinHandle<()>);
+impl Drop for McpCloseObserver {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+pub fn on_mcp_client_close(client: &crate::transport_sdk::McpClient, listener: impl FnOnce() + Send + 'static) -> McpCloseObserver {
+    let mut closed = client.closed.subscribe();
+    McpCloseObserver(tokio::spawn(async move {
+        loop {
+            if *closed.borrow_and_update() {
+                break;
+            }
+            if closed.changed().await.is_err() {
+                break;
+            }
+        }
+        listener();
+    }))
+}
