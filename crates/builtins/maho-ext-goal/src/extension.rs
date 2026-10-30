@@ -61,7 +61,7 @@ impl GoalExtension {
             (
                 "update_goal",
                 "Update Goal",
-                "Update the existing goal. Set complete only when the objective has actually been achieved and no required work remains. A non-empty reason is required when blocking; reason must not be provided when completing.",
+                crate::tool_registration::UPDATE_GOAL_DESCRIPTION,
                 crate::tool_registration::update_goal_schema(),
             ),
         ] {
@@ -241,6 +241,16 @@ mod tests {
             Default::default(),
         );
         GoalExtension::default().register(&mut api);
+        let update = api
+            .registered
+            .tools
+            .iter()
+            .find(|tool| tool.definition.name == "update_goal")
+            .unwrap();
+        assert_eq!(
+            update.definition.description,
+            crate::tool_registration::UPDATE_GOAL_DESCRIPTION
+        );
         for name in ["create_goal", "update_goal", "get_goal"] {
             assert!(
                 api.registered
