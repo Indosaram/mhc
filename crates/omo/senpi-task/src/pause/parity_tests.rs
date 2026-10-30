@@ -275,6 +275,7 @@ struct Effects {
     registry: PauseRegistry,
     events: Mutex<Vec<&'static str>>,
     newer_hold: bool,
+    fail_resume: std::sync::atomic::AtomicBool,
     guidance_entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     guidance_release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
@@ -334,6 +335,9 @@ impl RunPauseEffects for Effects {
         assert_eq!(request.child_seq_cutoff, Some(8));
         self.event("resume");
         Box::pin(async move {
+            if self.fail_resume.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(PauseError::message("restore failed"));
+            }
             Ok(if self.newer_hold {
                 ResumeParticipantResult::HeldByUser { child_seq: 9 }
             } else {
@@ -369,6 +373,7 @@ fn harness(dir: &std::path::Path, newer_hold: bool) -> (Arc<RunPauseController>,
         registry: registry.clone(),
         events: Mutex::new(vec![]),
         newer_hold,
+        fail_resume: std::sync::atomic::AtomicBool::new(false),
         guidance_entered: Mutex::new(None),
         guidance_release: Mutex::new(None),
     });
@@ -475,6 +480,30 @@ async fn controller_stop_two_supersedes_resume_one_during_guidance() {
             .expect("stale release")
     );
     assert!(!effects.events.lock().expect("events").contains(&"resume"));
+}
+
+// run-controller.test.ts (c1e4ec892b): a failed restore of an acknowledged, in-custody child is
+// logged and marked lost instead of failing the parent's Resume.
+#[tokio::test]
+async fn controller_failed_child_restore_never_blocks_parent_resume() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (controller, effects) = harness(dir.path(), false);
+    controller.pause("root", 1).await.expect("stop");
+    effects
+        .fail_resume
+        .store(true, std::sync::atomic::Ordering::Release);
+    let result = controller
+        .resume("root", 1, "resume")
+        .await
+        .expect("resume never throws for one child");
+    let RunResumeResult::Installed { failures } = result else {
+        panic!("expected installed, got {result:?}");
+    };
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].key, "a");
+    let record = controller.registry.require("root").expect("ledger");
+    assert_eq!(record.participants["a"].state, ParticipantState::Lost);
+    assert!(effects.events.lock().expect("events").contains(&"install"));
 }
 
 struct NativeEngine {
