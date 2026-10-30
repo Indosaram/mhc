@@ -141,6 +141,7 @@ pub mod status_live;
 pub mod status_live_wiring;
 pub mod supervisor;
 pub mod sync_config_error;
+pub mod sync_session_deferred;
 pub mod sync_runner;
 pub mod sync_runtime;
 pub mod sync_status_surface;

@@ -114,6 +114,7 @@ pub fn register_memory_static(
             api.events.clone(),
             api.runtime.clone(),
         ));
+        let notice_warn = options.warn.clone();
         let inputs = Arc::new(crate::wiring_notice_inputs::create_memory_notice_inputs(
             crate::wiring_notice_inputs::MemoryNoticeInputsOptions {
                 resolve_context: options.resolve_context.clone(),
@@ -122,6 +123,12 @@ pub fn register_memory_static(
                     if let Ok(value) = serde_json::to_value(record) {
                         let _ = sender.append_entry(custom_type, Some(value));
                     }
+                })),
+                on_warn: Some(Arc::new(move |message, detail| {
+                    notice_warn(&match detail {
+                        Some(detail) => format!("{message}: {detail}"),
+                        None => message.to_owned(),
+                    })
                 })),
             },
         ));
