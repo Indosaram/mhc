@@ -38,6 +38,7 @@ pub mod host_launch_spec;
 pub mod host_lifecycle;
 pub mod host_memory_sampler;
 pub mod host_observe_request;
+pub mod host_pointer_election;
 pub mod host_probe;
 pub mod host_process_metrics;
 pub mod host_process_table;

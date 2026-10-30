@@ -29,6 +29,8 @@ pub async fn prepare_handoff(socket:&str,agent_dir:&std::path::Path,platform:&st
     crate::host_daemon_paths::create_daemon_directories(&paths).map_err(|error|error.source)?;
     let host=crate::host_probe::probe_protocol_info(socket,10000).await;
     if let Some(refusal)=handoff_refusal(platform,host.as_ref(),true){return Ok(Err(refusal));}
+    // A pointer an earlier prune dropped is given back to the one proven live generation (senpi#1911).
+    crate::host_pointer_election::elect_pointer(&paths,socket,true);
     let registered=crate::host_daemon_registration::read_host_registration(&paths)?;
     if crate::host_daemon_registration::proven_owner(registered.as_ref(),socket).is_none(){return Ok(Err(HandoffRefusal{reason:"unknown_owner",upgradeable:true}));}
     Ok(Ok(HandoffContext{paths,host:host.expect("preflight checked host"),owner:registered.expect("preflight proved owner")}))

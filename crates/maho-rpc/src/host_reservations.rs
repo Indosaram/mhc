@@ -111,6 +111,38 @@ pub fn process_is_live(pid: u32) -> bool {
         })
         .unwrap_or(false)
 }
+/// Whether `pid` is a process still RUNNING: live, and not an exited-but-unreaped zombie (state Z), which
+/// makes no more writes (senpi `processIsRunning`, senpi#4119). Reads the kernel state in process instead of
+/// spawning `ps -o stat=`; an unreadable state on a live pid answers running, as the pinned source does.
+pub fn process_is_running(pid: u32) -> bool {
+    if !process_is_live(pid) {
+        return false;
+    }
+    !process_is_zombie(pid)
+}
+#[cfg(target_os = "linux")]
+fn process_is_zombie(pid: u32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(") ")
+                .and_then(|(_, rest)| rest.chars().next())
+        })
+        .is_some_and(|state| state == 'Z')
+}
+#[cfg(target_os = "macos")]
+fn process_is_zombie(pid: u32) -> bool {
+    /// `SZOMB` from `<sys/proc.h>`.
+    const SZOMB: u32 = 5;
+    i32::try_from(pid)
+        .ok()
+        .and_then(|pid| libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(pid, 1).ok())
+        .is_some_and(|info| info.pbi_status == SZOMB)
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_is_zombie(_pid: u32) -> bool {
+    false
+}
 /// `Proven`: the pid runs and its start time matches the claim. `Gone`: the pid is dead, or runs with a
 /// different start time. `Unproven`: the pid runs but no start time was recorded or none can be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +152,8 @@ pub enum ClaimIdentity {
     Unproven,
 }
 pub fn claim_owner_identity(owner: &SessionPathOwner) -> ClaimIdentity {
-    if !process_is_live(owner.pid) {
+    // An exited, unreaped owner (state Z) makes no more writes: the claim is gone (senpi#4119).
+    if !process_is_running(owner.pid) {
         return ClaimIdentity::Gone;
     }
     let Some(recorded) = &owner.process_start_time else {
