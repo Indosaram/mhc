@@ -4,9 +4,9 @@ use maho_tui::tui::Component;
 use serde_json::json;
 
 fn main() {
-    let theme = Theme { colors: [("accent".into(), "#7dcfff".into()), ("success".into(), "#9ece6a".into()),
-        ("warning".into(), "#e0af68".into()), ("muted".into(), "#a9b1d6".into()), ("dim".into(), "#565f89".into()),
-        ("toolTitle".into(), "#bb9af7".into()), ("toolOutput".into(), "#c0caf5".into())].into_iter().collect(), ..Default::default() };
+    let theme = Theme { colors: [("accent".into(), "\u{1b}[38;2;125;207;255m".into()), ("success".into(), "\u{1b}[38;2;158;206;106m".into()),
+        ("warning".into(), "\u{1b}[38;2;224;175;104m".into()), ("muted".into(), "\u{1b}[38;2;169;177;214m".into()), ("dim".into(), "\u{1b}[38;2;86;95;137m".into()),
+        ("toolTitle".into(), "\u{1b}[38;2;187;154;247m".into()), ("toolOutput".into(), "\u{1b}[38;2;192;202;245m".into())].into_iter().collect(), ..Default::default() };
     for width in [100, 45] {
         println!("\r\nwebfetch renderer width={width}");
         let mut call = render_call(&json!({"url":"https://example.test/티스토리/본문","format":"markdown","timeout":7}), &theme);
