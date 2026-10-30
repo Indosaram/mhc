@@ -461,3 +461,7 @@ mod cancellation_tests {
 #[cfg(test)]
 #[path = "empty_assistant_recovery_tests.rs"]
 mod capture_tests;
+
+#[cfg(test)]
+#[path = "internal_events_recovery_tests.rs"]
+mod agent_capture_tests;
