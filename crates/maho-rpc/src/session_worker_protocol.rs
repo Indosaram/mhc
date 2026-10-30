@@ -95,6 +95,9 @@ pub enum HostToSessionWorker {
         request: u64,
         configuration: serde_json::Value,
         profile: serde_json::Value,
+        /// The host store's mirrored records as of the prepare (senpi#3695 `mirrorSnapshot()`).
+        #[serde(default)]
+        subscription_limits: Vec<serde_json::Value>,
     },
     Commit {
         request: u64,
@@ -121,7 +124,13 @@ pub enum HostToSessionWorker {
         display: WorkerDisplay,
     },
     CancelUi,
-    CancelGrant { id: String },
+    CancelGrant {
+        id: String,
+    },
+    /// The host's subscription limit records, mirrored into the worker's store (senpi#3695).
+    SubscriptionLimits {
+        accounts: Vec<serde_json::Value>,
+    },
     Close,
     /// The host's answer to one blocking worker exchange (native stand-in for senpi's
     /// `SharedArrayBuffer` wait signal: the worker is a process, so the grant crosses the pipe).
@@ -199,6 +208,10 @@ pub enum SessionWorkerWire {
         signal: u64,
     },
     RequestClose,
+    /// A record a turn in the worker reported, mirrored into the host's store (senpi#3695).
+    SubscriptionLimits {
+        limits: serde_json::Value,
+    },
     Failure {
         error: String,
     },
@@ -247,6 +260,10 @@ pub enum SessionWorkerToHost {
         signal: crate::session_worker_signals::WorkerSignal,
     },
     RequestClose,
+    /// A record a turn in the worker reported, mirrored into the host's store (senpi#3695).
+    SubscriptionLimits {
+        limits: serde_json::Value,
+    },
     Failure {
         error: String,
     },
@@ -347,7 +364,7 @@ pub fn profile_from_wire(
             creation_model,
             initial_thinking_level: text("initialThinkingLevel"),
             auto_title: value.get("autoTitle").and_then(serde_json::Value::as_bool),
-                prompt_size_inventory: None,
+            prompt_size_inventory: None,
         },
         session_path: text("sessionPath"),
         durable_session_id: text("durableSessionId"),
@@ -395,6 +412,37 @@ pub struct WorkerActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn subscription_limit_mirror_messages_cross_both_ways() {
+        let record = serde_json::json!({"provider":"p","account":"a","windows":[],"reportedAt":"t","revision":1});
+        let host: HostToSessionWorker = serde_json::from_value(
+            serde_json::json!({"type":"subscription_limits","accounts":[record.clone()]}),
+        )
+        .unwrap();
+        assert_eq!(
+            host,
+            HostToSessionWorker::SubscriptionLimits {
+                accounts: vec![record.clone()]
+            }
+        );
+        let worker = serde_json::to_value(SessionWorkerWire::SubscriptionLimits {
+            limits: record.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            worker,
+            serde_json::json!({"type":"subscription_limits","limits":record})
+        );
+        // An older host's prepare carries no records.
+        let prepare: HostToSessionWorker = serde_json::from_value(
+            serde_json::json!({"type":"prepare","request":1,"configuration":{},"profile":{}}),
+        )
+        .unwrap();
+        assert!(matches!(
+            prepare,
+            HostToSessionWorker::Prepare { subscription_limits, .. } if subscription_limits.is_empty()
+        ));
+    }
     #[test]
     fn worker_death_is_a_closing_channel_not_a_generic_failure() {
         let closing = crate::session_registry::RpcSessionRegistryError::new(
