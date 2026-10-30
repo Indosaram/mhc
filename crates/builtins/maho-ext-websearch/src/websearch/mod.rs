@@ -6,3 +6,7 @@ pub mod config;
 pub mod native;
 pub mod tool;
 pub mod renderers;
+pub mod hosted_routes;
+pub mod html_document;
+pub mod route_attempts;
+pub mod search_model;
