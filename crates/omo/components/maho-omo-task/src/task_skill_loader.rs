@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use maho_ext_api::ComponentLogger;
+use maho_omo_bundled_skills::resolve_bundled_skills_override;
 use maho_omo_git_master::GitMasterSettings;
 use maho_omo_git_master::skill_content::resolve_git_master_skill_additions;
 use senpi_task::tools::task::skills::{
@@ -20,6 +23,26 @@ pub struct TaskSkillLoaderOptions {
     pub plugin_skills_dirs: Vec<PathBuf>,
     /// Upstream `loadSettings`; `None` reads the merged omo config for the cwd.
     pub load_settings: Option<LoadGitMasterSettings>,
+}
+
+/// Upstream `packagedSkillDirs(moduleUrl, env, logger)`: a valid `OMO_BUNDLED_SKILLS_DIR` replaces the
+/// packaged bundled-skills roots (an invalid one is reported once and ignored); the credential-gated
+/// `skills-conditional` roots always follow. Only existing directories are kept.
+pub fn packaged_skill_dirs(
+    bundled: Vec<PathBuf>,
+    conditional: Vec<PathBuf>,
+    env: &BTreeMap<String, String>,
+    logger: Option<&dyn ComponentLogger>,
+) -> Vec<PathBuf> {
+    let bundled = match resolve_bundled_skills_override(env, logger, None) {
+        Some(override_dir) => vec![override_dir],
+        None => bundled,
+    };
+    bundled
+        .into_iter()
+        .chain(conditional)
+        .filter(|dir| dir.exists())
+        .collect()
 }
 
 fn with_git_master_settings(
@@ -50,7 +73,9 @@ fn with_git_master_settings(
                 let content = (additions.rewrite_skill_text)(&skill.content);
                 let content = match &additions.directive {
                     None => content,
-                    Some(directive) if !skill.content.contains("<commit_attribution>") => format!("{content}\n\n{directive}"),
+                    Some(directive) if !skill.content.contains("<commit_attribution>") => {
+                        format!("{content}\n\n{directive}")
+                    }
                     Some(_) => content,
                 };
                 let mut skill = skill.clone();
