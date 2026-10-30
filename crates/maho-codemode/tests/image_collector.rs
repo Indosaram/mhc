@@ -94,3 +94,21 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
     let failure=handler.handle(&serde_json::json!({"type":"tool-call","toolName":"__schema__","callId":"schema-failure","args":{}})).await;
     assert_eq!(failure,Err("native catalog unavailable".into()));
 }
+
+/// senpi 903b8336 eval-display-json-bounds.test.ts: a displayed value is bounded inside before it is
+/// stored in jsonOutputs, so a wide value keeps its leading keys and a visible marker.
+#[tokio::test]
+async fn stored_display_json_is_bounded_with_visible_markers() {
+    let mut collector=collector();
+    let encode=|value:&serde_json::Value|base64::engine::general_purpose::STANDARD.encode(value.to_string());
+    let records:Vec<_>=(0..300).map(|index|serde_json::json!({"id":index,"name":format!("user-{index}"),"email":format!("user-{index}@example.com"),"active":index%2==0})).collect();
+    collector.display("application/json",&encode(&serde_json::json!(records))).await.unwrap();
+    collector.display("application/json",&encode(&serde_json::json!({"payload":"x".repeat(200_000),"width":1,"height":1}))).await.unwrap();
+    let result=collector.finish().await.unwrap();
+    let stored=result.json_outputs[0].as_array().expect("a partial array");
+    assert_eq!(stored[0],serde_json::json!({"id":0,"name":"user-0","email":"user-0@example.com","active":true}));
+    assert!(stored.last().and_then(|last|last.as_str()).is_some_and(|last|last.contains("more items")));
+    assert!(result.json_outputs[0].to_string().encode_utf16().count()<=8_000);
+    assert_eq!(result.json_outputs[1]["width"],1);
+    assert!(result.json_outputs[1]["payload"].as_str().is_some_and(|payload|payload.contains("elided")));
+}

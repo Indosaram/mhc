@@ -1374,19 +1374,67 @@ fn render_json_outputs(values: &[Value], context: &EvalRenderContext, width: usi
             &style(theme, "dim", &format!("display[{}]", index + 1)),
             width,
         ));
-        let tree = super::json_tree::render_json_tree_lines_themed(
-            value,
-            theme,
-            if context.expanded { 6 } else { 2 },
-            if context.expanded { 200 } else { 6 },
-            if context.expanded { 2000 } else { 60 },
-        );
-        for line in tree.lines {
-            lines.extend(visual(&line, width));
+        lines.extend(render_json_entry_lines(value, context, width));
+    }
+    lines
+}
+
+/// render-detail.ts `renderJsonEntryLines`: legacy stored entries (Buffer dumps, oversized values)
+/// collapse to a bounded placeholder or summary instead of walking the whole value.
+fn render_json_entry_lines(
+    value: &Value,
+    context: &EvalRenderContext,
+    width: usize,
+) -> Vec<String> {
+    use super::display_json_size::{
+        MAX_DISPLAY_JSON_BYTES, buffer_placeholder, display_json_size_exceeds, format_byte_length,
+        serialized_buffer_byte_length,
+    };
+    use super::json_tree::format_scalar;
+    let theme = context.theme.as_ref();
+    let (depth, line_cap, scalar_len) = if context.expanded {
+        (6, 200, 2000)
+    } else {
+        (2, 6, 60)
+    };
+    let fallback = |text: &str| visual(&style(theme, "dim", text), width);
+    if let Some(bytes) = serialized_buffer_byte_length(value) {
+        return fallback(&buffer_placeholder(bytes));
+    }
+    if let Some(record) = value.as_object()
+        && let Some((key, bytes)) = record
+            .iter()
+            .find_map(|(key, item)| serialized_buffer_byte_length(item).map(|bytes| (key, bytes)))
+    {
+        let mut lines = fallback(&format!("{key}: {}", buffer_placeholder(bytes)));
+        let others: Vec<_> = record.iter().filter(|(other, _)| *other != key).collect();
+        let shown = line_cap.saturating_sub(1).min(others.len());
+        for (other, item) in &others[..shown] {
+            lines.extend(fallback(&format!(
+                "  {other}: {}",
+                format_scalar(item, scalar_len)
+            )));
         }
-        if tree.truncated {
-            lines.extend(visual(&style(theme, "dim", "…"), width));
+        if others.len() > shown {
+            lines.extend(fallback(&format!("  … {} more keys", others.len() - shown)));
         }
+        return lines;
+    }
+    if display_json_size_exceeds(value, MAX_DISPLAY_JSON_BYTES) {
+        return fallback(&format!(
+            "… oversized display value elided ({}, ~{}+ stored)",
+            format_scalar(value, scalar_len),
+            format_byte_length(MAX_DISPLAY_JSON_BYTES)
+        ));
+    }
+    let tree =
+        super::json_tree::render_json_tree_lines_themed(value, theme, depth, line_cap, scalar_len);
+    let mut lines = vec![];
+    for line in tree.lines {
+        lines.extend(visual(&line, width));
+    }
+    if tree.truncated {
+        lines.extend(visual(&style(theme, "dim", "…"), width));
     }
     lines
 }
