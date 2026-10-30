@@ -8,6 +8,10 @@ use crate::session_lifecycle_types::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+/// The `session_hold` key a reopened session installs, before session_start producers run, when its last run
+/// was interrupted: opening a session is not explicit Resume, so automatic work waits for human input or Resume.
+pub const INTERRUPTED_RUN_HOLD_KEY: &str = "interrupted-run";
+
 /// Children reports a parent's waits name; the rest are counted in `childReportsOmitted`.
 const MAX_CHILD_REPORTS: usize = 32;
 
@@ -142,6 +146,25 @@ impl SessionLifecycleController {
     }
     pub fn requires_human_continuation(&self) -> bool {
         self.ledger.interrupted && !self.pending_human
+    }
+    /// The hold key to install when this session is opened, if its run must wait for a person.
+    pub fn opening_hold_key(&self) -> Option<&'static str> {
+        self.requires_human_continuation()
+            .then_some(INTERRUPTED_RUN_HOLD_KEY)
+    }
+    /// Binding restore: consumed work is discovered before session_start can queue another automatic turn. A
+    /// custody record with a ticket that was consumed, or whose delivery the transcript already holds, marks the
+    /// run interrupted; the later recovery pass still writes interruption/tool records.
+    pub fn mark_interrupted_from_custody(&mut self, delivered: impl Fn(&str) -> bool) {
+        let consumed = self.obligations.active().into_iter().any(|record| {
+            record.ticket_id.as_deref().is_some_and(|ticket| {
+                record.state == crate::work_custody_record::CustodyState::Consumed
+                    || delivered(ticket)
+            })
+        });
+        if consumed {
+            self.ledger.interrupted = true;
+        }
     }
     pub fn next_run_origin(&self) -> EpochOrigin {
         if self.pending_human {
@@ -915,6 +938,45 @@ mod tests {
         assert_eq!(stop.cause, LifecycleStopCause::Deadline);
         assert_eq!(stop.persisted, Some(false));
         assert_eq!(stop.at, "1970-01-01T00:00:00.000Z");
+    }
+    struct ConsumedStore;
+    impl crate::work_obligations::CustodyStore for ConsumedStore {
+        fn entries(&self) -> Vec<Value> {
+            vec![json!({"type":"custom","customType":"work-custody","data":{
+                "id":"w1","key":"delivery:t1","kind":"background","state":"consumed","ticketId":"t1","sessionId":"s"
+            }})]
+        }
+        fn append(
+            &mut self,
+            _: &crate::work_custody_record::WorkCustodyRecord,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn changed(&mut self) {}
+    }
+    #[test]
+    fn consumed_custody_holds_the_reopened_session_for_a_person() {
+        let mut c = controller();
+        c.mark_interrupted_from_custody(|_| true);
+        assert_eq!(
+            c.opening_hold_key(),
+            None,
+            "no ticketed custody, nothing interrupted"
+        );
+        let mut c = SessionLifecycleController::new(SessionLifecycleOptions {
+            session_id: "s".into(),
+            spawned_by: None,
+            read_runtime: Arc::new(LifecycleRuntimeFacts::default),
+            append_child: None,
+            entries: vec![],
+            append: Arc::new(|_| Ok(())),
+            custody: Box::new(ConsumedStore),
+        });
+        assert_eq!(c.obligations.active().len(), 1);
+        c.mark_interrupted_from_custody(|_| false);
+        assert_eq!(c.opening_hold_key(), Some(INTERRUPTED_RUN_HOLD_KEY));
+        c.human_input("now");
+        assert_eq!(c.opening_hold_key(), None);
     }
     #[test]
     fn retries_and_queued_human_input_are_not_stalls() {
