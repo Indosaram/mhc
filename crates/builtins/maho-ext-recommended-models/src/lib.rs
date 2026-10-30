@@ -9,7 +9,7 @@ use maho_ai::{model::Model,types::ThinkingLevel};
 
 pub const RECOMMENDED_DEFAULT_MODELS: &[(&str,ThinkingLevel)] = &[
     ("claude-opus-5-5",ThinkingLevel::Medium),(recommended_fable_model(FABLE55_RELEASED,FABLE55_PROMOTE_DEFAULTS),ThinkingLevel::Xhigh),
-    ("kimi-k3",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
+    ("kimi-k3.1-pro",ThinkingLevel::Max),("gpt-6-astra",ThinkingLevel::Xhigh),
     ("gpt-6.1-sol",ThinkingLevel::Medium),("glm-5.3",ThinkingLevel::Max),
 ];
 const CLAUDE_PROVIDERS:&[&str]=&["anthropic-subscription","anthropic","anthropic-api","github-copilot","opencode"];
@@ -18,7 +18,7 @@ const GPT_PROVIDERS:&[&str]=&["chatgpt-subscription","openai","github-copilot","
 const GLM_PROVIDERS:&[&str]=&["zai-coding-plan","opencode-go"];
 /// Providers serving a recommended model, best first (empty for an unknown id).
 pub fn ranked_providers(model_id:&str)->&'static[&'static str]{match model_id{
-    "claude-opus-5-5"|"claude-fable-5-1"|"claude-fable-5-5"=>CLAUDE_PROVIDERS,"kimi-k3"=>KIMI_PROVIDERS,
+    "claude-opus-5-5"|"claude-fable-5-1"|"claude-fable-5-5"=>CLAUDE_PROVIDERS,"kimi-k3.1-pro"|"kimi-k3"=>KIMI_PROVIDERS,
     "gpt-6-astra"|"gpt-6.1-sol"=>GPT_PROVIDERS,"glm-5.3"=>GLM_PROVIDERS,_=>&[]
 }}
 pub fn canonical_model_id(id:&str)->String{
@@ -26,7 +26,8 @@ pub fn canonical_model_id(id:&str)->String{
     while let Some(suffix)=["-ultrafast","-unlocked","-256k","-fast"].iter().find(|suffix|id.ends_with(**suffix)){
         id.truncate(id.len()-suffix.len());
     }
-    if id=="k3"{"kimi-k3".into()}else{id}
+    // Kimi Code serves the Moonshot models under bare ids (`k3`, `k3.1-pro`).
+    if id=="k3"||id=="k3.1-pro"{format!("kimi-{id}")}else{id}
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct Recommendation{pub model_id:String,pub thinking_level:ThinkingLevel}

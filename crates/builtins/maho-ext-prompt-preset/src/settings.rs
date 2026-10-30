@@ -23,6 +23,7 @@ pub enum PromptPresetName {
  Grok45,
  Grok46,
  Grok47,
+ KimiK31,
  KimiK3,
  KimiK28,
  KimiK27,
@@ -59,6 +60,7 @@ impl PromptPresetName {
  Self::Grok45 => "grok-4.5",
  Self::Grok46 => "grok-4.6",
  Self::Grok47 => "grok-4.7",
+ Self::KimiK31 => "kimi-k3-1",
  Self::KimiK3 => "kimi-k3",
  Self::KimiK28 => "kimi-k2-8",
  Self::KimiK27 => "kimi-k2-7",
@@ -96,6 +98,7 @@ pub fn parse_prompt_preset(value: Option<&str>) -> Option<PromptPresetName> {
 "grok-4.5" => Some(PromptPresetName::Grok45),
 "grok-4.6" => Some(PromptPresetName::Grok46),
 "grok-4.7" => Some(PromptPresetName::Grok47),
+"kimi-k3-1" => Some(PromptPresetName::KimiK31),
 "kimi-k3" => Some(PromptPresetName::KimiK3),
 "kimi-k2-8" => Some(PromptPresetName::KimiK28),
 "kimi-k2-7" => Some(PromptPresetName::KimiK27),
@@ -117,7 +120,7 @@ pub const VALID_PRESETS: &[&str] = &[
     "claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-4-7",
     "claude-opus-4-6", "claude-opus-4-5", "deepseek-v4-flash", "deepseek-v4-flash-0731",
     "deepseek-v4-1-flash", "deepseek-v4-pro", "glm-5.2", "glm-5.3", "gemini-4-argon",
-    "grok-4.5", "grok-4.6", "grok-4.7", "kimi-k3", "kimi-k2-8", "kimi-k2-7", "kimi-k2-6",
+    "grok-4.5", "grok-4.6", "grok-4.7", "kimi-k3-1", "kimi-k3", "kimi-k2-8", "kimi-k2-7", "kimi-k2-6",
     "gpt-5", "gpt-5.2", "gpt-5.3-codex", "gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-astra",
 ];
 

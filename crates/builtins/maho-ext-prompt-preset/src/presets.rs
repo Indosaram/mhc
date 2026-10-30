@@ -36,6 +36,7 @@ pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, mut o
   PromptPresetName::Grok45 => crate::grok_4_5::build_grok45_prompt(options),
   PromptPresetName::Grok46 => crate::grok_4_6::build_grok46_prompt(options),
   PromptPresetName::Grok47 => crate::grok_4_7::build_grok47_prompt(options),
+  PromptPresetName::KimiK31 => crate::kimi_k3_1::build_kimi_k3_1_prompt(options),
   PromptPresetName::KimiK3 => crate::kimi_k3::build_kimi_k3_prompt(options),
   PromptPresetName::KimiK28 => crate::kimi_k2_8::build_kimi_k28_prompt(options),
   PromptPresetName::KimiK27 => crate::kimi_k2_7::build_kimi_k27_prompt(options),
@@ -79,6 +80,8 @@ pub fn resolve_preset_name(model: ModelMetadata<'_>, setting: PromptPresetName) 
  if id.contains("gpt-5.4") { return Some(PromptPresetName::Gpt54); }
  if id.contains("gpt-5.3") { return Some(PromptPresetName::Gpt53Codex); }
  if id.contains("gpt-5.2") { return Some(PromptPresetName::Gpt52); }
+  // Kimi K3.1 ids also carry the K3 signal, so check them first.
+  if model_signal(model, &[r"(?:^|[/@._-])(?:kimi-)?k3(?:[._-]|p)1(?:$|[/@._:-])"]) { return Some(PromptPresetName::KimiK31); }
   if model_signal(model, &[r"(?:^|[/@:._-])swe-2(?:-(?:high|max|low|high-lite))?(?:$|[/@:._-])"]) || model_signal(model, &[r"(?:^|[/@._-])kimi-k3(?:$|[/@._:-])"]) || id == "k3" || model.name.is_some_and(|name| normalized(name) == "k3") { return Some(PromptPresetName::KimiK3); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)8(?:$|[/@._:-])"]) || id == "kimi-for-coding" || model.name.is_some_and(|name| normalized(name) == "kimi-for-coding") { return Some(PromptPresetName::KimiK28); }
  if model_signal(model, &[r"(?:^|[/@._-])kimi-k2(?:[._-]|p)7(?:$|[/@._:-])"]) || id == "kimi-for-coding-highspeed" || model.name.is_some_and(|name| normalized(name) == "kimi-for-coding-highspeed") { return Some(PromptPresetName::KimiK27); }

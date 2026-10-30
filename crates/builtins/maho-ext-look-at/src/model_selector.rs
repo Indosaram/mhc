@@ -1,4 +1,4 @@
-pub const DEFAULT_LOOK_AT_CHAIN:[&str;4]=["gpt-5.6-terra:off","gemini-3.1-pro-preview:low","gemini-3.5-flash","kimi-k3"];
+pub const DEFAULT_LOOK_AT_CHAIN:[&str;4]=["gpt-5.6-terra:off","gemini-3.1-pro-preview:low","gemini-3.5-flash","kimi-k3.1-pro"];
 use maho_ai::{model::Model,types::{InputModality,ModelThinkingLevel,ThinkingLevel}};
 use maho_core::model_resolver::{find_exact_model_reference_match,parse_model_pattern};
 #[derive(Clone,Debug,PartialEq)]
