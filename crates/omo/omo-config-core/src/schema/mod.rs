@@ -11,6 +11,7 @@ pub mod legacy_harness_names;
 pub mod memory;
 pub mod memory_agreements;
 pub mod model_catalog;
+pub mod model_pad;
 pub mod model_profile;
 pub mod model_ref;
 #[cfg(test)]
@@ -35,6 +36,7 @@ pub use legacy_harness_names::*;
 pub use memory::*;
 pub use memory_agreements::*;
 pub use model_catalog::*;
+pub use model_pad::*;
 pub use model_profile::*;
 pub use model_ref::*;
 pub use provenance::*;

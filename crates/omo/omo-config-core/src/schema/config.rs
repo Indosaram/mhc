@@ -16,6 +16,7 @@ use crate::schema::git_master::{
 };
 use crate::schema::memory::{omo_memory_settings_layer_schema, omo_memory_settings_schema};
 use crate::schema::model_catalog::{omo_model_catalog_layer_schema, omo_model_catalog_schema};
+use crate::schema::model_pad::omo_model_pad_schema;
 use crate::schema::model_profile::{
     omo_model_profiles_layer_schema, omo_model_profiles_schema,
 };
@@ -61,6 +62,7 @@ pub fn omo_typed_harness_config_schema() -> Node {
         optional("models", omo_model_catalog_layer_schema()),
         optional("model_profiles", omo_model_profiles_layer_schema()),
         optional("model_profile", string()),
+        optional("model_pad", omo_model_pad_schema()),
         optional("memory", omo_memory_settings_layer_schema()),
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
@@ -82,6 +84,7 @@ pub fn omo_config_profile_schema() -> Node {
         optional("models", omo_model_catalog_layer_schema()),
         optional("model_profiles", omo_model_profiles_layer_schema()),
         optional("model_profile", string()),
+        optional("model_pad", omo_model_pad_schema()),
         optional("memory", omo_memory_settings_layer_schema()),
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),
@@ -108,6 +111,7 @@ pub fn omo_config_schema() -> Node {
         optional("models", omo_model_catalog_schema()),
         optional("model_profiles", omo_model_profiles_schema()),
         optional("model_profile", string()),
+        optional("model_pad", omo_model_pad_schema()),
         optional("memory", omo_memory_settings_schema()),
         optional("telemetry", omo_telemetry_settings_schema()),
         optional("computer", omo_computer_settings_schema()),
@@ -141,6 +145,7 @@ pub fn omo_config_layer_schema() -> Node {
         optional("models", omo_model_catalog_layer_schema()),
         optional("model_profiles", omo_model_profiles_layer_schema()),
         optional("model_profile", string()),
+        optional("model_pad", omo_model_pad_schema()),
         optional("memory", omo_memory_settings_layer_schema()),
         optional("telemetry", omo_telemetry_settings_layer_schema()),
         optional("computer", omo_computer_settings_layer_schema()),

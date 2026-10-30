@@ -667,7 +667,7 @@ fn full_memory_defaults() -> Value {
         "enabled": true,
         "agent": "auto",
         "auto_identity": "path",
-        "projection": { "max_entries_per_directory": 40, "max_bytes": 24576 },
+        "projection": { "max_entries_per_directory": 0, "max_bytes": 40960 },
         "reflection": {
             "enabled": true,
             "trigger": { "step_count": 25, "on_compaction": true },
@@ -2454,5 +2454,87 @@ fn model_profile_keeps_an_optional_caution_string_through_strict_parsing() {
     assert_eq!(
         value["model_profiles"]["capable"],
         json!({ "caution": "Needs a paid plan" })
+    );
+}
+
+// model-pad.test.ts
+
+fn model_pad_shapes() -> Vec<(&'static str, Node)> {
+    vec![
+        ("config", omo_config_core::omo_config_schema()),
+        ("harness", omo_config_core::omo_typed_harness_config_schema()),
+        ("layer", omo_config_core::omo_config_layer_schema()),
+        ("profile", omo_config_core::omo_config_profile_schema()),
+    ]
+}
+
+#[test]
+fn model_pad_labels_for_every_axis_word_are_accepted_by_all_four_strict_shapes() {
+    let block = json!({ "model_pad": { "labels": { "daily": "Claude", "geeky": "GPT", "normal": "Normal", "heavy": "Heavy" } } });
+
+    let results: Vec<(&str, bool)> = model_pad_shapes()
+        .iter()
+        .map(|(shape, schema)| (*shape, safe_parse(schema, &block).is_ok()))
+        .collect();
+    let value = parsed(&omo_config_core::omo_config_schema(), block);
+
+    assert_eq!(
+        results,
+        vec![("config", true), ("harness", true), ("layer", true), ("profile", true)]
+    );
+    assert_eq!(
+        value["model_pad"],
+        json!({ "labels": { "daily": "Claude", "geeky": "GPT", "normal": "Normal", "heavy": "Heavy" } })
+    );
+}
+
+#[test]
+fn model_pad_labels_for_only_some_axis_words_keep_the_unset_words_absent() {
+    let value = parsed(
+        &omo_config_core::omo_config_schema(),
+        json!({ "model_pad": { "labels": { "geeky": "GPT" } } }),
+    );
+
+    assert_eq!(value["model_pad"], json!({ "labels": { "geeky": "GPT" } }));
+}
+
+#[test]
+fn model_pad_invalid_blocks_are_rejected_by_every_strict_shape_at_their_own_path() {
+    for (name, block, path) in [
+        ("an unknown axis word", json!({ "model_pad": { "labels": { "obsessive": "GPT" } } }), "model_pad.labels"),
+        ("an unknown model_pad key", json!({ "model_pad": { "slots": {} } }), "model_pad"),
+        ("a non-string label", json!({ "model_pad": { "labels": { "daily": 1 } } }), "model_pad.labels.daily"),
+    ] {
+        for (shape, schema) in model_pad_shapes() {
+            let reported = issues(&schema, block.clone());
+            assert!(
+                issue_paths(&reported).contains(&path.to_string()),
+                "{name} in {shape}: {:?}",
+                issue_paths(&reported)
+            );
+        }
+    }
+}
+
+// memory-overrides.test.ts "memory projection limits"
+
+#[test]
+fn memory_projection_defaults_to_no_per_directory_cap_and_40960_bytes() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(
+        value["projection"],
+        json!({ "max_entries_per_directory": 0, "max_bytes": 40960 })
+    );
+}
+
+#[test]
+fn memory_projection_with_only_one_limit_set_keeps_the_other_default() {
+    let value = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "projection": { "max_entries_per_directory": 5 } }),
+    );
+    assert_eq!(
+        value["projection"],
+        json!({ "max_entries_per_directory": 5, "max_bytes": 40960 })
     );
 }
