@@ -3344,9 +3344,9 @@
     "ulw-research": [
       {
         "path": "AGENTS.md",
-        "bytes": 7565,
-        "sha256": "64545bdcf74fbf740c4355e386925e78868b5edcba6ea38b711b701247fd5e85",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/AGENTS.md (MIT)"
+        "bytes": 8436,
+        "sha256": "647f12dd471757b1c92d2ab8b436cd0fe355164e8e4ed93b4996fcff9c6866a1",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/AGENTS.md (MIT), mhc-adapted"
       },
       {
         "path": "ATTRIBUTION.md",
@@ -3356,45 +3356,63 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 76529,
-        "sha256": "c915da1ee54de090c11d7edfa1054911c05f555e25aae827299e3cfd7e5c3759",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/SKILL.md (MIT)"
+        "bytes": 36346,
+        "sha256": "df748a5925ecf4437f70b08d4e03556a85c8c46510c7c2a255f22cc288075f84",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/SKILL.md (MIT), mhc-adapted"
       },
       {
         "path": "references/deliverable-phase.md",
-        "bytes": 45246,
-        "sha256": "8b3750cd5f8795fcd239fba83f600f9052dcea9218d433513e9cfe12bc9bbf25",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/deliverable-phase.md (MIT)"
+        "bytes": 50199,
+        "sha256": "32107955c08027e573632639e8803d9eeb4daba3f7f87138ff26c082d944a78e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/deliverable-phase.md (MIT)"
       },
       {
         "path": "references/fact-ledger-grammar.md",
-        "bytes": 6421,
-        "sha256": "691e56282e2aa50a3119a7ff971409c3f596c6a5f2c727efd3ab0c916f6f72df",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/fact-ledger-grammar.md (MIT)"
+        "bytes": 6934,
+        "sha256": "070518c70abe5d585ac66afac3026dc37218c0e1e0001743df320527147b2764",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger-grammar.md (MIT)"
       },
       {
         "path": "references/fact-ledger.md",
-        "bytes": 12524,
-        "sha256": "db97c200331f630df6de4d8a15bdbc0ae7da8d14425e3550684a170d5e39f61e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/fact-ledger.md (MIT)"
+        "bytes": 24940,
+        "sha256": "f4d164ea3201ca25114829a60af43a3a13a229893e77f856dc03f072edc9419b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger.md (MIT)"
       },
       {
         "path": "references/fidelity-claim-kinds.md",
-        "bytes": 3846,
-        "sha256": "47387435ae91b97293d1905deaea363f662279a6859e97050de017a5effd160d",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/fidelity-claim-kinds.md (MIT)"
+        "bytes": 5305,
+        "sha256": "b6d9d123f57cbcca13dae60dbd8bcd83803acd29f7cf09125065d6ae94f7ea2e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fidelity-claim-kinds.md (MIT)"
+      },
+      {
+        "path": "references/markdown-blocks.md",
+        "bytes": 721,
+        "sha256": "b5fdbc9a147730739249d655f3ca57b33e256c72a518f6fc98707899d23bdafc",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/markdown-blocks.md (MIT)"
       },
       {
         "path": "references/report-gates.md",
-        "bytes": 25649,
-        "sha256": "879b0e37ad284dd075a721b9067dea14afee670731374e030ac8d113218122f7",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/report-gates.md (MIT)"
+        "bytes": 32819,
+        "sha256": "57511c785cbe23da8a5baf109b9a9b5966fe769d07355b46cea2ca5e42b84006",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/report-gates.md (MIT)"
       },
       {
         "path": "references/report-visualization.md",
         "bytes": 15603,
         "sha256": "e3ea103136975c0a46c482b0ecea15640ec49988ee84b5d1de47fd9c4baee48c",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/report-visualization.md (MIT)"
+      },
+      {
+        "path": "references/research-collection.md",
+        "bytes": 27167,
+        "sha256": "8a261881b375432189d87123934a71609b9d448fbdfd93bfb016aeddc6599be6",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-collection.md (MIT), mhc-adapted"
+      },
+      {
+        "path": "references/research-delivery.md",
+        "bytes": 14622,
+        "sha256": "028c67a83b68aa994cfbf62651e82c8fa23e2a49ee2a9dc38a299986f8ebf6d2",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-delivery.md (MIT), mhc-adapted"
       },
       {
         "path": "references/unit-rules.md",
@@ -3404,9 +3422,9 @@
       },
       {
         "path": "scripts/claim-kinds.mjs",
-        "bytes": 7286,
-        "sha256": "cc38efeacf902033a4d7101e757a231356396e1b6b25e2ba459329e61b45e0ca",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/claim-kinds.mjs (MIT)"
+        "bytes": 10996,
+        "sha256": "8311e8bc6462b801861d84fba7f33f1bd3a8c6ae7ad76f8951f4b72e4615fd17",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/claim-kinds.mjs (MIT)"
       },
       {
         "path": "scripts/claims-index.mjs",
@@ -3422,15 +3440,27 @@
       },
       {
         "path": "scripts/contracts.mjs",
-        "bytes": 22580,
-        "sha256": "7bcfc195b404fcdd7f3c63327490e76828dc981a294b87df60d94fced98579bb",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/contracts.mjs (MIT)"
+        "bytes": 24803,
+        "sha256": "37a078df3bdd87f347d23c60a8f38feba67c439317766032537771ebc8cd7094",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/contracts.mjs (MIT)"
+      },
+      {
+        "path": "scripts/conversion-probe.mjs",
+        "bytes": 13444,
+        "sha256": "e29fc87e099b83bc47f305e7e733f520d95fd49cc2969dc6c2e8b73acb9011d5",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/conversion-probe.mjs (MIT)"
+      },
+      {
+        "path": "scripts/css-hiding.mjs",
+        "bytes": 8944,
+        "sha256": "18c0971489c729981c835f2b53a4e079c4a586b19bb1d994e626eb6ec0e1e585",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/css-hiding.mjs (MIT)"
       },
       {
         "path": "scripts/css-lite.mjs",
-        "bytes": 7333,
-        "sha256": "b19f7be3020ee56aeed28e858c0b681b6322b7caa2d812bab37fcb9219c885d3",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/css-lite.mjs (MIT)"
+        "bytes": 7490,
+        "sha256": "563661398a97436c153310173ccfe4dbe66195302db9dd7d6c39246c94ac0dcf",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/css-lite.mjs (MIT)"
       },
       {
         "path": "scripts/design-spec.mjs",
@@ -3440,9 +3470,9 @@
       },
       {
         "path": "scripts/entities.mjs",
-        "bytes": 1535,
-        "sha256": "e1bf29a52d6f88409503378d20fd8cc7909862e2bca662a35604845c5dac416a",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/entities.mjs (MIT)"
+        "bytes": 2395,
+        "sha256": "51a2614b7aa04f40594f48e903695e8e8abac587c4a0e96d50c4d59facc0bb59",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/entities.mjs (MIT)"
       },
       {
         "path": "scripts/entry-guard.mjs",
@@ -3452,39 +3482,39 @@
       },
       {
         "path": "scripts/fact-commands-fill.mjs",
-        "bytes": 5693,
-        "sha256": "b2858ab0b2bd15d99b5800339a988b4d82f261691fc6cbd00b6ae0b5d5d9eca0",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-fill.mjs (MIT)"
+        "bytes": 6408,
+        "sha256": "863a79d820179da430d7e58cc833f97834dd67e268def81e31b945ba394608ae",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-fill.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands-meaning.mjs",
-        "bytes": 11658,
-        "sha256": "0fbddf27d8d70f30dc0afdd749586f6cbfd2c8ca46027785778bca3c5e186800",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-meaning.mjs (MIT)"
+        "bytes": 12321,
+        "sha256": "0ac75dbca09c629dd84746366441513400045ea80dbcad60fb28d46b6d70207e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-meaning.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands-polish.mjs",
-        "bytes": 8060,
-        "sha256": "b2912a6082e6d6f815706fa4369b736e6c593ed2fcd12487fd009c75dc696c22",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-polish.mjs (MIT)"
+        "bytes": 10128,
+        "sha256": "d94a4dc3e825a9236bf91f08916611bb4abe9cfc43e4b742bce725aa841faac4",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-polish.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands-verify.mjs",
-        "bytes": 11274,
-        "sha256": "f4374b9bd27ee8dc6a07f5dc54c320213cdd758cec543a225990e0ca2603735b",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-verify.mjs (MIT)"
+        "bytes": 12486,
+        "sha256": "2d32d18d7f229aa135bca2e4a5b5de1657a4193a196afade1b697e21fdd74485",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-verify.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands.mjs",
-        "bytes": 11160,
-        "sha256": "fa3e664d55d27300fa13bf9ec19467b79f21bcd3350821a5245efca08579a76e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands.mjs (MIT)"
+        "bytes": 13288,
+        "sha256": "3895bc7c0868a52466a9cd2a500e305856cc7f18f295bfe017a28c2bf227b7e5",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands.mjs (MIT)"
       },
       {
         "path": "scripts/fact-derive.mjs",
-        "bytes": 4263,
-        "sha256": "a1c64302331da074de3cb038e4e8a719e4b74431c4987cfae54bb7ffaed8da51",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-derive.mjs (MIT)"
+        "bytes": 4655,
+        "sha256": "2d0731b856381c9e4a7f00ecea3238b85ad2169c82bbf7869a51bae0959582fe",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-derive.mjs (MIT)"
       },
       {
         "path": "scripts/fact-expr.mjs",
@@ -3494,15 +3524,15 @@
       },
       {
         "path": "scripts/fact-fill.mjs",
-        "bytes": 10736,
-        "sha256": "d451780bd268544e7a260d8cd0df6a80d82726e615d38f83bcf4d5e4692ad81f",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-fill.mjs (MIT)"
+        "bytes": 11316,
+        "sha256": "17326c8abe07f5d20fb686e895b4ca426106d836f5c8f089ad78491f3542d3e3",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-fill.mjs (MIT)"
       },
       {
         "path": "scripts/fact-ledger-kinds.mjs",
-        "bytes": 15572,
-        "sha256": "4638a30da3dc1acc6a321b73e45ae0e57d80a70148f2c8ba55bba4685ee288bb",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-ledger-kinds.mjs (MIT)"
+        "bytes": 15972,
+        "sha256": "99e4083f76538216042060fe161f213a7db8278c7b8796b94be7e18f500cf3f0",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-ledger-kinds.mjs (MIT)"
       },
       {
         "path": "scripts/fact-ledger-schema.mjs",
@@ -3518,9 +3548,9 @@
       },
       {
         "path": "scripts/fact-locate.mjs",
-        "bytes": 11571,
-        "sha256": "37b559cca04543c277917c91a2787cff7b457cf504353dae5bf323c711e263b4",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-locate.mjs (MIT)"
+        "bytes": 11923,
+        "sha256": "358f0746e999200d6b03b6fc341586a798d790dc4404e9360f03157e709a41bf",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-locate.mjs (MIT)"
       },
       {
         "path": "scripts/fact-pairs.mjs",
@@ -3548,27 +3578,51 @@
       },
       {
         "path": "scripts/fidelity-claims.mjs",
-        "bytes": 4746,
-        "sha256": "415908748e46b648955b9a683ef35fd076c6fbab5f1bbddc67eca2df0f73b1ac",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-claims.mjs (MIT)"
+        "bytes": 4879,
+        "sha256": "941481a853e76dd67190b065944c81a187a7d0a5d2646c4501a8d72d8ffc2a66",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-claims.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-csv.mjs",
+        "bytes": 1095,
+        "sha256": "92350e9ebb0e6feba4b31d9eb019d2df9664fd08c178b123ea039a7c3bb012a1",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-csv.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-lexicon.mjs",
-        "bytes": 8040,
-        "sha256": "50e58d0bfa27deef632bd0bf46bbac04c88724d2eef664e368808399e065c491",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-lexicon.mjs (MIT)"
+        "bytes": 8058,
+        "sha256": "80fd0755d0624f39befa9600ef6ed015ce0691eb4a277b3d7747d4a2268f2986",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-lexicon.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-originals.mjs",
+        "bytes": 9719,
+        "sha256": "25abfa60d383f97aee2941d88d98c6b2cc10b477ec27b5f43c2e3e6b458c9137",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-originals.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-policy.mjs",
-        "bytes": 9845,
-        "sha256": "12ebc2d03984362eccd82bfa3e8a1fc20f8ca00f5764533aeeb5a60a4e4c1949",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-policy.mjs (MIT)"
+        "bytes": 9923,
+        "sha256": "06a8b00ecaec70b5ecc03ea64c4b33d240f71a71e9b50b99ca0d2265371257c3",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-policy.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-records.mjs",
-        "bytes": 9222,
-        "sha256": "a45ba812e3199756977eba04e49c17261780f5849e80842aabdea4f89b36a19c",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-records.mjs (MIT)"
+        "bytes": 13196,
+        "sha256": "d373d61e2a09330b8cabdcdd504a357bd32279aecda553bcd3f9319daf191273",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-records.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-snapshot-readability.mjs",
+        "bytes": 2165,
+        "sha256": "d2df0d79d1c40115f405b6720df85aaa7dc0294f702013e769df1b6168bcf508",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-snapshot-readability.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-sources.mjs",
+        "bytes": 3953,
+        "sha256": "76265c601ec10c7b16d44e93dd981e7ecebd810f5c7061024282827c6a5bcca7",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-sources.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-state.mjs",
@@ -3578,15 +3632,21 @@
       },
       {
         "path": "scripts/fidelity-trace.mjs",
-        "bytes": 5092,
-        "sha256": "e684c666fbd71b0a47818783e13bd916354d4f9876e34cec39a7a9262a8b994d",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-trace.mjs (MIT)"
+        "bytes": 5931,
+        "sha256": "0191350781e1a977da3709656468b944b4ad8f539cd284009107ffe0023de713",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-trace.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-value-unit.mjs",
+        "bytes": 13077,
+        "sha256": "a58fea6dcc444baaa2f3eddc7e6b9dfa6f69f12ffa352f7deb371e4e7b29eaf8",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-value-unit.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-values.mjs",
-        "bytes": 14019,
-        "sha256": "5d7b28b8ad38291d19438f10556a2c4bc4c0ba4f280e2404d98ef13aa7299169",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-values.mjs (MIT)"
+        "bytes": 15425,
+        "sha256": "f0498369baefe42fac7521c42e5d241885adaca801ea419c55392fcff509f8a9",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-values.mjs (MIT)"
       },
       {
         "path": "scripts/format-extract-css.mjs",
@@ -3602,9 +3662,9 @@
       },
       {
         "path": "scripts/gates-fidelity.mjs",
-        "bytes": 5848,
-        "sha256": "6103e3073c324c71a0194e616e3d0fc45ce14d6238f40edb91c0226611035698",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/gates-fidelity.mjs (MIT)"
+        "bytes": 6110,
+        "sha256": "4b57cfd646b539214f054af26af3f4b6ad40f7ab54bb970a19bf6ffb3590f29b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/gates-fidelity.mjs (MIT)"
       },
       {
         "path": "scripts/gates-figures.mjs",
@@ -3620,9 +3680,9 @@
       },
       {
         "path": "scripts/gates-static.mjs",
-        "bytes": 7662,
-        "sha256": "4b1f0a42e78b2c276aaedf3b81102535ba0e11659bf17ae704fa4dfac1131397",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/gates-static.mjs (MIT)"
+        "bytes": 8100,
+        "sha256": "ac9cf4290532f0a16289be27ff2b213b029bc604ba4561d7e477299cdaa4be95",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/gates-static.mjs (MIT)"
       },
       {
         "path": "scripts/gates-structure.mjs",
@@ -3638,15 +3698,21 @@
       },
       {
         "path": "scripts/html-lite.mjs",
-        "bytes": 8915,
-        "sha256": "07b6f8956b8bdde54213e5b8d5b2e5f480db2d4aef1e5bbb2caa30c9cb8ceed5",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/html-lite.mjs (MIT)"
+        "bytes": 9068,
+        "sha256": "de21ec4c6adde62d138e9b732c43687b4429ea1cffa530a314fac5c15ed955ab",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-lite.mjs (MIT)"
       },
       {
         "path": "scripts/html-markup.mjs",
-        "bytes": 6950,
-        "sha256": "fbae393a28571b270692fff471ea683fc5c357bf0b46d896f27d47cca50dc8b0",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/html-markup.mjs (MIT)"
+        "bytes": 6948,
+        "sha256": "25d07fc79b2b3379fc318de82bb0bc265cbe87fc6565592ffbb36cdb05c0ee60",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-markup.mjs (MIT)"
+      },
+      {
+        "path": "scripts/html-text-map.mjs",
+        "bytes": 4658,
+        "sha256": "1d8d2d32149d551c5c5e2c151e46068c78dad5a76e6db287ca6a4120e5e7bc04",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-text-map.mjs (MIT)"
       },
       {
         "path": "scripts/layout-probe.mjs",
@@ -3661,10 +3727,16 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/lexicon.mjs (MIT)"
       },
       {
+        "path": "scripts/markdown-closers.mjs",
+        "bytes": 4860,
+        "sha256": "25061e5cdfef7fa5ff0a811972e2d4a14d6092ec12044f7f303e07a8b0913a41",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/markdown-closers.mjs (MIT)"
+      },
+      {
         "path": "scripts/md-lite.mjs",
-        "bytes": 7650,
-        "sha256": "69c41f3f3d0a1eb39a8cbec9ac0fb560d8cd06c05f4fb7cec6c48066640e3944",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/md-lite.mjs (MIT)"
+        "bytes": 7676,
+        "sha256": "e31ef5138abd8576b7d58fcf3178d3cce8620308f985c2ed0605c8840646e961",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/md-lite.mjs (MIT)"
       },
       {
         "path": "scripts/meaning-check.mjs",
@@ -3673,16 +3745,28 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/meaning-check.mjs (MIT)"
       },
       {
+        "path": "scripts/number-grammar.mjs",
+        "bytes": 2157,
+        "sha256": "25a15a5fea0907ce242443e48fc82f229494c80a86475da6d33135f3e23ee142",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/number-grammar.mjs (MIT)"
+      },
+      {
         "path": "scripts/numerals.mjs",
-        "bytes": 11085,
-        "sha256": "df9c2a5dc7b3a4ef37451e16ab96a7e1cb44b9995a2836dfaf1da7f28e61fa06",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/numerals.mjs (MIT)"
+        "bytes": 11973,
+        "sha256": "174adbfc5cb356b741a21a5a4b4c0ded3450b3efb0a1c12713d4cb60c796c449",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/numerals.mjs (MIT)"
+      },
+      {
+        "path": "scripts/outcome-start.mjs",
+        "bytes": 3766,
+        "sha256": "a186a453711d1f0b09dd831bcd9242b114c82bb368ea93fcb073bc4d047e330b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/outcome-start.mjs (MIT)"
       },
       {
         "path": "scripts/outcome.mjs",
-        "bytes": 10784,
-        "sha256": "ac1784bb332d3940c73e4a5bcf9ab264fdbc7f7ab52d989d96d14513f1c011ff",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/outcome.mjs (MIT)"
+        "bytes": 10388,
+        "sha256": "35e7afc73d54af5c13ce7d2cbd511685896a244e8a679923df71701b72c4a85f",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/outcome.mjs (MIT)"
       },
       {
         "path": "scripts/particles-ko.mjs",
@@ -3692,15 +3776,15 @@
       },
       {
         "path": "scripts/placeholder.mjs",
-        "bytes": 8254,
-        "sha256": "00fed0879823eacd725039e6e6e0c2bc78663f764149d4c98599e6d018aab741",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/placeholder.mjs (MIT)"
+        "bytes": 9227,
+        "sha256": "bc35928aa79c6c790a280fe55436fe293461bd2204c69bd57a8f4bfb50cd9438",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/placeholder.mjs (MIT)"
       },
       {
         "path": "scripts/polish-apply.mjs",
-        "bytes": 6730,
-        "sha256": "8efd21edfde21a2479119f510601f56fd105a2801f2196ab7f4cf88235fcec0e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/polish-apply.mjs (MIT)"
+        "bytes": 6745,
+        "sha256": "99676f73476a0b01f5a67b2e0fb4fe7d7db6042196b1f7bdbed0579388a38ea4",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/polish-apply.mjs (MIT)"
       },
       {
         "path": "scripts/polish-diff.mjs",
@@ -3727,6 +3811,18 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/rational.mjs (MIT)"
       },
       {
+        "path": "scripts/raw-decode.mjs",
+        "bytes": 4454,
+        "sha256": "77013fe8be6c82ddc178e545eed751a360327a69222f104afcaa53c1154587ae",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/raw-decode.mjs (MIT)"
+      },
+      {
+        "path": "scripts/raw-locator.mjs",
+        "bytes": 2427,
+        "sha256": "338be30e7472121c0730e257a58235583e13fb645a3285010c802fb83d0b6f62",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/raw-locator.mjs (MIT)"
+      },
+      {
         "path": "scripts/repair-tracker.mjs",
         "bytes": 7508,
         "sha256": "d27afec02c37aa4c0e78dd4c563d16886f6a6fdbe83681bc87a497dfc6cf7c06",
@@ -3734,15 +3830,15 @@
       },
       {
         "path": "scripts/report-tools-commands.mjs",
-        "bytes": 12182,
-        "sha256": "0e56ae411ac4f5df2801a5ccb6af5b91f653a700d0e6bbfd204dd603e97aa995",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/report-tools-commands.mjs (MIT)"
+        "bytes": 12219,
+        "sha256": "298c6bc3e72f22bec103518fab88eb726d22524665c6bb16bf50e557d34a777a",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/report-tools-commands.mjs (MIT)"
       },
       {
         "path": "scripts/report-tools.mjs",
-        "bytes": 2224,
-        "sha256": "372876b570830dd95f170b5ae0356db42e5f5751f4d98bcae48a0db46aaefa56",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/report-tools.mjs (MIT)"
+        "bytes": 2497,
+        "sha256": "8bc5e84c16585c84a6c407e15ff42fd4ffcc78feb84e3b879f2bf49e7a1ba985",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/report-tools.mjs (MIT)"
       },
       {
         "path": "scripts/sentence-split.mjs",
@@ -3752,15 +3848,33 @@
       },
       {
         "path": "scripts/source-commands.mjs",
-        "bytes": 7912,
-        "sha256": "d86c0f3599904eabd068c7966f8d604607210d286fba50512cc6631aeae34e75",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/source-commands.mjs (MIT)"
+        "bytes": 11967,
+        "sha256": "130da49b66e06ca2f481aff8966b4d6289c128e7cae6d22cdf7529972cb9f352",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-commands.mjs (MIT)"
+      },
+      {
+        "path": "scripts/source-refresh.mjs",
+        "bytes": 4977,
+        "sha256": "82946a7d3e492a2671d8ed383f37ad25dc115ae66ae8c9157747c691334634c7",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-refresh.mjs (MIT)"
       },
       {
         "path": "scripts/source-snapshot.mjs",
-        "bytes": 8042,
-        "sha256": "3addaede866bae3f4937ba783234352a4e17801fed17ff8ef62e3a6b4cb6ffd1",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/source-snapshot.mjs (MIT)"
+        "bytes": 9797,
+        "sha256": "3020beaaa01953af35a8b5a47402b2800bc0effcdcc63477216dfeac0c58ebf8",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-snapshot.mjs (MIT)"
+      },
+      {
+        "path": "scripts/source-view.mjs",
+        "bytes": 4832,
+        "sha256": "76cf050c448b0ca9f0002a65380284dd918e816a8c2b92cdaef88f0b8cd57604",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-view.mjs (MIT)"
+      },
+      {
+        "path": "scripts/sources-citation.mjs",
+        "bytes": 12099,
+        "sha256": "37625d20a0edcdf7d9bf0c8d563a18a4c87e38782cfbcd949401045cf8b29240",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/sources-citation.mjs (MIT)"
       },
       {
         "path": "scripts/text-normalize.mjs",
@@ -3818,9 +3932,9 @@
       },
       {
         "path": "scripts/units.mjs",
-        "bytes": 6301,
-        "sha256": "c739a77d22d91158542861622bc94842ed3675943aa87c717b8192f68df67341",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/units.mjs (MIT)"
+        "bytes": 6995,
+        "sha256": "504250ee45ea4fa9cf44be1bbbfe0e4880b7dd97b03ec90789d2319823f797c7",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/units.mjs (MIT)"
       }
     ],
     "visual-qa": [
@@ -7006,8 +7120,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 640,
-    "declaredSha256": 640,
+    "files": 659,
+    "declaredSha256": 659,
     "unbound": 0,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }

@@ -72,3 +72,4 @@ mhc adaptations listed above are kept.
 | --- | --- | --- |
 | ast-grep | e809c369 | downloaded `sg` goes to the user cache (`OMO_AST_GREP_BIN_DIR`, else XDG/LOCALAPPDATA `omo-ast-grep/bin`), never the skill dir |
 | coding-agent-sessions | e809c369 | finder runs with `python3 -B` and sets `sys.dont_write_bytecode` before importing its package |
+| ulw-research | e809c369 | scripts and references byte-equal to lazycodex@e809c369; `SKILL.md` follows the new router + `references/research-collection.md` / `research-delivery.md` split with the mhc tool notes (`task`/`team_create`/`workflow`, `mhc ulw-loop`) re-applied in those references; `AGENTS.md` keeps the mhc single-copy notes |
