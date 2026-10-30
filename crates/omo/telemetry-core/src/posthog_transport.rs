@@ -253,3 +253,130 @@ pub fn create_default_posthog_transport(
 ) -> Result<Box<dyn TelemetryTransport>, TelemetryError> {
     Ok(Box::new(PostHogTelemetryTransport::new(api_key, options)?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Answers `requests` POSTs with 200 and returns their JSON bodies.
+    async fn server(requests: usize) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let host = format!("http://{}", listener.local_addr().expect("address"));
+        let task = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                let (offset, length) = loop {
+                    let size = stream.read(&mut buffer).await.expect("request");
+                    assert_ne!(size, 0);
+                    bytes.extend_from_slice(&buffer[..size]);
+                    if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..index]).to_lowercase();
+                        let length: usize = header
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .expect("content length")
+                            .trim()
+                            .parse()
+                            .expect("length");
+                        break (index + 4, length);
+                    }
+                };
+                while bytes.len() < offset + length {
+                    let size = stream.read(&mut buffer).await.expect("body");
+                    assert_ne!(size, 0);
+                    bytes.extend_from_slice(&buffer[..size]);
+                }
+                bodies.push(serde_json::from_slice(&bytes[offset..offset + length]).expect("json"));
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .expect("response");
+            }
+            bodies
+        });
+        (host, task)
+    }
+
+    fn message(event: &str) -> TelemetryCaptureMessage {
+        TelemetryCaptureMessage {
+            uuid: None,
+            timestamp: None,
+            distinct_id: "install".into(),
+            event: event.into(),
+            properties: Default::default(),
+        }
+    }
+
+    fn events(bodies: &[Value]) -> Vec<String> {
+        bodies
+            .iter()
+            .flat_map(|body| body["batch"].as_array().cloned().unwrap_or_default())
+            .map(|entry| entry["event"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn consent_gate_drops_every_send_path_until_consent_is_given() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (host, server) = server(2).await;
+            let options = TelemetryTransportOptions {
+                host,
+                disable_geoip: true,
+                enable_exception_autocapture: false,
+                enable_local_evaluation: false,
+                strict_local_evaluation: true,
+                disable_remote_config: true,
+                flush_at: 100,
+                flush_interval: 0,
+            };
+            let consent = Arc::new(AtomicBool::new(false));
+            let allowed = Arc::clone(&consent);
+            let dropped = Arc::new(Mutex::new(Vec::new()));
+            let observed = Arc::clone(&dropped);
+            let transport = PostHogTelemetryTransport::new("key", &options)
+                .expect("transport")
+                .with_consent_gate(ConsentGate {
+                    is_send_allowed: Arc::new(move || allowed.load(Ordering::SeqCst)),
+                    on_dropped: Some(Arc::new(move |count| {
+                        observed.lock().expect("dropped").push(count);
+                    })),
+                });
+
+            transport.capture(&message("dropped_a")).expect("capture");
+            transport.capture(&message("dropped_b")).expect("capture");
+            transport
+                .flush()
+                .expect("flush")
+                .await
+                .expect("dropped flush is Ok");
+            transport
+                .capture_immediate(&message("dropped_now"))
+                .expect("immediate")
+                .await
+                .expect("dropped immediate is Ok");
+            assert_eq!(*dropped.lock().expect("dropped"), vec![2, 1]);
+
+            consent.store(true, Ordering::SeqCst);
+            transport.capture(&message("sent")).expect("capture");
+            transport.flush().expect("flush").await.expect("sent flush");
+            transport
+                .capture_immediate(&message("sent_now"))
+                .expect("immediate")
+                .await
+                .expect("sent immediate");
+
+            let bodies = server.await.expect("server");
+            assert_eq!(events(&bodies), vec!["sent", "sent_now"]);
+            assert_eq!(*dropped.lock().expect("dropped"), vec![2, 1]);
+        })
+        .await
+        .expect("bounded consent gate");
+    }
+}
