@@ -106,17 +106,7 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
             } else {
                 compute_touched_phases(&ctx.args, operation, &visible, &completed)
             };
-            let mut rows = ask
-                .map(|value| {
-                    vec![theme.fg(
-                        ThemeColor::Dim,
-                        &format!(
-                            "Ask: {}",
-                            crate::todo_format::sanitize_todo_text(&value.text)
-                        ),
-                    )]
-                })
-                .unwrap_or_default();
+            let mut rows = Vec::new();
             for (index, phase) in visible.iter().enumerate() {
                 let heading = format!(
                     "{}. {}",
@@ -161,8 +151,17 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
                     )
                 }));
             }
+            // The in-progress row stays the bold Now line; a result without a captured ask
+            // renders as before, and a result with no visible phase falls back to its text.
             let text = if !rows.is_empty() {
-                rows.join("\n")
+                let rendered = rows.join("\n");
+                match ask {
+                    Some(value) => format!(
+                        "{}\n{rendered}",
+                        theme.fg(ThemeColor::Dim, &format!("Ask: {}", value.text))
+                    ),
+                    None => rendered,
+                }
             } else if !fallback.is_empty() {
                 fallback
             } else {
@@ -252,7 +251,7 @@ pub fn create_todo_tool(
         "Track phased tasks with one op-based todo tool; reference tasks by their exact content."
             .into(),
     );
-    tool.prompt_guidelines=Some(vec!["Use one todo operation at a time; batch it with the real work rather than making a solo todo turn.".into(),"Reference tasks and phases by their exact content/name; use view when the text is uncertain.".into(),"Mark work done immediately and use drop for tasks that are no longer needed.".into()]);
+    tool.prompt_guidelines=Some(vec!["Use one todo operation at a time, batched with the real work; never end a turn with a todo call as its only tool call.".into(),"Reference tasks and phases by their exact content/name; use view when the text is uncertain.".into(),"Mark work done immediately and use drop for tasks that are no longer needed.".into()]);
     tool
 }
 pub fn parameters() -> serde_json::Value {
@@ -499,6 +498,44 @@ pub fn render_call_label(params: &TodoOpEntry) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_result_renderer_prefixes_ask_only_above_rendered_phases() {
+        use maho_ext_api::{AgentToolResult, ToolRenderContext, ToolRendererSession};
+        let context = ToolRenderContext {
+            args: serde_json::json!({"op":"view"}),
+            tool_call_id: "todo-ask".into(),
+            invalidate: std::rc::Rc::new(|| {}),
+            last_component: None,
+            state: (),
+            cwd: Default::default(),
+            execution_started: false,
+            args_complete: true,
+            is_partial: false,
+            expanded: false,
+            show_images: false,
+            image_protocol: None,
+            is_error: false,
+            has_result: None,
+            spinner_frame: None,
+        };
+        let mut slots = ToolRendererSession {
+            renderers: std::sync::Arc::new(renderers()),
+            context,
+        }
+        .into_slots();
+        let theme = maho_ext_api::Theme::default();
+        let ask = serde_json::json!({"entryId":"m1","text":"Ship it","capturedAt":1});
+        let mut empty = AgentToolResult::text("Todo list is empty.");
+        empty.details = serde_json::json!({"op":"view","phases":[],"ask":ask});
+        let rendered = slots.render_result(&empty, &theme, 80).unwrap().join("\n");
+        assert!(rendered.contains("Todo list is empty."));
+        assert!(!rendered.contains("Ask:"));
+        let mut listed = AgentToolResult::text("");
+        listed.details = serde_json::json!({"op":"view","phases":[{"name":"Build","tasks":[{"content":"Compile","status":"in_progress"}]}],"ask":ask});
+        let rendered = slots.render_result(&listed, &theme, 80).unwrap().join("\n");
+        let ask_at = rendered.find("Ask: Ship it").expect("ask line");
+        assert!(ask_at < rendered.find("Compile").expect("task line"));
+    }
     #[test]
     fn native_result_renderer_collapses_untouched_phases_and_expands_them() {
         use maho_ext_api::{AgentToolResult, ToolRenderContext, ToolRendererSession};
@@ -767,6 +804,41 @@ mod tests {
             defer_macrotask: None,
             compaction_signal: Default::default(),
         }
+    }
+    #[tokio::test]
+    async fn registered_command_offers_verb_completions_and_omits_absent_ask() {
+        let fixture = std::sync::Arc::new(ExecutionFixture::default());
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("todotools", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        crate::commands::register_todo_command(
+            &mut api,
+            fixture.clone(),
+            fixture.clone(),
+            std::sync::Arc::new(|_| Box::pin(async { Ok(()) })),
+        );
+        let complete = &api.registered.command_argument_completions["todo"];
+        let verbs = complete(" D").await.unwrap().unwrap();
+        assert_eq!(
+            verbs
+                .iter()
+                .map(|item| item.value.as_str())
+                .collect::<Vec<_>>(),
+            ["done", "drop"]
+        );
+        assert!(complete("missing").await.unwrap().is_none());
+        let temp = tempfile::tempdir().unwrap();
+        let ctx = command_context(
+            std::sync::Arc::new(CommandUi::default()),
+            temp.path().into(),
+        );
+        (api.registered.commands[0].handler)("append Work", &ctx)
+            .await
+            .unwrap();
+        assert!(fixture.entries.lock().unwrap()[0].get("ask").is_none());
     }
     #[tokio::test]
     async fn registered_command_executes_mutations_copy_and_file_roundtrip() {
@@ -1214,14 +1286,29 @@ mod tests {
         let memory = crate::todo_types::TodoStorage::Memory;
         let (text, details) = plan_execution(&init, &[], memory).unwrap();
         assert!(text.starts_with("Ask: "));
-        assert!(text.ends_with(crate::todo_format::handoff_cue_text(crate::todo_format::HandoffMoment::ListCreated)));
+        assert!(text.ends_with(crate::todo_format::handoff_cue_text(
+            crate::todo_format::HandoffMoment::ListCreated
+        )));
         let (chat, _) = plan_execution_with_ask(&init, &[], None, None, false, memory).unwrap();
         assert!(!chat.contains("Handoff due"));
-        let (closed, _) = plan_execution(&serde_json::json!({"op":"done","task":"a"}), &details.phases, memory).unwrap();
-        assert!(closed.ends_with(crate::todo_format::handoff_cue_text(crate::todo_format::HandoffMoment::PhaseClosed)));
-        let (view, _) = plan_execution(&serde_json::json!({"op":"view"}), &details.phases, memory).unwrap();
+        let (closed, _) = plan_execution(
+            &serde_json::json!({"op":"done","task":"a"}),
+            &details.phases,
+            memory,
+        )
+        .unwrap();
+        assert!(closed.ends_with(crate::todo_format::handoff_cue_text(
+            crate::todo_format::HandoffMoment::PhaseClosed
+        )));
+        let (view, _) =
+            plan_execution(&serde_json::json!({"op":"view"}), &details.phases, memory).unwrap();
         assert!(!view.contains("Handoff due"));
-        let error = plan_execution(&serde_json::json!({"op":"done","task":"missing"}), &details.phases, memory).unwrap_err();
+        let error = plan_execution(
+            &serde_json::json!({"op":"done","task":"missing"}),
+            &details.phases,
+            memory,
+        )
+        .unwrap_err();
         assert!(error.starts_with("Ask: "));
     }
     #[test]
