@@ -4,6 +4,7 @@ pub mod child_reaper;
 pub mod child_reaper_syscalls;
 pub mod client_admission_record;
 pub mod client_input_handler;
+pub mod client_message_events;
 pub mod connection_handler;
 pub mod connection_question_bridge;
 pub mod connection_roles;
