@@ -1981,6 +1981,21 @@ impl HostCore {
         let (handle, attached) = match opened {
             Err(error) => return Err(OpenRefusal::from_registry(&error)),
             Ok(crate::worker_session_registry::WorkerOpen::Created(handle)) => (handle, false),
+            Ok(crate::worker_session_registry::WorkerOpen::Attached(handle))
+                if self.default_writer.is_session_sealed(&handle) =>
+            {
+                // senpi `open`: lost output cannot be replayed, so a reattach to a sealed session undoes only this
+                // attachment and keeps the seal until an explicit unload parks it (senpi#3913).
+                let session_path = workers
+                    .with_entry(&handle, |entry| entry.session_path.clone())
+                    .flatten();
+                let _ = workers.mark_close(&handle, true);
+                let mut data = serde_json::json!({"sessionId":handle,"action":"unload_and_reopen"});
+                if let Some(path) = session_path {
+                    data["sessionPath"] = path.into();
+                }
+                return Err(OpenRefusal::sealed(data));
+            }
             Ok(crate::worker_session_registry::WorkerOpen::Attached(handle)) => (handle, true),
         };
         if !attached && let Some(overlay) = overlay.and_then(serde_json::Value::as_object) {
@@ -3704,6 +3719,67 @@ mod handoff_tests {
                 root_session_id: "r".into(),
                 task_id: "t".into(),
             })
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worker_reattach_to_a_sealed_session_is_refused_at_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        // A stand-in worker: answers prepare with the path and commit with an idle snapshot, then stays up.
+        let script = format!(
+            r#"while IFS= read -r line; do
+  r=$(printf '%s' "$line" | sed -n 's/.*"request":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"type":"prepare"'*) printf '{{"type":"prepared","request":%s,"sessionPath":"{path}"}}\n' "$r" ;;
+    *'"type":"commit"'*) printf '{{"type":"ready","request":%s,"snapshot":{{"state":{{"sessionId":"d"}},"sessionPath":"{path}","liveSessionPaths":["{path}"],"busy":false,"streaming":false}}}}\n' "$r" ;;
+    *'"request":'*) printf '{{"type":"result","request":%s}}\n' "$r" ;;
+  esac
+done"#
+        );
+        let spawn: crate::session_worker_client::SpawnSessionWorker =
+            std::sync::Arc::new(move || {
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+            });
+        let core = std::sync::Arc::try_unwrap(idle_core())
+            .ok()
+            .expect("the idle core is uniquely owned")
+            .with_worker_registry(crate::worker_session_registry::WorkerSessionRegistry::new(
+                serde_json::json!({}),
+                spawn,
+                0,
+            ));
+        let core = std::sync::Arc::new(core);
+        let mut client = peer(&core, "c");
+        let open = serde_json::json!({"id":"o","type":"open_session","cwd":temp.path(),"sessionPath":path})
+            .to_string();
+        core.handle(Some("c"), &open).await.unwrap();
+        let opened = reply_to(&mut client, "o").await;
+        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
+        let reserved = core
+            .default_writer
+            .reserve_close_response(&session_id, &serde_json::json!({}), true)
+            .unwrap()
+            .unwrap();
+        core.default_writer
+            .complete_close_response(reserved, &session_id, serde_json::json!({}), true, None)
+            .unwrap();
+        let reopen = serde_json::json!({"id":"o2","type":"open_session","cwd":temp.path(),"sessionPath":path})
+            .to_string();
+        core.handle(Some("c"), &reopen).await.unwrap();
+        let refused = reply_to(&mut client, "o2").await;
+        assert_eq!(refused["errorCode"], "session_output_overflow");
+        assert_eq!(refused["errorData"]["action"], "unload_and_reopen");
+        let workers = core.workers.clone().unwrap();
+        assert_eq!(
+            workers.with_entry(&session_id, |entry| entry.close.attachments),
+            Some(1)
         );
     }
     #[tokio::test]
