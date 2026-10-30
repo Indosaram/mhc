@@ -80,12 +80,16 @@ pub fn stream_anthropic_subscription(
         let mut started = false;
         let mut asked_legacy_long_context = false;
         let mut long_context_retried = false;
+        // account-context.ts: the account of the attempt that produced the turn's error, never another attempt's.
+        let mut attempt_account: Option<crate::account_context::AccountContext> = None;
         let outcome = loop {
             let mut query = None;
             let mut selected = None;
             let mut visible = false;
+            attempt_account = None;
             let outcome: anyhow::Result<()> = async {
             if let Some(error) = pool_error.take() { return Err(error); }
+            crate::session_cwd::require_anthropic_subscription_cwd(Some(&deps.cwd))?;
             if let Some(signal) = &signal { signal.throw_if_aborted()?; }
             let (lane, environment, account) = match pool.as_ref() {
                 Some(pool) => {
@@ -108,9 +112,19 @@ pub fn stream_anthropic_subscription(
                     };
                     selected = Some(slot.clone());
                     pool.refresh_for_attempt(deps.store.as_ref(), &mut slot, (deps.now)() as f64, signal.clone().unwrap_or_else(|| maho_ai::utils::abort::AbortController::new().signal()), deps.refresh.clone()).await?;
-                    (pool.lane, crate::auth_lane::prepared_environment(&pool.environment, pool.lane, &slot, &deps.agent_dir, (deps.now)() as u64)?, slot.name)
+                    let environment = crate::auth_lane::prepared_environment(&pool.environment, pool.lane, &slot, &deps.agent_dir, (deps.now)() as u64)?;
+                    // auth-lane.ts: `pinSource: input.pinnedAccount !== undefined ? "cli" : pool.pinSource`.
+                    let attempt = crate::account_context::AttemptAccount { account_name: &slot.name, accounts: &pool.accounts, auth_lane: pool.lane, pin_source: if cli_pin.is_some() { Some(crate::affinity::PinSource::Cli) } else { pool.pin_source } };
+                    attempt_account = Some(crate::account_context::attempt_account_context(&attempt));
+                    crate::account_context::log_attempt_account(&attempt, options.as_ref().and_then(|options| options.stream.session_id.as_deref()), &deps.agent_dir);
+                    (pool.lane, environment, slot.name)
                 },
-                None => (crate::auth_lane::TokenInjection::Ambient, crate::auth_lane::ambient_environment(&deps.environment, request), "ambient".into()),
+                None => {
+                    let attempt = crate::account_context::AttemptAccount { account_name: "ambient", accounts: &[], auth_lane: crate::auth_lane::TokenInjection::Ambient, pin_source: None };
+                    attempt_account = Some(crate::account_context::attempt_account_context(&attempt));
+                    crate::account_context::log_attempt_account(&attempt, options.as_ref().and_then(|options| options.stream.session_id.as_deref()), &deps.agent_dir);
+                    (crate::auth_lane::TokenInjection::Ambient, crate::auth_lane::ambient_environment(&deps.environment, request), "ambient".into())
+                },
             };
             let model_json = serde_json::to_value(&model)?; let context_json = serde_json::to_value(&context)?;
             let resolved = crate::tools::resolve_tools(context_json["tools"].as_array().map(Vec::as_slice));
@@ -374,7 +388,10 @@ pub fn stream_anthropic_subscription(
                 } else {
                     StopReason::Error
                 };
-                let mut message = crate::stream_guidance::with_auth_guidance(&error);
+                let mut message = crate::stream_guidance::with_account_auth_guidance(
+                    &error,
+                    attempt_account.as_ref(),
+                );
                 if error
                     .downcast_ref::<crate::affinity::AllAccountsBlockedError>()
                     .is_none()
