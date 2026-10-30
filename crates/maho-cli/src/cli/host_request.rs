@@ -303,7 +303,17 @@ pub async fn run(
     agent_dir: &Path,
 ) -> Result<HostOutcome, HostCommandError> {
     let request = build_host_request(parsed, socket, agent_dir)?;
-    run_host_request(request)
+    // senpi v2026.10.27-2 `runHostCommand`: the presenter bootstrap stream lives for this request
+    // only (dropped, i.e. destroyed, when it settles); the key root selects endpoint credentials.
+    let presenter_bootstrap = parsed
+        .presenter_bootstrap_fd
+        .and_then(maho_rpc::mcp_presenter_bootstrap::presenter_bootstrap_stream);
+    let options = maho_rpc::host_runner::RunHostRequestOptions {
+        key_root: parsed.key_root.clone(),
+        presenter_bootstrap,
+        mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
+    };
+    run_host_request(request, options)
         .await
         .map_err(|error| HostCommandError::Host(error.to_string()))
 }

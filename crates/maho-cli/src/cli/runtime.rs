@@ -209,15 +209,34 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
             );
         }
         maho_core::timings::print_timings();
-        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone())
+        let presenter = maho_rpc::multi_session_host::MultiSessionHostPresenterOptions {
+            presenter_bootstrap_fd: parsed.presenter_bootstrap_fd,
+            mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
+        };
+        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone(), presenter)
             .await
             .map_err(|error| error.to_string());
     }
     // senpi main.ts:1157-1161: decide the final runtime cwd before creating cwd-bound runtime
     // services. --session and --resume may select a session from another project, so project
     // trust, settings, resources and models resolve against the target session cwd.
+    // senpi v2026.10.27-2 `createSessionManager`: ancestry applies to fresh sessions only.
+    if parsed.spawned_by.is_some()
+        && (parsed.session.is_some()
+            || parsed.resume
+            || parsed.continue_session
+            || parsed.fork.is_some()
+            || parsed.rebind.is_some())
+    {
+        indicator.during_surface_write(|| {
+            eprintln!(
+                "\x1b[33mWarning: --spawned-by is ignored when resuming or forking a session.\x1b[39m"
+            )
+        });
+    }
     let identity = Some(maho_core::session_manager::NewSessionOptions {
         id: parsed.session_id.clone(),
+        spawned_by: parsed.spawned_by.clone(),
         ..Default::default()
     });
     let session_dir = resolve_session_dir(
@@ -286,7 +305,14 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     } else if let Some(id) = parsed.session_id.as_deref() {
         // senpi main.ts:537-547: an existing exact-id project session is resumed, not duplicated.
         match find_local_session_by_exact_id(id, &cwd_text, session_dir.as_deref()) {
-            Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
+            Some(path) => {
+                if parsed.spawned_by.is_some() {
+                    indicator.during_surface_write(|| {
+                        eprintln!("\x1b[33mWarning: --spawned-by is ignored when resuming an existing session.\x1b[39m")
+                    });
+                }
+                SessionManager::open(&path, session_dir.as_deref(), None, None)?
+            }
             None => {
                 indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m"));
                 SessionManager::create(&cwd_text, session_dir.as_deref(), identity)

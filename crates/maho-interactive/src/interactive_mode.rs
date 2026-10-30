@@ -769,6 +769,9 @@ pub struct InteractiveModeOptions {
     pub auto_trust_on_reload_cwd: Option<String>,
     /// senpi `initialTitlePrompt`: the title source for the initial message (`None` disables titling).
     pub initial_title_prompt: Option<String>,
+    /// senpi `mcpPresenterEnforcement` (`--mcp-presenter-enforcement`): the terminal enrolls as the
+    /// `local_tui` MCP presenter.
+    pub mcp_presenter_enforcement: bool,
 }
 
 pub struct InteractiveMode {

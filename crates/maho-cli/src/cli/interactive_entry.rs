@@ -192,6 +192,7 @@ pub async fn run(
             auth_notices,
             auto_trust_on_reload_cwd,
             initial_title_prompt: initial.initial_title_prompt.clone(),
+            mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
         },
     );
     *mode

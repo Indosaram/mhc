@@ -39,6 +39,8 @@ pub struct Args {
     pub no_session: bool,
     pub session: Option<String>,
     pub session_id: Option<String>,
+    /// Fresh-session ancestry (`--spawned-by <json>`).
+    pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
     pub fork: Option<String>,
     pub rebind: Option<String>,
     pub session_dir: Option<String>,
@@ -68,6 +70,9 @@ pub struct Args {
     pub project_trust_override: Option<bool>,
     pub grok_neo: bool,
     pub multi_session: bool,
+    /// `--mcp-presenter-fd 4`: the presenter bootstrap descriptor handed to the shared host.
+    pub presenter_bootstrap_fd: Option<u32>,
+    pub mcp_presenter_enforcement: bool,
     pub auto_title_sessions: bool,
     pub listen: Option<String>,
     pub session_runtime: Option<SessionRuntime>,
@@ -105,6 +110,19 @@ impl Args {
             message: message.into(),
         });
     }
+}
+/// senpi `isSpawnedBy` (core/session-spawned-by.ts): an object with non-empty `parentSessionId`,
+/// `rootSessionId` and `taskId` strings.
+fn spawned_by_from_json(value: &serde_json::Value) -> Option<maho_core::session_lifecycle_types::SpawnedBy> {
+    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned);
+    if !value.is_object() {
+        return None;
+    }
+    Some(maho_core::session_lifecycle_types::SpawnedBy {
+        parent_session_id: field("parentSessionId")?,
+        root_session_id: field("rootSessionId")?,
+        task_id: field("taskId")?,
+    })
 }
 fn positional(result: &mut Args, value: &str) {
     if let Some(file) = value.strip_prefix('@') {
@@ -148,6 +166,31 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
             "--offline" => result.offline = true,
             "--grok-neo" if grok_neo_enabled => result.grok_neo = true,
             "--multi-session" => result.multi_session = true,
+            "--mcp-presenter-fd" => {
+                if next == Some("4") {
+                    result.presenter_bootstrap_fd = Some(4);
+                } else {
+                    result.diagnostic(true, "Invalid presenter bootstrap descriptor");
+                }
+                i += 1;
+            }
+            "--mcp-presenter-enforcement" => result.mcp_presenter_enforcement = true,
+            "--spawned-by" => match next {
+                Some(value) if !value.starts_with('-') => {
+                    i += 1;
+                    match serde_json::from_str::<serde_json::Value>(value) {
+                        Ok(ancestry) => match spawned_by_from_json(&ancestry) {
+                            Some(spawned_by) => result.spawned_by = Some(spawned_by),
+                            None => result.diagnostic(
+                                true,
+                                "--spawned-by requires non-empty parentSessionId, rootSessionId, and taskId strings",
+                            ),
+                        },
+                        Err(_) => result.diagnostic(true, "--spawned-by must be valid JSON"),
+                    }
+                }
+                _ => result.diagnostic(true, "--spawned-by requires a JSON object"),
+            },
             "--auto-title-sessions" => result.auto_title_sessions = true,
             "--print-prompt-sizes" => result.print_prompt_sizes = true,
             "--list-tips" => result.list_tips = true,
