@@ -142,7 +142,9 @@ pub fn serialized_tool_result_bytes(
     let content = match serde_json::to_string(&result.content) {
         Ok(content) => content,
         Err(error) => {
-            eprintln!("Memory report tool result serialization failed: {error}");
+            maho_core::output_guard::maho_write_stderr(&format!(
+                "Memory report tool result serialization failed: {error}\n"
+            ));
             return 0;
         }
     };
