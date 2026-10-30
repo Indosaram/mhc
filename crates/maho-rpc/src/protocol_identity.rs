@@ -47,7 +47,14 @@ fn resolve_extension_path(cwd:&str,value:&str)->String{
     }
     resolved.to_string_lossy().into_owned()
 }
-pub fn protocol_identity(profile:RpcLaunchProfile,env:&HashMap<String,String>)->serde_json::Value{let build=maho_core::engine_build_identity::engine_build_identity();serde_json::json!({"instanceId":host_instance_id(),"generation":host_generation(env),"engineVersion":build.text,"engineOrdinal":build.ordinal,"launch_profile":profile})}
+/// The identity fields of this host's `get_protocol_info` answer, including the agent dir it reads and writes
+/// (#3560): this process's own, resolved.
+pub fn protocol_identity(profile:RpcLaunchProfile,env:&HashMap<String,String>)->serde_json::Value{
+    let agent_dir=std::path::absolute(maho_core::config::get_agent_dir()).map(|dir|dir.to_string_lossy().into_owned()).unwrap_or_else(|_|maho_core::config::get_agent_dir());
+    protocol_identity_for(profile,env,&agent_dir)
+}
+/// `protocol_identity` with the agent dir a socket host captured at startup.
+pub fn protocol_identity_for(profile:RpcLaunchProfile,env:&HashMap<String,String>,agent_dir:&str)->serde_json::Value{let build=maho_core::engine_build_identity::engine_build_identity();serde_json::json!({"instanceId":host_instance_id(),"generation":host_generation(env),"engineVersion":build.text,"engineOrdinal":build.ordinal,"launch_profile":profile,"agentDir":agent_dir})}
 #[cfg(test)]
 mod tests{
     use super::*;

@@ -27,7 +27,7 @@ pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket
         result=>{
             let _=child.kill().await;let _=child.wait().await;
             let reason=if result.is_err(){"successor_unavailable"}else{abort_reason(std::path::Path::new(socket),replaced)};
-            Ok(Err(crate::host_handoff::HandoffRefusal{reason,upgradeable:true}))
+            Ok(Err(crate::host_handoff::HandoffRefusal{reason,upgradeable:true,detail:None}))
         }
     }
 }

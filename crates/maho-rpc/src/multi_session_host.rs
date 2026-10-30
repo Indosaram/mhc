@@ -919,9 +919,14 @@ impl HostCore {
                         .map_or_else(
                             || serde_json::json!({}),
                             |profile| {
-                                crate::protocol_identity::protocol_identity(
+                                // The agent dir this host captured at startup: only a client of it may
+                                // replace this host (#3560).
+                                crate::protocol_identity::protocol_identity_for(
                                     profile,
                                     &std::env::vars().collect(),
+                                    &std::path::absolute(&self.options.agent_dir)
+                                        .unwrap_or_else(|_| self.options.agent_dir.clone())
+                                        .to_string_lossy(),
                                 )
                             },
                         );

@@ -249,7 +249,7 @@ pub async fn handoff_outcome(
             serde_json::Map::from_iter([
                 ("reason".into(), upgrade_refusal(result.reason).into()),
                 ("socket".into(), socket.into()),
-                ("detail".into(), result.reason.into()),
+                ("detail".into(), result.detail.as_deref().unwrap_or(result.reason).into()),
                 ("upgradeable".into(), result.upgradeable.into()),
             ]),
         )),
