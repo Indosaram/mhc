@@ -29,7 +29,8 @@ use maho_ai::types::{
 use serde_json::{Map, json};
 
 fn usage() -> Usage {
-    Usage { context_usage: None,
+    Usage {
+        context_usage: None,
         input: 100,
         output: 50,
         cache_read: 0,
@@ -304,6 +305,83 @@ fn classifies_trailing_newline_byte_overflow_as_bytes_not_lines() {
     assert!(result.truncated);
     assert_eq!(result.content, "a");
     assert_eq!(result.truncated_by, Some(TruncatedBy::Bytes));
+}
+
+fn head(
+    content: &str,
+    max_bytes: u64,
+    max_lines: u64,
+) -> maho_agent::harness::utils::truncate::TruncationResult {
+    truncate_head(
+        content,
+        TruncationOptions {
+            max_bytes: Some(max_bytes),
+            max_lines: Some(max_lines),
+        },
+    )
+}
+
+fn assert_head(
+    result: &maho_agent::harness::utils::truncate::TruncationResult,
+    content: &str,
+    truncated_by: Option<TruncatedBy>,
+    total_lines: u64,
+    output_lines: u64,
+) {
+    assert_eq!(result.content, content);
+    assert_eq!(result.truncated, truncated_by.is_some());
+    assert_eq!(result.truncated_by, truncated_by);
+    assert_eq!(result.total_lines, total_lines);
+    assert_eq!(result.output_lines, output_lines);
+}
+
+#[test]
+fn reports_bytes_when_only_a_trailing_newline_exceeds_the_byte_limit_at_the_line_cap() {
+    assert_head(
+        &head("hello\nworld\n", 11, 2),
+        "hello\nworld",
+        Some(TruncatedBy::Bytes),
+        2,
+        2,
+    );
+}
+
+#[test]
+fn reports_bytes_when_only_a_trailing_newline_exceeds_the_byte_limit_below_the_line_cap() {
+    assert_head(
+        &head("hello\nworld\n", 11, 10),
+        "hello\nworld",
+        Some(TruncatedBy::Bytes),
+        2,
+        2,
+    );
+}
+
+#[test]
+fn reports_bytes_when_only_a_line_separator_pushes_the_output_past_the_byte_limit() {
+    assert_head(
+        &head("hello\nworld", 10, 10),
+        "hello",
+        Some(TruncatedBy::Bytes),
+        2,
+        1,
+    );
+}
+
+#[test]
+fn reports_lines_when_lines_were_omitted_even_though_the_kept_lines_fill_the_byte_limit_exactly() {
+    assert_head(
+        &head("a\nb\nc", 3, 2),
+        "a\nb",
+        Some(TruncatedBy::Lines),
+        3,
+        2,
+    );
+}
+
+#[test]
+fn returns_content_within_both_limits_unchanged() {
+    assert_head(&head("hello\nworld\n", 12, 2), "hello\nworld\n", None, 2, 2);
 }
 
 #[test]
