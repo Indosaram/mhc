@@ -18,6 +18,8 @@ pub mod exec_modern;
 pub mod r#gen;
 pub mod measure;
 pub mod pi_args;
+#[cfg(test)]
+mod producer_capture_tests;
 pub mod reasoning_params;
 pub mod stream_retry;
 pub mod types;
