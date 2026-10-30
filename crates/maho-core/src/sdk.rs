@@ -517,9 +517,15 @@ pub async fn create_agent_session(
             tools: Some(active_tools),
             ..Default::default()
         }),
-        stream_fn: Some(Arc::new(move |model, context, options| {
-            runtime_for_stream.stream_simple(model, context, options.map(|options| options.simple))
-        })),
+        stream_fn: Some({
+            // Every model request runs in the session cwd, so subprocess-backed lanes start there.
+            let stream_cwd = cwd.clone();
+            Arc::new(move |model, context, options| {
+                let mut simple = options.map(|options| options.simple).unwrap_or_default();
+                simple.stream.request.cwd = Some(stream_cwd.clone());
+                runtime_for_stream.stream_simple(model, context, Some(simple))
+            })
+        }),
         get_api_key: Some(Arc::new(move |provider| {
             let runtime = runtime_for_auth.clone();
             Box::pin(async move { api_key_from_auth(runtime.get_auth(&provider).await) })

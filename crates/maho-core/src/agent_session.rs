@@ -9919,6 +9919,7 @@ impl AgentSession {
                             max_tokens: Some(1),
                             request: maho_ai::types::ProviderRequestOptions {
                                 signal: Some(ticket.signal.clone()),
+                                cwd: Some(session.cwd()),
                                 ..Default::default()
                             },
                             ..Default::default()
@@ -17475,13 +17476,17 @@ impl AgentSession {
         }
         let source = ui.clone();
         let bound: Arc<dyn ExtensionUi> = match sender {
-            Some(events) => Arc::new(maho_ext_host::ui::LifecycleUi::new(
-                ui,
-                runner.runtime.clone(),
-                Arc::new(move |event| {
-                    let _ = events.send(event);
-                }),
-            )),
+            // The wrapper keeps the host's MCP presentation (and private forms) (senpi#d61b732).
+            Some(events) => crate::mcp_mrtr_presentations::inherit_mcp_mrtr_presentation(
+                &ui,
+                Arc::new(maho_ext_host::ui::LifecycleUi::new(
+                    ui.clone(),
+                    runner.runtime.clone(),
+                    Arc::new(move |event| {
+                        let _ = events.send(event);
+                    }),
+                )),
+            ),
             None => ui,
         };
         runner

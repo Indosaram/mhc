@@ -116,6 +116,8 @@ pub mod http_dispatcher;
 pub mod input_origin;
 pub mod manual_continue;
 pub mod mcp_grant_presentations;
+pub mod mcp_form_types;
+pub mod mcp_mrtr_presentations;
 pub mod models_store;
 pub mod package_identity;
 pub mod pending_input_journal;
