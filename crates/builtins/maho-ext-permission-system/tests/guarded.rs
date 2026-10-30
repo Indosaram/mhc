@@ -7,7 +7,7 @@ use std::path::Path;
 fn context() -> PresetContext { PresetContext { agent_dir: "/home/u/.mhc/agent".into(), temp_dir: "/tmp".into() } }
 fn guarded() -> Ruleset { rules_for_preset_in(PermissionPresetName::Guarded, &context()) }
 fn request(permission: &str, pattern: &str) -> Request {
-    Request { id: "g-1".into(), session_id: "s".into(), permission: permission.into(), patterns: vec![pattern.into()], always: vec![], metadata: Default::default(), tool: None }
+    Request { id: "g-1".into(), session_id: "s".into(), permission: permission.into(), patterns: vec![pattern.into()], always: vec![], original_paths: None, metadata: Default::default(), tool: None }
 }
 
 #[test]

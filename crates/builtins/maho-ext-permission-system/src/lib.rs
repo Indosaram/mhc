@@ -12,6 +12,9 @@ pub mod settings;
 pub mod prompt;
 pub mod external_dir;
 pub mod parsers;
+pub mod bash_command_segments;
+pub mod external_pattern;
+pub mod external_spellings;
 
 use maho_ext_api::{Extension,ExtensionApi,EventKind,ExtensionEvent,EventResult,FlagType,FlagValue,ExtensionFailure,ToolCallEventResult};
 use std::sync::{Arc,Mutex};
@@ -60,8 +63,10 @@ impl Extension for PermissionSystem{
                         if config::EDIT_TOOLS.contains(&event.tool_name.as_str()){metadata.insert("filepath".into(),path.clone());}
                         if event.tool_name=="read"{metadata.insert("filePath".into(),path);}
                     }
-                    let request=types::Request::new(format!("permission-{}",counter.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1),ctx.session_manager.session_id().into(),parsed.permission,parsed.patterns,parsed.always,metadata);
-                    let (future,pending,rules,cli)={let mut guard=state.lock().expect("permission state lock");let policy=guard.as_mut().expect("session policy initialized");let future=policy.service.ask(request.clone());let pending=policy.service.list().iter().any(|entry|entry.id==request.id);(future,pending,policy.static_rules.clone(),policy.cli.clone())};
+                    let mut request=types::Request::new(format!("permission-{}",counter.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1),ctx.session_manager.session_id().into(),parsed.permission,parsed.patterns,parsed.always,metadata);
+                    request.original_paths=parsed.original_paths;
+                    let ask=service::AskOptions{auto_approve_ask:parsed.auto_approve_ask,rule_aliases:parsed.rule_aliases};
+                    let (future,pending,rules,cli)={let mut guard=state.lock().expect("permission state lock");let policy=guard.as_mut().expect("session policy initialized");let future=policy.service.ask_with(request.clone(),ask);let pending=policy.service.list().iter().any(|entry|entry.id==request.id);(future,pending,policy.static_rules.clone(),policy.cli.clone())};
                     if pending{
                         let reply=if ctx.has_ui{Some(prompt::show_permission_prompt(ctx,&request).await)}else{
                             // The service already emitted asked; use a private telemetry bus to avoid emitting it twice.
