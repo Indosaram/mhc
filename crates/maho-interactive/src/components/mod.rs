@@ -74,3 +74,4 @@ pub mod write_result;
 pub mod handoff_fold; // ledger sync-5152
 pub mod themed_text; // ledger sync-5152
 pub mod tool_execution_animation; // ledger sync-5152
+pub mod remote_delivery_message; // ledger sync-5152
