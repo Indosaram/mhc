@@ -12,6 +12,7 @@ pub mod ownership;
 pub mod requeue;
 pub mod revoke;
 pub mod session_lock;
+pub mod write_guard;
 
 use serde_json::{Value, json};
 use std::io::Write;
