@@ -385,16 +385,16 @@ impl MemoryPromptHandler {
             agent_id: input.identity.to_owned(),
             projection: None,
         };
-        // Cross-lane API (memory-core, upstream `compileWithExpiries`): the block plus every declared
-        // expiry, compiled at the turn's pin instant.
+        // Cross-lane API (memory-core lane `compile_with_expiries`, upstream `compileWithExpiries`): the
+        // block plus every declared expiry, compiled at the turn's pin instant.
         let compiled = self
             .cache
             .compile_with_expiries(
                 input.repo,
+                turn.revision.as_deref(),
                 &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity),
                 &options,
-                turn.revision.as_deref(),
-                turn.as_of_ms as i64,
+                Some(turn.as_of_ms as i64),
             )
             .map_err(MemoryPromptError::Compile)?;
         let block = compiled.block;
