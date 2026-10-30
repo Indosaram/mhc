@@ -311,3 +311,28 @@ async fn futures_poll_pending<F: std::future::Future + Unpin>(future: &mut F) ->
     })
     .await
 }
+
+// typebox 1.3.34 `Errors` summaries captured at senpi 903b8336 (agent-bridge.ts parseAgentArgs).
+#[tokio::test]
+async fn invalid_arguments_report_typebox_errors_in_order() {
+    let fixture = fixture("unused", json!({}));
+    for (args, summary) in [
+        (json!({}), "/ must have required properties prompt"),
+        (
+            json!({"prompt":"x","merge":"x"}),
+            "/merge must be boolean; /merge must be equal to constant; /merge must be equal to constant; /merge must match a schema in anyOf",
+        ),
+        (
+            json!({"prompt":1,"agent":"","model":"","label":1,"handle":"y","extra":2}),
+            "/extra schema is false; / must not have additional properties; /prompt must be string; /agent must not have fewer than 1 characters; /model must not have fewer than 1 characters; /label must be string; /handle must be boolean",
+        ),
+        (json!({"prompt":"x","tools":"a"}), "/tools must be array"),
+    ] {
+        let error = invoke(args, &fixture).await.expect_err("invalid arguments");
+        assert_eq!(
+            error.to_string(),
+            format!("agent() received invalid arguments: {summary}")
+        );
+    }
+    assert!(fixture.calls.lock().unwrap().is_empty());
+}

@@ -96,3 +96,26 @@ fn reserved_names_stay_distinct_and_recognized() {
     assert!(is_reserved_tool_name(RESERVED_SCHEMA_TOOL));
     assert!(!is_reserved_tool_name("grep"));
 }
+
+// typebox 1.3.34 `Errors` summaries captured at senpi 903b8336 (schema-bridge.ts parseSchemaArgs).
+#[test]
+fn invalid_arguments_report_typebox_errors_in_order() {
+    for (value, summary) in [
+        (
+            json!({"name":""}),
+            "/name must not have fewer than 1 characters",
+        ),
+        (json!({"name":3}), "/name must be string"),
+        (
+            json!({"name":"","extra":1,"z":2}),
+            "/extra schema is false; /z schema is false; / must not have additional properties; /name must not have fewer than 1 characters",
+        ),
+        (json!(null), "/ must be object"),
+    ] {
+        let error = run_eval_schema(&value, &tools()).expect_err("invalid arguments");
+        assert_eq!(
+            error.to_string(),
+            format!("schema() received invalid arguments: {summary}")
+        );
+    }
+}

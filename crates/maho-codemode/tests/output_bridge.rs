@@ -375,3 +375,35 @@ async fn returns_task_output_from_a_real_javascript_cell() {
         )]
     );
 }
+
+// typebox 1.3.34 `Errors` summaries captured at senpi 903b8336 (output-bridge.ts parseOutputArgs).
+#[tokio::test]
+async fn invalid_arguments_report_typebox_errors_in_order() {
+    let fixture = Fixture::default();
+    for (args, summary) in [
+        (json!({}), "/ must have required properties ids"),
+        (
+            json!({"ids":["",""],"offset":-1}),
+            "/ids/0 must not have fewer than 1 characters; /ids/1 must not have fewer than 1 characters; /offset must be >= 1",
+        ),
+        (
+            json!({"ids":["a"],"limit":0,"offset":0,"extra":1}),
+            "/extra schema is false; / must not have additional properties; /offset must be >= 1; /limit must be >= 1",
+        ),
+        (
+            json!({"ids":["a"],"format":"x"}),
+            "/format must be equal to constant; /format must be equal to constant; /format must match a schema in anyOf",
+        ),
+        (json!({"ids":"a"}), "/ids must be array"),
+    ] {
+        let error = run_eval_output(args, "task_output", &fixture, ExecuteToolOptions::default())
+            .await
+            .err()
+            .expect("invalid arguments");
+        assert_eq!(
+            error.to_string(),
+            format!("output() received invalid arguments: {summary}")
+        );
+    }
+    assert!(fixture.calls.lock().unwrap().is_empty());
+}
