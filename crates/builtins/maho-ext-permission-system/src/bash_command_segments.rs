@@ -52,6 +52,11 @@ const MAX_DEPTH: usize = 12;
 pub const MAX_COMMAND_LENGTH: usize = 64 * 1024;
 /// Total characters the lexer may visit across every nested scan of one command before giving up.
 const MAX_STEPS: usize = 4_000_000;
+/// Commands a command may nest through wrappers (`env`, `nice`, `timeout`, `xargs`, `find -exec`)
+/// and inline scripts (`eval`, `sh -c`, `su -c`, `trap`). Upstream recurses until the JS stack
+/// overflows and catches the RangeError as `unparsed`; Rust cannot catch a stack overflow, so the
+/// nesting is bounded explicitly and a deeper chain is `unparsed` too.
+const MAX_WRAPPER_DEPTH: usize = 64;
 /// Words a best-effort candidate needs: the longest `BashArity` prefix is three words.
 const CANDIDATE_WORDS: usize = 3;
 
@@ -62,6 +67,8 @@ thread_local! {
 /// Lexer work shared by every nested scan of one command.
 struct State {
     steps: usize,
+    /// Current nesting of `expand_simple_command`.
+    wrapper_depth: usize,
 }
 impl State {
     /// Counts lexer work; overrunning the budget makes the command `unparsed`, never slow.
@@ -983,6 +990,16 @@ fn path_basename(text: &str) -> &str {
 /// Turns one simple command's words into the command lines it runs: the wrapper's own name first,
 /// then the wrapped command, recursively. Every name is reduced to its basename.
 fn expand_simple_command(state: &mut State, input: &[Word], out: &mut Vec<Vec<String>>) -> Lex<()> {
+    if state.wrapper_depth >= MAX_WRAPPER_DEPTH {
+        return Err(Unparsed);
+    }
+    state.wrapper_depth += 1;
+    let result = expand_one_command(state, input, out);
+    state.wrapper_depth -= 1;
+    result
+}
+
+fn expand_one_command(state: &mut State, input: &[Word], out: &mut Vec<Vec<String>>) -> Lex<()> {
     // Leading assignments and reserved words do not name the command.
     let mut start = 0;
     while let Some(word) = input.get(start) {
@@ -1244,7 +1261,10 @@ fn lex_segments(state: &mut State, command: &str) -> Lex<Vec<Vec<Word>>> {
 /// Every simple command `command` would run, each as its normalized words (command name first),
 /// in source order; or `Unparsed` when any part of the command is outside what this lexer understands.
 pub fn analyze_bash_command(command: &str) -> BashCommandAnalysis {
-    let mut state = State { steps: 0 };
+    let mut state = State {
+        steps: 0,
+        wrapper_depth: 0,
+    };
     // `command.length` counts UTF-16 units upstream; the char count is never larger.
     let result = if command.encode_utf16().count() > MAX_COMMAND_LENGTH {
         Err(Unparsed)

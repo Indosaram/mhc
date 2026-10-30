@@ -432,6 +432,40 @@ fn bounded_work_and_fail_closed_limits() {
     ] {
         assert_eq!(analyze_bash_command(&nested), BashCommandAnalysis::Unparsed);
     }
+    // Wrapper chains up to the length limit fail closed instead of exhausting the stack.
+    for (unit, tail) in [
+        ("env ", "rm -rf build"),
+        ("nice ", "rm -rf build"),
+        ("eval ", "rm"),
+    ] {
+        let count = (MAX_COMMAND_LENGTH - tail.len()) / unit.len();
+        let deep = format!("{}{tail}", unit.repeat(count));
+        assert!(deep.len() <= MAX_COMMAND_LENGTH);
+        assert_eq!(
+            analyze_bash_command(&deep),
+            BashCommandAnalysis::Unparsed,
+            "{unit}"
+        );
+        let requests = parse(&deep);
+        assert!(
+            requests.iter().any(|request| request
+                .patterns
+                .iter()
+                .any(|pattern| pattern.starts_with(UNPARSED_BASH_PREFIX))),
+            "{unit}: {requests:?}"
+        );
+    }
+    // A realistic wrapper chain still parses.
+    assert_eq!(
+        analyze_bash_command("env A=1 nice -n 5 nohup timeout 5 rm -rf build"),
+        parsed(&[
+            &["env"],
+            &["nice"],
+            &["nohup"],
+            &["timeout"],
+            &["rm", "-rf", "build"]
+        ])
+    );
     assert!(MAX_COMMAND_LENGTH < 100_000);
     assert_eq!(
         analyze_bash_command(&format!("echo {}", "a".repeat(100_000))),
