@@ -3,6 +3,7 @@ pub mod durable_file;
 pub mod extension;
 pub mod file_monitor;
 pub mod index;
+pub mod lease_keeper;
 pub mod manager;
 pub mod manifest_lease;
 pub mod monitor_file_digest;
