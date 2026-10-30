@@ -1,5 +1,6 @@
 pub mod agent_bridge;
 pub mod eval_handle_bridge;
+pub mod eval_virtual_schemas;
 pub mod handles;
 pub mod output_bridge;
 pub mod packages_install;

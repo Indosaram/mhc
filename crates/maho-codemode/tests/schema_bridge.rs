@@ -119,3 +119,38 @@ fn invalid_arguments_report_typebox_errors_in_order() {
         );
     }
 }
+
+// eval-virtual-schemas.ts: virtual entries resolve by name and never join the catalog listing.
+#[test]
+fn virtual_eval_entries_resolve_but_are_never_listed() {
+    let listed = run_eval_schema(&json!({}), &tools()).unwrap();
+    let EvalSchemaResult::Tools { tools: names } = listed else {
+        panic!("expected listing")
+    };
+    assert!(names.iter().all(|name| !name.starts_with("eval:")));
+    assert_eq!(
+        maho_codemode::bridges::eval_virtual_schemas::virtual_eval_schema_names(),
+        [
+            "eval:wait",
+            "eval:helpers",
+            "eval:kernel-tools",
+            "eval:environments",
+            "eval:isolation"
+        ]
+    );
+    let EvalSchemaResult::Tool {
+        name,
+        description,
+        parameters,
+    } = run_eval_schema(&json!({"name":"eval:wait"}), &tools()).unwrap()
+    else {
+        panic!("expected virtual entry")
+    };
+    assert_eq!(name, "eval:wait");
+    assert!(
+        description
+            .unwrap()
+            .starts_with("wait(handles, {timeout?, mode?})")
+    );
+    assert_eq!(parameters.unwrap()["required"], json!(["handles"]));
+}

@@ -1,0 +1,150 @@
+[
+	{
+		"name": "eval:wait",
+		"description": "wait(handles, {timeout?, mode?}) blocks the cell until the given handles settle (js: await wait(...); py/rb: wait(...); jl: wait(handle(node)) or wait([handle(a), handle(b)])).\nmode \"all\" (default) returns the successful values in input order and raises the first failed, cancelled or lost handle's error; \"any\" returns {index, ref, value} of the first success or eval_wait_all_rejected; \"settled\" returns one {status, ref, value|error} outcome per input slot.\nDuplicates keep their slots with one subscription. Empty handles: all/settled -> [], any -> eval_wait_empty.\ntimeout is wall-clock seconds from entry (finite, >= 0; 0 = one atomic check; omitted = no wait-specific deadline). On timeout the subscription closes and `eval_wait_timeout: wait() timed out after Ns; k/n handles settled; work was not cancelled` is raised. wait() never cancels work.\nwait() rides the bridge-call path: the cell's run budget pauses while parked, the hard limit never pauses, and a long barrier detaches like any bridge-parked cell. Cancelling the cell closes its subscriptions at once. Task and workpool notifications are neither consumed nor suppressed.\nA workpool must be closed first (eval_pool_open) and succeeds only when every key succeeds (eval_workpool_failed carries the keyed aggregate).\nAgent and workpool handles need the host capability; without it wait() fails with eval_wait_unavailable and never polls task_output. Completion handles always work.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"handles": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"description": "A saved handle reference. agent(..., {handle: true}) records, handle() views, completion handles and workpools ({pool_id}) are accepted directly.",
+						"properties": {
+							"kind": {
+								"enum": [
+									"agent",
+									"completion",
+									"workpool"
+								]
+							},
+							"id": {
+								"type": "string"
+							},
+							"run_epoch": {
+								"type": "integer",
+								"minimum": 0,
+								"description": "The run this reference is bound to; a resumed task gets a new epoch and the old reference fails with eval_handle_stale."
+							}
+						},
+						"required": [
+							"kind",
+							"id",
+							"run_epoch"
+						]
+					}
+				},
+				"timeout": {
+					"type": "number",
+					"minimum": 0,
+					"description": "Wall-clock seconds from entry."
+				},
+				"mode": {
+					"enum": [
+						"all",
+						"any",
+						"settled"
+					],
+					"default": "all"
+				}
+			},
+			"required": [
+				"handles"
+			]
+		}
+	},
+	{
+		"name": "eval:helpers",
+		"description": "Advanced cell helpers (all four languages; js helpers are awaited).\nhandle(node | ref | {pool_id}) returns a rich view: the legacy fields plus a non-enumerable `control` (py: attribute, rb: singleton method) with status(), output({format, offset, limit}), send(message) (agent handles only; others eval_handle_operation_unsupported), cancel() (idempotent for that run epoch; never cancels a successor run) and wait({timeout}).\ncontrol.status() goes through the host subscription; control.send/cancel/output are fenced by owner, id and run_epoch inside the task owner (stale -> eval_handle_stale, foreign -> eval_handle_forbidden); control.output() returns only that epoch's transcript. The plain output() helper and task tools are unchanged.\nThe legacy agent(..., {handle: true}) record is unchanged: .output stays a string and no enumerable key is added. A saved {kind, id, run_epoch} (or the record itself) can be rebound with handle(ref) in a later cell or after a kernel reset while the owner and run epoch are valid.\ncompletion(prompt, {handle: true}) (py: handle=True) returns a control handle after preflight validation; provider failures surface in its outcome; its deadline derives from the creating cell's hard deadline. Completion handles are codemode-owned and need no host capability; once the session generation is dropped they fail with eval_handle_stale.\nworkpool(agent, name, {mode?, tools?}) (py/jl: mode=, tools=; rb: mode:, tools:) forwards tools (kernel-tool names, e.g. from @tool or tool(fn)) unchanged to the host workpool tool's create; the host checks them. There is no pool.wait(): the host delivers the aggregate and the kernel stays free to serve kernel tools.\nSee tool_schema('eval:wait') for the barrier semantics.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"wait": {
+					"description": "wait(handles, {timeout?, mode?}) -> values | {index, ref, value} | outcomes[]"
+				},
+				"handle": {
+					"description": "handle(node | ref | {pool_id}) -> view with .control"
+				},
+				"control.status": {
+					"description": "() -> {ref, phase, host_status, revision}"
+				},
+				"control.output": {
+					"description": "({format?, offset?, limit?}) -> {ref, text, offset, total, truncated}"
+				},
+				"control.send": {
+					"description": "(message) -> snapshot; agent handles only"
+				},
+				"control.cancel": {
+					"description": "() -> {ref, cancelled, phase}"
+				},
+				"control.wait": {
+					"description": "({timeout?}) -> value"
+				},
+				"completion": {
+					"description": "completion(prompt, {handle: true}) -> control handle"
+				}
+			}
+		}
+	},
+	{
+		"name": "eval:kernel-tools",
+		"description": "Kernel tools: functions a cell defines that in-process children can call (js and py; rb/jl answer tools_unavailable).\njs: tool(fn, {name?, description?, schema?}) registers a named function; arguments are passed in its parameter order; without schema only the parameter names are inferred and every one is required.\npy: @tool or @tool(name=..., description=..., schema=...) registers the function and returns it unchanged. The schema is inferred from type hints (str, int, float, bool, None, list[T], dict[str, T], Literal, unions and Optional as nullable, Annotated[T, \"description\"], keyword-only parameters); a JSON default makes a parameter optional; string annotations (from __future__ import annotations) resolve through the function's globals. Positional-only, *args, **kwargs and unresolvable or unsupported annotations are refused with invalid_tool_definition unless schema= is given. The function is never called to infer anything.\ntool.defined() lists this kernel's kernel tools (sorted); tool.undefine(name) removes one (true if it existed). The names defined and undefine are reserved.\nGrants: a child is given descriptors (name, kernel_generation, definition_revision) before it starts. A reset, restart or redefinition makes an old descriptor fail with kernel_tool_stale; the new definition never satisfies it. A name defined in both js and py fails describe with tool_name_collision.\npy callbacks run while the kernel is idle or its cell is parked in a host call (a tool call, wait(), an install); a cell busy in pure computation is never interrupted, the callback waits. A callback's printed text goes to its own reply, never the parent cell's output. Cancelling a call ends it at its next host call (kernel_tool_cancelled); a computation already running finishes and its result is dropped. An awaited object from the parent cell's event loop fails with kernel_tool_loop_mismatch.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"tool": {
+					"description": "js: tool(fn, metadata?); py: @tool / @tool(name=, description=, schema=)"
+				},
+				"tool.defined": {
+					"description": "() -> names[]"
+				},
+				"tool.undefine": {
+					"description": "(name) -> boolean"
+				}
+			}
+		}
+	},
+	{
+		"name": "eval:environments",
+		"description": "Host magic cells: a cell whose first code line (blank and comment lines skipped) is one of these runs on the host, in the language kernel's queue, so it orders with ordinary cells and a queued one is removed by stop like any queued cell. A magic followed by more code is refused: put it on its own cell, then run the code that uses it in the next cell.\npy: %pip install <requirements ...> installs into the session's environment (a trailing backslash continues the line). Result: installed <packages> into <mode> (revision <n>); already-imported modules stay cached until reset.\njs: %bun add <packages ...> or %npm add <packages ...> (install is accepted as a synonym of add). Result: added <packages> with <installer> into <mode>[ (revision <n>)]; already-imported modules stay cached until reset. A package the project's own node_modules still shadows is named with environment_resolution_conflict in the result.\npy and js: %environment managed | project selects where installs go. managed (the default) uses per-session revisions under the session's artifacts directory (or environments.managedRoot) and never touches project files; project installs into the session directory (py: .senpi/python-packages; js: the project root).\npy and js: %load <file> runs a local file as a cell, read when its turn comes in the queue, with the file's name in tracebacks; definitions persist like any cell. It accepts a path relative to the session directory, local:// or file://, reads files up to 8 MiB and never fetches remote URLs.\nInstalls pause the run budget like a bridge call, stream the installer's output into the cell, detach past the foreground window like any cell, and are stopped by stop.\njs and py: packages.install(manager, requirements, {timeout?}) runs the same install as a call instead of a magic: manager \"pip\" in a Python cell, \"bun\" or \"npm\" in a JavaScript cell; requirements is a non-empty string or a non-empty list of non-empty strings, and timeout is a positive number of seconds (default 600; py spells it packages.install(\"pip\", [...], timeout=...)). pip receives the requirement list as separate arguments, never re-split; a js package spec cannot contain whitespace. It drives the same session environment the magic uses, returns that install's receipt (py: manager, mode, root, revision, requested, resolved, changed; js: installer, mode, revision, added, shadowed) and is cancelled by stop like a magic install. Unlike the magic, the installer's output is not streamed into the cell: the receipt is the result, and a failure carries the installer's stderr tail.\nInstall failures are cell errors that start with their code: environment_install_failed (an argument the host rejects: an unknown manager, an empty requirement list, a bun/npm requirement with whitespace or a non-positive timeout; or an installer failure, with the installer's stderr tail. A JS options value that is not an object, or a Python timeout that float() cannot convert, fails earlier in the cell with a plain TypeError or ValueError), environment_install_timeout (a packages.install() still running after its timeout, default 600 s, was stopped), environment_install_cancelled (stopped before or during the install), environment_installer_unavailable (no interpreter or no pip; no JavaScript package environment in this session; neither bun nor npm on PATH, or the chosen one missing; the installer failed to start; installs turned off with environments.autoProvision: false; or pip asked of a session with no Python interpreter, or bun/npm asked of a Python cell), environment_resolution_conflict (py: pip reported a dependency conflict). A %load failure, and a magic refused because more code follows it, are plain cell errors without a code.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"%pip": {
+					"description": "py: %pip install <requirements ...>"
+				},
+				"%bun": {
+					"description": "js: %bun add <packages ...>"
+				},
+				"%npm": {
+					"description": "js: %npm add <packages ...>"
+				},
+				"%environment": {
+					"enum": [
+						"managed",
+						"project"
+					]
+				},
+				"%load": {
+					"description": "py and js: %load <path | local://... | file://...>"
+				},
+				"packages.install": {
+					"description": "js and py: packages.install(manager, requirements, {timeout?}) (py: timeout=...)"
+				}
+			}
+		}
+	},
+	{
+		"name": "eval:isolation",
+		"description": "isolate: true runs one JavaScript cell in a fresh QuickJS sandbox instead of the persistent kernel. It is available only when sandbox.enabled is on in the codemode settings; only then does the eval input schema carry the isolate field. An older senpi drops the field and would run the code as an ordinary cell, so check this entry before relying on it.\nRequests are refused with eval_isolate_invalid when sandbox cells are turned off, when language is not \"js\", when isolate is not a boolean, with reset: true (a sandbox cell always starts fresh), or when eval runs through a proxy that cannot isolate a cell.\nAn isolated cell shares nothing with the kernel. Its globals are print, display, text, image, console, exit, tool.<name>(args) (also reachable as tools), ALL_TOOLS (the names and descriptions of the tools it may call), load and store. Its tool calls go through the host, so permission hooks still apply, and tool calls still pending when the script settles are aborted. The store is rejected: load returns nothing and store fails with eval_isolate_no_state.\nLimits: sandbox.timeoutSeconds (default 300) and sandbox.memoryMb (default 64; SENPI_CODEMODE_SANDBOX_MEMORY_MB overrides it). The result's runtime names quickjs and its version, with isolation sandbox.\nFailures start with their code: eval_isolate_timeout, eval_isolate_aborted, eval_isolate_memory_limit, eval_isolate_unresolved_promise (the script ended with a promise still pending), eval_isolate_no_state, eval_isolate_unavailable (the sandbox itself failed: it could not load, or its worker crashed, exited or lost its output; if that happened after the script started, tool calls the cell made may already have run, so check their effects before retrying).",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"isolate": {
+					"type": "boolean",
+					"description": "true with language: \"js\" runs the cell in a fresh sandbox"
+				}
+			}
+		}
+	}
+]
