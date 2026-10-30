@@ -406,7 +406,8 @@ pub fn probe_alive(pid: f64) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier, mpsc};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn record(path: &Path) -> Option<LeaseRecord> {
         read_text(path).unwrap().as_deref().and_then(parse_record)
@@ -641,17 +642,19 @@ mod tests {
 
     /// Two waiters inspect the same dead record; the first finishes its acquire before the second
     /// acts on its stale view. Without the inspected reclaim the second unlinks the first's fresh
-    /// lease and both acquire.
+    /// lease and both acquire. Every handshake is a bounded `recv_timeout`, so a waiter that fails
+    /// early makes the test fail instead of hang.
     #[test]
     fn concurrent_reclaim_of_one_dead_record_acquires_exactly_once() -> std::io::Result<()> {
         let dir = tempfile::tempdir()?;
         std::fs::write(dir.path().join("s.lease"), br#"{"pid":12,"startedAtMs":1}"#)?;
-        let inspected = Arc::new(Barrier::new(2));
-        let (first_done, wait_first) = mpsc::channel::<()>();
-        let spawn = |me: f64, after_inspect: Option<mpsc::Receiver<()>>| {
+        let bound = Duration::from_secs(10);
+        let (inspected, wait_inspected) = mpsc::channel::<f64>();
+        let spawn = |me: f64| {
             let dir = dir.path().to_path_buf();
             let inspected = inspected.clone();
-            std::thread::spawn(move || {
+            let (go, wait_go) = mpsc::channel::<()>();
+            let handle = std::thread::spawn(move || {
                 let mut seen_dead = false;
                 let mut is_process_alive = |pid: f64| -> std::io::Result<bool> {
                     if pid != 12.0 {
@@ -659,10 +662,8 @@ mod tests {
                     }
                     if !seen_dead {
                         seen_dead = true;
-                        inspected.wait();
-                        if let Some(after) = &after_inspect {
-                            after.recv().map_err(std::io::Error::other)?;
-                        }
+                        inspected.send(me).map_err(std::io::Error::other)?;
+                        wait_go.recv_timeout(bound).map_err(std::io::Error::other)?;
                     }
                     Ok(false)
                 };
@@ -676,13 +677,26 @@ mod tests {
                         read_process_start_ms: &mut |_| None,
                     },
                 )
-            })
+            });
+            (go, handle)
         };
-        let second = spawn(14.0, Some(wait_first));
-        let first = spawn(13.0, None)
+        let (go_first, first) = spawn(13.0);
+        let (go_second, second) = spawn(14.0);
+        let mut arrived = [
+            wait_inspected
+                .recv_timeout(bound)
+                .map_err(std::io::Error::other)?,
+            wait_inspected
+                .recv_timeout(bound)
+                .map_err(std::io::Error::other)?,
+        ];
+        arrived.sort_by(f64::total_cmp);
+        assert_eq!(arrived, [13.0, 14.0]);
+        go_first.send(()).map_err(std::io::Error::other)?;
+        let first = first
             .join()
             .map_err(|_| std::io::Error::other("first waiter panicked"))??;
-        first_done.send(()).map_err(std::io::Error::other)?;
+        go_second.send(()).map_err(std::io::Error::other)?;
         let second = second
             .join()
             .map_err(|_| std::io::Error::other("second waiter panicked"))??;
