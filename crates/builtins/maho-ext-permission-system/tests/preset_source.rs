@@ -29,7 +29,7 @@ fn no_ui_preset_admission_emits_only_source_events() {
         let _asked = emitter.on_asked(move |_| captured.lock().expect("events").push("asked"));
         let captured = events.clone();
         let _replied = emitter.on_replied(move |event| { assert_eq!(event.reply, PermissionDecision::Allow); captured.lock().expect("events").push("replied"); });
-        let request = Request { id:"request-1".into(), session_id:"session-1".into(), permission:"bash".into(), patterns:vec!["git status".into()], always:vec!["*".into()], metadata:Default::default(), tool:None };
+        let request = Request { id:"request-1".into(), session_id:"session-1".into(), permission:"bash".into(), patterns:vec!["git status".into()], always:vec!["*".into()], original_paths:None, metadata:Default::default(), tool:None };
         let result = handle_no_ui(&request, (&rules_for_preset(preset), &[]), &emitter).expect("admission");
         assert_eq!(result.is_none(), allowed);
         if let Some(reply) = result { assert_eq!(reply.request_id, "request-1"); assert_eq!(reply.reply, Reply::Reject); }

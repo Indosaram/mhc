@@ -1,17 +1,60 @@
-use crate::{evaluate::evaluate, events::{PermissionEventEmitter, PermissionRepliedEvent}, types::{Action, PermissionDecision, Reply, ReplyInput, Request, Rule}};
+use crate::{
+    evaluate::evaluate,
+    events::{PermissionEventEmitter, PermissionRepliedEvent},
+    types::{Action, DENIAL_IS_FINAL, PermissionDecision, Reply, ReplyInput, Request, Rule},
+};
 
-pub fn handle_no_ui(request: &Request, rulesets: (&[Rule], &[Rule]), emitter: &PermissionEventEmitter) -> Result<Option<ReplyInput>, serde_json::Error> {
+pub fn handle_no_ui(
+    request: &Request,
+    rulesets: (&[Rule], &[Rule]),
+    emitter: &PermissionEventEmitter,
+) -> Result<Option<ReplyInput>, serde_json::Error> {
     emitter.emit_asked(request)?;
-    let pattern=request.patterns.first().map_or("",String::as_str);
-    for (rules,source) in [(rulesets.1,"CLI flag"),(rulesets.0,"config")] {
-        match evaluate(&request.permission,pattern,&[rules]).action {
-            Action::Allow => { emitter.emit_replied(PermissionRepliedEvent {request_id:request.id.clone(),session_id:request.session_id.clone(),reply:PermissionDecision::Allow})?; return Ok(None); }
-            Action::Deny => return Ok(Some(ReplyInput {request_id:request.id.clone(),reply:Reply::Reject,always:None,message:Some(format!("Permission denied by {source}: {}",request.permission))})),
-            Action::Ask => {},
+    let pattern = request.patterns.first().map_or("", String::as_str);
+    for (rules, source) in [(rulesets.1, "CLI flag"), (rulesets.0, "config")] {
+        match evaluate(&request.permission, pattern, &[rules]).action {
+            Action::Allow => {
+                emitter.emit_replied(PermissionRepliedEvent {
+                    request_id: request.id.clone(),
+                    session_id: request.session_id.clone(),
+                    reply: PermissionDecision::Allow,
+                })?;
+                return Ok(None);
+            }
+            Action::Deny => {
+                return Ok(Some(ReplyInput {
+                    request_id: request.id.clone(),
+                    reply: Reply::Reject,
+                    always: None,
+                    message: Some(format!(
+                        "Permission denied by {source}: {}",
+                        request.permission
+                    )),
+                }));
+            }
+            Action::Ask => {}
         }
     }
-    if request.permission=="external_directory" {
-        return Ok(Some(ReplyInput {request_id:request.id.clone(),reply:Reply::Reject,always:None,message:Some(format!("Permission required to access {} outside the working directory. Allow it with --permission external_directory=allow, set permissionPreset to \"full-access\", or add a permission rule.",request.patterns.join(", ")))}));
+    if request.permission == "external_directory" {
+        return Ok(Some(ReplyInput {
+            request_id: request.id.clone(),
+            reply: Reply::Reject,
+            always: None,
+            message: Some(format!(
+                "Permission required to access {} outside the working directory. Allow it with --permission external_directory=allow, set permissionPreset to \"full-access\", or add a permission rule.",
+                request.patterns.join(", ")
+            )),
+        }));
     }
-    Ok(Some(ReplyInput {request_id:request.id.clone(),reply:Reply::Reject,always:None,message:Some(format!("Permission required for {} ({}). Use --permission {}=allow to override.",request.permission,request.patterns.join(", "),request.permission))}))
+    Ok(Some(ReplyInput {
+        request_id: request.id.clone(),
+        reply: Reply::Reject,
+        always: None,
+        message: Some(format!(
+            "Permission required for {} ({}), and there is no UI to ask, so the call did not run. {DENIAL_IS_FINAL} The user can allow it with --permission {}=allow.",
+            request.permission,
+            request.patterns.join(", "),
+            request.permission
+        )),
+    }))
 }

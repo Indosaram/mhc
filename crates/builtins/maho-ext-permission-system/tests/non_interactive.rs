@@ -2,7 +2,7 @@ use maho_ext_permission_system::{events::PermissionEventEmitter, non_interactive
 use std::sync::{Arc, Mutex};
 
 fn request(permission: &str, pattern: &str) -> Request {
-    Request { id: "print-test".into(), session_id: "session-1".into(), permission: permission.into(), patterns: vec![pattern.into()], always: vec![], metadata: Default::default(), tool: None }
+    Request { id: "print-test".into(), session_id: "session-1".into(), permission: permission.into(), patterns: vec![pattern.into()], always: vec![], original_paths: None, metadata: Default::default(), tool: None }
 }
 fn rule(permission: &str, pattern: &str, action: Action) -> Rule {
     Rule { permission: permission.into(), pattern: pattern.into(), action }

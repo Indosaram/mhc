@@ -2,7 +2,7 @@ use maho_ext_permission_system::{events::PermissionEventEmitter, service::Permis
 use std::sync::{Arc, Mutex};
 
 fn request(id: &str) -> Request {
-    Request { id: id.into(), session_id: "session".into(), permission: "bash".into(), patterns: vec!["git commit".into()], always: vec!["git *".into()], metadata: Default::default(), tool: None }
+    Request { id: id.into(), session_id: "session".into(), permission: "bash".into(), patterns: vec!["git commit".into()], always: vec!["git *".into()], original_paths: None, metadata: Default::default(), tool: None }
 }
 fn rule(pattern: &str, action: Action) -> Rule {
     Rule { permission: "bash".into(), pattern: pattern.into(), action }
