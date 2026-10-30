@@ -2183,3 +2183,7 @@ mod compaction_error_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "structural_tests.rs"]
+mod structural_tests;
