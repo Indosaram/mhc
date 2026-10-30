@@ -526,3 +526,105 @@ Errors (only if §7.2 is implemented)
   is sourced from MIT code.
 - Notice/log wording is specified by required facts; proposed identifiers are neutral.
 - No OmO-original feature or persona name is used.
+
+---
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+Changes to §6 (model profiles) observed in the upstream release. Message wording is the
+implementer's; only the facts below are mandated.
+
+### D1. Launch-gated model rungs (daily-heavy)
+
+Behaviour: a profile chain may contain a *launch-gated* model, i.e. a model id that is known to
+the product before the provider serves it. The one gated id in this release is `claude-fable-5-5`
+(compared after turning `.` into `-` and ignoring any `provider/` prefix). While the release flag
+for that model is off (it is off in this release), every built-in chain is built **without** any
+rung naming it, so no resolver, cache state (cold or warm) or fallback walk can ever see the id.
+When the flag is on, a gated rung is kept only if its reasoning level is one of the *accepted
+levels* for that model (`xhigh`, `max`); a gated rung with another or no level is dropped, the
+drop is recorded in a process-local list and one warning is logged naming the level.
+Dropping must never prevent the profile list from loading.
+
+The built-in `daily-heavy` chain stages the gated rung first, at `xhigh`, on the Anthropic
+provider set, followed by the current top Anthropic model of the same family at `xhigh`
+(source the following rung's id from the MIT recommended-models data as §6.1 says). With the
+flag off the chain is therefore exactly the following rung alone.
+
+Inputs: the built-in chain definitions; the flag; the accepted levels. Output: the built chain.
+Errors: none surfaced to the user beyond the one warning.
+
+Tests:
+1. Given the flag is off, when built-in profiles are created, then `daily-heavy` has no rung
+   whose model normalises to `claude-fable-5-5`, and `resolve_profile` never reports it as
+   skipped or selected, even with an `available` list that contains it.
+2. Given the flag is on and the rung is `xhigh`, then the chain starts with that rung.
+3. Given the flag is on and a rung has level `medium`, then it is dropped, one rejection is
+   recorded and one warning is logged; the other rungs remain.
+4. A user-defined profile that names the gated id explicitly is not filtered (the gate covers
+   built-in data only).
+
+### D2. Profile outcomes are not sent to the model
+
+Behaviour: the "applied / unavailable / unknown / registry no longer lists it" outcomes of §6.8
+are recorded as **session entries** that are not part of the model's input, plus a user-visible
+UI notification (level `info` for a clean applied outcome, otherwise `warning`). They are never
+delivered as a custom message that enters the next model request. The entry carries the same
+type ids and details as §6.8 and is marked as start-up bookkeeping so it does not count as user
+activity. Hosts without a UI notification channel (headless json/print runs) skip the
+notification only; the entry and the log line remain. A runtime that cannot append entries logs a
+warning and notifies only.
+
+Tests: given an applied outcome in a run with a recording host, then exactly one entry with type
+`model-profile:applied` is appended, one notification is issued, and no message is sent to the
+model; given a host without UI, then the entry exists and nothing throws.
+
+### D3. Notice facts for "no available model" and "registry dropped the model"
+
+1. Unavailable (no rung has an available model): the notice ends with a next step that depends
+   on the run mode. In rpc/desktop mode it says to sign in to one of the listed providers in the
+   client's provider settings or to choose a model in the composer. In every other mode it says to
+   log in to one of the listed providers from an interactive session with `/login`, or to start
+   with `--model`.
+2. Resolved but the registry no longer lists the chosen model: the notice states the profile id,
+   the `provider/model`, that the session keeps its current model, and asks the user to choose
+   another model for this profile (rpc/desktop: in settings; otherwise via `/model` or `--model`).
+   The product name in the message is `mhc`.
+
+Tests: unavailable in rpc mode contains "provider settings" semantics and no `/login`; in tui/print
+mode contains `/login` and `--model`; registry-dropped notice names the current-model fact.
+
+### D4. Transient OAuth refresh failure in the request-auth probe (§6.6)
+
+Behaviour: when resolving provider auth for a slot fails with an error that marks itself as a
+*transient refresh failure* (the engine's `StreamError::oauth_refresh_unavailable` family — found by
+walking the error's cause chain, at most 16 links, cycle-safe, not by type identity), the provider
+is **kept** as a candidate and is **not** reported as reason `refresh`. The model-scope check
+(§6.6 step 3, model request auth/headers) still runs on that candidate. While such a refresh is
+unresolved, one warning per probe is logged with only the error class and the kind of the cause
+(an error code, an HTTP status or a timeout class) — never a message, URL or body. A refresh that
+is refused (not transient) keeps the §6.6 behaviour (exclude, reason refresh). A probe cut short by
+the transient failure leaves the candidate kept and unchecked rather than excluded.
+
+Tests: 28b. Provider A's login fails transiently (marker on a wrapped cause) → A stays the chosen
+rung, the applied outcome lists no failure for A, one warning with class+kind and no message text.
+28c. Same, but the model's headers fail → only that model is excluded (reason request). 28d. A
+plain refused refresh still excludes A with reason refresh.
+
+### D5. Mapping table
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-18 | D1 | APPLIES | model id and rung order are observable in the chain |
+| omo-components-19 | D2 | APPLIES | what the user sees and what the model reads |
+| omo-components-20 | D3 | APPLIES | notice facts the user reads |
+| omo-components-21 | D4 | APPLIES | changes which providers a session may start on |
+
+Leak self-check:
+- No fenced code from SUL: none used (no code blocks in this delta).
+- No sentence paraphrases a SUL comment or prompt: the gate and probe are described from
+  behaviour; messages are described by facts only.
+- No row-for-row table: only the single gated model id and two level names (interface facts) appear.
+- No OmO-original identifier: type ids stay `model-profile:*`; product name `mhc`.
+- No OmO-original feature: the persona/launch tooling of the upstream is not specified beyond the
+  one gate that shapes a built-in chain.
