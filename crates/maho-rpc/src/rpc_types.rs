@@ -74,6 +74,35 @@ pub const RPC_ERROR_RELEASE_UNSUPPORTED: &str = "release_unsupported";
 pub const RPC_ERROR_RELEASE_FAILED: &str = "release_failed";
 /// A draining host parks every session itself; `release_session` and `open_session` are refused meanwhile.
 pub const RPC_ERROR_HOST_DRAINING: &str = "host_draining";
+/// Wire contract v1.1 identity-fenced attachment refusals (senpi `rpc-error-types.ts`).
+pub const RPC_ERROR_SESSION_IDENTITY_MISMATCH: &str = "session_identity_mismatch";
+pub const RPC_ERROR_SESSION_BUSY_LIFECYCLE: &str = "session_busy_lifecycle";
+pub const RPC_ERROR_ATTACHED_ELSEWHERE: &str = "attached_elsewhere";
+/// A malformed argument (`get_entries` page bounds).
+pub const RPC_ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
+/// An answer that cannot fit one response line (`get_entries`, senpi#3534).
+pub const RPC_ERROR_RESPONSE_TOO_LARGE: &str = "response_too_large";
+pub const RPC_ERROR_OWNER_CHANGED: &str = "owner_changed";
+pub const RPC_ERROR_SESSION_NOT_HELD: &str = "session_not_held";
+pub const RPC_ERROR_INVALID_SUBSCRIPTION: &str = "invalid_subscription";
+pub const RPC_ERROR_UNKNOWN_SUBSCRIPTION: &str = "unknown_subscription";
+pub const RPC_ERROR_SUBSCRIPTION_LIMIT: &str = "subscription_limit";
+pub const RPC_ERROR_UNSUPPORTED_TRANSPORT: &str = "unsupported_transport";
+pub const RPC_ERROR_WARM_FAILED: &str = "warm_failed";
+pub const RPC_ERROR_MODEL_NOT_FOUND: &str = "model_not_found";
+pub const RPC_ERROR_EFFECT_ID_CONFLICT: &str = "effect_id_conflict";
+pub const RPC_ERROR_TRANSCRIPT_UNREADABLE: &str = "transcript_unreadable";
+pub const RPC_ERROR_PROVIDER_UNAVAILABLE: &str = "provider_unavailable";
+pub const RPC_ERROR_CONTEXT_BUDGET: &str = "context_budget";
+pub const RPC_ERROR_EVAL_CELL_NOT_FOUND: &str = "eval_cell_not_found";
+pub const RPC_ERROR_INVALID_EVAL_CELL_REQUEST: &str = "invalid_eval_cell_request";
+pub const RPC_ERROR_EVAL_CELLS_UNAVAILABLE: &str = "eval_cells_unavailable";
+pub const RPC_ERROR_UNKNOWN_COMMAND: &str = "unknown_command";
+pub const RPC_ERROR_HOST_STOPPING: &str = "host_stopping";
+/// A sealed (overflowed) session's output cannot be reattached; the client unloads and reopens it.
+pub const RPC_ERROR_SESSION_OUTPUT_OVERFLOW: &str = "session_output_overflow";
+/// `open_session.spawnedBy` must name non-empty `parentSessionId`, `rootSessionId` and `taskId`.
+pub const RPC_ERROR_INVALID_SPAWNED_BY: &str = "invalid_spawned_by";
 
 /// Capability: `steer_when_idle` (rpc-types.ts `STEER_WHEN_IDLE_CAPABILITY`).
 pub const STEER_WHEN_IDLE_CAPABILITY: &str = "steer_when_idle";
@@ -328,6 +357,23 @@ pub enum RpcCommandBody {
     GetEntries {
         #[serde(skip_serializing_if = "Option::is_none")]
         since: Option<String>,
+        /// Only entries before this id: the cursor of a backward (`tail`) walk.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<Value>,
+        /// The newest `tail` entries of the range, read backwards (senpi#4267); never combined with `limit`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tail: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_bytes: Option<Value>,
+    },
+    /// State plus the newest history entries captured at once, with a cursor marker (senpi `get_snapshot`).
+    GetSnapshot {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tail: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_bytes: Option<Value>,
     },
     GetTree,
     GetLastAssistantText,
