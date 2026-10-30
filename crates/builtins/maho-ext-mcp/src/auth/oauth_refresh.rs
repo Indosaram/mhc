@@ -68,13 +68,24 @@ impl McpRefreshManager {
                 if !force && !is_token_stale(current.as_ref(),now) && let Some(tokens)=stored_auth_to_tokens(current.as_ref(),now){return Ok(tokens);}
                 let refresh=current.as_ref().and_then(|record|record.refresh_token.clone()).ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} has no refresh token",store.server_name)))))?;
                 let info=match &discover {Some(discover)=>discover(&store.server_url).await?,None=>super::oauth::discover(&provider,&client).await?};
+                // senpi#4194: a refresh token is presented only to the authorization server that issued it; a grant or
+                // registration stamped for another server is a continuity break, so drop it and require a fresh sign-in.
+                // DIVERGENCE: upstream (senpi#2940) also drops an unstamped grant, attributing it via the persisted
+                // discoveryState. mhc never persisted discovery or stamps before this port, so an unstamped grant keeps
+                // the previous behavior and is stamped on its first successful refresh.
+                let authorization_server=super::oauth_issuer::validated_authorization_server_issuer(&info,&store.server_name).map_err(OAuthRequestError::Flow)?;
+                if !super::oauth_issuer::credentials_match_issuer(current.as_ref(),&authorization_server) {
+                    store.write_unlocked(None)?;
+                    let issuer=current.as_ref().and_then(|record|record.issuer.clone()).unwrap_or_else(||"another authorization server".into());
+                    return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} now uses authorization server {authorization_server}, but its saved sign-in was issued by {issuer}; credentials cleared, re-authentication required.",store.server_name)))));
+                }
                 let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} is not registered",store.server_name)))))?;
                 let resource=current.as_ref().and_then(|record|record.resource.clone()).unwrap_or_else(||normalize_resource_url(&store.server_url));
                 let mut form=vec![("grant_type".into(),"refresh_token".into()),("refresh_token".into(),refresh.clone())];
                 add_resource_param(&mut form,&resource);
                 for attempt in 0..=max_retries {
                     match request_tokens(&client,&info,&information,form.clone()).await {
-                        Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64)))?;return Ok(tokens);}
+                        Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64,Some(authorization_server.as_str()))))?;return Ok(tokens);}
                         Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::InvalidGrant=>{store.write_unlocked(None)?;return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::InvalidGrant,format!("MCP server {} refresh rejected (invalid_grant); credentials cleared, re-authentication required.",store.server_name)))));}
                         Err(error) if attempt<max_retries && match &error {
                             OAuthRequestError::Flow(flow)=>super::oauth_errors::is_transient_token_error(&serde_json::json!({"errorCode":flow.error.message,"message":flow.error.message})),

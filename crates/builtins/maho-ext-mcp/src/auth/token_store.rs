@@ -11,6 +11,8 @@ pub struct McpStoredAuth {
     #[serde(skip_serializing_if = "Option::is_none")] pub code_verifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub resource: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub expires_at: Option<f64>,
+    /// Authorization server that issued the grant (senpi#4194); refresh tokens are presented only to it.
+    #[serde(skip_serializing_if = "Option::is_none")] pub issuer: Option<String>,
     #[serde(flatten)] pub extra: BTreeMap<String,Value>,
 }
 #[derive(Debug, thiserror::Error)]

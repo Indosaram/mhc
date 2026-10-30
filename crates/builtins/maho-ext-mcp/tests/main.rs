@@ -45,6 +45,8 @@ pub mod modern_wire;
 pub mod notifications;
 #[path = "oauth.rs"]
 pub mod oauth;
+#[path = "oauth_issuer.rs"]
+pub mod oauth_issuer;
 #[path = "oauth_client_auth.rs"]
 pub mod oauth_client_auth;
 #[path = "oauth_flow.rs"]

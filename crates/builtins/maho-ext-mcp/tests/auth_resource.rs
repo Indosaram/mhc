@@ -112,7 +112,7 @@ async fn resource_is_sent_on_authorize_exchange_refresh_and_client_credentials()
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1, expected);
 
-    finish_authorization(&provider, "fixture-code", &client).await.expect("test fixture");
+    finish_authorization(&provider, "fixture-code", None, &client).await.expect("test fixture");
     assert_eq!(resources(&next_form(&mut fixture).await), [expected.as_str()]);
 
     // Refresh: the stored resource wins over the computed one.

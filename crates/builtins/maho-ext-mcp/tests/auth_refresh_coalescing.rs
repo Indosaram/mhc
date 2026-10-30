@@ -53,7 +53,7 @@ fn manager(root: &std::path::Path, name: &str, server_url: &str, token_url: &str
     provider.client_id = Some("fixture-client".into());
     let info = OAuthServerInfo {
         authorization_server_url: "http://idp.invalid".into(),
-        authorization_server_metadata: json!({"token_endpoint": token_url}),
+        authorization_server_metadata: json!({"issuer": "http://idp.invalid", "token_endpoint": token_url}),
         resource_metadata: Value::Null,
     };
     let discover: DiscoverFn = Arc::new(move |_| {
