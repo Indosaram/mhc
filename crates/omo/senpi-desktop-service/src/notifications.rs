@@ -125,7 +125,7 @@ impl NotificationHub {
         }
 
         match method {
-            "audit" => match serde_json::from_value::<AuditEvent>(params.clone()).ok().filter(|_| crate::parse::is_audit_event(params)) {
+            "audit" => match crate::parse::parse_audit_event(params) {
                 Some(event) => {
                     let listeners: Vec<_> = {
                         let inner = self.inner.lock().unwrap();
