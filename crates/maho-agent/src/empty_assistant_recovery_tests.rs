@@ -10,8 +10,14 @@ use maho_ai::utils::assistant_capture::{
     push_assistant_progress, subscribe_assistant_capture,
 };
 
-fn model() -> Model {
+/// `model` from internal-events-recovery-fixture.ts: a recovering model whose id is not Claude or
+/// Kimi, so reasoning commits an attempt.
+pub(super) fn model() -> Model {
     let mut model = crate::agent::default_model();
+    model.id = "fixture".to_owned();
+    model.name = "fixture".to_owned();
+    model.api = "openai-completions".to_owned();
+    model.provider = "fixture".to_owned();
     model.recover_text_tool_calls = Some(true);
     model
 }
@@ -32,7 +38,7 @@ fn message() -> AssistantMessage {
 }
 
 /// `attempt(signature, text)` from internal-events-recovery-fixture.ts.
-fn attempt(signature: &str, text: &str) -> AssistantMessageEventStream {
+pub(super) fn attempt(signature: &str, text: &str) -> AssistantMessageEventStream {
     let stream = AssistantMessageEventStream::with_capture_blocks(true);
     let mut output = message();
     stream.push(AssistantMessageEvent::Start {
@@ -120,6 +126,80 @@ fn progress(records: &[AssistantRecord]) -> Vec<AssistantProgress> {
             AssistantRecord::Event(_) => None,
         })
         .collect()
+}
+
+/// The public events upstream's `keeps the public bytes recorded before capture` snapshot holds,
+/// verbatim from `__snapshots__/internal-events-recovery.test.ts.snap`.
+const PUBLIC_BYTES_SNAPSHOT: &str = r#"[{"type":"start","partial":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},{"type":"thinking_start","contentIndex":0,"partial":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},{"type":"thinking_end","contentIndex":0,"content":"","partial":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},{"type":"text_start","contentIndex":1,"partial":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},{"type":"text_delta","contentIndex":1,"delta":"kept","partial":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},{"type":"text_end","contentIndex":1,"content":"kept","partial":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}},{"type":"done","reason":"stop","message":{"role":"assistant","api":"openai-completions","provider":"fixture","model":"fixture","timestamp":0,"content":[{"type":"thinking","thinking":""},{"type":"text","text":"kept"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"diagnostics":[{"type":"empty_assistant_response_recovery","timestamp":0,"details":{"retries":1}}]}}]"#;
+
+/// `.replace(/"timestamp":\d+/g, '"timestamp":0')`, plus JS number identity: TS writes the
+/// integral cost `0` where serde writes the `f64` as `0.0`.
+fn mask_timestamps(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number)
+            if number.as_f64().is_some_and(|float| float.fract() == 0.0)
+                && !number.is_i64()
+                && !number.is_u64() =>
+        {
+            let integral = number.as_f64().unwrap_or_default() as i64;
+            *value = serde_json::Value::from(integral);
+        }
+        serde_json::Value::Object(map) => {
+            for (key, entry) in map.iter_mut() {
+                if key == "timestamp" && entry.is_i64() {
+                    *entry = serde_json::Value::from(0);
+                } else {
+                    mask_timestamps(entry);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(mask_timestamps),
+        _ => {}
+    }
+}
+
+/// TS events share one mutated `partial` object, so the snapshot serializes every partial with
+/// the final content; a Rust event owns the partial cloned at push time. The block content is
+/// therefore compared on the terminal message only.
+fn without_partial_content(events: &mut serde_json::Value) {
+    for event in events.as_array_mut().expect("event array") {
+        if let Some(partial) = event.get_mut("partial").and_then(|p| p.as_object_mut()) {
+            partial.remove("content");
+        }
+    }
+}
+
+#[tokio::test]
+async fn keeps_the_public_bytes_recorded_before_capture() {
+    let _capture = subscribe_assistant_capture();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let source: StreamFn = Arc::new(move |_, _, _| {
+        let first = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        attempt("discard-me", if first { "" } else { "kept" })
+    });
+    let context = maho_ai::types::Context {
+        system_prompt: None,
+        messages: Vec::new(),
+        tools: None,
+        active_tool_names: None,
+    };
+    let wrapped = with_empty_assistant_recovery(&model(), source)(&model(), &context, None);
+    let events = tokio::time::timeout(std::time::Duration::from_secs(5), wrapped.collect())
+        .await
+        .expect("bounded")
+        .expect("events");
+    let mut actual = serde_json::to_value(&events).expect("serialize events");
+    mask_timestamps(&mut actual);
+    let mut expected: serde_json::Value =
+        serde_json::from_str(PUBLIC_BYTES_SNAPSHOT).expect("snapshot json");
+    assert_eq!(
+        actual.as_array().and_then(|events| events.last()),
+        expected.as_array().and_then(|events| events.last())
+    );
+    without_partial_content(&mut actual);
+    without_partial_content(&mut expected);
+    assert_eq!(actual, expected);
 }
 
 #[tokio::test]
