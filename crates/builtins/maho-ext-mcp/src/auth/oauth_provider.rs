@@ -17,8 +17,9 @@ pub fn stored_auth_to_tokens(record: Option<&McpStoredAuth>, now: f64) -> Option
     let access = record.access_token.as_ref().filter(|s| !s.is_empty())?;
     Some(OAuthTokens { access_token:access.clone(),refresh_token:record.refresh_token.clone(),token_type:"Bearer".into(),expires_in:record.expires_at.map(|t| ((t-now)/1000.0).ceil().max(0.0)) })
 }
-pub fn merge_tokens_into_stored_auth(current: Option<McpStoredAuth>, tokens: &OAuthTokens, server_url: &str, now: f64) -> McpStoredAuth {
+pub fn merge_tokens_into_stored_auth(current: Option<McpStoredAuth>, tokens: &OAuthTokens, server_url: &str, now: f64, issuer: Option<&str>) -> McpStoredAuth {
     let mut next = current.unwrap_or_default(); next.access_token = Some(tokens.access_token.clone());
+    if let Some(issuer) = issuer { next.issuer = Some(issuer.into()); }
     next.resource.get_or_insert_with(|| super::oauth::normalize_resource_url(server_url));
     if let Some(refresh) = &tokens.refresh_token { next.refresh_token = Some(refresh.clone()); }
     next.expires_at = token_expires_at(tokens,now); next
@@ -47,6 +48,11 @@ impl McpOAuthProvider {
     pub fn client_metadata(&self) -> Value {
         let mut value = json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"mhc"});
         if let Some(scopes) = &self.scopes { value["scope"] = Value::String(scopes.join(" ")); }
+        // senpi#4194: loopback or custom-scheme redirects register a native client.
+        if let Some(redirect) = self.redirect_url.as_deref().and_then(|redirect| url::Url::parse(redirect).ok()) {
+            let native = !["http","https"].contains(&redirect.scheme()) || ["127.0.0.1","localhost","[::1]"].contains(&redirect.host_str().unwrap_or_default());
+            value["application_type"] = Value::String(if native { "native" } else { "web" }.into());
+        }
         value
     }
     pub fn state(&mut self) -> Result<String, getrandom::Error> {
@@ -58,10 +64,34 @@ impl McpOAuthProvider {
         if let Some(id) = self.client_id.as_ref().or(self.client_metadata_url.as_ref()) { return Ok(Some(json!({"client_id":id}))); }
         Ok(self.store.read()?.and_then(|r| r.client_info))
     }
-    pub fn save_client_information(&self, info: Value) -> Result<(),TokenStoreError> { self.store.update(|r| { let mut next = r.unwrap_or_default(); next.client_info=Some(info); Some(next) })?; Ok(()) }
+    /// Persists a registration stamped with the validated issuer that registered it (senpi#4194).
+    pub fn save_client_information(&self, mut info: Value, issuer: Option<&str>) -> Result<(),TokenStoreError> {
+        let issuer = issuer.map(str::to_owned).or_else(|| info.get("issuer").and_then(Value::as_str).map(super::oauth_issuer::canonical_authorization_server_issuer));
+        if let (Some(issuer), Some(object)) = (issuer, info.as_object_mut()) { object.insert("issuer".into(), Value::String(issuer)); }
+        self.store.update(|r| { let mut next = r.unwrap_or_default(); next.client_info=Some(info); Some(next) })?; Ok(())
+    }
+    /// Binds stored credentials to the authorization server discovery validated now (upstream `saveDiscoveryState`):
+    /// credentials stamped for another issuer are dropped, and a registration that cannot be attributed is never
+    /// sent to the server discovered now.
+    pub fn bind_issuer(&self, issuer: &str) -> Result<(),TokenStoreError> {
+        self.store.update(|current| {
+            let current = current?;
+            if !super::oauth_issuer::credentials_match_issuer(Some(&current), issuer) { return None; }
+            let mut next = current;
+            let client_issuer = next.client_info.as_ref().and_then(|info| info.get("issuer")).and_then(Value::as_str).map(str::to_owned).or_else(|| next.issuer.clone());
+            next.client_info = match (client_issuer, next.client_info.take()) {
+                (Some(_), Some(mut info)) => { if let Some(object) = info.as_object_mut() { object.insert("issuer".into(), Value::String(issuer.into())); } Some(info) }
+                _ => None,
+            };
+            Some(next)
+        })?;
+        Ok(())
+    }
     pub fn tokens(&self, now: f64) -> Result<Option<OAuthTokens>,TokenStoreError> { Ok(stored_auth_to_tokens(self.store.read()?.as_ref(),now)) }
-    pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(),TokenStoreError> {
-        self.store.update(|r| Some(merge_tokens_into_stored_auth(r,tokens,&self.store.server_url,now)))?;
+    pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(),TokenStoreError> { self.save_tokens_with_issuer(tokens, now, None) }
+    /// `save_tokens` with the validated issuer stamped on the grant (senpi#4194).
+    pub fn save_tokens_with_issuer(&self, tokens: &OAuthTokens, now: f64, issuer: Option<&str>) -> Result<(),TokenStoreError> {
+        self.store.update(|r| Some(merge_tokens_into_stored_auth(r,tokens,&self.store.server_url,now,issuer)))?;
         if let Some(logger)=&self.logger {let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info","oauth saveTokens",Some(&json!({"token_fp":crate::log::fingerprint_secret(&tokens.access_token)})),None);}
         Ok(())
     }

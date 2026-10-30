@@ -107,7 +107,12 @@ async fn discover_fetch(server_url:String,require_https:bool,client:reqwest::Cli
         let issuer=value.get("authorization_servers").and_then(Value::as_array).and_then(|servers|servers.iter().filter_map(Value::as_str).find(|server|!server.is_empty())).map(str::to_owned)
             .ok_or_else(||OAuthRequestError::Invalid("Protected resource metadata lacks authorization_servers".into()))?;
         (issuer,value)
-    } else if status.as_u16()==404 {(server_url.clone(),Value::Null)}
+    } else if status.as_u16()==404 {
+        // Without protected resource metadata the server's origin root is the authorization server (MCP SDK
+        // fallback); senpi#4194 validates its metadata issuer against the origin form.
+        let mut origin=resource.clone();origin.set_path("/");origin.set_query(None);origin.set_fragment(None);
+        (origin.to_string(),Value::Null)
+    }
     else {return Err(OAuthRequestError::Invalid(format!("Protected resource metadata request failed with status {}",status.as_u16())));};
     let issuer_url=url::Url::parse(&issuer)?;
     if require_https{check_https(&issuer,"Authorization server URL")?;}
@@ -139,12 +144,47 @@ async fn discover_fetch(server_url:String,require_https:bool,client:reqwest::Cli
     }
     Ok(OAuthServerInfo {authorization_server_url:issuer,authorization_server_metadata:authorization,resource_metadata})
 }
+/// Discovery whose metadata names the issuer it was fetched for (senpi#4194). A rejected document is evicted so a
+/// server that fixes its metadata is rediscovered instead of staying cached.
+pub async fn trusted_discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<(OAuthServerInfo,String),OAuthRequestError> {
+    let info=discover(provider,client).await?;
+    match super::oauth_issuer::validated_authorization_server_issuer(&info,&provider.store.server_name) {
+        Ok(issuer)=>Ok((info,issuer)),
+        Err(error)=>{locked(&DISCOVERY_CACHE).remove(&normalize_resource_url(&provider.store.server_url));Err(OAuthRequestError::Flow(error))}
+    }
+}
+/// The discovery this process already trusts for the provider, without fetching (upstream `discoveryState()`):
+/// absent when nothing was discovered, the metadata names another issuer, or stored credentials are stamped for
+/// another authorization server.
+pub fn trusted_discovery_state(provider:&McpOAuthProvider)->Result<Option<(OAuthServerInfo,String)>,OAuthRequestError> {
+    let Some(info)=locked(&DISCOVERY_CACHE).get(&normalize_resource_url(&provider.store.server_url)).cloned() else{return Ok(None);};
+    let Ok(issuer)=super::oauth_issuer::validated_authorization_server_issuer(&info,&provider.store.server_name) else{return Ok(None);};
+    if !super::oauth_issuer::credentials_match_issuer(provider.store.read()?.as_ref(),&issuer){return Ok(None);}
+    Ok(Some((info,issuer)))
+}
+/// RFC 9207: an authorization response that names another authorization server, or that omits `iss` although this
+/// server promises to send it, may have been injected by a mix-up attack; never exchange its code.
+pub fn assert_authorization_response_issuer(provider:&McpOAuthProvider,iss:Option<&str>)->Result<(),OAuthRequestError> {
+    let server=&provider.store.server_name;
+    let flow=|message:String|OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,message)));
+    let Some((info,issuer))=trusted_discovery_state(provider)? else{
+        return Err(flow(format!("MCP server {server} has no trusted authorization discovery; restart with /mcp auth-start {server}.")));
+    };
+    let promised=info.authorization_server_metadata.get("authorization_response_iss_parameter_supported")==Some(&Value::Bool(true));
+    match iss {
+        None if !promised=>Ok(()),
+        Some(iss) if iss==issuer=>Ok(()),
+        None=>Err(flow(format!("MCP server {server} authorization response has no issuer although its authorization server promises one; restart with /mcp auth-start {server}."))),
+        Some(iss)=>Err(flow(format!("MCP server {server} authorization response names another authorization server ({iss}); restart with /mcp auth-start {server}."))),
+    }
+}
 pub struct BeginAuthResult {pub authorized:bool,pub authorization_url:Option<url::Url>}
 pub async fn begin_authorization(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {begin_authorization_inner(provider,client,false).await}
 /// Like `begin_authorization` but never short-circuits on stored tokens.
 pub async fn begin_authorization_forced(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {begin_authorization_inner(provider,client,true).await}
 async fn begin_authorization_inner(provider:&mut McpOAuthProvider,client:&reqwest::Client,force:bool)->Result<BeginAuthResult,OAuthRequestError> {
-    let info=discover(provider,client).await?;
+    let (info,issuer)=trusted_discover(provider,client).await?;
+    provider.bind_issuer(&issuer)?;
     assert_s256_supported(Some(&info.authorization_server_metadata),&provider.store.server_name).map_err(OAuthRequestError::Flow)?;
     if !force && provider.tokens(chrono::Utc::now().timestamp_millis() as f64)?.is_some(){return Ok(BeginAuthResult {authorized:true,authorization_url:None});}
     let client_info=match provider.client_information()? {
@@ -152,7 +192,7 @@ async fn begin_authorization_inner(provider:&mut McpOAuthProvider,client:&reqwes
         None=>{
             let endpoint=info.authorization_server_metadata.get("registration_endpoint").and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth authorization server has no registration endpoint".into()))?;
             let registered=client.post(endpoint).json(&provider.client_metadata()).send().await?.error_for_status()?.json::<Value>().await?;
-            provider.save_client_information(registered.clone())?;registered
+            provider.save_client_information(registered.clone(),Some(issuer.as_str()))?;registered
         }
     };
     let client_id=client_info.get("client_id").and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth client has no client_id".into()))?;
@@ -168,18 +208,19 @@ async fn begin_authorization_inner(provider:&mut McpOAuthProvider,client:&reqwes
     provider.redirect_to_authorization(authorization.clone()).await?;Ok(BeginAuthResult {authorized:false,authorization_url:Some(authorization)})
 }
 pub async fn complete_authorization(provider:&mut McpOAuthProvider,redirect:&str,client:&reqwest::Client)->Result<(),OAuthRequestError> {
-    let (code,state)=parse_redirect(redirect,&provider.store.server_name).map_err(OAuthRequestError::Flow)?;
+    let (code,state,iss)=parse_redirect(redirect,&provider.store.server_name,|iss|assert_authorization_response_issuer(provider,iss))?;
     if !provider.consume_state(state.as_deref()){return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::StateMismatch,format!("MCP server {} authorization state did not match (possible CSRF or a stale/replayed link); restart with /mcp auth-start.",provider.store.server_name)))));}
-    finish_authorization(provider,&code,client).await
+    finish_authorization(provider,&code,iss.as_deref(),client).await
 }
-pub async fn finish_authorization(provider:&McpOAuthProvider,code:&str,client:&reqwest::Client)->Result<(),OAuthRequestError> {
-    let info=discover(provider,client).await?;
+pub async fn finish_authorization(provider:&McpOAuthProvider,code:&str,iss:Option<&str>,client:&reqwest::Client)->Result<(),OAuthRequestError> {
+    assert_authorization_response_issuer(provider,iss)?;
+    let (info,issuer)=trusted_discover(provider,client).await?;
     let client_info=provider.client_information()?.ok_or_else(||OAuthRequestError::Invalid("OAuth client is not registered".into()))?;
     let mut form=vec![("grant_type".into(),"authorization_code".into()),("code".into(),code.into()),("code_verifier".into(),provider.code_verifier()?)];
     add_resource_param(&mut form,&normalize_resource_url(&provider.store.server_url));
     if let Some(redirect)=&provider.redirect_url {form.push(("redirect_uri".into(),redirect.clone()));}
     match request_tokens(client,&info,&client_info,form).await {
-        Ok(tokens)=>{provider.save_tokens(&tokens,chrono::Utc::now().timestamp_millis() as f64)?;Ok(())}
+        Ok(tokens)=>{provider.save_tokens_with_issuer(&tokens,chrono::Utc::now().timestamp_millis() as f64,Some(issuer.as_str()))?;Ok(())}
         Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::InvalidGrant=>{
             provider.invalidate_credentials(CredentialScope::Tokens)?;provider.invalidate_credentials(CredentialScope::Verifier)?;
             Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::ExpiredCode,format!("MCP server {} authorization code was rejected or expired; restart with /mcp auth-start {}.",provider.store.server_name,provider.store.server_name)))))
@@ -223,19 +264,24 @@ pub async fn request_tokens(client:&reqwest::Client,info:&OAuthServerInfo,client
     Ok(serde_json::from_value(body)?)
 }
 pub async fn client_credentials_grant(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<(),OAuthRequestError> {
-    let info=discover(provider,client).await?;let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} client_credentials requires a clientId.",provider.store.server_name)))))?;
+    let (info,issuer)=trusted_discover(provider,client).await?;provider.bind_issuer(&issuer)?;let information=provider.client_information()?.ok_or_else(||OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {} client_credentials requires a clientId.",provider.store.server_name)))))?;
     let mut form=vec![("grant_type".into(),"client_credentials".into())];
     if let Some(scopes)=provider.effective_scopes() {form.push(("scope".into(),scopes.join(" ")));}
     add_resource_param(&mut form,&normalize_resource_url(&provider.store.server_url));
-    let tokens=request_tokens(client,&info,&information,form).await?;provider.save_tokens(&tokens,chrono::Utc::now().timestamp_millis() as f64)?;Ok(())
+    let tokens=request_tokens(client,&info,&information,form).await?;provider.save_tokens_with_issuer(&tokens,chrono::Utc::now().timestamp_millis() as f64,Some(issuer.as_str()))?;Ok(())
 }
 pub fn logout(provider:&McpOAuthProvider)->Result<(),OAuthRequestError> {provider.store.clear()?;Ok(())}
-pub fn parse_redirect(input:&str,server:&str)->Result<(String,Option<String>),Box<OAuthFlowError>> {
-    let url=url::Url::parse(input.trim()).map_err(|_|Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {server} received a malformed redirect URL; paste the full http://127.0.0.1/... address from your browser."))))?;
+/// `(code, state, iss)`. `trust` checks the RFC 9207 `iss` before any server-supplied error text is exposed.
+pub fn parse_redirect(input:&str,server:&str,trust:impl FnOnce(Option<&str>)->Result<(),OAuthRequestError>)->Result<(String,Option<String>,Option<String>),OAuthRequestError> {
+    let flow=|message:String|OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,message)));
+    let url=url::Url::parse(input.trim()).map_err(|_|flow(format!("MCP server {server} received a malformed redirect URL; paste the full http://127.0.0.1/... address from your browser.")))?;
     let params=url.query_pairs().collect::<Vec<_>>();
-    if let Some((_,error))=params.iter().find(|(key,_)|key=="error") {return Err(Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {server} authorization failed: {error}"))));}
-    let code=params.iter().find(|(key,_)|key=="code").map(|(_,value)|value.to_string()).filter(|value|!value.is_empty()).ok_or_else(||Box::new(OAuthFlowError::new(OAuthFailureKind::NeedsAuth,format!("MCP server {server} redirect URL has no authorization code; ensure you copied the entire address."))))?;
-    Ok((code,params.iter().find(|(key,_)|key=="state").map(|(_,value)|value.to_string())))
+    let first=|name:&str|params.iter().find(|(key,_)|key==name).map(|(_,value)|value.to_string());
+    let iss=first("iss");
+    trust(iss.as_deref())?;
+    if let Some(error)=first("error") {return Err(flow(format!("MCP server {server} authorization failed: {error}")));}
+    let code=first("code").filter(|value|!value.is_empty()).ok_or_else(||flow(format!("MCP server {server} redirect URL has no authorization code; ensure you copied the entire address.")))?;
+    Ok((code,first("state"),iss))
 }
 pub fn is_rejected_authorization_code(message:&str)->bool {
     let message=message.to_lowercase();message.contains("authorization code invalid") || (message.contains("authorization code") && message.contains("used")) || message.contains("pkce verification failed")

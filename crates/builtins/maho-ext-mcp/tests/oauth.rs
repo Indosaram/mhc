@@ -11,11 +11,11 @@ fn proof_key_support_must_be_explicit() {
 }
 #[test]
 fn redirect_parsing_preserves_first_query_value() {
-    assert_eq!(parse_redirect(" http://127.0.0.1/callback?code=a%2Bb&code=other&state=csrf ","srv").unwrap(),("a+b".into(),Some("csrf".into())));
+    assert_eq!(parse_redirect(" http://127.0.0.1/callback?code=a%2Bb&code=other&state=csrf&iss=https%3A%2F%2Fidp ","srv",|_|Ok(())).unwrap(),("a+b".into(),Some("csrf".into()),Some("https://idp".into())));
 }
 #[test]
 fn malformed_failed_and_empty_redirects_are_rejected() {
-    for input in ["not a url","http://127.0.0.1/callback?code=","http://127.0.0.1/callback?error=access_denied&code=abc"] {assert_eq!(parse_redirect(input,"srv").unwrap_err().oauth_kind,OAuthFailureKind::NeedsAuth);}
+    for input in ["not a url","http://127.0.0.1/callback?code=","http://127.0.0.1/callback?error=access_denied&code=abc"] {assert!(matches!(parse_redirect(input,"srv",|_|Ok(())).unwrap_err(),OAuthRequestError::Flow(error) if error.oauth_kind==OAuthFailureKind::NeedsAuth));}
 }
 
 #[tokio::test]
@@ -49,7 +49,7 @@ async fn refresh_does_not_retry_unclassified_token_errors() {
     let root=tempfile::tempdir().unwrap();let store=McpTokenStore::new(root.path(),"nontransient",&base);
     store.write(McpStoredAuth {access_token:Some("fixture-stale".into()),refresh_token:Some("fixture-refresh".into()),expires_at:Some(0.0),..Default::default()}).unwrap();
     let mut provider=McpOAuthProvider::new(store.clone());provider.client_id=Some("fixture-client".into());
-    let info=OAuthServerInfo {authorization_server_url:base.clone(),authorization_server_metadata:json!({"token_endpoint":format!("{base}/token")}),resource_metadata:serde_json::Value::Null};
+    let info=OAuthServerInfo {authorization_server_url:base.clone(),authorization_server_metadata:json!({"issuer":base.clone(),"token_endpoint":format!("{base}/token")}),resource_metadata:serde_json::Value::Null};
     let mut manager=McpRefreshManager::new_with_options(Arc::new(provider),reqwest::Client::new(),RefreshManagerOptions {discover:Some(Arc::new(move |_| {let info=info.clone();Box::pin(async move {Ok(info)})})),..Default::default()});manager.retry_delay=std::time::Duration::ZERO;
     let result=manager.refresh().await;shutdown.send(()).unwrap();server.await.unwrap();
     assert!(matches!(result,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::Transient));
@@ -71,7 +71,7 @@ async fn concurrent_failed_refreshes_share_one_request_and_later_calls_retry() {
     let (shutdown,closed)=tokio::sync::oneshot::channel();let server=tokio::spawn(async move {axum::serve(listener,app).with_graceful_shutdown(async {let _=closed.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let store=McpTokenStore::new(root.path(),"coalesce",&base);
     store.write(McpStoredAuth {access_token:Some("fixture-stale".into()),refresh_token:Some("fixture-refresh".into()),expires_at:Some(0.0),..Default::default()}).unwrap();
-    let mut provider=McpOAuthProvider::new(store);provider.client_id=Some("fixture-client".into());let info=OAuthServerInfo {authorization_server_url:base.clone(),authorization_server_metadata:json!({"token_endpoint":format!("{base}/token")}),resource_metadata:serde_json::Value::Null};let manager=Arc::new(McpRefreshManager::new_with_options(Arc::new(provider),reqwest::Client::new(),RefreshManagerOptions {discover:Some(Arc::new(move |_| {let info=info.clone();Box::pin(async move {Ok(info)})})),..Default::default()}));
+    let mut provider=McpOAuthProvider::new(store);provider.client_id=Some("fixture-client".into());let info=OAuthServerInfo {authorization_server_url:base.clone(),authorization_server_metadata:json!({"issuer":base.clone(),"token_endpoint":format!("{base}/token")}),resource_metadata:serde_json::Value::Null};let manager=Arc::new(McpRefreshManager::new_with_options(Arc::new(provider),reqwest::Client::new(),RefreshManagerOptions {discover:Some(Arc::new(move |_| {let info=info.clone();Box::pin(async move {Ok(info)})})),..Default::default()}));
     let mut first=Box::pin(manager.refresh());let mut second=Box::pin(manager.refresh());
     assert!(futures::poll!(&mut first).is_pending());
     tokio::time::timeout(std::time::Duration::from_secs(2),requests.recv()).await.unwrap().unwrap();
