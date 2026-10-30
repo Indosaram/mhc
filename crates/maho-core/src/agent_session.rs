@@ -22145,6 +22145,13 @@ mod tests {
             .hold_input(json!({"inputId":"held-b","revision":0,"text":"second"}))
             .expect("hold");
         let (messages, ids) = session.take_held_input_messages().await.expect("prepare");
+        assert_eq!(ids, vec!["held-a", "held-b"]);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(session.held_inputs().len(), 2);
+        session.consume_held_inputs(&ids).expect("settle");
+        assert!(session.held_inputs().is_empty());
+    }
+
     #[tokio::test]
     async fn before_prompt_messages_land_before_the_prompt_and_others_append() {
         let session = test_session();
@@ -22186,13 +22193,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(order, ["held", "A", "user", "consumed", "B"]);
-    }
-
-        assert_eq!(ids, vec!["held-a", "held-b"]);
-        assert_eq!(messages.len(), 2);
-        assert_eq!(session.held_inputs().len(), 2);
-        session.consume_held_inputs(&ids).expect("settle");
-        assert!(session.held_inputs().is_empty());
     }
 
     #[tokio::test]

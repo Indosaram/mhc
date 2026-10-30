@@ -2273,7 +2273,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn bash_redact_secrets_in_output_is_true_only_for_boolean_true() {
         for (json_text, expected) in [
             ("{}", false),
@@ -2298,6 +2297,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn strips_comments_without_touching_comment_like_text_in_strings() {
         let parsed = settings(
             "{\n  // line comment\n  \"a\": \"// not a comment\",\n  /* block\n     comment */ \"b\": \"/* also not */\"\n}",
