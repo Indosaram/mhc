@@ -11,14 +11,14 @@ pub use super::secret_redaction::{redact_credential_shapes, redact_secrets};
 // Anthropic's not_found_error whose message names the model ("model: <id>"; any other
 // not_found_error is not one), and Google's "models/<id> is not found". Every quantifier is
 // bounded, so a long run never makes a match attempt expensive. `\w` is spelled as the ASCII class
-// JS uses.
+// JS uses, and `\b` is the ASCII word boundary `(?-u:\b)` JS uses.
 static MODEL_CONFIG_ERROR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?i)\bmodel_not_found\b",
-        r"|\bunknown provider for model\b",
-        r"|\bthe model\s{1,8}[`'\x22]?[A-Za-z0-9_.:/-]{1,256}[`'\x22]?\s{1,8}does not exist\b",
-        r"|\bnot_found_error\b[^}]{0,120}?\bmodel:\s{0,8}[A-Za-z0-9_.:/-]",
-        r"|\bmodels/[A-Za-z0-9_.:-]{1,256} is not found\b",
+        r"(?i)(?-u:\b)model_not_found(?-u:\b)",
+        r"|(?-u:\b)unknown provider for model(?-u:\b)",
+        r"|(?-u:\b)the model\s{1,8}[`'\x22]?[A-Za-z0-9_.:/-]{1,256}[`'\x22]?\s{1,8}does not exist(?-u:\b)",
+        r"|(?-u:\b)not_found_error(?-u:\b)[^}]{0,120}?(?-u:\b)model:\s{0,8}[A-Za-z0-9_.:/-]",
+        r"|(?-u:\b)models/[A-Za-z0-9_.:-]{1,256} is not found(?-u:\b)",
     ))
     .unwrap_or_else(|error| panic!("MODEL_CONFIG_ERROR is a valid pattern: {error}"))
 });
