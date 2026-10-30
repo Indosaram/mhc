@@ -197,7 +197,7 @@ fn clone_tool_call(tool_call: &ToolCall) -> ToolCall {
 
 fn clone_start_message(message: &AssistantMessage) -> AssistantMessage {
     AssistantMessage {
-        error_cause: message.error_cause,
+        error_cause: message.error_cause.clone(),
         prompt_cache_breakpoint: message.prompt_cache_breakpoint,
         prompt_cache_diagnostics: message.prompt_cache_diagnostics.clone(),
         thinking_level: message.thinking_level,
@@ -220,6 +220,7 @@ fn clone_start_message(message: &AssistantMessage) -> AssistantMessage {
         end_turn: None,
         timestamp: message.timestamp,
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -914,6 +915,7 @@ mod tests {
             end_turn: None,
             timestamp: 1,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

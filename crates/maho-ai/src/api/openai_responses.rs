@@ -146,7 +146,7 @@ pub(crate) fn apply_responses_failure(output: &mut AssistantMessage, error: &Res
             ..
         } => {
             output.provider_diagnostic = diagnostic.clone();
-            output.error_cause = *error_cause;
+            output.error_cause = error_cause.clone();
         }
         ResponsesApiError::Http { status_code, body }
         | ResponsesApiError::HttpWithHeaders {
@@ -568,6 +568,7 @@ pub fn format_openai_responses_error(error: &ResponsesApiError, provider: &str) 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,

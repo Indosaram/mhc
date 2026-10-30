@@ -46,6 +46,7 @@ fn clone_legacy_message(source: &AssistantMessage, content: Vec<ContentBlock>) -
         end_turn: None,
         timestamp: source.timestamp,
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -57,7 +58,7 @@ pub fn clone_message_with_content(
     content: Vec<ContentBlock>,
 ) -> AssistantMessage {
     AssistantMessage {
-        error_cause: source.error_cause,
+        error_cause: source.error_cause.clone(),
         prompt_cache_breakpoint: source.prompt_cache_breakpoint,
         prompt_cache_diagnostics: source.prompt_cache_diagnostics.clone(),
         thinking_level: source.thinking_level,
@@ -80,6 +81,7 @@ pub fn clone_message_with_content(
         end_turn: source.end_turn,
         timestamp: source.timestamp,
         failure_source: source.failure_source,
+        credential_served_recently: source.credential_served_recently,
         timing: source.timing.clone(),
     }
 }
@@ -173,6 +175,7 @@ mod tests {
             prompt_cache_breakpoint: Some(true),
             timestamp: 42,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

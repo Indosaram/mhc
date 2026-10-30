@@ -308,6 +308,7 @@ impl EventConverter {
             model: model.clone(),
             partial: AssistantMessage {
                 failure_source: None,
+                credential_served_recently: None,
                 timing: None,
                 error_cause: None,
                 prompt_cache_breakpoint: None,
@@ -597,6 +598,7 @@ fn create_error_event(
     };
     let mut assistant_message = AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
