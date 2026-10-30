@@ -34,6 +34,16 @@ pub async fn migrate_legacy_goal(reference: &GoalStoreRef) -> Result<Option<Goal
     })
     .await
 }
+/// `migrateLegacyGoal` with an explicit standalone agent dir, under the same goal lock.
+pub async fn migrate_legacy_goal_from(
+    reference: &GoalStoreRef,
+    standalone_agent_dir: &std::path::Path,
+) -> Result<Option<Goal>, GoalError> {
+    with_goal_file_lock(reference, |_held| async {
+        crate::persistence::migrate_legacy_goal_file(reference, standalone_agent_dir)
+    })
+    .await
+}
 pub async fn write_goal(reference: &GoalStoreRef, goal: Option<&Goal>) -> Result<(), GoalError> {
     with_goal_file_lock(reference, |held| async move {
         held.write(goal)?;
@@ -989,5 +999,47 @@ mod tests {
         .unwrap();
         assert!(recorded);
         assert_eq!(blocked.unwrap().no_progress_continuations, Some(0));
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_import_waits_for_the_goal_lock_so_a_concurrent_write_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = GoalStoreRef {
+            base_dir: dir.path().join("extensions/goal"),
+            thread_id: "t".into(),
+        };
+        let legacy = dir.path().join("extensions/pi-goal");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("t.json"),
+            serde_json::json!({"version":1,"goal":{"id":"legacy","threadId":"t","objective":"old","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string(),
+        )
+        .unwrap();
+        let current = fresh_goal(&reference, "current".into(), GoalStatus::Active, None, 2);
+        let migrated = with_goal_file_lock(&reference, |held| {
+            let reference = reference.clone();
+            let standalone = dir.path().to_path_buf();
+            let current = current.clone();
+            async move {
+                let migration =
+                    tokio::spawn(
+                        async move { migrate_legacy_goal_from(&reference, &standalone).await },
+                    );
+                // Let the spawned import run up to the lock; it must not publish while we hold it.
+                for _ in 0..16 {
+                    tokio::task::yield_now().await;
+                }
+                assert!(!migration.is_finished());
+                held.write(Some(&current))?;
+                Ok(migration)
+            }
+        })
+        .await
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(migrated, None);
+        assert_eq!(read_goal(&reference).unwrap(), Some(current));
+        assert!(legacy.join("t.json").exists());
     }
 }
