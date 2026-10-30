@@ -199,7 +199,7 @@ fn write_watermark(
         // The rename already consumed this notice; a durability failure must not discard it.
         on_warn(
             "[memory] Published agreements watermark directory sync failed:",
-            Some(&error.kind().to_string()),
+            Some(&crate::support::errno::io_error_code(&error)),
         );
     }
     Ok(())

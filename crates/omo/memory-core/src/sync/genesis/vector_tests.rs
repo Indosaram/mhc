@@ -327,6 +327,17 @@ fn refuses_bad_bootstrap_before_sealing_or_countersigning() {
 }
 
 #[test]
+fn rejects_bootstrap_and_body_with_an_extra_key() {
+    let v = vector();
+    let mut bootstrap = serde_json::to_value(&v.bootstrap).expect("bootstrap");
+    bootstrap["extra"] = json!(true);
+    assert!(serde_json::from_value::<GenesisBootstrap>(bootstrap).is_err());
+    let mut body = serde_json::to_value(&v.prepared.body).expect("body");
+    body["extra"] = json!(true);
+    assert!(serde_json::from_value::<GenesisBody>(body).is_err());
+}
+
+#[test]
 fn refuses_prepared_ciphertext_tampering_before_device_signing() {
     let v = vector();
     let mut prepared = v.prepared.clone();

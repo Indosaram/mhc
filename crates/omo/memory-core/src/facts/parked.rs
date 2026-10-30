@@ -161,11 +161,6 @@ mod tests {
         migrate_parked_entries(&layout).unwrap();
         assert!(!path.exists());
     }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::facts::failures_schema::FactsFailureReason;
 
     fn parked_record() -> FactsFailureRecord {
         FactsFailureRecord {
