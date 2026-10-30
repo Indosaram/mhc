@@ -375,6 +375,23 @@ pub fn sweep_spool(ctx: &SpoolContext) -> io::Result<()> {
             _ => {}
         }
     }
+    // A crashed writer leaves its owner marker behind; it must not keep the spool live for an opt-out purge.
+    let owners = owners_dir(&ctx.dir);
+    for entry in list_spool(&owners)? {
+        if let SpoolEntry::Owner {
+            name, pid, boot_id, ..
+        } = entry
+        {
+            let dead = if pid == ctx.pid {
+                boot_id != ctx.boot_id
+            } else {
+                !(ctx.is_pid_alive)(pid)
+            };
+            if dead {
+                delete_file(&owners, &name)?;
+            }
+        }
+    }
     for entry in list_spool(&ctx.dir)? {
         if let SpoolEntry::Batch { name, batch_id, .. } = entry
             && now.saturating_sub(batch_created_ms(&batch_id)) > ctx.max_age_ms {

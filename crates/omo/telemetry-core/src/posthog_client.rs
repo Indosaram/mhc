@@ -5,6 +5,7 @@ use crate::env::has_telemetry_api_key;
 use crate::env::should_disable_telemetry;
 use crate::machine_id::get_default_telemetry_os_provider;
 use crate::posthog_transport::create_default_posthog_transport;
+use crate::terminal_program::to_telemetry_terminal_program;
 use crate::types::TelemetryCaptureMessage;
 use crate::types::TelemetryCaptureProperties;
 use crate::types::TelemetryDiagnosticEvent;
@@ -248,13 +249,18 @@ fn get_shared_properties(input: &CreateTelemetryClientInput<'_>) -> TelemetryCap
         "timezone",
         iana_time_zone::get_timezone().ok(),
     );
-    insert_optional(&mut properties, "shell", std::env::var("SHELL").ok());
+    insert_optional(
+        &mut properties,
+        "shell",
+        get_shell_name(std::env::var("SHELL").ok().as_deref()),
+    );
     let ci = std::env::var("CI").is_ok_and(|value| !value.is_empty());
     properties.insert("ci".into(), ci.into());
     insert_optional(
         &mut properties,
         "terminal",
-        std::env::var("TERM_PROGRAM").ok(),
+        to_telemetry_terminal_program(std::env::var("TERM_PROGRAM").ok().as_deref())
+            .map(str::to_owned),
     );
     if let Some(additional) = &product.additional_properties {
         for (key, value) in additional {
@@ -262,4 +268,34 @@ fn get_shared_properties(input: &CreateTelemetryClientInput<'_>) -> TelemetryCap
         }
     }
     properties
+}
+
+/// The login shell's path often contains the user's name (`/home/<user>/.nix-profile/bin/zsh`), so
+/// only the program name is sent: the last path segment, without a Windows `.exe` suffix.
+fn get_shell_name(shell_path: Option<&str>) -> Option<String> {
+    let last = shell_path?.rsplit(['/', '\\']).next()?;
+    let name = match last.len().checked_sub(4).and_then(|at| last.get(at..)) {
+        Some(tail) if tail.eq_ignore_ascii_case(".exe") => &last[..last.len() - 4],
+        _ => last,
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+#[cfg(test)]
+mod shell_name_tests {
+    use super::get_shell_name;
+
+    #[test]
+    fn keeps_only_the_program_name() {
+        assert_eq!(
+            get_shell_name(Some("/home/u/.nix-profile/bin/zsh")).as_deref(),
+            Some("zsh")
+        );
+        assert_eq!(
+            get_shell_name(Some("C:\\Git\\bash.EXE")).as_deref(),
+            Some("bash")
+        );
+        assert_eq!(get_shell_name(Some("/usr/bin/")), None);
+        assert_eq!(get_shell_name(None), None);
+    }
 }
