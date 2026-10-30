@@ -63,6 +63,13 @@ impl GoalDelivery {
             last_facts: Default::default(),
         }
     }
+    /// `session_tree` in goal/index.ts: a tree move restarts the todo-owed reminder chain.
+    pub fn reset_todo_chain(&self) {
+        self.todo_backstop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset_chain();
+    }
     pub fn queue_callback(self: &Arc<Self>) -> crate::command_registration::QueueGoalContinuation {
         let owner = self.clone();
         Arc::new(move |ctx, goal| {

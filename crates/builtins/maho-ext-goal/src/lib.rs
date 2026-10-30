@@ -8,6 +8,7 @@ pub mod command;
 pub mod command_registration;
 pub mod continuation;
 pub mod continuation_recovery;
+pub mod deadline_stop_renderer;
 pub mod delivery;
 pub mod direct_input_lifecycle;
 pub mod elapsed_ticker;
