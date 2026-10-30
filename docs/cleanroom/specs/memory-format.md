@@ -130,3 +130,139 @@ copied into a new place unless the user enabled people memory.
   verbatim in `content`.
 - Recall ledgers, sync queues, locks or other bookkeeping files the legacy store may keep are not
   documented; anything that is not a `.md` file is skipped.
+
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+This delta records one change in the legacy format that the MIT importer must honour: files may
+declare when they stop being true. It was written from the OmO public documentation of the
+`expires` frontmatter key and the shape of accepted values; the spec writer read SUL and upstream
+sources for understanding only and reproduces facts, not wording or code. Everything else in the
+v5.1.52 range concerns machinery the MIT store does not have (account sync, prompt projection,
+workers, write guards) and is listed as N-A in the mapping table.
+
+### 1.1 The `expires` frontmatter key (interface fact)
+
+A legacy memory file may carry `expires: <value>` in its YAML frontmatter. The importer reads it
+as an instant in UTC (epoch milliseconds) using these rules:
+
+- Accepted: a calendar date `YYYY-MM-DD` (the instant is 00:00:00.000 UTC of that day); or a
+  datetime `YYYY-MM-DDTHH:MM`, optionally with `:SS` and a fraction of 1 to 9 digits, that ends
+  in `Z` or a numeric offset `+HH:MM` / `-HH:MM`. The instant is normalised to UTC. Fractions
+  finer than a millisecond are truncated.
+- The scalar may be bare, single-quoted or double-quoted; surrounding whitespace is ignored.
+- Anything else reads as "no expiry": a datetime without `Z`/offset (it would mean a different
+  instant on each machine), a space instead of `T`, free text, an empty value, an hour above 23,
+  minutes or seconds above 59, a date that does not exist (for example 30 February), a non-scalar
+  value. A malformed value never hides content and never makes the file fail.
+- A file with no `expires` key has no expiry. Other undocumented keys remain preserved as
+  metadata and uninterpreted, as before.
+
+Given/when/then:
+
+- Given `expires: 2026-10-28`, when parsed, then the instant is 2026-10-28T00:00:00.000Z.
+- Given `expires: 2026-10-27T15:33+09:00`, then the instant is 2026-10-27T06:33:00.000Z.
+- Given `expires: "2026-10-27T06:33:15.250Z"`, then the instant is 2026-10-27T06:33:15.250Z.
+- Given `expires: 2026-10-27T06:33`, `expires: 2026-02-30`, `expires: 2026-10-27T25:00Z`,
+  `expires: after the outage` or an empty value, then there is no expiry.
+
+### 1.2 The key never rejects a file
+
+`expires` is a known key, so it is not reported as an unknown key and an unreadable value adds
+at most one warning (path, reason `unreadable expires value`) to the migration report; the
+file is still imported in full. Re-validating hand-edited files must never be blocked by it.
+
+Given a file whose `expires` is free text, when imported, then its blocks are imported with no
+expiry and the report lists one warning for that path.
+
+### 1.3 Mapping into `valid_until`
+
+For every block of a file with a readable expiry, the imported `working_memory` row sets
+`valid_until` to that instant formatted as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC, the same format the
+store stamps its own expiries with, so string comparison against "now" stays correct). The
+block's `metadata_json` gains `"expires": <the original value as written>`.
+
+- A row is expired from the instant onward: at exactly the expiry instant it is no longer
+  recalled (the store already treats `valid_until > now` as live), consistent with the file rule
+  "at its instant it is expired".
+- Files already expired at import time are still imported (history is kept; recall and active
+  counts exclude them) and are counted (per file) in a new report field `expired_on_import`, in text and
+  JSON output.
+- Row ids do not depend on `expires` (the id recipe is unchanged), so re-running the import
+  after a user edits only `expires` skips the existing rows and does not change their
+  `valid_until`. This is reported through `skipped_existing` as before.
+- A file with no readable expiry leaves `valid_until` null, as before.
+- With `--dry-run`, `expired_on_import` is computed against the current time and nothing is
+  written.
+
+Given/when/then:
+
+- Given a notes file with `expires: 2026-10-28` and two list items, when imported on 2026-10-27,
+  then two rows exist, each with `valid_until` 2026-10-28T00:00:00.000Z, and both are returned
+  by recall on 2026-10-27 but not on 2026-10-28T00:00:00.000Z.
+- Given the same file imported on 2026-11-01, then two rows exist, none is recalled, and the
+  report shows `expired_on_import` 1 (it counts files, not blocks).
+- Given an import report for a tree with no `expires` keys, then `expired_on_import` is 0.
+
+Error cases: none new; every failure mode of 1.1 degrades to "no expiry".
+
+### Mapping table
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-memory-01 | - | N-A | N-A reason: genesis key-bundle validation belongs to the encrypted account-sync stack; maho-memory is a local SQLite store with no accounts, keyrings or wraps |
+| omo-memory-02 | - | N-A | N-A reason: genesis preparation (sealed key wraps) has no counterpart: no encrypted sync in maho-memory |
+| omo-memory-03 | - | N-A | N-A reason: genesis record building/signing has no counterpart: no signed append log |
+| omo-memory-04 | - | N-A | N-A reason: conformance vector for a genesis format the MIT store does not have |
+| omo-memory-05 | - | N-A | N-A reason: text is a desktop-app sign-in hint for the account sync; maho-memory has no sign-in and no sync failure messages |
+| omo-memory-06 | - | N-A | N-A reason: agreements ledger is a git-tree file of the legacy store; MIT store keeps no agreements ledger or git reads |
+| omo-memory-07 | - | N-A | N-A reason: agreements notice watermark: MIT store has no notice mechanism |
+| omo-memory-08 | - | N-A | N-A reason: watermark file hardening: MIT store writes no watermark files |
+| omo-memory-09 | - | N-A | N-A reason: soul notice watermark: no counterpart |
+| omo-memory-10 | - | N-A | N-A reason: soul watermark hardening: no counterpart |
+| omo-memory-11 | - | N-A | N-A reason: persisted compiled-block cache; MIT store has no compiled block or block cache (recall queries SQLite directly) |
+| omo-memory-12 | 1.1 | APPLIES | `expires` frontmatter is a documented interface key; importer must read it into a UTC instant |
+| omo-memory-13 | 1.3 | APPLIES | legacy rule: expired files stop being shown as of the pin instant; MIT analogue is that imported expired rows stay out of recall (valid_until) and the report counts them |
+| omo-memory-14 | - | N-A | N-A reason: compiled-block cache and compiler version; no counterpart |
+| omo-memory-15 | - | N-A | N-A reason: reading git HEAD from files; MIT store never runs or reads git |
+| omo-memory-16 | - | N-A | N-A reason: external-path projection grouping; MIT store has no projection into prompts |
+| omo-memory-17 | - | N-A | N-A reason: external-path name folding for projection; no projection |
+| omo-memory-18 | - | N-A | N-A reason: projection limits (config keys memory.projection.*) only shape the legacy prompt block; the importer does not read them |
+| omo-memory-19 | 1.2 | APPLIES | `expires` joins the recognised frontmatter keys; an unreadable value means no expiry and never rejects the file |
+| omo-memory-20 | - | N-A | N-A reason: persona prompts of the legacy reflection/dream workers; MIT store ships no personas or reflection workers |
+| omo-memory-21 | - | N-A | N-A reason: in-process journal lock cancellation (already present upstream); MIT store has no journal lock |
+| omo-memory-22 | - | N-A | N-A reason: journal store cancellation; no journal |
+| omo-memory-23 | - | N-A | N-A reason: parked fact-queue recovery; MIT store has no fact queue |
+| omo-memory-25 | - | N-A | N-A reason: memory patch tool path accounting; MIT tools are the mnemopi_* MCP tools, not a patch tool |
+| omo-memory-26 | - | N-A | N-A reason: private desktop-sync wire protocol; no desktop sync |
+| omo-memory-27 | - | N-A | N-A reason: desktop-sync channel attach; no desktop sync |
+| omo-memory-28 | - | N-A | N-A reason: keychain-pending deferral of account sync; no account or credential store |
+| omo-memory-29 | - | N-A | N-A reason: deferred sync retry schedule; no sync runner |
+| omo-memory-32 | - | N-A | N-A reason: project memory grant path walk is a write-guard of the legacy memory directory; MIT store exposes no file-path grants |
+| omo-memory-33 | - | N-A | N-A reason: write-guard target resolution for legacy memory files; no guard in MIT store |
+| omo-memory-34 | - | N-A | N-A reason: expiry notice in the pinned prompt block; MIT store has no pinned projection (expired rows are simply not recalled, see 1.3) |
+| omo-memory-35 | - | N-A | N-A reason: pin record bookkeeping for the legacy prompt projection; no pin |
+| omo-memory-36 | - | N-A | N-A reason: prompt assembly for the legacy memory block; MIT store has no prompt notice |
+| omo-memory-37 | - | N-A | N-A reason: tool metadata line for the legacy file tools; the MIT tools already document an optional expiry argument (valid_until) and the legacy `expires` key is covered by 1.1 |
+| omo-memory-39 | - | N-A | N-A reason: identity reconcile single-flight; no identity runtime |
+| omo-memory-40 | - | N-A | N-A reason: per-session user-activity reconcile dedup; no such runtime |
+| omo-memory-41 | - | N-A | N-A reason: facts wiring abort handling (already present upstream); no facts queue |
+| omo-memory-42 | - | N-A | N-A reason: journal wiring and RPC bridge abort guards; no journal or bridge |
+| omo-memory-43 | - | N-A | N-A reason: reflection trigger abort threading; no reflection triggers |
+| omo-memory-44 | - | N-A | N-A reason: settle-time wiring observer; no settle wiring |
+| omo-memory-45 | - | N-A | N-A reason: warn sink for notice watermarks; no watermarks |
+| omo-memory-46 | - | N-A | N-A reason: worker run reconciliation abortability; MIT store has no background workers or run sentinels |
+| omo-memory-47 | - | N-A | N-A reason: Windows tree kill for the legacy memory worker supervisor; no worker supervisor |
+
+Rows omo-memory-24, -30, -31 and -38 are not routed to `crates/maho-memory` (N-A upstream or
+targeted at `maho-core`) and are outside this table.
+
+Leak self-check:
+
+- [x] no fenced code block is Rust, TypeScript or JS from the SUL tree (this delta has none);
+- [x] no sentence is a translation or paraphrase of a SUL comment, doc comment or prompt (the
+      rules in 1.1 are stated as behaviour in the writer's own words);
+- [x] no list or table mirrors a SUL constant table row-for-row (the only table is the mapping
+      table; the key `expires` and the date forms are interface facts);
+- [x] no proposed identifier is an OmO-original name (`expired_on_import` is neutral);
+- [x] OmO-original features are absent (no persona, no projection, no pin or notice state).
