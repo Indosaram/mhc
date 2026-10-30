@@ -20,12 +20,18 @@
 
 pub mod auth_guidance;
 pub mod auth_providers;
+pub mod auth_credential_values;
 pub mod auth_storage;
 pub mod brand;
 pub mod cache_stats;
 pub mod cli;
 pub mod compaction;
 pub mod config;
+pub mod config_reference_env;
+pub mod config_reference_file;
+pub mod config_reference_redaction;
+pub mod config_reference_resolver;
+pub mod credential_policy_schema;
 pub mod credential_accounts;
 pub mod credential_pool;
 pub mod defaults;
@@ -41,6 +47,7 @@ pub mod lockfile_policy;
 pub mod messages;
 pub mod model_config;
 pub mod model_config_schema;
+pub mod model_reference_origins;
 pub mod model_registry;
 pub mod model_resolver;
 pub mod model_runtime;

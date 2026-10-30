@@ -27586,7 +27586,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27679,7 +27679,7 @@ mod tests {
                 "stalled-summary",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("stalled-fixture".to_owned()),
+                        api_key: Some("stalled-fixture".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27772,7 +27772,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27846,7 +27846,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -27936,7 +27936,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28073,7 +28073,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28281,7 +28281,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28380,7 +28380,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -28459,7 +28459,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -30543,7 +30543,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -30599,7 +30599,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -31265,7 +31265,7 @@ mod tests {
                 "faux",
                 crate::provider_composer::ProviderConfigInput {
                     config: crate::model_config_schema::ModelsJsonProvider {
-                        api_key: Some("faux-test".to_owned()),
+                        api_key: Some("faux-test".into()),
                         ..Default::default()
                     },
                     ..Default::default()

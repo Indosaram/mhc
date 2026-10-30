@@ -71,9 +71,10 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             config: crate::model_config_schema::ModelsJsonProvider {
                 name: config.name,
                 base_url: config.base_url,
-                api_key: config.api_key,
+                api_key: config.api_key.map(Into::into),
                 api: config.api,
-                headers: config.headers,
+                // Extension values are plain strings: an extension can never declare a reference (senpi#3858).
+                headers: config.headers.map(|headers| headers.into_iter().map(|(name, value)| (name, value.into())).collect()),
                 extra_body: config
                     .extra_body
                     .and_then(|value| value.as_object().cloned()),
@@ -133,7 +134,7 @@ fn extension_provider_model(
         cost: Some(model.cost),
         context_window: Some(model.context_window as f64),
         max_tokens: Some(model.max_tokens as f64),
-        headers: model.headers,
+        headers: model.headers.map(|headers| headers.into_iter().map(|(name, value)| (name, value.into())).collect()),
         extra_body: model
             .extra_body
             .and_then(|value| value.as_object().cloned()),
