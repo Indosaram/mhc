@@ -70,6 +70,7 @@ fn create_squad(inherited: Option<Vec<String>>) -> Created {
             state_dir: state_dir_config(&project),
             team_bounds: bounds,
             lead_session_id: "lead-session".to_string(),
+            root_session_id: None,
             spawn_depth: 1,
             now: None,
             member_extension: Some(member_extension(inherited)),

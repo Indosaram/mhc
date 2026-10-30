@@ -87,6 +87,7 @@ fn base_record(input: &DagDefinition, node_states: &[(&str, DagNodeState)]) -> R
         name: input.name.clone(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
+        parent_model: None,
         definition_fingerprint: "definition-fingerprint".to_string(),
         definition: crate::dag::manager::DagPersistedDefinition {
             key: input.key.clone(),

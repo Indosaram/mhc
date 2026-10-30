@@ -190,7 +190,7 @@ fn fixture() -> Fixture {
 fn run_once(fixture: &Fixture, definition: DagDefinition) -> DagRunId {
     let started = fixture
         .manager
-        .start(DagStartParams { definition, parent_session_id: PARENT.into(), root_session_id: ROOT.into() })
+        .start(DagStartParams { parent_model: None, definition, parent_session_id: PARENT.into(), root_session_id: ROOT.into() })
         .unwrap();
     let run_id = started.snapshot.run_id.clone();
     let scheduler = create_dag_scheduler(DagSchedulerOptions {
