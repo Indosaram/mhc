@@ -257,3 +257,7 @@ impl Backend for MacosBackend {
 fn permission_label(granted: bool) -> String {
     if granted { "granted" } else { "denied" }.to_string()
 }
+
+#[cfg(test)]
+#[path = "backend_tests.rs"]
+mod tests;
