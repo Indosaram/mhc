@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 use indexmap::IndexMap;
 
 use super::types::ModelCapabilitiesSnapshotEntry;
+use crate::fable_55_launch::FABLE_55_LAUNCH;
 use super::types::SnapshotLimit;
 use super::types::SnapshotModalities;
 
@@ -16,6 +17,7 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
     IndexMap<String, ModelCapabilitiesSnapshotEntry>,
 > = LazyLock::new(|| {
     IndexMap::from([
+        (FABLE_55_LAUNCH.id.clone(), FABLE_55_LAUNCH.clone()),
         ("kimi-k3".to_string(), ModelCapabilitiesSnapshotEntry {
             id: "kimi-k3".to_string(),
             family: Some("kimi".to_string()),
@@ -24,6 +26,26 @@ pub static SUPPLEMENTAL_MODEL_CAPABILITIES: LazyLock<
             tool_call: Some(true),
             modalities: Some(SnapshotModalities { input: strings(&["text","image","video"]), output: strings(&["text"]) }),
             limit: Some(SnapshotLimit { context: Some(262144), input: None, output: Some(262144) }),
+        }),
+        // Kimi K3.1 Pro (Moonshot docs, 2026-10-27): 1M context, max_completion_tokens up to the full
+        // window (131072 by default), thinking always on, same parameter constraints as kimi-k3.
+        ("kimi-k3.1-pro".to_string(), ModelCapabilitiesSnapshotEntry {
+            id: "kimi-k3.1-pro".to_string(),
+            family: Some("kimi".to_string()),
+            reasoning: Some(true),
+            temperature: Some(true),
+            tool_call: Some(true),
+            modalities: Some(SnapshotModalities { input: strings(&["text","image","video"]), output: strings(&["text"]) }),
+            limit: Some(SnapshotLimit { context: Some(1048576), input: None, output: Some(1048576) }),
+        }),
+        ("kimi-k3.1-pro-highspeed".to_string(), ModelCapabilitiesSnapshotEntry {
+            id: "kimi-k3.1-pro-highspeed".to_string(),
+            family: Some("kimi".to_string()),
+            reasoning: Some(true),
+            temperature: Some(true),
+            tool_call: Some(true),
+            modalities: Some(SnapshotModalities { input: strings(&["text","image","video"]), output: strings(&["text"]) }),
+            limit: Some(SnapshotLimit { context: Some(1048576), input: None, output: Some(1048576) }),
         }),
         ("kimi-k2.6".to_string(), ModelCapabilitiesSnapshotEntry {
             id: "kimi-k2.6".to_string(),
