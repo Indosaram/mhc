@@ -223,7 +223,8 @@ fn main_screen_resize_shrink_leaves_no_stale_cells() {
         };
         let mut screen = TuiMainScreen::new();
         screen.base.set_mux_detector(Box::new(|| false));
-        let child: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::with_padding(long_line, 0, 0)));
+        let child: Rc<RefCell<dyn Component>> =
+            Rc::new(RefCell::new(Text::with_padding(long_line, 0, 0)));
         screen.base.add_child(child);
         screen.base.reset_forced_render_state();
         screen.base.do_render(&mut terminal);
@@ -237,7 +238,8 @@ fn main_screen_resize_shrink_leaves_no_stale_cells() {
     };
     let mut screen = TuiMainScreen::new();
     screen.base.set_mux_detector(Box::new(|| false));
-    let child: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::with_padding(long_line, 0, 0)));
+    let child: Rc<RefCell<dyn Component>> =
+        Rc::new(RefCell::new(Text::with_padding(long_line, 0, 0)));
     screen.base.add_child(child);
     screen.base.reset_forced_render_state();
     screen.base.do_render(&mut resizing);
@@ -262,7 +264,10 @@ fn main_screen_resize_shrink_leaves_no_stale_cells() {
             (text.chars().count() > 60).then(|| format!("row {row}: {text:?}"))
         })
         .collect();
-    assert!(stale.is_empty(), "cells past column 60 survived the shrink: {stale:?}");
+    assert!(
+        stale.is_empty(),
+        "cells past column 60 survived the shrink: {stale:?}"
+    );
     println!("resize 100->60: post-resize frame equals a fresh 60-column frame; no stale cells");
 }
 
@@ -284,4 +289,66 @@ fn alt_screen_frames_wheel_resize_and_exit_match_senpi() {
 #[test]
 fn alt_screen_preserve_screen_exit_matches_senpi() {
     assert_case("tui-screen-alt-preserve");
+}
+
+// ---- tab-width.test.ts: "keeps tab-containing overlays on one physical terminal row" ----
+
+struct FullViewportContent;
+
+impl Component for FullViewportContent {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        ["base 0", "base 1", "base 2"]
+            .iter()
+            .map(|line| format!("{line:<width$}"))
+            .collect()
+    }
+}
+
+struct TabStatusOverlay;
+
+impl Component for TabStatusOverlay {
+    fn render(&mut self, _width: usize) -> Vec<String> {
+        vec!["\tX".to_string()]
+    }
+}
+
+#[test]
+fn keeps_tab_containing_overlays_on_one_physical_terminal_row() {
+    use maho_tui::tui::{OverlayOptions, SizeValue};
+
+    let mut terminal = RecordingTerminal {
+        columns: 16,
+        rows: 3,
+        out: String::new(),
+    };
+    let mut screen = TuiMainScreen::new();
+    screen.base.set_mux_detector(Box::new(|| false));
+    screen
+        .base
+        .add_child(Rc::new(RefCell::new(FullViewportContent)));
+    let _overlay = screen.base.show_overlay(
+        Rc::new(RefCell::new(TabStatusOverlay)),
+        Some(OverlayOptions {
+            width: Some(SizeValue::Absolute(4)),
+            row: Some(SizeValue::Absolute(1)),
+            col: Some(SizeValue::Absolute(4)),
+            ..OverlayOptions::default()
+        }),
+    );
+    screen.base.reset_forced_render_state();
+    screen.base.do_render(&mut terminal);
+
+    let mut vt = VirtualTerminal::new(16, 3);
+    vt.start();
+    vt.write(&terminal.out);
+    let viewport: Vec<String> = vt
+        .viewport()
+        .into_iter()
+        .map(|row| format!("{row:<16}"))
+        .collect();
+    assert_eq!(
+        viewport,
+        ["base 0          ", "base   X        ", "base 2          "]
+    );
+    assert!(!terminal.out.contains('\t'));
 }
