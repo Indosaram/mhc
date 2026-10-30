@@ -190,6 +190,7 @@ pub mod assistant_usage_scope;
 pub mod bootstrap_crash_listeners;
 pub mod browser_engine;
 pub mod continue_from_leaf;
+pub mod crash_log;
 pub mod event_loop_slicer;
 pub mod extension_handler_stall_report;
 pub mod image_elision_placeholder;
