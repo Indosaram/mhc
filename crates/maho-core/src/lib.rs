@@ -183,6 +183,16 @@ pub mod tool_call_display_name;
 pub mod usage_totals;
 pub mod user_text_blocks;
 
+// sync-5152 ledger-markers: the pending-input lifecycle (markers-08).
+pub mod pending_input;
+pub mod pending_input_mutations;
+pub mod pending_input_projection;
+pub mod pending_input_public;
+pub mod pending_input_session;
+pub mod pending_input_session_port;
+pub mod pending_input_store;
+pub mod pending_input_types;
+
 pub use auth_storage::{AuthStorage, CredentialKind, ReadOnlyAuthStorage, read_stored_credential};
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};
 pub use config::{
