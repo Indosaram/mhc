@@ -16,38 +16,7 @@ pub const HOST_WATCH_IDENTITY_ONLY_INTERVAL_MS: u64 = 1_000;
 /// How often the recorded start is compared off Linux, where reading it may spawn a probe.
 pub const HOST_WATCH_SPAWNING_IDENTITY_INTERVAL_MS: u64 = 60_000;
 
-/// The supervisor start the host was told about: Linux boot-clock ticks, or the platform's start time elsewhere.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RecordedStart {
-    pub ticks: Option<String>,
-    pub time: Option<String>,
-}
-
-/// `Unknown` whenever either side is missing or unreadable: an unreadable identity is never evidence of reuse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartComparison {
-    Same,
-    Changed,
-    Unknown,
-}
-
-/// senpi `compareRecordedStart`: Linux compares `/proc` start ticks; elsewhere the recorded start time.
-pub fn compare_recorded_start(
-    linux: bool,
-    recorded: &RecordedStart,
-    observed: Option<&str>,
-) -> StartComparison {
-    let recorded = if linux {
-        recorded.ticks.as_deref()
-    } else {
-        recorded.time.as_deref()
-    };
-    match (recorded, observed) {
-        (Some(recorded), Some(observed)) if recorded == observed => StartComparison::Same,
-        (Some(_), Some(_)) => StartComparison::Changed,
-        _ => StartComparison::Unknown,
-    }
-}
+pub use crate::process_start_identity::{RecordedStart, StartComparison, compare_recorded_start};
 
 /// The cadence when the poll is the host's only binding: identity-only (1 s) with a recorded start, else 250 ms.
 pub fn sole_interval_ms(recorded: &RecordedStart) -> u64 {
@@ -81,7 +50,11 @@ impl SupervisorProbe for OsSupervisorProbe {
         crate::host_reservations::process_is_live(pid)
     }
     fn start(&mut self, pid: u32) -> Option<String> {
-        crate::host_reservations::read_process_start_time(pid)
+        if cfg!(target_os = "linux") {
+            crate::process_start_identity::read_process_start_ticks(pid)
+        } else {
+            crate::host_reservations::read_process_start_time(pid)
+        }
     }
 }
 
@@ -163,25 +136,6 @@ mod tests {
             ticks: Some(value.into()),
             time: Some(value.into()),
         }
-    }
-    #[test]
-    fn unreadable_or_missing_identity_is_unknown() {
-        assert_eq!(
-            compare_recorded_start(true, &RecordedStart::default(), Some("1")),
-            StartComparison::Unknown
-        );
-        assert_eq!(
-            compare_recorded_start(true, &recorded("1"), None),
-            StartComparison::Unknown
-        );
-        assert_eq!(
-            compare_recorded_start(false, &recorded("1"), Some("1")),
-            StartComparison::Same
-        );
-        assert_eq!(
-            compare_recorded_start(true, &recorded("1"), Some("2")),
-            StartComparison::Changed
-        );
     }
     #[test]
     fn cadences_follow_the_binding() {
