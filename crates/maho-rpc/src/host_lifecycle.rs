@@ -461,6 +461,30 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         crate::host_watchdog::HOST_CLEANUP_PATHS_ENV.into(),
         cleanup_paths.join("\n"),
     );
+    // The child's lifetime poll compares the supervisor's start on one clock per platform: `/proc` start ticks on
+    // Linux, the recorded start time elsewhere (senpi `prepareInternalHop` supervisorStart).
+    if platform != "win32"
+        && let Some(start) = crate::host_reservations::read_process_start_time(std::process::id())
+    {
+        let name = if platform == "linux" {
+            crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV
+        } else {
+            crate::host_watchdog::HOST_WATCH_PSTART_ENV
+        };
+        child_env.insert(name.into(), start);
+    }
+    // Linux: supervisor death reaches the child as FIFO EOF; the held writer is never closed by this process.
+    let _lifetime_binding = internal
+        .dir
+        .as_deref()
+        .filter(|_| platform != "win32")
+        .and_then(|dir| crate::host_lifetime_binding::prepare_lifetime_binding(dir, platform));
+    if let Some(binding) = &_lifetime_binding {
+        child_env.insert(
+            crate::host_watchdog::HOST_WATCH_LIFETIME_FIFO_ENV.into(),
+            binding.lifetime_fifo.to_string_lossy().into_owned(),
+        );
+    }
     #[cfg(unix)]
     let _watch_guard = bind_child_watch_pipe(&mut child_env)?;
     let stderr = {
