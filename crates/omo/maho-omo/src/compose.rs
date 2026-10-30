@@ -19,6 +19,8 @@ use maho_ext_api::{
 };
 use idle_injection::IdleInjectionCoordinator;
 
+use maho_omo_comment_checker::resolver::default_comment_checker_cache_dir;
+
 use crate::coordinator::{Delivery, IdleInjectionDelivery, IdleInjectionMessage};
 use crate::logger::StderrLogger;
 use crate::provisioning::{
@@ -140,6 +142,27 @@ impl Extension for OmoExtension {
         environment.clear();
         for (name, value) in updates {
             if let Some(value) = value { environment.insert(name, value); }
+        }
+        // Shell children inherit this environment: a bundled skill's Python must not write
+        // __pycache__ into a signed app, so bytecode goes to <user cache>/omo-senpi/pycache unless
+        // the user set either variable, even to an empty string.
+        if self.provisioning.read("PYTHONDONTWRITEBYTECODE").is_none()
+            && self.provisioning.read("PYTHONPYCACHEPREFIX").is_none()
+        {
+            let env: std::collections::BTreeMap<String, String> =
+                ["XDG_CACHE_HOME", "LOCALAPPDATA", "APPDATA"]
+                    .into_iter()
+                    .filter_map(|name| Some((name.to_owned(), self.provisioning.read(name)?)))
+                    .collect();
+            let platform = if cfg!(windows) { "win32" } else { "linux" };
+            let cache_dir = default_comment_checker_cache_dir(platform, Some(&env), Some("omo-senpi"));
+            if let Some(root) = cache_dir.parent() {
+                let prefix = root.join("pycache").to_string_lossy().into_owned();
+                if let Some(sink) = &self.provisioning.sink {
+                    sink("PYTHONPYCACHEPREFIX", Some(&prefix));
+                }
+                environment.insert("PYTHONPYCACHEPREFIX".to_owned(), prefix);
+            }
         }
         drop(environment);
 
