@@ -55,6 +55,7 @@ pub fn resolve_senpi_comment_checker_binary(
 pub fn default_comment_checker_cache_dir(
     platform: &str,
     env: Option<&BTreeMap<String, String>>,
+    cache_dir_name: Option<&str>,
 ) -> PathBuf {
     let empty_env = BTreeMap::new();
     let env = env.unwrap_or(&empty_env);
@@ -66,7 +67,7 @@ pub fn default_comment_checker_cache_dir(
         platform,
         env,
         homedir: &home,
-        cache_dir_name: COMMENT_CHECKER_CACHE_DIR_NAME,
+        cache_dir_name: cache_dir_name.unwrap_or(COMMENT_CHECKER_CACHE_DIR_NAME),
     })
 }
 
