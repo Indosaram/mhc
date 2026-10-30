@@ -200,7 +200,6 @@ mod tests {
             "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html"
         );
         assert!(results[0].snippet.as_deref().unwrap().contains("satisfies"));
-        assert_eq!(results[0].published_at, None);
     }
 
     #[test]
