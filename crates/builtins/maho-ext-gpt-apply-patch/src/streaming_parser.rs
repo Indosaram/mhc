@@ -187,13 +187,21 @@ impl StreamingPatchParser {
         }
         let chunk = self.current_chunk()?;
         if let Some(value) = line.strip_prefix(' ') {
+            chunk
+                .context_line_indices
+                .push((chunk.old_lines.len(), chunk.new_lines.len()));
             chunk.old_lines.push(value.into());
             chunk.new_lines.push(value.into());
         } else if let Some(value) = line.strip_prefix('-') {
             chunk.old_lines.push(value.into());
+            chunk.removed_count += 1;
         } else if let Some(value) = line.strip_prefix('+') {
             chunk.new_lines.push(value.into());
+            chunk.added_count += 1;
         } else if line.is_empty() {
+            chunk
+                .context_line_indices
+                .push((chunk.old_lines.len(), chunk.new_lines.len()));
             chunk.old_lines.push(String::new());
             chunk.new_lines.push(String::new());
         } else {
@@ -319,5 +327,19 @@ mod tests {
         assert_eq!(chunks[0].old_lines, ["old"]);
         assert_eq!(chunks[0].new_lines, ["new"]);
         assert!(chunks[0].is_end_of_file);
+    }
+    #[test]
+    fn streaming_chunk_matches_strict_context_indices_and_counts() {
+        let patch =
+            "*** Begin Patch\n*** Update File: a\n@@\n keep\n+keep\n-old\n\n*** End Patch\n";
+        let mut parser = StreamingPatchParser::default();
+        parser.push_delta(patch).unwrap();
+        let streamed = parser.finish().unwrap();
+        let ParsedPatch::Update { chunks, .. } = &streamed[0] else {
+            panic!()
+        };
+        assert_eq!(chunks[0].context_line_indices, [(0, 0), (2, 2)]);
+        assert_eq!((chunks[0].added_count, chunks[0].removed_count), (1, 1));
+        assert_eq!(streamed, crate::parser::parse_patch(patch).unwrap());
     }
 }

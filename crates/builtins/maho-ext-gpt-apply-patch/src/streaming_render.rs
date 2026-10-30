@@ -48,11 +48,10 @@ pub fn format_streaming_hunks(hunks: &[ParsedPatch]) -> String {
                 move_path,
                 chunks,
             } => {
+                // added_count/removed_count are tracked by prefix at parse time, so context lines
+                // are excluded and a + line equal to a context line still counts as an addition.
                 let (added, removed) = chunks.iter().fold((0, 0), |(added, removed), chunk| {
-                    (
-                        added + chunk.new_lines.len(),
-                        removed + chunk.old_lines.len(),
-                    )
+                    (added + chunk.added_count, removed + chunk.removed_count)
                 });
                 let path = match move_path.as_deref().filter(|path| !path.is_empty()) {
                     Some(destination) => format!("{file_path} → {destination}"),
@@ -140,5 +139,11 @@ mod tests {
         assert_eq!(output[1], "  … (+8 lines above)");
         assert_eq!(output[2], "  + line 8");
         assert_eq!(output[13], "  + line 19");
+    }
+    #[test]
+    fn streaming_counts_exclude_context_lines() {
+        let patch = "*** Begin Patch\n*** Update File: a\n@@\n ctx\n+ctx\n ctx2\n*** End Patch";
+        let hunks = crate::parser::parse_patch(patch).unwrap();
+        assert!(format_streaming_hunks(&hunks).starts_with("• Edited a (+1 -0)"));
     }
 }

@@ -18,7 +18,12 @@ pub struct PatchChunk {
     pub change_contexts: Vec<String>,
     pub old_lines: Vec<String>,
     pub new_lines: Vec<String>,
+    pub context_line_indices: Vec<crate::line_endings::ContextLineIndex>,
     pub is_end_of_file: bool,
+    /// Real added/removed line counts by prefix, tracked at parse time (context lines excluded,
+    /// so a `+` line whose text equals a context line still counts as an addition).
+    pub added_count: usize,
+    pub removed_count: usize,
 }
 pub type AtomicWriteFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>>;
