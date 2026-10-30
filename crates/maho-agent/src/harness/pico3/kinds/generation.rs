@@ -268,7 +268,7 @@ async fn stream(prep:&Prep,model:&Model,messages:Vec<RequestMessage>,rt:&Rt<'_>,
                 response_model:None,response_id:None,thinking_level:None,provider_thinking_level:None,diagnostics:None,
                 prompt_cache_breakpoint:None,prompt_cache_diagnostics:None,usage:maho_ai::types::Usage::default(),
                 stop_reason:StopReason::Error,stop_details:None,deferred:None,error_message:Some(error),error_cause:None,
-                provider_diagnostic:None,abort_source:None,failure_source:None,raw_stop_reason:None,end_turn:None,timing:None,
+                provider_diagnostic:None,abort_source:None,failure_source:None,raw_stop_reason:None,end_turn:None,timing:None,credential_served_recently:None,
                 timestamp:i64::try_from(rt.now()).unwrap_or(i64::MAX),
             };
             // A thrown provider error never passed the stream boundary: classify and redact it the same way (senpi#4282).
