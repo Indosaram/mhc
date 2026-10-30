@@ -13,7 +13,7 @@ pub struct CreateFixedRequest { pub base:CreateDynamicRequest,pub requested_inte
 #[derive(Clone,Debug,PartialEq)]
 pub enum CreateResult { Created { loop_id:LoopId,superseded_loop_id:Option<LoopId> },Cap { active_loop_ids:Vec<LoopId> } }
 #[derive(Clone,Debug,PartialEq)]
-pub struct LoopTick { pub loop_id:LoopId,pub delivery_id:DeliveryId,pub scheduled_for_at:f64,pub coalesced:bool }
+pub struct LoopTick { pub loop_id:LoopId,pub delivery_id:DeliveryId,pub scheduled_for_at:f64,pub deliver_as:maho_ext_api::StreamingBehavior,pub coalesced:bool }
 #[derive(Clone,Debug,PartialEq)]
 pub enum DueResult { Dispatch(LoopTick),Coalesce,Expire }
 pub enum TickOutcome { Completed,Error,Retrying }
@@ -71,7 +71,7 @@ impl LoopScheduler {
         let fixed=matches!(self.state.entries.get(id),Some(CronEntry::Fixed { .. })); let expired=if fixed || in_flight { self.arm(id,now).is_some() } else { self.armed_timers.remove(id); false }; self.commit(now);
         if in_flight { return DueResult::Coalesce; }
         if !expired { self.in_flight_deliveries.insert(id.into(),delivery_id.clone()); }
-        DueResult::Dispatch(LoopTick { loop_id:id.into(),delivery_id,scheduled_for_at:now,coalesced })
+        DueResult::Dispatch(LoopTick { loop_id:id.into(),delivery_id,scheduled_for_at:now,deliver_as:maho_ext_api::StreamingBehavior::Steer,coalesced })
     }
     pub fn on_tick_settled(&mut self,id:&str,delivery:&str,outcome:TickOutcome,now:f64,next_delivery:DeliveryId)->SettledResult {
         let Some(entry)=self.state.entries.get(id) else { return SettledResult::Ignored; };
@@ -94,12 +94,15 @@ impl LoopScheduler {
         if let Some(entry)=self.state.entries.get_mut(&request.loop_id) { phase(entry,LoopPhase::Waiting); if let CronEntry::Dynamic { fields,pending_wakeup,keepalive_credit,.. }=entry { fields.queued_for_at=None; fields.noop_streak=noop_streak; *keepalive_credit=1; *pending_wakeup=Some(PendingWakeup { id:wakeup_id.clone(),loop_id:request.loop_id.clone(),kind:DynamicKind::Dynamic,source:WakeupSource::Model,requested_delay_seconds:request.requested_delay_seconds,delay_seconds:request.delay_seconds,due_at,reason:request.reason,prompt:request.prompt,noop:request.noop,created_at:now }); } }
         self.arm(&request.loop_id,now); self.commit(now); ScheduleWakeupResult::Scheduled { wakeup_id,replaced_wakeup_id:replaced,due_at,noop_streak }
     }
-    pub fn on_turn_ended_without_schedule(&mut self,id:&str,wakeup_id:WakeupId,now:f64)->KeepaliveResult {
+    /// `charge_credit: false` (a tick steered into a turn the loop did not start) arms the fallback
+    /// without spending the credit, so the user's own work can never exhaust the loop.
+    pub fn on_turn_ended_without_schedule(&mut self,id:&str,wakeup_id:WakeupId,now:f64)->KeepaliveResult { self.on_turn_ended_without_schedule_charged(id,wakeup_id,now,true) }
+    pub fn on_turn_ended_without_schedule_charged(&mut self,id:&str,wakeup_id:WakeupId,now:f64,charge_credit:bool)->KeepaliveResult {
         let Some(CronEntry::Dynamic { fields,lifecycle,keepalive_credit,.. })=self.state.entries.get(id) else { return KeepaliveResult::Ignored; };
         if matches!(lifecycle.phase(),LoopPhase::Ended|LoopPhase::Suspended) { return KeepaliveResult::Ignored; }
-        if now>=fields.expires_at || *keepalive_credit==0 { let reason=if now>=fields.expires_at { LoopEndReason::Expired } else { LoopEndReason::KeepaliveExhausted }; self.end(id,now,reason,None); self.commit(now); return KeepaliveResult::Ended(reason); }
+        if now>=fields.expires_at || (charge_credit && *keepalive_credit==0) { let reason=if now>=fields.expires_at { LoopEndReason::Expired } else { LoopEndReason::KeepaliveExhausted }; self.end(id,now,reason,None); self.commit(now); return KeepaliveResult::Ended(reason); }
         let due_at=now+self.keepalive_seconds*1000.0;
-        if let Some(entry)=self.state.entries.get_mut(id) { phase(entry,LoopPhase::Waiting); if let CronEntry::Dynamic { fields,pending_wakeup,keepalive_credit,.. }=entry { fields.queued_for_at=None; *keepalive_credit=0; *pending_wakeup=Some(PendingWakeup { id:wakeup_id.clone(),loop_id:id.into(),kind:DynamicKind::Dynamic,source:WakeupSource::Keepalive,requested_delay_seconds:self.keepalive_seconds,delay_seconds:self.keepalive_seconds,due_at,reason:"keepalive armed (model did not reschedule)".into(),prompt:fields.reentry_prompt.clone(),noop:false,created_at:now }); } }
+        if let Some(entry)=self.state.entries.get_mut(id) { phase(entry,LoopPhase::Waiting); if let CronEntry::Dynamic { fields,pending_wakeup,keepalive_credit,.. }=entry { fields.queued_for_at=None; if charge_credit { *keepalive_credit=0; } *pending_wakeup=Some(PendingWakeup { id:wakeup_id.clone(),loop_id:id.into(),kind:DynamicKind::Dynamic,source:WakeupSource::Keepalive,requested_delay_seconds:self.keepalive_seconds,delay_seconds:self.keepalive_seconds,due_at,reason:"keepalive armed (model did not reschedule)".into(),prompt:fields.reentry_prompt.clone(),noop:false,created_at:now }); } }
         let expired=self.arm(id,now); self.commit(now); expired.map_or(KeepaliveResult::Armed { wakeup_id,delay_seconds:self.keepalive_seconds,due_at },KeepaliveResult::Ended)
     }
     fn targets(&self,target:&str)->Vec<LoopId> { if target=="all" { self.order.clone() } else { vec![target.into()] } }
@@ -119,7 +122,7 @@ impl LoopScheduler {
             let recover=(overdue || remnant || fields(entry).coalesced_fire_pending) && fields(entry).tick_count<self.max_ticks;
             if let Some(entry)=self.state.entries.get_mut(&id) { phase(entry,LoopPhase::Waiting); let base=fields_mut(entry); base.queued_for_at=None; base.coalesced_fire_pending=false; match entry { CronEntry::Fixed { next_fire_at,interval_ms,.. }=>*next_fire_at=now+*interval_ms,CronEntry::Dynamic { pending_wakeup,.. }=>if overdue { *pending_wakeup=None; } } }
             if self.arm(&id,now).is_some() { result.expired_loop_ids.push(id); continue; }
-            if recover { result.recovery_ticks.push(LoopTick { loop_id:id.clone(),delivery_id:delivery_id(),scheduled_for_at:now,coalesced:true }); }
+            if recover { result.recovery_ticks.push(LoopTick { loop_id:id.clone(),delivery_id:delivery_id(),scheduled_for_at:now,deliver_as:maho_ext_api::StreamingBehavior::Steer,coalesced:true }); }
             result.rearmed_loop_ids.push(id);
         }
         self.commit(now);

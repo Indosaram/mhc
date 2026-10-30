@@ -32,9 +32,11 @@ pub fn live_hold_kinds(entries: &[SessionEntry]) -> Vec<String> {
 }
 pub fn stop_hold_live(ctx: &ExtensionContext) -> bool {
     match ctx.get_pause_state() {
-        Ok(state) => state["holds"]
-            .as_array()
-            .is_some_and(|holds| holds.iter().any(|hold| hold["kind"] == "session_hold")),
+        Ok(state) => state["holds"].as_array().is_some_and(|holds| {
+            holds
+                .iter()
+                .any(|hold| hold["kind"] == "session_hold" && hold["key"] != "interrupted-run")
+        }),
         Err(error) => {
             maho_ext_api::diagnostic(&format!("Goal Stop pause state unavailable: {error}"));
             false
