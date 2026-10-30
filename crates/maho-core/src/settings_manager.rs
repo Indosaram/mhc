@@ -2273,6 +2273,31 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn bash_redact_secrets_in_output_is_true_only_for_boolean_true() {
+        for (json_text, expected) in [
+            ("{}", false),
+            (r#"{"tools":{"bash":{}}}"#, false),
+            (r#"{"tools":{"bash":{"redactSecretsInOutput":true}}}"#, true),
+            (
+                r#"{"tools":{"bash":{"redactSecretsInOutput":false}}}"#,
+                false,
+            ),
+            (
+                r#"{"tools":{"bash":{"redactSecretsInOutput":"true"}}}"#,
+                false,
+            ),
+            (r#"{"tools":{"bash":{"redactSecretsInOutput":1}}}"#, false),
+        ] {
+            let manager = SettingsManager::in_memory(settings(json_text), false);
+            assert_eq!(
+                manager.get_bash_redact_secrets_in_output(),
+                expected,
+                "{json_text}"
+            );
+        }
+    }
+
     fn strips_comments_without_touching_comment_like_text_in_strings() {
         let parsed = settings(
             "{\n  // line comment\n  \"a\": \"// not a comment\",\n  /* block\n     comment */ \"b\": \"/* also not */\"\n}",
