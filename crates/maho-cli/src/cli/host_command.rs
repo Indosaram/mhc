@@ -30,6 +30,12 @@ pub struct ParsedHostArgs {
     pub owner: Option<String>,
     pub root: Option<String>,
     pub agent_dir: Option<String>,
+    /// `--rpc-key-root <dir>` (absolute): endpoint credentials only; the profile is unchanged.
+    pub key_root: Option<String>,
+    /// `ensure`/`handoff --mcp-presenter-fd 4`: the private presenter enrollment channel.
+    pub presenter_bootstrap_fd: Option<u32>,
+    /// `ensure`/`handoff --mcp-presenter-enforcement`: deployment opt-in, default off for a new host.
+    pub mcp_presenter_enforcement: bool,
 }
 /// senpi `parseHostStopGeneration` (maho-rpc owns the parser; host_runner carries its own mirror type).
 fn parse_stop_generation(text: &str) -> Option<maho_rpc::host_runner::HostStopGeneration> {
@@ -78,12 +84,19 @@ pub fn parse_host_args(args: &[String]) -> Result<ParsedHostArgs, String> {
         owner: None,
         root: None,
         agent_dir: None,
+        key_root: None,
+        presenter_bootstrap_fd: None,
+        mcp_presenter_enforcement: false,
     };
     let is_stop = result.subcommand == HostSubcommand::Stop;
     let is_handoff = result.subcommand == HostSubcommand::Handoff;
     let is_status = result.subcommand == HostSubcommand::Status;
     let is_shard = result.subcommand == HostSubcommand::ShardPath;
     let is_gc = result.subcommand == HostSubcommand::Gc;
+    let presents = matches!(
+        result.subcommand,
+        HostSubcommand::Ensure | HostSubcommand::Handoff
+    );
     let mut wait_ms: Option<&String> = None;
     let mut handover = std::collections::BTreeMap::new();
     let mut index = 1;
@@ -91,6 +104,20 @@ pub fn parse_host_args(args: &[String]) -> Result<ParsedHostArgs, String> {
         let flag = &args[index];
         let value = args.get(index + 1);
         match flag.as_str() {
+            "--mcp-presenter-fd" if presents && value.is_some_and(|value| value == "4") => {
+                result.presenter_bootstrap_fd = Some(4);
+                index += 1;
+            }
+            "--mcp-presenter-enforcement" if presents => result.mcp_presenter_enforcement = true,
+            "--rpc-key-root" if value.is_some_and(|value| !value.starts_with("--")) => {
+                result.key_root = value.map(|value| {
+                    std::path::absolute(value)
+                        .unwrap_or_else(|_| std::path::PathBuf::from(value))
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                index += 1;
+            }
             "--json" => result.json = true,
             "--all" if is_status => result.all = true,
             "--include-workers" => result.include_workers = true,
@@ -196,6 +223,9 @@ const USAGE: &str = "usage: {app} host <ensure|status|stop|handoff|shard-path|gc
   shard-path  --kind <p|i> --owner <id> [--root <dir>] [--json]   (no host contact)
   gc       [--agent-dir <dir>]
 
+  --rpc-key-root <dir>   endpoint credentials only; keeps this client's profile
+  --mcp-presenter-enforcement   ensure/handoff deployment opt-in; default off for a new host
+  --mcp-presenter-fd 4   ensure/handoff private enrollment channel; never enrolls on reuse
   --json   accepted for symmetry; the answer is always one JSON line on stdout";
 
 pub async fn run_host_command(args: &[String]) -> Result<i32, String> {
