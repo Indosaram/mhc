@@ -2938,20 +2938,20 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 3255,
-        "sha256": "dcea6da8fd0c51adec75c47b18c51d0a62133e94973f4ff581437f9f8f298501",
+        "bytes": 3743,
+        "sha256": "87e311833a0e3496ed2c6558162460d14d48d5dcd8c3f659d1624dada7e136f7",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 11950,
-        "sha256": "9a810154497aa630d37541af5488ead7d0b6b1ca1c07b98183bdf39629b9a98a",
+        "bytes": 12061,
+        "sha256": "d1f2072bd2990c58e33a3f251ea68ed4bf6355d949a0874470bec73e2aa7353a",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/SKILL.md"
       },
       {
         "path": "engine/AGENTS.md",
-        "bytes": 10667,
-        "sha256": "009d577b82c6bbdf984200ab86d86f0cd5214b5cd7a96069616c3c70d0b3117c",
+        "bytes": 10673,
+        "sha256": "92896ff0125ac6c86f564629838619a03813f4e607dcbac317870d5778e0bf26",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/AGENTS.md"
       },
       {
@@ -2962,8 +2962,8 @@
       },
       {
         "path": "engine/__main__.py",
-        "bytes": 4922,
-        "sha256": "3201d6a2950c318677f266e67526ac859591b07bc40e5b7e5a7c2f0b29463b07",
+        "bytes": 5095,
+        "sha256": "150a39d79900aedb15bd32ee7c70bbd9b21cd6a9f6623ae212dfc48141c9896f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/__main__.py"
       },
       {
@@ -3004,8 +3004,8 @@
       },
       {
         "path": "engine/summary.py",
-        "bytes": 1198,
-        "sha256": "13e9dfe96f5204d0e206d67562584a00f7d63fd9658fae5f4b0a431f5c24a01c",
+        "bytes": 1201,
+        "sha256": "5ac2629edf3933cb9b6f9ab82ec074767ce2bae9a50994db2392df30fedef1c0",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/summary.py"
       },
       {
@@ -3112,8 +3112,8 @@
       },
       {
         "path": "references/insane-search/README.md",
-        "bytes": 19998,
-        "sha256": "c1cf3e2f3159920875a7bd70b4fa0eed20dc8cdfa9c563df90c6fdc5eff035c6",
+        "bytes": 20101,
+        "sha256": "0beb341e6d207f9031cf8e71003607d166ca3fc348cf67b9786a2091767a2ada",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/references/insane-search/README.md"
       },
       {
@@ -3208,8 +3208,8 @@
       },
       {
         "path": "scripts/extract_cookies.py",
-        "bytes": 9546,
-        "sha256": "f613d7e6b70c3b1c7c1b67844711a7ce6a6bec22242bc4f29e9066ad8af7fd73",
+        "bytes": 9662,
+        "sha256": "1f22b394752b80db6461cf1afdde2bbd1a26b18231041bc63c5a3b819b26759a",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/scripts/extract_cookies.py"
       }
     ],
