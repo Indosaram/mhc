@@ -3904,14 +3904,14 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 2903,
-        "sha256": "ff3ae42655c2591b6149f0cb0ca468d435c625fbfc8f6e6fd117224f5508fa35",
+        "bytes": 3463,
+        "sha256": "7234a01a851bb59357586fcb3891bf9b72939a358d5e2ca8ff50dab7be229729",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 46543,
-        "sha256": "3f12ea7cbdb71c8721eb617c7b21b1de14b0f0173156094b9792bf80177b25d8",
+        "bytes": 48388,
+        "sha256": "24eb7d230b4e59ea09bbb38198c8ab6ae9a396554193230da85f774ca9fc8a05",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
