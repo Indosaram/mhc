@@ -34,6 +34,15 @@ pub struct ServerConnection {
     auth: Mutex<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
     auth_challenge_handler: Mutex<Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>>,
     elicitation_ui: Mutex<Option<Arc<dyn maho_ext_api::ExtensionUi>>>,
+    /// Upstream `requestLifetimeSignal`: aborted (and replaced) on renew, bump, disable and dispose, so an
+    /// MRTR origin issued for an earlier transport never outlives it.
+    request_lifetime: Mutex<maho_ext_api::AbortSignal>,
+    /// Upstream `resolveConfig`: a server that declares references re-reads them for every new transport.
+    resolve_config: Mutex<Option<crate::config_generation::McpGenerationRenewal>>,
+    /// Upstream `#stopFormReadiness`: the private-form readiness subscription of an enforced binding.
+    form_readiness: Mutex<Option<crate::form_types::McpFormUnsubscribe>>,
+    /// Upstream `#renegotiatingForms` single flight.
+    renegotiating_forms: std::sync::atomic::AtomicBool,
 }
 impl ServerConnection {
     /// The resolved configuration this connection opens transports from.
@@ -75,6 +84,10 @@ impl ServerConnection {
             auth: Mutex::new(None),
             auth_challenge_handler: Mutex::new(None),
             elicitation_ui: Mutex::new(None),
+            request_lifetime: Mutex::new(maho_ext_api::AbortSignal::default()),
+            resolve_config: Mutex::new(None),
+            form_readiness: Mutex::new(None),
+            renegotiating_forms: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn set_project_policy(&self, resolve: crate::transport::ProjectPolicyResolver) {
@@ -109,6 +122,123 @@ impl ServerConnection {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+    pub fn project_policy(&self) -> Option<crate::transport::ProjectPolicyResolver> {
+        self.project_policy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    /// The live reference renewal, when this server declares references.
+    pub fn generation_renewal(&self) -> Option<crate::config_generation::McpGenerationRenewal> {
+        self.resolve_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    fn private_forms(&self) -> Option<Arc<crate::form_types::McpFormBinding>> {
+        self.elicitation_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(crate::form_types::private_mcp_forms)
+    }
+    /// Upstream `#legacyFormsChanged`: an enforced legacy client whose advertised forms no longer match the
+    /// presenter's readiness.
+    fn legacy_forms_changed(&self, client: &McpClient) -> bool {
+        if self.private_forms().is_none() || crate::modern::request::is_modern_mcp_client(client) {
+            return false;
+        }
+        let ui = self
+            .elicitation_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        crate::modern::request::legacy_mcp_forms_advertised(client)
+            != Some(crate::elicitation::legacy_mcp_form_eligible(
+                ui.as_ref(),
+                true,
+            ))
+    }
+    /// Upstream `#refreshLegacyForms`: one renewal at a time; a failure degrades the connection.
+    fn refresh_legacy_forms(self: &Arc<Self>) {
+        if self.state() != ServerConnectionState::Connected {
+            return;
+        }
+        let Ok(client) = self.client() else {
+            return;
+        };
+        if !self.legacy_forms_changed(&client)
+            || self
+                .renegotiating_forms
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let connection = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = connection.renew().await {
+                connection.mark_failure(ServerConnectionState::Degraded, Some(error));
+            }
+            connection
+                .renegotiating_forms
+                .store(false, std::sync::atomic::Ordering::Release);
+        });
+    }
+    fn observe_form_readiness(self: &Arc<Self>) {
+        let Some(subscribe) = self
+            .private_forms()
+            .and_then(|forms| forms.subscribe.clone())
+        else {
+            return;
+        };
+        let mut readiness = self
+            .form_readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if readiness.is_none() {
+            let weak = Arc::downgrade(self);
+            *readiness = Some(subscribe(Arc::new(move || {
+                if let Some(connection) = weak.upgrade() {
+                    connection.refresh_legacy_forms();
+                }
+            })));
+        }
+    }
+    fn stop_form_readiness(&self) {
+        let stop = self
+            .form_readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(stop) = stop {
+            stop();
+        }
+    }
+    pub fn request_lifetime_signal(&self) -> maho_ext_api::AbortSignal {
+        self.request_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    fn end_request_lifetime(&self, replace: bool) {
+        let mut lifetime = self
+            .request_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lifetime.abort();
+        if replace {
+            *lifetime = maho_ext_api::AbortSignal::default();
+        }
+    }
+    pub fn set_resolve_config(
+        &self,
+        renewal: Option<crate::config_generation::McpGenerationRenewal>,
+    ) {
+        *self
+            .resolve_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = renewal;
     }
     pub fn state(&self) -> ServerConnectionState {
         self.inner
@@ -197,6 +327,7 @@ impl ServerConnection {
             .and_then(|transport| transport.get_root_pid())
     }
     pub async fn connect(self: &Arc<Self>) -> Result<Arc<McpClient>, McpError> {
+        self.observe_form_readiness();
         let mut receiver = {
             let mut inner = self
                 .inner
@@ -267,11 +398,20 @@ impl ServerConnection {
                 }
                 None => None,
             };
-        let (config, env) = materialized
-            .as_ref()
-            .map_or((&self.config, self.env.as_ref()), |materialized| {
-                (&materialized.config, Some(&materialized.env))
-            });
+        // A changed reference snapshot opens no transport: the owner re-keys under the new identity.
+        let renewal = self
+            .resolve_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let renewed = match &renewal {
+            Some(renewal) if materialized.is_none() => Some(renewal.resolve_config()?),
+            _ => None,
+        };
+        let (config, env) = materialized.as_ref().map_or(
+            (renewed.as_ref().unwrap_or(&self.config), self.env.as_ref()),
+            |materialized| (&materialized.config, Some(&materialized.env)),
+        );
         let transport =
             match create_mcp_transport(&self.server_name, config, env, self.logger.clone()) {
                 Ok(mut transport) => {
@@ -377,6 +517,12 @@ impl ServerConnection {
             ));
         }
         if let Ok(client) = &result {
+            // Readiness can change while initialize is in flight; never keep that stale negotiation.
+            if self.legacy_forms_changed(client) {
+                let renew: futures::future::BoxFuture<'_, Result<Arc<McpClient>, McpError>> =
+                    Box::pin(self.renew());
+                return renew.await;
+            }
             self.mark_tools_changed();
             self.subscribe_client(client, generation);
         }
@@ -443,6 +589,7 @@ impl ServerConnection {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             inner.authorization.abort();
             inner.authorization = maho_ext_api::AbortSignal::default();
+            self.end_request_lifetime(!disabled);
             inner.generation += 1;
             inner.pending = None;
             if clear_error {
@@ -469,9 +616,11 @@ impl ServerConnection {
             .await
     }
     pub async fn disable(&self) -> Result<(), McpError> {
+        self.stop_form_readiness();
         self.invalidate(true, true).await
     }
     pub async fn dispose(&self) -> Result<(), McpError> {
+        self.stop_form_readiness();
         self.invalidate(true, false).await
     }
     pub async fn renew(self: &Arc<Self>) -> Result<Arc<McpClient>, McpError> {

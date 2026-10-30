@@ -15,6 +15,8 @@ pub struct McpToolCatalogEntry {
     pub ensure_connected:Option<McpCatalogCallback>,pub ensure_fresh:Option<McpCatalogCallback>,
     pub agent_dir:Option<std::path::PathBuf>,pub artifacts:Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
     pub output_guard:Option<crate::config_schema::OutputGuardSettings>,
+    /// The binding-issued request origin (service.ts `#requestOrigin`), absent for unbound callers.
+    pub request_origin:Option<crate::request_origin::McpRequestOriginFactory>,
 }
 pub type McpCatalogCallback=Arc<dyn Fn()->std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),McpError>>+Send>>+Send+Sync>;
 pub struct McpCatalogRuntime {
@@ -46,12 +48,12 @@ pub async fn collect_tool_catalog(server:&str,client:Arc<McpClient>,timeout:Dura
 }
 fn output_schema(tool:&Value)->Option<Value> {tool.get("outputSchema").filter(|schema|schema.is_object() || schema.is_boolean()).cloned()}
 pub fn cached_tools_to_catalog_entries(server:&str,tools:&[Value],client:Arc<McpClient>,timeout:Duration)->Vec<McpToolCatalogEntry> {
-    tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),output_schema:output_schema(tool),modern:false,description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:Some(client.clone()),runtime:None,connection:None,ensure_connected:None,ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
+    tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),output_schema:output_schema(tool),modern:false,description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:Some(client.clone()),runtime:None,connection:None,ensure_connected:None,ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None,request_origin:None}).collect()
 }
 pub fn cached_mcp_catalog_entries(server:&str,catalog:&crate::catalog_cache::McpCachedServerCatalog,runtime:Arc<McpCatalogRuntime>,timeout:Duration,ensure_connected:McpCatalogCallback)->Vec<McpToolCatalogEntry> {
     // A connected client knows its era; otherwise the cache records it.
     let modern=match runtime.connection.client() {Ok(client) if runtime.connection.state()==crate::connection::ServerConnectionState::Connected=>crate::modern::request::is_modern_mcp_client(&client),_=>catalog.modern};
-    catalog.tools.iter().filter(|tool|!modern || crate::modern::tool_schema::has_supported_modern_tool_schemas(tool)).map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),output_schema:output_schema(tool),modern,description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:None,runtime:Some(runtime.clone()),connection:None,ensure_connected:Some(ensure_connected.clone()),ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
+    catalog.tools.iter().filter(|tool|!modern || crate::modern::tool_schema::has_supported_modern_tool_schemas(tool)).map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),output_schema:output_schema(tool),modern,description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:None,runtime:Some(runtime.clone()),connection:None,ensure_connected:Some(ensure_connected.clone()),ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None,request_origin:None}).collect()
 }
 #[cfg(test)]
 mod tests {
