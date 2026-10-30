@@ -415,6 +415,8 @@ struct ClientInner {
     /// The grant dialogs this worker is waiting on, when a writer bridges them.
     grants: Option<WorkerGrants>,
     started: std::time::Instant,
+    /// The host store's mirror listener posting each change to this worker (senpi `stopLimitMirror`).
+    limit_mirror: std::sync::Mutex<Option<crate::session_worker_limit_mirror::LimitMirror>>,
 }
 /// Host-side handle of one session worker process (senpi \`SessionWorkerClient\`).
 pub struct SessionWorkerClient {
@@ -502,6 +504,7 @@ impl ClientInner {
             state.controls.stop();
         }
         lock(&self.requests).close_with_error("session_worker_exited");
+        drop(lock(&self.limit_mirror).take());
         self.settled.send_modify(|count| *count += 1);
         (self.callbacks.exit)();
     }
@@ -716,6 +719,9 @@ impl ClientInner {
                 );
             }
             W::RequestClose => (self.callbacks.request_close)(),
+            W::SubscriptionLimits { limits } => {
+                crate::session_worker_limit_mirror::adopt_wire(std::slice::from_ref(&limits));
+            }
             W::Failure { error } => self.fail(&error),
         }
     }
@@ -761,6 +767,7 @@ impl SessionWorkerClient {
             callbacks,
             grants,
             started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
         });
         tokio::spawn(async move {
             while let Some(line) = lines.recv().await {
@@ -820,7 +827,20 @@ impl SessionWorkerClient {
         configuration: &serde_json::Value,
         profile: &crate::session_registry::RpcSessionLaunchProfile,
     ) -> Result<String, String> {
-        let result=self.request(serde_json::json!({"type":"prepare","configuration":configuration,"profile":crate::session_worker_protocol::profile_to_wire(profile)})).await?;
+        // senpi#3695: subscribe to the host store's mirror BEFORE taking the snapshot the prepare carries, so no
+        // change lands between the two; a duplicate copy is a no-op in the worker's total order.
+        let outbox = self.inner.outbox.clone();
+        let mirror = crate::session_worker_limit_mirror::subscribe_mirror(move |limits| {
+            if let Ok(line) = serde_json::to_string(
+                &crate::session_worker_protocol::HostToSessionWorker::SubscriptionLimits {
+                    accounts: vec![limits],
+                },
+            ) {
+                let _ = outbox.send(format!("{line}\n"));
+            }
+        });
+        *lock(&self.inner.limit_mirror) = Some(mirror);
+        let result=self.request(serde_json::json!({"type":"prepare","configuration":configuration,"profile":crate::session_worker_protocol::profile_to_wire(profile),"subscriptionLimits":crate::session_worker_limit_mirror::mirror_snapshot_wire()})).await?;
         match (result["type"].as_str(), result["sessionPath"].as_str()) {
             (Some("prepared"), Some(path)) => Ok(path.to_owned()),
             _ => Err("Invalid worker prepare response".into()),

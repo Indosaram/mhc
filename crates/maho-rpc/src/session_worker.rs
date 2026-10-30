@@ -1,4 +1,5 @@
-pub type ListenerCallback = std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>>;
+pub type ListenerCallback =
+    std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(serde_json::Value) + Send + Sync>>>>;
 use crate::session_release_interrupt::BoxFuture;
 use crate::session_worker_protocol::{SESSION_WORKER_LIMITS, WorkerDisplay};
 pub fn apply_display(display: &mut WorkerDisplay, next: WorkerDisplay) -> bool {
@@ -231,10 +232,7 @@ fn publish_output(
 }
 /// senpi `WorkerEventWriter.settleGrantDialog`: the grant dialog for `id` settled in this isolate, so the host may
 /// stop waiting for an answer and forget the connection it routed it to.
-pub fn publish_grant_settled(
-    publish: &dyn Fn(serde_json::Value),
-    id: &str,
-) {
+pub fn publish_grant_settled(publish: &dyn Fn(serde_json::Value), id: &str) {
     publish(serde_json::json!({"type": "security_grant_settled", "id": id}));
 }
 
@@ -248,7 +246,9 @@ pub type GrantSelect =
 pub fn bind_security_presentations(
     durable_id: &str,
     attach_grant: impl FnOnce(&str, GrantSelect) -> Box<dyn Fn() + Send + Sync>,
-    subscribe_notices: impl FnOnce(Box<dyn Fn(serde_json::Value) + Send + Sync>) -> Box<dyn Fn() + Send + Sync>,
+    subscribe_notices: impl FnOnce(
+        Box<dyn Fn(serde_json::Value) + Send + Sync>,
+    ) -> Box<dyn Fn() + Send + Sync>,
     select: GrantSelect,
     publish: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
 ) -> Box<dyn Fn() + Send + Sync> {
@@ -282,10 +282,13 @@ impl WorkerState {
                 request,
                 configuration,
                 profile,
+                subscription_limits,
             } => {
                 if lock(&self.prepared).is_some() {
                     return Err("Session worker already prepared".into());
                 }
+                // The host's records as of the prepare, before any turn here reads the store (senpi#3695).
+                crate::session_worker_limit_mirror::adopt_wire(&subscription_limits);
                 let configuration = std::sync::Arc::new((self.configure)(&configuration)?);
                 let mut profile = crate::session_worker_protocol::profile_from_wire(&profile)?;
                 let path = match &profile.session_path {
@@ -459,6 +462,10 @@ impl WorkerState {
                     control: crate::session_worker_protocol::WorkerControlKind::CancelUi,
                 }))
             }
+            H::SubscriptionLimits { accounts } => {
+                crate::session_worker_limit_mirror::adopt_wire(&accounts);
+                Ok(None)
+            }
             H::CancelGrant { id } => {
                 // `binding?.handle({ type: "extension_ui_response", id, cancelled: true })`: the dialog nobody can
                 // present is answered cancelled here, so the session's grant flow resolves instead of hanging.
@@ -532,6 +539,13 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         subscription: Default::default(),
         closing: std::sync::atomic::AtomicBool::new(false),
         roles: Default::default(),
+    });
+    // A turn in this worker reports into its own store; the host mirrors it so its clients see it (senpi#3695).
+    let mirror_port = std::sync::Arc::clone(&port);
+    let _limit_mirror = crate::session_worker_limit_mirror::subscribe_mirror(move |limits| {
+        mirror_port.send(
+            &crate::session_worker_protocol::SessionWorkerWire::SubscriptionLimits { limits },
+        );
     });
     let (messages, mut inbox) = tokio::sync::mpsc::unbounded_channel::<
         crate::session_worker_protocol::HostToSessionWorker,
@@ -646,8 +660,7 @@ mod tests {
     #[test]
     fn binding_security_presentations_mirrors_notices_and_detaches_both() {
         let attached = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let listener: ListenerCallback =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let listener: ListenerCallback = std::sync::Arc::new(std::sync::Mutex::new(None));
         let published = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let detached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
