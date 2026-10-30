@@ -3,8 +3,8 @@
 //! Port of senpi `packages/coding-agent/src/core/session-lifecycle-reducer.ts`.
 
 use crate::session_lifecycle_types::{
-    ChildTerminal, LifecycleFailure, LifecycleHold, LifecycleHoldKind,
-    LifecycleWaits, SessionLifecycleState, SessionRole,
+    ChildTerminal, LifecycleFailure, LifecycleHold, LifecycleHoldKind, LifecycleWaits,
+    SessionLifecycleState, SessionRole,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -23,7 +23,9 @@ pub fn lifecycle_state(facts: &LifecycleFacts) -> SessionLifecycleState {
         hold.kind == LifecycleHoldKind::SessionHold || hold.kind == LifecycleHoldKind::InheritedHold
     });
 
-    if facts.role == SessionRole::Child && let Some(terminal) = facts.terminal {
+    if facts.role == SessionRole::Child
+        && let Some(terminal) = facts.terminal
+    {
         match terminal {
             ChildTerminal::Completed => {
                 if facts.holds.is_empty() {
@@ -179,6 +181,8 @@ mod tests {
         facts.waits.background.push(BackgroundWait {
             source: "timer".into(),
             active_count: 1,
+            items: None,
+            omitted_items: None,
             retry_at_ms: None,
         });
         assert_eq!(
