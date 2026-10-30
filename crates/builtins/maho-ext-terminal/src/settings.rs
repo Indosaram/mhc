@@ -34,6 +34,8 @@ pub const MAX_MONITOR_WAKES_PER_HOUR: f64 = 3600.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTerminalSettings {
+    /// `tools.bash.redactSecretsInOutput` (settings-manager `getBashRedactSecretsInOutput`), default false.
+    pub redact_secrets_in_output: bool,
     pub default_cols: f64,
     pub default_rows: f64,
     pub scrollback: f64,
@@ -46,6 +48,7 @@ pub struct ResolvedTerminalSettings {
 }
 
 pub const TERMINAL_SETTINGS_DEFAULTS: ResolvedTerminalSettings = ResolvedTerminalSettings {
+    redact_secrets_in_output: false,
     default_cols: 120.0,
     default_rows: 40.0,
     scrollback: 10_000.0,
@@ -90,6 +93,7 @@ pub fn resolve_terminal_settings(raw: Option<&Value>) -> ResolvedTerminalSetting
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     let defaults = &TERMINAL_SETTINGS_DEFAULTS;
     ResolvedTerminalSettings {
+        redact_secrets_in_output: defaults.redact_secrets_in_output,
         default_cols: positive_int(
             raw.get("defaultCols"),
             defaults.default_cols,
@@ -192,10 +196,13 @@ pub fn load_session_settings(
         &home,
         ctx.is_project_trusted(),
     );
-    let terminal = load_terminal_settings(
-        settings.get_global().get("terminal"),
-        settings.get_project().get("terminal"),
-    );
+    let terminal = ResolvedTerminalSettings {
+        redact_secrets_in_output: settings.get_bash_redact_secrets_in_output(),
+        ..load_terminal_settings(
+            settings.get_global().get("terminal"),
+            settings.get_project().get("terminal"),
+        )
+    };
     let shell = settings.get_shell_path();
     Ok((terminal, shell))
 }

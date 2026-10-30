@@ -138,7 +138,8 @@ fn bind_monitor_events(
             if let Err(error) = sender.rpc_emit("terminal_monitor_state", &payload) {
                 maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));
             }
-            sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
+            // The stable "mon_" id: runtime ids churn on restore, and item ids feed the custody signature.
+            sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.monitor_id.as_ref().unwrap_or(&entry.id),"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
             // Upstream `onMonitorState`: the manifest mirrors mute state and burned fire windows and
             // prunes monitors that ended.
             if let Some(lifecycle) = lifecycle.lock().await.as_mut()
@@ -1382,6 +1383,7 @@ impl Extension for TerminalExtension {
             "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
             r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already — when the run creates that directory too, use the `command` branch instead."#.to_owned(),
             r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
+            "A non-persistent command watch is a watcher with a deadline: timeout_ms KILLS the watched command when it fires (the summary says killed at deadline). Put long jobs in a run_in_background session and only watch them.".to_owned(),
             "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
         ]);
         api.register_tool_with_renderers(monitor_tool, crate::tools::render::monitor_renderers())
