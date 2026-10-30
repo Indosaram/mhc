@@ -72,6 +72,7 @@ fn catalog_entry(entry: &McpServiceRegistrationEntry, _server: &McpServerConfig,
         annotations: tool.get("annotations").cloned(), request_timeout: timeout, client,
         runtime: None, connection:Some(entry.connection.clone()), ensure_connected: Some(entry.ensure_cached_tool_connected.clone()), ensure_fresh: Some(entry.ensure_fresh.clone()),
         agent_dir: entry.agent_dir.clone(), artifacts: entry.artifacts.clone(), output_guard: settings.output_guard.clone(),
+        request_origin: entry.request_origin.clone(),
     }
 }
 
@@ -93,6 +94,7 @@ async fn build_catalog(entry: &McpServiceRegistrationEntry, server: &McpServerCo
             collected.agent_dir = entry.agent_dir.clone();
             collected.artifacts = entry.artifacts.clone();
             collected.output_guard = settings.output_guard.clone();
+            collected.request_origin = entry.request_origin.clone();
             collected
         }).collect();
     }
@@ -107,6 +109,7 @@ fn resource_server(entry: &McpServiceRegistrationEntry, server: &McpServerConfig
         server: entry.name.clone(), client, agent_dir: entry.agent_dir.clone().unwrap_or_default(),
         artifacts: entry.artifacts.clone().unwrap_or_else(|| Arc::new(McpOutputArtifacts::default())),
         output_guard: settings.output_guard.clone(), request_timeout: request_timeout(server), resources: cached.resources.clone(),
+        connection: Some(entry.connection.clone()), request_origin: entry.request_origin.clone(), ensure_fresh: Some(entry.ensure_fresh.clone()),
     })
 }
 
@@ -135,7 +138,7 @@ pub async fn register_direct_mcp_tools(
         }
         for warning in &policy.warnings {warn(entry, warning);}
         if let Some(cached) = &entry.cached_catalog && !cached.prompts.is_empty() {
-            prompt_servers.push(McpPromptServer {server: entry.name.clone(), connection: entry.connection.clone(), request_timeout: request_timeout(server), prompts: cached.prompts.clone()});
+            prompt_servers.push(McpPromptServer {server: entry.name.clone(), connection: entry.connection.clone(), request_timeout: request_timeout(server), prompts: cached.prompts.clone(), request_origin: entry.request_origin.clone(), ensure_fresh: Some(entry.ensure_fresh.clone()), bind_presentation: entry.bind_presentation.clone()});
         }
         if let Some(resources) = resource_server(entry, server, &config.settings) {resource_servers.push(resources);}
         if policy.mode == Exposure::Search {search_mode = true;}

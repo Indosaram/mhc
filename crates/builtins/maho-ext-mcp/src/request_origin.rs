@@ -19,6 +19,10 @@ pub type McpAuthorityResolver = Arc<
     dyn Fn(AbortSignal) -> BoxFuture<'static, Result<Value, crate::errors::McpError>> + Send + Sync,
 >;
 
+/// Upstream `requestOrigin?: () => McpRequestOrigin | undefined`: a fresh origin per request, so presentation
+/// and lifetime are read at call time.
+pub type McpRequestOriginFactory = Arc<dyn Fn() -> Option<Arc<McpRequestOrigin>> + Send + Sync>;
+
 pub struct McpRequestOrigin {
     /// Identity of the session binding that issued this origin (upstream: the binding object).
     pub binding: usize,

@@ -28,6 +28,24 @@ pub struct SessionConnectionOptions<'a> {
     pub config: McpServerConfig,
     pub agent_dir: &'a Path,
     pub env: Option<BTreeMap<String, String>>,
+    /// The declaring session's UI: keys pooled connections by legacy-form policy (host-registry.ts).
+    pub elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+}
+/// host-registry.ts `attachShared`: an enforced private-form pool observes live readiness, so its key never
+/// freezes a creation-time readiness; other pools key by whether legacy forms are advertised.
+pub fn mcp_legacy_form_policy_key(
+    ui: Option<&Arc<dyn maho_ext_api::ExtensionUi>>,
+    elicitation_enabled: bool,
+) -> String {
+    let enforced = ui.and_then(crate::form_types::private_mcp_forms).is_some();
+    if enforced {
+        format!("private:{elicitation_enabled}")
+    } else {
+        format!(
+            "{}:false",
+            crate::elicitation::legacy_mcp_form_eligible(ui, elicitation_enabled)
+        )
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub enum SessionConnectionError {
@@ -60,6 +78,7 @@ fn create_session_connection(
         config,
         agent_dir,
         env,
+        elicitation_ui,
     } = options;
     let logger = Arc::new(Mutex::new(McpLogger::new(name, agent_dir, None)?));
     let plan =
@@ -84,7 +103,11 @@ fn create_session_connection(
     let shared = shared_cwd
         .filter(|cwd| crate::sharing_policy::shareable(&config, Some(cwd)))
         .map(|_| {
-            registry.attach_shared(key, owner, || {
+            let pool_key = format!(
+                "{key}\0legacy-form:{}",
+                mcp_legacy_form_policy_key(elicitation_ui.as_ref(), true)
+            );
+            registry.attach_shared(&pool_key, owner, || {
                 let connection =
                     ServerConnection::new(name, config.clone(), env.clone(), logger.clone());
                 if let Some(refresh) = refresh.clone() {
@@ -182,11 +205,10 @@ fn create_session_connection(
                         &observation.snapshot,
                         &identity,
                     ) != authority.started_grant_names())
-                    && let Err(error) = connection.bump_generation().await {
-                        maho_ext_api::diagnostic(&format!(
-                            "MCP grant invalidation failed: {error}"
-                        ));
-                    }
+                    && let Err(error) = connection.bump_generation().await
+                {
+                    maho_ext_api::diagnostic(&format!("MCP grant invalidation failed: {error}"));
+                }
             }
         });
         // Registration is synchronous; the entry is fresh and has no competing owner yet.
