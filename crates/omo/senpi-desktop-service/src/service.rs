@@ -213,6 +213,11 @@ impl DesktopService {
             cancel_rx: None,
         };
         let res = self.call("capabilities", json!({}), opts).await?;
+        if !crate::parse::is_desktop_capabilities(&res) {
+            return Err(DesktopError::Service(DesktopServiceError::internal(
+                "malformed capabilities: mistyped optional field".to_string(),
+            )));
+        }
         serde_json::from_value::<DesktopCapabilities>(res).map_err(|e| {
             DesktopError::Service(DesktopServiceError::internal(format!(
                 "malformed capabilities: {e}"
