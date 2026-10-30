@@ -22635,6 +22635,29 @@ mod tests {
         assert!(binding.consume(&json!({"role":"custom","details":{"ticketId":"t"}}), "r").is_none());
     }
 
+    struct CustodyProbe(std::sync::Mutex<Vec<(bool, bool)>>);
+    impl crate::lifecycle_session_binding::LifecycleBindingHost for CustodyProbe {
+        fn event(&self, _: &str, _: Value) {}
+        fn facts_failed(&self, _: String) {}
+        fn mark_interrupted_from_custody(&self, delivered: &dyn Fn(&str) -> bool) {
+            self.0.lock().unwrap().push((delivered("t1"), delivered("t2")));
+        }
+    }
+    /// senpi#4204: binding restore asks the controller to mark consumed custody interrupted, once, with the
+    /// transcript's delivered tickets.
+    #[tokio::test]
+    async fn restore_marks_interrupted_from_custody_with_delivered_tickets() {
+        let session = Arc::new(test_session());
+        session.with_session_manager_mut(|manager| {
+            manager.append_custom_message("wake", json!("hi"), false, Some(json!({"ticketId":"t1"})));
+        });
+        let host = Arc::new(CustodyProbe(std::sync::Mutex::new(Vec::new())));
+        let mut binding = crate::lifecycle_session_binding::LifecycleSessionBinding::new(session, host.clone());
+        binding.restore().await.expect("restore");
+        binding.restore().await.expect("second restore is a no-op");
+        assert_eq!(*host.0.lock().unwrap(), vec![(true, false)]);
+    }
+
     fn test_session_with_manager(manager: SessionManager) -> AgentSession {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
