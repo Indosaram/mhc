@@ -11,7 +11,7 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
     fn register_provider(
         &self,
         registration: maho_ext_api::ProviderRegistration,
-        _: &str,
+        extension_path: &str,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
         let mut runtime = self
             .0
@@ -19,6 +19,8 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (name, config, model_options, retry_policy) = match registration {
             maho_ext_api::ProviderRegistration::Native(provider) => {
+                // The registering extension is reported as the provider's origin (senpi#4328).
+                runtime.note_extension_path(provider.id(), Some(extension_path));
                 runtime.register_native_provider(provider);
                 return Ok(());
             }
@@ -94,7 +96,9 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
         };
         runtime
             .register_provider(&name, input)
-            .map_err(maho_ext_api::ExtensionFailure::new)
+            .map_err(maho_ext_api::ExtensionFailure::new)?;
+        runtime.note_extension_path(&name, Some(extension_path));
+        Ok(())
     }
     fn unregister_provider(
         &self,

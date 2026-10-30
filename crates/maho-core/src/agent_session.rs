@@ -637,6 +637,8 @@ struct AgentSessionState {
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
     retry_attempt: u32,
+    /// senpi `_modelConfigErrors`: one `model_config_error` warning per model and session (senpi#4282).
+    model_config_errors: crate::retry_fallback::model_config_error::ModelConfigErrorReporter,
     retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     user_aborted: bool,
     abort_source: Option<maho_ext_api::AbortSource>,
@@ -4039,6 +4041,7 @@ impl AgentSession {
             turn_index: 0,
             message_replacements: Vec::new(),
             retry_attempt: 0,
+            model_config_errors: Default::default(),
             retry_abort_controller: None,
             user_aborted: false,
             abort_source: None,
@@ -8180,6 +8183,10 @@ impl AgentSession {
         if Self::is_local_failure(message) {
             return false;
         }
+        // A route that does not serve the model fails the same way on every attempt, whatever status wraps it.
+        if crate::retry_fallback::model_config_error::is_model_config_failure(message) {
+            return false;
+        }
         if message.error_message.as_deref().is_some_and(|error| {
             error.starts_with(
                 maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX,
@@ -8228,7 +8235,9 @@ impl AgentSession {
         {
             return false;
         }
-        if Self::is_local_failure(message) {
+        if Self::is_local_failure(message)
+            || crate::retry_fallback::model_config_error::is_model_config_failure(message)
+        {
             return false;
         }
         message.stop_reason == StopReason::Error
@@ -8245,7 +8254,20 @@ impl AgentSession {
                 .content
                 .iter()
                 .any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
-            && self.can_try_fallback().await
+            && self.can_try_fallback_refused(
+                crate::provider_failure::is_request_level_refusal(message)
+                    .then_some(message.provider.as_str()),
+            )
+            .await
+    }
+
+    /// senpi `canTryFallback(refusedProvider)` (senpi#2491).
+    async fn can_try_fallback_refused(&self, refused_provider: Option<&str>) -> bool {
+        self.retry_fallback
+            .lock()
+            .await
+            .as_mut()
+            .is_some_and(|controller| controller.can_try_fallback_refused(refused_provider))
     }
 
     /// `_takeNativeToolSearchInjectionFailure`: consumes the tool-search service's pending flag.
@@ -8579,6 +8601,23 @@ impl AgentSession {
             return Ok(estimate_messages_tokens(&messages));
         }
         Ok(estimate.tokens)
+    }
+
+    /// senpi `_modelConfigErrors.report`: logs `model_config_error` once per model and session (senpi#4282).
+    fn report_model_config_error(&self, message: &maho_ai::types::AssistantMessage) {
+        let session_id = self.session_id();
+        let Some(event) = self.state().model_config_errors.report(message, &session_id) else {
+            return;
+        };
+        let mut data = Map::new();
+        data.insert("model".to_owned(), Value::String(event.model));
+        data.insert("provider".to_owned(), Value::String(event.provider));
+        data.insert(
+            "errorMessage".to_owned(),
+            Value::String(message.error_message.clone().unwrap_or_default()),
+        );
+        crate::retry_fallback::log::FallbackLogger::new(std::path::Path::new(&self.agent_dir()), None)
+            .warn("model_config_error", Some(&data));
     }
 
     /// senpi `agent_end`: an unhandled Cursor quota `resource_exhausted` names the likely cause.
@@ -9114,6 +9153,9 @@ impl AgentSession {
                 }
             }
             if !request_shape_recover && !Box::pin(self.retry_can_admit_provider(&message)).await {
+                if crate::retry_fallback::model_config_error::is_model_config_failure(&message) {
+                    self.report_model_config_error(&message);
+                }
                 if let Some(error) = message.error_message.clone()
                     && maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(
                         &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message),
@@ -9383,6 +9425,9 @@ impl AgentSession {
                 };
                 let mut controller = self.retry_fallback.lock().await;
                 if let Some(controller) = controller.as_mut() {
+                    if crate::provider_failure::is_request_level_refusal(&message) {
+                        controller.note_refused_provider(&message.provider);
+                    }
                     switched = controller
                         .try_fallback(
                             reason,
