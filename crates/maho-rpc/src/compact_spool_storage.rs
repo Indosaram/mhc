@@ -7,7 +7,7 @@
 //! The pump is spawned on the current tokio runtime when work is queued; `idle()` spawns it too, so a
 //! store created outside a runtime still drains once awaited.
 use crate::compact_content_store::CompactContentStore;
-use crate::compact_read_lease::{CompactError, CompactReadReason, lock};
+use crate::compact_read_lease::{CompactError, CompactReadReason};
 use crate::compact_spool_dir::{SpoolDirError, create_spool_dir, remove_spool_dir};
 use crate::compact_storage_io::{
     CompactFileRange, CompactStorageFailure, CompactStorageOperation, CompactStorageReadError,
@@ -19,8 +19,17 @@ pub const RECLAIM_WORK_ALLOWANCE_BYTES: i64 = 1024 * 1024;
 const RECLAIM_RETRY_DELAYS_MS: [u64; 5] = [100, 400, 1_600, 6_400, 25_600];
 const FAILURE_HISTORY: usize = 32;
 
-pub(crate) type Job =
+pub type Job =
     Box<dyn FnOnce(CompactContentStore) -> BoxFuture<'static, Result<(), CompactError>> + Send>;
+
+/// Boxes one storage job (the closure's future is boxed as the job chain's dyn future).
+pub fn job<F, Fut>(f: F) -> Job
+where
+    F: FnOnce(CompactContentStore) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), CompactError>> + Send + 'static,
+{
+    Box::new(move |store| Box::pin(f(store)))
+}
 
 #[derive(Default)]
 pub(crate) struct SpoolState {
@@ -89,7 +98,7 @@ impl SpoolState {
 }
 
 /// Ends one read; retirement waits for every read to end before it removes the directory.
-pub(crate) struct ReadGuard {
+pub struct ReadGuard {
     store: CompactContentStore,
 }
 
@@ -156,17 +165,16 @@ impl CompactContentStore {
         loop {
             let next = {
                 let mut state = self.lock();
-                match state.spool.jobs.pop_front() {
-                    Some(next) => next,
-                    None => {
-                        state.spool.pump_running = false;
-                        drop(state);
-                        self.0.changed.notify_waiters();
-                        return;
-                    }
+                let next = state.spool.jobs.pop_front();
+                if next.is_none() {
+                    state.spool.pump_running = false;
                 }
+                next
             };
-            let (operation, job) = next;
+            let Some((operation, job)) = next else {
+                self.0.changed.notify_waiters();
+                return;
+            };
             let result = job(self.clone()).await;
             {
                 let mut state = self.lock();
@@ -377,17 +385,10 @@ impl crate::compact_content_store::StoreState {
     pub(crate) fn enqueue_reclaim(&mut self, path: String, bytes: i64, attempt: usize) {
         self.spool.enqueue(
             CompactStorageOperation::Reclaim,
-            Box::new(move |store| {
-                Box::pin(async move {
-                    store.reclaim(path, bytes, attempt).await;
-                    Ok(())
-                })
+            job(move |store| async move {
+                store.reclaim(path, bytes, attempt).await;
+                Ok(())
             }),
         );
     }
-}
-
-/// The lock helper for state the pump and readers share.
-pub(crate) fn spool_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    lock(mutex)
 }

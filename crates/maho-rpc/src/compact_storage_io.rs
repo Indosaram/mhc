@@ -147,7 +147,9 @@ mod tests {
             length: 3,
         };
         assert_eq!(
-            io.read_file(path.clone(), Some(range)).await.expect("range"),
+            io.read_file(path.clone(), Some(range))
+                .await
+                .expect("range"),
             b"cde"
         );
         assert_eq!(

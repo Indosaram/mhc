@@ -83,10 +83,13 @@ pub async fn create_spool_dir(dir: &str) -> Result<String, SpoolDirError> {
     }
     if let Err(cause) = mkdir_private(path, false).await {
         if cause.kind() == ErrorKind::AlreadyExists {
-            return Err(
-                CompactSpoolRefusedError::new(CompactSpoolRefusal::PreExisting, dir, None, None)
-                    .into(),
-            );
+            return Err(CompactSpoolRefusedError::new(
+                CompactSpoolRefusal::PreExisting,
+                dir,
+                None,
+                None,
+            )
+            .into());
         }
         return Err(cause.into());
     }
@@ -157,7 +160,12 @@ async fn refusal_for(
     let Some(marker) = marker.filter(std::fs::Metadata::is_file) else {
         return Some(CompactSpoolRefusal::MarkerMissing);
     };
-    if tokio::fs::read_to_string(&marker_path).await.ok().as_deref() != Some(token) {
+    if tokio::fs::read_to_string(&marker_path)
+        .await
+        .ok()
+        .as_deref()
+        != Some(token)
+    {
         return Some(CompactSpoolRefusal::MarkerMissing);
     }
     #[cfg(unix)]
@@ -198,7 +206,11 @@ mod tests {
             Some(CompactSpoolRefusal::PreExisting)
         );
         assert_eq!(
-            refusal(remove_spool_dir(&dir, "other").await.expect_err("wrong token")),
+            refusal(
+                remove_spool_dir(&dir, "other")
+                    .await
+                    .expect_err("wrong token")
+            ),
             Some(CompactSpoolRefusal::MarkerMissing)
         );
         remove_spool_dir(&dir, &token).await.expect("remove");
