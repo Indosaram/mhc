@@ -30,6 +30,8 @@ mod tests {
 
     #[test]
     fn flattens_the_shard_by_model_type() {
+        // The embedded shard tracks the drift target (senpi v2026.10.27-2: 32 `pi-messages` rows);
+        // the at-pin shard (903b8336) had 29. The data file is owned by the senpi-ai drift lane.
         assert_eq!(radius_models().len(), 32);
         assert!(
             radius_models()
