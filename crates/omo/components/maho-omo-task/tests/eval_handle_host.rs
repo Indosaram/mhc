@@ -161,3 +161,26 @@ async fn pool_cancel_through_handle_and_foreign_pool_is_forbidden() {
     assert_eq!(receipt.phase, EvalHandlePhase::Cancelled);
     assert!(matches!(host.result(reference, context()).await.expect("pool result"), EvalHandleOutcome::Rejected { error, .. } if error.code == "eval_handle_cancelled"));
 }
+
+// pool-refs.ts loadOwnedPool parity: an inspect error other than scope_denied (here store_corrupt) reads as not found.
+#[tokio::test]
+async fn corrupt_pool_record_reports_not_found() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, _manager, host) = task_fixture(root.path());
+    let id = "wp_00000000000000000000000000000000";
+    let dir = store.state_dir().join("workpools");
+    std::fs::create_dir_all(&dir).expect("workpool dir");
+    std::fs::write(dir.join(format!("{id}.json")), "{").expect("corrupt record");
+    let reference = EvalHandleRef {
+        kind: EvalHandleKind::Workpool,
+        id: id.into(),
+        run_epoch: 0,
+    };
+    match host.result(reference, context()).await {
+        Err(error) => {
+            assert_eq!(error.code.as_deref(), Some("eval_handle_not_found"));
+            assert_eq!(error.message, format!("no workpool {id}"));
+        }
+        Ok(_) => panic!("expected an eval handle failure"),
+    }
+}
