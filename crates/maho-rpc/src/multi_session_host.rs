@@ -2123,12 +2123,13 @@ impl HostCore {
     /// with its capabilities and late-joiner replay, the session's visibility class, and the shared
     /// binding the first opener creates. A stdio open owns no connection and keeps no binding.
     async fn attach_connection(&self, connection: Option<&str>, session_id: &str) {
-        let (runtime, kind) = {
+        let (runtime, kind, lane) = {
             let registry = self.registry.lock().await;
             match registry.get(session_id) {
                 Some(entry) => (
                     entry.runtime.as_ref().map(std::sync::Arc::clone),
                     entry.identity.kind,
+                    entry.acceptance.clone(),
                 ),
                 None => return,
             }
@@ -2178,8 +2179,20 @@ impl HostCore {
         let fanout = std::sync::Arc::clone(&self.fanout);
         let writer = std::sync::Arc::clone(&self.default_writer);
         let tag = session_id.to_owned();
+        // senpi `createRpcSessionBinding`: the lane registers with the writer and sees every record first.
+        let acceptance = lane.map(|lane| {
+            self.default_writer.register_acceptance(
+                &self.fanout,
+                session_id,
+                std::sync::Arc::clone(&lane),
+            );
+            crate::session_binding::BindingAcceptance::new(lane, runtime.session().clone())
+        });
         let sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
             std::sync::Arc::new(move |value: serde_json::Value| {
+                if let Some(acceptance) = &acceptance {
+                    acceptance.accept(&value);
+                }
                 let owner = CURRENT_CONNECTION.try_with(Clone::clone).ok().flatten();
                 route_session_record(&fanout, &writer, &tag, owner.as_deref(), value);
             });

@@ -23,7 +23,18 @@ pub struct SessionEventFanout {
     worker_sessions: BTreeSet<String>,
     /// What a shed `event_resync` peer's snapshot reads; shared because the actor reads it off the fanout lock.
     resync: std::sync::Arc<std::sync::Mutex<ResyncView>>,
+    /// Each routing session's acceptance lane; retired when the session is sealed or forgotten.
+    pub acceptance: SharedAcceptanceLanes,
 }
+/// The acceptance lanes, shared with the writer and with the recovery cuts that freeze them at a shed.
+pub type SharedAcceptanceLanes = std::sync::Arc<
+    std::sync::Mutex<
+        BTreeMap<
+            String,
+            std::sync::Arc<std::sync::Mutex<crate::session_acceptance_lane::SessionAcceptanceLane>>,
+        >,
+    >,
+>;
 /// Per-connection attachments and each session's latest in-flight message line, kept only while some connection
 /// negotiated `event_resync` (senpi `resyncSnapshot` reads `connectionSessions` and `sessionSnapshots`).
 #[derive(Default)]
@@ -95,6 +106,7 @@ impl SessionEventFanout {
         };
         self.resync_view().recovering.insert(id.to_owned());
         let view = std::sync::Arc::clone(&self.resync);
+        let lanes = std::sync::Arc::clone(&self.acceptance);
         let connection = id.to_owned();
         actor.enable_recovery(Box::new(move |reason| {
             let attached = view
@@ -104,9 +116,30 @@ impl SessionEventFanout {
                 .get(&connection)
                 .cloned()
                 .unwrap_or_default();
+            // Frozen at the shed, before the actor awaits its drain (R3.C1.5); released by the recovery.
+            let frozen: Vec<_> = {
+                let lanes = lanes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                attached
+                    .iter()
+                    .filter_map(|session| lanes.get(session).cloned())
+                    .filter_map(|lane| {
+                        let mut guard = lane
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if guard.retired() {
+                            return None;
+                        }
+                        let root = guard.freeze();
+                        drop(guard);
+                        Some((lane, root))
+                    })
+                    .collect()
+            };
             let view = std::sync::Arc::clone(&view);
             let connection = connection.clone();
-            Box::new(move || {
+            let mut cut = crate::socket_peer_recovery::ResyncCut::new(Box::new(move || {
                 let view = view
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -135,7 +168,15 @@ impl SessionEventFanout {
                         record
                     })
                     .collect()
-            })
+            }));
+            cut.release = Some(Box::new(move || {
+                for (lane, root) in frozen {
+                    lane.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .release(&root);
+                }
+            }));
+            cut
         }));
     }
     fn disable_resync(&self, id: &str) {
@@ -265,6 +306,16 @@ impl SessionEventFanout {
         }
     }
     pub fn forget_session(&mut self, session: &str) {
+        let lane = self
+            .acceptance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+        if let Some(lane) = lane {
+            lane.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retire(crate::session_acceptance_lane::RetireReason::Close);
+        }
         {
             let mut view = self.resync_view();
             view.latest.remove(session);
