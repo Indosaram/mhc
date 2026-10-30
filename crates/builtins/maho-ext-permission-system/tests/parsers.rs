@@ -182,3 +182,69 @@ fn apply_patch_explicit_file_uses_edit_permission() {
     assert_eq!(requests[0].permission, "edit");
     assert_eq!(requests[0].patterns, vec!["src/file.rs"]);
 }
+
+/// The read tool unquotes a path that does not exist as written, so the parser must classify the
+/// unquoted file: a quoted outside path still asks external_directory, and a quoted credential
+/// file still asks credential_file.
+#[test]
+fn quoted_read_path_is_classified_as_the_file_the_read_tool_opens() {
+    let project = tempfile::tempdir().expect("project");
+    let outside = tempfile::tempdir().expect("outside");
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "x").expect("secret");
+    let secret = std::fs::canonicalize(&secret).expect("canonical secret");
+    let home = Path::new("/home/user");
+    for quoted in [
+        format!("'{}'", secret.display()),
+        format!("\"{}\"", secret.display()),
+        format!("@'{}'", secret.display()),
+    ] {
+        let requests = create_builtin_parser_registry().parse(
+            "read",
+            &json!({ "path": quoted }),
+            (project.path(), home),
+        );
+        let external = requests
+            .iter()
+            .find(|request| request.permission == "external_directory")
+            .unwrap_or_else(|| panic!("{quoted}: external_directory request in {requests:?}"));
+        assert_eq!(
+            external.patterns,
+            vec![secret.to_string_lossy().into_owned()]
+        );
+        assert_eq!(external.original_paths, Some(vec![quoted.clone()]));
+        assert_eq!(
+            maho_ext_permission_system::parsers::resolve_read_path(&quoted, project.path()),
+            secret.to_string_lossy()
+        );
+    }
+
+    let agent = tempfile::tempdir().expect("agent");
+    std::fs::write(agent.path().join("auth.json"), "{}").expect("auth");
+    let registry =
+        maho_ext_permission_system::parsers::create_builtin_parser_registry_in(agent.path());
+    let quoted = format!("'{}'", agent.path().join("auth.json").display());
+    let requests = registry.parse("read", &json!({ "path": quoted }), (project.path(), home));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.permission == "credential_file"),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn a_quoted_path_that_exists_as_written_is_not_unquoted() {
+    let project = tempfile::tempdir().expect("project");
+    let literal = project.path().join("'name'");
+    std::fs::write(&literal, "x").expect("literal");
+    assert_eq!(
+        maho_ext_permission_system::parsers::resolve_read_path("'name'", project.path()),
+        literal.to_string_lossy()
+    );
+    // Neither the quoted nor the unquoted spelling exists: the path as written is kept.
+    assert_eq!(
+        maho_ext_permission_system::parsers::resolve_read_path("'missing'", project.path()),
+        project.path().join("'missing'").to_string_lossy()
+    );
+}
