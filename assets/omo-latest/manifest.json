@@ -300,21 +300,21 @@
     "coding-agent-sessions": [
       {
         "path": "AGENTS.md",
-        "bytes": 4004,
-        "sha256": "4013b21f6d8d3c0e9a313a98e6ac0c09136c212bcca8e3f897491d9e78809375",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/AGENTS.md (MIT)"
+        "bytes": 4332,
+        "sha256": "f3db8a4b41c8d5732f038bfb52304f887052d1f8bab62f68d098e8dfd0f01f64",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/AGENTS.md (MIT)"
       },
       {
         "path": "SKILL.md",
-        "bytes": 11097,
-        "sha256": "4569988eb01c3c6aeb150100fb0dfcd7481887bff0e6c2c7959468e2f5057a70",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/SKILL.md (MIT)"
+        "bytes": 11261,
+        "sha256": "d4b7e3b7a5a83a8f4b550fc840ba0e764e75ffa1beba349711e9ba58180ed048",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/SKILL.md (MIT)"
       },
       {
         "path": "references/all-platforms.md",
-        "bytes": 6036,
-        "sha256": "a514a0be3f57d8c99086c180fc4b486400e40e9d09495a409af5ec5cc27142ad",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/references/all-platforms.md (MIT)"
+        "bytes": 6042,
+        "sha256": "8dca240189a4503241804e17ad65fe605fa7911a62df040058a1004935446b1c",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/references/all-platforms.md (MIT)"
       },
       {
         "path": "references/claude.md",
@@ -324,9 +324,9 @@
       },
       {
         "path": "references/codex.md",
-        "bytes": 1867,
-        "sha256": "23d43c81556182d7faa9a6eb96a553fca6fd55005c1b2a8bcd0110c7ff100f2e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/references/codex.md (MIT)"
+        "bytes": 1879,
+        "sha256": "3ba4bb287d57a42e79e55adf3eb98e16859d2cc34dd008ccf6bbc5992591ab4b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/references/codex.md (MIT)"
       },
       {
         "path": "references/opencode.md",
@@ -360,9 +360,9 @@
       },
       {
         "path": "scripts/agent_sessions/cli.py",
-        "bytes": 11142,
-        "sha256": "739d6c79a2a8766267893f6b763b0bef2bf7275bc113feb6b7cc37a3440ef613",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/scripts/agent_sessions/cli.py (MIT)"
+        "bytes": 11145,
+        "sha256": "cc13992ea106a3a0062256307c1e6e88058bda78e7ffbf5d47f16fbbc5e8c187",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/scripts/agent_sessions/cli.py (MIT)"
       },
       {
         "path": "scripts/agent_sessions/codex.py",
@@ -438,9 +438,9 @@
       },
       {
         "path": "scripts/find-agent-sessions.py",
-        "bytes": 785,
-        "sha256": "bbd36d197048e190d1dc466f016255454c8e172c28f6bf4cff23f8b04bd7e18d",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/scripts/find-agent-sessions.py (MIT)"
+        "bytes": 827,
+        "sha256": "eaa130a580caeff029c60626f998b1aa337ecf33de85b0f6e5bd207480741841",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/scripts/find-agent-sessions.py (MIT)"
       }
     ],
     "dag-library": [
