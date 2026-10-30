@@ -41,5 +41,6 @@ pub mod terminal_jobs;
 pub mod terminal_manifest;
 pub mod terminal_manifest_model;
 pub mod terminal_state;
+pub mod terminal_state_gc;
 pub mod tools;
 pub use extension::TerminalExtension;
