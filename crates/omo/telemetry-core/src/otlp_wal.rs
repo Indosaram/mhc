@@ -219,10 +219,13 @@ impl SpoolWriter {
             return;
         }
         self.owned = false;
-        let _ = delete_file(
+        // `delete_file` already treats NotFound as success; anything else is surfaced, not discarded.
+        if let Err(e) = delete_file(
             &owners_dir(&self.input.dir),
             &owner_name(self.input.signal, self.input.pid, &self.input.boot_id),
-        );
+        ) {
+            (self.input.on_error)(&e, 0);
+        }
     }
 }
 fn event_name(name: &str) -> bool {

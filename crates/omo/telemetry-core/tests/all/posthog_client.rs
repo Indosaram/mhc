@@ -3,10 +3,12 @@ use std::path::Path;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use sha2::Digest;
 use telemetry_core::CreateTelemetryClientInput;
 use telemetry_core::DEFAULT_POSTHOG_API_KEY;
 use telemetry_core::DEFAULT_POSTHOG_HOST;
 use telemetry_core::RecordDailyActiveInput;
+use telemetry_core::TELEMETRY_INSTALL_ID_FILE_NAME;
 use telemetry_core::TELEMETRY_RUNTIME;
 use telemetry_core::TelemetryClientEnabledInput;
 use telemetry_core::TelemetryEnv;
@@ -263,4 +265,53 @@ async fn blank_api_key_does_not_write_dedup_state() {
 
     assert_eq!(recorder.messages().len(), 0);
     assert!(!get_telemetry_activity_state_file_path(state_dir.path()).exists());
+}
+
+#[tokio::test]
+async fn daily_active_distinct_id_is_the_hash_of_the_state_dir_install_id() {
+    let recorder = Recorder::new();
+    let state_dir = tempfile::tempdir().unwrap();
+    let env = env(&[("POSTHOG_API_KEY", "test-key")]);
+    let product = product();
+
+    record_daily_active(&record_input(&env, &product, state_dir.path(), &recorder))
+        .await
+        .unwrap();
+
+    let install_id =
+        std::fs::read_to_string(state_dir.path().join(TELEMETRY_INSTALL_ID_FILE_NAME)).unwrap();
+    let expected = hex::encode(sha2::Sha256::digest(install_id.trim().as_bytes()));
+    let messages = recorder.messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].distinct_id, expected);
+}
+
+#[tokio::test]
+async fn disabled_or_keyless_daily_active_creates_no_install_id() {
+    for pairs in [
+        &[
+            ("OMO_CODEX_DISABLE_POSTHOG", "1"),
+            ("POSTHOG_API_KEY", "test-key"),
+        ][..],
+        &[("DO_NOT_TRACK", "1"), ("POSTHOG_API_KEY", "test-key")][..],
+        &[("POSTHOG_API_KEY", " ")][..],
+    ] {
+        let recorder = Recorder::new();
+        let state_dir = tempfile::tempdir().unwrap();
+        let env = env(pairs);
+        let product = product();
+
+        record_daily_active(&record_input(&env, &product, state_dir.path(), &recorder))
+            .await
+            .unwrap();
+
+        assert_eq!(recorder.messages().len(), 0, "{pairs:?}");
+        assert!(
+            !state_dir
+                .path()
+                .join(TELEMETRY_INSTALL_ID_FILE_NAME)
+                .exists(),
+            "{pairs:?}"
+        );
+    }
 }

@@ -719,4 +719,49 @@ mod tests {
         // `<home>/gone/..` does not exist as a path, but its lexical form `<home>` does.
         assert!(!is_inside_temp_dir(&missing, &env(&[]), &deps));
     }
+
+    #[test]
+    fn a_selection_naming_only_a_profile_is_judged_with_the_account_home() {
+        let root = tempfile::tempdir().unwrap();
+        let account = root.path().join("account");
+        let elsewhere = root.path().join("elsewhere");
+        let project = root.path().join("project");
+        for dir in [&account, &elsewhere, &project] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir(account.join(".omo")).unwrap();
+        // Only the account home's `work` profile turns telemetry on.
+        std::fs::write(
+            account.join(".omo/omo.jsonc"),
+            r#"{"telemetry":{"enabled":false},"profiles":{"work":{"telemetry":{"enabled":true}}}}"#,
+        )
+        .unwrap();
+        let process_env = env(&[
+            ("HOME", elsewhere.to_str().unwrap()),
+            ("OMO_PROFILE", "mine"),
+        ]);
+        let options = SenpiTelemetryOptions::default();
+        let judge = |selection: &[(&str, &str)]| {
+            let selection: ConfigSelection = selection
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect();
+            is_omo_native_telemetry_config_enabled(
+                &options,
+                Some(project.as_path()),
+                &process_env,
+                Some(account.as_path()),
+                Some(&selection),
+            )
+        };
+
+        assert!(judge(&[("OMO_PROFILE", "work")]));
+        // The same profile read from the writer's own home (no config there) stays off.
+        assert!(!judge(&[
+            ("OMO_PROFILE", "work"),
+            ("HOME", elsewhere.to_str().unwrap()),
+        ]));
+        // The account home without the writer's profile stays off.
+        assert!(!judge(&[]));
+    }
 }
