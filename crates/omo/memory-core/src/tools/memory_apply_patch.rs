@@ -271,6 +271,9 @@ fn apply_operations(
     for path in pending_deletes {
         if path.exists() {
             fs::remove_file(&path).map_err(|e| err(e.to_string()))?;
+        } else {
+            // A chained move whose source never existed on disk is not an affected path.
+            affected_paths.remove(&to_relative(root, &path));
         }
     }
 
