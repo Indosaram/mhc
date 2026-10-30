@@ -18,7 +18,31 @@ use crate::types::TelemetryTransportOptions;
 const LIB_NAME: &str = "omo-telemetry-core-rs";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The send-time consent gate of `createConsentGatedFetch`: read at the moment a batch would leave the
+/// process, so consent withdrawn after an event was queued still stops that event. A dropped batch is
+/// reported by size only (never content) and answered as accepted, so it is not retried: dropping IS the
+/// outcome, not a failure.
+#[derive(Clone)]
+pub struct ConsentGate {
+    pub is_send_allowed: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub on_dropped: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+}
+
+impl ConsentGate {
+    /// True when the send may proceed; otherwise reports `count` events dropped.
+    pub fn allows(&self, count: usize) -> bool {
+        if (self.is_send_allowed)() {
+            return true;
+        }
+        if let Some(on_dropped) = &self.on_dropped {
+            on_dropped(count);
+        }
+        false
+    }
+}
+
 struct Inner {
+    gate: Option<ConsentGate>,
     api_key: String,
     options: TelemetryTransportOptions,
     http: reqwest::Client,
@@ -36,6 +60,16 @@ pub struct PostHogTelemetryTransport {
 }
 
 impl PostHogTelemetryTransport {
+    /// Gates every send this transport makes (batch flush, durable and immediate) on `gate`.
+    #[must_use]
+    pub fn with_consent_gate(mut self, gate: ConsentGate) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.gate = Some(gate.clone());
+        }
+        self.immediate.set_gate(gate);
+        self
+    }
+
     pub fn new(api_key: &str, options: &TelemetryTransportOptions) -> Result<Self, TelemetryError> {
         let http = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
@@ -44,6 +78,7 @@ impl PostHogTelemetryTransport {
         Ok(Self {
             immediate: crate::posthog_immediate_send::create_immediate_sender(api_key, options)?,
             inner: Arc::new(Inner {
+                gate: None,
                 api_key: api_key.to_string(),
                 options: options.clone(),
                 http,
@@ -78,6 +113,13 @@ impl Inner {
     async fn flush(&self) -> Result<(), TelemetryError> {
         let batch = std::mem::take(&mut *self.queue.lock().unwrap_or_else(PoisonError::into_inner));
         if batch.is_empty() {
+            return Ok(());
+        }
+        if self
+            .gate
+            .as_ref()
+            .is_some_and(|gate| !gate.allows(batch.len()))
+        {
             return Ok(());
         }
         let url = format!("{}/batch/", self.options.host.trim_end_matches('/'));
@@ -158,15 +200,18 @@ impl TelemetryTransport for PostHogTelemetryTransport {
         message: TelemetryCaptureMessage,
     ) -> BoxFuture<'_, Result<(), TelemetryError>> {
         Box::pin(async move {
+            if self.inner.gate.as_ref().is_some_and(|gate| !gate.allows(1)) {
+                return Ok(());
+            }
             let mut entry = self.inner.to_batch_entry(&message);
             if let Some(uuid) = message.properties.get("$insert_id").and_then(Value::as_str) {
                 entry["uuid"] = json!(uuid);
             }
             if let Some(seconds) = message.properties.get("$time").and_then(Value::as_f64)
                 && let Some(at) = chrono::DateTime::from_timestamp_millis((seconds * 1000.0) as i64)
-                {
-                    entry["timestamp"] = json!(to_iso_string(at));
-                }
+            {
+                entry["timestamp"] = json!(to_iso_string(at));
+            }
             let response = self
                 .inner
                 .http

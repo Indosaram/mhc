@@ -81,6 +81,23 @@ pub async fn record_senpi_daily_active(
             .state_dir
             .clone()
             .unwrap_or_else(|| get_senpi_telemetry_state_dir(&env));
+        let transport_factory = options.transport_factory.clone().unwrap_or_else(|| {
+            let consent_env = env.clone();
+            let consent_product = product.clone();
+            crate::otlp::create_senpi_telemetry_transport_factory(crate::otlp::TransportInput {
+                env: env.clone(),
+                consent: Arc::new(move || {
+                    telemetry_core::is_telemetry_client_enabled(
+                        &telemetry_core::TelemetryClientEnabledInput::for_product(
+                            Some(&consent_env),
+                            &consent_product,
+                        ),
+                    )
+                }),
+                diagnostics: options.diagnostics.clone(),
+                source: Some("senpi-extension".into()),
+            })
+        });
         let input = RecordDailyActiveInput {
             diagnostics: options.diagnostics.clone(),
             env: Some(&env),
@@ -90,7 +107,7 @@ pub async fn record_senpi_daily_active(
             reason: "session_start",
             source: "senpi-extension",
             state_dir: &state_dir,
-            transport_factory: options.transport_factory.clone(),
+            transport_factory: Some(transport_factory),
         };
         record_daily_active(&input).await
     });

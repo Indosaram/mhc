@@ -13,6 +13,55 @@ pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductCon
     config.product_name="omo-native".into();
     config
 }
+/// A valid `OMO_BUNDLED_SKILLS_DIR` (an absolute, listable directory), or `None` when it is absent, empty or
+/// invalid (`resolveBundledSkillsOverride`). An invalid value is reported once per process through `report`.
+pub fn resolve_bundled_skills_override(
+    env: &telemetry_core::TelemetryEnv,
+    report: &dyn Fn(&str),
+) -> Option<PathBuf> {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let value = env.get("OMO_BUNDLED_SKILLS_DIR").filter(|value| !value.is_empty())?;
+    let path = Path::new(value);
+    let problem = if !path.is_absolute() {
+        "relative".to_string()
+    } else {
+        match std::fs::read_dir(path) {
+            Ok(_) => return Some(path.to_path_buf()),
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => "ENOENT".to_string(),
+                std::io::ErrorKind::PermissionDenied => "EACCES".to_string(),
+                _ => "ENOTDIR".to_string(),
+            },
+        }
+    };
+    let message = format!(
+        "OMO_BUNDLED_SKILLS_DIR={value} ignored ({problem}); needs a readable absolute dir"
+    );
+    let first = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(message.clone());
+    if first {
+        report(&message);
+    }
+    None
+}
+/// The bundled skills directory, ending in a path separator (callers append `<skill>/SKILL.md`). A valid
+/// `OMO_BUNDLED_SKILLS_DIR` wins; otherwise `default_root` (the plugin's own skills).
+pub fn get_builtin_skills_root(
+    env: &telemetry_core::TelemetryEnv,
+    default_root: &Path,
+    report: &dyn Fn(&str),
+) -> PathBuf {
+    let root = resolve_bundled_skills_override(env, report).unwrap_or_else(|| default_root.to_path_buf());
+    let text = root.to_string_lossy();
+    if text.ends_with(std::path::MAIN_SEPARATOR) || text.ends_with('/') {
+        root
+    } else {
+        PathBuf::from(format!("{text}{}", std::path::MAIN_SEPARATOR))
+    }
+}
 pub const BUILTIN_SKILL_NAMES: &[&str] = &["adversarial-plan", "ast-grep", "browser", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "init-deep", "lsp-setup", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "ulw-execute", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa", "visualize"];
 pub use crate::event_schemas::{BUILTIN_CATEGORY_NAMES, EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_COMMON_PROPERTY_SCHEMAS, OMO_NATIVE_EVENT_SCHEMAS, OMO_NATIVE_PROPERTY_ALLOWLISTS, omo_native_event_schemas, builtin_category_names, curated_agents};
 /// Shipped v5.1.38 builtin skill vocabulary.

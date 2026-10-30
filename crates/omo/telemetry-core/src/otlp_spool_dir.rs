@@ -394,9 +394,10 @@ pub fn sweep_spool(ctx: &SpoolContext) -> io::Result<()> {
     }
     for entry in list_spool(&ctx.dir)? {
         if let SpoolEntry::Batch { name, batch_id, .. } = entry
-            && now.saturating_sub(batch_created_ms(&batch_id)) > ctx.max_age_ms {
-                drop_file(ctx, &name, DropReason::Expired)?;
-            }
+            && now.saturating_sub(batch_created_ms(&batch_id)) > ctx.max_age_ms
+        {
+            drop_file(ctx, &name, DropReason::Expired)?;
+        }
     }
     for file in list_quarantine(ctx)? {
         if now.saturating_sub(file.mtime_ms) > ctx.max_age_ms {

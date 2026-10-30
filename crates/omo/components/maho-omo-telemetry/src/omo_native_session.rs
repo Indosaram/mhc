@@ -9,17 +9,17 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-pub use crate::session_inventory::{
-    InventoryDiagnostics, OmoNativeInventoryDiagnostic as InventoryDiagnostic,
-};
 use crate::account_inventory::{EngineTables, read_connected_accounts};
 use crate::index::{SenpiTelemetryOptions, get_senpi_telemetry_state_dir};
 use crate::product_identity::{
-    EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, OmoNativeAttributionInput, create_omo_native_product_config,
-    get_omo_native_attribution, get_omo_native_state_dir, hash_session_id,
-    with_omo_native_attribution,
+    EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, OmoNativeAttributionInput,
+    create_omo_native_product_config, get_omo_native_attribution, get_omo_native_state_dir,
+    hash_session_id, with_omo_native_attribution,
 };
 use crate::session_inventory::read_omo_native_inventory;
+pub use crate::session_inventory::{
+    InventoryDiagnostics, OmoNativeInventoryDiagnostic as InventoryDiagnostic,
+};
 use crate::session_role::TelemetrySessionRole;
 use crate::session_summary_purge::{ConfigSelection, with_config_selection};
 
@@ -27,7 +27,12 @@ pub const SOURCE: &str = "omo-native-session";
 pub const SESSION_REASONS: [&str; 5] = ["startup", "reload", "new", "resume", "fork"];
 pub const OPTED_OUT_SESSION_HASH: &str = "opted-out";
 const ALLOW_AUTOMATION_VALUES: [&str; 3] = ["1", "true", "yes"];
-const POSIX_TEMP_ROOTS: [&str; 4] = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+const POSIX_TEMP_ROOTS: [&str; 4] = [
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+];
 const POSIX_USERS_DIRS: [&str; 3] = ["/Users", "/home", "/var/home"];
 const POSIX_ROOT_HOMES: [&str; 2] = ["/root", "/var/root"];
 
@@ -43,12 +48,10 @@ pub struct TempDirDeps {
 
 pub fn session_reason(payload: &Value) -> &'static str {
     match payload.get("reason").and_then(Value::as_str) {
-        Some(reason) if SESSION_REASONS.contains(&reason) => {
-            SESSION_REASONS
-                .into_iter()
-                .find(|candidate| *candidate == reason)
-                .unwrap_or("startup")
-        }
+        Some(reason) if SESSION_REASONS.contains(&reason) => SESSION_REASONS
+            .into_iter()
+            .find(|candidate| *candidate == reason)
+            .unwrap_or("startup"),
         _ => "startup",
     }
 }
@@ -177,11 +180,12 @@ pub fn is_inside_temp_dir(
         .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
     let mut candidates = vec![tmpdir];
     if !windows {
-        candidates.extend(
-            deps.posix_temp_roots
-                .clone()
-                .unwrap_or_else(|| POSIX_TEMP_ROOTS.iter().map(|root| (*root).to_string()).collect()),
-        );
+        candidates.extend(deps.posix_temp_roots.clone().unwrap_or_else(|| {
+            POSIX_TEMP_ROOTS
+                .iter()
+                .map(|root| (*root).to_string())
+                .collect()
+        }));
     }
     candidates.into_iter().any(|candidate| {
         let candidate = PathBuf::from(candidate);
@@ -293,13 +297,16 @@ fn config_enabled(
     if let Some(is_config_enabled) = &options.is_config_enabled {
         return is_config_enabled(cwd.unwrap_or_else(|| Path::new("")));
     }
-    let loaded = maho_omo_config_resolution::load_senpi_omo_config(
-        omo_config_core::LoadOmoConfigOptions {
+    let loaded =
+        maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
             cwd: cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
-            env: Some(env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
+            env: Some(
+                env.iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
             ..Default::default()
-        },
-    );
+        });
     if !loaded.diagnostics.is_empty() {
         if let Some(diagnostics) = &options.diagnostics {
             diagnostics(&telemetry_core::TelemetryDiagnosticInput {
@@ -389,7 +396,18 @@ pub fn start_native_session(
         schema_version: OMO_NATIVE_SCHEMA_VERSION,
         set_timeout_fn: options.set_timeout_fn.clone(),
         source: SOURCE,
-        transport_factory: options.transport_factory.clone(),
+        transport_factory: Some(options.transport_factory.clone().unwrap_or_else(|| {
+            let consent_options = options.clone();
+            let consent_env = env.clone();
+            crate::otlp::create_senpi_telemetry_transport_factory(crate::otlp::TransportInput {
+                env: env.clone(),
+                consent: Arc::new(move || {
+                    is_omo_native_telemetry_enabled(&consent_options, None, &consent_env)
+                }),
+                diagnostics: options.diagnostics.clone(),
+                source: Some(SOURCE.into()),
+            })
+        })),
     });
     if !client.enabled() {
         return Ok(None);
@@ -398,8 +416,8 @@ pub fn start_native_session(
         .state_dir
         .clone()
         .unwrap_or_else(|| get_omo_native_state_dir(&env));
-    let hash =
-        hash_session_id(input.session_id, &state).map_err(|e| TelemetryError::new(e.to_string()))?;
+    let hash = hash_session_id(input.session_id, &state)
+        .map_err(|e| TelemetryError::new(e.to_string()))?;
     let activity = get_daily_active_capture_state(&DailyActiveCaptureStateInput {
         state_dir: &state,
         now: options.now,
@@ -416,12 +434,10 @@ pub fn start_native_session(
         ]);
         client.capture_event("daily_active", &properties);
     }
-    let inventory = read_omo_native_inventory(input.agent_dir, options.inventory_diagnostics.as_ref());
-    let connected_accounts = read_connected_accounts(
-        input.agent_dir,
-        &env,
-        EngineTables::load().as_ref(),
-    );
+    let inventory =
+        read_omo_native_inventory(input.agent_dir, options.inventory_diagnostics.as_ref());
+    let connected_accounts =
+        read_connected_accounts(input.agent_dir, &env, EngineTables::load().as_ref());
     let reason = session_reason(input.payload);
     let timezone = read_time_zone(options.time_zone.as_deref());
     let mut properties = serde_json::Map::from_iter([
@@ -440,10 +456,7 @@ pub fn start_native_session(
             "configured_provider_count".into(),
             json!(inventory.configured_provider_count),
         ),
-        (
-            "connected_account_count".into(),
-            json!(connected_accounts),
-        ),
+        ("connected_account_count".into(), json!(connected_accounts)),
         ("model_count".into(), json!(inventory.model_count)),
         ("providers".into(), json!(inventory.providers)),
         ("reason".into(), json!(reason)),
@@ -538,10 +551,7 @@ mod tests {
             Some("test_runner")
         );
         assert_eq!(
-            automated_run_reason(
-                &env(&[("NODE_ENV", "test")]),
-                &TempDirDeps::default()
-            ),
+            automated_run_reason(&env(&[("NODE_ENV", "test")]), &TempDirDeps::default()),
             Some("test_runner")
         );
         assert_eq!(
@@ -583,10 +593,7 @@ mod tests {
         std::fs::create_dir_all(&inside).unwrap();
         assert!(is_inside_temp_dir(&inside, &env(&[]), &deps));
         assert_eq!(
-            automated_run_reason(
-                &env(&[("HOME", inside.to_str().unwrap())]),
-                &deps
-            ),
+            automated_run_reason(&env(&[("HOME", inside.to_str().unwrap())]), &deps),
             Some("ephemeral_home")
         );
         // A real account profile is never ephemeral, whatever TMPDIR says.
@@ -608,7 +615,11 @@ mod tests {
             &account_deps
         ));
         // Root's home is likewise never ephemeral.
-        assert!(!is_inside_temp_dir(Path::new("/root"), &env(&[]), &account_deps));
+        assert!(!is_inside_temp_dir(
+            Path::new("/root"),
+            &env(&[]),
+            &account_deps
+        ));
     }
 
     #[test]
@@ -647,7 +658,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let deps = TempDirDeps {
             platform: Some("win32".into()),
-            tmpdir: Some(Arc::new({ let path = tmp.path().to_string_lossy().into_owned(); move || path.clone() })),
+            tmpdir: Some(Arc::new({
+                let path = tmp.path().to_string_lossy().into_owned();
+                move || path.clone()
+            })),
             posix_temp_roots: None,
             realpath: Some(Arc::new(|candidate: &Path| {
                 std::fs::canonicalize(candidate).ok()
@@ -656,10 +670,7 @@ mod tests {
         let inside = tmp.path().join("Temp-home");
         std::fs::create_dir_all(&inside).unwrap();
         assert_eq!(
-            automated_run_reason(
-                &env(&[("USERPROFILE", inside.to_str().unwrap())]),
-                &deps
-            ),
+            automated_run_reason(&env(&[("USERPROFILE", inside.to_str().unwrap())]), &deps),
             Some("ephemeral_home")
         );
         // HOME is not read on win32.
@@ -671,17 +682,41 @@ mod tests {
 
     #[test]
     fn timezone_reads_the_provider_then_the_environment() {
-        assert_eq!(read_time_zone(None), std::env::var("TZ").ok().filter(|zone| {
-            !zone.trim().is_empty() && zone.trim().len() <= 64
-        }).map(|zone| zone.trim().to_string()));
+        assert_eq!(
+            read_time_zone(None),
+            std::env::var("TZ")
+                .ok()
+                .filter(|zone| { !zone.trim().is_empty() && zone.trim().len() <= 64 })
+                .map(|zone| zone.trim().to_string())
+        );
         assert_eq!(
             read_time_zone(Some(&|| "Europe/Berlin".to_string())).as_deref(),
             Some("Europe/Berlin")
         );
         assert_eq!(read_time_zone(Some(&|| String::new())), None);
+        assert_eq!(read_time_zone(Some(&|| "x".repeat(65))), None);
+    }
+
+    #[test]
+    fn lexical_resolve_folds_dot_segments_without_touching_the_filesystem() {
         assert_eq!(
-            read_time_zone(Some(&|| "x".repeat(65))),
-            None
+            lexical_resolve(Path::new("/a/b/../c/./d")),
+            PathBuf::from("/a/c/d")
         );
+        assert_eq!(lexical_resolve(Path::new("/../x")), PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn a_dotdot_home_is_judged_by_its_lexical_target() {
+        let home = tempfile::tempdir().unwrap();
+        let missing = home.path().join("gone").join("..");
+        let deps = TempDirDeps {
+            platform: Some("linux".into()),
+            tmpdir: Some(Arc::new(|| "/definitely-not-a-tmp".into())),
+            posix_temp_roots: Some(Vec::new()),
+            realpath: None,
+        };
+        // `<home>/gone/..` does not exist as a path, but its lexical form `<home>` does.
+        assert!(!is_inside_temp_dir(&missing, &env(&[]), &deps));
     }
 }
