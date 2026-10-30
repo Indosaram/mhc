@@ -380,6 +380,7 @@ fn test_untracked_empty_directory_delete_reports_no_changes() {
 #[test]
 fn test_unrelated_dirty_files_fail_clean_check_first() {
     let (_temp, repo) = fixture();
+    let head = repo.head().expect("head");
     fs::write(repo.dir.join("dirty.md"), "dirty").expect("dirty");
     let err = run_memory_tool(
         &repo,
@@ -401,6 +402,8 @@ fn test_unrelated_dirty_files_fail_clean_check_first() {
         fs::read_to_string(repo.dir.join("dirty.md")).expect("dirty"),
         "dirty"
     );
+    assert!(!repo.dir.join("new.md").exists());
+    assert_eq!(repo.head().expect("head"), head);
 }
 
 // memory-validation.test.ts: editable frontmatter with read_only false keeps body and flag through update_description.
