@@ -134,10 +134,7 @@ impl FakeHandle {
 
     pub fn fail(&self, kind: RunnerFailureKind, message: &str) {
         self.settle(RunnerOutcome::Error {
-            failure: RunnerFailure {
-                kind,
-                message: message.to_string(),
-            },
+            failure: RunnerFailure::new(kind, message),
             killed: false,
         });
     }

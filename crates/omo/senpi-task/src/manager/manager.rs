@@ -3548,25 +3548,45 @@ impl Inner {
         {
             return None;
         }
-        let candidates = crate::manager::credential_failure::runtime_fallback_candidates(
-            &record,
-            &failure.message,
-        );
-        let next = candidates.remaining.first()?.clone();
-        let remaining = candidates.chain_after_hop();
+        // #10806: a prompt the engine refused because the provider has no usable credentials walks
+        // the chain too, skipping every remaining rung on the refusing provider.
+        let credentials =
+            crate::manager::start_credentials_refusal::start_credentials_refusal(failure);
+        let (next, remaining) = match credentials {
+            Some(refusal) => {
+                let chain =
+                    crate::manager::start_credentials_refusal::chain_without_refusing_provider(
+                        &record, refusal,
+                    );
+                let next = chain.first()?.clone();
+                (next, chain[1..].to_vec())
+            }
+            None => {
+                let candidates = crate::manager::credential_failure::runtime_fallback_candidates(
+                    &record,
+                    &failure.message,
+                );
+                let next = candidates.remaining.first()?.clone();
+                (next, candidates.chain_after_hop())
+            }
+        };
         let mut attempts = record
             .fallback_attempts
             .clone()
             .unwrap_or_else(|| record.resolved_model.iter().cloned().collect());
         attempts.push(next.clone());
         let note = (record.parent_model.as_deref() == Some(next.display.as_str())).then(|| {
-            let reason = crate::manager::parent_model_fallback::reason_of_failure(
-                &failure.message,
-                record
-                    .resolved_model
-                    .as_ref()
-                    .map(|model| model.model_id.as_str()),
-            );
+            let reason = if credentials.is_some() {
+                crate::state::ParentModelFallbackReason::NotSignedIn
+            } else {
+                crate::manager::parent_model_fallback::reason_of_failure(
+                    &failure.message,
+                    record
+                        .resolved_model
+                        .as_ref()
+                        .map(|model| model.model_id.as_str()),
+                )
+            };
             let reason = if reason == crate::state::ParentModelFallbackReason::Error {
                 crate::state::ParentModelFallbackReason::Unavailable
             } else {
@@ -3575,7 +3595,7 @@ impl Inner {
             crate::manager::parent_model_fallback::build(
                 record.model.clone(),
                 reason,
-                Some(&failure.message),
+                credentials.is_none().then_some(failure.message.as_str()),
                 &[],
                 self.now_iso(),
             )
