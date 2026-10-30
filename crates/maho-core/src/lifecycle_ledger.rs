@@ -2,6 +2,17 @@
 use crate::lifecycle_attention::LifecycleAttention;
 use crate::lifecycle_record::read_lifecycle_record;
 use serde_json::{Value, json};
+
+/// One `update` evaluation: the reduced state plus the run's stop and live activity, when known.
+pub struct LedgerUpdate {
+    pub state: String,
+    pub waits: Value,
+    pub holds: Vec<Value>,
+    pub failure: Option<Value>,
+    pub last_stop: Option<Value>,
+    pub activity: Option<Value>,
+}
+
 pub struct LifecycleLedger {
     pub current: Value,
     pub attention: LifecycleAttention,
@@ -11,6 +22,9 @@ pub struct LifecycleLedger {
     goal_completed: Option<String>,
     run_completed: Option<String>,
     admission_write_failed: bool,
+    unwritten: bool,
+    write_failed: bool,
+    activity_instance_id: String,
     pub run_id: Option<String>,
     pub run_active: bool,
     pub interrupted: bool,
@@ -31,10 +45,11 @@ impl LifecycleLedger {
             });
         let mut current=restored.clone().unwrap_or_else(||json!({"state":"done","seq":0,"epoch":0,"epochOrigin":"automatic","humanInputRevision":0,"selfSettleEligible":true,"restoring":true,"persisted":false,"runPaused":false,"since":chrono::Utc::now().to_rfc3339(),"role":if spawned_by.is_some(){"child"}else{"root"},"rootSessionId":spawned_by.map(|s|s["rootSessionId"].clone()).unwrap_or(json!(session_id))}));
         if restored.is_none()
-            && let Some(s) = spawned_by {
-                current["parentSessionId"] = s["parentSessionId"].clone();
-                current["taskId"] = s["taskId"].clone();
-            }
+            && let Some(s) = spawned_by
+        {
+            current["parentSessionId"] = s["parentSessionId"].clone();
+            current["taskId"] = s["taskId"].clone();
+        }
         let r = restored.as_ref().unwrap_or(&Value::Null);
         let sealed = r["epochSealed"] == true;
         let run_id = r["runId"].as_str().map(str::to_owned);
@@ -60,6 +75,8 @@ impl LifecycleLedger {
         ] {
             current.as_object_mut().expect("lifecycle object").remove(k);
         }
+        let activity_instance_id = uuid::Uuid::new_v4().to_string();
+        current["activityRevision"] = json!({"instanceId":activity_instance_id,"revision":0});
         Self {
             current,
             attention: LifecycleAttention::new(session_id, restored.as_ref()),
@@ -69,6 +86,9 @@ impl LifecycleLedger {
             goal_completed,
             run_completed,
             admission_write_failed: false,
+            unwritten: false,
+            write_failed: false,
+            activity_instance_id,
             run_id,
             run_active: false,
             interrupted,
@@ -100,6 +120,13 @@ impl LifecycleLedger {
             n["since"] = json!(at);
         }
         n["humanInputRevision"] = json!(n["humanInputRevision"].as_u64().unwrap_or(0) + 1);
+        // Input that opens a new epoch is recorded by that epoch's opening record (senpi#3980). Input into an
+        // open epoch is written at once: it must supersede a standing settle request durably.
+        if !self.run_active && (self.sealed || n["epoch"] == 0) {
+            self.current = n;
+            self.unwritten = true;
+            return true;
+        }
         let ok = self.write(n, append);
         if !ok {
             self.admission_write_failed = true;
@@ -120,10 +147,20 @@ impl LifecycleLedger {
             self.current["epoch"] = json!(self.current["epoch"].as_u64().unwrap_or(0) + 1);
             self.current["epochOrigin"] = json!(origin);
             self.current["selfSettleEligible"] = json!(!self.admission_write_failed);
+            self.unwritten = true;
         }
+        // The previous run's stop never describes this one (senpi#3864).
+        self.current
+            .as_object_mut()
+            .expect("object")
+            .remove("lastStop");
         self.run_id = Some(uuid::Uuid::new_v4().to_string());
         self.run_active = true;
         self.admission_write_failed = false;
+        // A new run is unsaved state even inside an open epoch: `update` treats records that differ only in
+        // runActive or runId as equal, so without this a later run in the same epoch would never be recorded
+        // (senpi#3980).
+        self.unwritten = true;
     }
     pub fn mark_goal_completed(
         &mut self,
@@ -188,12 +225,46 @@ impl LifecycleLedger {
         failure: Option<Value>,
         append: impl FnOnce(&Value) -> Result<(), String>,
     ) -> bool {
+        self.update_with(
+            LedgerUpdate {
+                state: state.to_owned(),
+                waits,
+                holds,
+                failure,
+                last_stop: None,
+                activity: None,
+            },
+            append,
+        )
+    }
+    /// Returns whether the snapshot changed and must be emitted; an activity-only change emits without a write.
+    pub fn update_with(
+        &mut self,
+        input: LedgerUpdate,
+        append: impl FnOnce(&Value) -> Result<(), String>,
+    ) -> bool {
+        let LedgerUpdate {
+            state,
+            waits,
+            holds,
+            failure,
+            last_stop,
+            activity,
+        } = input;
+        let state = state.as_str();
         if !holds.is_empty() || state == "failed" {
             self.request = None;
         }
         let terminal = state == "done" || state == "failed";
         let mut n = self.current.clone();
-        for k in ["completionId", "completion", "failure", "settleDecision"] {
+        for k in [
+            "completionId",
+            "completion",
+            "failure",
+            "settleDecision",
+            "lastStop",
+            "activity",
+        ] {
             n.as_object_mut().expect("object").remove(k);
         }
         let now = chrono::Utc::now().to_rfc3339();
@@ -228,9 +299,16 @@ impl LifecycleLedger {
             };
         }
         if state == "failed"
-            && let Some(f) = failure {
-                n["failure"] = f;
-            }
+            && let Some(f) = failure
+        {
+            n["failure"] = f;
+        }
+        if let Some(stop) = last_stop {
+            n["lastStop"] = stop;
+        }
+        if let Some(activity) = activity {
+            n["activity"] = activity;
+        }
         if state == "done"
             && (standing || (self.sealed && self.current.get("settleDecision").is_some()))
         {
@@ -255,11 +333,27 @@ impl LifecycleLedger {
             "waitingOn",
             "holds",
             "failure",
+            "lastStop",
         ]
         .iter()
         .all(|k| self.current[*k] == n[*k]);
-        if self.current["persisted"] == true && same {
+        let same_activity = self.current["activity"] == n["activity"];
+        // An unchanged lifecycle writes nothing; an unwritten revision waits for the record that carries it
+        // (senpi#3980).
+        if self.current["persisted"] == true && same_activity && same {
             return false;
+        }
+        // Activity alone only emits, also while custody writes fail. Pending run/epoch state and a failed
+        // lifecycle write retain the ordinary durable path: activity cannot consume or clear that work.
+        if !same_activity && !self.unwritten && !self.write_failed && same {
+            let revision = self.current["activityRevision"]["revision"]
+                .as_u64()
+                .unwrap_or(0)
+                + 1;
+            n["activityRevision"] =
+                json!({"instanceId":self.activity_instance_id,"revision":revision});
+            self.current = n;
+            return true;
         }
         if terminal && n["epoch"] == 0 {
             self.current = n;
@@ -270,10 +364,19 @@ impl LifecycleLedger {
     pub fn checkpoint(&mut self, append: impl FnOnce(&Value) -> Result<(), String>) -> bool {
         self.write(self.current.clone(), append)
     }
+    /// Publishes a revision or epoch that no record carries yet, once. Returns whether a record was written.
+    pub fn publish_unwritten(&mut self, append: impl FnOnce(&Value) -> Result<(), String>) -> bool {
+        self.unwritten && self.write(self.current.clone(), append)
+    }
     fn write(&mut self, mut n: Value, append: impl FnOnce(&Value) -> Result<(), String>) -> bool {
         n["seq"] = json!(self.current["seq"].as_u64().unwrap_or(0) + 1);
         n["persisted"] = json!(true);
+        n["activityRevision"] = json!({"instanceId":self.activity_instance_id,"revision":0});
         let mut r = n.clone();
+        // Activity is live and wire-only: durable records never carry it.
+        for k in ["activity", "activityRevision"] {
+            r.as_object_mut().expect("object").remove(k);
+        }
         r["sessionId"] = json!(self.session_id);
         r["attentionSeq"] = json!(self.attention.attention_seq());
         r["synthetic"] = self.attention.synthetic();
@@ -295,8 +398,10 @@ impl LifecycleLedger {
         if let Some(q) = &self.request {
             r["settleRequest"] = q.clone();
         }
+        self.unwritten = false;
         let ok = append(&r).is_ok();
         self.current = n;
+        self.write_failed = !ok;
         if !ok {
             self.custody_write_failed();
         }
@@ -357,12 +462,120 @@ mod terminal_identity_tests {
     fn failed_admission_write_disables_self_settlement() {
         let mut ledger = LifecycleLedger::new("s", None, &[]);
         ledger.release_restore_barrier();
+        ledger.start_run("human");
+        assert!(ledger.publish_unwritten(|_| Ok(())));
+        // Input into an open epoch is written at once; opening input waits for the run's opening record.
         assert!(!ledger.human_input("now", |_| Err("disk full".into())));
         ledger.start_run("human");
         assert_eq!(
             ledger.request_self_settle(|_| Ok(()))["reason"],
             "not_eligible"
         );
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    fn waits() -> Value {
+        json!({"children":0,"background":[],"human":[]})
+    }
+    fn running(
+        ledger: &mut LifecycleLedger,
+        activity: Option<Value>,
+        records: &mut Vec<Value>,
+    ) -> bool {
+        ledger.update_with(
+            LedgerUpdate {
+                state: "running".into(),
+                waits: waits(),
+                holds: vec![],
+                failure: None,
+                last_stop: None,
+                activity,
+            },
+            |r| {
+                records.push(r.clone());
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn activity_only_changes_emit_a_new_revision_without_a_durable_record() {
+        let mut ledger = LifecycleLedger::new("s", None, &[]);
+        ledger.release_restore_barrier();
+        ledger.start_run("human");
+        let mut records = Vec::new();
+        assert!(ledger.publish_unwritten(|r| {
+            records.push(r.clone());
+            Ok(())
+        }));
+        assert!(running(&mut ledger, None, &mut records));
+        let written = records.len();
+        let tool =
+            json!({"kind":"tool","toolName":"bash","toolCallId":"c","since":"now","outstanding":1});
+        assert!(running(&mut ledger, Some(tool.clone()), &mut records));
+        assert_eq!(records.len(), written);
+        assert_eq!(ledger.snapshot()["activity"], tool);
+        assert_eq!(ledger.snapshot()["activityRevision"]["revision"], 1);
+        assert!(!running(&mut ledger, Some(tool), &mut records));
+        assert!(running(&mut ledger, None, &mut records));
+        assert_eq!(ledger.snapshot()["activityRevision"]["revision"], 2);
+        assert!(
+            records
+                .iter()
+                .all(|r| r.get("activity").is_none() && r.get("activityRevision").is_none())
+        );
+    }
+
+    #[test]
+    fn a_failed_write_keeps_activity_on_the_durable_path() {
+        let mut ledger = LifecycleLedger::new("s", None, &[]);
+        ledger.release_restore_barrier();
+        ledger.start_run("human");
+        assert!(!ledger.publish_unwritten(|_| Err("disk full".into())));
+        let mut records = Vec::new();
+        let tool = json!({"kind":"model","since":"now"});
+        assert!(running(&mut ledger, Some(tool), &mut records));
+        assert_eq!(records.len(), 1);
+        assert_eq!(ledger.snapshot()["activityRevision"]["revision"], 0);
+    }
+
+    #[test]
+    fn opening_input_waits_for_the_runs_opening_record() {
+        let mut ledger = LifecycleLedger::new("s", None, &[]);
+        ledger.release_restore_barrier();
+        let mut writes = 0;
+        assert!(ledger.human_input("now", |_| {
+            writes += 1;
+            Ok(())
+        }));
+        assert_eq!(writes, 0);
+        ledger.start_run("human");
+        assert!(ledger.publish_unwritten(|r| {
+            writes += 1;
+            assert_eq!(r["humanInputRevision"], 1);
+            Ok(())
+        }));
+        assert!(!ledger.publish_unwritten(|_| panic!("published twice")));
+        assert_eq!(writes, 1);
+    }
+
+    #[test]
+    fn a_later_run_inside_an_open_epoch_is_recorded() {
+        let mut ledger = LifecycleLedger::new("s", None, &[]);
+        ledger.release_restore_barrier();
+        ledger.start_run("human");
+        assert!(ledger.publish_unwritten(|_| Ok(())));
+        ledger.run_active = false;
+        ledger.start_run("automatic");
+        let mut run = None;
+        assert!(ledger.publish_unwritten(|r| {
+            run = r["runId"].as_str().map(str::to_owned);
+            Ok(())
+        }));
+        assert_eq!(run, ledger.run_id);
     }
 }
 
