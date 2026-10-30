@@ -186,6 +186,7 @@ pub mod user_text_blocks;
 // sync-5152 ledger lane (maho-core at-pin parity).
 pub mod agent_busy_error;
 pub mod agent_run_continuation;
+pub mod anthropic_oauth_migration;
 pub mod assistant_usage_scope;
 pub mod bootstrap_crash_listeners;
 pub mod browser_engine;
