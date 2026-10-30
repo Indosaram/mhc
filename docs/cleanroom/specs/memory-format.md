@@ -21,7 +21,7 @@ from the repository's user-facing documents and MIT call sites:
 | The primary human is described by the card `system/human.md`: its display name is the card's description; YAML frontmatter may carry `aliases`; the seeded name is `Human` | `docs/divergences.md` SD-7 |
 | Facts about the primary human and about the project are written to `notes/facts/<month>.md` | `docs/divergences.md` SD-7 |
 | Third-party people profiles live under `people/<slug>/`; they are written only when `memory.people.enabled` is true (default false) | `docs/divergences.md` SD-7, `README.md`, `README.en.md` |
-| Config keys that shape the store (`memory.enabled`, `memory.people.*`, `memory.projection.max_entries_per_directory`=40, `memory.projection.max_bytes`=24576, `memory.sync.remote`) | `docs/cleanroom/specs/config-keys.md` § `memory` |
+| Config keys that shape the store (`memory.enabled`, `memory.people.*`, `memory.projection.max_entries_per_directory`=0, `memory.projection.max_bytes`=40960 (omo v5.1.52 defaults; earlier builds used 40 and 24576), `memory.sync.remote`) | `docs/cleanroom/specs/config-keys.md` § `memory` and § Delta (omo v5.1.52) D1 |
 
 ## Directory layout
 

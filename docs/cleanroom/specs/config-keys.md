@@ -548,8 +548,9 @@ still has no default of its own. When it is absent, the agent falls back to `mem
 so the agent inherits the new defaults. This delta changes only the default values; it does not
 change what a given value means.
 
-Error cases: as before, a negative or non-integer value is a validation error for that key
-(config.md §4) and the default applies.
+Error cases: as before, a negative or non-integer value is an invalid-value for that key. It is
+pruned from its layer (config.md §4.4 step 5), and the default then applies in the merged view
+(config.md §6.4).
 
 Tests:
 - Given `{"memory": {"enabled": true}}` (a `memory` section without `projection`), when the
@@ -575,6 +576,12 @@ omo-senpi-task-b-40 change built-in fallback-chain models (Fable 5.5 staging, Ki
 Those are built-in data owned by model-selection.md and maho-task, not defaults of a user key.
 omo-components-08 (comment-checker cache dir name), omo-components-28 (gateway attachment
 fence) and the telemetry rows (no user key; see telemetry.md delta) also add or change no key.
+
+Outside the census (found at review): v5.1.52 also adds an optional top-level key `model_pad`
+(object; `model_pad.labels.daily|geeky|normal|heavy` : string, no defaults), accepted at top
+level, in typed harness blocks and in profiles. Its only census row sits in a discarded shard, so
+this delta does not specify it. Until a spec covers it, mhc treats it as an unknown key
+(config.md §4.4).
 
 Leak self-check:
 
