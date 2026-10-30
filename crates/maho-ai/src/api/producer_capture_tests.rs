@@ -280,22 +280,7 @@ fn fixture(name: &str) -> Value {
 /// The snapshot pins `Date.now()` to 1; the Rust producers stamp the clock, so both sides zero it.
 fn snapshot(name: &str) -> Value {
     let mut value = fixture(name);
-    fn zero(value: &mut Value) {
-        match value {
-            Value::Object(map) => {
-                for (key, entry) in map.iter_mut() {
-                    if key == "timestamp" && entry.is_number() {
-                        *entry = json!(0);
-                    } else {
-                        zero(entry);
-                    }
-                }
-            }
-            Value::Array(items) => items.iter_mut().for_each(zero),
-            _ => {}
-        }
-    }
-    zero(&mut value);
+    crate::utils::capture_test_records::zero_timestamps(&mut value);
     value
 }
 
