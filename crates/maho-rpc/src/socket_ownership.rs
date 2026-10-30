@@ -23,6 +23,15 @@ pub fn classify_endpoint_ownership(path:&str,identity:Option<SocketFileIdentity>
     match stat_socket_identity(Path::new(path)){Ok(None)=>EndpointOwnership::Absent,Ok(Some(current)) if current==identity=>EndpointOwnership::Held,Ok(Some(_))=>EndpointOwnership::Replaced,Err(_)=>EndpointOwnership::Unknown}
 }
 pub fn socket_entry_replaced(path:&str,identity:Option<SocketFileIdentity>,platform:&str)->bool{classify_endpoint_ownership(path,identity,platform)==EndpointOwnership::Replaced}
+/// Takes the public name over with a rename, once - and only while - that name still refers to the entry this
+/// handoff was decided against (senpi `adoptPublicSocket`). A socket that changed underneath belongs to another
+/// process now: the successor aborts and leaves both the intruder's socket and its own bind entry alone.
+pub fn adopt_public_socket(bind_socket:&Path,public_socket:&Path,expected:Option<SocketFileIdentity>)->io::Result<()>{
+    let Some(expected)=expected else{return Err(io::Error::other(format!("{}: a generation launch must name the entry it replaces",public_socket.display())));};
+    if stat_socket_identity(public_socket)?!=Some(expected){return Err(io::Error::other(format!("{}: owned by another socket entry now; refusing to replace it",public_socket.display())));}
+    // rename(2) is atomic for readers of the path: every connect reaches the old entry or this one, never nothing.
+    fs::rename(bind_socket,public_socket)
+}
 pub fn write_socket_identity_file(path:&Path,identity:SocketFileIdentity)->io::Result<()>{
     if let Some(parent)=path.parent(){
         let mut builder=fs::DirBuilder::new();
@@ -73,6 +82,7 @@ pub async fn shield_socket_during_close<T>(path:&str,platform:&str,close:impl st
 #[cfg(all(test,unix))]
 mod tests{
     use super::*;
+    #[test] fn adoption_refuses_a_public_name_that_changed_underneath(){let temp=tempfile::tempdir().unwrap();let public=temp.path().join("public");let bind=temp.path().join("bind");let first=std::os::unix::net::UnixListener::bind(&public).unwrap();let expected=stat_socket_identity(&public).unwrap();let ours=std::os::unix::net::UnixListener::bind(&bind).unwrap();fs::remove_file(&public).unwrap();let intruder=std::os::unix::net::UnixListener::bind(&public).unwrap();assert!(adopt_public_socket(&bind,&public,expected).is_err());assert!(bind.exists());assert!(adopt_public_socket(&bind,&public,None).is_err());let current=stat_socket_identity(&public).unwrap();adopt_public_socket(&bind,&public,current).unwrap();assert!(!bind.exists());drop((first,ours,intruder));}
     #[test] fn newer_socket_survives_teardown(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("socket");let original=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=stat_socket_identity(&path).unwrap();let replacement=temp.path().join("new");let newer=std::os::unix::net::UnixListener::bind(&replacement).unwrap();fs::rename(replacement,&path).unwrap();let path=path.to_str().unwrap();assert!(socket_entry_replaced(path,identity,"linux"));unlink_owned_socket(path,identity,"linux",|_|{});assert!(Path::new(path).exists());drop((original,newer));}
     #[test] fn own_entry_removed_and_absence_distinguished(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("socket");let listener=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=stat_socket_identity(&path).unwrap();let path=path.to_str().unwrap();assert_eq!(classify_endpoint_ownership(path,identity,"linux"),EndpointOwnership::Held);unlink_owned_socket(path,identity,"linux",|_|{});assert_eq!(classify_endpoint_ownership(path,identity,"linux"),EndpointOwnership::Absent);drop(listener);}
     #[test] fn owner_token_roundtrip_and_truncation(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("private/owner");let identity=SocketFileIdentity{dev:1,ino:2};write_socket_identity_file(&path,identity).unwrap();assert_eq!(read_socket_identity_file(&path).unwrap(),Some(identity));fs::write(&path,"{").unwrap();assert_eq!(read_socket_identity_file(&path).unwrap(),None);}
