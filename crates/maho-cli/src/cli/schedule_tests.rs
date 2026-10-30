@@ -79,6 +79,7 @@ fn options<'a, D: Delivery + ?Sized>(dir: &'a Path, delivery: &'a D) -> RunDueOp
         delivery,
         concurrency: 4,
         delivery_timeout_ms: 900_000,
+        session_id: None,
     }
 }
 
@@ -216,6 +217,32 @@ async fn successful_one_shot_is_delivered_once_and_removed() -> Result<()> {
     assert_eq!(events[0].id, job.id);
     assert_eq!(events[0].fire_count, 1);
     assert_eq!(events[0].prompt, job.prompt);
+    Ok(())
+}
+/// senpi v2026.10.27-2 (#4074): a live session's own pass delivers only its jobs.
+#[tokio::test]
+async fn session_scoped_pass_delivers_only_that_sessions_jobs() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let own = create(dir.path(), "a", None)?;
+    let other = create(dir.path(), "b", None)?;
+    let delivery = Recording {
+        events: Mutex::new(Vec::new()),
+        failure: false,
+        defer: false,
+    };
+    let scoped = RunDueOptions {
+        session_id: Some("a"),
+        ..options(dir.path(), &delivery)
+    };
+    let result = run_due_jobs(&scoped).await?;
+    assert_eq!(result.events.len(), 1);
+    assert_eq!(result.events[0]["id"], own.id);
+    let listing = list_scheduled_jobs(dir.path())?;
+    assert_eq!(listing.jobs.len(), 1);
+    assert_eq!(listing.jobs[0].job.id, other.id);
+    let events = delivery.events.lock().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, own.id);
     Ok(())
 }
 #[tokio::test]
@@ -413,6 +440,7 @@ async fn real_exec_hook_receives_json_after_lock_registration() -> Result<()> {
         delivery: &delivery,
         concurrency: 1,
         delivery_timeout_ms: 5000,
+        session_id: None,
     };
     let result = tokio::time::timeout(Duration::from_secs(10), run_due_jobs(&options))
         .await
