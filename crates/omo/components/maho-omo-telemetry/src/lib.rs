@@ -69,3 +69,6 @@ pub mod wave_assembler;
 pub use index::SenpiTelemetryComponent;
 #[cfg(test)]
 mod telemetry_parity_tests;
+#[cfg(test)]
+#[path = "telemetry_sync_5152_tests.rs"]
+mod telemetry_sync_5152_tests;
