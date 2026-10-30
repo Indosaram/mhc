@@ -114,10 +114,26 @@ async fn language_env_beats_file() {
 }
 
 #[tokio::test]
-async fn unknown_settings_rejected() {
-    let result = loaded(json!({"unknown":true})).await;
-    assert_eq!(result.settings, CodemodeSettings::default());
+async fn unknown_top_level_key_is_dropped_with_one_warning() {
+    // config.test.ts: a key from a newer version keeps the other settings and warns once.
+    let result = loaded(json!({"futureKey":1,"runBudgetSeconds":120})).await;
+    assert_eq!(result.settings.run_budget_seconds, 120.0);
     assert_eq!(result.warnings.len(), 1);
+    assert!(result.warnings[0].starts_with("Unknown codemode setting \"futureKey\" in "));
+}
+
+#[tokio::test]
+async fn unknown_nested_key_still_falls_back_to_defaults() {
+    let result =
+        loaded(json!({"runBudgetSeconds":120,"taskTools":{"task":"task","futureNested":true}}))
+            .await;
+    assert_eq!(result.settings, CodemodeSettings::default());
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Falling back to codemode defaults"))
+    );
 }
 
 #[tokio::test]

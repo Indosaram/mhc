@@ -164,23 +164,32 @@ pub async fn load_codemode_settings(
                 });
             }
         };
-        let settings = serde_json::from_value::<CodemodeSettings>(parsed)
+        let known = super::unknown_settings::without_unknown_top_level_keys(
+            parsed,
+            &known_setting_keys(),
+            &candidate,
+        );
+        let settings = serde_json::from_value::<CodemodeSettings>(known.value)
             .ok()
             .filter(valid_settings);
+        let mut warnings = known.warnings;
         return Ok(match settings {
             Some(settings) => LoadedCodemodeSettings {
                 settings,
                 source: Some(candidate),
-                warnings: Vec::new(),
+                warnings,
             },
-            None => LoadedCodemodeSettings {
-                settings: CodemodeSettings::default(),
-                source: Some(candidate.clone()),
-                warnings: vec![format!(
+            None => {
+                warnings.push(format!(
                     "Invalid codemode settings in {}. Falling back to codemode defaults.",
                     candidate.display()
-                )],
-            },
+                ));
+                LoadedCodemodeSettings {
+                    settings: CodemodeSettings::default(),
+                    source: Some(candidate.clone()),
+                    warnings,
+                }
+            }
         });
     }
     Ok(LoadedCodemodeSettings {
@@ -188,6 +197,14 @@ pub async fn load_codemode_settings(
         source: None,
         warnings: Vec::new(),
     })
+}
+
+/// The top-level keys `CodemodeSettings` accepts (upstream `codemodeSettingsSchema.properties`).
+fn known_setting_keys() -> Vec<String> {
+    match serde_json::to_value(CodemodeSettings::default()) {
+        Ok(serde_json::Value::Object(object)) => object.into_iter().map(|(key, _)| key).collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn valid_settings(settings: &CodemodeSettings) -> bool {
