@@ -33,3 +33,16 @@
   premium-request accounting, the model price catalogue, the OpenTelemetry SDK itself (replaced by
   `src/proto.rs` + reqwest), content capture, handoff/judgment spans, application-log forwarding,
   periodic 30 s flushing, gRPC and `http/json`.
+
+## telemetry-5152 (omo v5.1.52 delta)
+
+- Unit: telemetry-5152. Method: **C** (clean room) from `docs/cleanroom/specs/telemetry.md`
+  "## Delta (omo v5.1.52, 2026-10-30)" D1-D6 at spec commit `0be789b7`, plus the public
+  OpenTelemetry semantic conventions (GenAI `gen_ai.provider.name` well-known values and
+  `gen_ai.usage.input_tokens` definition; resource `service.instance.id`, `os.type`,
+  `host.arch`). No SUL or OmO source was opened.
+- Changed: `src/otlp.rs` (cache-inclusive exported input, `gen_ai.provider.name` mapping and
+  `mhc.provider.id`), `src/settings.rs` (standard resource attributes and their precedence,
+  resolved resource in `--status`), `src/extension.rs` (push-time re-check of
+  `telemetry.enabled`/`telemetry.otlpExportEnabled`, fail-closed, once-per-session discard
+  diagnostic), `src/delta_5152_tests.rs` (one test per given/when/then case).

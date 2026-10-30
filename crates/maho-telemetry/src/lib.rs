@@ -19,5 +19,8 @@ pub mod record;
 pub mod settings;
 pub mod stats;
 
+#[cfg(test)]
+mod delta_5152_tests;
+
 pub use extension::TelemetryExtension;
 pub use settings::{ConfigSwitches, Settings, resolve};
