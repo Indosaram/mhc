@@ -7,6 +7,7 @@
 //! on `mhc/task/<id>` and cherry-picks it), or keeps it, and removes the isolation. Settings come
 //! from `task.isolation` in the merged config of the task's directory.
 pub mod backend;
+pub mod iso;
 pub mod lifecycle;
 pub mod owner;
 pub mod settings;
