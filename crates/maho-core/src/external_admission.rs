@@ -76,12 +76,35 @@ impl AdmissionLedger {
             || self.emitted.contains(id)
             || self.failed.contains_key(id)
     }
-    /// Releases restored reservations no longer owned.
-    fn release_restored(&mut self) {
-        self.restored.retain(|_, owned| owned());
-    }
 }
 impl ExternalAdmission {
+    /// Releases restored reservations no longer owned. The ownership closures read custody (session manager,
+    /// work obligations), so they run after the ledger lock is released, never under it.
+    fn release_restored(&self) {
+        let restored: Vec<(String, RestoredOwnership)> = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .restored
+            .iter()
+            .map(|(id, owned)| (id.clone(), owned.clone()))
+            .collect();
+        let released: Vec<String> = restored
+            .into_iter()
+            .filter(|(_, owned)| !owned())
+            .map(|(id, _)| id)
+            .collect();
+        if released.is_empty() {
+            return;
+        }
+        let mut l = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in &released {
+            l.restored.shift_remove(id);
+        }
+    }
     /// senpi `restoreQueued`: durable custody will replay this delivery; reserve its id before asynchronous recovery
     /// or gateway admission. Recovery chooses the payload's queue lane; this only tracks durable ownership.
     pub fn restore_queued(&self, delivery_id: &str, is_owned: RestoredOwnership) {
@@ -174,6 +197,7 @@ impl ExternalAdmission {
         deliver: impl FnOnce(Value, &str) -> Result<(), String>,
     ) -> Result<Value, String> {
         let gate = self.gate(editor);
+        self.release_restored();
         let mut l = self
             .ledger
             .lock()
@@ -183,7 +207,6 @@ impl ExternalAdmission {
         }
         let id = input["delivery_id"].as_str().ok_or("missing delivery id")?;
         let result = |kind: &str, epoch: u64| json!({"kind":kind,"turn_epoch":epoch});
-        l.release_restored();
         if l.holds(id) {
             return Ok(result("already_admitted", l.epoch));
         }
@@ -222,11 +245,11 @@ impl ExternalAdmission {
         Ok(result(kind, epoch))
     }
     pub fn list(&self) -> Value {
-        let mut l = self
+        self.release_restored();
+        let l = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        l.release_restored();
         let pending: Vec<&String> = l.pending.keys().chain(l.restored.keys()).collect();
         let mut r = json!({"pending":pending,"emitted":l.emitted.iter().collect::<Vec<_>>()});
         if !l.failed.is_empty() {
@@ -280,11 +303,11 @@ impl ExternalAdmission {
     }
     /// Cleared carriers are no longer held; custody not yet enqueued for recovery still owns its delivery.
     pub fn drop_queued(&self) {
+        self.release_restored();
         let mut l = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        l.release_restored();
         l.pending.retain(|_, lane| lane == "start");
     }
 }
@@ -396,5 +419,18 @@ mod restored_tests {
             })
             .expect("admit");
         assert!(delivered);
+    }
+
+    /// The ownership check runs outside the ledger lock, so a closure that reads the admission itself (as
+    /// custody reads do through the session) cannot self-deadlock.
+    #[test]
+    fn an_ownership_check_runs_outside_the_ledger_lock() {
+        let admission = ExternalAdmission::default();
+        let reader = admission.clone();
+        admission.restore_queued("d", Arc::new(move || reader.turn_epoch() == 0));
+        assert_eq!(admission.list()["pending"], json!(["d"]));
+        admission.begin_turn();
+        admission.drop_queued();
+        assert_eq!(admission.list()["pending"], json!([]));
     }
 }
