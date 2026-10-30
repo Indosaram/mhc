@@ -10,6 +10,8 @@ pub mod azure_openai_responses;
 pub mod azure_openai_responses_lazy;
 pub mod bedrock_converse_stream;
 pub mod bedrock_converse_stream_lazy;
+#[cfg(test)]
+mod bedrock_producer_capture_tests;
 pub mod cloudflare;
 pub mod cloudflare_ai_binding;
 pub mod constrained_sampling;
@@ -29,6 +31,8 @@ pub mod google_vertex_lazy;
 pub mod lazy;
 pub mod mistral_conversations;
 pub mod mistral_conversations_lazy;
+#[cfg(test)]
+mod mistral_producer_capture_tests;
 pub mod openai_client_auth;
 pub mod openai_codex_responses;
 pub mod openai_codex_responses_lazy;

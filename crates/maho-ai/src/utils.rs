@@ -9,6 +9,8 @@ pub mod assistant_seed_frontier;
 pub mod block_symbols;
 #[cfg(test)]
 pub(crate) mod capture_test_records;
+#[cfg(test)]
+pub(crate) mod capture_test_server;
 pub mod chatgpt_subscription_auth;
 pub mod claude_code_version;
 pub mod config_reference;
