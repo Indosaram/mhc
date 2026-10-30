@@ -187,7 +187,13 @@ fn register_onboarding(
     let runtime = api.runtime.clone();
     let session_kind = api.profile.session_kind;
     let state_dir = component.state_dir.clone();
-    let skills_root = component.skills_root.clone();
+    // Upstream `getBuiltinSkillsRoot(process.env, logger)`: a valid OMO_BUNDLED_SKILLS_DIR moves the tour.
+    let skills_root = maho_omo_bundled_skills::resolve_bundled_skills_override(
+        &std::env::vars().collect(),
+        None,
+        None,
+    )
+    .map_or_else(|| component.skills_root.clone(), |dir| dir.to_string_lossy().into_owned());
     let process_forced = Arc::new(Mutex::new(false));
     // None is unclaimed; Some(None) is a successfully completed turn.
     let pending: Pending = Arc::new(Mutex::new(None::<Option<PendingRun>>));
