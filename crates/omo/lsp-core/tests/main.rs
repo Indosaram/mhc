@@ -15,6 +15,8 @@ pub mod post_edit_not_installed;
 pub mod server_installation_latest;
 #[path = "server_resolution_local_binary.rs"]
 pub mod server_resolution_local_binary;
+#[path = "typescript_server_defaults.rs"]
+pub mod typescript_server_defaults;
 #[path = "workspace_apply_edit.rs"]
 pub mod workspace_apply_edit;
 #[path = "workspace_apply_edit_lease.rs"]
