@@ -218,3 +218,36 @@ fn persistence_reuses_values_and_isolates_build_revision_and_degraded_results() 
     fresh.settled();
     other.settled();
 }
+
+#[test]
+fn a_block_is_cached_per_expiry_slot() {
+    use crate::compile::cache::MemoryBlockCacheOptions;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let outage = memory("Outage", "outage body\n").replacen(
+        "description: Outage",
+        "description: Outage\nexpires: 2026-10-27T06:33Z",
+        1,
+    );
+    let (_temp, repo) = repo_with(vec![("system/outage.md", &outage)]).expect("repo init");
+    let expires = 20_753 * 86_400_000 + (6 * 60 + 33) * 60_000;
+    let clock = Arc::new(AtomicI64::new(expires - 1000));
+    let cache = MemoryBlockCache::with_options(MemoryBlockCacheOptions {
+        now: Some({
+            let clock = clock.clone();
+            Arc::new(move || clock.load(Ordering::SeqCst))
+        }),
+        ..Default::default()
+    });
+    let options = CompileMemoryBlockOptions {
+        agent_id: "agent-expiry".to_string(),
+        projection: None,
+    };
+    let live = cache.compile(&repo, "template", &options).unwrap();
+    assert!(live.contains("outage body"));
+    clock.store(expires, Ordering::SeqCst);
+    let expired = cache.compile(&repo, "template", &options).unwrap();
+    assert!(!expired.contains("outage body"));
+    clock.store(expires - 1000, Ordering::SeqCst);
+    assert_eq!(cache.compile(&repo, "template", &options).unwrap(), live);
+}
