@@ -6,6 +6,7 @@ pub mod composition;
 pub mod consent_exchange;
 pub mod context;
 pub mod delivery;
+pub mod desktop_sync;
 pub mod device_session;
 pub mod dream_scoring;
 pub mod dream_selector;
