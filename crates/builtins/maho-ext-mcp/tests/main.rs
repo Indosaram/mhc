@@ -11,6 +11,8 @@ pub mod callback;
 pub mod commands;
 #[path = "config.rs"]
 pub mod config;
+#[path = "config_identity.rs"]
+pub mod config_identity;
 #[path = "connection.rs"]
 pub mod connection;
 #[path = "control_inventory.rs"]

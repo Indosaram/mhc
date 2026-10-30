@@ -65,7 +65,10 @@ fn request_timeout(server: &McpServerConfig) -> Duration {
 fn catalog_entry(entry: &McpServiceRegistrationEntry, _server: &McpServerConfig, settings: &McpSettings, tool: &Value, timeout: Duration, client: Option<Arc<crate::transport_sdk::McpClient>>) -> McpToolCatalogEntry {
     McpToolCatalogEntry {
         server: entry.name.clone(), tool: tool.get("name").and_then(Value::as_str).unwrap_or("").into(),
-        schema: tool.get("inputSchema").cloned().unwrap_or(Value::Null), description: tool.get("description").and_then(Value::as_str).map(str::to_owned),
+        schema: tool.get("inputSchema").cloned().unwrap_or(Value::Null),
+        output_schema: tool.get("outputSchema").filter(|schema| schema.is_object() || schema.is_boolean()).cloned(),
+        modern: entry.cached_catalog.as_ref().is_some_and(|cached| cached.modern) || client.as_ref().is_some_and(|client| crate::modern::request::is_modern_mcp_client(client)),
+        description: tool.get("description").and_then(Value::as_str).map(str::to_owned),
         annotations: tool.get("annotations").cloned(), request_timeout: timeout, client,
         runtime: None, connection:Some(entry.connection.clone()), ensure_connected: Some(entry.ensure_cached_tool_connected.clone()), ensure_fresh: Some(entry.ensure_fresh.clone()),
         agent_dir: entry.agent_dir.clone(), artifacts: entry.artifacts.clone(), output_guard: settings.output_guard.clone(),
@@ -76,7 +79,8 @@ async fn build_catalog(entry: &McpServiceRegistrationEntry, server: &McpServerCo
     let timeout = request_timeout(server);
     if let Some(cached) = &entry.cached_catalog {
         let client = entry.connection.client().ok();
-        return cached.tools.iter().map(|tool| catalog_entry(entry, server, settings, tool, timeout, client.clone())).collect();
+        let modern = cached.modern || client.as_ref().is_some_and(|client| crate::modern::request::is_modern_mcp_client(client));
+        return cached.tools.iter().filter(|tool| !modern || crate::modern::tool_schema::has_supported_modern_tool_schemas(tool)).map(|tool| catalog_entry(entry, server, settings, tool, timeout, client.clone())).collect();
     }
     if entry.connection.state() == ServerConnectionState::Connected
         && let Ok(client) = entry.connection.client()

@@ -7,13 +7,21 @@ use crate::config_schema::*;
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct McpConfigValidationError(pub String);
-pub fn validate_raw(raw: Value) -> Result<RawConfig, McpConfigValidationError> {
+pub fn validate_raw(mut raw: Value) -> Result<RawConfig, McpConfigValidationError> {
     validate_schema_value(&raw,"$")?;
-    let config: RawConfig = serde_path_to_error::deserialize(raw).map_err(|e| {
+    // Reference objects leave their slots before typed parsing; each server carries them in `references`.
+    let mut references = BTreeMap::new();
+    if let Some(servers) = raw.get_mut("mcpServers").and_then(Value::as_object_mut) {
+        for (name, server) in servers.iter_mut() { references.insert(name.clone(), crate::config_references::extract_mcp_references(server)); }
+    }
+    let mut config: RawConfig = serde_path_to_error::deserialize(raw).map_err(|e| {
         let path = e.path().to_string();
         let message = if e.inner().to_string().contains("expected a sequence") { "Expected array".into() } else { e.inner().to_string() };
         McpConfigValidationError(format!("Invalid MCP config at {}: {message}", if path == "." { "$" } else { &path }))
     })?;
+    for (name, server) in config.mcp_servers.iter_mut().flat_map(|servers| servers.iter_mut()) {
+        if let Some(found) = references.remove(name) { server.references = found; }
+    }
     if let Some(error) = get_server_endpoint_validation_error(&config) { return Err(McpConfigValidationError(format!("Invalid MCP config at {error}"))); }
     if let Some(settings) = &config.settings {
         if settings.import_configs.as_ref().is_some_and(|items| items.iter().any(|s| s != "claude")) {
@@ -47,8 +55,10 @@ fn validate_schema_value(raw:&Value,path:&str)->Result<(),McpConfigValidationErr
                             "command"|"cwd"|"url"|"bearerTokenEnv"=>check_type(value,&path,"string")?,
                             "enabled"=>check_type(value,&path,"boolean")?,
                             "connectTimeoutMs"|"requestTimeoutMs"|"startupTimeoutMs"|"idleTimeoutMin"=>check_type(value,&path,"number")?,
-                            "args"|"includeTools"|"excludeTools"=>check_strings(value,&path)?,
-                            "env"|"headers"=>{let map=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for (name,value) in map {check_type(value,&format!("{path}.{name}"),"string")?;}}
+                            "includeTools"|"excludeTools"=>check_strings(value,&path)?,
+                            // `args[]`, `env.*` and `headers.*` admit a configuration reference object (ConfigValueSchema).
+                            "args"=>{let array=value.as_array().ok_or_else(||schema_error(&path,"Expected array"))?;for (index,value) in array.iter().enumerate(){check_config_value(value,&format!("{path}.{index}"))?;}}
+                            "env"|"headers"=>{let map=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for (name,value) in map {check_config_value(value,&format!("{path}.{name}"))?;}}
                             "type"=>check_literals(value,&path,&["stdio","http","sse"] )?,
                             "lifecycle"=>check_literals(value,&path,&["lazy","eager","keep-alive"] )?,
                             "exposure"=>check_literals(value,&path,&["auto","direct","search","proxy"] )?,
@@ -92,6 +102,9 @@ fn check_type(value:&Value,path:&str,kind:&str)->Result<(),McpConfigValidationEr
     let valid=match kind {"string"=>value.is_string(),"boolean"=>value.is_boolean(),"number"=>value.is_number(),"integer"=>value.as_f64().is_some_and(|number|number.fract()==0.0),_=>false};
     if valid{Ok(())}else{Err(schema_error(path,&format!("must be {kind}")))}
 }
+fn check_config_value(value:&Value,path:&str)->Result<(),McpConfigValidationError> {
+    if maho_ai::utils::config_reference::is_config_reference(value){Ok(())}else{check_type(value,path,"string")}
+}
 fn check_strings(value:&Value,path:&str)->Result<(),McpConfigValidationError> {
     let array=value.as_array().ok_or_else(||schema_error(path,"Expected array"))?;
     for (index,value) in array.iter().enumerate(){check_type(value,&format!("{path}.{index}"),"string")?;}Ok(())
@@ -122,10 +135,20 @@ pub fn normalize_server(mut server: ServerConfigWire) -> McpServerConfig {
     server.startup_timeout_ms.get_or_insert(250.0);
     server
 }
-pub fn hash_config(config: &McpServerConfig) -> Result<String, McpConfigValidationError> {
-    let mut value = serde_json::to_value(config).map_err(|e| McpConfigValidationError(e.to_string()))?;
+// config-identity.ts
+/// The keyed identity of a declared server (senpi#3858): HMAC under the installation key of `agent_dir`.
+pub fn hash_config(config: &McpServerDeclaredConfig, agent_dir: Option<&Path>) -> Result<String, McpConfigValidationError> {
+    Ok(crate::config_identity_key::keyed_identity(agent_dir, &hashable_config(config)?))
+}
+/// The unkeyed identity earlier builds persisted; read only to adopt a matching cache entry.
+pub fn legacy_hash_config(config: &McpServerDeclaredConfig) -> Result<String, McpConfigValidationError> {
+    Ok(format!("{:x}", Sha256::digest(hashable_config(config)?)))
+}
+fn hashable_config(config: &McpServerDeclaredConfig) -> Result<String, McpConfigValidationError> {
+    // startupTimeoutMs is a client-side startup-race policy, not a connection or catalog-shape input.
+    let mut value = config.declared_json().map_err(|e| McpConfigValidationError(e.to_string()))?;
     if let Some(obj) = value.as_object_mut() { obj.remove("startupTimeoutMs"); }
-    Ok(format!("{:x}", Sha256::digest(stable_stringify(&value))))
+    Ok(stable_stringify(&value))
 }
 fn stable_stringify(value: &Value) -> String {
     match value {
@@ -138,14 +161,22 @@ fn stable_stringify(value: &Value) -> String {
         _ => value.to_string(),
     }
 }
+// config-interpolation.ts
+/// A reference is one opaque leaf, including its literal concat parts and path.
 pub fn interpolate_value(value: &Value, path: &str, env: &BTreeMap<String, String>) -> Result<Value, McpConfigValidationError> {
+    if maho_ai::utils::config_reference::is_config_reference(value) { return Ok(value.clone()); }
     match value {
         Value::String(s) => {
             if s.trim_start().starts_with('!') || s.contains("$(") {
                 return Err(McpConfigValidationError(format!("MCP config interpolation rejected command substitution at {}: config values may reference only environment variables for security; shell commands are never executed.", path.strip_prefix("mcp.").unwrap_or(path))));
             }
             let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}").map_err(|e| McpConfigValidationError(e.to_string()))?;
-            Ok(Value::String(re.replace_all(s, |c: &regex::Captures<'_>| env.get(&c[1]).cloned().unwrap_or_else(|| c.get(3).map_or("", |m| m.as_str()).into())).into_owned()))
+            Ok(Value::String(re.replace_all(s, |c: &regex::Captures<'_>| {
+                let name = &c[1];
+                maho_core::config_reference_env::warn_opaque_config_environment(name, env.get(name).map(String::as_str));
+                if !env.contains_key(name) && c.get(3).is_none() { maho_core::config_reference_env::warn_missing_config_environment(name); }
+                env.get(name).cloned().unwrap_or_else(|| c.get(3).map_or("", |m| m.as_str()).into())
+            }).into_owned()))
         }
         Value::Array(items) => items.iter().enumerate().map(|(i, v)| interpolate_value(v, &format!("{path}.{i}"), env)).collect::<Result<Vec<_>, _>>().map(Value::Array),
         Value::Object(map) => map.iter().map(|(k, v)| Ok((k.clone(), interpolate_value(v, &format!("{path}.{k}"), env)?))).collect::<Result<serde_json::Map<_, _>, _>>().map(Value::Object),
@@ -161,13 +192,15 @@ fn read_config(path: &Path, trusted: bool, diagnostics: &mut Vec<String>) -> Res
         Err(reason) => { diagnostics.push(format!("Blocked untrusted MCP config at {}: invalid JSON ({reason})", path.display())); Ok(None) }
     }
 }
-fn trusted_config(raw: Option<Value>, env: &BTreeMap<String, String>) -> Result<Option<RawConfig>, McpConfigValidationError> {
+fn trusted_config(raw: Option<Value>, env: &BTreeMap<String, String>, path: &Path) -> Result<Option<RawConfig>, McpConfigValidationError> {
     raw.map(|raw| {
         let original=validate_raw(raw.clone())?;
         let mut resolved=validate_raw(interpolate_value(&raw,"mcp",env)?)?;
         if let (Some(original),Some(resolved))=(original.mcp_servers,resolved.mcp_servers.as_mut()) {
             for (name,target) in resolved {if let Some(source)=original.get(name){crate::sharing_policy::inherit_mcp_sharing_scope(source,target);}}
         }
+        // Each reference resolves against the trusted file that declares it.
+        crate::config_references::remember_mcp_reference_origins(resolved.mcp_servers.as_mut(), &path.to_string_lossy());
         Ok(resolved)
     }).transpose()
 }
@@ -181,16 +214,16 @@ pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpC
     let claude_project_path = options.cwd.join(".mcp.json");
     let claude_local_path = options.cwd.join(".claude/.mcp.json");
     let mut diagnostics = Vec::new();
-    let global = trusted_config(read_config(&global_path, true, &mut diagnostics)?, options.env)?;
+    let global = trusted_config(read_config(&global_path, true, &mut diagnostics)?, options.env, &global_path)?;
     let project_raw = read_config(&project_path, options.project_trusted, &mut diagnostics)?;
-    let project = if options.project_trusted { trusted_config(project_raw.clone(), options.env)? } else { None };
+    let project = if options.project_trusted { trusted_config(project_raw.clone(), options.env, &project_path)? } else { None };
     let preliminary = merge_settings(global.as_ref().and_then(|c| c.settings.as_ref()), project.as_ref().and_then(|c| c.settings.as_ref()))?;
     let import = preliminary.import_configs.as_ref().is_some_and(|i| i.iter().any(|v| v == "claude"));
     let mut claude_configs = Vec::new();
     if import {
         for (path, trusted) in [(&claude_user_path, true), (&claude_config_path, true), (&claude_project_path, options.project_trusted), (&claude_local_path, options.project_trusted)] {
             let raw = read_config(path, trusted, &mut diagnostics)?;
-            let config = if trusted { trusted_config(raw.clone(), options.env)? } else { None };
+            let config = if trusted { trusted_config(raw.clone(), options.env, path)? } else { None };
             claude_configs.push((config, raw, path.clone(), trusted));
         }
     }
@@ -201,13 +234,13 @@ pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpC
     let mut result = ResolvedMcpConfig { settings, servers: BTreeMap::new(), diagnostics };
     for (name, declaration) in global.and_then(|c| c.mcp_servers).unwrap_or_default() {
         let config = normalize_server(declaration);
-        result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Global, global_path.clone(), config)?);
+        result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Global, global_path.clone(), config, Some(options.agent_dir))?);
     }
     for (config, raw, path, trusted) in claude_configs {
         if trusted {
             for (name, declaration) in config.and_then(|c| c.mcp_servers).unwrap_or_default() {
                 let config = normalize_server(declaration);
-                result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Claude, path.clone(), config)?);
+                result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Claude, path.clone(), config, Some(options.agent_dir))?);
             }
         } else if let Some(servers) = raw.as_ref().and_then(|r| r.get("mcpServers")).and_then(Value::as_object) {
             for name in servers.keys() {
@@ -221,7 +254,7 @@ pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpC
     if options.project_trusted {
         for (name, declaration) in project.and_then(|c| c.mcp_servers).unwrap_or_default() {
             let config = normalize_server(declaration);
-            result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Project, project_path.clone(), config)?);
+            result.servers.insert(name.clone(), resolved_server(name, McpServerSource::Project, project_path.clone(), config, Some(options.agent_dir))?);
         }
     } else if let Some(servers) = project_raw.as_ref().and_then(|r| r.get("mcpServers")).and_then(Value::as_object) {
         for name in servers.keys() {
@@ -241,22 +274,33 @@ fn merge_settings(first: Option<&McpSettings>, second: Option<&McpSettings>) -> 
     }
     serde_json::from_value(raw).map_err(|e| McpConfigValidationError(e.to_string()))
 }
-fn resolved_server(name: String, source: McpServerSource, source_path: std::path::PathBuf, config: McpServerConfig) -> Result<ResolvedMcpServer, McpConfigValidationError> {
-    Ok(ResolvedMcpServer { name, source, source_path, state: if config.enabled == Some(false) { McpServerState::Disabled } else { McpServerState::Enabled }, transport: config.transport, config_hash: Some(hash_config(&config)?), config: Some(config) })
+fn resolved_server(name: String, source: McpServerSource, source_path: std::path::PathBuf, config: McpServerDeclaredConfig, agent_dir: Option<&Path>) -> Result<ResolvedMcpServer, McpConfigValidationError> {
+    Ok(ResolvedMcpServer { name, source, source_path, state: if config.enabled == Some(false) { McpServerState::Disabled } else { McpServerState::Enabled }, transport: config.transport, config_hash: Some(hash_config(&config, agent_dir)?), config: Some(config) })
 }
-pub fn resolve_extension_mcp_server(name: &str, mut raw: ServerConfigWire, source_path: &Path, registration_cwd: &Path) -> Result<ResolvedMcpServer, McpConfigValidationError> {
+// config-extension.ts
+/// Resolve an extension-declared MCP server; a stdio declaration without an explicit `cwd` defaults to the
+/// extension's registration cwd. Extensions are never trusted to declare references.
+/// `agent_dir` keys the identity; `None` uses the process agent dir as upstream `hashConfig(config)` does.
+pub fn resolve_extension_mcp_server(name: &str, mut raw: ServerConfigWire, source_path: &Path, registration_cwd: &Path, agent_dir: Option<&Path>) -> Result<ResolvedMcpServer, McpConfigValidationError> {
+    crate::config_references::refuse_mcp_references(name, &raw).map_err(|error| McpConfigValidationError(error.to_string()))?;
     raw.cwd.get_or_insert_with(|| registration_cwd.to_string_lossy().into_owned());
-    resolved_server(name.into(), McpServerSource::Extension, source_path.into(), normalize_server(raw))
+    resolved_server(name.into(), McpServerSource::Extension, source_path.into(), normalize_server(raw), agent_dir)
 }
-pub fn resolve_skill_mcp_server(name: &str, raw: ServerConfigWire, source_path: &Path) -> Result<ResolvedMcpServer, McpConfigValidationError> {
+/// A skill server: references stay only where the caller remembered a trusted origin on them.
+pub fn resolve_skill_mcp_server(name: &str, raw: ServerConfigWire, source_path: &Path, agent_dir: Option<&Path>) -> Result<ResolvedMcpServer, McpConfigValidationError> {
     let mut config = normalize_server(raw);
     config.direct_tools = Some(DirectTools::Patterns(Vec::new())); config.exposure = Some(Exposure::Search);
-    resolved_server(name.into(), McpServerSource::Skill, source_path.into(), config)
+    resolved_server(name.into(), McpServerSource::Skill, source_path.into(), config, agent_dir)
 }
 pub fn visit_spawnable_mcp_servers(config: &ResolvedMcpConfig, mut visit: impl FnMut(&str, &ResolvedMcpServer)) {
     for (name, server) in &config.servers { if server.state == McpServerState::Enabled { visit(name, server); } }
 }
 pub fn merge_extension_mcp_servers(result: &mut ResolvedMcpConfig, declarations: &[maho_ext_api::RegisteredMcpServerDeclaration]) -> Result<(), McpConfigValidationError> {
+    merge_extension_mcp_servers_in(result, declarations, None)
+}
+/// `merge_extension_mcp_servers` keyed under a session's agent dir. A declaration that carries a reference is
+/// skipped with a diagnostic instead of failing the merge.
+pub fn merge_extension_mcp_servers_in(result: &mut ResolvedMcpConfig, declarations: &[maho_ext_api::RegisteredMcpServerDeclaration], agent_dir: Option<&Path>) -> Result<(), McpConfigValidationError> {
     for declaration in declarations {
         let name = &declaration.name;
         if let Some(existing) = result.servers.get(name) {
@@ -266,7 +310,7 @@ pub fn merge_extension_mcp_servers(result: &mut ResolvedMcpConfig, declarations:
             }
             result.diagnostics.push(format!("Extension MCP server '{name}' from {} replaces untrusted {} placeholder from {}.", declaration.extension_path, existing.source, existing.source_path.display()));
         }
-        result.servers.insert(name.clone(), resolve_extension_mcp_server(name, ServerConfigWire::from(&declaration.config), Path::new(&declaration.extension_path), &declaration.registration_cwd)?);
+        result.servers.insert(name.clone(), resolve_extension_mcp_server(name, ServerConfigWire::from(&declaration.config), Path::new(&declaration.extension_path), &declaration.registration_cwd, agent_dir)?);
     }
     Ok(())
 }
