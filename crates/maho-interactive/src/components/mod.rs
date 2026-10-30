@@ -71,3 +71,5 @@ pub mod user_message;
 pub mod user_message_selector;
 pub mod visual_truncate;
 pub mod write_result;
+pub mod handoff_fold; // ledger sync-5152
+pub mod themed_text; // ledger sync-5152
