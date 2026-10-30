@@ -615,7 +615,11 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             std::fs::set_permissions(&bind_socket, std::fs::Permissions::from_mode(0o600))?;
         }
         if launch.bind_socket.is_some() && bind_socket != public_socket {
-            std::fs::rename(&bind_socket, &public_socket)?;
+            crate::socket_ownership::adopt_public_socket(
+                std::path::Path::new(&bind_socket),
+                std::path::Path::new(&public_socket),
+                launch.replace_identity,
+            )?;
         }
         listener
     };
