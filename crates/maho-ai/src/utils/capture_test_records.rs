@@ -105,30 +105,32 @@ pub(crate) fn record_kinds(records: &[AssistantRecord]) -> Vec<String> {
         .collect()
 }
 
-/// The public bytes of the events, with every timestamp zeroed.
-pub(crate) fn public_bytes(events: &[CapturedEvent]) -> Value {
-    fn zero(value: &mut Value) {
-        match value {
-            Value::Object(map) => {
-                for (key, entry) in map.iter_mut() {
-                    if key == "timestamp" && entry.is_number() {
-                        *entry = json!(0);
-                    } else {
-                        zero(entry);
-                    }
+/// Zeroes every numeric `timestamp`: snapshots pin the clock, Rust producers stamp it.
+pub(crate) fn zero_timestamps(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, entry) in map.iter_mut() {
+                if key == "timestamp" && entry.is_number() {
+                    *entry = json!(0);
+                } else {
+                    zero_timestamps(entry);
                 }
             }
-            Value::Array(items) => items.iter_mut().for_each(zero),
-            _ => {}
         }
+        Value::Array(items) => items.iter_mut().for_each(zero_timestamps),
+        _ => {}
     }
+}
+
+/// The public bytes of the events, with every timestamp zeroed.
+pub(crate) fn public_bytes(events: &[CapturedEvent]) -> Value {
     let mut value = Value::Array(
         events
             .iter()
             .map(|event| serde_json::to_value(&event.value).expect("event json"))
             .collect(),
     );
-    zero(&mut value);
+    zero_timestamps(&mut value);
     value
 }
 

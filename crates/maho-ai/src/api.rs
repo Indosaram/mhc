@@ -25,6 +25,10 @@ pub mod devin_agent_lazy;
 pub mod github_copilot_headers;
 pub mod google_generative_ai;
 pub mod google_generative_ai_lazy;
+#[cfg(test)]
+mod google_interleave_capture_tests;
+#[cfg(test)]
+mod google_producer_capture_tests;
 pub mod google_shared;
 pub mod google_vertex;
 pub mod google_vertex_lazy;
