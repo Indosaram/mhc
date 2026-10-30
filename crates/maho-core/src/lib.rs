@@ -203,6 +203,7 @@ pub mod memory_report;
 pub mod message_path_resolution;
 pub mod model_change_origin;
 pub mod model_config_thinking_schema;
+pub mod model_discovery_url;
 pub mod model_switch_auth_error;
 pub mod pending_input;
 pub mod process_crash_record;
