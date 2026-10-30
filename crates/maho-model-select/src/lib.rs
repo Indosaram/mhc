@@ -18,7 +18,9 @@ pub use grammar::{
 };
 pub use matching::{is_available, match_available};
 pub use profile::{
-    DEFAULT_PROFILE_ORDER, Exclusions, ModelProfile, ProfileResolution, ProfileRung,
-    builtin_profiles, effective_profile, merge_profiles, resolve_default, resolve_profile,
+    BuiltProfiles, DEFAULT_PROFILE_ORDER, DroppedRung, Exclusions, GATED_ACCEPTED_LEVELS,
+    LAUNCH_GATED_MODEL, ModelProfile, ProfileResolution, ProfileRung, build_builtin_profiles,
+    builtin_profiles, effective_profile, is_launch_gated, merge_profiles, resolve_default,
+    resolve_profile,
 };
 pub use transforms::model_id_for_provider;
