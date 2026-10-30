@@ -3,6 +3,8 @@ pub type LifecycleAttentionCallback = Arc<std::sync::Mutex<Option<Arc<dyn Fn() +
 use maho_ext_api::*;
 pub type PromptStartObserver<'a> =
     dyn Fn(&str, &str, &str, Option<&[DynamicSystemPromptPart]>) + Send + Sync + 'a;
+#[path = "handler_budget.rs"]
+pub mod handler_budget;
 #[path = "shutdown_quit_budget.rs"]
 pub mod shutdown_quit_budget;
 use std::{
@@ -892,6 +894,30 @@ pub struct ExtensionRunner {
     handle_ledgers: crate::extension_handle_ledger::RunnerHandleLedgers,
     session_start_turns: Arc<crate::session_start_turn_gate::SessionStartTurnGate>,
     reported_child_module_replacements: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// senpi#3650 host budget for queued lifecycle and boundary event handlers (`setEventHandlerBudget`).
+    event_handler_budget: Option<handler_budget::HandlerBudgetResolver>,
+    handler_stall_listener: Option<handler_budget::HandlerStallListener>,
+    handler_turn_scope: Option<handler_budget::HandlerTurnScope>,
+    reported_invalid_handler_budget: Arc<std::sync::atomic::AtomicBool>,
+    held_handler_waits: Arc<handler_budget::HeldHandlerWaits>,
+}
+/// senpi `QUEUED_LIFECYCLE_EVENTS` plus the boundary events `emitBoundary` walks under the same budget.
+const fn is_budgeted_event(kind: EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::AgentStart
+            | EventKind::AgentEnd
+            | EventKind::AgentSettled
+            | EventKind::TurnStart
+            | EventKind::MessageStart
+            | EventKind::MessageUpdate
+            | EventKind::MessageEnd
+            | EventKind::ToolExecutionStart
+            | EventKind::ToolExecutionUpdate
+            | EventKind::ToolExecutionEnd
+            | EventKind::TurnEnd
+            | EventKind::AgentBeforeSettle
+    )
 }
 #[derive(Default)]
 struct LiveBindings {
@@ -955,6 +981,11 @@ impl ExtensionRunner {
             context_session_manager: Arc::new(std::sync::Mutex::new(None)),
             live_bindings: Arc::default(),
             session_error_listener: None,
+            event_handler_budget: None,
+            handler_stall_listener: None,
+            handler_turn_scope: None,
+            reported_invalid_handler_budget: Arc::default(),
+            held_handler_waits: Arc::default(),
         }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
@@ -1074,6 +1105,9 @@ impl ExtensionRunner {
         runner.shutdown_quit_budget = self.shutdown_quit_budget.clone();
         runner.shutdown_warn_ms = self.shutdown_warn_ms;
         runner.shutdown_timeout_ms = self.shutdown_timeout_ms;
+        runner.event_handler_budget = self.event_handler_budget.clone();
+        runner.handler_stall_listener = self.handler_stall_listener.clone();
+        runner.handler_turn_scope = self.handler_turn_scope.clone();
         Ok(runner)
     }
     pub fn ensure_recreation_available(&self) -> Result<(), ExtensionFailure> {
@@ -1518,6 +1552,79 @@ impl ExtensionRunner {
         resolver: Arc<dyn Fn() -> (u64, u64) + Send + Sync>,
     ) {
         self.shutdown_budget = Some(resolver);
+    }
+    /// senpi `setEventHandlerBudget`: the host's budget for handlers of the queued lifecycle and boundary
+    /// events, who hears their stalls, and the turn that owns a wait started now (the turn deadline
+    /// releases only its own turn's waits).
+    pub fn set_event_handler_budget(
+        &mut self,
+        budget: handler_budget::HandlerBudgetResolver,
+        on_stall: handler_budget::HandlerStallListener,
+        turn_scope: Option<handler_budget::HandlerTurnScope>,
+    ) {
+        self.event_handler_budget = Some(budget);
+        self.handler_stall_listener = Some(on_stall);
+        self.handler_turn_scope = turn_scope;
+    }
+    /// senpi `releaseHeldHandlers`: stops waiting on the given turn's handlers that are still running.
+    pub fn release_held_handlers(&self, turn: u64) -> usize {
+        self.held_handler_waits.release(turn)
+    }
+    /// Resolved once per emission, before any handler starts. An invalid setting is reported once and the
+    /// shipped defaults apply.
+    fn resolve_event_handler_budget(&self) -> handler_budget::ExtensionHandlerBudget {
+        let Some(resolve) = &self.event_handler_budget else {
+            return handler_budget::ExtensionHandlerBudget::UNBOUNDED;
+        };
+        match resolve() {
+            Ok(budget) => budget,
+            Err(message) => {
+                if !self
+                    .reported_invalid_handler_budget
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    diagnostic(&format!(
+                        "Using the default extension event handler budget (warn {}ms, hard cap {}ms): {message}",
+                        handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_WARN_MS,
+                        handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_TIMEOUT_MS,
+                    ));
+                }
+                handler_budget::ExtensionHandlerBudget::DEFAULT
+            }
+        }
+    }
+    /// The budget, held-wait registry and turn scope for one emission of `kind`, or `None` when the event
+    /// is not host-budgeted.
+    fn handler_budget_for(
+        &self,
+        kind: EventKind,
+    ) -> Option<(
+        handler_budget::ExtensionHandlerBudget,
+        Arc<handler_budget::HeldHandlerWaits>,
+        u64,
+    )> {
+        if !is_budgeted_event(kind) || !self.has_handlers(kind) {
+            return None;
+        }
+        Some((
+            self.resolve_event_handler_budget(),
+            Arc::clone(&self.held_handler_waits),
+            self.handler_turn_scope.as_ref().map_or(0, |scope| scope()),
+        ))
+    }
+    fn report_stopped_handler(
+        &mut self,
+        path: &str,
+        kind: EventKind,
+        verdict: handler_budget::HandlerStopVerdict,
+        budget: handler_budget::ExtensionHandlerBudget,
+    ) {
+        self.emit_error(ExtensionError {
+            extension_path: path.into(),
+            event: kind.as_str().into(),
+            error: handler_budget::stopped_handler_error(verdict, budget),
+            stack: None,
+        });
     }
     pub fn set_shutdown_quit_budget_resolver(
         &mut self,
@@ -2111,6 +2218,7 @@ impl ExtensionRunner {
             _ => None,
         };
         let (base_warn_ms, base_timeout_ms) = (self.shutdown_warn_ms, self.shutdown_timeout_ms);
+        let budgeted = self.handler_budget_for(kind);
         for (path, handler) in self.handlers(kind) {
             let context = self.create_context_for_extension(Some(&path))?;
             let mut ends_at_quit_deadline = false;
@@ -2126,6 +2234,24 @@ impl ExtensionRunner {
             let handled = if kind == EventKind::SessionShutdown {
                 self.run_shutdown(&path, &mut event, &context, &handler, ends_at_quit_deadline)
                     .await
+            } else if let Some((budget, waits, scope)) = &budgeted {
+                let outcome = handler_budget::run_budgeted_handler(
+                    &path,
+                    kind.as_str(),
+                    *budget,
+                    Some((waits.as_ref(), *scope)),
+                    self.handler_stall_listener.as_ref(),
+                    handler(&mut event, &context),
+                )
+                .await;
+                match outcome {
+                    handler_budget::BudgetedHandlerOutcome::Settled(result) => result,
+                    handler_budget::BudgetedHandlerOutcome::Stopped(verdict) => {
+                        self.runtime.assert_active()?;
+                        self.report_stopped_handler(&path, kind, verdict, *budget);
+                        continue;
+                    }
+                }
             } else {
                 handler(&mut event, &context).await
             };
@@ -2373,12 +2499,40 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut current_message = message;
         let mut modified = false;
+        let budgeted = self.handler_budget_for(EventKind::MessageEnd);
         for (path, handler) in self.handlers(EventKind::MessageEnd) {
             let context = self.create_context_for_extension(Some(&path))?;
             let mut event = ExtensionEvent::MessageEnd {
                 message: current_message.clone(),
             };
-            match handler(&mut event, &context).await {
+            let handled = match &budgeted {
+                Some((budget, waits, scope)) => {
+                    let outcome = handler_budget::run_budgeted_handler(
+                        &path,
+                        EventKind::MessageEnd.as_str(),
+                        *budget,
+                        Some((waits.as_ref(), *scope)),
+                        self.handler_stall_listener.as_ref(),
+                        handler(&mut event, &context),
+                    )
+                    .await;
+                    match outcome {
+                        handler_budget::BudgetedHandlerOutcome::Settled(result) => result,
+                        handler_budget::BudgetedHandlerOutcome::Stopped(verdict) => {
+                            self.runtime.assert_active()?;
+                            self.report_stopped_handler(
+                                &path,
+                                EventKind::MessageEnd,
+                                verdict,
+                                *budget,
+                            );
+                            continue;
+                        }
+                    }
+                }
+                None => handler(&mut event, &context).await,
+            };
+            match handled {
                 Ok(EventResult::MessageEnd {
                     message: Some(next),
                 }) => {
