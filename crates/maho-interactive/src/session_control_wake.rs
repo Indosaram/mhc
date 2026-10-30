@@ -337,15 +337,22 @@ mod tests {
     async fn edges_during_a_pass_merge_into_one_more_pass_with_the_priority_reason() {
         let passes = Arc::new(Mutex::new(Vec::<Value>::new()));
         let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        // Sent from inside the first pass: the edges below are requested while it is running.
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let started_tx = Arc::new(Mutex::new(Some(started_tx)));
         let seen = passes.clone();
         let pass: WakePass = Arc::new(
             move |event: Value| -> BoxFuture<'static, Result<Value, String>> {
                 let seen = seen.clone();
                 let mut gate = gate_rx.clone();
+                let started = lock(&started_tx).take();
                 Box::pin(async move {
                     let first = lock(&seen).is_empty();
                     lock(&seen).push(event);
                     if first {
+                        if let Some(started) = started {
+                            drop(started.send(()));
+                        }
                         drop(gate.wait_for(|open| *open).await);
                     }
                     Ok(json!({"admitted": ["d"]}))
@@ -354,7 +361,10 @@ mod tests {
         );
         let scheduler = WakeScheduler::new(pass, Arc::new(|_| {}));
         let first = scheduler.request("inbox", &[]);
-        tokio::task::yield_now().await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), started_rx)
+            .await
+            .expect("the first pass starts")
+            .expect("the first pass signals its start");
         let second = scheduler.request("emitted", &["a".into()]);
         let third = scheduler.request("submission", &["b".into()]);
         gate_tx.send_replace(true);
