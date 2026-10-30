@@ -3,6 +3,7 @@
 pub mod branch_summarization;
 #[allow(clippy::module_inception)] // mirrors senpi's compaction/compaction.ts
 pub mod compaction;
+pub mod estimate_cache_key;
 pub mod ideal_settings;
 pub mod lifecycle;
 pub mod settings;
