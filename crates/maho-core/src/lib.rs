@@ -215,6 +215,8 @@ pub mod pending_input_session;
 pub mod pending_input_session_port;
 pub mod pending_input_store;
 pub mod pending_input_types;
+#[cfg(test)]
+mod prompt_templates_cases;
 pub mod provider_default_selection;
 pub mod provider_rejected_images;
 pub mod reload_veto;
