@@ -29,3 +29,15 @@
 - Cross-lane prerequisites (not implemented here): the senpi `appendEntry` start-up-bookkeeping
   option on mhc `append_entry`; the transient/refused OAuth refresh split in `maho-ai` /
   `ExtensionFailure` so `RegistryProbe` can fill `ProbeError::refresh`.
+
+## Unit model-selection-5152-d6 (omo v5.1.52 delta D6)
+
+- Method: **C** (clean room). Written from the `### D6` subsection (with its prerequisite
+  paragraph), the §4 compatibility facts and D6 tests 1-5 of
+  `docs/cleanroom/specs/model-selection.md`, spec commit ab572b379, plus MIT code already in this
+  tree (`maho-ext-recommended-models`). No SUL, OmO or upstream source was opened.
+- D6: the `daily-normal` Kimi rung is `kimi-k3.1-pro`, taking providers and level from
+  `maho-ext-recommended-models` through the existing `recommended_rung`. §4 Kimi coding transform
+  gains `kimi-k3.1-pro` → `k3.1-pro` and `kimi-k3.1-pro-highspeed` → `k3.1-pro-highspeed`.
+- Tests (`tests/delta_5152_d6.rs`) were written from D6 tests 1-5; test 2 checks the
+  non-empty-providers invariant for every built-in rung in both launch-gate states.

@@ -191,7 +191,7 @@ pub fn build_builtin_profiles(released: bool, warn: &mut dyn FnMut(&str)) -> Bui
             "normal",
             vec![
                 recommended_rung("claude-opus-5-5", Some("medium")),
-                recommended_rung("kimi-k3", None),
+                recommended_rung("kimi-k3.1-pro", None),
                 recommended_rung("glm-5.3", None),
             ],
         ),
