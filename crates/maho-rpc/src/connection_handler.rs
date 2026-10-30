@@ -1141,6 +1141,7 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::ReleaseSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"release_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: release_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::SetSessionContext{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_session_context".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: set_session_context".into(),error_code:None,error_data:None}}),
         RpcCommandBody::AttachSession{..}|RpcCommandBody::ReleaseAttachment|RpcCommandBody::ReclaimSession{..}=>{let kind=match &command.body{RpcCommandBody::AttachSession{..}=>"attach_session",RpcCommandBody::ReleaseAttachment=>"release_attachment",_=>"reclaim_session"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
+        RpcCommandBody::SubscribeSessions|RpcCommandBody::UnsubscribeSessions=>{let kind=if matches!(command.body,RpcCommandBody::SubscribeSessions){"subscribe_sessions"}else{"unsubscribe_sessions"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse {
@@ -1950,6 +1951,27 @@ impl RpcConnectionHandler {
     ) -> Self {
         self.connection_roles = roles;
         self
+    }
+    /// senpi `uiRequestChanged` for a hosted session: every dialog registration and settlement is reported as a
+    /// `ui_request_pending`/`ui_request_settled` observation record on `out` (dialog observers, senpi#4266).
+    pub fn report_ui_request_changes(&self, out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>) {
+        let dialogs = out.clone();
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_changed(Box::new(move |change| {
+                if let Some(change) = change {
+                    dialogs(change.record());
+                }
+            }));
+        self.questions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_changed(Box::new(move |change| {
+                if let Some(change) = change {
+                    out(change.record());
+                }
+            }));
     }
     pub fn ui(&self) -> &std::sync::Arc<RpcExtensionUi> {
         &self.ui
