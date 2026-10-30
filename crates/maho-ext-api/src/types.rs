@@ -1775,6 +1775,8 @@ impl WidgetPlacement {
 }
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionUiDialogOptions {
+    /// Private local dialog: emits no generic blocked event or pending marker. Not an RPC field.
+    pub ephemeral: bool,
     pub signal: Option<AbortSignal>,
     pub timeout_ms: Option<u64>,
 }
@@ -2790,6 +2792,12 @@ pub struct DynamicSystemPromptPart {
     pub source: Option<String>,
     pub text: String,
 }
+/// senpi `BeforeAgentStartEventResult.message.placement`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BeforeAgentStartPlacement {
+    /// Insert before this turn's triggering prompt instead of appending after it.
+    BeforePrompt,
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BeforeAgentStartEventResult {
     pub system_prompt_parts: Option<Vec<DynamicSystemPromptPart>>,
@@ -2800,6 +2808,8 @@ pub struct BeforeAgentStartEventResult {
 pub struct BeforeAgentStartCombinedResult {
     pub system_prompt_parts: Option<Vec<DynamicSystemPromptPart>>,
     pub messages: Vec<CustomMessage>,
+    /// Messages whose handler asked for `BeforePrompt` placement, in handler order.
+    pub before_prompt_messages: Vec<CustomMessage>,
     pub system_prompt: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3437,6 +3447,9 @@ pub enum EventResult {
     },
     ProviderPayload(JsonValue),
     BeforeAgentStart(BeforeAgentStartEventResult),
+    /// `BeforeAgentStart` whose `message` carries `placement` (senpi `message.placement`); a separate
+    /// variant so existing struct-literal results keep compiling.
+    BeforeAgentStartPlaced(BeforeAgentStartEventResult, BeforeAgentStartPlacement),
     ModelSelect(ModelSelectEventResult),
     MessageEnd {
         message: Option<AgentMessage>,

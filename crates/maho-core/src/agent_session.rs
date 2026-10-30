@@ -6620,9 +6620,10 @@ impl AgentSession {
         );
         let mut messages = self.engine_turn_input_messages();
         messages.extend(options.held_messages.clone());
+        let prompt_index = messages.len();
         messages.push(user_message);
         messages.extend(consumed.clone());
-        self.apply_before_agent_start_result(&mut messages, before)?;
+        self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
         if let Err(error) = self.enforce_final_provider_admission(&messages).await {
             self.state()
                 .pending_next_turn_messages
@@ -6748,8 +6749,21 @@ impl AgentSession {
         &self,
         messages: &mut Vec<AgentMessage>,
         result: Option<maho_ext_api::BeforeAgentStartCombinedResult>,
+        prompt_index: usize,
     ) -> Result<(), String> {
         if let Some(before) = result {
+            // `placement: "before-prompt"` messages land just before the triggering prompt, in handler order.
+            for (offset, message) in before.before_prompt_messages.into_iter().enumerate() {
+                messages.insert(
+                    prompt_index + offset,
+                    session_message_from_value(
+                        serde_json::json!({"role":"custom", "customType":message.custom_type,
+                    "content":message.content, "display":message.display, "details":message.details,
+                    "timestamp":maho_ai::utils::diagnostics::now_ms()}),
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+            }
             for message in before.messages {
                 messages.push(
                     session_message_from_value(
@@ -17739,6 +17753,7 @@ impl AgentSession {
         }
         self.state().user_aborted = false;
         let mut messages = held_messages;
+        let prompt_index = messages.len();
         messages.push(app_message.clone());
         self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
         let admitted: Result<bool, String> = async {
@@ -17790,7 +17805,7 @@ impl AgentSession {
             if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) {
                 return Ok(false);
             }
-            self.apply_before_agent_start_result(&mut messages, before)?;
+            self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
             self.enforce_final_provider_admission(&messages).await?;
             Ok::<bool, String>(
                 user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst),
