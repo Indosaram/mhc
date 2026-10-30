@@ -2966,7 +2966,12 @@ impl HostCore {
                 attachments.release(owner, &session_id);
             }
         }
-        self.release_owner_attachment(owner, &session_id).await;
+        // The caller stays in the fanout until the seal: the terminal record is delivered to attached connections.
+        self.connection_left(&session_id, owner).await;
+        self.widths
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear_width(&session_id, Some(owner));
         if let Some(dir) = self.handover_parked_dir.get() {
             crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
         }
@@ -3001,9 +3006,27 @@ impl HostCore {
                     session_path: None,
                 })
             {
-                self.route(&session_id, None, value);
+                // senpi `sealLifecycle(..., attachedOnly = true)`: never broadcast to unattached connections.
+                let stdio = self
+                    .fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .deliver_to_attached(&session_id, value);
+                match stdio {
+                    Ok(Some(record)) => {
+                        let _ = self.default_writer.enqueue(&session_id, record);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("senpi rpc session {session_id} output failed: {error}")
+                    }
+                }
             }
         }
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .detach(owner, &session_id);
         self.forget_session(&session_id);
         Ok(session_id)
     }
@@ -3567,6 +3590,61 @@ mod handoff_tests {
             .expect("the deferred release ends the session once its turn settles")
             .expect("the runtime reports its disposal");
         turn.await.unwrap().unwrap();
+    }
+    #[tokio::test]
+    async fn reclaim_seals_session_closed_to_attached_connections_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut owner = peer(&core, "a");
+        let mut bystander = peer(&core, "b");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let path = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        core.handle(
+            Some("a"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd,"sessionPath":path})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut owner, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let durable = core
+            .live_identity(&session_id)
+            .await
+            .and_then(|(_, durable, _)| durable)
+            .unwrap();
+        core.handle(
+            Some("a"),
+            &serde_json::json!({"id":"k","type":"reclaim_session","sessionPath":path,"durableSessionId":durable,"expectedHostInstance":crate::protocol_identity::host_instance_id()})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let closed = loop {
+            let record = next(&mut owner).await;
+            if record["type"] == "session_closed" {
+                break record;
+            }
+            assert_ne!(record["id"], "k", "the reclaim answered before its seal");
+        };
+        assert_eq!(closed["reason"], "client_close");
+        assert_eq!(reply_to(&mut owner, "k").await["success"], true);
+        // The unattached connection's next record is its own reply, not the reclaimed session's seal.
+        core.handle(
+            Some("b"),
+            &serde_json::json!({"id":"m","type":"set_client_info","width":40}).to_string(),
+        )
+        .await
+        .unwrap();
+        loop {
+            let record = next(&mut bystander).await;
+            assert_ne!(record["type"], "session_closed");
+            if record["id"] == "m" {
+                break;
+            }
+        }
     }
     #[tokio::test]
     async fn a_dropped_connection_gives_up_every_attachment_it_held() {

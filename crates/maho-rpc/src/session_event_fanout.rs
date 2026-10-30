@@ -174,6 +174,45 @@ impl SessionEventFanout {
         view.attached.remove(id);
         view.recovering.remove(id);
     }
+    /// A terminal lifecycle record for the connections attached to `session` only (senpi `sealLifecycle` with
+    /// `attachedOnly`, through `deliverToSession`). With no registered connection the record is handed back for the
+    /// stdio lane.
+    pub fn deliver_to_attached(
+        &mut self,
+        session: &str,
+        mut wire: Value,
+    ) -> Result<Option<Value>, String> {
+        if let Some(object) = wire.as_object_mut() {
+            object.insert("sessionId".into(), session.into());
+        }
+        self.snapshots.forget(session);
+        self.resync_view().latest.remove(session);
+        if self.is_empty() {
+            return Ok(Some(wire));
+        }
+        let line = crate::jsonl::serialize_json_line(&wire).map_err(|error| error.to_string())?;
+        let mut failed = Vec::new();
+        for id in self.attached_connections(session) {
+            let Some(actor) = self.actors.get(&id) else {
+                continue;
+            };
+            if actor
+                .enqueue(crate::socket_event_fanout::QueueEntry {
+                    line: line.clone(),
+                    key: None,
+                    demoted_line: None,
+                    on_written: None,
+                })
+                .is_err()
+            {
+                failed.push(id);
+            }
+        }
+        for id in failed {
+            self.unregister(&id);
+        }
+        Ok(None)
+    }
     /// Queues one untagged control record for a registered connection (senpi `enqueueControl`);
     /// `false` when the connection has no actor and the caller must use the stdio lane.
     pub fn enqueue_control(&self, id: &str, value: &Value) -> Result<bool, String> {
