@@ -2755,10 +2755,16 @@ pub struct BuildSystemPromptOptions {
     pub context_files: Vec<ContextFile>,
     pub surface: PromptSurface,
 }
+/// senpi `ContextFile.scope`: `"user"` marks the user's own standing instruction files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextFileScope {
+    User,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextFile {
     pub path: String,
     pub content: String,
+    pub scope: Option<ContextFileScope>,
 }
 /// senpi `PromptSurface`: where the assistant's replies are rendered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
