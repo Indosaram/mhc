@@ -140,3 +140,23 @@ Written without opening any SUL source. Identifiers (`session_list`, `session_se
 `mhc gateway`, `gateway.enabled|poll_ms|max_hops`, store layout, header wording) are new; the only
 interface facts reused are the MIT senpi `session_control_delivery` contract and the generic
 config section name `gateway` already in `maho-config`.
+
+---
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+The upstream changes in this release concern a thread-RPC client that must attach to a session on
+a host socket before sending a session-scoped command (a deny-by-default attachment fence with
+typed refusal codes). The MIT gateway has no RPC host, no socket client and no attach step: it
+delivers through a file store and inbox (§2, §5). No behaviour of §1-§9 changes.
+
+### D1. Mapping table
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-28 | - | N-A | N-A reason: fence over host-socket session attachment; the file-store gateway has no attach step to fence |
+| omo-components-29 | - | N-A | N-A reason: typed attach refusals (`unknown_session`, `session_identity_mismatch`) exist only on the socket attach path; MIT target resolution already reports "no live session" / "ambiguous" (§4) |
+
+Leak self-check:
+- No code, no paraphrase of SUL comments, no tables mirroring SUL constants, no OmO-original
+  names or features were added; the delta is a decision record only.

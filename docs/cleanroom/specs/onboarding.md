@@ -87,3 +87,19 @@ Selection gates (TTY, resume, skip variable values, disabled, versions, force); 
 over scripted input (numbers and ids, skipped key, EOF aborts with no writes); non-interactive
 validation (unknown provider/model, missing `--yes` without TTY); apply writes auth, settings and
 `omo.jsonc` keys and preserves comments; setup state written last.
+
+---
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+No behaviour of §1-§6 changes. The upstream changes concern (a) the wording of a loader failure
+for a separately packaged session-history scanner, and (b) the path of a bundled tour skill used
+by the OmO first-run tour. The MIT setup has no separately loaded scanner (it runs in-process)
+and no tour step.
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-07 | - | N-A | N-A reason: message wording of an artifact loader that the in-process MIT session-history scan does not have |
+| omo-components-02 (onboarding half; the skill-command half is skills.md D2) | - | N-A | N-A reason: MIT onboarding has no bundled tour skill, so it resolves no bundled skill root |
+
+Leak self-check: no code, no SUL wording, no tables, no OmO-original names or features were added.
