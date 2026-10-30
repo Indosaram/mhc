@@ -960,6 +960,9 @@ pub struct AgentSessionInner {
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
     lifecycle_goal: Mutex<Option<Value>>,
     lifecycle_turn_facts: Mutex<Option<Value>>,
+    /// senpi `RunStopFacts` of the run whose agent_end was bound, and the run restored from disk, which keeps exactly
+    /// the stop its record carries (senpi#3864).
+    lifecycle_stop_facts: Mutex<(Option<crate::lifecycle_stop::RunStopFacts>, Option<String>)>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -1097,6 +1100,42 @@ struct SessionFallbackDeps(
 );
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
+
+/// senpi `SessionLifecycleController.lastStop`: derived only from the current run's own bound end; an end processed
+/// after a later run started sets nothing, and an unchanged stop keeps its first `at`. A run restored from disk keeps
+/// exactly the stop its record carries. No turn deadline is captured here: maho has no turn-deadline tracker.
+fn lifecycle_last_stop(
+    ledger: &crate::lifecycle_ledger::LifecycleLedger,
+    restored_run_id: Option<&str>,
+    facts: Option<&crate::lifecycle_stop::RunStopFacts>,
+    input: Option<&Value>,
+    stalled: bool,
+) -> Option<Value> {
+    let existing = ledger.current.get("lastStop").cloned();
+    let run_id = ledger.run_id.as_deref()?;
+    if Some(run_id) == restored_run_id {
+        return existing;
+    }
+    let Some(facts) = facts.filter(|facts| facts.run_id.as_deref() == Some(run_id)) else {
+        return existing;
+    };
+    let Some(detail) = crate::lifecycle_stop::stop_detail(input, Some(facts), None, stalled) else {
+        return existing;
+    };
+    if existing
+        .as_ref()
+        .is_some_and(|existing| crate::lifecycle_stop::same_stop(existing, &detail))
+    {
+        return existing;
+    }
+    let mut stop = detail;
+    stop["runId"] = json!(run_id);
+    stop["epoch"] = ledger.current["epoch"].clone();
+    if stop.get("at").is_none() {
+        stop["at"] = json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    }
+    Some(stop)
+}
 
 /// senpi `_bindExtensionCore` provider callbacks: registration updates the catalog, then the live
 /// session model is replaced so a reload does not keep the pre-reload context window.
@@ -4106,6 +4145,7 @@ impl AgentSession {
                 .session_manager
                 .reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY),
         );
+        let restored_run_id = lifecycle.run_id.clone();
         let held_inputs = crate::held_inputs::HeldInputs::new(&config.session_manager.entries());
         let session = Self {
             inner: Arc::new(AgentSessionInner {
@@ -4121,6 +4161,7 @@ impl AgentSession {
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
                 lifecycle_goal: Mutex::new(None),
                 lifecycle_turn_facts: Mutex::new(None),
+                lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
                 session_manager: Mutex::new(config.session_manager),
                 settings_manager: Arc::new(Mutex::new(config.settings_manager)),
                 model_registry,
@@ -4235,6 +4276,7 @@ impl AgentSession {
             Some(crate::work_obligations::SessionWorkObligations::new(
                 Box::new(SessionCustodyStore(Arc::downgrade(&session.inner))),
             ));
+        session.restore_queued_external_deliveries();
         let initial_model = session.agent.state().model;
         let scoped_tier = lock(&session.state)
             .scoped_models
@@ -4379,7 +4421,9 @@ impl AgentSession {
                         "automatic"
                     };
                     ledger.start_run(origin);
-                    ledger.checkpoint(|record| self.persist_lifecycle_record(record));
+                    lock(&self.lifecycle_stop_facts).0 = None;
+                    // The run's opening record carries the admitted input and the epoch (senpi#3980).
+                    ledger.publish_unwritten(|record| self.persist_lifecycle_record(record));
                     state.required_compaction_turn_error = None;
                     state.turn_index = 0;
                     state.message_replacements.clear();
@@ -4608,8 +4652,29 @@ impl AgentSession {
                 }),
             }
         } else {
+            // Bound at emission: the run this end belonged to, and the leaf before its handlers ran, so only a
+            // guard that this end's handlers appended is attributed to it (senpi#3864).
+            let bound_end = matches!(event, AgentEvent::AgentEnd { .. }).then(|| {
+                (
+                    lock(&self.lifecycle).run_id.clone(),
+                    self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
+                )
+            });
             self.dispatch_agent_extension_event(&event, end_boundary.as_ref(), will_retry)
                 .await;
+            if let Some((run_id, guard_start_leaf)) = bound_end {
+                let guard = self.with_session_manager(|manager| {
+                    crate::lifecycle_stop::goal_guard_after(
+                        &manager.branch(None),
+                        guard_start_leaf.as_deref(),
+                    )
+                });
+                lock(&self.lifecycle_stop_facts).0 = Some(crate::lifecycle_stop::RunStopFacts {
+                    run_id,
+                    guard,
+                    todo: None,
+                });
+            }
         }
         if let Some(boundary) = &end_boundary {
             self.state().abort_provenance.end_agent_end(boundary);
@@ -5018,8 +5083,9 @@ impl AgentSession {
         &self.external_admission
     }
 
+    /// Reads the lifecycle; every fact that feeds it raises its own change edge, so a read never writes
+    /// (senpi#3980).
     pub fn lifecycle_snapshot(&self) -> Value {
-        self.refresh_lifecycle();
         lock(&self.lifecycle).snapshot().clone()
     }
 
@@ -5155,6 +5221,10 @@ impl AgentSession {
     }
 
     fn refresh_lifecycle(&self) {
+        // Work aborted by dispose() still unwinds afterwards; its edges must not write to the released session file.
+        if self.state().disposed {
+            return;
+        }
         let activity = self.activity_snapshot();
         let entries = self.with_session_manager(|manager| {
             manager.reduce_history(&crate::lifecycle_history::LIFECYCLE_HISTORY)
@@ -5263,7 +5333,26 @@ impl AgentSession {
         {
             return;
         }
-        let changed = ledger.update(&state, waits, holds, failure, |record| {
+        let last_stop = {
+            let stop_facts = lock(&self.lifecycle_stop_facts);
+            let mut facts = stop_facts.0.clone();
+            if let Some(facts) = facts.as_mut() {
+                facts.todo = input
+                    .as_ref()
+                    .and_then(|input| input["todoOutcome"].as_str())
+                    .map(str::to_owned);
+            }
+            lifecycle_last_stop(
+                &ledger,
+                stop_facts.1.as_deref(),
+                facts.as_ref(),
+                input.as_ref(),
+                ledger.attention.synthetic().as_array().is_some_and(|waits| {
+                    waits.iter().any(|wait| wait["wait"]["kind"] == "stalled")
+                }),
+            )
+        };
+        let changed = ledger.update_with_stop(&state, waits, holds, failure, last_stop, |record| {
             self.persist_lifecycle_record(record)
         });
         let snapshot = ledger.snapshot().clone();
@@ -5274,6 +5363,10 @@ impl AgentSession {
     }
 
     fn persist_lifecycle_record(&self, record: &Value) -> Result<(), String> {
+        // Writes and emits nothing once disposed: the session file is no longer this session's (senpi#4149).
+        if self.state().disposed {
+            return Ok(());
+        }
         self.with_session_manager_mut(|manager| {
             manager.append_custom("session-lifecycle", Some(record.clone()));
             manager
@@ -6731,7 +6824,15 @@ impl AgentSession {
                 .prompt(maho_agent::agent::AgentPromptInput::Messages(messages)),
         )
         .await;
-        Box::pin(self.finish_provider_turn()).await?;
+        if let Err(error) = Box::pin(self.finish_provider_turn()).await {
+            // A turn the engine refused never ran, so it releases the barrier it armed (senpi#4106).
+            if let Some(spec) = &options.tool_barrier
+                && self.agent.signal().is_none()
+            {
+                self.release_tool_barrier(&spec.id);
+            }
+            return Err(error);
+        }
         let transcript_failure = lock(&self.transcript_write_failures).take_report();
         self.flush_pending_bash_messages();
         let required_compaction_error = self.state().required_compaction_admission_error.take();
@@ -11350,7 +11451,11 @@ impl AgentSession {
         });
         let controller = maho_ai::utils::abort::AbortController::new();
         let navigation_signal = controller.signal();
+        // Only the end of a tree navigation is a lifecycle edge: a record written while it runs would become the leaf
+        // under it (senpi#4120). It is session work: a prompt, tick or delivery arriving meanwhile waits for it
+        // instead of starting a run on the leaf it is moving (senpi#4154).
         self.state().branch_summary_abort_controller = Some(controller);
+        let session_work = self.work_barrier.begin();
         let signal = maho_ext_api::AbortSignal::default();
         let hook_signal = signal.clone();
         let abort_signal = navigation_signal.clone();
@@ -11534,7 +11639,10 @@ impl AgentSession {
             })
         }
         .await;
+        // The navigation's two busy facts end together, then raise the one lifecycle edge (senpi#4154).
         self.state().branch_summary_abort_controller = None;
+        session_work.finish();
+        self.refresh_lifecycle();
         result
     }
 
@@ -12111,6 +12219,8 @@ impl AgentSession {
         self.state()
             .bash_abort_signals
             .insert(key.clone(), signal.clone());
+        // A running user bash is a lifecycle fact: its start and end are edges (senpi#3980).
+        self.refresh_lifecycle();
         let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
         let shell = self.with_settings_manager(|manager| manager.get_shell_path());
         let local = self.tool_dispatcher.bash_operations(shell.as_deref());
@@ -12145,6 +12255,7 @@ impl AgentSession {
         .await
         .map_err(|error| error.to_string());
         self.state().bash_abort_signals.remove(&key);
+        self.refresh_lifecycle();
         if let Ok(result) = &result {
             self.record_bash_result(command, result, exclude_from_context);
         }
@@ -15621,7 +15732,12 @@ impl AgentSession {
                             } else {
                                 crate::work_custody_record::ObligationKind::Background
                             };
-                            registry.sync_source(source, kind, count);
+                            registry.sync_source(
+                                source,
+                                kind,
+                                count,
+                                crate::lifecycle_wait_items::wake_source_items(data),
+                            );
                         }
                     AgentSession { inner }.refresh_lifecycle();
                 }
@@ -17972,6 +18088,13 @@ impl AgentSession {
         {
             **message = crate::retry_fallback::usage_limit::describe_usage_limit_message(message);
         }
+        // Compaction start and end are lifecycle edges: the lifecycle getter no longer recomputes (senpi#3980).
+        if matches!(
+            event,
+            AgentSessionEvent::CompactionStart { .. } | AgentSessionEvent::CompactionEnd { .. }
+        ) {
+            self.refresh_lifecycle();
+        }
         self.log_session_event(&event);
         // PERF-DIVERGENCE(senpi agent-session.ts): upstream iterates its listener array; the port cloned the whole listener Vec per event, so we snapshot one copy-on-write Arc instead. Snapshot-at-emit semantics are unchanged.
         let listeners = Arc::clone(&lock(&self.event_listeners));
@@ -18474,7 +18597,10 @@ impl AgentSession {
         let cleared_deliveries = self.queued_delivery_tickets();
         self.agent.clear_all_queues();
         self.release_queued_deliveries(&cleared_deliveries, "cleared");
-        self.audit_queued_custom_receipts("queued custom message cleared before delivery");
+        // A removed queued message is never written: every send waiting on it settles now as cleared (senpi#4106).
+        self.audit_queued_custom_receipts(
+            &crate::itemized_send::QueuedDeliveryCleared { item_ids: Vec::new() }.to_string(),
+        );
         self.emit_queue_update();
         ClearedQueue {
             steering,
@@ -19889,6 +20015,66 @@ impl AgentSession {
 }
 
 impl AgentSession {
+    /// senpi `LifecycleSessionBinding` constructor (senpi#11209): a crashed receiver may hold durable custody but no
+    /// transcript entry yet. Recovery owns that delivery already, so it is reserved before session_start can let the
+    /// gateway enqueue a second carrier; consumed work marks the ledger interrupted first.
+    fn restore_queued_external_deliveries(&self) {
+        let deliveries = self.with_session_manager(|manager| {
+            crate::lifecycle_delivery::lifecycle_delivery_entries(&manager.entries())
+        });
+        let active: Vec<crate::work_custody_record::WorkCustodyRecord> = lock(&self.work_obligations)
+            .as_ref()
+            .map(|registry| registry.active().into_iter().cloned().collect())
+            .unwrap_or_default();
+        for record in active {
+            let Some(ticket) = record.ticket_id.clone() else {
+                continue;
+            };
+            if record.state == crate::work_custody_record::CustodyState::Consumed
+                || deliveries.contains_key(&ticket)
+            {
+                lock(&self.lifecycle).interrupted = true;
+            }
+            if record.state != crate::work_custody_record::CustodyState::Queued {
+                continue;
+            }
+            let Some(payload) = &record.payload else {
+                continue;
+            };
+            let mut message = payload.message.clone();
+            message["role"] = json!("custom");
+            message["timestamp"] = json!(0);
+            let Some(delivery_id) = crate::external_admission::delivery_id_of(&message).map(str::to_owned)
+            else {
+                continue;
+            };
+            if deliveries.contains_key(&ticket) {
+                self.external_admission.observe_persisted(&message);
+                continue;
+            }
+            let weak = Arc::downgrade(&self.inner);
+            self.external_admission.restore_queued(
+                &delivery_id,
+                Arc::new(move || {
+                    let Some(inner) = weak.upgrade() else {
+                        return false;
+                    };
+                    let session = AgentSession { inner };
+                    // Consumption writes the entry before message_end observes it in external admission.
+                    session.with_session_manager(|manager| {
+                        crate::lifecycle_delivery::lifecycle_delivery_entries(&manager.entries())
+                            .contains_key(&ticket)
+                    }) || lock(&session.work_obligations).as_ref().is_some_and(|registry| {
+                        registry.active().iter().any(|current| {
+                            current.ticket_id.as_deref() == Some(ticket.as_str())
+                                && current.state == crate::work_custody_record::CustodyState::Queued
+                        })
+                    })
+                }),
+            );
+        }
+    }
+
     /// Ticket admission precedes every write. Delivery is acknowledged only by the transcript receipt.
     pub fn send_work_ticket(
         &self,
@@ -19900,7 +20086,19 @@ impl AgentSession {
         if admission != crate::work_obligations::TicketAdmission::Admitted {
             return Err(crate::work_obligations::DeliveryTicketRefused {
                 ticket_id: ticket.into(),
-                reason: admission,
+                reason: crate::work_obligations::DeliveryTicketRefusal::Admission(admission),
+            }
+            .to_string());
+        }
+        // A re-send of a queued ticket must not replace the batch that queued message will write (senpi#4106).
+        if let Some(items) = &payload.item_ids
+            && let Some(queued) =
+                self.with_work_obligations(|registry| registry.queued_item_ids(ticket))
+            && !crate::itemized_send::same_items(&queued, items)
+        {
+            return Err(crate::work_obligations::DeliveryTicketRefused {
+                ticket_id: ticket.into(),
+                reason: crate::work_obligations::DeliveryTicketRefusal::DifferentItems,
             }
             .to_string());
         }
@@ -22373,6 +22571,28 @@ mod tests {
 
     fn test_session() -> AgentSession {
         test_session_with_stream_function(true)
+    }
+
+    struct Recorder(std::sync::Mutex<Vec<String>>);
+    impl crate::lifecycle_session_binding::LifecycleBindingHost for Recorder {
+        fn event(&self, name: &str, _: Value) {
+            self.0.lock().unwrap().push(name.to_owned());
+        }
+        fn facts_failed(&self, _: String) {}
+    }
+    /// senpi test/suite/regressions/4149-disposed-binding.test.ts: a disposed binding writes and emits nothing.
+    #[test]
+    fn a_disposed_binding_writes_and_emits_nothing() {
+        let session = Arc::new(test_session());
+        let host = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
+        let mut binding = crate::lifecycle_session_binding::LifecycleSessionBinding::new(session, host.clone());
+        binding.start_run();
+        binding.dispose();
+        binding.start_run();
+        binding.idle();
+        binding.refresh_facts(Value::Null);
+        assert_eq!(*host.0.lock().unwrap(), vec!["start_run".to_owned()]);
+        assert!(binding.consume(&json!({"role":"custom","details":{"ticketId":"t"}}), "r").is_none());
     }
 
     fn test_session_with_manager(manager: SessionManager) -> AgentSession {

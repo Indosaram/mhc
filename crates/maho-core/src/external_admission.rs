@@ -16,10 +16,14 @@ pub struct ExternalAdmission {
     input: Arc<Mutex<InputState>>,
     ledger: Arc<Mutex<AdmissionLedger>>,
 }
+/// A durable-custody reservation (senpi `PendingLane` function): held while the restored delivery is still owned.
+pub type RestoredOwnership = Arc<dyn Fn() -> bool + Send + Sync>;
 #[derive(Default)]
 struct AdmissionLedger {
     epoch: u64,
     pending: IndexMap<String, String>,
+    /// Restored queued deliveries custody will replay, reserved before recovery or gateway admission (senpi#11209).
+    restored: IndexMap<String, RestoredOwnership>,
     emitted: IndexSet<String>,
     failed: IndexMap<String, String>,
     file_takes_writes: Option<bool>,
@@ -65,7 +69,31 @@ impl Drop for InputHold {
         self.end();
     }
 }
+impl AdmissionLedger {
+    fn holds(&self, id: &str) -> bool {
+        self.pending.contains_key(id)
+            || self.restored.contains_key(id)
+            || self.emitted.contains(id)
+            || self.failed.contains_key(id)
+    }
+    /// Releases restored reservations no longer owned.
+    fn release_restored(&mut self) {
+        self.restored.retain(|_, owned| owned());
+    }
+}
 impl ExternalAdmission {
+    /// senpi `restoreQueued`: durable custody will replay this delivery; reserve its id before asynchronous recovery
+    /// or gateway admission. Recovery chooses the payload's queue lane; this only tracks durable ownership.
+    pub fn restore_queued(&self, delivery_id: &str, is_owned: RestoredOwnership) {
+        let mut l = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if l.holds(delivery_id) {
+            return;
+        }
+        l.restored.insert(delivery_id.to_owned(), is_owned);
+    }
     pub fn has_input_work(&self) -> bool {
         !self
             .input
@@ -155,7 +183,8 @@ impl ExternalAdmission {
         }
         let id = input["delivery_id"].as_str().ok_or("missing delivery id")?;
         let result = |kind: &str, epoch: u64| json!({"kind":kind,"turn_epoch":epoch});
-        if l.pending.contains_key(id) || l.emitted.contains(id) || l.failed.contains_key(id) {
+        l.release_restored();
+        if l.holds(id) {
             return Ok(result("already_admitted", l.epoch));
         }
         if gate["can_admit"] != true {
@@ -193,11 +222,13 @@ impl ExternalAdmission {
         Ok(result(kind, epoch))
     }
     pub fn list(&self) -> Value {
-        let l = self
+        let mut l = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut r = json!({"pending":l.pending.keys().collect::<Vec<_>>(),"emitted":l.emitted.iter().collect::<Vec<_>>()});
+        l.release_restored();
+        let pending: Vec<&String> = l.pending.keys().chain(l.restored.keys()).collect();
+        let mut r = json!({"pending":pending,"emitted":l.emitted.iter().collect::<Vec<_>>()});
         if !l.failed.is_empty() {
             r["failed"] = json!(
                 l.failed
@@ -216,6 +247,7 @@ impl ExternalAdmission {
         l.file_takes_writes = Some(true);
         if let Some(id) = delivery_id_of(message) {
             l.pending.shift_remove(id);
+            l.restored.shift_remove(id);
             l.emitted.insert(id.into());
         }
     }
@@ -228,6 +260,7 @@ impl ExternalAdmission {
         if let Some(id) = delivery_id_of(message)
             && !l.emitted.contains(id) {
                 l.pending.shift_remove(id);
+                l.restored.shift_remove(id);
                 l.failed.insert(id.into(), error);
             }
     }
@@ -245,12 +278,14 @@ impl ExternalAdmission {
             }
         }
     }
+    /// Cleared carriers are no longer held; custody not yet enqueued for recovery still owns its delivery.
     pub fn drop_queued(&self) {
-        self.ledger
+        let mut l = self
+            .ledger
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pending
-            .retain(|_, lane| lane == "start");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        l.release_restored();
+        l.pending.retain(|_, lane| lane == "start");
     }
 }
 pub fn delivery_message(input: &Value) -> Value {
@@ -325,5 +360,41 @@ mod delivery_tests {
         );
         admission.observe_persisted(&delivery_message(&input));
         assert_eq!(admission.list()["emitted"], json!(["d"]));
+    }
+}
+
+#[cfg(test)]
+mod restored_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// senpi test/suite/regressions/11209-restored-external-delivery.test.ts and
+    /// 11209-restored-reservation-queue-clear.test.ts: a restored delivery keeps its reservation across a queue
+    /// clear while owned, and is released once custody no longer owns it.
+    #[test]
+    fn a_restored_delivery_is_reserved_until_custody_releases_it() {
+        let admission = ExternalAdmission::default();
+        let owned = Arc::new(AtomicBool::new(true));
+        let reader = owned.clone();
+        admission.restore_queued("d", Arc::new(move || reader.load(Ordering::SeqCst)));
+        let input = json!({"delivery_id":"d","text":"hi","deliverAs":"followUp"});
+        assert_eq!(
+            admission
+                .admit(&input, &json!({}), false, |_, _| panic!("reserved"))
+                .expect("dedupe")["kind"],
+            "already_admitted"
+        );
+        admission.drop_queued();
+        assert_eq!(admission.list()["pending"], json!(["d"]));
+        owned.store(false, Ordering::SeqCst);
+        assert_eq!(admission.list()["pending"], json!([]));
+        let mut delivered = false;
+        admission
+            .admit(&input, &json!({}), false, |_, _| {
+                delivered = true;
+                Ok(())
+            })
+            .expect("admit");
+        assert!(delivered);
     }
 }
