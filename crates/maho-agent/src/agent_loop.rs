@@ -23,9 +23,8 @@ use tokio::sync::oneshot;
 
 use crate::assistant_terminal_state::{
     AgentStreamError, PROVIDER_RETRY_WATCHDOG_ABORT_ERROR_NAME, TerminalAssistantMessageEvent,
-    create_terminal_failure_assistant_message, demote_tool_use_without_tool_calls,
-    is_stream_idle_timeout_error, normalize_terminal_assistant_message, now_ms,
-    promote_stop_with_pending_tool_calls, should_finalize_idle_as_stop,
+    create_terminal_failure_assistant_message, is_stream_idle_timeout_error,
+    normalize_terminal_assistant_message, now_ms, settle_stop_reason, should_finalize_idle_as_stop,
     should_terminate_assistant_turn,
 };
 use crate::empty_assistant_recovery::with_empty_assistant_recovery;
@@ -400,9 +399,7 @@ async fn run_loop(
                 idle_timeout_ms,
             )
             .await;
-            let message = demote_tool_use_without_tool_calls(promote_stop_with_pending_tool_calls(
-                streamed.message,
-            ));
+            let message = streamed.message;
             let provider_tool_results = streamed.provider_tool_results;
             new_messages.push(assistant_event(&message));
             let mut tool_results: Vec<ToolResultMessage> = Vec::new();
@@ -1107,8 +1104,10 @@ async fn stream_assistant_response(
                     _ => None,
                 };
                 if let Some(terminal) = terminal {
-                    let final_message =
-                        normalize_terminal_assistant_message(result().await?, terminal);
+                    let final_message = settle_stop_reason(normalize_terminal_assistant_message(
+                        result().await?,
+                        terminal,
+                    ));
                     finalized = Some(final_message);
                     break;
                 }
@@ -1204,7 +1203,7 @@ async fn stream_assistant_response(
 
             let final_message = match finalized {
                 Some(final_message) => final_message,
-                None => result().await?,
+                None => settle_stop_reason(result().await?),
             };
             let mut final_message = final_message;
             propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
@@ -1268,7 +1267,7 @@ async fn stream_assistant_response(
                 })
             {
                 let partial = partial_message.cloned();
-                let mut final_message = AssistantMessage {
+                let final_message = AssistantMessage {
                     content: partial
                         .as_ref()
                         .map(|message| message.content.clone())
@@ -1313,6 +1312,7 @@ async fn stream_assistant_response(
                     timing: None,
                     timestamp: partial.as_ref().map(|m| m.timestamp).unwrap_or_else(now_ms),
                 };
+                let mut final_message = settle_stop_reason(final_message);
                 propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
                 if added_partial {
                     if let Some(last) = context.messages.last_mut() {
