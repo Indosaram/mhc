@@ -299,3 +299,5 @@ pub mod lifecycle_human_input;
 pub mod lifecycle_ledger;
 pub mod lifecycle_record;
 pub mod lifecycle_runtime_facts;
+pub mod lifecycle_stop;
+pub mod lifecycle_wait_items;
