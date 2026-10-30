@@ -3,7 +3,8 @@
 //!
 //! Native lease shape: `manifest_lease` records `{pid, startedAtMs}` without the upstream token or
 //! boot identity, so a lease is stale when it is unparseable or its pid is dead; a recycled pid
-//! (upstream `reused`) is detected by comparing the recorded start with `read_process_start_ms`.
+//! (upstream `reused`) is a process that `read_process_start_ms` says started after the recorded
+//! acquisition instant (upstream's one-sided v1 rule).
 //! Removal re-reads the file and unlinks only when the bytes are unchanged, the native analogue of
 //! upstream `reclaimInspected` (a lease published while the sweep probed is never deleted).
 use std::collections::HashSet;
@@ -59,8 +60,10 @@ fn lease_is_stale(raw: &[u8], options: &SweepOptions<'_>) -> bool {
     let Some(read_start) = options.read_process_start_ms else {
         return false;
     };
+    // Upstream's v1 rule (`classifyLease`): the native `startedAtMs` is when the lease was taken, so
+    // its holder started no later than that; only a process that started afterwards is a reuse.
     read_start(record.pid)
-        .is_some_and(|started| (started - record.started_at_ms).abs() > START_TOLERANCE_MS)
+        .is_some_and(|started| started > record.started_at_ms + START_TOLERANCE_MS)
 }
 
 fn sweep_entry(
@@ -229,6 +232,29 @@ mod tests {
         .unwrap();
         assert_eq!(result.removed_leases, 1);
         assert_eq!(probes.get(), 1);
+    }
+
+    #[test]
+    fn keeps_a_live_holder_that_took_its_lease_long_after_its_process_started() {
+        let dir = tempfile::tempdir().unwrap();
+        // startedAtMs is the acquisition instant; the holder process started 9 s before it.
+        lease(dir.path(), "live.lease", 21.0, 10_000.0);
+        let start = |_: f64| Some(1_000.0);
+        let alive = |_: f64| true;
+        let keep = HashSet::new();
+        let result = sweep_terminal_state_dir(
+            dir.path(),
+            &SweepOptions {
+                self_pid: 1.0,
+                keep: &keep,
+                limit: None,
+                is_process_alive: Some(&alive),
+                read_process_start_ms: Some(&start),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.removed_leases, 0);
+        assert!(dir.path().join("live.lease").exists());
     }
 
     #[test]

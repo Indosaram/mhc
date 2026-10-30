@@ -247,9 +247,15 @@ impl RpcMonitorRenderer {
                 format!("rpc {} {kind}", self.label(socket, record))
             }
             _ => {
-                let mut rest = record.as_object().cloned().unwrap_or_else(Map::new);
-                rest.remove("type");
-                rest.remove("sessionId");
+                // Filter instead of `Map::remove`: under the workspace's serde_json `preserve_order`,
+                // `remove` is `swap_remove` and would reorder the remaining keys.
+                let rest: Map<String, Value> = record
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(key, _)| key.as_str() != "type" && key.as_str() != "sessionId")
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
                 let json = Value::Object(rest).to_string();
                 let chars: Vec<char> = json.chars().collect();
                 let body = if chars.len() > UNKNOWN_JSON_LIMIT {
