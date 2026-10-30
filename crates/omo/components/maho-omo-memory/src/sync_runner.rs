@@ -737,10 +737,17 @@ mod tests {
     const BOUND: Duration = Duration::from_secs(20);
 
     #[derive(Default)]
-    struct Log(Mutex<Vec<(String, String, Option<String>)>>);
+    struct Log(
+        Mutex<Vec<(String, String, Option<String>)>>,
+        Mutex<Vec<(String, tokio::time::Instant)>>,
+    );
     impl Log {
         fn lines(&self) -> Vec<(String, String, Option<String>)> {
             lock(&self.0).clone()
+        }
+        /// Each warning with the (test-runtime) time it was logged.
+        fn warns(&self) -> Vec<(String, tokio::time::Instant)> {
+            lock(&self.1).clone()
         }
     }
     impl SyncRunnerLogger for Log {
@@ -749,6 +756,7 @@ mod tests {
         }
         fn warn(&self, message: &str, _: &str) {
             lock(&self.0).push(("warn".into(), message.into(), None));
+            lock(&self.1).push((message.into(), tokio::time::Instant::now()));
         }
         fn error(&self, message: &str, _: &str, code: &str) {
             lock(&self.0).push(("error".into(), message.into(), Some(code.into())));
@@ -892,17 +900,21 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test]
+    // Paused clock: each retry sleep fires as soon as the runtime idles, so the virtual time of every
+    // warning is exact. No `timeout` here: while the worker thread answers, auto-advance would fire it.
+    #[tokio::test(start_paused = true)]
     async fn a_deferred_session_is_retried_and_warns_once_per_delay() {
+        const DEFERRED_PASSES: u64 = 16;
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         let log = Arc::new(Log::default());
-        let attempts = Arc::new(AtomicU64::new(0));
-        let seen = attempts.clone();
+        let (attempted, mut attempts) = mpsc::unbounded_channel::<u64>();
+        let sequence = Arc::new(AtomicU64::new(0));
         let resolve: SyncSessionResolver = Arc::new(move |_| {
-            let seen = seen.clone();
+            let attempt = sequence.fetch_add(1, Ordering::SeqCst);
+            let _ = attempted.send(attempt);
             Box::pin(async move {
-                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                if attempt < DEFERRED_PASSES {
                     Err(crate::sync_session_deferred::SyncSessionDeferredError::new(
                         "Approve the keychain.",
                     )
@@ -913,22 +925,36 @@ mod tests {
             })
         });
         let (runner, _) = runner(&log, Some(resolve), None);
-        tokio::time::timeout(BOUND, runner.acquire("id", &paths, true))
-            .await
-            .unwrap();
-        // The retry runs on its own after the (minimum) delay and finds a signed-out device.
-        let deadline = tokio::time::Instant::now() + BOUND;
-        while attempts.load(Ordering::SeqCst) < 2 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the deferred pass was never retried"
-            );
-            tokio::task::yield_now().await;
+        let started = tokio::time::Instant::now();
+        runner.acquire("id", &paths, true).await;
+        // Every deferred pass is retried on its own, ending with the pass that finds a signed-out device.
+        for expected in 0..=DEFERRED_PASSES {
+            assert_eq!(attempts.recv().await, Some(expected));
         }
-        assert!(log.lines().iter().any(|(level, message, _)| level == "warn"
-            && message
-                == "memory sync is waiting: Approve the keychain. Sync retries on its own."));
         runner.release(&paths.repo).await.unwrap();
+        let waiting = "memory sync is waiting: Approve the keychain. Sync retries on its own.";
+        let still = "memory sync is still waiting for keychain approval.";
+        let warns: Vec<(String, u64)> = log
+            .warns()
+            .into_iter()
+            .map(|(message, at)| (message, (at - started).as_millis() as u64))
+            .collect();
+        // The delay doubles from 1 s to the 300 s cap; each new delay warns once, then the cap passes
+        // stay quiet but for one reminder per 900 s of waiting (passes 12 and 15).
+        let mut expected = Vec::new();
+        let (mut at, mut delay) = (0, DEFERRED_RETRY_MIN_MS);
+        for pass in 0..DEFERRED_PASSES {
+            if pass <= 9 {
+                expected.push((waiting.to_owned(), at));
+            } else if pass == 12 || pass == 15 {
+                expected.push((still.to_owned(), at));
+            }
+            at += delay;
+            delay = (delay * 2).min(DEFERRED_RETRY_MAX_MS);
+        }
+        assert_eq!(warns, expected);
+        assert_eq!(expected[10].1 - expected[9].1, DEFERRED_STILL_WAITING_MS);
+        assert_eq!(expected[11].1 - expected[10].1, DEFERRED_STILL_WAITING_MS);
     }
 
     #[tokio::test]
