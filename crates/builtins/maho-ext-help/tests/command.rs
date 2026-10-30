@@ -233,13 +233,16 @@ fn command(api: &ExtensionApi, name: &str) -> RegisteredCommand {
 }
 fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
     let mut future = std::pin::pin!(future);
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    loop {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    // The handlers under test never wait on I/O; a pending poll means a handler started waiting,
+    // which must fail the test instead of spinning forever.
+    const MAX_POLLS: usize = 1_000;
+    for _ in 0..MAX_POLLS {
         if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
             return value;
         }
     }
+    panic!("future still pending after {MAX_POLLS} polls");
 }
 
 #[test]
