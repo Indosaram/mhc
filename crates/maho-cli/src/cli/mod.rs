@@ -108,3 +108,5 @@ pub mod tool_search;
 pub mod user_extensions;
 #[cfg(not(feature = "omo"))]
 pub mod usage_stats;
+// ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
+pub mod cross_project_session;
