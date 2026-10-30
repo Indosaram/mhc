@@ -28,3 +28,16 @@
 - Identifiers are neutral (`WorkflowDefinition`, `WorkflowNode`, `WorkflowRun`,
   `WorkflowStore`, `WorkflowScheduler`, `WorkflowAddon`, `TaskExecutor`); every message text is
   this crate's own.
+
+## Unit task-5152 (omo v5.1.52 delta)
+
+- Method: **C** (clean room). Built from the `## Delta (omo v5.1.52, 2026-10-30)` section of
+  `docs/cleanroom/specs/workflow-dag.md` (D1, D2) at spec commit `ac9221fa8`; unit `task-5152`.
+- Allowed inputs (and the only ones used): that spec, `task.md` Delta D5, this crate's existing
+  MIT code, `maho-task` and the MIT `maho-skills` resolver (`RootResolver`, `NoticeContext`). No
+  SUL, OmO or upstream source, checkout, cache or web page was opened.
+- New: the run record's `parent_model`, stored at start and passed through `NodeRequest` to every
+  dispatch (D1); `skills::skill_roots`, which takes the bundled root from the shared validated
+  resolver (D2).
+- Tests (`delta_d1_parent_model_survives_retry_and_recovery` in `tests/workflow.rs`, unit tests
+  in `src/state.rs` and `src/skills.rs`) were written from the delta's test lists.

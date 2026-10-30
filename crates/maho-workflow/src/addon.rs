@@ -6,7 +6,7 @@ use crate::dag;
 use crate::executor::{BoxFuture, ChildOutcome, ChildProbe, NodeExecutor, NodeRequest, SendOutcome, StartError};
 use crate::scheduler::{SchedulerOptions, WorkflowScheduler};
 use crate::settings::DagSettings;
-use crate::skills::DirSkillResolver;
+use crate::skills::{DirSkillResolver, skill_roots};
 use crate::state::codes;
 use crate::store::WorkflowStore;
 use crate::tool::{self, Caller, TOOL_NAME};
@@ -46,11 +46,14 @@ pub fn outcome_of(record: &TaskRecord, output: String) -> ChildOutcome {
         TaskStatus::Interrupted => ChildOutcome::Interrupted {
             message: "the process that ran the child ended before it reported back".to_owned(),
         },
-        // A spawn or wait error is the host's problem; a non-zero exit is the child's.
-        TaskStatus::Failed => match &record.error {
-            Some(error) => ChildOutcome::Failed { message: error.clone(), infrastructure: true },
-            None => ChildOutcome::Failed {
-                message: match record.exit_code {
+        // A spawn or wait error (no exit code) is the host's problem; a child that exited with a
+        // code failed on its own, also when its error carries a credential remedy line
+        // (task.md Delta D3), which another automatic attempt would not fix.
+        TaskStatus::Failed => match (&record.error, record.exit_code) {
+            (Some(error), None) => ChildOutcome::Failed { message: error.clone(), infrastructure: true },
+            (Some(error), Some(_)) => ChildOutcome::Failed { message: error.clone(), infrastructure: false },
+            (None, code) => ChildOutcome::Failed {
+                message: match code {
                     Some(code) => format!("the child exited with code {code}"),
                     None => "the child ended without an exit code".to_owned(),
                 },
@@ -77,8 +80,11 @@ impl NodeExecutor for TaskExecutor {
             item.insert("model".into(), json!(model));
         }
         item.insert("name".into(), json!(format!("wf-{}", request.node_id)));
+        // The run's stored parent model is the last candidate (Delta D1); a run recorded before
+        // the field uses the current session's model.
         let mut spawn = self
             .scope
+            .with_parent_model(request.parent_model.clone())
             .request(&Value::Object(item), None)
             .map_err(|message| StartError { code: codes::PLAN_UNRESOLVED.to_owned(), message })?;
         spawn.quiet = true;
@@ -154,7 +160,8 @@ static SCHEDULERS: Mutex<Option<HashMap<PathBuf, Arc<WorkflowScheduler>>>> = Mut
 #[derive(Clone, Debug, Default)]
 pub struct WorkflowAddon {
     /// Extra skill roots searched for `load_skills` (after `<cwd>/.omo/skills` and
-    /// `<cwd>/.agents/skills`), e.g. the agent dir's `skills/` and the bundled root.
+    /// `<cwd>/.agents/skills`), e.g. the agent dir's `skills/`. The bundled root is always added
+    /// last, resolved by the shared `maho-skills` resolver (Delta D2).
     pub skill_roots: Vec<PathBuf>,
 }
 
@@ -186,8 +193,12 @@ impl WorkflowAddon {
         if let Some(existing) = map.get(&root) {
             return Arc::clone(existing);
         }
-        let mut roots = vec![scope.cwd().join(".omo").join("skills"), scope.cwd().join(".agents").join("skills")];
-        roots.extend(self.skill_roots.iter().cloned());
+        let roots = skill_roots(
+            scope.cwd(),
+            &self.skill_roots,
+            &maho_skills::RootResolver::default(),
+            &maho_skills::NoticeContext::diagnostic(),
+        );
         let scheduler = WorkflowScheduler::new(SchedulerOptions {
             store: WorkflowStore::in_state_dir(&root),
             settings: DagSettings::from_view(Some(scope.view())),
@@ -216,7 +227,7 @@ impl WorkflowAddon {
 }
 
 fn caller(scope: &TaskScope) -> Caller {
-    Caller::new(scope.session_id())
+    Caller::new(scope.session_id()).with_parent_model(scope.parent_model().map(str::to_owned))
 }
 
 impl TaskAddon for WorkflowAddon {

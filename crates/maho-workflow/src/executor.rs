@@ -17,6 +17,9 @@ pub struct NodeRequest {
     pub subagent_type: Option<String>,
     pub model: Option<String>,
     pub label: Option<String>,
+    /// The run's stored parent model (Delta D1): the last model candidate of the child's model
+    /// choice. `None` (a record from before the field) = the current session's model.
+    pub parent_model: Option<String>,
 }
 
 /// Why a child could not be started.

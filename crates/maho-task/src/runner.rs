@@ -2,7 +2,7 @@
 //! non-interactive `mhc -p` process of the current executable, with its own session (so a later run
 //! of the same task resumes it), its final answer on stdout redirected to the task's output file
 //! and stderr to its log. Behavior spec: `docs/cleanroom/specs/task.md` §3.
-use crate::settings::{DEPTH_ENV, ROOT_SESSION_ENV, TASK_ID_ENV};
+use crate::settings::{DEPTH_ENV, PARENT_SESSION_ENV, ROOT_SESSION_ENV, TASK_ID_ENV};
 use std::ffi::OsString;
 use std::future::Future;
 use std::path::PathBuf;
@@ -58,6 +58,27 @@ pub struct RunSpec {
     /// Root session of the chain that started this run (passed to the child as
     /// `MHC_TASK_ROOT_SESSION`).
     pub root_session: Option<String>,
+    /// Session that spawned the task (passed to the child as `MAHO_TASK_PARENT_SESSION`).
+    pub parent_session: Option<String>,
+}
+
+impl RunSpec {
+    /// The variables added to the child's inherited environment (task.md §3 and Delta D1): depth,
+    /// task id, root session (the parent when the record has no root) and parent session.
+    pub fn child_env(&self) -> Vec<(&'static str, String)> {
+        let parent = self.parent_session.clone().unwrap_or_default();
+        let root = self
+            .root_session
+            .clone()
+            .filter(|root| !root.trim().is_empty())
+            .unwrap_or_else(|| parent.clone());
+        vec![
+            (DEPTH_ENV, self.depth.to_string()),
+            (TASK_ID_ENV, self.task_id.clone()),
+            (ROOT_SESSION_ENV, root),
+            (PARENT_SESSION_ENV, parent),
+        ]
+    }
 }
 
 /// How a run ended.
@@ -181,9 +202,7 @@ impl TaskRunner for ProcessRunner {
                 .args(&self.leading_args)
                 .args(Self::args(spec))
                 .current_dir(&spec.cwd)
-                .env(DEPTH_ENV, spec.depth.to_string())
-                .env(TASK_ID_ENV, &spec.task_id)
-                .env(ROOT_SESSION_ENV, spec.root_session.as_deref().unwrap_or_default())
+                .envs(spec.child_env())
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
@@ -238,7 +257,26 @@ mod tests {
             log_path: dir.join("T.log"),
             sessions_dir: dir.join("sessions"),
             root_session: None,
+            parent_session: None,
         }
+    }
+
+    /// task.md Delta D1 test 5: the child's environment carries the owner session.
+    #[test]
+    fn child_env_carries_parent_and_root() {
+        let dir = std::path::Path::new("/s");
+        let mut run = spec(dir);
+        run.parent_session = Some("P".into());
+        let env = run.child_env();
+        let get = |key: &str| env.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone());
+        assert_eq!(get(PARENT_SESSION_ENV).as_deref(), Some("P"));
+        assert_eq!(get(ROOT_SESSION_ENV).as_deref(), Some("P"), "root falls back to the parent");
+        assert_eq!(get(TASK_ID_ENV).as_deref(), Some("T"));
+        assert_eq!(get(DEPTH_ENV).as_deref(), Some("1"));
+        run.root_session = Some("R".into());
+        let env = run.child_env();
+        assert!(env.contains(&(ROOT_SESSION_ENV, "R".to_owned())));
+        assert!(env.contains(&(PARENT_SESSION_ENV, "P".to_owned())));
     }
 
     #[test]
@@ -269,7 +307,7 @@ mod tests {
         let script = dir.path().join("child.sh");
         std::fs::write(
             &script,
-            "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = sleep ]; then sleep 30; fi\necho \"depth=$MHC_TASK_DEPTH id=$MHC_TASK_ID last=$last\"\necho log >&2\n",
+            "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = sleep ]; then sleep 30; fi\necho \"depth=$MHC_TASK_DEPTH id=$MHC_TASK_ID parent=$MAHO_TASK_PARENT_SESSION last=$last\"\necho log >&2\n",
         )
         .expect("script");
         let mut perms = std::fs::metadata(&script).expect("meta").permissions();
@@ -278,12 +316,13 @@ mod tests {
         let runner = ProcessRunner::new(&script);
         let mut run = spec(dir.path());
         run.prompt = "hello".into();
+        run.parent_session = Some("P".into());
         let outcome = runner
             .run(&run, CancelToken::default(), Box::new(|pid| assert!(pid.is_some())))
             .await;
         assert!(outcome.succeeded(), "{outcome:?}");
         let out = std::fs::read_to_string(&run.output_path).expect("out");
-        assert_eq!(out.trim(), "depth=1 id=T last=hello");
+        assert_eq!(out.trim(), "depth=1 id=T parent=P last=hello");
         assert_eq!(std::fs::read_to_string(&run.log_path).expect("log").trim(), "log");
 
         run.prompt = "sleep".into();

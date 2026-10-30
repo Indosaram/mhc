@@ -202,6 +202,10 @@ pub struct WorkflowRun {
     pub parent_session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session: Option<String>,
+    /// The starting session's model (`provider/id`), fixed at start and passed as the parent
+    /// model to every node dispatch (Delta D1). Absent in records written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_model: Option<String>,
     pub status: RunStatus,
     pub definition: WorkflowDefinition,
     pub fingerprint: String,
@@ -277,6 +281,47 @@ mod tests {
     fn preview_is_char_bounded() {
         let text = "\u{e9}".repeat(PREVIEW_CHARS + 5);
         assert_eq!(preview(&text).chars().count(), PREVIEW_CHARS);
+    }
+
+    /// Delta D1 test 5.
+    #[test]
+    fn parent_model_round_trips_and_is_optional() {
+        let definition: WorkflowDefinition =
+            serde_json::from_value(serde_json::json!({"key": "k", "name": "n", "nodes": []})).expect("definition");
+        let mut run = WorkflowRun {
+            version: RECORD_VERSION,
+            run_id: "wf_1".into(),
+            key: "k".into(),
+            name: "n".into(),
+            parent_session: "s".into(),
+            root_session: None,
+            parent_model: Some("p/main".into()),
+            status: RunStatus::Running,
+            definition,
+            fingerprint: "f".into(),
+            nodes: BTreeMap::new(),
+            created_at: 1,
+            updated_at: 1,
+            finished_at: None,
+            error: None,
+            amendments: 0,
+            user_paused: false,
+            guidance: Vec::new(),
+            diagnostics: Vec::new(),
+            warnings: Vec::new(),
+            owner_pid: None,
+            lease_at: 0,
+        };
+        let json = serde_json::to_value(&run).expect("json");
+        assert_eq!(json["parent_model"], "p/main");
+        let back: WorkflowRun = serde_json::from_value(json.clone()).expect("load");
+        assert_eq!(back, run);
+        let mut old = json;
+        old.as_object_mut().expect("object").remove("parent_model");
+        let loaded: WorkflowRun = serde_json::from_value(old).expect("old record loads");
+        assert_eq!(loaded.parent_model, None);
+        run.parent_model = None;
+        assert!(serde_json::to_value(&run).expect("json").get("parent_model").is_none());
     }
 
     #[test]
