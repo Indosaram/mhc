@@ -10,6 +10,10 @@ use std::sync::{
 pub trait LifecycleBindingHost: Send + Sync {
     fn event(&self, name: &str, data: Value);
     fn facts_failed(&self, error: String);
+    /// Binding restore, before any queued delivery is re-sent: the owner forwards this to
+    /// `SessionLifecycleController::mark_interrupted_from_custody(delivered)` so consumed work holds the reopened
+    /// session for a person (senpi#4204). `delivered` reports whether the transcript already holds a ticket's delivery.
+    fn mark_interrupted_from_custody(&self, _delivered: &dyn Fn(&str) -> bool) {}
 }
 pub struct LifecycleSessionBinding {
     pub session_id: String,
@@ -198,6 +202,15 @@ impl LifecycleSessionBinding {
         if self.restored || !self.writable() {
             return Ok(());
         }
+        let delivered: std::collections::HashSet<String> = self.session.with_session_manager(|manager| {
+            manager
+                .entries()
+                .iter()
+                .filter(|entry| entry["type"] == "custom_message")
+                .filter_map(|entry| entry.pointer("/details/ticketId").and_then(Value::as_str).map(str::to_owned))
+                .collect()
+        });
+        self.host.mark_interrupted_from_custody(&|ticket| delivered.contains(ticket));
         self.session.with_session_manager_mut(|manager| {
             let entries = manager.entries();
             let mut custody = std::collections::BTreeMap::new();
