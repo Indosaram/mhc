@@ -190,6 +190,7 @@ pub mod anthropic_oauth_migration;
 pub mod assistant_usage_scope;
 pub mod bootstrap_crash_listeners;
 pub mod browser_engine;
+pub mod context_files;
 pub mod continue_from_leaf;
 pub mod crash_log;
 pub mod credential_account_order;
