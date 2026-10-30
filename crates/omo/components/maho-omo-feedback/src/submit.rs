@@ -10,10 +10,11 @@ use std::sync::{Arc, LazyLock};
 use chrono::{SecondsFormat, Utc};
 use regex::Regex;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::draft::{FeedbackDraft, FeedbackKind, UploadRedactor};
 
-pub const FEEDBACK_REDACTOR_VERSION: &str = "1";
+pub const FEEDBACK_REDACTOR_VERSION: &str = "1.0.0";
 /// Keys this component issues (`feedback-<draftId>`); anything else from a caller is ignored.
 pub const FEEDBACK_IDEMPOTENCY_KEY_PATTERN: &str = r"^feedback-[A-Za-z0-9_-]{4,96}$";
 
@@ -95,6 +96,7 @@ pub enum FeedbackSubmitRefusal {
     SecretDetected,
     TooLarge,
     RateLimited,
+    SignInRequired,
     Unavailable,
 }
 
@@ -104,17 +106,45 @@ impl FeedbackSubmitRefusal {
             Self::SecretDetected => "secret-detected",
             Self::TooLarge => "too-large",
             Self::RateLimited => "rate-limited",
+            Self::SignInRequired => "sign-in-required",
             Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Which kind of service refusal a coded answer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceRefusal {
+    Rejected,
+    Unavailable,
+}
+
+impl ServiceRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rejected => "service-rejected",
+            Self::Unavailable => "service-unavailable",
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmitResult {
-    Sent { report_id: String },
-    Saved { path: PathBuf },
+    Sent {
+        report_id: String,
+    },
+    Saved {
+        path: PathBuf,
+    },
     AlreadySent,
     Refused(FeedbackSubmitRefusal),
+    /// A service answer with an error code: `code` is `unknown` when the answer carried no code
+    /// the contract knows (a proxy's page, or a newer service); `request_id` is redacted-clean.
+    ServiceRefused {
+        reason: ServiceRefusal,
+        code: String,
+        request_id: Option<String>,
+    },
 }
 
 impl SubmitResult {
@@ -125,6 +155,17 @@ impl SubmitResult {
             Self::Saved { path } => json!({"kind": "saved", "path": path.to_string_lossy()}),
             Self::AlreadySent => json!({"kind": "already-sent"}),
             Self::Refused(reason) => json!({"kind": "refused", "reason": reason.as_str()}),
+            Self::ServiceRefused {
+                reason,
+                code,
+                request_id,
+            } => {
+                let mut value = json!({"kind": "refused", "reason": reason.as_str(), "code": code});
+                if let Some(request_id) = request_id {
+                    value["requestId"] = json!(request_id);
+                }
+                value
+            }
         }
     }
 }
@@ -227,16 +268,128 @@ fn remember_delete_token(state_dir: &Path, id: &str, delete_token: &str) -> std:
     private_write(&path, &text)
 }
 
-fn refusal_for(status: u16, code: Option<&str>) -> SubmitResult {
-    SubmitResult::Refused(if code == Some("secret_detected") {
-        FeedbackSubmitRefusal::SecretDetected
-    } else if status == 413 {
-        FeedbackSubmitRefusal::TooLarge
-    } else if status == 429 {
-        FeedbackSubmitRefusal::RateLimited
-    } else {
-        FeedbackSubmitRefusal::Unavailable
-    })
+/// The service's closed error-code list (`ERROR_CODES` in the service contract's errors.ts), each
+/// with the refusal it means for a report. `unavailable` is never one of them: it is a send that
+/// got no answer from the service.
+#[derive(Clone, Copy)]
+enum Mapped {
+    SecretDetected,
+    RateLimited,
+    SignInRequired,
+    Service(ServiceRefusal),
+}
+
+const SERVICE_REFUSALS: [(&str, Mapped); 27] = [
+    ("secret_detected", Mapped::SecretDetected),
+    ("rate_limited", Mapped::RateLimited),
+    ("unauthorized", Mapped::SignInRequired),
+    ("forbidden", Mapped::SignInRequired),
+    ("reauth_required", Mapped::SignInRequired),
+    ("device_revoked", Mapped::SignInRequired),
+    ("writer_floor_mismatch", Mapped::SignInRequired),
+    ("account_deleted", Mapped::SignInRequired),
+    ("anonymous_closed", Mapped::SignInRequired),
+    ("invalid_request", Mapped::Service(ServiceRefusal::Rejected)),
+    ("not_found", Mapped::Service(ServiceRefusal::Rejected)),
+    (
+        "method_not_allowed",
+        Mapped::Service(ServiceRefusal::Rejected),
+    ),
+    ("conflict", Mapped::Service(ServiceRefusal::Rejected)),
+    ("stale_base", Mapped::Service(ServiceRefusal::Rejected)),
+    ("quota_exceeded", Mapped::Service(ServiceRefusal::Rejected)),
+    (
+        "entitlement_required",
+        Mapped::Service(ServiceRefusal::Rejected),
+    ),
+    (
+        "client_update_required",
+        Mapped::Service(ServiceRefusal::Rejected),
+    ),
+    ("update_required", Mapped::Service(ServiceRefusal::Rejected)),
+    (
+        "client_upgrade_required",
+        Mapped::Service(ServiceRefusal::Rejected),
+    ),
+    (
+        "unsupported_version",
+        Mapped::Service(ServiceRefusal::Rejected),
+    ),
+    ("export_expired", Mapped::Service(ServiceRefusal::Rejected)),
+    (
+        "step_up_required",
+        Mapped::Service(ServiceRefusal::Rejected),
+    ),
+    ("access_not_open", Mapped::Service(ServiceRefusal::Rejected)),
+    (
+        "not_available",
+        Mapped::Service(ServiceRefusal::Unavailable),
+    ),
+    (
+        "not_configured",
+        Mapped::Service(ServiceRefusal::Unavailable),
+    ),
+    (
+        "service_upgrade_required",
+        Mapped::Service(ServiceRefusal::Unavailable),
+    ),
+    ("internal", Mapped::Service(ServiceRefusal::Unavailable)),
+];
+
+/// The error codes this client maps to a typed refusal (pinned against the contract fixture).
+pub fn service_refusal_codes() -> Vec<&'static str> {
+    SERVICE_REFUSALS.iter().map(|(code, _)| *code).collect()
+}
+
+static REQUEST_ID: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_-]{1,128}$").ok());
+
+fn refusal_for(
+    status: u16,
+    code: Option<&str>,
+    request_id: Option<&str>,
+    redact: &UploadRedactor,
+) -> SubmitResult {
+    let request_id = request_id
+        .filter(|id| {
+            REQUEST_ID
+                .as_ref()
+                .is_some_and(|pattern| pattern.is_match(id))
+        })
+        .filter(|id| redact(id).count == 0)
+        .map(str::to_string);
+    if let Some((known, mapped)) =
+        code.and_then(|code| SERVICE_REFUSALS.iter().find(|(name, _)| *name == code))
+    {
+        return match mapped {
+            Mapped::SecretDetected => SubmitResult::Refused(FeedbackSubmitRefusal::SecretDetected),
+            Mapped::RateLimited => SubmitResult::Refused(FeedbackSubmitRefusal::RateLimited),
+            Mapped::SignInRequired => SubmitResult::Refused(FeedbackSubmitRefusal::SignInRequired),
+            Mapped::Service(reason) => SubmitResult::ServiceRefused {
+                reason: *reason,
+                code: (*known).to_string(),
+                request_id,
+            },
+        };
+    }
+    if status == 401 || status == 403 {
+        return SubmitResult::Refused(FeedbackSubmitRefusal::SignInRequired);
+    }
+    if status == 413 {
+        return SubmitResult::Refused(FeedbackSubmitRefusal::TooLarge);
+    }
+    if status == 429 {
+        return SubmitResult::Refused(FeedbackSubmitRefusal::RateLimited);
+    }
+    SubmitResult::ServiceRefused {
+        reason: if status >= 500 {
+            ServiceRefusal::Unavailable
+        } else {
+            ServiceRefusal::Rejected
+        },
+        code: "unknown".into(),
+        request_id,
+    }
 }
 
 /// Sends the draft as one report: the description is redacted here (the only text written after the
@@ -298,6 +451,11 @@ pub async fn submit_report(options: SubmitOptions) -> SubmitResult {
                 .unwrap_or_else(|| format!("feedback-{}", options.draft.draft_id)),
         ),
     ];
+    headers.push(("content-length".to_string(), json_body.len().to_string()));
+    headers.push((
+        "x-omo-content-sha256".to_string(),
+        format!("{:x}", Sha256::digest(json_body.as_bytes())),
+    ));
     if let Some(token) = &options.access_token {
         headers.push(("authorization".to_string(), format!("Bearer {token}")));
     }
@@ -311,15 +469,17 @@ pub async fn submit_report(options: SubmitOptions) -> SubmitResult {
     };
     let answer: Option<Value> = serde_json::from_str(&response.body).ok();
     if !(200..300).contains(&response.status) {
-        let code = answer
-            .as_ref()
-            .and_then(|answer| answer.get("error"))
+        let error = answer.as_ref().and_then(|answer| answer.get("error"));
+        let code = error
             .and_then(|error| error.get("code"))
+            .and_then(Value::as_str);
+        let request_id = error
+            .and_then(|error| error.get("requestId"))
             .and_then(Value::as_str);
         if kept_key.is_some() && response.status == 409 && code == Some("conflict") {
             return SubmitResult::AlreadySent;
         }
-        return refusal_for(response.status, code);
+        return refusal_for(response.status, code, request_id, &options.redact);
     }
     let Some(report_id) = answer
         .as_ref()
@@ -444,7 +604,17 @@ mod tests {
         );
         let body: Value = serde_json::from_str(&request.body).expect("json body");
         assert_eq!(body["title"], "broke <redacted>");
-        assert_eq!(body["redactorVersion"], "1");
+        assert_eq!(body["redactorVersion"], "1.0.0");
+        let sent_body = &request.body;
+        assert!(
+            request
+                .headers
+                .contains(&("content-length".into(), sent_body.len().to_string()))
+        );
+        assert!(request.headers.contains(&(
+            "x-omo-content-sha256".into(),
+            format!("{:x}", Sha256::digest(sent_body.as_bytes()))
+        )));
         assert_eq!(
             body["sections"][0]["text"],
             "  \nbroke <redacted>\nmore".replace("SECRET", "<redacted>")
@@ -499,12 +669,36 @@ mod tests {
             ),
             (413, "{}", FeedbackSubmitRefusal::TooLarge),
             (429, "{}", FeedbackSubmitRefusal::RateLimited),
-            (500, "nope", FeedbackSubmitRefusal::Unavailable),
+            (401, "{}", FeedbackSubmitRefusal::SignInRequired),
+            (403, "{}", FeedbackSubmitRefusal::SignInRequired),
         ] {
             let (transport, _) = scripted(status, body);
             let result = submit_report(options(dir.path(), BTreeMap::new(), None, transport)).await;
             assert_eq!(result, SubmitResult::Refused(expected));
         }
+        let (transport, _) = scripted(500, "nope");
+        let result = submit_report(options(dir.path(), BTreeMap::new(), None, transport)).await;
+        assert_eq!(
+            result,
+            SubmitResult::ServiceRefused {
+                reason: ServiceRefusal::Unavailable,
+                code: "unknown".into(),
+                request_id: None,
+            }
+        );
+        let (transport, _) = scripted(
+            400,
+            r#"{"error":{"code":"invalid_request","requestId":"req_1"}}"#,
+        );
+        let result = submit_report(options(dir.path(), BTreeMap::new(), None, transport)).await;
+        assert_eq!(
+            result,
+            SubmitResult::ServiceRefused {
+                reason: ServiceRefusal::Rejected,
+                code: "invalid_request".into(),
+                request_id: Some("req_1".into()),
+            }
+        );
     }
 
     #[tokio::test]
