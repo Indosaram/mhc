@@ -107,6 +107,54 @@ pub struct HostRegistration {
     pub generation: f64,
     pub launch_profile_id: String,
 }
+/// The process that wrote a pidfile record (senpi `HostPidFileWriter`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostPidFileWriter {
+    pub pid: u32,
+    pub start_time: Option<String>,
+}
+/// Writes one generation's `host.pid` record (senpi `writeGenerationRecord`), creating its directory.
+pub fn write_generation_record(
+    paths: &HostDaemonPaths,
+    registration: &HostRegistration,
+) -> Result<
+    (
+        crate::host_daemon_paths::HostGenerationPaths,
+        HostPidFileWriter,
+    ),
+    crate::host_daemon_paths::HostDaemonStateError,
+> {
+    let generation = generation_paths(paths, &registration.instance_id);
+    crate::host_daemon_paths::create_generation_directory(&generation)?;
+    let writer = HostPidFileWriter {
+        pid: std::process::id(),
+        start_time: read_process_start_time(std::process::id()),
+    };
+    let build = maho_core::engine_build_identity::engine_build_identity();
+    crate::host_daemon_state::write_state_file(
+        &generation.pid_file,
+        &serde_json::json!({"pid":registration.pid,"processStartTime":registration.process_start_time,"instance_id":registration.instance_id,"generation":registration.generation,"engineVersion":build.text,"engineOrdinal":build.ordinal,"launchProfileId":registration.launch_profile_id,"socket":registration.socket,"writer":{"pid":writer.pid,"startTime":writer.start_time}}),
+    )?;
+    Ok((generation, writer))
+}
+/// Drops the pointer and settings when they still name `instance_id` (senpi `releaseRegistrationPointer`). The
+/// pointer goes LAST: "no pointer" is what every reader takes as "no host here" (senpi#2241).
+pub fn release_registration_pointer(
+    paths: &HostDaemonPaths,
+    instance_id: &str,
+) -> std::io::Result<()> {
+    let pointer = parse_json(read_file_or_undefined(&paths.pointer_file)?.as_deref());
+    if pointer
+        .as_ref()
+        .and_then(|pointer| pointer.get("instance_id"))
+        .and_then(Value::as_str)
+        != Some(instance_id)
+    {
+        return Ok(());
+    }
+    remove_file(&paths.settings_file)?;
+    remove_file(&paths.pointer_file)
+}
 pub fn write_host_registration(
     paths: &HostDaemonPaths,
     registration: &HostRegistration,
@@ -117,14 +165,8 @@ pub fn write_host_registration(
             source,
         }
     })?;
-    let generation = generation_paths(paths, &registration.instance_id);
-    crate::host_daemon_paths::create_generation_directory(&generation)?;
-    let writer = serde_json::json!({"pid":std::process::id(),"startTime":read_process_start_time(std::process::id())});
-    let build = maho_core::engine_build_identity::engine_build_identity();
-    crate::host_daemon_state::write_state_file(
-        &generation.pid_file,
-        &serde_json::json!({"pid":registration.pid,"processStartTime":registration.process_start_time,"instance_id":registration.instance_id,"generation":registration.generation,"engineVersion":build.text,"engineOrdinal":build.ordinal,"launchProfileId":registration.launch_profile_id,"socket":registration.socket,"writer":writer}),
-    )?;
+    let (generation, writer) = write_generation_record(paths, registration)?;
+    let writer = serde_json::json!({"pid":writer.pid,"startTime":writer.start_time});
     let temporary = std::path::PathBuf::from(format!(
         "{}.{}.tmp",
         paths.pointer_file.display(),
@@ -235,6 +277,36 @@ pub fn clear_host_registration(paths: &HostDaemonPaths) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generation_records_and_pointer_release() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = crate::host_daemon_paths::create_host_daemon_paths("s", temp.path());
+        crate::host_daemon_paths::create_daemon_directories(&paths).expect("dirs");
+        let registration = HostRegistration {
+            pid: 7,
+            process_start_time: Some("1".into()),
+            socket: "s".into(),
+            instance_id: "g1".into(),
+            generation: 3.0,
+            launch_profile_id: "p".into(),
+        };
+        let (generation, writer) = write_generation_record(&paths, &registration).expect("record");
+        assert_eq!(writer.pid, std::process::id());
+        let record: Value =
+            serde_json::from_str(&std::fs::read_to_string(&generation.pid_file).expect("read"))
+                .expect("json");
+        assert_eq!(
+            (record["pid"].as_u64(), record["instance_id"].as_str()),
+            (Some(7), Some("g1"))
+        );
+        std::fs::write(&paths.pointer_file, r#"{"instance_id":"other"}"#).expect("pointer");
+        std::fs::write(&paths.settings_file, "{}").expect("settings");
+        release_registration_pointer(&paths, "g1").expect("foreign kept");
+        assert!(paths.pointer_file.exists() && paths.settings_file.exists());
+        std::fs::write(&paths.pointer_file, r#"{"instance_id":"g1"}"#).expect("pointer");
+        release_registration_pointer(&paths, "g1").expect("released");
+        assert!(!paths.pointer_file.exists() && !paths.settings_file.exists());
+    }
     #[test]
     fn legacy_record_is_read_and_liveness_requires_the_recorded_start_time() {
         let temp = tempfile::tempdir().unwrap();
