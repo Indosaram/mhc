@@ -387,6 +387,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         &env,
     );
     let public_socket = launch.socket.clone();
+    let state = std::sync::Arc::new(crate::host_lifecycle_shutdown::SupervisorState::default());
+    // POSIX public hosts publish a per-launch key record once bound (senpi `RpcPublicEndpoint`).
+    #[cfg(unix)]
+    let public_endpoint = Some(
+        crate::rpc_public_key::RpcPublicEndpoint::new(
+            std::path::Path::new(&agent_dir),
+            &public_socket,
+        )
+        .map_err(std::io::Error::other)?,
+    );
     let bind_socket = launch
         .bind_socket
         .clone()
@@ -467,7 +477,10 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         if let Some(ticks) =
             crate::process_start_identity::read_process_start_ticks(std::process::id())
         {
-            child_env.insert(crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(), ticks);
+            child_env.insert(
+                crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(),
+                ticks,
+            );
         }
     } else if platform != "win32"
         && let Some(start) = crate::host_reservations::read_process_start_time(std::process::id())
@@ -605,6 +618,11 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     };
     let (drain_tx, mut drain_rx) = tokio::sync::watch::channel(false);
     let drain_request_watch = accept_drain_requests(&generation_files, drain_tx.clone());
+    // Startup publication (senpi `state.startupComplete`): shutdown joins these writes before it removes the
+    // directories they write into, and a shutdown that already began publishes nothing.
+    let Some(publication) = state.begin_startup() else {
+        return Ok(());
+    };
     // Publish the public endpoint: an ordinary start binds the public name directly; a successor
     // binds its own generation name and adopts the public one by rename.
     #[cfg(unix)]
@@ -613,6 +631,10 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bind_socket, std::fs::Permissions::from_mode(0o600))?;
+        }
+        // The key record names a listener that exists: published only after the bind succeeded.
+        if let Some(endpoint) = &public_endpoint {
+            endpoint.publish().map_err(std::io::Error::other)?;
         }
         if launch.bind_socket.is_some() && bind_socket != public_socket {
             crate::socket_ownership::adopt_public_socket(
@@ -656,6 +678,12 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             identity,
         );
     }
+    drop(publication);
+    crate::host_supervisor_log::write_host_ready(
+        &public_socket,
+        &policy.cold_start,
+        policy.idle_exit_ms,
+    );
     // Observer: the supervisor cannot see turns directly - it proxies the public socket - so the
     // idle decision reads them from one always-on connection to the internal hop.
     let turns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -828,49 +856,163 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             },
         }
     }
-    // Teardown: stop accepting, let the host exit, then remove only the entries this generation
-    // still owns so a replacement's freshly published socket survives.
-    supersession.stop();
-    drain_request_watch.stop();
-    child_pid_task.abort();
+    // Teardown (senpi `performShutdown`): stop accepting, stop the child, join startup publication, then remove
+    // only the entries this generation still owns so a replacement's freshly published socket survives.
+    let mut watchers: Vec<Box<dyn FnOnce() + Send>> = vec![
+        Box::new(move || supersession.stop()),
+        Box::new(move || drain_request_watch.stop()),
+        Box::new(move || child_pid_task.abort()),
+        Box::new(move || publisher.abort()),
+        Box::new(move || observer.abort()),
+    ];
     if let Some(task) = handoff_grace {
-        task.abort();
+        watchers.push(Box::new(move || task.abort()));
     }
-    draining_tx.send_replace(true);
-    publisher.abort();
-    observer.abort();
     #[cfg(windows)]
-    identity_watch.abort();
-    #[cfg(unix)]
-    crate::host_stop::signal_generation(child_pid, rustix::process::Signal::TERM).ok();
-    // win32 has no SIGTERM: Node's `process.kill(pid, "SIGTERM")` there is TerminateProcess.
-    #[cfg(windows)]
-    let _ = child.start_kill();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if child.try_wait()?.is_some() {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    // Named-pipe handles can outlive cleanup; the bound (armed once the child is gone, senpi `performShutdown`)
-    // guarantees the supervisor never stays resident. Inert off win32.
-    let _hard_exit = ShutdownHardExit::arm(platform, signal_code.unwrap_or(0));
-    crate::socket_ownership::unlink_owned_socket(&public_socket, bound, platform, |_| {});
-    crate::host_daemon_registration::release_generation(&paths, &instance_id, child_pid)?;
-    crate::host_daemon_registration::release_generation(&paths, &instance_id, std::process::id())?;
-    if let Some(dir) = internal.dir {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-    if let Some(code) = signal_code {
-        std::process::exit(code);
+    watchers.push(Box::new(move || identity_watch.abort()));
+    let reason = match signal_code {
+        Some(143) => "signal:SIGTERM".to_owned(),
+        Some(129) => "signal:SIGHUP".to_owned(),
+        Some(code) => format!("signal:{code}"),
+        None => "rpc host child exited".to_owned(),
+    };
+    let mut teardown = GenerationTeardown {
+        child,
+        child_pid,
+        draining_tx,
+        watchers,
+        platform,
+        public_socket,
+        bound,
+        paths,
+        instance_id,
+        internal_dir: internal.dir,
+        hard_exit_code: signal_code.unwrap_or(0),
+        hard_exit: None,
+        #[cfg(unix)]
+        public_endpoint,
+    };
+    let exit_code = crate::host_lifecycle_shutdown::perform_shutdown(
+        &mut teardown,
+        &state,
+        &reason,
+        signal_code.unwrap_or(0),
+    )
+    .await;
+    drop(teardown);
+    if signal_code.is_some() || exit_code != 0 {
+        std::process::exit(exit_code);
     }
     Ok(())
+}
+/// One generation's resources as [`crate::host_lifecycle_shutdown::perform_shutdown`] tears them down.
+#[cfg(any(unix, windows))]
+struct GenerationTeardown {
+    child: tokio::process::Child,
+    child_pid: u32,
+    draining_tx: tokio::sync::watch::Sender<bool>,
+    watchers: Vec<Box<dyn FnOnce() + Send>>,
+    platform: &'static str,
+    public_socket: String,
+    bound: Option<crate::socket_ownership::SocketFileIdentity>,
+    paths: crate::host_daemon_paths::HostDaemonPaths,
+    instance_id: String,
+    internal_dir: Option<std::path::PathBuf>,
+    hard_exit_code: i32,
+    hard_exit: Option<ShutdownHardExit>,
+    #[cfg(unix)]
+    public_endpoint: Option<crate::rpc_public_key::RpcPublicEndpoint>,
+}
+#[cfg(any(unix, windows))]
+impl GenerationTeardown {
+    /// Waits up to `bound` for the child's exit; `true` once it is observed.
+    async fn wait_for_exit(&mut self, bound: std::time::Duration) -> std::io::Result<bool> {
+        match tokio::time::timeout(bound, self.child.wait()).await {
+            Ok(status) => status.map(|_| true),
+            Err(_) => Ok(false),
+        }
+    }
+}
+#[cfg(any(unix, windows))]
+#[async_trait::async_trait]
+impl crate::host_lifecycle_shutdown::SupervisorTeardown for GenerationTeardown {
+    fn stop_admission(&mut self) {
+        self.draining_tx.send_replace(true);
+    }
+    async fn stop_child(&mut self, _reason: &str) -> std::io::Result<()> {
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        crate::host_stop::signal_generation(self.child_pid, rustix::process::Signal::TERM).ok();
+        // win32 has no SIGTERM: Node's `process.kill(pid, "SIGTERM")` there is TerminateProcess.
+        #[cfg(windows)]
+        let _ = self.child.start_kill();
+        if self
+            .wait_for_exit(std::time::Duration::from_secs(5))
+            .await?
+        {
+            return Ok(());
+        }
+        self.child.start_kill()?;
+        if self
+            .wait_for_exit(std::time::Duration::from_secs(5))
+            .await?
+        {
+            return Ok(());
+        }
+        Err(std::io::Error::other(format!(
+            "host child pid {} exit unobserved after SIGKILL",
+            self.child_pid
+        )))
+    }
+    async fn child_exit_recorded(&mut self) {
+        // The exit is recorded in the supervisor loop when the child ends on its own (`note_child_exit`).
+    }
+    fn stop_watchers(&mut self) {
+        for stop in self.watchers.drain(..) {
+            stop();
+        }
+    }
+    async fn release(&mut self) -> std::io::Result<()> {
+        // Named-pipe handles can outlive cleanup; the bound (armed once the child is gone) guarantees the
+        // supervisor never stays resident. Inert off win32.
+        self.hard_exit = Some(ShutdownHardExit::arm(self.platform, self.hard_exit_code));
+        if let Some(dir) = self.internal_dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        crate::socket_ownership::unlink_owned_socket(
+            &self.public_socket,
+            self.bound,
+            self.platform,
+            |_| {},
+        );
+        crate::host_daemon_registration::release_generation(
+            &self.paths,
+            &self.instance_id,
+            self.child_pid,
+        )?;
+        crate::host_daemon_registration::release_generation(
+            &self.paths,
+            &self.instance_id,
+            std::process::id(),
+        )
+    }
+    async fn reap_child_after_failure(&mut self) -> std::io::Result<()> {
+        if self.child.try_wait()?.is_none() {
+            self.child.start_kill()?;
+            self.wait_for_exit(std::time::Duration::from_secs(5))
+                .await?;
+        }
+        Ok(())
+    }
+    fn dispose_public_endpoint(&mut self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        if let Some(endpoint) = self.public_endpoint.take() {
+            return endpoint.dispose();
+        }
+        Ok(())
+    }
 }
 #[cfg(not(any(unix, windows)))]
 pub async fn run_host_supervisor(_launch: SupervisorLaunch) -> std::io::Result<()> {
