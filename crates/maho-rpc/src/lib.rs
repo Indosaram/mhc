@@ -86,6 +86,7 @@ pub mod rpc_command_invocation;
 pub mod rpc_command_surface;
 pub mod rpc_input_validation;
 pub mod rpc_mode;
+pub mod rpc_public_key;
 pub mod rpc_session_state;
 pub mod rpc_types;
 pub mod run_hold_commands;
