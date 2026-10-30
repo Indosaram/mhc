@@ -257,6 +257,10 @@ impl AuthContext for OverlayEnvAuthContext<'_> {
     async fn file_exists(&self, path: &str) -> bool {
         self.base.file_exists(path).await
     }
+
+    async fn stored_provider_env(&self, provider_id: &str) -> Option<ProviderEnv> {
+        self.base.stored_provider_env(provider_id).await
+    }
 }
 
 pub fn overlay_env_auth_context<'a>(
@@ -748,9 +752,12 @@ mod tests {
                 {"name": "work", "key": "work-key", "env": {"REGION": "work"}}
             ],
             "pinned": "work"
-        })).unwrap();
+        }))
+        .unwrap();
         let credentials = seeded(credential).await;
-        let ctx = FauxCtx { env: HashMap::new() };
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
         let overrides = AuthResolutionOverrides {
             slot_name: Some("work".into()),
             env: Some([("REQUEST".into(), "value".into())].into()),
@@ -759,9 +766,16 @@ mod tests {
 
         // When
         let result = resolve_provider_auth(
-            "p", &api_key_provider("MY_KEY"), &credentials, &ctx,
-            Some(&overrides), &signal(),
-        ).await.unwrap().unwrap();
+            "p",
+            &api_key_provider("MY_KEY"),
+            &credentials,
+            &ctx,
+            Some(&overrides),
+            &signal(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // Then
         assert_eq!(result.auth.api_key.as_deref(), Some("work-key"));

@@ -84,6 +84,10 @@ impl AuthContext for EnvOverlayAuthContext<'_> {
     async fn file_exists(&self, path: &str) -> bool {
         self.base.file_exists(path).await
     }
+
+    async fn stored_provider_env(&self, provider_id: &str) -> Option<ProviderEnv> {
+        self.base.stored_provider_env(provider_id).await
+    }
 }
 
 fn models_error(error: resolve::ModelsError) -> ModelsError {
@@ -425,6 +429,13 @@ mod auth_integration_tests {
         // Then ambient availability and environment survive without a synthetic key.
         assert!(resolution.ambient);
         assert!(resolution.auth.api_key.is_none());
-        assert_eq!(resolution.env.expect("env").get("profile").map(String::as_str), Some("shared"));
+        assert_eq!(
+            resolution
+                .env
+                .expect("env")
+                .get("profile")
+                .map(String::as_str),
+            Some("shared")
+        );
     }
 }

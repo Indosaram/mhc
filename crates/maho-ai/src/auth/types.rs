@@ -198,6 +198,12 @@ pub trait AuthContext: Send + Sync {
     async fn env(&self, name: &str) -> Option<String>;
     /// Check whether a file exists. Supports a leading `~`.
     async fn file_exists(&self, path: &str) -> bool;
+    /// senpi `storedProviderEnv(providerId)`: read-only env of another provider's stored
+    /// credential, for ambient auth. Routing metadata only, never keys. `None` when the context
+    /// has no credential store or that provider stores no api-key env.
+    async fn stored_provider_env(&self, _provider_id: &str) -> Option<ProviderEnv> {
+        None
+    }
 }
 
 /// Result of resolving auth for a model.
