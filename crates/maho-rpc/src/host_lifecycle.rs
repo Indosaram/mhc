@@ -463,15 +463,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     );
     // The child's lifetime poll compares the supervisor's start on one clock per platform: `/proc` start ticks on
     // Linux, the recorded start time elsewhere (senpi `prepareInternalHop` supervisorStart).
-    if platform != "win32"
+    if platform == "linux" {
+        if let Some(ticks) =
+            crate::process_start_identity::read_process_start_ticks(std::process::id())
+        {
+            child_env.insert(crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(), ticks);
+        }
+    } else if platform != "win32"
         && let Some(start) = crate::host_reservations::read_process_start_time(std::process::id())
     {
-        let name = if platform == "linux" {
-            crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV
-        } else {
-            crate::host_watchdog::HOST_WATCH_PSTART_ENV
-        };
-        child_env.insert(name.into(), start);
+        child_env.insert(crate::host_watchdog::HOST_WATCH_PSTART_ENV.into(), start);
     }
     // Linux: supervisor death reaches the child as FIFO EOF; the held writer is never closed by this process.
     let _lifetime_binding = internal

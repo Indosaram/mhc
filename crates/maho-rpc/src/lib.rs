@@ -76,6 +76,7 @@ pub mod observer_link;
 pub mod ownership_safe_lock;
 pub mod pause_command_validation;
 pub mod print_mode;
+pub mod process_start_identity;
 pub mod protocol_identity;
 pub mod provider_native_rendering;
 pub mod rpc_client;

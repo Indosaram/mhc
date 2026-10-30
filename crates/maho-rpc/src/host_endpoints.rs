@@ -305,7 +305,8 @@ fn generation_record_is_live(pid_file: &Path) -> bool {
     else {
         return false;
     };
-    if !crate::host_reservations::process_is_live(pid) {
+    // An exited, unreaped generation (state Z) serves nothing: it is not live (senpi#4119).
+    if !crate::host_reservations::process_is_running(pid) {
         return false;
     }
     match (
