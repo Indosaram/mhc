@@ -369,7 +369,10 @@ pub async fn cli_access_token(
     let current = match store.read().await {
         Ok(Some(current)) => current,
         Ok(None) => return (None, false),
-        Err(_) => return (None, true),
+        // Upstream `!(error instanceof SignInError)`: every native store read failure (no usable
+        // OS store, a locked keyring, unreadable stored data) is one of upstream's `SignInError`s,
+        // so it is a signed-out send, not a stored sign-in that could not be used.
+        Err(_) => return (None, false),
     };
     let expires_at = current
         .get("accessTokenExpiresAt")
@@ -825,6 +828,70 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)[0],
             ("nope".to_string(), NotificationType::Error)
+        );
+    }
+
+    struct FixedStore(Result<Option<Value>, String>);
+
+    impl CredentialStore for FixedStore {
+        fn read(
+            &self,
+        ) -> maho_omo_memory::device_session::account_source::AccountFuture<'_, Option<Value>>
+        {
+            let result = self.0.clone();
+            Box::pin(async move { result })
+        }
+        fn write(
+            &self,
+            _: Value,
+        ) -> maho_omo_memory::device_session::account_source::AccountFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+        fn clear(&self) -> maho_omo_memory::device_session::account_source::AccountFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    async fn send_with_store(store: FixedStore) -> Vec<(String, NotificationType)> {
+        let ui = ScriptedUi::new(&[Some("it broke")], &[Some(CHOICE_SEND)]);
+        run_feedback_command(
+            FeedbackKind::Bug,
+            "",
+            &ui,
+            &BTreeMap::new(),
+            Some(Arc::new(store)),
+            || async { Ok(sample_draft()) },
+            |_| async {
+                SubmitResult::Sent {
+                    report_id: "rep_1".into(),
+                }
+            },
+        )
+        .await;
+        ui.notices
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[tokio::test]
+    async fn an_expired_stored_sign_in_warns_before_the_anonymous_send() {
+        let expired = json!({"accessToken": "t", "accessTokenExpiresAt": "2000-01-01T00:00:00Z"});
+        let notices = send_with_store(FixedStore(Ok(Some(expired)))).await;
+        assert_eq!(
+            notices[0],
+            (SIGNED_OUT_SEND.to_string(), NotificationType::Warning)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_error_from_the_store_sends_without_the_fallback_warning() {
+        let notices = send_with_store(FixedStore(Err("keyring locked".into()))).await;
+        assert_eq!(
+            notices,
+            [(
+                "Thanks. Your report was sent (rep_1).".to_string(),
+                NotificationType::Info
+            )]
         );
     }
 

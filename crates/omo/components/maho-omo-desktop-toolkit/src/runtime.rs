@@ -192,7 +192,7 @@ impl Runtime {
         let _ = done.wait_for(|finished| *finished).await;
     }
 
-    async fn run_discovery(&self, session_id: &str, state: &SessionDiscovery) {
+    async fn run_discovery(self: &Arc<Self>, session_id: &str, state: &SessionDiscovery) {
         let signal = state.controller.signal();
         let grant = match self.acquire("thread", Some(&signal)).await {
             _ if signal.aborted() => return,

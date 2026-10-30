@@ -127,7 +127,7 @@ const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
     },
     BuiltinRung {
         providers: KIMI_PROVIDERS,
-        model: "kimi-k3",
+        model: "kimi-k3.1-pro",
         variant: Some("max"),
     },
     BuiltinRung {

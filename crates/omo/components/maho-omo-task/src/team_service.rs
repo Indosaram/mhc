@@ -23,6 +23,18 @@ pub struct TeamServiceDeps {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamLeadAncestry { pub depth: u32, pub root_session_id: Option<String> }
 pub type ResolveTeamAncestry = Arc<dyn Fn(&str) -> Option<TeamLeadAncestry> + Send + Sync>;
+/// Upstream `engine.ts` `resolveAncestry`: an in-process child shares this session's tool closures
+/// but calls them as its own session, so its task record supplies the depth and root; any other
+/// session falls back to this process's session ancestry (`readSessionAncestry`).
+pub fn task_tree_ancestry_resolver(manager: Arc<TaskManager>, session: Option<TeamLeadAncestry>) -> ResolveTeamAncestry {
+    Arc::new(move |session_id: &str| {
+        let caller = manager.list(&senpi_task::manager::types::ListScope::All).into_iter().map(|entry| entry.record).find(|record| record.child_session_id.as_deref() == Some(session_id));
+        if let Some(record) = caller.filter(|record| record.execution_mode == "in-process") {
+            return Some(TeamLeadAncestry { depth: record.depth, root_session_id: Some(record.root_session_id) });
+        }
+        session.as_ref().map(|ancestry| TeamLeadAncestry { depth: ancestry.depth, root_session_id: Some(ancestry.root_session_id.clone().unwrap_or_else(|| session_id.to_owned())) })
+    })
+}
 pub struct TeamService { deps: TeamServiceDeps, config: TeamCoreConfig, append_event: TeamEventAppender, resolve_ancestry: Option<ResolveTeamAncestry> }
 struct MemberStatusView<'a>(&'a dyn TeamRuntimeManagerPort);
 impl senpi_task::team::member_projection::MemberStatusPort for MemberStatusView<'_> {
