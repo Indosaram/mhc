@@ -215,6 +215,7 @@ async fn open_endpoint(
             session: session.clone(),
             attachments: attachments.clone(),
             editor_hold: Arc::new(move || editor_hold(&hold_context)),
+            effect_session: None,
         },
     });
     let server: Arc<ControlServer> = Arc::new(

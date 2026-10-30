@@ -17,9 +17,11 @@ use crate::session_control_server::{ControlCommand, ControlConnection, failure, 
 use maho_core::agent_session::AgentSession;
 use maho_rpc::connection_roles::CONNECTION_ROLE_FIXED;
 use maho_rpc::custom_capability::INTERACTIVE_USER_CAPABILITY;
-use maho_rpc::session_status_commands::{
-    answer_subscribe_sessions, answer_unsubscribe_sessions, refusal,
+use maho_rpc::rpc_types::{
+    RPC_ERROR_INVALID_SUBSCRIPTION, RPC_ERROR_SUBSCRIPTION_LIMIT, RPC_ERROR_UNKNOWN_SUBSCRIPTION,
 };
+use maho_rpc::session_status_stream::MAX_SUBSCRIPTIONS_PER_CONNECTION;
+use maho_rpc::session_status_subscriptions::parse_subscription;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -50,6 +52,10 @@ pub struct RpcCommandContext {
     /// The composer's admission hold (senpi `externalAdmission.setEditorSource`): mhc's admission
     /// takes it per call instead of reading an installed source.
     pub editor_hold: Arc<dyn Fn() -> Value + Send + Sync>,
+    /// The effect ledger's view of this session (`maho_rpc::effect_session::EffectSession`). OPEN: no
+    /// branch has an adapter over `AgentSession` yet (L-rpc-server report, rpc-54/58/60), so the
+    /// endpoint passes `None` and the effect-bearing fields are refused by name.
+    pub effect_session: Option<Arc<dyn maho_rpc::effect_session::EffectSession>>,
 }
 
 /// senpi's `object | null | undefined`.
@@ -73,11 +79,7 @@ pub async fn run_tui_rpc_command(
         "get_snapshot" => Answer(get_snapshot(context, connection, command)),
         "open_session" => open_session(context, connection, command),
         "subscribe_sessions" => subscribe(context, connection, command),
-        "unsubscribe_sessions" => Answer(answer_unsubscribe_sessions(
-            command,
-            Some(key_of(connection).as_str()),
-            &context.attachments.status,
-        )),
+        "unsubscribe_sessions" => Answer(unsubscribe(context, connection, command)),
         "steer" | "follow_up" => Answer(admit_input(
             context,
             command,
@@ -331,39 +333,174 @@ async fn abort(
             session.abort().await;
         }
     });
-    maho_rpc::effect_commands::run_abort(
-        &maho_rpc::effect_commands::EffectCommandContext {
-            session: context.session.clone(),
-            connection_id: Some(key),
-            session_id: context.attachments.handle(),
-        },
-        command,
-        dispatch,
-    )
-    .await
+    let Some(effects) = effect_context(context, key) else {
+        // Without the effect ledger only the plain abort is served; what needs the ledger is refused
+        // by name instead of dropped.
+        if let Some(refused) =
+            needs_effect_ledger(command, &["effectId", "awaitIdle", "clearQueue"])
+        {
+            return refused;
+        }
+        tokio::spawn(dispatch);
+        return success(command.get("id"), "abort", None);
+    };
+    maho_rpc::effect_commands::run_abort(&effects, command, dispatch).await
 }
 
+/// `get_effect_status`: the host's ledger read, served once this session has an effect ledger.
+async fn get_effect_status(context: &RpcCommandContext, command: &ControlCommand) -> Value {
+    let Some(effects) = effect_context(context, String::new()) else {
+        return needs_effect_ledger(command, &[])
+            .unwrap_or_else(|| failure(command.get("id"), "get_effect_status", "unsupported"));
+    };
+    maho_rpc::effect_commands::run_get_effect_status(&effects, command).await
+}
+
+/// The host's effect-command context for this terminal's session, when it has an effect session.
+fn effect_context(
+    context: &RpcCommandContext,
+    connection_id: String,
+) -> Option<maho_rpc::effect_commands::EffectCommandContext> {
+    Some(maho_rpc::effect_commands::EffectCommandContext {
+        session: context.effect_session.clone()?,
+        by: maho_rpc::effect_record::EffectActor { connection_id },
+        session_id: Some(context.attachments.handle()),
+    })
+}
+
+/// The refusal for a field (or, with no fields, a command) that needs the effect ledger.
+fn needs_effect_ledger(command: &ControlCommand, fields: &[&str]) -> Option<Value> {
+    let kind = command["type"].as_str().unwrap_or_default();
+    let named = fields
+        .iter()
+        .filter(|field| !command[**field].is_null())
+        .copied()
+        .collect::<Vec<_>>();
+    if !fields.is_empty() && named.is_empty() {
+        return None;
+    }
+    let what = if named.is_empty() {
+        kind.to_owned()
+    } else {
+        named.join(", ")
+    };
+    Some(refusal(
+        id_of(command),
+        kind,
+        "unsupported_field",
+        &format!("this terminal has no effect ledger yet, so it cannot serve {what}"),
+        "send it without those fields, or send it to a host session",
+    ))
+}
+
+/// senpi `refusal` (session-status-commands.ts): the stable `<code>: <reason>` error plus
+/// `errorData { reason, action }`.
+pub fn refusal(id: Option<&str>, command: &str, code: &str, reason: &str, action: &str) -> Value {
+    let mut answer = json!({
+        "type": "response",
+        "command": command,
+        "success": false,
+        "error": format!("{code}: {reason}"),
+        "errorCode": code,
+        "errorData": {"reason": reason, "action": action},
+    });
+    if let Some(id) = id {
+        answer["id"] = id.into();
+    }
+    answer
+}
+
+/// senpi `answerSubscribeSessions` over this terminal's one-session stream. A control connection
+/// always has an identity, so the stdio refusal never applies here.
 fn subscribe(
     context: &RpcCommandContext,
     connection: &ControlConnection,
     command: &ControlCommand,
 ) -> TuiRpcAnswer {
     let key = key_of(connection);
-    let status = &context.attachments.status;
-    let (answer, activate) = answer_subscribe_sessions(command, Some(key.as_str()), status);
-    let Some(activate) = activate else {
-        return TuiRpcAnswer::Answer(answer);
+    let attachments = &context.attachments;
+    let id = id_of(command);
+    let mut status = attachments
+        .status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if status.connection_size(&key) >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        return TuiRpcAnswer::Answer(refusal(
+            id,
+            "subscribe_sessions",
+            RPC_ERROR_SUBSCRIPTION_LIMIT,
+            &format!(
+                "this connection already holds {MAX_SUBSCRIPTIONS_PER_CONNECTION} subscriptions"
+            ),
+            "unsubscribe_sessions the ones you no longer read, then subscribe again",
+        ));
+    }
+    let options = match parse_subscription(command) {
+        Ok(options) => options,
+        Err(refused) => {
+            return TuiRpcAnswer::Answer(refusal(
+                id,
+                "subscribe_sessions",
+                RPC_ERROR_INVALID_SUBSCRIPTION,
+                &refused.reason,
+                &refused.action,
+            ));
+        }
     };
+    let subscribed = status.subscribe(
+        &attachments.status_source,
+        &attachments.status_delivery,
+        &key,
+        options,
+    );
+    let answer = answered(
+        id,
+        "subscribe_sessions",
+        json!({
+            "subscriptionId": subscribed.subscription_id,
+            "snapshot": subscribed.snapshot,
+            "seq": subscribed.seq,
+            "hostGeneration": maho_rpc::protocol_identity::host_generation(&std::env::vars().collect()).to_string(),
+            "hostInstanceId": maho_rpc::protocol_identity::host_instance_id(),
+        }),
+    );
     // As on a host: the answer reaches the connection's FIFO before the subscription goes live, so
-    // its snapshot is the first record the client reads for this subscription.
-    if context.attachments.respond(connection, &answer)
-        && context.attachments.has_connection(connection)
-    {
-        status.activate(&activate);
+    // its snapshot is the first record the client reads for this subscription. The stream stays
+    // locked across both, so no delta lands between them.
+    if attachments.respond(connection, &answer) && attachments.has_connection(connection) {
+        status.activate(&attachments.status_delivery, &subscribed.subscription_id);
     } else {
-        status.unsubscribe(&key, &activate);
+        status.unsubscribe(&key, &subscribed.subscription_id);
     }
     TuiRpcAnswer::Answered
+}
+
+/// senpi `answerUnsubscribeSessions`.
+fn unsubscribe(
+    context: &RpcCommandContext,
+    connection: &ControlConnection,
+    command: &ControlCommand,
+) -> Value {
+    let removed = command["subscriptionId"]
+        .as_str()
+        .is_some_and(|subscription| {
+            context
+                .attachments
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unsubscribe(&key_of(connection), subscription)
+        });
+    if removed {
+        return success(command.get("id"), "unsubscribe_sessions", None);
+    }
+    refusal(
+        id_of(command),
+        "unsubscribe_sessions",
+        RPC_ERROR_UNKNOWN_SUBSCRIPTION,
+        "this connection holds no subscription with that id",
+        "send the subscriptionId your subscribe_sessions answer returned, on the same connection",
+    )
 }
 
 fn admit_prompt(context: &RpcCommandContext, command: &ControlCommand) -> Value {
