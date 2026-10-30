@@ -126,6 +126,7 @@ pub async fn run_agent_loop(
             &emit,
             AgentEvent::MessageStart {
                 message: prompt.clone(),
+                streaming: None,
             },
         )
         .await;
@@ -308,6 +309,7 @@ async fn run_loop(
                         &emit,
                         AgentEvent::MessageStart {
                             message: message.clone(),
+                            streaming: None,
                         },
                     )
                     .await;
@@ -409,6 +411,7 @@ async fn run_loop(
                     &emit,
                     AgentEvent::MessageStart {
                         message: message.clone(),
+                        streaming: None,
                     },
                 )
                 .await;
@@ -631,6 +634,7 @@ async fn run_loop(
                     &emit,
                     AgentEvent::MessageStart {
                         message: failure.clone(),
+                        streaming: None,
                     },
                 )
                 .await;
@@ -782,6 +786,7 @@ pub(crate) async fn emit_run_failure(
         emit,
         AgentEvent::MessageStart {
             message: failure.clone(),
+            streaming: None,
         },
     )
     .await;
@@ -1120,6 +1125,7 @@ async fn stream_assistant_response(
                             emit,
                             AgentEvent::MessageStart {
                                 message: assistant_event(partial),
+                                streaming: Some(true),
                             },
                         )
                         .await;
@@ -1217,6 +1223,7 @@ async fn stream_assistant_response(
                     emit,
                     AgentEvent::MessageStart {
                         message: assistant_event(&final_message),
+                        streaming: None,
                     },
                 )
                 .await;
@@ -1326,6 +1333,7 @@ async fn stream_assistant_response(
                         emit,
                         AgentEvent::MessageStart {
                             message: assistant_event(&final_message),
+                            streaming: None,
                         },
                     )
                     .await;
@@ -1375,6 +1383,7 @@ async fn stream_assistant_response(
                         emit,
                         AgentEvent::MessageStart {
                             message: assistant_event(&final_message),
+                            streaming: None,
                         },
                     )
                     .await;
@@ -2642,6 +2651,7 @@ async fn emit_tool_result_message(tool_result_message: &ToolResultMessage, emit:
         emit,
         AgentEvent::MessageStart {
             message: message.clone(),
+            streaming: None,
         },
     )
     .await;
@@ -2861,7 +2871,7 @@ mod provider_context_tests {
             .expect("events")
             .iter()
             .filter_map(|event| match event {
-                AgentEvent::MessageStart { message } => Some(("start", message.role())),
+                AgentEvent::MessageStart { message, .. } => Some(("start", message.role())),
                 AgentEvent::MessageEnd { message } => Some(("end", message.role())),
                 _ => None,
             })
@@ -3173,7 +3183,7 @@ mod audit_gap_tests {
         // Then: neither provider nor transcript saw the claimed input.
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(restored.load(Ordering::SeqCst), 1);
-        assert!(!events.lock().expect("events").iter().any(|event| matches!(event, AgentEvent::MessageStart { message } if message.role() == "user")));
+        assert!(!events.lock().expect("events").iter().any(|event| matches!(event, AgentEvent::MessageStart { message, .. } if message.role() == "user")));
     }
 
     #[tokio::test(start_paused = true)]

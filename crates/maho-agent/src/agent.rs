@@ -1273,7 +1273,7 @@ impl Agent {
     /// and `finishRun()` clears runtime-owned state.
     async fn process_events(&self, event: AgentEvent) {
         match &event {
-            AgentEvent::MessageStart { message } => {
+            AgentEvent::MessageStart { message, .. } => {
                 lock(&self.inner.state).streaming_message = Some(message.clone());
             }
             AgentEvent::MessageUpdate { message, .. } => {

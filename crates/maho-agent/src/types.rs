@@ -700,6 +700,10 @@ pub enum AgentEvent {
     // Message lifecycle - emitted for user, assistant, and toolResult messages
     MessageStart {
         message: AgentMessage,
+        /// Set only on the provider stream `start` event, never on prepared/user/tool-result or
+        /// synthetic-failure starts, so lifecycle activity can tell a live model stream apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        streaming: Option<bool>,
     },
     /// Only emitted for assistant messages during streaming.
     MessageUpdate {
