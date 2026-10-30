@@ -2,9 +2,12 @@
 //!
 //! Port of oh-my-pi `packages/coding-agent/src/tools/browser/launch.ts`
 //! (`systemChromiumCandidates`, `resolveSystemChromium`, `buildHeadlessLaunchArgs`, the
-//! `PUPPETEER_EXECUTABLE_PATH` override and the `PUPPETEER_PROXY*` flags). Chrome for Testing
-//! downloads and the stealth patches are not ported.
+//! `PUPPETEER_EXECUTABLE_PATH` override and the `PUPPETEER_PROXY*` flags). The same file's Chrome
+//! for Testing download lives in [`chrome_for_testing`] and its stealth patches in [`stealth`].
 use std::path::{Path, PathBuf};
+
+pub mod chrome_for_testing;
+pub mod stealth;
 
 /// Environment variables naming the browser executable, in precedence order.
 pub const EXECUTABLE_ENV: &[&str] = &[
@@ -144,6 +147,11 @@ pub fn find_executable(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> 
             return Some(PathBuf::from(value.trim()));
         }
     }
+    find_system_executable(env)
+}
+
+/// The first installed system Chrome/Chromium/Edge (oh-my-pi `resolveSystemChromium`).
+pub fn find_system_executable(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let home = env("HOME")
         .or_else(|| env("USERPROFILE"))
         .map(PathBuf::from)
