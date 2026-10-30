@@ -56,12 +56,18 @@ pub struct RpcSessionEntry {
     pub last_command_at: f64,
     /// Patches `set_session_context` applied over the frozen open-time context (senpi `contextOverlay`).
     pub context_overlay: Option<crate::session_context_patch::SessionContextOverlay>,
+    /// The in-process session's ordered acceptance lane, present only while the compact-updates flag is on.
+    pub acceptance: Option<SharedAcceptanceLane>,
 }
+pub type SharedAcceptanceLane =
+    Arc<std::sync::Mutex<crate::session_acceptance_lane::SessionAcceptanceLane>>;
 #[derive(Default)]
 pub struct RpcSessionRegistry {
     entries: BTreeMap<String, RpcSessionEntry>,
     next_handle: u64,
     worker_refusal: Option<(u64, u64)>,
+    /// A session worker's own registry: its host owns the acceptance lane, so the isolate opens none.
+    pub worker_isolate: bool,
 }
 pub enum OpenAdmission {
     Create(String),
@@ -225,6 +231,7 @@ impl RpcSessionRegistry {
                 identity,
                 last_command_at: now,
                 context_overlay: None,
+                acceptance: None,
             },
         );
         Ok(OpenAdmission::Create(handle))
@@ -241,6 +248,21 @@ impl RpcSessionRegistry {
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
         entry.durable_session_id = Some(runtime.session().session_id());
         entry.session_path = runtime.session().session_file();
+        // senpi `openSession`: the lane bootstraps from the manager's journal before admission.
+        if maho_core::engine_socket_flag::compact_updates_enabled() && !self.worker_isolate {
+            let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::default();
+            let transcript = runtime
+                .session()
+                .with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            lane.bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap { transcript },
+                None,
+            );
+            runtime
+                .session()
+                .set_session_recovery_epoch(lane.recovery_epoch());
+            entry.acceptance = Some(Arc::new(std::sync::Mutex::new(lane)));
+        }
         entry.close.writing = true;
         entry.close.state = RpcSessionState::Open;
         entry.runtime = Some(runtime);
