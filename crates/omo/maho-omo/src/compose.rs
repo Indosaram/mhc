@@ -205,10 +205,19 @@ impl Extension for OmoExtension {
         // armed before a reload can never call `sendMessage` on a stale API; every still-queued
         // injection is handed back to its producer as a delivery failure. Registered before the
         // component loop so the runtime-binding pass below leaves it unwrapped.
+        let settles = crate::settle_observers::SettleObservers::new(runtime.logger());
         let shutdown_runtime = Arc::clone(&runtime);
-        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+        let shutdown_settles = settles.clone();
+        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, context| {
             shutdown_runtime.startup_deferral().retire();
             shutdown_runtime.coordinator().retire();
+            shutdown_settles.retire(Some(context.session_manager.session_id()));
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }));
+        // On A -> B switches the host sends session_shutdown on A before starting B.
+        let start_settles = settles.clone();
+        api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, context| {
+            start_settles.retire(Some(context.session_manager.session_id()));
             Box::pin(async { Ok(maho_ext_api::EventResult::None) })
         }));
         for kind in [maho_ext_api::EventKind::Input, maho_ext_api::EventKind::BeforeAgentStart] {
@@ -228,7 +237,16 @@ impl Extension for OmoExtension {
                 runtime.logger().info("omo-senpi component disabled by flag", Some(&details));
                 continue;
             }
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| component.register(api, &runtime))) {
+            let settled_before = api.registered.handlers.get(&maho_ext_api::EventKind::AgentSettled).map_or(0, Vec::len);
+            let registration = catch_unwind(AssertUnwindSafe(|| component.register(api, &runtime)));
+            // Upstream `prewarm-diagnostics`: every `agent_settled` handler a component registered
+            // runs under a bounded settle observer.
+            if let Some(handlers) = api.registered.handlers.get_mut(&maho_ext_api::EventKind::AgentSettled) {
+                for handler in handlers.iter_mut().skip(settled_before) {
+                    *handler = settles.wrap(component.name, None, Arc::clone(handler));
+                }
+            }
+            if let Err(payload) = registration {
                 let details = serde_json::json!({
                     "component": component.name,
                     "error": panic_reason(payload.as_ref()),
