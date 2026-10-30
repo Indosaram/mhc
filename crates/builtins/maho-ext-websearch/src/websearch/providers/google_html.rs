@@ -90,6 +90,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
         .append_pair("udm", "14")
         .append_pair("pws", "0");
     Ok(BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "GET",
         headers: browser_headers(Some(GOOGLE_HOME_URL), BTreeMap::new()),

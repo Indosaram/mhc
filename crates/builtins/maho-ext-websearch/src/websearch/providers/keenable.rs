@@ -51,6 +51,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> BuiltSearchRequest {
         )
     };
     BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "POST",
         headers: content_headers(BTreeMap::from([auth])),

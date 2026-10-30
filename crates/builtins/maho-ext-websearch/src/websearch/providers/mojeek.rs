@@ -58,6 +58,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
         )
         .append_pair("t", &(clamp(ctx.max_results, 1.0, 20.0) as i64).to_string());
     Ok(BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "GET",
         headers: browser_headers(Some(MOJEEK_HOME_URL), BTreeMap::new()),

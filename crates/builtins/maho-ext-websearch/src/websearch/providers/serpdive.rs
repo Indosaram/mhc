@@ -10,6 +10,7 @@ pub const DEFAULT_URL: &str = "https://api.serpdive.com/v1/search";
 
 pub fn build_request(ctx: &BuildContext<'_>) -> BuiltSearchRequest {
     BuiltSearchRequest {
+        form: None,
         url: ctx.base_url.unwrap_or(DEFAULT_URL).into(),
         method: "POST",
         headers: content_headers(BTreeMap::from([(
