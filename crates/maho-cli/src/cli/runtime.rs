@@ -159,6 +159,16 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     );
     indicator.during_surface_write(|| report_startup_settings_diagnostics(&startup_settings));
     if mode == AppMode::Rpc && parsed.multi_session {
+        // senpi v2026.10.27-2 main.ts hands `presenterBootstrapFd`/`mcpPresenterEnforcement` to
+        // `runMultiSessionHost`. OPEN: maho-rpc has no presenter-aware host entry
+        // (`run_multi_session_host_with_presenter`, senpi-rpc-rest-31 / host-09), so a host asked
+        // to enforce presenters refuses to start instead of serving without enforcement.
+        if parsed.presenter_bootstrap_fd.is_some() || parsed.mcp_presenter_enforcement {
+            return Err(
+                "--mcp-presenter-fd and --mcp-presenter-enforcement are not supported by this build's host yet"
+                    .to_owned(),
+            );
+        }
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
         // upstream it starts only after the stdout takeover and the migrations above, and never
@@ -209,11 +219,7 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
             );
         }
         maho_core::timings::print_timings();
-        let presenter = maho_rpc::multi_session_host::MultiSessionHostPresenterOptions {
-            presenter_bootstrap_fd: parsed.presenter_bootstrap_fd,
-            mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
-        };
-        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone(), presenter)
+        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone())
             .await
             .map_err(|error| error.to_string());
     }

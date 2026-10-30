@@ -37,3 +37,19 @@ fn rpc_key_root_resolves_to_an_absolute_path_on_every_subcommand() {
     assert!(parse_host_args(&["status", "--rpc-key-root", "--json"].map(str::to_owned)).is_err());
     assert!(parse_host_args(&["status".to_owned()]).unwrap().key_root.is_none());
 }
+// Until maho-rpc's host runner takes request options, a request naming them is refused, never run without them.
+#[test]
+fn request_options_the_runner_cannot_carry_are_refused_by_name() {
+    let plain = parse_host_args(&["ensure".to_owned()]).unwrap();
+    assert!(maho_cli::cli::host_request::unsupported_request_options(&plain).is_none());
+    let named = parse_host_args(
+        &["ensure", "--mcp-presenter-enforcement", "--rpc-key-root", "keys"].map(str::to_owned),
+    )
+    .unwrap();
+    let refused = maho_cli::cli::host_request::unsupported_request_options(&named).expect("refused");
+    assert_eq!(refused.exit_code(), 1);
+    let detail = refused.payload()["detail"].as_str().unwrap_or_default().to_owned();
+    assert!(detail.contains("--rpc-key-root"));
+    assert!(detail.contains("--mcp-presenter-enforcement"));
+    assert!(!detail.contains("--mcp-presenter-fd"));
+}

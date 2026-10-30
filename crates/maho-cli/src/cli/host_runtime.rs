@@ -967,7 +967,6 @@ fn host_close_grace_ms() -> u64 {
 pub async fn serve_multi_session_host(
     core: std::sync::Arc<maho_rpc::multi_session_host::HostCore>,
     listen: Option<String>,
-    presenter: maho_rpc::multi_session_host::MultiSessionHostPresenterOptions,
 ) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -975,10 +974,7 @@ pub async fn serve_multi_session_host(
             crate::utils::shell::kill_tracked_detached_children,
         );
     }
-    // senpi v2026.10.27-2 main.ts: `presenterBootstrapFd`/`mcpPresenterEnforcement` reach
-    // `runMultiSessionHost` and are stripped from the worker runtime args.
-    maho_rpc::multi_session_host::run_multi_session_host_with_presenter(core, listen, presenter)
-        .await
+    maho_rpc::multi_session_host::run_multi_session_host(core, listen).await
 }
 
 /// senpi `createCliRuntimeFactory`'s `HostRuntimeFactory` adapter: one fully mounted session runtime
