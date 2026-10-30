@@ -17,17 +17,8 @@ pub fn read_lifecycle_state(v: &Value) -> Option<&str> {
         .contains(s)
     })
 }
-pub fn read_waits(v: &Value) -> Option<Value> {
-    let children = v.get("children")?.as_number()?;
-    let background=v["background"].as_array().into_iter().flatten().filter_map(|x| {let mut item=json!({"source":x.get("source")?.as_str()?,"activeCount":x.get("activeCount")?.as_number()?}); if x["retryAtMs"].is_number(){item["retryAtMs"]=x["retryAtMs"].clone();} Some(item)}).collect::<Vec<_>>();
-    let human = v["human"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(read_human_wait)
-        .collect::<Vec<_>>();
-    Some(json!({"children":children,"background":background,"human":human}))
-}
+/// The one reader of a durable or reported `waitingOn` lives in `lifecycle_children` (senpi#4106).
+pub use crate::lifecycle_children::read_waits;
 pub fn read_holds(v: &Value) -> Option<Value> {
     Some(json!(
         v.as_array()?
@@ -143,6 +134,9 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
             }
         }
         r["failure"] = f;
+    }
+    if let Some(stop) = crate::lifecycle_stop::read_last_stop(&v["lastStop"], &v["runId"]) {
+        r["lastStop"] = stop;
     }
     let t = &v["lastTurnEnd"];
     if [
