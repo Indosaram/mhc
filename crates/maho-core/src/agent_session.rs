@@ -2646,6 +2646,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 .map(|file| maho_ext_api::ContextFile {
                     path: file.path,
                     content: file.content,
+                    scope: file.scope,
                 })
                 .collect(),
         }
@@ -12322,6 +12323,7 @@ impl AgentSession {
                 .map(|file| maho_ext_api::ContextFile {
                     path: file.path,
                     content: file.content,
+                    scope: file.scope,
                 })
                 .collect(),
             cwd: self.cwd().into(),
