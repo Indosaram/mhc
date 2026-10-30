@@ -138,8 +138,7 @@ impl MemoryComponent {
                                 None,
                                 &self.options.env,
                                 None,
-                            )
-                            ?;
+                            )?;
                         let pins = PathBuf::from(
                             self.options
                                 .env
@@ -170,6 +169,7 @@ impl MemoryComponent {
                     },
                     open: None,
                     close_wait: None,
+                    deferred_retry: None,
                 }),
             );
         }
