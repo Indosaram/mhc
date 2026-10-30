@@ -33,10 +33,24 @@
       `src/launch.rs`;
     - `packages/coding-agent/src/tools/browser.ts`, `tools/computer.ts` (tool surface: actions,
       named tabs, `app.*` options, viewport, dialogs, close) → the spec and `src/extension.rs`.
+- Sync 5152 additions (method **P**; omowright files byte-identical between a019fdf and
+  `c06d20337ad942b09dea8757a45f6c848008a68d`, LICENSE MIT re-checked; oh-my-pi at
+  `3a2758b68f7c8e6bdf22c3a76b86c8675e5e0c9e`, root LICENSE MIT):
+  - omowright `src/frames-snapshot.js` + the core.js `FrameManager` and multi-frame `takeSnapshot`
+    → `src/page/frames.rs`; `src/network-snoop.js` → `src/page/network_snoop.rs`; `src/har.js` →
+    `src/page/har.rs`; `src/trace.js` → `src/page/trace.rs`; `src/events.js` (tabs, downloads) →
+    `src/page/events.rs`; `src/bridge-transport.js` + `src/bridge-schemas.js` (extension bridge)
+    → `src/page/bridge.rs`; core.js `CONSOLE_INTERCEPTOR_SCRIPT`/`PageConsole` →
+    `Page::capture_console`/`console_logs` in `src/page.rs`.
+  - oh-my-pi `tools/browser/launch.ts` stealth section → `src/launch/stealth.rs`, its
+    `tools/puppeteer/*_stealth_*.txt` → `assets/stealth/` (vendored unchanged) and the injection
+    wrapper → `assets/stealth/injection.js`; its `ensureChromiumExecutable`/`ensureManagedChromium`
+    plus the `@puppeteer/browsers` cache layout and download URL scheme (Apache-2.0, facts only:
+    paths and URLs) → `src/launch/chrome_for_testing.rs`.
 - Not ported: oh-my-pi's JavaScript-execution browser/computer runtimes (puppeteer workers,
-  native desktop capture), relay/Tern/cmux browsers, stealth patches, Chrome for Testing download;
-  omowright's frames, network snooping, scroll collection, routes, HAR, tracing, named instances,
-  cookies, Chrome profile APIs, captcha helpers and extension bridge; pi-cua-integration's config
+  native desktop capture), relay/Tern/cmux browsers; omowright's scroll collection, routes, named
+  instances, cookies, Chrome profile APIs, captcha helpers, the standalone `src/chrome.js` API and
+  the bridge's companion extension (`bridge/extension/background.js`); pi-cua-integration's config
   loader, sandbox manager policy and skills.
 - No SUL source was opened: not `crates/omo/**` (including `maho-omo-browser-bridge` and
   `maho-omo-computer-use`), `assets/omo-latest/**`, `assets/omo.schema.json`, the omo-gated
