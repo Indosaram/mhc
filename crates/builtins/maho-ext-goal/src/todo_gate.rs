@@ -25,11 +25,11 @@ pub fn open_todo_completion_error(open_tasks:&[String])->String {
 pub fn stale_goal_todo_reminder(goal:Option<&Goal>)->Option<String> {
     if goal.is_some_and(|goal|goal.status!=GoalStatus::Complete) { return None; }
     let (stale,fix)=if goal.is_none() {
-        ("New todo tasks were added, but this thread has no goal registered.","If this todo list tracks a durable objective (multi-step work that should survive across turns), register it now with create_goal so progress is tracked and audited.")
+        ("New todo tasks were added, but this thread has no goal registered.","Register one with create_goal only when the work must outlive this turn - it waits on external state or needs more than one verify-and-fix round.")
     } else {
-        ("New todo tasks were added, but the registered goal is already complete (stale), so the new work is untracked.","If this todo list tracks a durable objective (multi-step work that should survive across turns), register it now with create_goal; creating a new goal archives the completed one and replaces it.")
+        ("New todo tasks were added, but the registered goal is already complete (stale), so the new work is untracked.","Register one with create_goal only when the work must outlive this turn - it waits on external state or needs more than one verify-and-fix round; a new goal archives the completed one.")
     };
-    Some(["<system-reminder>",stale,fix,"If the todos are trivial short-lived bookkeeping for the current turn, continue without a goal.","</system-reminder>"].join("\n"))
+    Some(["<system-reminder>",stale,fix,"Otherwise continue without a goal.","</system-reminder>"].join("\n"))
 }
 #[cfg(test)] mod tests {
     use super::*;
