@@ -87,7 +87,7 @@ machinery of the replaced code that this design does not have: a long-lived RPC 
 child sessions resident, heartbeat liveness of those sessions, startup reclamation of resident
 children, and an in-process child runner. Here a child is a plain `mhc -p` process (§1, §3), its
 liveness is "the process has not exited", and an orphaned run is simply `interrupted` (§2). The
-rows that carry user-observable behaviour are D1-D4 below; D5 points to the deltas in
+rows that carry user-observable behaviour are D1-D4, D7 and D8 below; D5 points to the deltas in
 `workflow-dag.md` and `team.md`. Message wording is the implementer's; only the listed facts are
 mandated.
 
@@ -102,10 +102,12 @@ this delta makes delegated runs fill it.
 Inputs: the task record's `owner_session` (parent), `root_session`, and `id`.
 
 - The runner adds one environment variable to the child, next to `MHC_TASK_DEPTH`, `MHC_TASK_ID`
-  and `MHC_TASK_ROOT_SESSION`: `MHC_TASK_PARENT_SESSION=<owner session id>` (proposed name;
-  neutral). `MHC_TASK_ROOT_SESSION` is the record's root session, or the parent when the record
-  has none.
-- When an `mhc` process that has `MHC_TASK_ID` and a non-empty `MHC_TASK_PARENT_SESSION` creates
+  and `MHC_TASK_ROOT_SESSION`: `MAHO_TASK_PARENT_SESSION=<owner session id>` (new names use the
+  project's `MAHO_` prefix; the three existing `MHC_TASK_*` names stay as they are). It is needed
+  because the child cannot otherwise learn its parent session: the state directory name is a
+  sanitised id and `MHC_TASK_ROOT_SESSION` names the root, not the parent. `MHC_TASK_ROOT_SESSION`
+  is the record's root session, or the parent when the record has none.
+- When an `mhc` process that has `MHC_TASK_ID` and a non-empty `MAHO_TASK_PARENT_SESSION` creates
   a **new** session file, the header gets `spawnedBy` with `parentSessionId` = the parent
   variable, `rootSessionId` = `MHC_TASK_ROOT_SESSION` (or the parent when empty) and `taskId` =
   `MHC_TASK_ID`. An existing session file (a follow-up run, §3 resume, task-control §1 revive) is
@@ -126,51 +128,60 @@ Tests:
    the same three variables and the session header is unchanged (still one header line).
 3. Given a delegated child `C` (root `P`) that is allowed to spawn (`task.max_depth` 2) and starts
    `T2`, then `T2`'s header has `parentSessionId: C`, `rootSessionId: P`, `taskId: T2`.
-4. Given `MHC_TASK_ID` set but `MHC_TASK_PARENT_SESSION` empty, then the header has no
+4. Given `MHC_TASK_ID` set but `MAHO_TASK_PARENT_SESSION` empty, then the header has no
    `spawnedBy`.
-5. The runner's environment for a run contains `MHC_TASK_PARENT_SESSION` equal to the record's
+5. The runner's environment for a run contains `MAHO_TASK_PARENT_SESSION` equal to the record's
    owner session (unit test over the built command).
 
 ### D2. Classifying a failed run as a credential failure
 
-Behaviour: a pure predicate decides whether the failure text of a run means the provider of the
-child's model cannot authenticate at all, so no other model of the same provider would work
-either. Input: the failure text (record `error` plus the tail of `<id>.log`, case-insensitive)
-and the failed model id (the part of the record's `model` after `provider/`). Output: `none`,
-`rejected` or `missing`.
+Purpose: decide whether a failed run says the child's **provider** cannot authenticate at all, in
+which case another model of the same provider is pointless. Input: the failure text (record
+`error` plus the tail of `<id>.log`, compared case-insensitively) and the failed model id (the
+part of the record's `model` after `provider/`). Output: `none`, `rejected` or `missing`.
 
-- `rejected` — the provider refused a credential it was given: an HTTP 401; "unauthorized" (either
-  spelling); an invalid OAuth grant or a failed OAuth refresh; a subscription that is required;
-  an invalid or incorrect API key; an authentication failure or error; an OAuth token of the
-  account that was rejected; a session that expired together with an instruction to run
-  `/login`.
-- `missing` — there is no credential at all: the engine's own "no API key found/provided for …"
-  and "no API key for provider …" refusals (`maho-core`/`maho-ai` messages, interface facts);
-  "not logged in"; "no … account(s)" followed by a colon or "configured"; "no … access token";
-  an authentication failed code.
-- A sentence that only says an access token or authentication "is required" (or an
-  `authentication_required` code) counts as `missing` **unless** the text scopes it to a model
-  (it contains the word "model"/"models" or the failed model id); a requirement for one model is
-  not a provider-wide problem.
-- An HTTP 403 or "forbidden" counts as `rejected` only when the text also names the account, a
-  credential, a token, an API key, an organization or a subscription **and** does not scope
-  itself to a model. Any other 403 is `none`.
-- A `/login` hint on its own is not enough (the engine also mentions `/login` in unrelated
-  guidance). Usage, quota and billing limits are not credential failures (they are handled by
-  `model-selection.md` §7.2).
-- `rejected` wins when both classes match.
+The classifier must recognise the credential messages that mhc itself produces (interface facts,
+all in MIT crates) plus plain HTTP semantics:
 
-Tests (given text → class):
-1. "401 Unauthorized" → rejected. "Invalid API key provided" → rejected.
-2. "The account's OAuth token was rejected" → rejected.
-3. "Session expired (status 403). Run `/login acme` to sign in again." → rejected.
-4. "No API key found for openai." → missing. "No API key for provider: openai" → missing.
-5. "not logged in" → missing. "no accounts: run /login acme" → missing.
-6. "Acme access token is required" → missing; "Authentication required for this model" → none;
-   "authentication is required for m-large" with failed model id `m-large` → none.
-7. "403 Forbidden: your organization must be verified to use this model" → none;
-   "403: API key lacks access for this account" → rejected; "403 Forbidden" alone → none.
-8. "No model selected. Use /login or /model" → none. "You hit your weekly limit" → none.
+- `missing` (no credential stored or signed in):
+  - the engine's refusal before a request is sent: `maho-core` auth guidance ("No API key found
+    for ..."), the model registry's quoted-provider variant, and the `maho-ai` adapters ("No API
+    key for provider: ...", "No API key for <provider>/<model>");
+  - built-in login lanes that report no usable login: a lane with no accounts left
+    (`maho-ext-cursor-cli-oauth`, "no accounts: ..."), a provider that says its access token is
+    absent or required (`maho-ai` cursor adapter), a "not logged in" answer;
+  - a statement that the provider requires authentication, **only** when it does not name a model
+    (neither the word model/models nor the failed model id): a requirement tied to one model says
+    nothing about the provider's other models.
+- `rejected` (a credential was sent and refused, or can no longer be renewed):
+  - HTTP 401 or an "unauthorized" answer; an invalid or incorrect API key;
+  - the engine's OAuth refresh failure (`maho-ai` "OAuth refresh failed for ...", an
+    `invalid_grant` answer) and the engine's 'Authentication failed for "<provider>"' guidance;
+  - provider-specific expiry texts that the engine emits: `maho-ext-anthropic-subscription`'s
+    rejected-token text, `maho-ai` meta's "session expired ... /login" text; a required
+    subscription;
+  - HTTP 403 / "forbidden" only when the text is about the account, a credential, a token, a key,
+    the organization or the subscription, and does not name a model (as above). Every other 403
+    is `none`.
+- `none`: everything else. In particular a `/login` mention by itself is not evidence (the
+  engine's "No model selected" guidance mentions it too), and usage/quota/billing limits belong
+  to `model-selection.md` §7.2.
+- When both `rejected` and `missing` match, the result is `rejected`.
+
+Tests (text; failed model id where it matters -> class). Providers are invented:
+1. "No API key found for zeta." -> missing. "No API key for provider: zeta" -> missing.
+2. "no accounts: run /login zeta-cli" -> missing. "zeta: not logged in" -> missing.
+3. "zeta authentication is required" -> missing; "authentication is required for zeta-large"
+   with id `zeta-large` -> none; "authentication is required to use this model" -> none.
+4. "HTTP 401 from zeta" -> rejected. "OAuth refresh failed for zeta" -> rejected.
+5. 'Authentication failed for "zeta". Credentials may have expired or network is unavailable.
+   Run '/login zeta' to re-authenticate.' -> rejected.
+6. "Meta session expired (status 401). Run `/login meta` to sign in again." -> rejected.
+7. "403: the key of this account was disabled" -> rejected; "403: plan does not include
+   zeta-large" with id `zeta-large` -> none; "403 access denied" -> none.
+8. "No model selected." followed by the engine's login help -> none. "daily limit reached, try
+   again tomorrow" -> none.
+9. "401 unauthorized; no accounts: run /login zeta" -> rejected (both match).
 
 ### D3. Remedy line for a credential failure
 
@@ -188,9 +199,9 @@ A failure without a provider part, or of class `none`, keeps its text unchanged.
 once (a record that already carries it is not extended again by a later identical failure).
 
 Tests:
-1. Model `openai/m1`, log "No API key found for openai." → error contains the original text, the
-   provider `openai`, the word for "not found"/missing, `/login openai` and `omo.jsonc`.
-2. Model `acme/m2`, log "401 Unauthorized" → error says the credentials were rejected and names
+1. Model `zeta/m1`, log "No API key found for zeta." → error contains the original text, the
+   provider `zeta`, the word for "not found"/missing, `/login zeta` and `omo.jsonc`.
+2. Model `acme/m2`, log "HTTP 401 from acme" → error says the credentials were rejected and names
    `/login acme`.
 3. Model `m3` (no provider) with "401" → error unchanged. Model `a/b` failing with "exit 1" and no
    matching text → unchanged.
@@ -257,9 +268,8 @@ Shared N-A reasons (referenced below):
 - **R-reconcile**: generation-fenced startup reconciliation, residency claims, revival and
   reclamation of resident children. This design has no residency or revival; an orphaned active
   record is reported `interrupted` and can be resumed by the user.
-- **R-input**: per-message client ids and admission reads over an RPC prompt channel. Steering
-  here goes through gateway inbox files (task-control §1.1); a file still present at settle is the
-  proof of non-delivery and is requeued, so no admission protocol exists.
+- **R-input**: the RPC wire plumbing for per-message ids and admission reads (port methods,
+  protocol frames). The user-visible part (no lost or doubled steers) is D7.
 - **R-chain**: built-in agent/category fallback chains or model ids in them. This design ships no
   built-in category or agent chains (§5); categories are user-configured. Profile chain ids are
   covered by `model-selection.md` Delta.
@@ -283,7 +293,7 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-a-07 | - | N-A | R-reconcile |
 | omo-senpi-task-a-08 | - | N-A | R-reconcile |
 | omo-senpi-task-a-09 | - | N-A | R-reconcile |
-| omo-senpi-task-a-10 | - | N-A | R-reconcile (no claim to re-check; orphan cancel only signals a live pid, task-control §2) |
+| omo-senpi-task-a-10 | D8 | APPLIES | maho-task signals a recorded pid of a foreign-owned run without checking it is still the child; same hazard (signal hitting a process that is no longer ours) |
 | omo-senpi-task-a-11 | - | N-A | R-reconcile |
 | omo-senpi-task-a-12 | - | N-A | R-host |
 | omo-senpi-task-a-13 | - | N-A | R-host |
@@ -293,9 +303,9 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-a-17 | - | N-A | R-host |
 | omo-senpi-task-a-18 | - | N-A | R-live / R-host |
 | omo-senpi-task-a-19 | - | N-A | R-live: no stdio RPC child and no heartbeat; process exit is the only end signal |
-| omo-senpi-task-a-20 | - | N-A | R-input |
-| omo-senpi-task-a-21 | - | N-A | R-input |
-| omo-senpi-task-a-22 | - | N-A | R-input |
+| omo-senpi-task-a-20 | D7 | APPLIES | identity per steer: the gateway delivery id is carried as the message identity |
+| omo-senpi-task-a-21 | D7 | APPLIES | resend only when not admitted; admitted steers are not repeated |
+| omo-senpi-task-a-22 | D7 | APPLIES | admission is read (from the child transcript here, not an RPC query) before any resend |
 | omo-senpi-task-a-23 | - | N-A | R-input / R-host |
 | omo-senpi-task-a-24 | D1 | APPLIES | child session header records parent, root and task |
 | omo-senpi-task-a-25 | - | N-A | the child is always the current executable, so there is no engine-version gate (D1) |
@@ -326,10 +336,10 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-b-24 | - | N-A | R-live (no unresponsive outcome to fold into workpool admission) |
 | omo-senpi-task-b-25 | - | N-A | R-live |
 | omo-senpi-task-b-26 | - | N-A | R-live |
-| omo-senpi-task-b-27 | - | N-A | R-input / R-live |
-| omo-senpi-task-b-28 | - | N-A | R-input / R-inproc |
-| omo-senpi-task-b-29 | - | N-A | R-input |
-| omo-senpi-task-b-30 | - | N-A | R-input |
+| omo-senpi-task-b-27 | D7 | APPLIES | pending drain keeps the identity of each queued message and drops already admitted ones; the liveness half is R-live |
+| omo-senpi-task-b-28 | D7 | APPLIES | identity on steer/follow-up (delivery id); the in-process half is R-inproc |
+| omo-senpi-task-b-29 | D7 | APPLIES | identity kept through the steer-to-follow-up fallback |
+| omo-senpi-task-b-30 | D7 | APPLIES | admitted / not admitted / unreadable outcomes before resend |
 | omo-senpi-task-b-31 | - | N-A | R-input / R-host |
 | omo-senpi-task-b-32 | - | N-A | no per-child session restore on resume: a user-paused workflow re-dispatches its paused nodes (workflow-dag §4), so one child cannot block the resume |
 | omo-senpi-task-b-33 | - | N-A | R-reconcile |
@@ -341,7 +351,62 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-b-39 | - | N-A | R-chain (profile-side gate in model-selection Delta D1) |
 | omo-senpi-task-b-40 | - | N-A | R-chain |
 
-Totals: 15 APPLIES, 58 N-A, 73 rows.
+Totals: 23 APPLIES, 50 N-A, 73 rows (review 2026-10-30 moved a-10, a-20, a-21, a-22, b-27, b-28,
+b-29, b-30 from N-A to APPLIES; see `docs/cleanroom/reviews/task-5152.md`).
+
+### D7. Steering messages are neither lost nor doubled
+
+Context: task-control §1.1 steers a running child by writing a gateway delivery into its inbox;
+the child sends it into its session and then deletes the file; a file still present when the
+run settles is moved back to the pending list. File presence alone is not proof: (a) the child
+can record the message and exit before deleting the file (the follow-up run then repeats it);
+(b) the child can delete the file after the send was accepted but before any turn used it, at
+the very end of a `-p` run (the message is then silently lost). This delta makes the outcome
+of each steer decided by the child's transcript, using the delivery id as the message's identity.
+
+Behaviour, applied by the parent when a run that had steers written to it settles:
+
+- Each written steer keeps its gateway `delivery_id` (in memory and, for restart safety, in the
+  pending-list entry as its `id`).
+- The parent reads the child's session file (`<root>/sessions/`, task session id). A steer is
+  **admitted** when the transcript has a `session_control_delivery` custom message whose
+  `details.delivery_id` equals the id (gateway.md §5 interface fact).
+- Admitted and followed by a completed assistant message: done; any leftover inbox file is
+  deleted; it is not queued again.
+- Admitted but no assistant message after it: the task gets one follow-up run whose prompt asks
+  the child to act on the messages it already received (the text is not repeated).
+- Not admitted (file present or not): the file is deleted if present and the text goes back to
+  the pending list with the same id, so it is delivered by the follow-up run exactly once.
+- Transcript unreadable: treat as not admitted only when the inbox file still exists; otherwise
+  report the steer as uncertain in the next `task_output`/background delivery (one line naming
+  the id) rather than resending it.
+- A pending-list entry whose id already appears as admitted in the transcript is dropped
+  before a follow-up run starts (covers a parent restart between write and settle).
+
+Tests:
+1. Child records steer `d1` and answers, but exits before deleting the inbox file → no follow-up
+   run, file removed.
+2. Child deletes the file after recording `d2` but no assistant turn follows → one follow-up run;
+   its prompt does not contain the `d2` text again.
+3. Child never drained `d3` → file removed, one follow-up run carrying the `d3` text.
+4. Parent restarted with pending entry `d4` already recorded in the transcript → `d4` is not sent
+   again.
+
+### D8. Signalling an orphaned child only while it is still that child
+
+task-control §2 signals the recorded pid of a run owned by another process. A pid can be reused
+after the child exited, so the signal could hit an unrelated process. Before signalling (cancel,
+`/task-kill`, workflow cancel of a foreign-owned node), the pid must still be the task's child:
+on Unix its start time is not later than the record's run start and its command line contains
+the task's `--session-id <session id>`; on Windows the image is the mhc executable and the
+command line contains the session id. When the check fails, nothing is signalled and the record
+is marked `cancelled` (the run is already gone). Only a terminate signal is sent; there is no
+escalation to a forced kill without re-checking.
+
+Tests:
+1. Record pid points to a live process whose command line lacks the session id → not signalled;
+   result `cancelled` with `signalled: false`.
+2. Record pid is the real child → signalled; `signalled: true`.
 
 Leak self-check:
 - [x] no fenced code block from the SUL tree (this delta has no code blocks at all);
@@ -350,7 +415,8 @@ Leak self-check:
 - [x] the only phrase lists (D2) describe provider/engine error texts a classifier must
       recognise, written as categories with test examples, not as the SUL pattern table; env
       names, the `spawnedBy` header fields and `omo.jsonc` are interface facts;
-- [x] proposed identifiers are neutral (`MHC_TASK_PARENT_SESSION`, `rejected`/`missing`
+- [x] proposed identifiers are neutral (`MAHO_TASK_PARENT_SESSION` (renamed by review from
+      the writer's `MHC_` proposal), `rejected`/`missing`
       classes); no OmO-original names;
 - [x] no OmO-original feature is specified (no persona chains, no mass fan-out, no
       plan-continuation state).
