@@ -78,6 +78,13 @@ struct State<C> {
     background_work: BTreeMap<String, f64>,
     pending: Option<PendingStop<C>>,
     drain_timer: Option<tokio::task::JoinHandle<()>>,
+    /// Bumped on every arm and clear. `JoinHandle::abort` cannot stop a timer task that already
+    /// finished its sleep, so a timer acts only while its generation is still current (upstream
+    /// `clearTimeout` is atomic).
+    drain_generation: u64,
+    /// Bumped whenever the held Stop is replaced or dropped, so a quiet check made outside the
+    /// lock cannot release a different Stop.
+    pending_generation: u64,
 }
 
 struct Inner<C: StopContext> {
@@ -121,9 +128,12 @@ impl<C: StopContext> Inner<C> {
         });
     }
 
-    fn dispatch_pending_if_quiet(&self) {
-        let stop = {
+    fn dispatch_pending_if_quiet(&self, generation: u64) {
+        let (ctx, pending_generation) = {
             let mut state = self.lock();
+            if state.drain_generation != generation {
+                return;
+            }
             state.drain_timer = None;
             if !state.background_work.is_empty() {
                 return;
@@ -131,8 +141,20 @@ impl<C: StopContext> Inner<C> {
             let Some(stop) = state.pending.as_ref() else {
                 return;
             };
-            // A wake turn that is already running or queued reports its own Stop when it ends.
-            if !stop.ctx.is_quiet() {
+            (stop.ctx.clone(), state.pending_generation)
+        };
+        // The quiet check calls into the host, which may publish wake-source state synchronously,
+        // so it runs without the state lock.
+        // A wake turn that is already running or queued reports its own Stop when it ends.
+        if !ctx.is_quiet() {
+            return;
+        }
+        let stop = {
+            let mut state = self.lock();
+            if state.pending_generation != pending_generation
+                || state.drain_timer.is_some()
+                || !state.background_work.is_empty()
+            {
                 return;
             }
             state.pending.take()
@@ -144,9 +166,15 @@ impl<C: StopContext> Inner<C> {
 }
 
 fn clear_drain_timer<C>(state: &mut State<C>) {
+    state.drain_generation = state.drain_generation.wrapping_add(1);
     if let Some(timer) = state.drain_timer.take() {
         timer.abort();
     }
+}
+
+fn set_pending<C>(state: &mut State<C>, pending: Option<PendingStop<C>>) {
+    state.pending_generation = state.pending_generation.wrapping_add(1);
+    state.pending = pending;
 }
 
 impl<C: StopContext> StopLifecycle<C> {
@@ -162,6 +190,8 @@ impl<C: StopContext> StopLifecycle<C> {
                     background_work: BTreeMap::new(),
                     pending: None,
                     drain_timer: None,
+                    drain_generation: 0,
+                    pending_generation: 0,
                 }),
                 dispatch_stop,
                 grace,
@@ -196,10 +226,11 @@ impl<C: StopContext> StopLifecycle<C> {
         };
         let weak: Weak<Inner<C>> = Arc::downgrade(&self.inner);
         let grace = self.inner.grace;
+        let generation = state.drain_generation;
         state.drain_timer = Some(runtime.spawn(async move {
             tokio::time::sleep(grace).await;
             if let Some(inner) = weak.upgrade() {
-                inner.dispatch_pending_if_quiet();
+                inner.dispatch_pending_if_quiet(generation);
             }
         }));
     }
@@ -209,11 +240,11 @@ impl<C: StopContext> StopLifecycle<C> {
         {
             let mut state = self.inner.lock();
             if !state.background_work.is_empty() {
-                state.pending = Some(PendingStop { ctx, input });
+                set_pending(&mut state, Some(PendingStop { ctx, input }));
                 return Ok(());
             }
             clear_drain_timer(&mut state);
-            state.pending = None;
+            set_pending(&mut state, None);
         }
         (self.inner.dispatch_stop)(ctx, input).await
     }
@@ -222,7 +253,7 @@ impl<C: StopContext> StopLifecycle<C> {
     pub fn drop_pending(&self) {
         let mut state = self.inner.lock();
         clear_drain_timer(&mut state);
-        state.pending = None;
+        set_pending(&mut state, None);
     }
 
     pub fn holds_stop(&self) -> bool {
@@ -463,5 +494,64 @@ mod tests {
             &json!({"source":"x","activeCount":"1"})
         ));
         assert!(!is_wake_source_state_event(&json!(null)));
+    }
+
+    #[tokio::test]
+    async fn a_superseded_drain_timer_that_already_slept_neither_dispatches_nor_clears_the_new_one()
+    {
+        let fixture = fixture(60_000);
+        publish(&fixture, "senpi-task", 1);
+        fixture
+            .lifecycle
+            .on_agent_end(fixture.ctx.clone(), stop())
+            .await
+            .unwrap();
+        publish(&fixture, "senpi-task", 0);
+        let stale = fixture.lifecycle.inner.lock().drain_generation;
+        // A second drain re-arms; the first timer's generation is now stale.
+        publish(&fixture, "terminal-monitors", 0);
+        assert!(fixture.lifecycle.drain_armed());
+        // The stale timer wakes after its sleep (its abort came too late) and runs its body.
+        fixture.lifecycle.inner.dispatch_pending_if_quiet(stale);
+        assert!(fixture.payloads.lock().unwrap().is_empty());
+        assert!(fixture.lifecycle.holds_stop());
+        assert!(fixture.lifecycle.drain_armed());
+        let current = fixture.lifecycle.inner.lock().drain_generation;
+        fixture.lifecycle.inner.dispatch_pending_if_quiet(current);
+        settled(&fixture).await;
+        assert_eq!(fixture.payloads.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn quiet_check_runs_without_the_state_lock() {
+        #[derive(Clone)]
+        struct Reentrant(Arc<Mutex<Option<StopLifecycle<Reentrant>>>>);
+        impl StopContext for Reentrant {
+            fn is_quiet(&self) -> bool {
+                // A host that publishes wake-source state while answering would deadlock here
+                // if the lifecycle held its state lock.
+                let lifecycle = self.0.lock().unwrap().clone().unwrap();
+                lifecycle.holds_stop()
+            }
+            fn notify_error(&self, _: &str) {}
+        }
+        let dispatched = Arc::new(tokio::sync::Notify::new());
+        let notify = Arc::clone(&dispatched);
+        let lifecycle = StopLifecycle::with_grace(
+            Arc::new(move |_ctx: Reentrant, _| {
+                notify.notify_one();
+                Box::pin(async { Ok(()) })
+            }),
+            Duration::from_millis(1),
+        );
+        let ctx = Reentrant(Arc::new(Mutex::new(Some(lifecycle.clone()))));
+        lifecycle.on_wake_source_state(&json!({"source":"senpi-task","activeCount":1}));
+        lifecycle.on_agent_end(ctx.clone(), stop()).await.unwrap();
+        lifecycle.on_wake_source_state(&json!({"source":"senpi-task","activeCount":0}));
+        tokio::time::timeout(Duration::from_secs(5), dispatched.notified())
+            .await
+            .expect("stop dispatch");
+        assert!(!lifecycle.holds_stop());
+        ctx.0.lock().unwrap().take();
     }
 }
