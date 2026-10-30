@@ -147,30 +147,35 @@ A legacy memory file may carry `expires: <value>` in its YAML frontmatter. The i
 as an instant in UTC (epoch milliseconds) using these rules:
 
 - Accepted: a calendar date `YYYY-MM-DD` (the instant is 00:00:00.000 UTC of that day); or a
-  datetime `YYYY-MM-DDTHH:MM`, optionally with `:SS` and a fraction of 1 to 9 digits, that ends
-  in `Z` or a numeric offset `+HH:MM` / `-HH:MM`. The instant is normalised to UTC. Fractions
-  finer than a millisecond are truncated.
+  datetime `YYYY-MM-DDTHH:MM`, optionally followed by `:SS`, which may itself be followed by a
+  fraction of 1 to 9 digits; the datetime must end in `Z` or a numeric offset `+HH:MM` /
+  `-HH:MM` (offset hour 00-23, minute 00-59). The instant is normalised to UTC. Fractions finer
+  than a millisecond are truncated.
 - The scalar may be bare, single-quoted or double-quoted; surrounding whitespace is ignored.
-- Anything else reads as "no expiry": a datetime without `Z`/offset (it would mean a different
-  instant on each machine), a space instead of `T`, free text, an empty value, an hour above 23,
-  minutes or seconds above 59, a date that does not exist (for example 30 February), a non-scalar
-  value. A malformed value never hides content and never makes the file fail.
+- Every other value is treated as if the key were absent. This includes: a date that is not on
+  the calendar (for example 31 April), a clock field out of range (hour > 23, minute or second
+  > 59), a datetime with no zone designator (its meaning would depend on the importing
+  machine's time zone), a separator other than `T` between date and time, prose, an empty
+  value, and lists or mappings. Such a value only removes the expiry; the file's content is
+  imported as usual and the import does not fail.
 - A file with no `expires` key has no expiry. Other undocumented keys remain preserved as
   metadata and uninterpreted, as before.
 
 Given/when/then:
 
-- Given `expires: 2026-10-28`, when parsed, then the instant is 2026-10-28T00:00:00.000Z.
-- Given `expires: 2026-10-27T15:33+09:00`, then the instant is 2026-10-27T06:33:00.000Z.
-- Given `expires: "2026-10-27T06:33:15.250Z"`, then the instant is 2026-10-27T06:33:15.250Z.
-- Given `expires: 2026-10-27T06:33`, `expires: 2026-02-30`, `expires: 2026-10-27T25:00Z`,
-  `expires: after the outage` or an empty value, then there is no expiry.
+- Given `expires: 2031-03-14`, when parsed, then the instant is 2031-03-14T00:00:00.000Z.
+- Given `expires: 2031-03-14T01:20-05:30`, then the instant is 2031-03-14T06:50:00.000Z.
+- Given `expires: '2031-03-14T06:50:09.1234567Z'`, then the instant is 2031-03-14T06:50:09.123Z.
+- Given `expires: 2031-03-14T06:50:09`, `expires: 2031-04-31`, `expires: 2031-03-14T06:61Z`,
+  `expires: 2031-03-14/06:50Z`, `expires: when the release ships`, `expires: [2031-03-14]` or
+  `expires:` with nothing after it, then there is no expiry.
 
 ### 1.2 The key never rejects a file
 
-`expires` is a known key, so it is not reported as an unknown key and an unreadable value adds
-at most one warning (path, reason `unreadable expires value`) to the migration report; the
-file is still imported in full. Re-validating hand-edited files must never be blocked by it.
+The importer interprets `expires` (it is no longer one of the uninterpreted keys) and still
+keeps it in the preserved frontmatter. A value that 1.1 cannot read adds exactly one warning for
+that file to the migration report (path, plus a reason of the implementer's wording that names
+the `expires` value as unusable); the file's blocks are all imported, without an expiry.
 
 Given a file whose `expires` is free text, when imported, then its blocks are imported with no
 expiry and the report lists one warning for that path.
@@ -182,9 +187,9 @@ For every block of a file with a readable expiry, the imported `working_memory` 
 store stamps its own expiries with, so string comparison against "now" stays correct). The
 block's `metadata_json` gains `"expires": <the original value as written>`.
 
-- A row is expired from the instant onward: at exactly the expiry instant it is no longer
-  recalled (the store already treats `valid_until > now` as live), consistent with the file rule
-  "at its instant it is expired".
+- The bound is exclusive: the store counts a row as live only while `valid_until` is later
+  than now, so when now equals the expiry instant the row is already out of recall and of the
+  active counts. No new rule is needed for this.
 - Files already expired at import time are still imported (history is kept; recall and active
   counts exclude them) and are counted (per file) in a new report field `expired_on_import`, in text and
   JSON output.
@@ -197,11 +202,11 @@ block's `metadata_json` gains `"expires": <the original value as written>`.
 
 Given/when/then:
 
-- Given a notes file with `expires: 2026-10-28` and two list items, when imported on 2026-10-27,
-  then two rows exist, each with `valid_until` 2026-10-28T00:00:00.000Z, and both are returned
-  by recall on 2026-10-27 but not on 2026-10-28T00:00:00.000Z.
-- Given the same file imported on 2026-11-01, then two rows exist, none is recalled, and the
-  report shows `expired_on_import` 1 (it counts files, not blocks).
+- Given `notes/trip.md` with `expires: 2031-03-14` and three list items, when imported at
+  2031-03-10T12:00Z, then three rows exist, each with `valid_until` 2031-03-14T00:00:00.000Z;
+  recall at 2031-03-13T23:59:59.999Z returns them and recall at 2031-03-14T00:00:00.000Z does not.
+- Given the same file imported at 2031-04-02T00:00Z, then three rows exist, none is recalled, and
+  the report shows `expired_on_import` 1 (it counts files, not blocks).
 - Given an import report for a tree with no `expires` keys, then `expired_on_import` is 0.
 
 Error cases: none new; every failure mode of 1.1 degrades to "no expiry".
@@ -227,8 +232,8 @@ Error cases: none new; every failure mode of 1.1 degrades to "no expiry".
 | omo-memory-15 | - | N-A | N-A reason: reading git HEAD from files; MIT store never runs or reads git |
 | omo-memory-16 | - | N-A | N-A reason: external-path projection grouping; MIT store has no projection into prompts |
 | omo-memory-17 | - | N-A | N-A reason: external-path name folding for projection; no projection |
-| omo-memory-18 | - | N-A | N-A reason: projection limits (config keys memory.projection.*) only shape the legacy prompt block; the importer does not read them |
-| omo-memory-19 | 1.2 | APPLIES | `expires` joins the recognised frontmatter keys; an unreadable value means no expiry and never rejects the file |
+| omo-memory-18 | - | N-A | N-A reason: projection limits (config keys memory.projection.*) only shape the legacy prompt block; the importer does not read them. The changed upstream defaults (0 and 40960) are a config-keys.md matter, not a memory-format one |
+| omo-memory-19 | 1.2 | APPLIES | `expires` is now an interpreted frontmatter key; a value 1.1 cannot read leaves the file without expiry and is imported anyway |
 | omo-memory-20 | - | N-A | N-A reason: persona prompts of the legacy reflection/dream workers; MIT store ships no personas or reflection workers |
 | omo-memory-21 | - | N-A | N-A reason: in-process journal lock cancellation (already present upstream); MIT store has no journal lock |
 | omo-memory-22 | - | N-A | N-A reason: journal store cancellation; no journal |
@@ -254,8 +259,9 @@ Error cases: none new; every failure mode of 1.1 degrades to "no expiry".
 | omo-memory-46 | - | N-A | N-A reason: worker run reconciliation abortability; MIT store has no background workers or run sentinels |
 | omo-memory-47 | - | N-A | N-A reason: Windows tree kill for the legacy memory worker supervisor; no worker supervisor |
 
-Rows omo-memory-24, -30, -31 and -38 are not routed to `crates/maho-memory` (N-A upstream or
-targeted at `maho-core`) and are outside this table.
+Rows omo-memory-24, -30, -31, -38, -48, -49 and -50 are not routed to `crates/maho-memory`
+(N-A upstream: test fixtures, hook labels, docs, JS packaging; or targeted at `maho-core`) and
+are outside this table.
 
 Leak self-check:
 
