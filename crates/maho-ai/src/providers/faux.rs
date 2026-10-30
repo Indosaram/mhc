@@ -178,6 +178,7 @@ pub fn faux_assistant_message(
         end_turn: None,
         timestamp: options.timestamp.unwrap_or_else(now_ms),
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -506,6 +507,7 @@ fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantM
         end_turn: None,
         timestamp: now_ms(),
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -540,6 +542,7 @@ fn create_error_message(
         end_turn: None,
         timestamp: now_ms(),
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }

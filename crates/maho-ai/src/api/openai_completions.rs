@@ -2387,6 +2387,7 @@ pub fn stream_with_transport(
     let stream = AssistantMessageEventStream::assistant();
     let output = AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,

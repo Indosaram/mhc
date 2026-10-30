@@ -2814,6 +2814,7 @@ fn create_output(model: &Model, options: &StreamOptions) -> AssistantMessage {
         .map(|_| effort_option(options).unwrap_or_else(|| "high".to_owned()));
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,

@@ -6387,6 +6387,7 @@ async fn run_stream(
 ) {
     let mut output = AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -6769,6 +6770,7 @@ mod tests {
     fn assistant_for_tests() -> AssistantMessage {
         AssistantMessage {
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
             error_cause: None,
             prompt_cache_breakpoint: None,
