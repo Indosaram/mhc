@@ -10,9 +10,14 @@ use serde_json::{Value, json};
 
 use crate::host::HostError;
 use crate::manager::child_handle::{
-    ManagedChildEvent, ManagedChildHandle, ManagedChildListener, Unsubscribe,
+    InputIdentity, ManagedChildEvent, ManagedChildHandle, ManagedChildListener, Unsubscribe,
 };
 use crate::runners::RunnerOutcome;
+use crate::runners::input_admission_read::read_stdio_admissions;
+use crate::runners::input_effects::{
+    IdentifiedInput, InputCommand, InputCommandType, InputEffectError, InputEffects,
+    InputEffectsOptions, InputWriteError, create_input_effects,
+};
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::classify_child_exit;
 use crate::runners::rpc::native_run_pause::RpcRunPause;
@@ -36,6 +41,8 @@ pub struct RpcChildHandleOptions {
     pub task_id: String,
     pub heartbeat_interval_ms: u64,
     pub now: Clock,
+    /// `inputStore`: where identified inputs and uncertain deliveries are persisted.
+    pub input_store: Option<crate::store::TaskRecordStore>,
 }
 
 #[derive(Default)]
@@ -155,6 +162,7 @@ pub struct RpcChildHandle {
     spawn_spec: Mutex<Option<RpcSpawnSpec>>,
     resume: Mutex<Option<(String, RpcSwitchSessionResult)>>,
     unsubscribe: Mutex<Vec<Unsubscribe>>,
+    input_effects: InputEffects,
 }
 
 impl RpcChildHandle {
@@ -195,8 +203,22 @@ impl RpcChildHandle {
                     .map_err(|error| TaskParentControlError::new(&error.to_string()))
             }),
         )));
+        let send_client = Arc::clone(&client);
+        let read_client = Arc::clone(&client);
+        let input_effects = create_input_effects(InputEffectsOptions {
+            task_id: options.task_id.clone(),
+            store: options.input_store,
+            send: Arc::new(move |command: &IdentifiedInput| {
+                write_command(send_client.as_ref(), command.wire(), command.kind.wire())
+                    .map_err(input_write_error)
+            }),
+            read: Some(Arc::new(move |ids: &[String]| {
+                read_stdio_admissions(read_client.as_ref(), ids)
+            })),
+        });
         Arc::new(Self {
             control,
+            input_effects,
             task_id: options.task_id,
             client,
             shared,
@@ -269,15 +291,73 @@ impl RpcChildHandle {
     }
 
     fn run_command(&self, command: Value, label: &str) -> Result<(), RpcClientError> {
-        let response = self.client.send(command)?;
-        if response.get("success").and_then(Value::as_bool) == Some(true) {
-            return Ok(());
+        write_command(self.client.as_ref(), command, label)
+    }
+
+    /// `inputEffects.send`: the input goes out under its durable id (minted or the caller's own).
+    fn send_input(
+        &self,
+        kind: InputCommandType,
+        text: &str,
+        streaming_behavior: Option<&str>,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
+        // The refused response keeps its typed fields (a credential refusal drives the start chain).
+        let refused = Mutex::new(None);
+        let command = InputCommand {
+            kind,
+            message: text.to_string(),
+            streaming_behavior: streaming_behavior.map(str::to_string),
+            client_message_id: client_message_id.map(str::to_string),
+        };
+        self.input_effects
+            .send_with(command, |identified| {
+                write_command(
+                    self.client.as_ref(),
+                    identified.wire(),
+                    identified.kind.wire(),
+                )
+                .map_err(|error| {
+                    let classified = input_write_error(error.clone());
+                    *refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                    classified
+                })
+            })
+            .map_err(|error| match error {
+                InputEffectError::Failed(message) => refused
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                    .unwrap_or(RpcClientError::Write { message }),
+                other => RpcClientError::Write {
+                    message: other.to_string(),
+                },
+            })
+    }
+
+    /// `delivery.prompt`: a busy refusal admitted nothing, so its followUp fallback keeps the id.
+    fn deliver_prompt(
+        &self,
+        text: &str,
+        follow_up: bool,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
+        let behavior = follow_up.then_some("followUp");
+        let result = self.send_input(InputCommandType::Prompt, text, behavior, client_message_id);
+        match result {
+            Err(error) if !follow_up && is_busy_child_rejection(&error) => self.send_input(
+                InputCommandType::Prompt,
+                text,
+                Some("followUp"),
+                client_message_id,
+            ),
+            other => other,
         }
-        let detail = response
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error");
-        Err(RpcCommandError::with_refusal(label, detail, &response).into())
+    }
+
+    /// Reconciles inputs whose acknowledgement was lost (`reconcileInputs`).
+    pub fn reconcile_inputs(&self) {
+        self.input_effects.reconcile();
     }
 
     fn begin_turn(&self) {
@@ -298,31 +378,59 @@ impl RpcChildHandle {
         state.turn_baseline = state.final_text.clone();
     }
 
-    fn run_prompt(&self, text: &str, follow_up: bool) -> Result<(), RpcClientError> {
+    fn run_prompt(
+        &self,
+        text: &str,
+        follow_up: bool,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
         self.begin_turn();
-        let command = if follow_up {
-            json!({ "type": "prompt", "message": text, "streamingBehavior": "followUp" })
-        } else {
-            json!({ "type": "prompt", "message": text })
-        };
-        self.run_command(command, "prompt").inspect_err(|error| {
-            let mut state = self.shared.lock();
-            self.shared
-                .settle_turn(&mut state, prompt_failure_outcome(&error.to_string()));
-        })
+        self.deliver_prompt(text, follow_up, client_message_id)
+            .inspect_err(|error| {
+                // An uncertain input may still be delivered: its turn is not failed.
+                if is_uncertain_input(error) {
+                    return;
+                }
+                let mut state = self.shared.lock();
+                self.shared
+                    .settle_turn(&mut state, prompt_failure_outcome(&error.to_string()));
+            })
     }
 
     pub fn start_initial_prompt(&self, text: &str) -> Result<(), RpcClientError> {
-        self.run_prompt(text, false)
+        self.run_prompt(text, false, None)
     }
 
     pub fn steer_turn(&self, text: &str) -> Result<(), RpcClientError> {
+        self.steer_turn_as(text, None)
+    }
+
+    /// `delivery.steer(text, clientMessageId)`: task_send ALWAYS steers; a busy refusal degrades to
+    /// followUp queueing under the same id.
+    pub fn steer_turn_as(
+        &self,
+        text: &str,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
         self.begin_turn();
-        self.run_command(json!({ "type": "steer", "message": text }), "steer")
+        match self.send_input(InputCommandType::Steer, text, None, client_message_id) {
+            Err(error) if is_busy_child_rejection(&error) => {
+                self.deliver_prompt(text, true, client_message_id)
+            }
+            other => other,
+        }
     }
 
     pub fn follow_up_turn(&self, text: &str) -> Result<(), RpcClientError> {
-        self.run_prompt(text, true)
+        self.run_prompt(text, true, None)
+    }
+
+    pub fn follow_up_turn_as(
+        &self,
+        text: &str,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
+        self.run_prompt(text, true, client_message_id)
     }
 
     pub fn abort_turn(&self) -> Result<(), RpcClientError> {
@@ -474,8 +582,22 @@ impl ManagedChildHandle for RpcChildHandle {
         self.steer_turn(text).map_err(host_error)
     }
 
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.steer_turn_as(text, Some(&identity.client_message_id))
+            .map_err(host_error)
+    }
+
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.follow_up_turn(text).map_err(host_error)
+    }
+
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
+        self.follow_up_turn_as(text, Some(&identity.client_message_id))
+            .map_err(host_error)
     }
 
     fn abort(&self) -> Result<(), HostError> {
@@ -541,6 +663,49 @@ impl ManagedChildHandle for RpcChildHandle {
     fn mark_stopping(&self) {
         self.shared.lock().aborted_by_user = true;
     }
+}
+
+/// `writeCommand` + `assertOk`: the refused response's typed fields travel with the error.
+fn write_command(
+    client: &dyn RpcClientPort,
+    command: Value,
+    label: &str,
+) -> Result<(), RpcClientError> {
+    let response = client.send(command)?;
+    if response.get("success").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    let detail = response
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown error");
+    Err(RpcCommandError::with_refusal(label, detail, &response).into())
+}
+
+fn input_write_error(error: RpcClientError) -> InputWriteError {
+    match error {
+        RpcClientError::Command(error) => InputWriteError::from_message(
+            error.error_code.clone(),
+            format!("{}: {}", error.command, error.detail),
+        ),
+        other => InputWriteError::from_message(None, other.to_string()),
+    }
+}
+
+fn is_uncertain_input(error: &RpcClientError) -> bool {
+    matches!(error, RpcClientError::Write { message } if message.starts_with("uncertain: "))
+}
+
+/// `isBusyChildRejection` (`rpc/delivery-semantics.ts`): the child is alive and simply busy.
+fn is_busy_child_rejection(error: &RpcClientError) -> bool {
+    let detail = match error {
+        RpcClientError::Command(error) => error.detail.to_lowercase(),
+        RpcClientError::Write { message } => message.to_lowercase(),
+        _ => return false,
+    };
+    detail.contains("already processing")
+        || detail.contains("streamingbehavior")
+        || detail.contains("one-at-a-time")
 }
 
 fn host_error(error: RpcClientError) -> HostError {

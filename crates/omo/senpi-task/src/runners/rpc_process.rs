@@ -128,6 +128,12 @@ impl RpcProcessRunner {
             task_id: spec.task_id.clone(),
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             now: Arc::clone(&self.now),
+            input_store: spec.task_store_dir.as_ref().map(|dir| {
+                crate::store::TaskRecordStore::new(&crate::store::StateDirConfig {
+                    project_dir: std::path::PathBuf::from(&spec.cwd),
+                    task_state_dir: Some(std::path::PathBuf::from(dir)),
+                })
+            }),
         });
         if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
             && !chain.is_empty() {

@@ -5,7 +5,12 @@ use super::{
 };
 use crate::{
     host::HostError,
-    manager::child_handle::{ManagedChildHandle, ManagedChildListener, Unsubscribe},
+    manager::child_handle::{InputIdentity, ManagedChildHandle, ManagedChildListener, Unsubscribe},
+    runners::input_admission_read::read_host_admissions,
+    runners::input_effects::{
+        IdentifiedInput, InputCommand, InputCommandType, InputEffects, InputEffectsOptions,
+        InputWriteError, create_input_effects,
+    },
     runners::RunnerOutcome,
     state::TaskStatus,
 };
@@ -22,12 +27,23 @@ pub struct HostSessionHandle {
     settled: std::sync::atomic::AtomicBool,
     event_subscription: Mutex<Option<Unsubscribe>>,
     outcome: Arc<dyn Fn() -> RunnerOutcome + Send + Sync>,
+    input_effects: InputEffects,
 }
 pub fn create_host_session_handle(
     task_id: String,
     port: Arc<dyn HostSessionPort>,
     opened: OpenedHostSession,
     outcome: Arc<dyn Fn() -> RunnerOutcome + Send + Sync>,
+) -> Arc<HostSessionHandle> {
+    create_host_session_handle_with_inputs(task_id, port, opened, outcome, None)
+}
+/// `createHostSessionHandle` with `inputStore`: identified inputs persist in the task store.
+pub fn create_host_session_handle_with_inputs(
+    task_id: String,
+    port: Arc<dyn HostSessionPort>,
+    opened: OpenedHostSession,
+    outcome: Arc<dyn Fn() -> RunnerOutcome + Send + Sync>,
+    input_store: Option<crate::store::TaskRecordStore>,
 ) -> Arc<HostSessionHandle> {
     let listeners = create_handle_listeners();
     let learned = listeners.clone();
@@ -37,6 +53,22 @@ pub fn create_host_session_handle(
         Arc::new(move |id| learned.emit_durable_session_id(id)),
     );
     let port = Arc::new(Mutex::new(port));
+    let send_port = port.clone();
+    let read_port = port.clone();
+    let input_effects = create_input_effects(InputEffectsOptions {
+        task_id: task_id.clone(),
+        store: input_store,
+        send: Arc::new(move |command: &IdentifiedInput| {
+            let current = send_port.lock().expect("hosted child state lock poisoned").clone();
+            current
+                .send(to_host_input(command))
+                .map_err(|error| InputWriteError::from_message(None, error.message))
+        }),
+        read: Some(Arc::new(move |ids: &[String]| {
+            let current = read_port.lock().expect("hosted child state lock poisoned").clone();
+            read_host_admissions(current.as_ref(), ids)
+        })),
+    });
     let teardown = create_handle_teardown(port.clone(), opened.attached);
     let handle = Arc::new(HostSessionHandle {
         native_pause: CurrentPortPause(port.clone()),
@@ -50,6 +82,7 @@ pub fn create_host_session_handle(
         settled: std::sync::atomic::AtomicBool::new(opened.attached),
         event_subscription: Mutex::new(None),
         outcome,
+        input_effects,
     });
     handle.bind_events();
     handle
@@ -101,8 +134,27 @@ impl HostSessionHandle {
         self.settled
             .store(false, std::sync::atomic::Ordering::Release);
         self.teardown.publish_running()?;
-        self.current_port()
-            .send(serde_json::json!({"type":"prompt","message":text}))
+        self.send_input(InputCommandType::Prompt, text, None)
+    }
+    /// `inputEffects.send`: every input goes out under its durable id (minted or the caller's own).
+    fn send_input(
+        &self,
+        kind: InputCommandType,
+        text: &str,
+        client_message_id: Option<&str>,
+    ) -> Result<(), HostError> {
+        self.input_effects
+            .send(InputCommand {
+                kind,
+                message: text.to_string(),
+                streaming_behavior: None,
+                client_message_id: client_message_id.map(str::to_string),
+            })
+            .map_err(|error| HostError { message: error.to_string() })
+    }
+    /// Reconciles inputs whose acknowledgement was lost (`reconcileInputs`).
+    pub fn reconcile_inputs(&self) {
+        self.input_effects.reconcile();
     }
     pub fn recovery_ended(
         self: &Arc<Self>,
@@ -183,13 +235,18 @@ impl ManagedChildHandle for HostSessionHandle {
         None
     }
     fn steer(&self, text: &str) -> Result<(), HostError> {
-        self.current_port()
-            .send(serde_json::json!({"type":"steer","message":text}))
+        self.send_input(InputCommandType::Steer, text, None)
+    }
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.send_input(InputCommandType::Steer, text, Some(&identity.client_message_id))
     }
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.teardown.publish_running()?;
-        self.current_port()
-            .send(serde_json::json!({"type":"followUp","message":text}))
+        self.send_input(InputCommandType::FollowUp, text, None)
+    }
+    fn follow_up_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.teardown.publish_running()?;
+        self.send_input(InputCommandType::FollowUp, text, Some(&identity.client_message_id))
     }
     fn abort(&self) -> Result<(), HostError> {
         self.current_port()
@@ -232,6 +289,15 @@ impl ManagedChildHandle for HostSessionHandle {
     fn publish_task_status(&self, status: TaskStatus) -> Result<(), HostError> {
         self.teardown.publish_task_status(status)
     }
+}
+
+/// `toHostInput` (`rpc-host/input-command.ts`): the identified input as a host session command.
+pub fn to_host_input(command: &IdentifiedInput) -> serde_json::Value {
+    let mut wire = command.wire();
+    if command.kind == InputCommandType::FollowUp {
+        wire["type"] = serde_json::json!("followUp");
+    }
+    wire
 }
 
 impl Drop for HostSessionHandle {

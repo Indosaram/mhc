@@ -16,6 +16,7 @@ pub mod session_client_opening;
 pub mod session_context;
 pub mod session_open;
 pub mod session_role;
+pub mod session_wire;
 pub mod store_index;
 pub mod task_parent_wire;
 use crate::host::HostError;
@@ -107,8 +108,19 @@ impl RpcHostRunner {
             });
         let opened = open_session::open_task_host_session(client.clone(), opened, pin.as_ref())?;
         let attached = opened.attached;
-        let handle =
-            handle::create_host_session_handle(spec.task_id.clone(), client, opened, outcome);
+        let input_store = spec.task_store_dir.as_ref().map(|dir| {
+            crate::store::TaskRecordStore::new(&crate::store::StateDirConfig {
+                project_dir: std::path::PathBuf::from(&spec.cwd),
+                task_state_dir: Some(std::path::PathBuf::from(dir)),
+            })
+        });
+        let handle = handle::create_host_session_handle_with_inputs(
+            spec.task_id.clone(),
+            client,
+            opened,
+            outcome,
+            input_store,
+        );
         if attached {
             Ok(handle)
         } else {
