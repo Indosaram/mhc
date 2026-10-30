@@ -1006,6 +1006,9 @@ pub struct InteractiveMode {
     mounted_renderer: Option<std::rc::Weak<RefCell<crate::tui_renderer::InteractiveTui>>>,
     side_column: Option<maho_ext_api::ExtensionSideColumn>,
     detach_mcp_grant_presentation: Option<Box<dyn FnOnce() + Send + 'static>>,
+    /// senpi `mcpMrtrPresentationLifetime`: one per extension binding, aborted on rebind and at dispose.
+    mcp_mrtr_presentation_lifetime:
+        std::sync::Mutex<Option<maho_ai::utils::abort::AbortController>>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
     /// senpi `lifecycleStatus`: the footer's projection of the bound session's lifecycle.
     lifecycle_status: crate::lifecycle_status::LifecycleStatus,
@@ -2769,6 +2772,7 @@ impl InteractiveMode {
             side_column_widget_bounds: None,
             side_column: None,
             detach_mcp_grant_presentation: None,
+            mcp_mrtr_presentation_lifetime: std::sync::Mutex::new(None),
             unsubscribe_security_notices: None,
             lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
             lifecycle_subscription_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -5050,10 +5054,48 @@ impl InteractiveMode {
         self.session_control_host.dispose_active().await;
     }
 
+    /// senpi `bindCurrentSessionExtensions` + `createExtensionUIContext`: the previous binding's MRTR
+    /// presentation lifetime ends, and the terminal UI is registered as this binding's local MCP MRTR
+    /// presentation (pre-aborted when the mode is already shutting down). The private-forms presenter
+    /// (`--mcp-presenter-enforcement`, `registerLocalMcpPresenter`) is not ported yet, so none is passed.
+    fn register_mcp_mrtr_presentation(&self) {
+        let lifetime = maho_ai::utils::abort::AbortController::new();
+        if self.shutdown_requested {
+            lifetime.abort(None);
+        }
+        let signal = lifetime.signal();
+        let previous = self
+            .mcp_mrtr_presentation_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(lifetime);
+        if let Some(previous) = previous {
+            previous.abort(None);
+        }
+        let ui: Arc<dyn maho_ext_api::ExtensionUi> = self.extension_ui.clone();
+        drop(
+            maho_core::mcp_mrtr_presentations::register_mcp_mrtr_presentation(
+                ui, signal, None, None,
+            ),
+        );
+    }
+
+    fn end_mcp_mrtr_presentation(&self) {
+        if let Some(lifetime) = self
+            .mcp_mrtr_presentation_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            lifetime.abort(None);
+        }
+    }
+
     /// The session-side half of `bind_extensions`. It does not borrow the mode, so the caller can
     /// keep reading input and painting while it runs (senpi's event loop serves keystrokes during
     /// `await rebindCurrentSession()`); UI requests it raises arrive through `drain_events`.
     pub fn start_extension_binding(&self) -> impl std::future::Future<Output = ()> + 'static {
+        self.register_mcp_mrtr_presentation();
         let session = self.session.clone();
         let bindings = maho_core::agent_session::ExtensionBindings {
             ui_context: Some(self.extension_ui.clone()),
@@ -14769,6 +14811,8 @@ impl Component for InteractiveMode {
         if let Some(detach) = self.detach_mcp_grant_presentation.take() {
             detach();
         }
+        // senpi `shutdown`: the MRTR presentation lifetime ends with the terminal.
+        self.end_mcp_mrtr_presentation();
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
             unsubscribe();
         }
