@@ -19,11 +19,10 @@ fn request(permission: &str, patterns: &[&str]) -> Request {
 fn every_refusal_tells_the_model_not_to_reach_the_refused_result_another_way() {
     let no_ui = handle_no_ui(
         &request("bash", &["git push"]),
-        (&[], &[]),
+        false,
         &PermissionEventEmitter::default(),
     )
-    .expect("emit")
-    .expect("reject");
+    .expect("emit");
     for message in [
         PermissionError::Rejected.to_string(),
         PermissionError::Corrected("not now".into()).to_string(),
@@ -49,11 +48,10 @@ fn refusals_keep_the_first_sentence_clients_match_as_a_prefix() {
 fn headless_rejection_names_the_flag_after_the_final_denial() {
     let outcome = handle_no_ui(
         &request("bash", &["rm -rf /"]),
-        (&[], &[]),
+        false,
         &PermissionEventEmitter::default(),
     )
-    .expect("emit")
-    .expect("reject");
+    .expect("emit");
     assert_eq!(
         outcome.message.as_deref(),
         Some(format!("Permission required for bash (rm -rf /), and there is no UI to ask, so the call did not run. {DENIAL_IS_FINAL} The user can allow it with --permission bash=allow.").as_str())
