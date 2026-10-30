@@ -13,6 +13,9 @@ pub const AUTO_TITLE_PER_SESSION_CAPABILITY: &str = "auto_title_per_session";
 pub const DURABLE_SESSION_ID_CAPABILITY: &str = "durable_session_id";
 pub const DETACH_CONNECTION_CAPABILITY: &str = "detach_connection";
 pub const SESSION_STATUS_CAPABILITY: &str = "session_status";
+/// Host capability: `subscribe_sessions { dialogs: true }` observes dialog registration and settlement
+/// (`ui_request_pending`/`ui_request_settled`) without receiving command replies (senpi#4266).
+pub const DIALOG_OBSERVER_CAPABILITY: &str = "dialog_observer";
 pub const WARM_CAPABILITY: &str = "warm";
 pub const MOVED_PATH_GUARD_CAPABILITY: &str = "moved_path_guard";
 pub const PROMPT_SURFACE_CAPABILITY: &str = "prompt_surface";
