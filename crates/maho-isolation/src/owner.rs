@@ -13,7 +13,7 @@ pub struct Owner {
     pub id: String,
     /// Repository (or directory) the isolation was made from.
     pub source: PathBuf,
-    /// `worktree` or `copy`.
+    /// `worktree`, `copy`, or a copy-on-write backend label (`btrfs`, `reflink`, ...).
     pub backend: String,
     #[serde(
         rename = "startToken",
@@ -123,6 +123,13 @@ pub fn clear_stale(root: &Path, include_retained: bool) -> Vec<PathBuf> {
             continue;
         }
         let merged = path.join(crate::MERGED_DIR);
+        // A copy-on-write view may be a mount or a dataset: release it before removing files.
+        if let Some(owner) = owner.as_ref()
+            && let Some(kind @ crate::backend::BackendKind::Cow(_)) =
+                crate::backend::BackendKind::from_label(&owner.backend)
+        {
+            crate::backend::stop(kind, &owner.source, &merged);
+        }
         if owner.as_ref().is_some_and(|o| o.backend == "worktree") {
             let _ = maho_git::Git::new(&merged).run(&["worktree", "remove", "--force", "."]);
         }
