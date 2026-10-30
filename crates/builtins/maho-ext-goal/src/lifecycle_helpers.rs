@@ -212,7 +212,7 @@ pub fn is_last_turn_stuck_on_context_overflow(
 pub fn blocked_reason_for_continuation_guard(reason: DenyReason) -> Option<&'static str> {
     match reason {
         DenyReason::Cap => Some(CONTINUATION_CAP_BLOCKED_REASON),
-        DenyReason::Unattended => Some(UNATTENDED_CONTINUATION_BLOCKED_REASON),
+        DenyReason::NoProgress => Some(NO_PROGRESS_BLOCKED_REASON),
         DenyReason::Repetition => Some(REPETITION_BLOCKED_REASON),
         DenyReason::LengthExhausted => Some(LENGTH_EXHAUSTED_BLOCKED_REASON),
         DenyReason::ContextOverflow => Some(CONTEXT_OVERFLOW_BLOCKED_REASON),
@@ -225,7 +225,7 @@ fn deny_reason_name(reason: DenyReason) -> &'static str {
         DenyReason::SingleFlight => "single-flight",
         DenyReason::Cap => "cap",
         DenyReason::Stale => "stale",
-        DenyReason::Unattended => "unattended",
+        DenyReason::NoProgress => "no-progress",
         DenyReason::Repetition => "repetition",
         DenyReason::LengthExhausted => "length-exhausted",
         DenyReason::ContextOverflow => "context-overflow",
@@ -249,6 +249,7 @@ pub fn report_denied_continuation(
             .notify(GOAL_STALE_STOP_NOTICE, maho_ext_api::NotificationType::Info);
     }
     let unattended = goal.unattended_continuations.unwrap_or(0);
+    let no_progress = goal.no_progress_continuations.unwrap_or(0);
     if let Some(blocked_reason) = blocked_reason_for_continuation_guard(reason) {
         if ctx.has_ui {
             ctx.ui.notify(
@@ -256,7 +257,7 @@ pub fn report_denied_continuation(
                 maho_ext_api::NotificationType::Warning,
             );
         }
-        api.events.emit("goal_continuation_guard_tripped",&serde_json::json!({"goalId":goal.id,"reason":name,"count":input.consecutive_continuations,"unattendedContinuations":unattended,"noProgressContinuations":0}));
+        api.events.emit("goal_continuation_guard_tripped",&serde_json::json!({"goalId":goal.id,"reason":name,"count":input.consecutive_continuations,"unattendedContinuations":unattended,"noProgressContinuations":no_progress}));
     }
     let warn = |kind: &str, error: ExtensionFailure| {
         if let Some(logger) = &ctx.logger {
@@ -266,7 +267,7 @@ pub fn report_denied_continuation(
             );
         }
     };
-    if let Err(error)=api.append_entry("goal-continuation-stopped",Some(serde_json::json!({"goalId":goal.id,"reason":name,"consecutiveContinuations":input.consecutive_continuations,"unattendedContinuations":unattended,"noProgressContinuations":0,"at":at}))) { warn("goal-continuation-stopped",error); }
+    if let Err(error)=api.append_entry("goal-continuation-stopped",Some(serde_json::json!({"goalId":goal.id,"reason":name,"consecutiveContinuations":input.consecutive_continuations,"unattendedContinuations":unattended,"noProgressContinuations":no_progress,"at":at}))) { warn("goal-continuation-stopped",error); }
     if matches!(reason, DenyReason::Stale | DenyReason::Repetition) {
         let branch: Vec<serde_json::Value> = ctx
             .session_manager
@@ -585,7 +586,7 @@ mod tests {
     fn only_guardrail_denials_block_persisted_goal() {
         for reason in [
             DenyReason::Cap,
-            DenyReason::Unattended,
+            DenyReason::NoProgress,
             DenyReason::Repetition,
             DenyReason::LengthExhausted,
             DenyReason::ContextOverflow,
