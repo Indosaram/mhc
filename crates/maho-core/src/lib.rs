@@ -140,6 +140,7 @@ pub mod prompt_size_report;
 pub mod prompt_size_startup;
 pub mod queued_input_age;
 pub mod run_resume_turn;
+pub mod session_control_actions;
 pub mod session_cwd;
 pub mod session_discovery;
 pub mod session_entry_materializer;
