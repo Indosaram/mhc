@@ -29,6 +29,10 @@ pub enum RunnerFailureKind {
     ToolsUnavailable,
     #[serde(rename = "session_unavailable")]
     SessionUnavailable,
+    /// The child stopped answering its heartbeat (stdio) or its host confirmed the unresponsive
+    /// session closed (`child-unresponsive`).
+    #[serde(rename = "child-unresponsive")]
+    ChildUnresponsive,
 }
 
 impl RunnerFailureKind {
@@ -41,6 +45,7 @@ impl RunnerFailureKind {
             Self::ModelUnavailable => "model_unavailable",
             Self::ToolsUnavailable => "tools_unavailable",
             Self::SessionUnavailable => "session_unavailable",
+            Self::ChildUnresponsive => "child-unresponsive",
         }
     }
 }

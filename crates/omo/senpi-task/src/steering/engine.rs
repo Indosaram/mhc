@@ -262,8 +262,26 @@ impl SteeringEngine {
         {
             return Ok(stale_send(&fresh));
         }
+        if handle.liveness().is_some_and(|liveness| !liveness.is_running()) {
+            if record.status == TaskStatus::Running {
+                return self.enqueue_pending(&record, &input.message, deliver_as);
+            }
+            return Ok(SendOutcome::Unresponsive {
+                reason: format!(
+                    "Task {}'s session is unresponsive; nothing was sent. Retry when its host status returns to running.",
+                    record.task_id
+                ),
+                task_id: record.task_id,
+                retryable: true,
+            });
+        }
         if mode == Messageability::Steer {
-            deliver(handle.as_ref(), deliver_as, &input.message)?;
+            match deliver(handle.as_ref(), deliver_as, &input.message) {
+                Err(error) if is_host_session_unresponsive(&error) => {
+                    return self.enqueue_pending(&record, &input.message, deliver_as);
+                }
+                delivered => delivered?,
+            }
             self.event(
                 &record.task_id,
                 "steered",

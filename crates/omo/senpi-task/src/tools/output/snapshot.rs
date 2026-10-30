@@ -39,6 +39,7 @@ pub fn build_task_snapshot(record: &TaskRecord, state_dir: &str, now: i64) -> Ta
         age_ms: age_ms(record, now),
         pid: record.pid,
         child_session_id: record.child_session_id.clone(),
+        host_liveness: record.host_liveness,
         final_response: record.final_response.clone(),
         error_message: record.error_message.clone(),
         run_stats: record.run_stats.clone(),

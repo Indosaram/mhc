@@ -260,6 +260,7 @@ struct Inner {
     child_pause: Arc<dyn crate::pause::ports::ChildPausePort>,
     held_callback: Option<crate::manager::start_admission::HeldCallback>,
     host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
+    on_child_liveness: Option<crate::manager::types::ChildLivenessCallback>,
     host_status_publication: Mutex<()>,
     launches_changed: std::sync::Condvar,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
@@ -369,6 +370,12 @@ pub fn create_task_manager(options: TaskManagerOptions) -> TaskManager {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn resident_record(inner: &Inner, task_id: &str) -> Option<TaskRecord> {
+    inner
+        .try_load(task_id)
+        .filter(|record| record.residency_state == ResidencyState::Resident)
 }
 
 fn log(message: &str, task_id: &str, error: &dyn std::fmt::Display) {
@@ -486,6 +493,7 @@ impl TaskManager {
                 traceparent_for: options.traceparent_for,
                 held_callback: options.on_held_admission,
                 host_transport: options.host_transport,
+                on_child_liveness: options.on_child_liveness,
                 host_status_publication: Mutex::new(()),
                 launches_changed: std::sync::Condvar::new(),
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
@@ -1901,7 +1909,12 @@ impl TaskManager {
     }
 
     pub fn get(&self, task_id: &str) -> Option<TaskRecord> {
-        self.inner.try_load(task_id)
+        let mut record = self.inner.try_load(task_id)?;
+        record.host_liveness = self
+            .inner
+            .live_handle(task_id)
+            .and_then(|handle| handle.liveness());
+        Some(record)
     }
 
     // PERF-DIVERGENCE(senpi manager/manager.ts): upstream resolves a task name by listing every record (with queue positions); we scan with the store's early-exit find_record and skip queue positions. Same first match in list order.
@@ -1926,7 +1939,11 @@ impl TaskManager {
         let concurrency = lock(&self.inner.concurrency);
         records
             .into_iter()
-            .map(|record| {
+            .map(|mut record| {
+                record.host_liveness = self
+                    .inner
+                    .live_handle(&record.task_id)
+                    .and_then(|handle| handle.liveness());
                 let queue_position = if record.status == TaskStatus::Pending {
                     concurrency.queue_position(&record.model, &record.task_id)
                 } else {
@@ -4144,11 +4161,15 @@ impl Inner {
             drop(publication);
             inner.reacquire_for_revive(&resumed_id, record.notification.run_epoch);
         }));
+        let liveness = self.subscribe_liveness(handle, task_id);
         Box::new(move || {
             host_identity();
             transcript();
             stats();
             fallback();
+            if let Some(liveness) = liveness {
+                liveness();
+            }
             if let Some(self_resumed) = self_resumed {
                 self_resumed();
             }
@@ -4156,6 +4177,116 @@ impl Inner {
                 durable();
             }
         })
+    }
+
+    /// `subscribeChildFacts` liveness: a resident child's status is logged as `host_liveness`, a
+    /// return to running drains its queued steering, and the parent notice is debounced 30 s
+    /// (terminal-pending notifies at once).
+    fn subscribe_liveness(
+        &self,
+        handle: &Arc<dyn ManagedChildHandle>,
+        task_id: &str,
+    ) -> Option<Unsubscribe> {
+        const LIVENESS_NOTICE_DEBOUNCE: Duration = Duration::from_secs(30);
+        let manager = self.this.clone();
+        let id = task_id.to_string();
+        // (generation, noticed state): a newer status cancels a pending debounced notice.
+        let notice = Arc::new((Mutex::new((0_u64, "running")), std::sync::Condvar::new()));
+        let cancel = Arc::clone(&notice);
+        let unsubscribe = handle.on_liveness(Arc::new(move |status| {
+            let Some(inner) = manager.upgrade() else {
+                return;
+            };
+            if resident_record(&inner, &id).is_none() {
+                return;
+            }
+            let payload = serde_json::to_value(status).unwrap_or(serde_json::Value::Null);
+            if let Err(error) = inner.store.append_event(
+                &id,
+                &PersistedTaskEvent {
+                    event_type: "host_liveness".to_string(),
+                    payload,
+                },
+            ) {
+                log("senpi-task host liveness event failed", &id, &error);
+            }
+            if status.is_running()
+                && let Err(error) = inner.steering.notify_started(&id)
+            {
+                log("senpi-task liveness steering drain failed", &id, &error);
+            }
+            let state = match status {
+                crate::state::host_liveness::HostLivenessStatus::Running => "running",
+                crate::state::host_liveness::HostLivenessStatus::Unresponsive { .. } => {
+                    "unresponsive"
+                }
+                crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. } => {
+                    "terminal-pending"
+                }
+            };
+            let generation = {
+                let mut slot = lock(&notice.0);
+                slot.0 += 1;
+                notice.1.notify_all();
+                if slot.1 == state {
+                    return;
+                }
+                slot.0
+            };
+            let notify = {
+                let manager = inner.this.clone();
+                let notice = Arc::clone(&notice);
+                let id = id.clone();
+                move || {
+                    let Some(inner) = manager.upgrade() else {
+                        return;
+                    };
+                    let Some(current) = resident_record(&inner, &id) else {
+                        return;
+                    };
+                    if let Some(callback) = &inner.on_child_liveness {
+                        let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || callback(&current, status),
+                        ));
+                        match delivered {
+                            Ok(()) => lock(&notice.0).1 = state,
+                            Err(_) => utils::logger::log(
+                                "senpi-task host liveness notice failed",
+                                Some(&json!({ "taskId": id })),
+                            ),
+                        }
+                    }
+                }
+            };
+            if matches!(
+                status,
+                crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
+            ) {
+                notify();
+                return;
+            }
+            let waiter = Arc::clone(&notice);
+            std::thread::spawn(move || {
+                let slot = lock(&waiter.0);
+                let (slot, timeout) = waiter
+                    .1
+                    .wait_timeout_while(slot, LIVENESS_NOTICE_DEBOUNCE, |slot| {
+                        slot.0 == generation
+                    })
+                    .unwrap_or_else(PoisonError::into_inner);
+                let current = slot.0 == generation && timeout.timed_out();
+                drop(slot);
+                if current {
+                    notify();
+                }
+            });
+        }))?;
+        Some(Box::new(move || {
+            unsubscribe();
+            let mut slot = lock(&cancel.0);
+            slot.0 += 1;
+            cancel.1.notify_all();
+        }))
     }
 
     fn fallback_candidate(

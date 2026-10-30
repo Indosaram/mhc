@@ -99,6 +99,7 @@ fn snapshot() -> TaskSnapshot {
         age_ms: 10,
         pid: None,
         child_session_id: None,
+        host_liveness: None,
         final_response: None,
         error_message: None,
         run_stats: None,

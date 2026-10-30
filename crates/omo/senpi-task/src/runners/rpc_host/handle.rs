@@ -28,6 +28,21 @@ pub struct HostSessionHandle {
     event_subscription: Mutex<Option<Unsubscribe>>,
     outcome: Arc<dyn Fn() -> RunnerOutcome + Send + Sync>,
     input_effects: InputEffects,
+    /// `startHostHeartbeat`: this session's liveness (probe failure is never proof of death).
+    liveness: Arc<super::handle_heartbeat::HostHeartbeat>,
+    unresponsive_close: Arc<super::unresponsive_close::UnresponsiveClose>,
+    pending_probe: Mutex<Option<std::sync::mpsc::Receiver<Result<serde_json::Value, HostError>>>>,
+    pending_close: Mutex<Option<std::sync::mpsc::Receiver<Result<(), HostError>>>>,
+    /// The outcome a liveness ending settles with (confirmed unresponsive close).
+    forced_outcome: Mutex<Option<RunnerOutcome>>,
+}
+/// The default probe cadence (`DEFAULT_HEARTBEAT_INTERVAL_MS`, `session-open.ts`).
+pub const HOST_HEARTBEAT_INTERVAL_MS: i64 = 10_000;
+/// The close grace of a hosted session (`DEFAULT_CLOSE_GRACE_MS`).
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+const UNRESPONSIVE_CLOSED: &str = "unresponsive, closed: the host confirmed this session is absent";
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 pub fn create_host_session_handle(
     task_id: String,
@@ -70,7 +85,50 @@ pub fn create_host_session_handle_with_inputs(
         })),
     });
     let teardown = create_handle_teardown(port.clone(), opened.attached);
+    let liveness = Arc::new(super::handle_heartbeat::HostHeartbeat::new(
+        task_id.clone(),
+        HOST_HEARTBEAT_INTERVAL_MS,
+        now_ms(),
+    ));
+    let close_port = port.clone();
+    let session_handle: Arc<std::sync::OnceLock<std::sync::Weak<HostSessionHandle>>> =
+        Arc::new(std::sync::OnceLock::new());
+    let session_lookup = Arc::clone(&session_handle);
+    let unresponsive_close = Arc::new(super::unresponsive_close::create_unresponsive_close(
+        super::unresponsive_close::UnresponsiveCloseInput {
+            task_id: task_id.clone(),
+            close_grace: CLOSE_GRACE,
+            // SAFETY-DIVERGENCE(omo rpc-host/unresponsive-close.ts): upstream reattaches through
+            // the handle's reattach seam before closing; the Rust reattach input lives in the
+            // assembly (maho-cli task_host), so a disconnected close is refused and retried.
+            reattach: None,
+            port: Arc::new(move || {
+                close_port
+                    .lock()
+                    .expect("hosted child state lock poisoned")
+                    .clone()
+            }),
+            session: Arc::new(move || {
+                session_lookup
+                    .get()
+                    .and_then(std::sync::Weak::upgrade)
+                    .map(|handle| handle.identity.current())
+                    .unwrap_or_else(|| HostSessionIdentity {
+                        routing_id: String::new(),
+                        session_path: String::new(),
+                        instance_id: String::new(),
+                    })
+            }),
+            stopped: Arc::new(|| false),
+            adopt: Arc::new(|_, _| {}),
+        },
+    ));
     let handle = Arc::new(HostSessionHandle {
+        liveness,
+        unresponsive_close,
+        pending_probe: Mutex::new(None),
+        pending_close: Mutex::new(None),
+        forced_outcome: Mutex::new(None),
         native_pause: CurrentPortPause(port.clone()),
         task_id,
         port,
@@ -84,8 +142,15 @@ pub fn create_host_session_handle_with_inputs(
         outcome,
         input_effects,
     });
+    let _ = session_handle.set(Arc::downgrade(&handle));
     handle.bind_events();
     handle
+}
+fn log_failure(message: &str, task_id: &str, error: &str) {
+    utils::logger::log(
+        message,
+        Some(&serde_json::json!({ "taskId": task_id, "error": error })),
+    );
 }
 impl HostSessionHandle {
     pub fn stopped(&self) -> bool {
@@ -110,6 +175,9 @@ impl HostSessionHandle {
             let Some(handle) = weak.upgrade() else {
                 return;
             };
+            handle
+                .liveness
+                .step(|machine, changes| machine.activity(now_ms(), changes));
             if event.event_type == "agent_start" {
                 let status_handle = Arc::downgrade(&handle);
                 std::thread::spawn(move || {
@@ -196,13 +264,188 @@ impl HostSessionHandle {
             Some(Ok(None)) | None => Ok(false),
         }
     }
+    /// One liveness step (`startHostHeartbeat`), driven by the assembly's recovery loop.
+    /// `Err` only for a probe the running session refused at once (a lost connection, which the
+    /// caller recovers); a missed deadline counts toward `unresponsive`, and a terminal-pending
+    /// session is closed with host-confirmed absence instead of being declared crashed.
     pub fn heartbeat(&self) -> Result<(), HostError> {
-        let state = self.current_port().get_state()?;
-        self.identity.observe_durable_id(&state["sessionId"]);
-        Ok(())
+        self.liveness_step_at(now_ms())
+    }
+    pub(crate) fn liveness_step_at(&self, now: i64) -> Result<(), HostError> {
+        use super::handle_heartbeat::HeartbeatStep;
+        use super::session_wire::is_host_session_missing;
+        if self.stopped() {
+            return Ok(());
+        }
+        self.collect_close();
+        let mut refused = None;
+        let deadline = std::time::Duration::from_millis(
+            crate::runners::rpc::heartbeat::HEARTBEAT_DEADLINE_MS as u64,
+        );
+        let step = self.liveness.step(|machine, changes| machine.tick(now, changes));
+        match step {
+            HeartbeatStep::Probe => {
+                let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+                let running = self.liveness.status().is_running();
+                let port = self.current_port();
+                let close = Arc::clone(&self.unresponsive_close);
+                std::thread::spawn(move || {
+                    let answer = if running {
+                        port.get_state()
+                    } else {
+                        close.probe().and_then(|probe| match probe {
+                            super::unresponsive_close::UnresponsiveProbe::State(state) => Ok(state),
+                            super::unresponsive_close::UnresponsiveProbe::Missing => Err(HostError {
+                                message: "unknown_session".into(),
+                            }),
+                        })
+                    };
+                    let _ = answer_tx.send(answer);
+                });
+                *self.pending_probe.lock().expect("hosted child state lock poisoned") =
+                    Some(answer_rx);
+            }
+            HeartbeatStep::Close => self.start_close(),
+            HeartbeatStep::Gone => {
+                self.session_gone();
+                return Ok(());
+            }
+            HeartbeatStep::Idle => {}
+        }
+        let pending = self
+            .pending_probe
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .take();
+        if let Some(answer_rx) = pending {
+            match answer_rx.recv_timeout(deadline) {
+                Ok(Ok(state)) => {
+                    self.identity.observe_durable_id(&state["sessionId"]);
+                    self.liveness
+                        .step(|machine, changes| machine.answered(now, changes));
+                }
+                Ok(Err(error)) => {
+                    let running = self.liveness.status().is_running();
+                    let missing = is_host_session_missing(None, &error.message);
+                    let next = self.liveness.step(|machine, changes| {
+                        machine.refused(now, missing, changes)
+                    });
+                    if next == HeartbeatStep::Gone {
+                        self.session_gone();
+                        return Ok(());
+                    }
+                    if running {
+                        refused = Some(error);
+                    }
+                }
+                // Still in flight: the machine counts the deadline; the probe stays single-flight.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    *self.pending_probe.lock().expect("hosted child state lock poisoned") =
+                        Some(answer_rx);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+            }
+        }
+        refused.map_or(Ok(()), Err)
+    }
+    fn start_close(&self) {
+        let mut pending = self.pending_close.lock().expect("hosted child state lock poisoned");
+        if pending.is_some() {
+            return;
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let close = Arc::clone(&self.unresponsive_close);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(close.close());
+        });
+        *pending = Some(done_rx);
+    }
+    fn collect_close(&self) {
+        let mut pending = self.pending_close.lock().expect("hosted child state lock poisoned");
+        let Some(done_rx) = pending.as_ref() else {
+            return;
+        };
+        match done_rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => *pending = None,
+            Ok(Err(error)) => {
+                *pending = None;
+                log_failure(
+                    "senpi-task unresponsive session close pending",
+                    &self.task_id,
+                    &error.message,
+                );
+            }
+            Ok(Ok(())) => {
+                *pending = None;
+                drop(pending);
+                self.closed_unresponsive();
+            }
+        }
+    }
+    /// Blocks until the in-flight confirmed close answers, then applies it (tests only).
+    #[cfg(test)]
+    pub(crate) fn settle_close_for_tests(&self) {
+        let pending = self
+            .pending_close
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .take();
+        let Some(done_rx) = pending else {
+            return;
+        };
+        let answer = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("close answered");
+        let (done_tx, replay) = std::sync::mpsc::channel();
+        let _ = done_tx.send(answer);
+        *self
+            .pending_close
+            .lock()
+            .expect("hosted child state lock poisoned") = Some(replay);
+        self.collect_close();
+    }
+    /// `onGone(true)`: the host confirmed this session is absent.
+    fn closed_unresponsive(&self) {
+        self.liveness.stop();
+        self.unresponsive_close.stop();
+        *self
+            .forced_outcome
+            .lock()
+            .expect("hosted child state lock poisoned") = Some(RunnerOutcome::error(
+            crate::runners::RunnerFailureKind::ChildUnresponsive,
+            UNRESPONSIVE_CLOSED,
+        ));
+        self.transport_lost(UNRESPONSIVE_CLOSED.to_string());
+    }
+    /// `onGone(false)`: a live host answered `unknown_session`; the session ended and is detached.
+    fn session_gone(&self) {
+        self.liveness.stop();
+        self.unresponsive_close.stop();
+        self.transport_lost("host session closed: unknown_session".to_string());
+        if let Err(error) = self.current_port().detach() {
+            log_failure(
+                "senpi-task absent session detach failed",
+                &self.task_id,
+                &error.message,
+            );
+        }
     }
     pub fn start_initial_prompt(&self, text: &str) -> Result<(), HostError> {
         self.begin_turn(text)
+    }
+    /// `HostSessionUnresponsiveError`: nothing is sent while the session is not running.
+    fn require_running(&self) -> Result<(), HostError> {
+        if self.liveness.status().is_running() {
+            return Ok(());
+        }
+        Err(super::session_wire::host_session_unresponsive_error())
+    }
+    /// `stopHeartbeat`: the heartbeat, the close path and the input retries stop together.
+    fn stop_liveness(&self) {
+        self.liveness.stop();
+        self.unresponsive_close.stop();
+        self.input_effects.stop_retrying();
     }
 }
 impl ManagedChildHandle for HostSessionHandle {
@@ -235,18 +478,31 @@ impl ManagedChildHandle for HostSessionHandle {
         None
     }
     fn steer(&self, text: &str) -> Result<(), HostError> {
+        self.require_running()?;
         self.send_input(InputCommandType::Steer, text, None)
     }
     fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.require_running()?;
         self.send_input(InputCommandType::Steer, text, Some(&identity.client_message_id))
     }
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
+        self.require_running()?;
         self.teardown.publish_running()?;
         self.send_input(InputCommandType::FollowUp, text, None)
     }
     fn follow_up_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.require_running()?;
         self.teardown.publish_running()?;
         self.send_input(InputCommandType::FollowUp, text, Some(&identity.client_message_id))
+    }
+    fn liveness(&self) -> Option<crate::state::host_liveness::HostLivenessStatus> {
+        Some(self.liveness.status())
+    }
+    fn on_liveness(
+        &self,
+        listener: Arc<dyn Fn(crate::state::host_liveness::HostLivenessStatus) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        Some(self.liveness.subscribe(listener))
     }
     fn abort(&self) -> Result<(), HostError> {
         self.current_port()
@@ -260,6 +516,12 @@ impl ManagedChildHandle for HostSessionHandle {
             .current_port()
             .wait_for_outcome()
             .unwrap_or_else(|| (self.outcome)());
+        let outcome = self
+            .forced_outcome
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clone()
+            .unwrap_or(outcome);
         self.settled
             .store(true, std::sync::atomic::Ordering::Release);
         outcome
@@ -273,11 +535,13 @@ impl ManagedChildHandle for HostSessionHandle {
     fn dispose(&self) -> Result<(), HostError> {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        self.stop_liveness();
         self.teardown.detach()
     }
     fn terminate(&self) -> Result<(), HostError> {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
+        self.stop_liveness();
         self.teardown.terminate()
     }
     fn has_terminate(&self) -> bool {
@@ -362,3 +626,7 @@ impl crate::pause::native_child_pause::NativeRunPause for CurrentPortPause {
         self.current()?.observe_hold(parent)
     }
 }
+
+#[cfg(test)]
+#[path = "handle_liveness_tests.rs"]
+mod liveness_tests;
