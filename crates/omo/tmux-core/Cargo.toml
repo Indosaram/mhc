@@ -16,6 +16,7 @@ reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 url.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
