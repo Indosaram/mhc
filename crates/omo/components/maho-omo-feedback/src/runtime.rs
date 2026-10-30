@@ -8,7 +8,9 @@ use std::future::Future;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use chrono::{DateTime, Utc};
-use maho_ext_api::{NotificationType, UiFuture};
+use maho_ext_api::{ComponentLogger, NotificationType, UiFuture};
+use maho_omo_memory::device_session::account_source::CredentialStore;
+use maho_omo_memory::device_session::credential_store::OsCredentialStore;
 use regex::Regex;
 use serde_json::Value;
 
@@ -18,8 +20,8 @@ use crate::draft::{
     FeedbackSectionId, UploadRedactor, build_draft,
 };
 use crate::submit::{
-    FeedbackSubmitRefusal, ReportClient, ReportTransport, SubmitOptions, SubmitResult,
-    feedback_uploads_disabled, submit_report,
+    FeedbackSubmitRefusal, ReportClient, ReportTransport, ServiceRefusal, SubmitOptions,
+    SubmitResult, feedback_uploads_disabled, submit_report,
 };
 
 const DRAFT_TTL_MS: i64 = 30 * 60 * 1000;
@@ -37,6 +39,8 @@ pub struct FeedbackCoreConfig {
     pub state_dir: Arc<dyn Fn() -> std::path::PathBuf + Send + Sync>,
     pub api_origin: Arc<dyn Fn() -> String + Send + Sync>,
     pub transport: ReportTransport,
+    /// Receives `feedback.report_rejected` when the service refuses a report.
+    pub logger: Option<Arc<dyn ComponentLogger>>,
 }
 
 #[derive(Clone)]
@@ -302,12 +306,27 @@ impl FeedbackCore {
             idempotency_key: string_field(input, "idempotencyKey").map(str::to_string),
         })
         .await;
-        let keep = matches!(
-            result,
-            SubmitResult::Refused(
-                FeedbackSubmitRefusal::RateLimited | FeedbackSubmitRefusal::Unavailable
-            )
-        );
+        if let (
+            SubmitResult::ServiceRefused {
+                code, request_id, ..
+            },
+            Some(logger),
+        ) = (&result, &self.config.logger)
+        {
+            logger.warn(
+                "feedback.report_rejected",
+                Some(&serde_json::json!({"code": code, "requestId": request_id})),
+            );
+        }
+        // A refusal a retry cannot fix (a secret, too large) drops the draft; every other one keeps it.
+        let keep = match &result {
+            SubmitResult::Refused(reason) => !matches!(
+                reason,
+                FeedbackSubmitRefusal::SecretDetected | FeedbackSubmitRefusal::TooLarge
+            ),
+            SubmitResult::ServiceRefused { .. } => true,
+            _ => false,
+        };
         if !keep {
             self.drafts()
                 .retain(|(key, _)| *key != stored.draft.draft_id);
@@ -332,12 +351,48 @@ pub const CHOICE_SEND: &str = "Send report";
 pub const CHOICE_SEE: &str = "See exactly what is sent";
 pub const CHOICE_CANCEL: &str = "Cancel";
 
+const SIGNED_OUT_SEND: &str =
+    "Your OmO sign-in could not be used, so this report is sent without your account.";
+
+/// The stored access token while it is still valid, else `None` (an anonymous send). It never
+/// refreshes: a refresh spends the single-use refresh token, and a report is worth more than its
+/// attribution. `fell_back` is a stored sign-in that could not be used.
+pub async fn cli_access_token(
+    api: &str,
+    env: &BTreeMap<String, String>,
+    store: Option<Arc<dyn CredentialStore>>,
+) -> (Option<String>, bool) {
+    if crate::submit::feedback_uploads_disabled(env) {
+        return (None, false);
+    }
+    let store = store.unwrap_or_else(|| OsCredentialStore::for_origin(api));
+    let current = match store.read().await {
+        Ok(Some(current)) => current,
+        Ok(None) => return (None, false),
+        Err(_) => return (None, true),
+    };
+    let expires_at = current
+        .get("accessTokenExpiresAt")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map_or(0, |at| at.timestamp_millis());
+    let valid = current.get("refreshState").and_then(Value::as_str) != Some("uncertain")
+        && expires_at > Utc::now().timestamp_millis() + 30_000;
+    match current.get("accessToken").and_then(Value::as_str) {
+        Some(token) if valid => (Some(token.to_string()), false),
+        _ => (None, true),
+    }
+}
+
 /// The TUI flow behind /feedback and /bug: describe, see the notice, optionally see exactly what is
 /// sent, then Send.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_feedback_command<P, PF, S, SF>(
     kind: FeedbackKind,
     args: &str,
     ui: &dyn FeedbackCommandUi,
+    env: &BTreeMap<String, String>,
+    credential_store: Option<Arc<dyn CredentialStore>>,
     prepare: P,
     submit: S,
 ) where
@@ -392,13 +447,24 @@ pub async fn run_feedback_command<P, PF, S, SF>(
             _ => return,
         }
     }
+    let api = env
+        .get("OMO_SERVICE_API_URL")
+        .map_or("https://api.omo.dev", String::as_str);
+    let (token, fell_back) = cli_access_token(api, env, credential_store).await;
+    if fell_back {
+        ui.notify(SIGNED_OUT_SEND, NotificationType::Warning);
+    }
     let result = submit(serde_json::json!({
         "draftId": prepared.draft_id,
         "kind": kind.as_str(),
         "description": description,
+        "accessToken": token,
     }))
     .await;
-    let level = if matches!(result, SubmitResult::Refused(_)) {
+    let level = if matches!(
+        result,
+        SubmitResult::Refused(_) | SubmitResult::ServiceRefused { .. }
+    ) {
         NotificationType::Error
     } else {
         NotificationType::Info
@@ -449,7 +515,21 @@ pub fn result_message(result: &SubmitResult) -> String {
         SubmitResult::AlreadySent => {
             "Your earlier report already reached the OmO team, so it was not sent again.".into()
         }
+        SubmitResult::ServiceRefused { reason, code, request_id } => {
+            let request = request_id
+                .as_ref()
+                .map_or_else(String::new, |id| format!(" Request ID: {id}."));
+            match reason {
+                ServiceRefusal::Rejected => format!(
+                    "The report was rejected by the service ({code}).{request} Update OmO and try again."
+                ),
+                ServiceRefusal::Unavailable => format!(
+                    "The OmO service could not take the report right now ({code}).{request} Try again later."
+                ),
+            }
+        }
         SubmitResult::Refused(reason) => match reason {
+            FeedbackSubmitRefusal::SignInRequired => "Sign in to send a report: run omo login",
             FeedbackSubmitRefusal::SecretDetected => "The report still looked like it contained a password or key, so nothing was sent. Remove it from the description and try again.",
             FeedbackSubmitRefusal::TooLarge => "The report is too large to send. Try again from a shorter conversation.",
             FeedbackSubmitRefusal::RateLimited => "Too many reports in a short time. Try again in a few minutes.",
@@ -500,6 +580,7 @@ mod tests {
                 let body = body.clone();
                 Box::pin(async move { Ok(TransportResponse { status, body }) })
             }),
+            logger: None,
         })
     }
 
@@ -673,6 +754,8 @@ mod tests {
             FeedbackKind::Bug,
             "  ",
             &ui,
+            &BTreeMap::from([("OMO_DISABLE_FEEDBACK".to_string(), "1".to_string())]),
+            None,
             || async { Ok(sample_draft()) },
             move |input| async move {
                 log.lock()
@@ -689,7 +772,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             sent[0],
-            json!({"draftId": "drf_1", "kind": "bug", "description": "it broke"})
+            json!({"draftId": "drf_1", "kind": "bug", "description": "it broke", "accessToken": null})
         );
         let notices = ui
             .notices
@@ -712,6 +795,8 @@ mod tests {
             FeedbackKind::Feedback,
             "hello",
             &ui,
+            &BTreeMap::new(),
+            None,
             || async { Ok(sample_draft()) },
             |_| async { panic!("must not submit") },
         )
@@ -728,6 +813,8 @@ mod tests {
             FeedbackKind::Feedback,
             "hello",
             &failing,
+            &BTreeMap::new(),
+            None,
             || async { Err("nope".to_string()) },
             |_| async { panic!("must not submit") },
         )
