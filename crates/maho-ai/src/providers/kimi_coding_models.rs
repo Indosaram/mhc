@@ -52,7 +52,8 @@ fn model(
         default_thinking_level: None,
         thinking_level_map: levels,
         input: input.to_vec(),
-        cost: ModelCost { unknown: None,
+        cost: ModelCost {
+            unknown: None,
             effective_rates: None,
             input: cost.0,
             output: cost.1,
@@ -74,6 +75,11 @@ fn model(
     }
 }
 
+fn with_cache_write(mut model: Model, cache_write: f64) -> Model {
+    model.cost.cache_write = cache_write;
+    model
+}
+
 pub fn kimi_coding_models() -> Vec<Model> {
     vec![
         model(
@@ -89,6 +95,42 @@ pub fn kimi_coding_models() -> Vec<Model> {
             1048576,
             131072,
             Some(thinking_level_map()),
+        ),
+        // K3.1 Pro ships on Kimi Code as `k3.1-pro` and `k3.1-pro-highspeed`: thinking only (low / high / max),
+        // up to 1048576 context, image and video input. Cost is the equivalent Moonshot API rate, like `k3`.
+        with_cache_write(
+            model(
+                "k3.1-pro",
+                "Kimi K3.1 Pro",
+                true,
+                &[
+                    InputModality::Text,
+                    InputModality::Image,
+                    InputModality::Video,
+                ],
+                (2.0, 10.0, 0.2),
+                1048576,
+                131072,
+                Some(thinking_level_map()),
+            ),
+            2.0,
+        ),
+        with_cache_write(
+            model(
+                "k3.1-pro-highspeed",
+                "Kimi K3.1 Pro Highspeed",
+                true,
+                &[
+                    InputModality::Text,
+                    InputModality::Image,
+                    InputModality::Video,
+                ],
+                (4.0, 20.0, 0.2),
+                1048576,
+                131072,
+                Some(thinking_level_map()),
+            ),
+            4.0,
         ),
         model(
             "k3-256k",
