@@ -53,6 +53,10 @@ pub use openai_responses_shared::openai_responses_prompt_cache;
 pub mod openrouter_images;
 pub mod openrouter_images_lazy;
 pub mod pi_messages;
+#[cfg(test)]
+mod producer_capture_native_tests;
+#[cfg(test)]
+mod producer_capture_tests;
 pub mod pi_messages_lazy;
 pub mod responses_completion_grace;
 pub mod simple_options;
