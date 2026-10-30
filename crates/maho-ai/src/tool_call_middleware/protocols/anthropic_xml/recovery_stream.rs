@@ -830,6 +830,170 @@ mod tests {
             assert_eq!(ends(&recovery), vec![recovered("recovered-antml-1")]);
         }
 
+        /// Pinned `invoke-recovery-metadata-fixtures.ts` `MetadataStreamHarness`: a hand-driven
+        /// producer whose every event carries a fresh snapshot of one metadata-rich partial.
+        struct MetadataStreamHarness {
+            inner: crate::utils::event_stream::AssistantMessageEventStream,
+            partial: crate::types::AssistantMessage,
+        }
+
+        impl MetadataStreamHarness {
+            fn new() -> Self {
+                let usage = crate::types::Usage {
+                    context_usage: None,
+                    cost_unknown: None,
+                    input: 101,
+                    output: 37,
+                    cache_read: 23,
+                    cache_write: 19,
+                    cache_write_1h: Some(17),
+                    reasoning: Some(11),
+                    total_tokens: 180,
+                    cost: crate::types::UsageCost {
+                        input: 0.101,
+                        output: 0.037,
+                        cache_read: 0.023,
+                        cache_write: 0.019,
+                        total: 0.18,
+                    },
+                };
+                let partial: crate::types::AssistantMessage = serde_json::from_value(json!({
+                    "role": "assistant",
+                    "api": "anthropic-messages",
+                    "provider": "anthropic",
+                    "model": "claude-requested",
+                    "responseModel": "claude-routed",
+                    "responseId": "msg-response-9",
+                    "content": [],
+                    "usage": usage,
+                    "stopReason": "stop",
+                    "timestamp": 9009
+                }))
+                .expect("metadata message");
+                Self {
+                    inner: crate::utils::event_stream::AssistantMessageEventStream::assistant(),
+                    partial,
+                }
+            }
+
+            fn start(&self) {
+                self.inner.push(crate::types::AssistantMessageEvent::Start {
+                    partial: self.partial.clone(),
+                });
+            }
+
+            fn start_text(&mut self, text_signature: &str) -> usize {
+                let content_index = self.partial.content.len();
+                self.partial.content.push(crate::types::ContentBlock::Text(
+                    crate::types::TextContent {
+                        text: String::new(),
+                        audience: None,
+                        text_signature: Some(text_signature.to_owned()),
+                    },
+                ));
+                self.inner
+                    .push(crate::types::AssistantMessageEvent::TextStart {
+                        content_index,
+                        partial: self.partial.clone(),
+                    });
+                content_index
+            }
+
+            fn text_delta(&mut self, content_index: usize, delta: &str) {
+                let Some(crate::types::ContentBlock::Text(block)) =
+                    self.partial.content.get_mut(content_index)
+                else {
+                    panic!("Expected text block at {content_index}");
+                };
+                block.text.push_str(delta);
+                self.inner
+                    .push(crate::types::AssistantMessageEvent::TextDelta {
+                        content_index,
+                        delta: delta.to_owned(),
+                        partial: self.partial.clone(),
+                    });
+            }
+
+            fn end_text(&self, content_index: usize) {
+                let Some(crate::types::ContentBlock::Text(block)) =
+                    self.partial.content.get(content_index)
+                else {
+                    panic!("Expected text block at {content_index}");
+                };
+                self.inner
+                    .push(crate::types::AssistantMessageEvent::TextEnd {
+                        content_index,
+                        content: block.text.clone(),
+                        partial: self.partial.clone(),
+                    });
+            }
+
+            fn finish(&mut self) {
+                self.partial.stop_reason = crate::types::StopReason::ToolUse;
+                self.inner.push(crate::types::AssistantMessageEvent::Done {
+                    reason: crate::types::DoneReason::ToolUse,
+                    message: self.partial.clone(),
+                });
+            }
+        }
+
+        fn event_message(
+            event: &crate::types::AssistantMessageEvent,
+        ) -> &crate::types::AssistantMessage {
+            use crate::types::AssistantMessageEvent as Event;
+            match event {
+                Event::Done { message, .. } => message,
+                Event::Error { error, .. } => error,
+                Event::Start { partial }
+                | Event::TextStart { partial, .. }
+                | Event::TextDelta { partial, .. }
+                | Event::TextEnd { partial, .. }
+                | Event::ThinkingStart { partial, .. }
+                | Event::ThinkingDelta { partial, .. }
+                | Event::ThinkingEnd { partial, .. }
+                | Event::ToolcallStart { partial, .. }
+                | Event::ToolcallDelta { partial, .. }
+                | Event::ToolcallEnd { partial, .. } => partial,
+            }
+        }
+
+        /// invoke-recovery-resource-scenarios.test.ts "preserves byte-identical full usage on
+        /// every event and terminal".
+        #[tokio::test]
+        async fn preserves_byte_identical_full_usage_on_every_event_and_terminal() {
+            use crate::tool_call_middleware::recovery_stream_wrapper::{
+                InvokeRecoveryOptions, wrap_stream_with_invoke_recovery,
+            };
+            let mut producer = MetadataStreamHarness::new();
+            let wrapped = wrap_stream_with_invoke_recovery(
+                producer.inner.clone(),
+                vec![bash_tool()],
+                InvokeRecoveryOptions::default(),
+            );
+            producer.start();
+            let index = producer.start_text("signed");
+            producer.text_delta(index, VALID_CALL);
+            producer.end_text(index);
+            producer.finish();
+            let deadline = std::time::Duration::from_secs(5);
+            let events = tokio::time::timeout(deadline, wrapped.collect())
+                .await
+                .expect("events deadline")
+                .expect("events");
+            let result = tokio::time::timeout(deadline, wrapped.result())
+                .await
+                .expect("result deadline")
+                .expect("result");
+            let expected = serde_json::to_string(&result.usage).expect("usage json");
+            assert!(!events.is_empty());
+            for event in &events {
+                assert_eq!(
+                    serde_json::to_string(&event_message(event).usage).expect("usage json"),
+                    expected
+                );
+            }
+        }
+
         /// invoke-recovery-resource-scenarios.test.ts "bounds recovery buffers and scan work".
         #[test]
         fn bounds_recovery_buffers_and_scan_work() {
