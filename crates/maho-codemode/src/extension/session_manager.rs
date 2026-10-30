@@ -264,11 +264,10 @@ impl CodemodeSessionManager {
             Ok((host, vec![]))
         });
         let settings = &self.options.settings;
-        let memory = crate::bridge::protocol::KernelMemoryThresholds {
-            gc_watermark_bytes: settings.memory_gc_watermark_bytes as u64,
-            notice_bytes: settings.memory_notice_bytes as u64,
-            ceiling_bytes: settings.memory_ceiling_bytes as u64,
-        };
+        let memory = crate::config::memory_settings::resolve_kernel_memory_thresholds(
+            Some(&settings.memory()),
+            &maho_ext_api::process_env::vars().into_iter().collect(),
+        );
         let kernel = Arc::new(
             crate::kernels::js::context_manager::JavaScriptKernel::start_with_memory(
                 &self.options.cwd,
