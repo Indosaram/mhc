@@ -778,12 +778,6 @@
         "source": "radius"
       },
       {
-        "id": "openrouter",
-        "name": "OpenRouter",
-        "credential": "radius",
-        "source": "radius"
-      },
-      {
         "id": "vercel-ai-gateway",
         "name": "Vercel AI Gateway",
         "credential": "radius",

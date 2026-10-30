@@ -9,7 +9,8 @@ use super::all::{
 use super::cloudflare_stream::resolve_cloudflare_model;
 use super::faux::{
     FauxAssistantMessageOptions, FauxProviderState, FauxResponseStep, RegisterFauxProviderOptions,
-    create_faux_core, faux_assistant_message, faux_streams, faux_text, faux_thinking, faux_tool_call,
+    create_faux_core, faux_assistant_message, faux_streams, faux_text, faux_thinking,
+    faux_tool_call,
 };
 use super::opencode_headers::with_open_code_session_header;
 use crate::compat::register_faux_provider;
@@ -82,7 +83,10 @@ fn faux_models() -> crate::models::Models {
 fn builtin_models_registers_every_builtin_provider_with_models() {
     let models = builtin_models(None).expect("builtin models");
     let providers = models.get_providers();
-    assert_eq!(providers.len(), builtin_providers().expect("builtin providers").len());
+    assert_eq!(
+        providers.len(),
+        builtin_providers().expect("builtin providers").len()
+    );
     let ids: Vec<&str> = providers.iter().map(|provider| provider.id()).collect();
     for id in ["anthropic", "bai", "ollama"] {
         assert!(ids.contains(&id), "missing builtin provider {id}");
@@ -166,11 +170,114 @@ fn uses_official_kimi_k3_pricing_for_moonshot_providers() {
 }
 
 #[test]
+fn uses_official_kimi_k3_1_pro_list_pricing_on_both_moonshot_providers() {
+    let expected: [(&str, (f64, f64, f64, f64)); 2] = [
+        ("kimi-k3.1-pro", (2.0, 10.0, 0.2, 2.0)),
+        ("kimi-k3.1-pro-highspeed", (4.0, 20.0, 0.2, 4.0)),
+    ];
+    for provider in ["moonshotai", "moonshotai-cn"] {
+        for (model_id, cost) in expected {
+            let model = get_builtin_model(provider, model_id).expect("moonshot model");
+            assert_eq!(
+                (
+                    model.cost.input,
+                    model.cost.output,
+                    model.cost.cache_read,
+                    model.cost.cache_write
+                ),
+                cost,
+                "{provider}/{model_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gives_moonshot_kimi_k3_1_pro_the_kimi_k3_request_contract() {
+    for provider in ["moonshotai", "moonshotai-cn"] {
+        for model_id in ["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"] {
+            let model = get_builtin_model(provider, model_id).expect("moonshot model");
+            let compat = model.compat.expect("compat");
+            for (key, value) in [
+                ("supportsReasoningEffort", json!(true)),
+                ("thinkingFormat", json!("openai")),
+                ("requiresReasoningContentOnAssistantMessages", json!(true)),
+                ("supportsMidConvoSystemMessages", json!(true)),
+                ("supportsMidConvoToolAdditions", json!(true)),
+            ] {
+                assert_eq!(compat.get(key), Some(&value), "{provider}/{model_id} {key}");
+            }
+            let map = model.thinking_level_map.expect("thinking level map");
+            for (level, expected) in [
+                (ModelThinkingLevel::Off, None),
+                (ModelThinkingLevel::Minimal, None),
+                (ModelThinkingLevel::Low, Some("low")),
+                (ModelThinkingLevel::Medium, None),
+                (ModelThinkingLevel::High, Some("high")),
+                (ModelThinkingLevel::Xhigh, None),
+                (ModelThinkingLevel::Max, Some("max")),
+            ] {
+                assert_eq!(
+                    map.get(&level).cloned().flatten().as_deref(),
+                    expected,
+                    "{provider}/{model_id} {level:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn registers_kimi_coding_k3_1_pro_rows_with_the_documented_limits() {
+    for (id, name, cost) in [
+        ("k3.1-pro", "Kimi K3.1 Pro", (2.0, 10.0, 0.2, 2.0)),
+        (
+            "k3.1-pro-highspeed",
+            "Kimi K3.1 Pro Highspeed",
+            (4.0, 20.0, 0.2, 4.0),
+        ),
+    ] {
+        let model = get_builtin_model("kimi-coding", id).expect("kimi-coding model");
+        assert_eq!(model.id, id);
+        assert_eq!(model.name, name);
+        assert_eq!(model.api, "anthropic-messages");
+        assert_eq!(model.base_url, "https://api.kimi.com/coding");
+        assert!(model.reasoning);
+        assert_eq!(
+            (model.context_window, model.max_tokens),
+            (1_048_576, 131_072)
+        );
+        assert_eq!(
+            model.input,
+            vec![
+                InputModality::Text,
+                InputModality::Image,
+                InputModality::Video
+            ]
+        );
+        assert_eq!(
+            (
+                model.cost.input,
+                model.cost.output,
+                model.cost.cache_read,
+                model.cost.cache_write
+            ),
+            cost
+        );
+        let compat = model.compat.expect("compat");
+        assert_eq!(compat.get("forceAdaptiveThinking"), Some(&json!(true)));
+        assert_eq!(compat.get("allowEmptySignature"), Some(&json!(true)));
+    }
+}
+
+#[test]
 fn uses_api_equivalent_implied_pricing_for_kimi_coding_subscription_models() {
-    let expected: [(&str, (f64, f64, f64)); 3] = [
+    let expected: [(&str, (f64, f64, f64)); 5] = [
         ("kimi-for-coding", (0.95, 4.0, 0.19)),
         ("k3", (3.0, 15.0, 0.3)),
         ("kimi-for-coding-highspeed", (1.9, 8.0, 0.38)),
+        ("k3.1-pro", (2.0, 10.0, 0.2)),
+        ("k3.1-pro-highspeed", (4.0, 20.0, 0.2)),
     ];
     for (model_id, cost) in expected {
         let model = get_builtin_model("kimi-coding", model_id).expect("kimi-coding model");
@@ -204,7 +311,7 @@ fn normalizes_the_anthropic_model_thinking_level_map() {
     );
     assert_eq!(
         get_builtin_model_data_generated_at(),
-        Some(1_792_653_165_108)
+        Some(1_793_114_501_669)
     );
 }
 
@@ -331,7 +438,8 @@ fn fixed_chunk_options() -> RegisterFauxProviderOptions {
 
 #[tokio::test]
 async fn faux_streams_queued_responses_through_a_models_collection() {
-    let faux = super::faux::faux_provider(RegisterFauxProviderOptions::default()).expect("faux provider");
+    let faux =
+        super::faux::faux_provider(RegisterFauxProviderOptions::default()).expect("faux provider");
     let models = faux_models();
     models.set_provider(faux.provider.clone());
     faux.set_responses(vec![
@@ -637,21 +745,24 @@ async fn provider_cancel_deferred_receives_the_resolved_model_and_request_option
     model.provider = "cancel-recording".into();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let models = create_models(None);
-    models.set_provider(create_provider(CreateProviderOptions {
-        id: "cancel-recording".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: vec![model.clone()],
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        images: indexmap::IndexMap::new(),
-        api: ProviderApi::Single(Arc::new(CancelRecordingStreams {
-            calls: calls.clone(),
-        })),
-    }).expect("provider"));
+    models.set_provider(
+        create_provider(CreateProviderOptions {
+            id: "cancel-recording".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            images: indexmap::IndexMap::new(),
+            api: ProviderApi::Single(Arc::new(CancelRecordingStreams {
+                calls: calls.clone(),
+            })),
+        })
+        .expect("provider"),
+    );
     let handle = DeferredHandle {
         provider: model.provider.clone(),
         model_id: model.id.clone(),
@@ -698,19 +809,22 @@ async fn models_cancel_deferred_reports_unsupported_capability_and_unknown_provi
     let models = create_models(None);
     let mut model = base.clone();
     model.provider = "no-cancel".into();
-    models.set_provider(create_provider(CreateProviderOptions {
-        id: "no-cancel".into(),
-        name: None,
-        base_url: None,
-        headers: None,
-        auth: None,
-        models: vec![model.clone()],
-        fetch_models: None,
-        restore_models: None,
-        filter_models: None,
-        images: indexmap::IndexMap::new(),
-        api: ProviderApi::Single(Arc::new(EchoStreams)),
-    }).expect("provider"));
+    models.set_provider(
+        create_provider(CreateProviderOptions {
+            id: "no-cancel".into(),
+            name: None,
+            base_url: None,
+            headers: None,
+            auth: None,
+            models: vec![model.clone()],
+            fetch_models: None,
+            restore_models: None,
+            filter_models: None,
+            images: indexmap::IndexMap::new(),
+            api: ProviderApi::Single(Arc::new(EchoStreams)),
+        })
+        .expect("provider"),
+    );
     let error = models
         .cancel_deferred(&model, &handle, None)
         .await
@@ -732,7 +846,8 @@ async fn models_cancel_deferred_reports_unsupported_capability_and_unknown_provi
 #[tokio::test]
 async fn faux_records_cancellation_and_reports_the_cancelled_fetch_in_band() {
     // Pinned providers.test.ts "records cancellation and returns deferred fetch failures in-band".
-    let faux = super::faux::faux_provider(RegisterFauxProviderOptions::default()).expect("faux provider");
+    let faux =
+        super::faux::faux_provider(RegisterFauxProviderOptions::default()).expect("faux provider");
     let models = faux_models();
     models.set_provider(faux.provider.clone());
     faux.set_responses(vec![
@@ -783,17 +898,33 @@ async fn shared_openai_provider_dispatches_its_concrete_image_implementation() {
     // Given a shared provider and an image model with an invalid endpoint.
     let provider = super::openai::openai_provider().expect("provider");
     let mut model = crate::image_models::get_image_model("openai", "gpt-image-2.5-sunburst")
-        .expect("model").clone();
+        .expect("model")
+        .clone();
     model.base_url = "file:///images".into();
     let mut options = crate::types::ImagesOptions::default();
     options.request.api_key = Some("fixture-key".into());
     // When the provider dispatches image generation without network access.
-    let result = provider.generate_images(&model, &crate::types::ImagesContext {
-        input: vec![faux_text("draw")],
-    }, Some(options)).await.expect("image operation");
+    let result = provider
+        .generate_images(
+            &model,
+            &crate::types::ImagesContext {
+                input: vec![faux_text("draw")],
+            },
+            Some(options),
+        )
+        .await
+        .expect("image operation");
     // Then the concrete adapter, not a missing-route fallback, reports its setup error.
-    assert_eq!(result.error_message.as_deref(), Some("OpenAI images base URL must use HTTP or HTTPS"));
-    assert!(provider.get_all_models().iter().any(|model| matches!(model, crate::types::AnyModel::Image(_))));
+    assert_eq!(
+        result.error_message.as_deref(),
+        Some("OpenAI images base URL must use HTTP or HTTPS")
+    );
+    assert!(
+        provider
+            .get_all_models()
+            .iter()
+            .any(|model| matches!(model, crate::types::AnyModel::Image(_)))
+    );
 }
 
 #[test]
@@ -804,6 +935,14 @@ fn shared_openrouter_provider_exposes_image_and_classifier_catalogs() {
     let models = provider.get_all_models();
     // Then both non-chat operations remain reachable alongside chat models.
     assert!(provider.supports_classification());
-    assert!(models.iter().any(|model| matches!(model, crate::types::AnyModel::Image(_))));
-    assert!(models.iter().any(|model| matches!(model, crate::types::AnyModel::Classifier(_))));
+    assert!(
+        models
+            .iter()
+            .any(|model| matches!(model, crate::types::AnyModel::Image(_)))
+    );
+    assert!(
+        models
+            .iter()
+            .any(|model| matches!(model, crate::types::AnyModel::Classifier(_)))
+    );
 }
