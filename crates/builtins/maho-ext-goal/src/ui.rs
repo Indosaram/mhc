@@ -15,9 +15,12 @@ pub fn truncate_goal_objective(objective:&str,max_length:usize)->String {
     }
 }
 pub fn goal_status_text(goal:&Goal,live_elapsed_seconds:Option<f64>)->String {
+    // goalDisplayStatus: an active goal whose automatic continuation stopped reads as paused, with
+    // goalStatusLabel's stopped wording (footer text uses the short v7 HUD form, docs/divergences.md UX-2).
+    if goal.status==GoalStatus::Active&&goal.continuation_stopped_at.is_some() { return "goal stopped: no progress (send a message or /goal resume)".into(); }
     match goal.status {
         GoalStatus::Active=>if let Some(seconds)=live_elapsed_seconds { format!("goal {}",format_goal_elapsed_seconds(seconds)) } else if goal.time_used_seconds>0.0 { format!("goal {}",format_goal_elapsed_seconds(goal.time_used_seconds)) } else { "goal".into() },
-        GoalStatus::Paused=>"goal paused /goal resume".into(),
+        GoalStatus::Paused=>if goal.continuation_stopped_at.is_some() { "goal stopped: no progress (send a message or /goal resume)".into() } else { "goal paused /goal resume".into() },
         GoalStatus::Blocked=>goal.blocked_reason.as_ref().filter(|reason|!reason.is_empty()).map_or_else(||"goal blocked".into(),|reason|format!("goal blocked: {reason}")),
         GoalStatus::Complete=>{ let elapsed=if goal.time_used_seconds>0.0 { format!(" ({})",format_goal_elapsed_seconds(goal.time_used_seconds)) } else { String::new() }; format!("{} \u{b7} goal achieved{elapsed}",truncate_goal_objective(&goal.objective,OBJECTIVE_PREVIEW_MAX_LENGTH)) },
     }
@@ -47,4 +50,14 @@ pub fn update_goal_ui(ctx:&ExtensionContext,goal:Option<&Goal>,live_elapsed_seco
         assert_eq!(goal_status_text(&goal(GoalStatus::Complete,0.0),Some(99.0)),"Ship the feature \u{b7} goal achieved");
     }
     #[test] fn preview_normalizes_ecmascript_whitespace() { assert_eq!(truncate_goal_objective("\u{feff} ship\n  the\tfeature \u{feff}",32),"ship the feature"); }
+}
+#[cfg(test)] mod stopped_display_tests {
+    use super::*;
+    #[test] fn stopped_active_or_paused_goal_shows_the_stopped_label_even_with_live_elapsed() {
+        let mut goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":30,"createdAt":1,"updatedAt":1,"continuationStoppedAt":5000})).unwrap();
+        let expected="goal stopped: no progress (send a message or /goal resume)";
+        assert_eq!(goal_status_text(&goal,Some(42.0)),expected);
+        goal.status=GoalStatus::Paused; assert_eq!(goal_status_text(&goal,None),expected);
+        goal.continuation_stopped_at=None; assert_eq!(goal_status_text(&goal,None),"goal paused /goal resume");
+    }
 }
