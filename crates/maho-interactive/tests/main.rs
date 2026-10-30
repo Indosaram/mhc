@@ -63,6 +63,9 @@ mod runtime35_transfer;
 mod runtime35_viewport;
 #[path = "runtime35_widget_clock.rs"]
 mod runtime35_widget_clock;
+#[cfg(unix)]
+#[path = "session_control_endpoint.rs"]
+mod session_control_endpoint;
 #[path = "task33_search.rs"]
 mod task33_search;
 #[path = "task33_selectors.rs"]

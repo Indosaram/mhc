@@ -1086,6 +1086,8 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     session.emit_session_shutdown_for_quit(true).await;
     session.dispose().await;
     drop(process_lifetime);
+    // senpi's endpoint `process.once("exit", unregisterTuiEndpointSync)`: nothing is left registered.
+    maho_interactive::session_control_lifecycle::unregister_endpoints_at_exit();
     if let Some(code) = signal_code {
         std::process::exit(code);
     }
