@@ -336,6 +336,12 @@ pub struct AgentLoopConfig {
     pub before_tool_call: Option<BeforeToolCall>,
     /// Called after a tool finishes executing, before `tool_execution_end` is emitted.
     pub after_tool_call: Option<AfterToolCall>,
+    /// `InternalLoopConfig[internalProgressSink]`: set only when the run started with an internal
+    /// listener; the loop then reads capture records and hands progress to it in order.
+    pub(crate) internal_progress_sink: Option<crate::internal_events::ProgressSink>,
+    /// Receives loop events together with the assistant capture they carry (the TS WeakMap
+    /// carrier on the event object). Without it the loop emits bare events through the sink.
+    pub(crate) captured_event_sink: Option<crate::internal_events::CapturedEventSink>,
 }
 
 impl AgentLoopConfig {
@@ -365,6 +371,8 @@ impl AgentLoopConfig {
             resolve_unknown_tool_call: None,
             before_tool_call: None,
             after_tool_call: None,
+            internal_progress_sink: None,
+            captured_event_sink: None,
         }
     }
 

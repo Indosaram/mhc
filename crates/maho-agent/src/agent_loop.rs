@@ -17,6 +17,10 @@ use maho_ai::types::{
     Usage, UserContent,
 };
 use maho_ai::utils::abort::{AbortController, AbortReason, AbortSignal};
+use maho_ai::utils::assistant_capture::{
+    AssistantProgress, AssistantRecord, BlockMetadata, Captured, CapturedEvent, assistant_records,
+    carry_assistant_capture, get_assistant_capture, is_assistant_progress,
+};
 use maho_ai::utils::event_stream::{EventStream, StreamError};
 use maho_ai::utils::validation::validate_tool_arguments;
 use tokio::sync::oneshot;
@@ -28,6 +32,7 @@ use crate::assistant_terminal_state::{
     should_terminate_assistant_turn,
 };
 use crate::empty_assistant_recovery::with_empty_assistant_recovery;
+use crate::internal_events::{CapturedEventSink, InternalLoopConfig};
 use crate::response_timing::create_response_timing_recorder;
 use crate::stream_fn::get_default_stream_fn;
 use crate::tool_arguments::prepare_agent_tool_call_arguments;
@@ -44,6 +49,19 @@ pub type AgentEventSink =
 
 async fn send(emit: &AgentEventSink, event: AgentEvent) {
     emit(event).await;
+}
+
+/// `emit(carryAssistantCapture(source, event, terminal))`: with a capture-aware sink (a run that
+/// started with an internal listener) the event keeps its carrier; otherwise it is emitted bare.
+async fn send_captured(
+    emit: &AgentEventSink,
+    captured: Option<&CapturedEventSink>,
+    event: Captured<AgentEvent>,
+) {
+    match captured {
+        Some(sink) => sink(event).await,
+        None => emit(event.value).await,
+    }
 }
 
 fn assistant_event(message: &AssistantMessage) -> AgentMessage {
@@ -968,7 +986,7 @@ struct ThinkingTiming {
 /// This is where AgentMessage[] gets transformed to Message[] for the LLM.
 async fn stream_assistant_response(
     context: &mut AgentContext,
-    config: &AgentLoopConfig,
+    config: &InternalLoopConfig,
     signal: Option<AbortSignal>,
     emit: &AgentEventSink,
     stream_function: StreamFn,
@@ -1078,6 +1096,17 @@ async fn stream_assistant_response(
                     )));
                 })
             };
+            // Without an internal listener the loop reads the public stream exactly as before: no
+            // records, no carriers.
+            let sink = config.internal_progress_sink.clone();
+            let captured_sink = config
+                .captured_event_sink
+                .as_ref()
+                .filter(|_| sink.is_some());
+            if sink.is_some() {
+                // Attached before the first read: it turns capture on for this stream.
+                let _ = assistant_records(&response);
+            }
             let mut event_reader = AssistantEventReader::new(
                 response.clone(),
                 stream_idle_timeout_ms,
@@ -1088,14 +1117,25 @@ async fn stream_assistant_response(
             );
             event_reader.configured_start_timeout_ms =
                 normalize_timeout_ms(config.stream_start_timeout_ms);
+            event_reader.records = sink.is_some();
 
-            let mut finalized: Option<AssistantMessage> = None;
+            let mut finalized: Option<(AssistantMessage, CapturedEvent)> = None;
             loop {
                 let next = match event_reader.next().await {
                     Ok(next) => next,
                     Err(error) => return Err(error),
                 };
-                let Some(event) = next else { break };
+                let Some(record) = next else { break };
+                let captured = match record {
+                    AssistantRecord::Progress(progress) => {
+                        if let Some(sink) = &sink {
+                            sink(progress).await;
+                        }
+                        continue;
+                    }
+                    AssistantRecord::Event(event) => event,
+                };
+                let event = captured.value.clone();
                 let terminal = match &event {
                     AssistantMessageEvent::Done { .. } => Some(TerminalAssistantMessageEvent::Done),
                     AssistantMessageEvent::Error { reason, .. } => {
@@ -1113,7 +1153,7 @@ async fn stream_assistant_response(
                         result().await?,
                         terminal,
                     ));
-                    finalized = Some(final_message);
+                    finalized = Some((final_message, captured));
                     break;
                 }
                 match &event {
@@ -1121,12 +1161,17 @@ async fn stream_assistant_response(
                         response_timing.started();
                         context.messages.push(assistant_event(partial));
                         added_partial = true;
-                        send(
+                        send_captured(
                             emit,
-                            AgentEvent::MessageStart {
-                                message: assistant_event(partial),
-                                streaming: Some(true),
-                            },
+                            captured_sink,
+                            carry_assistant_capture(
+                                &captured,
+                                AgentEvent::MessageStart {
+                                    message: assistant_event(partial),
+                                    streaming: Some(true),
+                                },
+                                None,
+                            ),
                         )
                         .await;
                     }
@@ -1144,13 +1189,24 @@ async fn stream_assistant_response(
                                     });
                             let (started_at, ended_at) = (timing.started_at, timing.ended_at);
                             let mut updated = partial.clone();
-                            set_thinking_block_timing(
+                            let stamped = set_thinking_block_timing(
                                 &mut updated,
                                 *content_index,
                                 started_at,
                                 ended_at,
                             );
-                            emit_message_update(emit, context, updated, event).await;
+                            emit_message_update(emit, captured_sink, context, updated, &captured)
+                                .await;
+                            if stamped {
+                                send_timing_progress(
+                                    sink.as_ref(),
+                                    &captured,
+                                    *content_index,
+                                    started_at,
+                                    ended_at,
+                                )
+                                .await;
+                            }
                         }
                     }
                     AssistantMessageEvent::ThinkingDelta {
@@ -1169,7 +1225,8 @@ async fn stream_assistant_response(
                                     timing.ended_at,
                                 );
                             }
-                            emit_message_update(emit, context, updated, event).await;
+                            emit_message_update(emit, captured_sink, context, updated, &captured)
+                                .await;
                         }
                     }
                     AssistantMessageEvent::ThinkingEnd {
@@ -1179,17 +1236,31 @@ async fn stream_assistant_response(
                     } => {
                         if added_partial {
                             let mut updated = partial.clone();
+                            let mut stamped = None;
                             if let Some(timing) = thinking_timing.get_mut(content_index) {
                                 timing.ended_at = Some(now_ms());
                                 let (started_at, ended_at) = (timing.started_at, timing.ended_at);
-                                set_thinking_block_timing(
+                                if set_thinking_block_timing(
                                     &mut updated,
                                     *content_index,
                                     started_at,
                                     ended_at,
-                                );
+                                ) {
+                                    stamped = Some((started_at, ended_at));
+                                }
                             }
-                            emit_message_update(emit, context, updated, event).await;
+                            emit_message_update(emit, captured_sink, context, updated, &captured)
+                                .await;
+                            if let Some((started_at, ended_at)) = stamped {
+                                send_timing_progress(
+                                    sink.as_ref(),
+                                    &captured,
+                                    *content_index,
+                                    started_at,
+                                    ended_at,
+                                )
+                                .await;
+                            }
                         }
                     }
                     AssistantMessageEvent::TextStart { partial, .. }
@@ -1200,16 +1271,29 @@ async fn stream_assistant_response(
                     | AssistantMessageEvent::ToolcallEnd { partial, .. } => {
                         if added_partial {
                             response_timing.observe(&event);
-                            emit_message_update(emit, context, partial.clone(), event).await;
+                            emit_message_update(
+                                emit,
+                                captured_sink,
+                                context,
+                                partial.clone(),
+                                &captured,
+                            )
+                            .await;
                         }
                     }
                     AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. } => {}
                 }
             }
 
-            let final_message = match finalized {
-                Some(final_message) => final_message,
-                None => settle_stop_reason(result().await?),
+            // The terminal carrier holds the final normalized message; a stream that ended without
+            // a terminal event emits bare events.
+            let (final_message, source) = match finalized {
+                Some((final_message, source)) => (final_message, Some(source)),
+                None => (settle_stop_reason(result().await?), None),
+            };
+            let carry = |event: AgentEvent, terminal: &AssistantMessage| match &source {
+                Some(source) => carry_assistant_capture(source, event, Some(terminal)),
+                None => Captured::bare(event),
             };
             let mut final_message = final_message;
             propagate_thinking_timing(&mut final_message, &thinking_timing, &response_timing);
@@ -1219,20 +1303,28 @@ async fn stream_assistant_response(
                 }
             } else {
                 context.messages.push(assistant_event(&final_message));
-                send(
+                send_captured(
                     emit,
-                    AgentEvent::MessageStart {
-                        message: assistant_event(&final_message),
-                        streaming: None,
-                    },
+                    captured_sink,
+                    carry(
+                        AgentEvent::MessageStart {
+                            message: assistant_event(&final_message),
+                            streaming: None,
+                        },
+                        &final_message,
+                    ),
                 )
                 .await;
             }
-            send(
+            send_captured(
                 emit,
-                AgentEvent::MessageEnd {
-                    message: assistant_event(&final_message),
-                },
+                captured_sink,
+                carry(
+                    AgentEvent::MessageEnd {
+                        message: assistant_event(&final_message),
+                    },
+                    &final_message,
+                ),
             )
             .await;
             Ok(StreamedAssistantResponse {
@@ -1433,36 +1525,67 @@ async fn stream_assistant_response(
 
 async fn emit_message_update(
     emit: &AgentEventSink,
+    captured_sink: Option<&CapturedEventSink>,
     context: &mut AgentContext,
     updated: AssistantMessage,
-    event: AssistantMessageEvent,
+    event: &CapturedEvent,
 ) {
     let message = AgentMessage::Llm(Message::Assistant(Box::new(updated)));
     if let Some(last) = context.messages.last_mut() {
         *last = message.clone();
     }
-    send(
+    send_captured(
         emit,
-        AgentEvent::MessageUpdate {
-            message,
-            assistant_message_event: event,
-        },
+        captured_sink,
+        carry_assistant_capture(
+            event,
+            AgentEvent::MessageUpdate {
+                message,
+                assistant_message_event: event.value.clone(),
+            },
+            None,
+        ),
     )
     .await;
 }
 
+/// Agent-stamped thinking timing, stamped after provider capture: it amends this event's seed or
+/// end block, so it follows the `message_update` it amends. Only captured, non-delta events.
+async fn send_timing_progress(
+    sink: Option<&crate::internal_events::ProgressSink>,
+    event: &CapturedEvent,
+    content_index: usize,
+    started_at: i64,
+    ended_at: Option<i64>,
+) {
+    let Some(sink) = sink else { return };
+    if get_assistant_capture(event).is_none() {
+        return;
+    }
+    sink(Arc::new(AssistantProgress::metadata(BlockMetadata {
+        content_index,
+        started_at: Some(started_at),
+        ended_at,
+        ..BlockMetadata::default()
+    })))
+    .await;
+}
+
+/// Returns whether the block at `content_index` is a thinking block that now carries the timing.
 fn set_thinking_block_timing(
     message: &mut AssistantMessage,
     content_index: usize,
     started_at: i64,
     ended_at: Option<i64>,
-) {
+) -> bool {
     if let Some(ContentBlock::Thinking(block)) = message.content.get_mut(content_index) {
         block.started_at = Some(started_at);
         if ended_at.is_some() {
             block.ended_at = ended_at;
         }
+        return true;
     }
+    false
 }
 
 fn propagate_thinking_timing(
@@ -1585,6 +1708,11 @@ struct AssistantEventReader {
     start_timeout_ms: Option<u64>,
     configured_start_timeout_ms: Option<u64>,
     saw_first_event: bool,
+    /// Provider silence since the last public event: internal progress records re-arm neither
+    /// bound.
+    silent_ms: u64,
+    /// Read ordered capture records (`assistantRecords(response)`) instead of the public stream.
+    records: bool,
     signal: Option<AbortSignal>,
     on_idle_timeout: Option<Arc<dyn Fn(AgentStreamError) + Send + Sync>>,
 }
@@ -1605,6 +1733,8 @@ impl AssistantEventReader {
             start_timeout_ms: normalize_timeout_ms(stream_start_timeout_ms),
             configured_start_timeout_ms: normalize_timeout_ms(stream_start_timeout_ms),
             saw_first_event: false,
+            silent_ms: 0,
+            records: false,
             signal: Some(signal),
             on_idle_timeout,
         }
@@ -1618,11 +1748,25 @@ impl AssistantEventReader {
                 timeout_ms: self.configured_start_timeout_ms.unwrap_or(timeout_ms),
             }
         } else {
-            AgentStreamError::IdleTimeout { timeout_ms }
+            AgentStreamError::IdleTimeout {
+                timeout_ms: self.idle_timeout_ms.unwrap_or(timeout_ms),
+            }
         }
     }
 
-    async fn next(&mut self) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+    async fn read_one(&self) -> Result<Option<AssistantRecord>, StreamError> {
+        if self.records {
+            self.stream.next_record().await
+        } else {
+            Ok(self
+                .stream
+                .next()
+                .await?
+                .map(|event| AssistantRecord::Event(Captured::bare(event))))
+        }
+    }
+
+    async fn next(&mut self) -> Result<Option<AssistantRecord>, AgentStreamError> {
         if let Some(signal) = self.signal.as_ref()
             && signal.aborted()
         {
@@ -1634,12 +1778,26 @@ impl AssistantEventReader {
         } else {
             self.idle_timeout_ms
         };
+        let read_started_at = tokio::time::Instant::now();
         let result = match read_timeout_ms {
-            Some(timeout_ms) => self.read_with_timeout(timeout_ms).await,
+            Some(timeout_ms) => {
+                self.read_with_timeout(timeout_ms.saturating_sub(self.silent_ms).max(1))
+                    .await
+            }
             None => self.read_without_timeout().await,
         }?;
-        if result.is_some() {
-            self.saw_first_event = true;
+        match &result {
+            Some(record) if is_assistant_progress(record) => {
+                let elapsed =
+                    u64::try_from(read_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                self.silent_ms = self.silent_ms.saturating_add(elapsed);
+            }
+            _ => {
+                self.silent_ms = 0;
+                if result.is_some() {
+                    self.saw_first_event = true;
+                }
+            }
         }
         Ok(result)
     }
@@ -1647,9 +1805,7 @@ impl AssistantEventReader {
     /// With no idle bound the read still races the abort signal, exactly as
     /// `readNextAssistantEvent` does whenever an abort promise exists: aborting mid-stream must
     /// tear the request down instead of waiting forever for a provider event that never comes.
-    async fn read_without_timeout(
-        &mut self,
-    ) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+    async fn read_without_timeout(&mut self) -> Result<Option<AssistantRecord>, AgentStreamError> {
         let signal = self.signal.clone();
         let abort_future = async move {
             match signal {
@@ -1660,14 +1816,14 @@ impl AssistantEventReader {
         tokio::select! {
             biased;
             _ = abort_future => Err(abort_error(self.signal.as_ref())),
-            result = self.stream.next() => result.map_err(stream_error),
+            result = self.read_one() => result.map_err(stream_error),
         }
     }
 
     async fn read_with_timeout(
         &mut self,
         timeout_ms: u64,
-    ) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+    ) -> Result<Option<AssistantRecord>, AgentStreamError> {
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1698,7 +1854,7 @@ impl AssistantEventReader {
                     }
                     return Err(error);
                 }
-                result = self.stream.next() => {
+                result = self.read_one() => {
                     return result.map_err(stream_error);
                 }
             }
