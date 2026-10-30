@@ -1497,6 +1497,7 @@ impl HostCore {
             prompt_surface,
             browser_engine,
             retry_fallback,
+            spawned_by,
         } = body
         else {
             return Err(OpenRefusal::plain(
@@ -1509,6 +1510,11 @@ impl HostCore {
                 crate::rpc_types::RPC_ERROR_INVALID_LAUNCH_PROFILE
             ))
         };
+        if crate::session_router_open_profile::invalid_spawned_by(spawned_by) {
+            return Err(OpenRefusal::plain(
+                crate::rpc_types::RPC_ERROR_INVALID_SPAWNED_BY,
+            ));
+        }
         // senpi session-command-router `open`: only `attended:false` (observational open) is accepted.
         if *attended == Some(true) {
             return Err(invalid("attended must be false or omitted".to_owned()));
