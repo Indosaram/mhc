@@ -3216,7 +3216,8 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
     fn discard_outgoing_state(&self, dir: &str) {
         // senpi `await rm(dir, { recursive, force })`. SAFETY-DIVERGENCE(senpi releaseSession): the discard runs from a
         // drop guard that cannot await, so the removal is detached; a retry stages a fresh attempt folder and
-        // `prepare_outgoing_state` removes any dead attempt left behind, so the reply never depends on it.
+        // `prepare_outgoing_state` removes any dead attempt left behind, treating one this discard already removed
+        // as gone (senpi `force: true`), so the reply never depends on it.
         let dir = dir.to_owned();
         tokio::task::spawn_blocking(move || crate::session_release::discard_outgoing_state(&dir));
     }

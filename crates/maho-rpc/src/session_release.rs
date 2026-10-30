@@ -88,15 +88,18 @@ fn sealed_attempt(entries: &[Value], move_id: &str) -> Option<String> {
 pub fn prepare_outgoing_state(session_file: &str, move_id: &str) -> Result<StagedState, String> {
     let root = outgoing_state_dir(session_file, move_id);
     let sealed = sealed_attempt(&load_entries_from_file(session_file), move_id);
-    if root.exists() {
-        for entry in std::fs::read_dir(&root).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if Some(&name) == sealed.as_ref() {
-                continue;
-            }
-            std::fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries.into_iter().flatten() {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if Some(&name) == sealed.as_ref() {
+            continue;
         }
+        remove_dead_attempt(&entry.path())?;
     }
     let attempt = uuid::Uuid::new_v4().simple().to_string();
     let attempt = attempt.get(..16).unwrap_or(attempt.as_str()).to_owned();
@@ -106,6 +109,15 @@ pub fn prepare_outgoing_state(session_file: &str, move_id: &str) -> Result<Stage
         attempt,
         dir: dir.to_string_lossy().into_owned(),
     })
+}
+
+/// senpi `rm(dir, { recursive, force })`: an attempt folder already gone (a detached discard of the same dead attempt
+/// won the race) is removed, not a failure.
+fn remove_dead_attempt(path: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+        _ => Ok(()),
+    }
 }
 
 /// Abandons one attempt's staging folder: what it wrote is never bundled, and a retry stages afresh.
@@ -633,6 +645,17 @@ mod tests {
     use crate::session_release_interrupt::{BoxFuture, SubscriptionGuard};
     use maho_core::agent_session::ClearedQueue;
     use maho_core::session_activity::SessionActivitySnapshot;
+    #[test]
+    fn a_dead_attempt_already_removed_by_a_detached_discard_does_not_fail_the_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        let first = prepare_outgoing_state(&session, "m").unwrap();
+        // The detached discard of the first attempt finishes between the retry's walk and its removal.
+        discard_outgoing_state(&first.dir);
+        assert_eq!(remove_dead_attempt(Path::new(&first.dir)), Ok(()));
+        let retry = prepare_outgoing_state(&session, "m").unwrap();
+        assert!(Path::new(&retry.dir).is_dir());
+    }
     use maho_core::session_move::ownership::{
         RefusedOwnership, RefusedState, SessionMovedAwayError,
     };
