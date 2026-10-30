@@ -130,8 +130,14 @@ impl LeaseKeeper {
                 if rearm {
                     keeper.arm();
                 }
-                if let Some(on_error) = keeper.lock().options.on_error.as_mut() {
+                // Run the callback with the mutex released: it may call back into the keeper.
+                let on_error = keeper.lock().options.on_error.take();
+                if let Some(mut on_error) = on_error {
                     on_error(error);
+                    let mut inner = keeper.lock();
+                    if inner.options.on_error.is_none() {
+                        inner.options.on_error = Some(on_error);
+                    }
                 }
             }
         });
@@ -150,8 +156,14 @@ impl LeaseKeeper {
         if self.state() != LeaseKeeperState::Waiting {
             return Ok(());
         }
-        if let Some(on_tick) = self.lock().on_tick.as_mut() {
+        // Run the callback with the mutex released: it may call back into the keeper.
+        let on_tick = self.lock().on_tick.take();
+        if let Some(mut on_tick) = on_tick {
             on_tick();
+            let mut inner = self.lock();
+            if inner.on_tick.is_none() {
+                inner.on_tick = Some(on_tick);
+            }
         }
         let (holder, probe) = {
             let inner = self.lock();
@@ -202,7 +214,11 @@ impl LeaseKeeper {
                 },
             },
         )?;
-        if self.state() != LeaseKeeperState::Waiting {
+        // The state check and the transition share one lock, so a concurrent stop() either lands
+        // first (the lease goes straight back) or finds the keeper already Owner.
+        let mut inner = self.lock();
+        if inner.state != LeaseKeeperState::Waiting {
+            drop(inner);
             // stop() landed while the acquire was in flight: hand the lease straight back.
             if let AcquireTerminalLeaseResult::Acquired { path, pid } = result {
                 release_terminal_lease(&path, pid)?;
@@ -211,20 +227,19 @@ impl LeaseKeeper {
         }
         match result {
             AcquireTerminalLeaseResult::Acquired { path, pid } => {
+                inner.state = LeaseKeeperState::Owner;
+                inner.timer = None;
+                let mut on_takeover = std::mem::replace(
+                    &mut inner.options.on_takeover,
+                    Box::new(|_: PathBuf, _: f64| {}),
+                );
                 // Run the callback with the mutex released: it may call back into the keeper.
-                let mut on_takeover = {
-                    let mut inner = self.lock();
-                    inner.state = LeaseKeeperState::Owner;
-                    inner.timer = None;
-                    std::mem::replace(
-                        &mut inner.options.on_takeover,
-                        Box::new(|_: PathBuf, _: f64| {}),
-                    )
-                };
+                drop(inner);
                 on_takeover(path, pid);
             }
             AcquireTerminalLeaseResult::Held { holder } => {
-                self.lock().holder = Some(holder);
+                inner.holder = Some(holder);
+                drop(inner);
                 self.arm();
             }
         }
@@ -439,5 +454,57 @@ mod tests {
         ticks(&harness, 1).await;
         assert_eq!(harness.takeovers.load(Ordering::SeqCst), 1);
         assert!(unlocked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runs_on_tick_and_on_error_with_the_keeper_mutex_released() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file where the state dir should be makes every acquire fail, so each tick errors.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "").unwrap();
+        let slot: Arc<Mutex<Option<LeaseKeeper>>> = Arc::new(Mutex::new(None));
+        let tick_unlocked = Arc::new(AtomicBool::new(false));
+        let error_unlocked = Arc::new(AtomicBool::new(false));
+        let errors = Arc::new(AtomicUsize::new(0));
+        let (error_slot, error_seen, error_count) =
+            (slot.clone(), error_unlocked.clone(), errors.clone());
+        let keeper = create_lease_keeper(LeaseKeeperOptions {
+            dir: blocked.join("state"),
+            encoded_session_id: "s".into(),
+            on_takeover: Box::new(|_: PathBuf, _: f64| {}),
+            on_error: Some(Box::new(move |_: std::io::Error| {
+                let keeper = error_slot.lock().unwrap().clone().unwrap();
+                error_seen.store(keeper.inner.try_lock().is_ok(), Ordering::SeqCst);
+                error_count.fetch_add(1, Ordering::SeqCst);
+            })),
+            interval_ms: Some(TICK_MS),
+            self_pid: SELF_PID,
+            self_started_at_ms: 2.0,
+            is_process_alive: Some(Arc::new(|_: f64| false)),
+            read_process_start_ms: Some(Arc::new(|_: f64| None)),
+        });
+        *slot.lock().unwrap() = Some(keeper.clone());
+        let (tick_slot, tick_seen) = (slot.clone(), tick_unlocked.clone());
+        let tick_total = Arc::new(AtomicUsize::new(0));
+        let tick_count = tick_total.clone();
+        keeper.set_on_tick(Some(Box::new(move || {
+            let keeper = tick_slot.lock().unwrap().clone().unwrap();
+            tick_seen.store(keeper.inner.try_lock().is_ok(), Ordering::SeqCst);
+            tick_count.fetch_add(1, Ordering::SeqCst);
+        })));
+        let harness = Harness {
+            keeper,
+            takeovers: Arc::new(AtomicUsize::new(0)),
+            ticks: tick_total,
+        };
+        harness.keeper.start(None);
+        ticks(&harness, 2).await;
+        assert_eq!(harness.ticks.load(Ordering::SeqCst), 2);
+        assert_eq!(errors.load(Ordering::SeqCst), 2);
+        assert!(tick_unlocked.load(Ordering::SeqCst));
+        assert!(error_unlocked.load(Ordering::SeqCst));
+        assert_eq!(harness.keeper.state(), LeaseKeeperState::Waiting);
+        harness.keeper.stop();
+        *slot.lock().unwrap() = None;
     }
 }

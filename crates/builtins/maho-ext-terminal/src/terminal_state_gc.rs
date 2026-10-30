@@ -5,8 +5,12 @@
 //! boot identity, so a lease is stale when it is unparseable or its pid is dead; a recycled pid
 //! (upstream `reused`) is a process that `read_process_start_ms` says started after the recorded
 //! acquisition instant (upstream's one-sided v1 rule).
-//! Removal re-reads the file and unlinks only when the bytes are unchanged, the native analogue of
-//! upstream `reclaimInspected` (a lease published while the sweep probed is never deleted).
+//! A stale lease is removed only through `manifest_lease::reclaim_inspected`, the same locked,
+//! inspected-bytes reclaim an acquire uses, so a lease another process published while the sweep
+//! probed is never deleted. A `<lease>.lock` goes only once `reclaim_lock_state` calls it stale.
+use crate::manifest_lease::{
+    LeaseProbes, LockState, ReclaimOutcome, break_stale_lock, reclaim_inspected, reclaim_lock_state,
+};
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::SystemTime;
@@ -72,14 +76,27 @@ fn sweep_entry(
     options: &SweepOptions<'_>,
     result: &mut SweepResult,
 ) -> std::io::Result<()> {
-    if name.ends_with(".tmp")
-        || name.ends_with(".reclaim")
-        || name.ends_with(".broken")
-        || name.ends_with(".lock")
-    {
-        // A temp file is published within milliseconds of being written; one this old was
-        // abandoned by a crash. The native lease takes no reclaim lock, so a `.lock` here is a
-        // leftover from an older generation and follows the same age rule.
+    let mut is_process_alive = |pid: f64| -> std::io::Result<bool> {
+        match options.is_process_alive {
+            Some(probe) => Ok(probe(pid)),
+            None => crate::manifest_lease::probe_alive(pid),
+        }
+    };
+    let mut read_process_start_ms =
+        |pid: f64| options.read_process_start_ms.and_then(|probe| probe(pid));
+    let mut probes = LeaseProbes {
+        is_process_alive: &mut is_process_alive,
+        read_process_start_ms: &mut read_process_start_ms,
+    };
+    // A reclaim lock goes only once its holder is gone; a temp file is published within
+    // milliseconds of being written, so one this old was abandoned by a crash.
+    if name.ends_with(".lock") {
+        if let LockState::Stale(raw) = reclaim_lock_state(path, &mut probes)? {
+            break_stale_lock(path, &raw)?;
+        }
+        return Ok(());
+    }
+    if name.ends_with(".tmp") || name.ends_with(".reclaim") || name.ends_with(".broken") {
         let Ok(info) = std::fs::metadata(path) else {
             return Ok(());
         };
@@ -93,10 +110,11 @@ fn sweep_entry(
     }
     if name.ends_with(".lease") {
         let raw = std::fs::read(path)?;
+        // Removal goes through the same inspected-record reclaim as an acquire, so a lease another
+        // process published while this sweep was probing is never deleted.
         if lease_is_stale(&raw, options)
-            && std::fs::read(path).ok().as_deref() == Some(raw.as_slice())
+            && reclaim_inspected(path, &raw, &mut probes)? == ReclaimOutcome::Removed
         {
-            unlink_if_present(path)?;
             result.removed_leases += 1;
         }
     } else if name.ends_with(".json") {
@@ -148,6 +166,8 @@ pub fn sweep_terminal_state_dir(
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn lease(dir: &Path, name: &str, pid: f64, started: f64) {
         std::fs::write(
@@ -316,5 +336,88 @@ mod tests {
             }
         );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// The sweep judges a dead record stale, then another process replaces the lease before the
+    /// sweep removes it: the fresh lease must survive.
+    #[test]
+    fn keeps_a_lease_replaced_between_inspection_and_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.lease");
+        lease(dir.path(), "s.lease", 11.0, 1.0);
+        let (inspected, wait_inspected) = mpsc::channel::<()>();
+        let (replaced, wait_replaced) = mpsc::channel::<()>();
+        let sweep = std::thread::scope(|scope| {
+            let sweeper = scope.spawn(|| {
+                let alive = move |pid: f64| {
+                    if pid == 11.0 {
+                        inspected.send(()).unwrap();
+                        wait_replaced
+                            .recv_timeout(Duration::from_secs(10))
+                            .expect("replacement handshake");
+                        return false;
+                    }
+                    true
+                };
+                let keep = HashSet::new();
+                sweep_terminal_state_dir(
+                    dir.path(),
+                    &SweepOptions {
+                        self_pid: 1.0,
+                        keep: &keep,
+                        limit: None,
+                        is_process_alive: Some(&alive),
+                        read_process_start_ms: None,
+                    },
+                )
+            });
+            wait_inspected
+                .recv_timeout(Duration::from_secs(10))
+                .expect("inspection handshake");
+            std::fs::write(&path, br#"{"pid":12,"startedAtMs":2}"#).unwrap();
+            replaced.send(()).unwrap();
+            sweeper.join().unwrap()
+        })
+        .unwrap();
+        assert_eq!(sweep.removed_leases, 0);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            br#"{"pid":12,"startedAtMs":2}"#
+        );
+        assert!(!dir.path().join("s.lease.lock").exists());
+    }
+
+    #[test]
+    fn breaks_a_reclaim_lock_of_a_dead_holder_and_keeps_a_live_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = |pid: f64| {
+            serde_json::to_vec(&crate::manifest_lease::ReclaimLockHolder {
+                pid,
+                boot_at_ms: crate::process_identity::process_boot_at_ms(None),
+                process_started_at_ms: crate::process_identity::own_process_started_at_ms(None),
+            })
+            .unwrap()
+        };
+        std::fs::write(dir.path().join("dead.lease.lock"), holder(999_999.0)).unwrap();
+        std::fs::write(
+            dir.path().join("live.lease.lock"),
+            holder(f64::from(std::process::id())),
+        )
+        .unwrap();
+        let alive = |_: f64| false;
+        let keep = HashSet::new();
+        sweep_terminal_state_dir(
+            dir.path(),
+            &SweepOptions {
+                self_pid: 1.0,
+                keep: &keep,
+                limit: None,
+                is_process_alive: Some(&alive),
+                read_process_start_ms: None,
+            },
+        )
+        .unwrap();
+        assert!(!dir.path().join("dead.lease.lock").exists());
+        assert!(dir.path().join("live.lease.lock").exists());
     }
 }
