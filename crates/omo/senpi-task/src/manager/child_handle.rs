@@ -127,6 +127,8 @@ pub trait ManagedChildHandle: Send + Sync {
     fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), HostError> {
         Ok(())
     }
+    /// Re-reads inputs whose acknowledgement was lost (TS `reconcileInputs?`); a no-op by default.
+    fn reconcile_inputs(&self) {}
 }
 
 /// Terminate (when supported) then always dispose.

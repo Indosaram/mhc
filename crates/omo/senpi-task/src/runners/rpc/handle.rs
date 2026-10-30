@@ -556,6 +556,9 @@ impl RpcChildHandle {
 }
 
 impl ManagedChildHandle for RpcChildHandle {
+    fn reconcile_inputs(&self) {
+        RpcChildHandle::reconcile_inputs(self);
+    }
     fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
         Some(self)
     }

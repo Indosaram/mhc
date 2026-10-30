@@ -97,6 +97,36 @@ pub(crate) fn term_then_kill(
     Ok(!context.signaller.is_alive(pid))
 }
 
+/// `terminateClaimedPid` / `terminateOldRpc`: like [`term_then_kill`], but the record is re-read
+/// after the SIGTERM grace. A pass that went stale, or (under a fenced pass) a claim that is no
+/// longer held, answers false without escalating to SIGKILL.
+pub(crate) fn term_then_kill_claimed(
+    context: &LifecycleContext,
+    record: &crate::state::TaskRecord,
+) -> Result<bool, LifecycleError> {
+    let Some(pid) = record.pid else {
+        return Ok(true);
+    };
+    if !context.signaller.is_alive(pid) {
+        return Ok(true);
+    }
+    signal_and_record(context, &record.task_id, pid, OrphanSignal::Term)?;
+    context.delay_orphan_kill(pid);
+    let fresh = context.store.load(&record.task_id)?;
+    if !super::context::reconciliation_active(context)
+        || (context.reconcile_active.is_some()
+            && !fresh.as_ref().is_some_and(|fresh| {
+                super::reconcile_reclamation::holds_claim(context, fresh, Some(record))
+            }))
+    {
+        return Ok(false);
+    }
+    if context.signaller.is_alive(pid) {
+        signal_and_record(context, &record.task_id, pid, OrphanSignal::Kill)?;
+    }
+    Ok(!context.signaller.is_alive(pid))
+}
+
 fn signal_and_record(
     context: &LifecycleContext,
     task_id: &str,
