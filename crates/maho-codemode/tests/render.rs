@@ -75,3 +75,25 @@ fn live_result_card_repaints_itself_each_second_until_terminal() {
     assert!(!maho_tui::ui_intervals::run_due_ui_intervals(Instant::now()+Duration::from_secs(5)));
     assert_eq!(invalidations.get(),1);
 }
+
+/// senpi 903b8336 eval-display-json-bounds.test.ts: legacy stored entries render as bounded placeholders.
+#[test]
+fn legacy_oversized_display_entries_render_bounded() {
+    let render=|value:serde_json::Value,expanded:bool| {
+        let mut result=AgentToolResult::text("");
+        result.details=json!({"cells":[{"language":"js","code":"1","status":"complete","output":""}],"jsonOutputs":[value]});
+        render_eval_result(&result,&maho_codemode::tool::types::EvalToolRequest::List,&EvalRenderContext {expanded,..Default::default()},80)
+    };
+    let buffer=json!({"type":"Buffer","data":vec![0;3_000_000],"width":1,"height":1});
+    let nested=json!({"buffer":{"type":"Buffer","data":vec![0;3_000_000]},"width":1,"height":1});
+    for expanded in [false,true] {
+        let lines=render(buffer.clone(),expanded);
+        assert!(lines.join("\n").contains("<Buffer 2.9 MB>"));
+        let lines=render(nested.clone(),expanded);
+        let text=lines.join("\n");
+        assert!(text.contains("buffer: <Buffer 2.9 MB>") && text.contains("width: 1") && text.contains("height: 1"));
+        assert!(!text.contains("[0]"));
+    }
+    let lines=render(json!({"payload":"x".repeat(200_000)}),true);
+    assert!(lines.iter().any(|line|line.starts_with("… oversized display value elided ({1 keys}, ~7.8 KB+ stored)")),"{lines:?}");
+}
