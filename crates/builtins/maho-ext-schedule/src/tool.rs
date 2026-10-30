@@ -231,21 +231,24 @@ async fn create(
     }
     let mut every_ms = None;
     if let Some(every) = args.get("everySeconds").filter(|value| !value.is_null()) {
-        let seconds = every
+        // A product past u64 is past Number.MAX_SAFE_INTEGER too, which upstream rejects with the
+        // integer error.
+        let ms = every
             .as_u64()
             .filter(|seconds| *seconds >= MIN_EVERY_SECONDS)
+            .and_then(|seconds| seconds.checked_mul(1000))
             .ok_or_else(|| {
                 fail(format!(
                     "everySeconds must be an integer of at least {MIN_EVERY_SECONDS}."
                 ))
             })?;
-        if seconds * 1000 > MAX_SCHEDULE_AHEAD_MS {
+        if ms > MAX_SCHEDULE_AHEAD_MS {
             return Err(fail(format!(
                 "everySeconds must be at most {} (366 days).",
                 MAX_SCHEDULE_AHEAD_MS / 1000
             )));
         }
-        every_ms = Some(seconds * 1000);
+        every_ms = Some(ms);
     }
     let dir = schedule_dir(&ctx.agent_dir);
     let session_id = ctx.session_manager.session_id().to_owned();
