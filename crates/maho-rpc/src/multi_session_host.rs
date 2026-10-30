@@ -3241,6 +3241,12 @@ fn route_session_record(
 ) {
     // Every copy, socket or stdio, is stamped where the host enqueues it (senpi `observeLifecycleDelivery`).
     crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
+    // senpi `SessionEventWriter.enqueue`: a `snapshot_marker` goes only to the requester's own mirror subscription,
+    // never to attachments, the attach replay or stdio. This host has no mirror subscriptions yet (session status
+    // stream open), so no target asked for it.
+    if record["type"] == crate::get_snapshot::SNAPSHOT_MARKER {
+        return;
+    }
     let targeted = matches!(
         record["type"].as_str(),
         Some("response" | "bash_execution_update")
@@ -3817,6 +3823,27 @@ mod handoff_tests {
             serde_json::json!({"type":"response","command":"open_session","success":true,"data":{"sessionId":"s","state":{"lifecycle":{"seq":1}}}}),
         );
         assert!(next(&mut client).await["data"]["state"]["lifecycle"]["observedAt"].is_string());
+    }
+    #[tokio::test]
+    async fn a_snapshot_marker_is_never_broadcast_to_attachments() {
+        let core = idle_core();
+        let mut client = peer(&core, "c");
+        core.fanout.lock().unwrap().attach("c", "s", 0.).unwrap();
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            Some("c"),
+            serde_json::json!({"type":"snapshot_marker","markerId":"m"}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"agent_end"}),
+        );
+        assert_eq!(next(&mut client).await["type"], "agent_end");
     }
     #[tokio::test]
     async fn late_joiner_replays_the_in_flight_message() {
