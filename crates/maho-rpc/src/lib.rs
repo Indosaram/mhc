@@ -106,6 +106,7 @@ pub mod session_move_wire;
 pub mod session_path_reservations;
 pub mod session_record_stream;
 pub mod session_registry;
+pub mod session_router_open_profile;
 pub mod session_release;
 pub mod session_release_adapter;
 pub mod session_release_interrupt;

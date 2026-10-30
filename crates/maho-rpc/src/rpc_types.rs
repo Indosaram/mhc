@@ -465,6 +465,10 @@ pub enum RpcCommandBody {
         /// The fallback policy this session runs with (validated at the router).
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_fallback: Option<Value>,
+        /// The ancestry of a spawned child session: `{ parentSessionId, rootSessionId, taskId }` (senpi `spawnedBy`).
+        /// Kept raw so a malformed value is refused with `invalid_spawned_by` rather than a parse error.
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        spawned_by: Value,
     },
     /// Hands a session over to a runtime outside this host (senpi `release_session`). The session id travels in
     /// the routing envelope. `reason` and `moveId` stay raw so a malformed value is refused with
