@@ -65,8 +65,17 @@ fn parse_timestamp_ms(text: &str) -> Option<f64> {
     let mut clock_parts = clock.split(':');
     let hour: i64 = clock_parts.next()?.parse().ok()?;
     let minute: i64 = clock_parts.next()?.parse().ok()?;
-    let seconds: f64 = clock_parts.next()?.parse().ok()?;
-    if clock_parts.next().is_some() || hour > 23 || minute > 59 || !(0.0..61.0).contains(&seconds) {
+    // Whole seconds and fraction digits parse as integers: `(s * 1000.0).floor()` loses a
+    // millisecond to float error (`"01.001"` -> 1000 ms) where `Date.parse` keeps it.
+    let seconds_text = clock_parts.next()?;
+    let (whole_seconds, fraction) = seconds_text.split_once('.').unwrap_or((seconds_text, ""));
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    if !digits(whole_seconds) || (seconds_text.contains('.') && !digits(fraction)) {
+        return None;
+    }
+    let seconds: i64 = whole_seconds.parse().ok()?;
+    let millis: i64 = format!("{fraction:0<3}")[..3].parse().ok()?;
+    if clock_parts.next().is_some() || hour > 23 || minute > 59 || seconds > 60 {
         return None;
     }
     let y = if month <= 2 { year - 1 } else { year };
@@ -76,7 +85,7 @@ fn parse_timestamp_ms(text: &str) -> Option<f64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
     let whole = (days * 86_400 + hour * 3_600 + minute * 60) * 1_000 - offset_ms;
-    Some(whole as f64 + (seconds * 1000.0).floor())
+    Some(whole as f64 + (seconds * 1000 + millis) as f64)
 }
 
 #[cfg(test)]
@@ -109,6 +118,15 @@ mod tests {
         );
         assert_eq!(session_activity_before_ms(None, base)?, None);
         assert_eq!(parse_timestamp_ms("2026-01-01T09:00:00+09:00"), Some(base));
+        // Float `(1.001 * 1000).floor()` is 1000; the fraction digits are 1 ms.
+        assert_eq!(
+            parse_timestamp_ms("2026-01-01T00:00:01.001Z"),
+            Some(base + 1_001.0)
+        );
+        assert_eq!(
+            parse_timestamp_ms("2026-01-01T00:00:04.35Z"),
+            Some(base + 4_350.0)
+        );
         Ok(())
     }
 }
