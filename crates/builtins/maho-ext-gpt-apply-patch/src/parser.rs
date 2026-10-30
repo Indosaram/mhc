@@ -32,15 +32,23 @@ fn parse_chunk(lines: &[&str], mut index: usize) -> Result<(PatchChunk, usize), 
             break;
         }
         if line.is_empty() {
+            chunk
+                .context_line_indices
+                .push((chunk.old_lines.len(), chunk.new_lines.len()));
             chunk.old_lines.push(String::new());
             chunk.new_lines.push(String::new());
         } else if let Some(value) = line.strip_prefix(' ') {
+            chunk
+                .context_line_indices
+                .push((chunk.old_lines.len(), chunk.new_lines.len()));
             chunk.old_lines.push(value.into());
             chunk.new_lines.push(value.into());
         } else if let Some(value) = line.strip_prefix('-') {
             chunk.old_lines.push(value.into());
+            chunk.removed_count += 1;
         } else if let Some(value) = line.strip_prefix('+') {
             chunk.new_lines.push(value.into());
+            chunk.added_count += 1;
         } else if parsed > 0 {
             break;
         } else {
@@ -220,5 +228,18 @@ mod tests {
                 file_path: "a".into()
             }]
         );
+    }
+    #[test]
+    fn chunk_tracks_context_indices_and_prefix_counts() {
+        // 2656: a `+` line equal to a context line is still one addition, not (+0 -0).
+        let patch = parse_patch(
+            "*** Begin Patch\n*** Update File: code.ts\n@@\n const a = 1;\n+const a = 1;\n const b = 2;\n-gone\n\n*** End Patch",
+        )
+        .unwrap();
+        let ParsedPatch::Update { chunks, .. } = &patch[0] else {
+            panic!()
+        };
+        assert_eq!(chunks[0].context_line_indices, [(0, 0), (1, 2), (3, 3)]);
+        assert_eq!((chunks[0].added_count, chunks[0].removed_count), (1, 1));
     }
 }
