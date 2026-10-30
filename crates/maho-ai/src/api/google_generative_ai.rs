@@ -132,7 +132,7 @@ pub fn stream(
 ) -> AssistantMessageEventStream {
     let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let sink = stream.clone();
     let model = model.clone();
     let context = context.clone();
@@ -793,22 +793,32 @@ fn push_block_end(
                 Some(ContentBlock::Text(text)) => text.text.clone(),
                 _ => String::new(),
             };
-            sink.push(AssistantMessageEvent::TextEnd {
-                content_index: block_index(output),
-                content,
-                partial: output.clone(),
-            });
+            // block_index() drifts past the open block once a native part is appended; capture
+            // keeps the block's own index.
+            sink.push_with_hint(
+                AssistantMessageEvent::TextEnd {
+                    content_index: block_index(output),
+                    content,
+                    partial: output.clone(),
+                },
+                crate::utils::assistant_capture::CaptureHint::content_index(current_block.index),
+            );
         }
         CurrentBlockKind::Thinking => {
             let content = match output.content.get(current_block.index) {
                 Some(ContentBlock::Thinking(thinking)) => thinking.thinking.clone(),
                 _ => String::new(),
             };
-            sink.push(AssistantMessageEvent::ThinkingEnd {
-                content_index: block_index(output),
-                content,
-                partial: output.clone(),
-            });
+            // block_index() drifts past the open block once a native part is appended; capture
+            // keeps the block's own index.
+            sink.push_with_hint(
+                AssistantMessageEvent::ThinkingEnd {
+                    content_index: block_index(output),
+                    content,
+                    partial: output.clone(),
+                },
+                crate::utils::assistant_capture::CaptureHint::content_index(current_block.index),
+            );
         }
     }
 }
@@ -896,32 +906,58 @@ fn handle_chunk(
                             output.content.get_mut(current_block.index)
                         {
                             thinking.thinking.push_str(&text);
+                        }
+                        crate::utils::assistant_capture::push_assistant_signature(
+                            sink,
+                            current_block.index,
+                            &output.content[current_block.index],
+                            incoming_signature,
+                        );
+                        if let Some(ContentBlock::Thinking(thinking)) =
+                            output.content.get_mut(current_block.index)
+                        {
                             thinking.thinking_signature = retain_thought_signature(
                                 thinking.thinking_signature.take(),
                                 incoming_signature,
                             );
                         }
-                        sink.push(AssistantMessageEvent::ThinkingDelta {
-                            content_index: block_index(output),
-                            delta: text,
-                            partial: output.clone(),
-                        });
+                        sink.push_with_hint(
+                            AssistantMessageEvent::ThinkingDelta {
+                                content_index: block_index(output),
+                                delta: text,
+                                partial: output.clone(),
+                            },
+                            crate::utils::assistant_capture::CaptureHint::content_index(current_block.index),
+                        );
                     }
                     CurrentBlockKind::Text => {
                         if let Some(ContentBlock::Text(block)) =
                             output.content.get_mut(current_block.index)
                         {
                             block.text.push_str(&text);
+                        }
+                        crate::utils::assistant_capture::push_assistant_signature(
+                            sink,
+                            current_block.index,
+                            &output.content[current_block.index],
+                            incoming_signature,
+                        );
+                        if let Some(ContentBlock::Text(block)) =
+                            output.content.get_mut(current_block.index)
+                        {
                             block.text_signature = retain_thought_signature(
                                 block.text_signature.take(),
                                 incoming_signature,
                             );
                         }
-                        sink.push(AssistantMessageEvent::TextDelta {
-                            content_index: block_index(output),
-                            delta: text,
-                            partial: output.clone(),
-                        });
+                        sink.push_with_hint(
+                            AssistantMessageEvent::TextDelta {
+                                content_index: block_index(output),
+                                delta: text,
+                                partial: output.clone(),
+                            },
+                            crate::utils::assistant_capture::CaptureHint::content_index(current_block.index),
+                        );
                     }
                 }
             }
@@ -987,11 +1023,16 @@ fn handle_chunk(
                     content_index: block_index(output),
                     partial: output.clone(),
                 });
-                sink.push(AssistantMessageEvent::ToolcallDelta {
-                    content_index: block_index(output),
-                    delta: js_json_stringify(&Value::Object(tool_call.arguments.clone())),
-                    partial: output.clone(),
-                });
+                // The adapter never parses its own spelling: the complete parsed seed stays
+                // authoritative.
+                sink.push_with_hint(
+                    AssistantMessageEvent::ToolcallDelta {
+                        content_index: block_index(output),
+                        delta: js_json_stringify(&Value::Object(tool_call.arguments.clone())),
+                        partial: output.clone(),
+                    },
+                    crate::utils::assistant_capture::CaptureHint::parsed_through(0),
+                );
                 sink.push(AssistantMessageEvent::ToolcallEnd {
                     content_index: block_index(output),
                     tool_call,
@@ -1005,6 +1046,11 @@ fn handle_chunk(
                     .push(ContentBlock::ProviderNative(to_provider_native_content(
                         part,
                     )));
+                crate::utils::assistant_capture::push_assistant_complete_block(
+                    sink,
+                    block_index(output),
+                    &output.content[block_index(output)],
+                );
             }
         }
     }
@@ -1019,6 +1065,11 @@ fn handle_chunk(
                 raw: grounding_metadata.clone(),
             },
         ));
+        crate::utils::assistant_capture::push_assistant_complete_block(
+            sink,
+            block_index(output),
+            &output.content[block_index(output)],
+        );
         state.grounding_metadata_emitted = true;
     }
 
@@ -1032,6 +1083,11 @@ fn handle_chunk(
                 raw: url_context_metadata.clone(),
             },
         ));
+        crate::utils::assistant_capture::push_assistant_complete_block(
+            sink,
+            block_index(output),
+            &output.content[block_index(output)],
+        );
         state.url_context_metadata_emitted = true;
     }
 

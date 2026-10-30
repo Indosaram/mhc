@@ -3038,12 +3038,20 @@ fn handle_content_block_start(
             });
         }
         Some(other) => {
-            state.push_block(
+            let content_index = state.push_block(
                 ContentBlock::ProviderNative(crate::types::ProviderNativeContent {
                     subtype: other.to_owned(),
                     raw: block,
                 }),
                 index,
+            );
+            crate::utils::assistant_capture::push_assistant_progress(
+                sink,
+                crate::utils::assistant_capture::AssistantProgress::block_state(
+                    content_index,
+                    crate::utils::assistant_capture::BlockPhase::Insert,
+                    &state.output.content[content_index],
+                ),
             );
         }
         None => {}
@@ -3138,6 +3146,16 @@ fn handle_content_block_delta(
                     .thinking_signature
                     .get_or_insert_with(String::new)
                     .push_str(signature);
+                crate::utils::assistant_capture::push_assistant_progress(
+                    sink,
+                    crate::utils::assistant_capture::AssistantProgress::metadata(
+                        crate::utils::assistant_capture::BlockMetadata {
+                            content_index,
+                            thinking_signature_delta: Some(signature.to_owned()),
+                            ..Default::default()
+                        },
+                    ),
+                );
             }
         }
         _ => {}
@@ -3198,6 +3216,14 @@ fn handle_content_block_stop(
             {
                 native.raw = merge_provider_native_input(&native.raw, &partial_json);
             }
+            crate::utils::assistant_capture::push_assistant_progress(
+                sink,
+                crate::utils::assistant_capture::AssistantProgress::block_state(
+                    content_index,
+                    crate::utils::assistant_capture::BlockPhase::End,
+                    &state.output.content[content_index],
+                ),
+            );
         }
         _ => {}
     }
@@ -3955,7 +3981,7 @@ pub fn stream(
         }),
     );
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let sink = stream.clone();
     let model = model.clone();
     let context = context.clone();

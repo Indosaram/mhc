@@ -524,7 +524,10 @@ fn assistant_push_hook(
         capture.decide();
         return None;
     }
-    capture.capture_event(event, hint)
+    match capture.relay_hint(event, hint) {
+        Some(relay) => capture.capture_event(event, &relay),
+        None => capture.capture_event(event, hint),
+    }
 }
 
 impl AssistantMessageEventStream {
@@ -544,6 +547,27 @@ impl AssistantMessageEventStream {
             stream.with_capture_slot(CaptureSlot::enable);
         }
         stream
+    }
+
+    /// Runs a projection step that copies `source` 1:1 to a new index. The copy is built from
+    /// source blocks read after later deltas landed, so its capture relays the source's
+    /// emission-time record instead of freezing the copy. Only the step's first push of the
+    /// source's type is that copy; any later one records nothing.
+    pub fn relaying<V>(
+        &self,
+        source: std::mem::Discriminant<AssistantMessageEvent>,
+        capture: Option<Arc<AssistantCapture>>,
+        project: impl FnOnce() -> V,
+    ) -> V {
+        struct EndRelay<'a>(&'a AssistantMessageEventStream);
+        impl Drop for EndRelay<'_> {
+            fn drop(&mut self) {
+                self.0.with_capture_slot(CaptureSlot::end_relay);
+            }
+        }
+        self.with_capture_slot(|slot| slot.begin_relay(source, capture));
+        let _end = EndRelay(self);
+        project()
     }
 
     /// Relay a frozen progress record another stream captured, unchanged.

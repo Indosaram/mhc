@@ -717,11 +717,15 @@ async fn stream_with_deltas(
                         deltas.abort_now(&partial);
                         return Ok(());
                     }
-                    stream.push(AssistantMessageEvent::ToolcallDelta {
-                        content_index: index,
-                        delta: chunk,
-                        partial: partial.clone(),
-                    });
+                    // Faux never parses its generated chunks; only the end installs the arguments.
+                    stream.push_with_hint(
+                        AssistantMessageEvent::ToolcallDelta {
+                            content_index: index,
+                            delta: chunk,
+                            partial: partial.clone(),
+                        },
+                        crate::utils::assistant_capture::CaptureHint::parsed_through(0),
+                    );
                 }
                 if let Some(ContentBlock::ToolCall(block)) = partial.content.get_mut(index) {
                     block.arguments = call.arguments.clone();
@@ -865,6 +869,7 @@ impl FauxCore {
         deferred: Option<crate::types::DeferredOption>,
     ) -> AssistantMessageEventStream {
         let outer = create_assistant_message_event_stream();
+        crate::utils::assistant_capture::enable_assistant_capture(&outer);
         let simple = SimpleStreamOptions {
             stream: options.clone(),
             deferred,
@@ -1016,6 +1021,7 @@ impl FauxCore {
         options: Option<DeferredFetchOptions>,
     ) -> AssistantMessageEventStream {
         let outer = create_assistant_message_event_stream();
+        crate::utils::assistant_capture::enable_assistant_capture(&outer);
         {
             let mut inner = self.lock();
             inner.state.deferred_fetch_count += 1;

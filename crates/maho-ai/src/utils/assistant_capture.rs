@@ -261,6 +261,15 @@ pub struct CaptureSlot {
     decided: Option<Option<CaptureState>>,
     demanded: bool,
     warned: bool,
+    relay: Option<RelaySource>,
+}
+
+/// The source event a `relaying` step copies 1:1 (TS `relaySource` / `relayed`).
+#[derive(Debug)]
+struct RelaySource {
+    kind: std::mem::Discriminant<AssistantMessageEvent>,
+    capture: Option<Arc<AssistantCapture>>,
+    relayed: bool,
 }
 
 static SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
@@ -299,6 +308,45 @@ impl CaptureSlot {
 
     pub(crate) fn demand(&mut self) {
         self.demanded = true;
+    }
+
+    pub(crate) fn begin_relay(
+        &mut self,
+        source: std::mem::Discriminant<AssistantMessageEvent>,
+        capture: Option<Arc<AssistantCapture>>,
+    ) {
+        self.relay = Some(RelaySource {
+            kind: source,
+            capture,
+            relayed: false,
+        });
+    }
+
+    pub(crate) fn end_relay(&mut self) {
+        self.relay = None;
+    }
+
+    /// Only a relaying step's first push of the source's type is the copy; it relays the source's
+    /// emission-time record, and any later one records nothing.
+    pub(crate) fn relay_hint(
+        &mut self,
+        event: &AssistantMessageEvent,
+        hint: &CaptureHint,
+    ) -> Option<CaptureHint> {
+        let relay = self.relay.as_mut()?;
+        if relay.kind != std::mem::discriminant(event) {
+            return None;
+        }
+        let carried = if relay.relayed {
+            None
+        } else {
+            relay.capture.clone()
+        };
+        relay.relayed = true;
+        Some(CaptureHint {
+            carried: Some(carried),
+            ..hint.clone()
+        })
     }
 
     /// Decide capture at this push without recording anything (a relayed event that already

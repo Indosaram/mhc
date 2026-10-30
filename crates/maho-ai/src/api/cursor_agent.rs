@@ -2279,11 +2279,18 @@ fn apply_streamed_args_delta(
             entry.last_parse_len = Some(next_len);
         }
     }
-    stream.push(AssistantMessageEvent::ToolcallDelta {
-        content_index: target,
-        delta: chunk.to_owned(),
-        partial: output.clone(),
+    // `parsedThrough` counts UTF-16 code units of the buffer prefix last parsed into `arguments`.
+    let parsed_through = entry.last_parse_len.map_or(0, |len| {
+        crate::utils::assistant_capture::utf16_len(&entry.partial_json.as_deref().unwrap_or("")[..len])
     });
+    stream.push_with_hint(
+        AssistantMessageEvent::ToolcallDelta {
+            content_index: target,
+            delta: chunk.to_owned(),
+            partial: output.clone(),
+        },
+        crate::utils::assistant_capture::CaptureHint::parsed_through(parsed_through),
+    );
 }
 
 fn interaction_case_name(message: &interaction_update::Message) -> &'static str {
@@ -6615,7 +6622,7 @@ pub fn stream_with_options(
     context: &Context,
     options: Option<CursorAgentOptions>,
 ) -> AssistantMessageEventStream {
-    let stream = AssistantMessageEventStream::assistant();
+    let stream = AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();
