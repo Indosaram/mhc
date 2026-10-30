@@ -221,6 +221,7 @@ pub mod provider_default_selection;
 pub mod provider_rejected_images;
 pub mod reload_veto;
 pub mod reserved_keywords;
+pub mod session_control_actions;
 pub mod session_entry_file;
 pub mod session_extension_flags;
 pub mod session_failure_report;
