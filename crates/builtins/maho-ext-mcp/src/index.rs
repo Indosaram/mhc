@@ -52,13 +52,13 @@ pub fn register_mcp_lifecycle_with_tool_search(
                         .map(|(elapsed, count)| {
                             format!("MCP test {name} ok ({elapsed:.0}ms): {count} tools")
                         })
-                        .map_err(|error| error.to_string()),
+                        .map_err(|error| format!("MCP test {name} failed: {error}")),
                     "reconnect" => {
                         let result = service
                             .reconnect_server(name)
                             .await
                             .map(|()| format!("MCP reconnect {name} connected"))
-                            .map_err(|error| error.to_string());
+                            .map_err(|error| format!("MCP reconnect {name} failed: {error}"));
                         let snapshot = service.wire_status_snapshot().await;
                         publish_wire_status(&events, &snapshot);
                         result
@@ -179,7 +179,14 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     Ok(message) => ctx
                         .ui
                         .notify(&message, maho_ext_api::NotificationType::Info),
-                    Err(error) => ctx.ui.notify(&error, maho_ext_api::NotificationType::Error),
+                    // commands.ts: a failure can quote a resolved reference value; redact before it leaves.
+                    Err(error) => ctx.ui.notify(
+                        &maho_core::config_reference_redaction::redact_resolved_reference_values(
+                            &error,
+                            "<redacted>",
+                        ),
+                        maho_ext_api::NotificationType::Error,
+                    ),
                 }
                 Ok(())
             })

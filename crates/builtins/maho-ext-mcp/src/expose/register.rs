@@ -55,13 +55,19 @@ pub fn build_mcp_tool_definitions(
     map_mcp_catalog_names(entries).into_iter().map(|named|{
         let entry=named.entry;let label=format!("{}/{}",entry.server,entry.tool);
         let description=entry.description.clone().unwrap_or_else(||format!("MCP tool {label}"));
-        let schema=convert_json_schema_to_type_box(&entry.schema).schema;
+        let schema=super::schema_compat::convert_json_schema_to_type_box_with(&entry.schema,entry.modern).schema;
         let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
         let mut tool=ToolDefinition::new(&named.name,&description,schema,Arc::new(move |call|{
             let entry=entry.clone();let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
             Box::pin(async move {
                 call.signal.check()?;
-                let params=if call.params.is_object(){call.params}else{json!({})};
+                // invocation.ts: a modern tool's arguments validate against its exact 2020-12 schema; an
+                // unusable schema refuses the call as schema_changed.
+                if entry.modern {
+                    let validator=crate::modern::tool_schema::compile_modern_schema(&entry.schema).map_err(|error|ToolError::Message(format!("schema_changed: {}: {}",error.code.as_str(),error.message)))?;
+                    if !validator.validate(&call.params) {return Err(ToolError::Message("schema_changed: Arguments do not match the current MCP tool schema.".into()));}
+                }
+                let params=if call.params.is_object() || entry.modern {call.params}else{json!({})};
                 let operation=||async {
                 if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
                     return Err(entry.runtime.as_ref().map(|runtime|&runtime.connection).or(entry.connection.as_ref()).and_then(|connection|crate::health::mark_mcp_connection_needs_auth(connection,&error)).unwrap_or(error));
@@ -79,7 +85,11 @@ pub fn build_mcp_tool_definitions(
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;
-                let request=client.request_with_signal("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout,&call.signal);tokio::pin!(request);
+                let call_params=json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}});
+                // tool-client.ts: a modern call validates structured output against the declared output schema.
+                let request=async {if crate::modern::request::is_modern_mcp_client(&client) {
+                    crate::tool_client::call_mcp_tool_request(&client,call_params,entry.output_schema.as_ref(),entry.request_timeout,&crate::request_origin::mcp_request_options(None,Some(call.signal.clone()))).await.map(Value::Object)
+                } else {client.request_with_signal("tools/call",call_params,entry.request_timeout,&call.signal).await}};tokio::pin!(request);
                 let result=loop {tokio::select! {
                     biased;
                     notification=notifications.recv(),if notifications_open=>{

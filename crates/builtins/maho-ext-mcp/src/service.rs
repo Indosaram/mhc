@@ -96,6 +96,8 @@ pub struct McpService {
     native_tool_search_gate: McpNativeToolSearchGate,
     self_weak: Option<std::sync::Weak<tokio::sync::Mutex<McpService>>>,
     registration_inputs: Option<McpRegistrationInputs>,
+    /// Servers whose configuration references failed to resolve in the last sync (config-generation.ts).
+    pub reference_errors: BTreeMap<String, maho_ai::utils::config_reference::ConfigReferenceError>,
 }
 impl McpService {
     pub fn new(registry: Arc<HostMcpRegistry>, owner: u64) -> Self {
@@ -119,6 +121,7 @@ impl McpService {
             native_tool_search_gate: McpNativeToolSearchGate::default(),
             self_weak: None,
             registration_inputs: None,
+            reference_errors: BTreeMap::new(),
         }
     }
     pub fn set_policy_notice_event(&mut self, emit: Arc<dyn Fn(serde_json::Value) + Send + Sync>) {
@@ -163,7 +166,7 @@ impl McpService {
             home_dir: None,
             claude_config_dir: None,
         })?;
-        crate::config::merge_extension_mcp_servers(&mut config, declarations)?;
+        crate::config::merge_extension_mcp_servers_in(&mut config, declarations, Some(agent_dir))?;
         if let Some(previous) = &self.config {
             for (name, server) in &previous.servers {
                 if server.source == crate::config_schema::McpServerSource::Skill
@@ -185,17 +188,42 @@ impl McpService {
         agent_dir: &Path,
         env: &BTreeMap<String, String>,
     ) -> Result<(), McpServiceError> {
+        // Every wanted server's references resolve into this sync's connection generation; a failing server
+        // is reported and stays unconnected without aborting its siblings (config-generation.ts).
+        let mut wanted = config
+            .servers
+            .iter()
+            .filter(|(_, server)| server.state == McpServerState::Enabled)
+            .map(|(name, server)| (name.clone(), server.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let generations = crate::config_generation::resolve_wanted_mcp_generations(
+            &mut wanted,
+            Some(env),
+            Some(agent_dir),
+            Some(agent_dir),
+            &mut self.reference_errors,
+        );
+        let mut config = config;
+        for (name, error) in &self.reference_errors {
+            config.diagnostics.push(format!("MCP server '{name}' skipped: {error}"));
+        }
+        let generation_hash = |name: &str, declared: &str| {
+            crate::config_generation::mcp_connection_identity(
+                declared,
+                generations.get(name).map(|generation| generation.config_hash.as_str()),
+            )
+        };
         let existing = self.connections.keys().cloned().collect::<Vec<_>>();
         for name in existing {
             let entry = self.connections[&name].entry.lock().await;
             let retain = config.servers.get(&name).is_some_and(|server| {
                 server.state == McpServerState::Enabled
-                    && server.config_hash.as_deref() == Some(&entry.config_hash)
-                    && server.config.as_ref().is_some_and(|server_config| {
+                    && server.config_hash.as_deref().map(|declared| generation_hash(&name, declared)).as_deref() == Some(&entry.config_hash)
+                    && generations.get(&name).is_some_and(|generation| {
                         entry.key
                             == crate::sharing_policy::shared_mcp_key(
                                 &name,
-                                server_config,
+                                &generation.config,
                                 Some(env),
                                 &agent_dir.to_string_lossy(),
                                 &cwd.to_string_lossy(),
@@ -212,9 +240,11 @@ impl McpService {
             if server.state != McpServerState::Enabled || self.connections.contains_key(name) {
                 continue;
             }
-            let (Some(server_config), Some(hash)) = (&server.config, &server.config_hash) else {
+            let (Some(generation), Some(declared_hash)) = (generations.get(name), &server.config_hash) else {
                 continue;
             };
+            let server_config = &generation.config;
+            let hash = &generation_hash(name, declared_hash);
             let key = crate::sharing_policy::shared_mcp_key(
                 name,
                 server_config,
@@ -243,14 +273,40 @@ impl McpService {
                 entry.artifacts = Some(self.output_artifacts.clone());
             }
             let cache = crate::catalog_cache::read_mcp_catalog_cache(agent_dir);
-            let cached_catalog = crate::catalog_cache::get_valid_cached_server(
-                &cache,
-                name,
-                hash,
-                chrono::Utc::now().timestamp_millis() as f64,
-            );
+            // catalog-cache-adoption.ts: the keyed identity's entry, or one an earlier unkeyed build wrote for the
+            // same config and credential (migrated under the keyed identities). A server without a credential
+            // identity reads the plain keyed entry.
+            let now = chrono::Utc::now().timestamp_millis() as f64;
+            let credential_identity = server.config.as_ref().and_then(|declared| {
+                crate::auth::catalog_identity::mcp_credential_identity(declared, name, Some(agent_dir), Some(env))
+            });
+            let cached_catalog = match (&credential_identity, &server.config) {
+                // An authenticated server whose credential is unavailable reads no catalog.
+                (None, Some(_)) => None,
+                (Some(credential_identity), Some(declared)) => crate::catalog_cache_adoption::adopt_mcp_cached_server(
+                    crate::catalog_cache_adoption::McpCacheAdoption {
+                        cache: &cache,
+                        agent_dir: Some(agent_dir),
+                        server_name: name,
+                        current: crate::catalog_cache_adoption::McpCacheIdentity {
+                            config_hash: hash.clone(),
+                            credential_identity: credential_identity.clone(),
+                        },
+                        legacy: Box::new(|| {
+                            crate::catalog_cache_adoption::legacy_mcp_cache_identity(
+                                declared,
+                                name,
+                                Some(agent_dir),
+                                Some(env),
+                            )
+                        }),
+                    },
+                    now,
+                ),
+                _ => crate::catalog_cache::get_valid_cached_server(&cache, name, hash, now).cloned(),
+            };
             if let Some(cached) = &cached_catalog {
-                connection.entry.lock().await.cached_catalog = Some((*cached).clone());
+                connection.entry.lock().await.cached_catalog = Some(cached.clone());
             }
             let entry_handle = connection.entry.clone();
             let shared_handle = connection.shared.clone();
@@ -388,12 +444,26 @@ impl McpService {
                 )? {
                     continue;
                 }
-            let resolved = if decl
+            let project_skill = decl
                 .provenance
                 .as_ref()
                 .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
                     provenance.kind != "user"
-                }) {
+                });
+            // skill-server.ts: a project (untrusted) or remote skill server refuses references before any I/O;
+            // a trusted user skill's references resolve against its own declaration file.
+            let remote = decl.raw.get("type").and_then(serde_json::Value::as_str).unwrap_or(if decl.raw.get("url").is_some() { "http" } else { "stdio" }) != "stdio";
+            if (project_skill || remote)
+                && let Some(warning) = crate::config_references::reference_refusal(
+                    name,
+                    &decl.raw,
+                    &format!("Skill '{}' MCP server '{name}'", decl.skill_name),
+                )
+            {
+                warnings.push(warning);
+                continue;
+            }
+            let resolved = if project_skill {
                 crate::project_skill_policy::prepare_project_skill_server_with_notices(
                     name,
                     decl,
@@ -406,9 +476,18 @@ impl McpService {
                 )
                 .await?
             } else {
-                let raw = serde_json::from_value(decl.raw.clone())
+                let mut raw_value = decl.raw.clone();
+                let references = crate::config_references::extract_mcp_references(&mut raw_value);
+                let mut raw: crate::config_schema::ServerConfigWire = serde_json::from_value(raw_value)
                     .map_err(|error| McpConfigValidationError(error.to_string()))?;
-                crate::config::resolve_skill_mcp_server(name, raw, &decl.source_path)?
+                raw.references = references;
+                let mut servers = BTreeMap::from([(name.clone(), raw)]);
+                crate::config_references::remember_mcp_reference_origins(
+                    Some(&mut servers),
+                    &decl.source_path.to_string_lossy(),
+                );
+                let raw = servers.remove(name).expect("inserted above");
+                crate::config::resolve_skill_mcp_server(name, raw, &decl.source_path, Some(&agent_dir))?
             };
             if existing.is_some_and(|existing| existing.config_hash == resolved.config_hash) {
                 continue;

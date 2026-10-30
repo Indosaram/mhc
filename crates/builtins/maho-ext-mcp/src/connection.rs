@@ -36,6 +36,13 @@ pub struct ServerConnection {
     elicitation_ui: Mutex<Option<Arc<dyn maho_ext_api::ExtensionUi>>>,
 }
 impl ServerConnection {
+    /// The resolved configuration this connection opens transports from.
+    pub fn config(&self) -> &McpServerConfig {
+        &self.config
+    }
+    pub fn env(&self) -> Option<&BTreeMap<String, String>> {
+        self.env.as_ref()
+    }
     pub fn new(
         server: &str,
         config: McpServerConfig,
