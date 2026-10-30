@@ -53,3 +53,4 @@ pub mod working_status;
 pub mod model_change_notice;
 pub mod session_failure_info;
 pub mod unknown_command_feedback;
+pub mod composer_user_activity;
