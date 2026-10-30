@@ -157,6 +157,7 @@ pub mod session_move;
 pub mod session_record;
 pub mod session_relocation;
 pub mod session_sidecar_store;
+pub mod session_spawned_by;
 pub mod session_summary;
 pub mod session_summary_cache;
 pub mod session_summary_lru;

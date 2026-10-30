@@ -7,10 +7,11 @@ use tokio::sync::Notify;
 
 const SETTLE_ROUNDS_BEFORE_YIELD: usize = 16;
 
-/// Tracks deferred session work: a begin() guard keeps the barrier active until the last guard is
-/// dropped, and wait_for_settled polls the event queue until both the queue and the work settle.
+/// The barrier's release edge (senpi `onActiveChange`).
 pub type ActiveChange = Arc<dyn Fn() + Send + Sync>;
 
+/// Tracks deferred session work: a begin() guard keeps the barrier active until the last guard is
+/// dropped, and wait_for_settled polls the event queue until both the queue and the work settle.
 #[derive(Default)]
 pub struct SessionWorkBarrier {
     active_work_depth: AtomicUsize,
