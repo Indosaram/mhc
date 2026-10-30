@@ -145,8 +145,13 @@ pub async fn register_tui_endpoint(
         )
         .map_err(|error| error.to_string())?;
         create_daemon_directories(&paths).map_err(|error| error.to_string())?;
-        maho_rpc::host_daemon_paths::ensure_endpoint_identity(&paths, socket, EndpointKind::Tui)
-            .map_err(|error| error.to_string())
+        maho_rpc::host_daemon_paths::ensure_endpoint_identity(
+            &paths,
+            socket,
+            false,
+            Some(EndpointKind::Tui),
+        )
+        .map_err(|error| error.to_string())
     })();
     let released = lock.release().map_err(|error| error.to_string());
     written?;
