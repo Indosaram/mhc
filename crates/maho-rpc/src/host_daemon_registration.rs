@@ -207,7 +207,8 @@ pub fn legacy_host_is_live(paths: &HostDaemonPaths) -> bool {
         return false;
     };
     let recorded = record.get("processStartTime").and_then(Value::as_str);
-    crate::host_reservations::process_is_live(pid)
+    // senpi `processMatchesPidFile` defaults to `processIsRunning`: an unreaped zombie is not a live host.
+    crate::host_reservations::process_is_running(pid)
         && recorded.is_none_or(|recorded| {
             crate::host_reservations::read_process_start_time(pid).as_deref() == Some(recorded)
         })
@@ -257,6 +258,29 @@ mod tests {
         .unwrap();
         assert!(!legacy_host_is_live(&paths));
         assert_eq!(this_process_start_time(), read_process_start_time(pid));
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_legacy_host_is_not_live() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::host_daemon_paths::create_host_daemon_paths("socket", temp.path());
+        crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        rustix::process::waitid(
+            rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child)),
+            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .unwrap();
+        let pid = child.id();
+        std::fs::write(
+            &paths.legacy_pid_file,
+            serde_json::json!({"pid":pid,"processStartTime":read_process_start_time(pid)})
+                .to_string(),
+        )
+        .unwrap();
+        let live = legacy_host_is_live(&paths);
+        child.wait().unwrap();
+        assert!(!live);
     }
     #[test]
     fn registration_requires_guard_shape_and_owner_matches_live_process() {
