@@ -91,7 +91,7 @@ impl SessionWorkObligations {
         ObligationToken { id }
     }
     pub fn sync_source(&mut self, source: &str, kind: ObligationKind, active_count: f64) {
-        let key = format!("wake-source:{source}");
+        let key = format!("{WAKE_SOURCE_KEY_PREFIX}{source}");
         self.published_sources.insert(key.clone());
         let current = self.active().into_iter().find(|r| r.key == key).cloned();
         if active_count <= 0. {
@@ -119,7 +119,8 @@ impl SessionWorkObligations {
             .active()
             .into_iter()
             .filter(|r| {
-                r.key.starts_with("wake-source:") && !self.published_sources.contains(&r.key)
+                r.key.starts_with(WAKE_SOURCE_KEY_PREFIX)
+                    && !self.published_sources.contains(&r.key)
             })
             .map(|r| r.id.clone())
             .collect();

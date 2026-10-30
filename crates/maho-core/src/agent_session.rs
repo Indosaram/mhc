@@ -22145,6 +22145,49 @@ mod tests {
             .hold_input(json!({"inputId":"held-b","revision":0,"text":"second"}))
             .expect("hold");
         let (messages, ids) = session.take_held_input_messages().await.expect("prepare");
+    #[tokio::test]
+    async fn before_prompt_messages_land_before_the_prompt_and_others_append() {
+        let session = test_session();
+        let custom = |custom_type: &str| {
+            session_message_from_value(json!({"role":"custom","customType":custom_type,"content":custom_type,"display":false,"timestamp":0}))
+                .expect("custom message")
+        };
+        let ext = |custom_type: &str| maho_ext_api::CustomMessage {
+            custom_type: custom_type.into(),
+            content: vec![maho_tools::definition::ToolContent::text(custom_type)],
+            display: false,
+            details: None,
+        };
+        // Layout built by `prompt`: held inputs, then the prompt, then consumed next-turn messages.
+        let mut messages = vec![
+            custom("held"),
+            make_user_message("prompt", None),
+            custom("consumed"),
+        ];
+        session
+            .apply_before_agent_start_result(
+                &mut messages,
+                Some(maho_ext_api::BeforeAgentStartCombinedResult {
+                    before_prompt_messages: vec![ext("A")],
+                    messages: vec![ext("B")],
+                    ..Default::default()
+                }),
+                1,
+            )
+            .expect("apply");
+        let order = messages
+            .iter()
+            .map(|message| {
+                let value = session_message_to_value(message).expect("value");
+                value["customType"]
+                    .as_str()
+                    .unwrap_or_else(|| value["role"].as_str().expect("role"))
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["held", "A", "user", "consumed", "B"]);
+    }
+
         assert_eq!(ids, vec!["held-a", "held-b"]);
         assert_eq!(messages.len(), 2);
         assert_eq!(session.held_inputs().len(), 2);
