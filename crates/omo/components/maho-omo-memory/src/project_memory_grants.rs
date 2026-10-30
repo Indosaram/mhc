@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use crate::context::MemoryIdentityContext;
-use crate::policy_guard::{canonicalize_from_nearest_existing, resolve_path};
+use crate::policy_guard::resolve_path;
 
 static GRANTS: LazyLock<Mutex<BTreeMap<String, BTreeSet<PathBuf>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -39,9 +39,10 @@ pub fn is_granted_project_memory_read(context: &MemoryIdentityContext, target: &
     if roots.is_empty() {
         return false;
     }
-    let resolved_target = canonicalize_from_nearest_existing(target)
-        .or_else(|| resolve_path(target).ok())
-        .unwrap_or_else(|| target.to_path_buf());
+    // An absent or unreadable path is not a read grant; never trust a lexical fallback.
+    let Some(resolved_target) = canonical_allowing_missing(target) else {
+        return false;
+    };
 
     for root in roots {
         if let Ok(rel) = resolved_target.strip_prefix(root) {
@@ -59,6 +60,45 @@ pub fn is_granted_project_memory_read(context: &MemoryIdentityContext, target: &
         }
     }
     false
+}
+
+/// The deepest existing ancestor is resolved natively and the missing segments are appended verbatim,
+/// never through a lexical join: a `.`, `..` or empty missing segment would make the rebuilt path name
+/// another file than the one the opener resolves, so such a remainder is refused. Only "not found"
+/// counts as missing (a not-a-directory error does not), the ancestor must be a directory, and a
+/// dangling link is an entry, not a missing note.
+fn canonical_allowing_missing(target: &Path) -> Option<PathBuf> {
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = target.to_path_buf();
+    loop {
+        match std::fs::canonicalize(&current) {
+            Ok(ancestor) => {
+                if missing.is_empty() {
+                    return Some(ancestor);
+                }
+                if !ancestor.is_dir() {
+                    return None;
+                }
+                let mut result = ancestor;
+                result.extend(missing.iter().rev());
+                return Some(result);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(&current).is_ok() {
+                    return None;
+                }
+                // `file_name` is None for `..` and a root; `.` and empty segments never reach here
+                // because `Path` drops them, but they are refused if one is ever produced.
+                let name = current.file_name()?.to_os_string();
+                if name.is_empty() || name == "." || name == ".." {
+                    return None;
+                }
+                missing.push(name);
+                current = current.parent()?.to_path_buf();
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -103,5 +143,22 @@ mod tests {
 
         revoke_project_memory_reads(&own);
         assert!(!is_granted_project_memory_read(&own, &foreign_note));
+    }
+
+    #[test]
+    fn a_missing_note_under_an_existing_directory_is_granted_but_not_under_a_file() {
+        let root = tempfile::tempdir().unwrap();
+        let own = fixture_context(root.path(), "agent-own");
+        let foreign_repo = root.path().join("foreign").join("repo");
+        let note = foreign_repo.join("reference").join("note.md");
+        std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+        std::fs::write(&note, "x").unwrap();
+        grant_project_memory_read(&own, &foreign_repo);
+
+        assert!(is_granted_project_memory_read(&own, &foreign_repo.join("reference").join("missing.md")));
+        assert!(is_granted_project_memory_read(&own, &foreign_repo.join("reference").join("a").join("b.md")));
+        assert!(!is_granted_project_memory_read(&own, &note.join("missing.md")));
+        assert!(!is_granted_project_memory_read(&own, &foreign_repo.join("reference").join("..").join("system").join("x.md").join("..")));
+        revoke_project_memory_reads(&own);
     }
 }
