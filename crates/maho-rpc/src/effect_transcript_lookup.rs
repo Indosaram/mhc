@@ -64,16 +64,14 @@ fn lookup_with_chunk(
         let data = chunk;
         end = start;
         // Every chunk but the first in the file starts mid-line: keep that head for the next chunk.
+        let newline = data.iter().position(|byte| *byte == b'\n');
         let first_newline = if start == 0 {
             None
+        } else if let Some(index) = newline {
+            Some(index)
         } else {
-            match data.iter().position(|byte| *byte == b'\n') {
-                Some(index) => Some(index),
-                None => {
-                    carry = data;
-                    continue;
-                }
-            }
+            carry = data;
+            continue;
         };
         let body_start = first_newline.map_or(0, |index| index + 1);
         carry = first_newline.map_or_else(Vec::new, |index| data[..index].to_vec());

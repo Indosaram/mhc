@@ -99,7 +99,10 @@ impl HostAdmission {
             let mut state = self.state();
             state.next_listener += 1;
             let id = state.next_listener;
-            let listener: StopListener = Arc::new(move || Box::pin(listener()));
+            let listener: StopListener =
+                Arc::new(move || -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                    Box::pin(listener())
+                });
             state.listeners.push((id, listener));
             id
         };
@@ -155,7 +158,9 @@ mod tests {
                 counted.fetch_add(1, Ordering::SeqCst);
             }
         });
-        let removed = admission.on_stop(|| async { panic!("removed listener ran") });
+        let removed = admission.on_stop(|| async {
+            panic!("removed listener ran");
+        });
         removed();
         admission.stop();
         admission.stop();
