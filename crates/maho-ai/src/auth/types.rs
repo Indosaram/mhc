@@ -154,6 +154,24 @@ pub trait CredentialStore: Send + Sync {
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>>;
 
+    /// Whether `read_slot` is implemented (TS `readSlot !== undefined`).
+    fn has_read_slot(&self) -> bool {
+        false
+    }
+
+    /// Read one pooled slot already projected onto the flat credential shape, as
+    /// `project_slot(read(...), slot_name)` would. Optional: a store that keeps configuration
+    /// references in pooled keys implements it (and `has_read_slot`) so a slot-scoped request
+    /// resolves only the selected slot, never the flat key or a sibling.
+    async fn read_slot(
+        &self,
+        provider_id: &str,
+        _slot_name: &str,
+        _options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        anyhow::bail!("Credential store for {provider_id} does not implement readSlot")
+    }
+
     /// List stored credential metadata without resolving or exposing secrets.
     async fn list(
         &self,
