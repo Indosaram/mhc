@@ -257,7 +257,10 @@ impl GoalRuntime {
                     .lock()
                     .map_err(|error| ExtensionFailure::new(error.to_string()))?
                     .dispose();
-                crate::persistence::migrate_legacy_goal_file_default(&reference)
+                // `migrateLegacyGoal` imports under the goal lock, so a concurrent writer cannot
+                // overwrite a fresh import.
+                crate::store::migrate_legacy_goal(&reference)
+                    .await
                     .map_err(failure)?;
                 goal = crate::store::read_goal(&reference).map_err(failure)?;
                 state.context = Some(context.clone());
