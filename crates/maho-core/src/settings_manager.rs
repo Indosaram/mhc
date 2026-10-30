@@ -1187,6 +1187,16 @@ impl SettingsManager {
         self.get_bash_env_scrub().then(|| self.get_bash_env_passthrough())
     }
 
+    /// senpi `getBashRedactSecretsInOutput`: `tools.bash.redactSecretsInOutput === true` (default false).
+    pub fn get_bash_redact_secrets_in_output(&self) -> bool {
+        self.settings
+            .get("tools")
+            .and_then(|tools| tools.get("bash"))
+            .and_then(|bash| bash.get("redactSecretsInOutput"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
     /// The agent dir this manager was created for (the process default for storages without one).
     pub fn agent_dir(&self) -> String {
         self.storage.agent_dir().unwrap_or_else(crate::config::get_agent_dir)

@@ -12065,6 +12065,8 @@ impl AgentSession {
                 })),
                 on_chunk_async: None,
                 env: Some(crate::utils::shell::get_shell_env()),
+                redact_secrets_in_output: self
+                    .with_settings_manager(|manager| manager.get_bash_redact_secrets_in_output()),
             },
         )
         .await
