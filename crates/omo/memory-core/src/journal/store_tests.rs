@@ -20,7 +20,7 @@ fn create_journal(dir: &Path) -> TranscriptJournal {
 #[test]
 fn tolerant_snapshot_skips_torn_rows_without_creating_missing_journal() {
     let temp = tempfile::tempdir().unwrap();
-    let journal = create_journal(temp.path().join("absent" ).as_path());
+    let journal = create_journal(temp.path().join("absent").as_path());
     assert!(journal.read_entries_snapshot().unwrap().is_empty());
     assert!(!journal.transcript_path.exists());
     std::fs::create_dir_all(temp.path().join("present")).unwrap();
@@ -36,9 +36,15 @@ fn consecutive_reflection_failures_use_bounded_exponential_backoff() {
     journal.record_reflection_failure_at(0).unwrap();
     let first = journal.get_state().unwrap();
     assert_eq!(first.consecutive_failures, Some(1));
-    assert_eq!(first.next_eligible_at.as_deref(), Some("1970-01-01T00:00:05.000Z"));
+    assert_eq!(
+        first.next_eligible_at.as_deref(),
+        Some("1970-01-01T00:00:05.000Z")
+    );
     journal.record_reflection_failure_at(0).unwrap();
-    assert_eq!(journal.get_state().unwrap().next_eligible_at.as_deref(), Some("1970-01-01T00:00:10.000Z"));
+    assert_eq!(
+        journal.get_state().unwrap().next_eligible_at.as_deref(),
+        Some("1970-01-01T00:00:10.000Z")
+    );
 }
 
 #[test]
@@ -180,7 +186,13 @@ fn test_row_scan_keeps_full_row_validation_and_escaped_ids_when_state_is_recount
     .unwrap();
 
     // then
-    assert_eq!(again, AppendResult { appended: 0, skipped: 1 });
+    assert_eq!(
+        again,
+        AppendResult {
+            appended: 0,
+            skipped: 1
+        }
+    );
     assert_eq!(state.total_completed_steps, 1);
     assert!(matches!(
         journal.get_state(),
@@ -341,7 +353,11 @@ fn test_artifact_is_reclaimed_by_age_when_payload_free_lock_file_abandoned_mid_a
     let file = File::create(&lock_path).unwrap();
     drop(file);
 
-    filetime::set_file_mtime(&lock_path, filetime::FileTime::from_unix_time(1577836800, 0)).unwrap();
+    filetime::set_file_mtime(
+        &lock_path,
+        filetime::FileTime::from_unix_time(1577836800, 0),
+    )
+    .unwrap();
 
     // when
     let mut task_runs = 0;
@@ -561,7 +577,14 @@ fn qualified_zero_wait_journal_lock_skips_live_foreign_owner_without_running_tas
     let lock_path = temp_dir.path().join("state.lock");
     std::fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
     let mut task_runs = 0;
-    let result = crate::journal::lock::try_with_local_journal_lock(&lock_path, || { task_runs += 1; Ok(()) }, None);
+    let result = crate::journal::lock::try_with_local_journal_lock(
+        &lock_path,
+        || {
+            task_runs += 1;
+            Ok(())
+        },
+        None,
+    );
     assert!(matches!(result, Err(JournalError::LockTimeout(_))));
     assert_eq!(task_runs, 0);
     assert!(lock_path.exists());
@@ -571,12 +594,24 @@ fn qualified_zero_wait_journal_lock_skips_live_foreign_owner_without_running_tas
 fn zero_wait_journal_lock_reclaims_stale_owner_and_runs_task() {
     let temp_dir = tempfile::tempdir().unwrap();
     let lock_path = temp_dir.path().join("state.lock");
-    let mut child = std::process::Command::new("git").arg("--version").stdout(std::process::Stdio::null()).spawn().unwrap();
+    let mut child = std::process::Command::new("git")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     let dead_pid = child.id();
     let _ = child.wait();
     std::fs::write(&lock_path, format!("{dead_pid}\n")).unwrap();
     let mut task_runs = 0;
-    crate::journal::lock::try_with_local_journal_lock(&lock_path, || { task_runs += 1; Ok(()) }, None).unwrap();
+    crate::journal::lock::try_with_local_journal_lock(
+        &lock_path,
+        || {
+            task_runs += 1;
+            Ok(())
+        },
+        None,
+    )
+    .unwrap();
     assert_eq!(task_runs, 1);
     assert!(!lock_path.exists());
 }
@@ -587,7 +622,14 @@ fn zero_wait_journal_lock_skips_live_foreign_owner_without_running_task() {
     let lock_path = temp_dir.path().join("state.lock");
     std::fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
     let mut task_runs = 0;
-    let result = crate::journal::lock::try_with_local_journal_lock(&lock_path, || { task_runs += 1; Ok(()) }, None);
+    let result = crate::journal::lock::try_with_local_journal_lock(
+        &lock_path,
+        || {
+            task_runs += 1;
+            Ok(())
+        },
+        None,
+    );
     assert!(matches!(result, Err(JournalError::LockTimeout(_))));
     assert_eq!(task_runs, 0);
     assert!(lock_path.exists());
@@ -603,7 +645,11 @@ fn test_sync_skips_only_the_upstream_skippable_error_kinds() {
     ] {
         assert!(is_skippable_sync_error(kind), "{kind:?} must be skipped");
     }
-    for kind in [std::io::ErrorKind::Other, std::io::ErrorKind::StorageFull, std::io::ErrorKind::Interrupted] {
+    for kind in [
+        std::io::ErrorKind::Other,
+        std::io::ErrorKind::StorageFull,
+        std::io::ErrorKind::Interrupted,
+    ] {
         assert!(!is_skippable_sync_error(kind), "{kind:?} must surface");
     }
 }
@@ -613,4 +659,24 @@ fn test_sync_of_a_missing_file_and_an_existing_directory_succeeds() {
     let temp_dir = tempfile::tempdir().unwrap();
     assert!(sync_journal_file(&temp_dir.path().join("absent.jsonl")).is_ok());
     assert!(sync_journal_directory(temp_dir.path()).is_ok());
+}
+
+#[test]
+fn test_append_and_reconcile_refuse_up_front_when_already_cancelled() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp_dir.path());
+    let is_aborted = || true;
+    let message = TranscriptProjection::Assistant {
+        message_id: "assistant-1".to_string(),
+        text_blocks: vec!["one".to_string()],
+        reasoning_blocks: Vec::new(),
+        tool_calls: Vec::new(),
+    };
+
+    let reconciled = journal.reconcile_with_cancel(&[message], Some(&is_aborted));
+    let appended = journal.append_with_cancel(&[], Some(&is_aborted));
+
+    assert!(matches!(reconciled, Err(JournalError::Aborted)));
+    assert!(matches!(appended, Err(JournalError::Aborted)));
+    assert_eq!(journal.lock_path.exists(), false);
 }
