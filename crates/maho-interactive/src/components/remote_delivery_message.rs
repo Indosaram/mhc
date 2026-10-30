@@ -184,7 +184,7 @@ pub fn built_in_message_renderer(custom_type: &str) -> Option<MessageRenderer> {
     (custom_type == SESSION_CONTROL_DELIVERY_TYPE).then(|| {
         Rc::new(
             |message: &Value, _expanded: bool, _pad: usize, theme: &Theme| {
-                Ok(Some(render_remote_delivery(message, theme)))
+                Ok::<_, String>(Some(render_remote_delivery(message, theme)))
             },
         ) as MessageRenderer
     })
