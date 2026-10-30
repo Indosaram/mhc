@@ -285,31 +285,57 @@ pub async fn reset_continuation_streak(
     })
     .await
 }
+/// Records an automatic-continuation stop once per active snapshot (`recordGoalContinuationStopped`).
+/// A guard `blocked_reason` blocks the goal and clears its continuation counters; `None` only closes
+/// elapsed accounting. Returns the current goal and whether this call recorded the stop.
 pub async fn record_goal_continuation_stopped(
     reference: &GoalStoreRef,
     expected: &Goal,
     at: u64,
-) -> Result<Option<Goal>, GoalError> {
+    blocked_reason: Option<&str>,
+) -> Result<(Option<Goal>, bool), GoalError> {
     with_goal_file_lock(reference, |held| async move {
-        let Some(mut goal) = read_goal_file(reference)? else {
-            return Ok(None);
+        let current = read_goal_file(reference)?;
+        let Some(goal) = current.as_ref().filter(|goal| {
+            goal.id == expected.id
+                && goal.status == GoalStatus::Active
+                && !(blocked_reason.is_none() && goal.continuation_stopped_at.is_some())
+                && goal.last_continuation_signature == expected.last_continuation_signature
+                && goal.consecutive_continuations == expected.consecutive_continuations
+        }) else {
+            return Ok((current, false));
         };
-        if goal.id != expected.id
-            || goal.status != GoalStatus::Active
-            || goal.continuation_stopped_at.is_some()
-            || goal.last_continuation_signature != expected.last_continuation_signature
-            || goal.consecutive_continuations != expected.consecutive_continuations
-        {
-            return Ok(None);
+        let updated_at = goal.updated_at.saturating_add(1).max(at / 1000);
+        let mut next = match blocked_reason {
+            None => {
+                let mut next = goal.clone();
+                next.updated_at = updated_at;
+                if let Some(started) = next.last_started_at {
+                    next.time_used_seconds += (at / 1000).saturating_sub(started) as f64;
+                }
+                next
+            }
+            Some(reason) => {
+                let mut next = transition_goal_status(
+                    goal,
+                    GoalStatus::Blocked,
+                    GoalUpdateSource::Model,
+                    Some(reason),
+                    updated_at,
+                )?;
+                next.consecutive_continuations = Some(0);
+                next.unattended_continuations = Some(0);
+                next.last_continuation_signature = None;
+                next
+            }
+        };
+        next.last_started_at = None;
+        next.continuation_stopped_at = Some(at);
+        held.write(Some(&next))?;
+        if blocked_reason.is_some() {
+            crate::lifecycle_facts::notify_transition(reference, Some(&next));
         }
-        if let Some(started) = goal.last_started_at {
-            goal.time_used_seconds += (at / 1000).saturating_sub(started) as f64;
-        }
-        goal.updated_at = goal.updated_at.saturating_add(1).max(at / 1000);
-        goal.last_started_at = None;
-        goal.continuation_stopped_at = Some(at);
-        held.write(Some(&goal))?;
-        Ok(Some(goal))
+        Ok((Some(next), true))
     })
     .await
 }
@@ -636,27 +662,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reference = reference(&dir);
         let goal = create_goal(&reference, "work", None, 1).await.unwrap();
-        let stopped = record_goal_continuation_stopped(&reference, &goal, 5000)
+        let (stopped, recorded) = record_goal_continuation_stopped(&reference, &goal, 5000, None)
             .await
-            .unwrap()
             .unwrap();
+        assert!(recorded);
+        let stopped = stopped.unwrap();
         assert_eq!(stopped.continuation_stopped_at, Some(5000));
         assert_eq!(stopped.last_started_at, None);
         assert!(
-            record_goal_continuation_stopped(&reference, &stopped, 6000)
+            !record_goal_continuation_stopped(&reference, &stopped, 6000, None)
                 .await
                 .unwrap()
-                .is_none()
+                .1
         );
         let delivered = record_continuation_delivered(&reference, "next", Some(&goal.id), true)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(delivered.continuation_stopped_at, None);
-        let _stopped = record_goal_continuation_stopped(&reference, &delivered, 7000)
-            .await
-            .unwrap()
-            .unwrap();
+        assert!(
+            record_goal_continuation_stopped(&reference, &delivered, 7000, None)
+                .await
+                .unwrap()
+                .1
+        );
         let resumed = update_goal(
             &reference,
             &GoalUpdate {
