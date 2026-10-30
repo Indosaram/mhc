@@ -389,10 +389,14 @@ async fn legacy_keeps_the_public_bytes_recorded_before_capture() {
     );
     let expected: Value =
         serde_json::from_str(include_str!("relay_legacy_public_bytes.json")).expect("snapshot");
-    assert_eq!(
-        public_bytes(&public_events(&drain_records(&wrapped).await)),
-        expected
-    );
+    // The TS wrapper pushes `partial: this.message`, one object it keeps mutating; Rust partials
+    // are push-time copies, so each is aliased to that object's final state, the last partial.
+    let mut events = public_events(&drain_records(&wrapped).await);
+    let last_partial = crate::utils::event_stream::extract_message(&events[events.len() - 2].value);
+    for event in &mut events {
+        crate::utils::capture_test_records::alias_partial(&mut event.value, &last_partial);
+    }
+    assert_eq!(public_bytes(&events), expected);
 }
 
 #[tokio::test]

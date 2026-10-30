@@ -463,6 +463,16 @@ impl AliasedTurn {
     }
 }
 
+/// Points a non-terminal event's partial at `output` (TS events alias one mutable message).
+pub(crate) fn alias_partial(event: &mut AssistantMessageEvent, output: &AssistantMessage) {
+    if !matches!(
+        event,
+        AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+    ) {
+        *event = alias(event.clone(), output);
+    }
+}
+
 fn alias(event: AssistantMessageEvent, output: &AssistantMessage) -> AssistantMessageEvent {
     let mut event = event;
     match &mut event {
