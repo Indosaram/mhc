@@ -1,6 +1,6 @@
 // Port of senpi todotools/native-todo-mirror.ts (MIT).
-use serde_json::Value;
 use crate::todo_types::{TodoItem, TodoPhase, TodoStatus};
+use serde_json::Value;
 
 pub fn phases_from_cursor_todos(todos: &Value) -> Option<Vec<TodoPhase>> {
     let items = todos.as_array()?;
@@ -15,7 +15,14 @@ pub fn phases_from_cursor_todos(todos: &Value) -> Option<Vec<TodoPhase>> {
         };
         Some(TodoItem { content: content.into(), status })
     }).collect();
-    Some(if tasks.is_empty() { vec![] } else { vec![TodoPhase { name: "Tasks".into(), tasks }] })
+    Some(if tasks.is_empty() {
+        vec![]
+    } else {
+        vec![TodoPhase {
+            name: "Tasks".into(),
+            tasks,
+        }]
+    })
 }
 
 #[cfg(test)]
@@ -25,7 +32,14 @@ mod tests {
     #[test]
     fn native_content_uses_ecmascript_trim() {
         let phases=phases_from_cursor_todos(&json!([{"content":"\u{feff}Task\u{feff}"},{"content":"\u{0085}"},{"content":"\u{feff}"}])).unwrap();
-        assert_eq!(phases[0].tasks.iter().map(|task|task.content.as_str()).collect::<Vec<_>>(),["Task","\u{0085}"]);
+        assert_eq!(
+            phases[0]
+                .tasks
+                .iter()
+                .map(|task| task.content.as_str())
+                .collect::<Vec<_>>(),
+            ["Task", "\u{0085}"]
+        );
     }
     #[test]
     fn absent_payload_differs_from_empty_list() {
@@ -36,17 +50,32 @@ mod tests {
     fn cursor_tasks_keep_status_and_drop_blank_items() {
         let input = json!([{"content":"build","status":"completed"},
             {"content":"link","status":"in_progress"}, {"content":"  ","status":"pending"}]);
-        assert_eq!(phases_from_cursor_todos(&input), Some(vec![TodoPhase {
-            name:"Tasks".into(), tasks:vec![
-                TodoItem {content:"build".into(),status:TodoStatus::Completed},
-                TodoItem {content:"link".into(),status:TodoStatus::InProgress},
-            ],
-        }]));
+        assert_eq!(
+            phases_from_cursor_todos(&input),
+            Some(vec![TodoPhase {
+                name: "Tasks".into(),
+                tasks: vec![
+                    TodoItem {
+                        content: "build".into(),
+                        status: TodoStatus::Completed
+                    },
+                    TodoItem {
+                        content: "link".into(),
+                        status: TodoStatus::InProgress
+                    },
+                ],
+            }])
+        );
     }
     #[test]
     fn malformed_items_are_omitted_and_unknown_status_is_pending() {
         let input = json!([null, 1, {}, {"content":4}, {"content":" valid ","status":"unknown"}]);
-        assert_eq!(phases_from_cursor_todos(&input).unwrap()[0].tasks,
-            vec![TodoItem {content:"valid".into(),status:TodoStatus::Pending}]);
+        assert_eq!(
+            phases_from_cursor_todos(&input).unwrap()[0].tasks,
+            vec![TodoItem {
+                content: "valid".into(),
+                status: TodoStatus::Pending
+            }]
+        );
     }
 }
