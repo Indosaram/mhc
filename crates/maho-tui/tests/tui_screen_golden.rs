@@ -559,3 +559,109 @@ mod sgr_row_clear {
         assert!(!cell_italic(&terminal.out, 20, 6, 1, 0));
     }
 }
+
+/// Port of senpi `sgr-coalesce.test.ts`. The cell comparison uses the vt100-backed
+/// VirtualTerminal snapshot (char, fg, bg, bold/dim/italic/underline/inverse).
+mod sgr_coalesce {
+    use super::*;
+    use maho_tui::utils::coalesce_adjacent_sgr;
+
+    const SEMANTIC_CORPUS: [&str; 30] = [
+        "\x1b[31m\x1b[1mred bold\x1b[0m plain",
+        "\x1b[1m\x1b[31mred bold reversed order\x1b[22m\x1b[39m",
+        "\x1b[38;5;196m\x1b[48;5;16m256 color\x1b[0m",
+        "\x1b[38;2;10;20;30m\x1b[48;2;240;230;220mtruecolor\x1b[0m",
+        "\x1b[4m\x1b[24munderline reset before text",
+        "\x1b[3mitalic \x1b[23mplain",
+        "\x1b[1;31m\x1b[44mnested colors\x1b[0m",
+        "\x1b[31mred\x1b[39m default \x1b[32mgreen\x1b[0m",
+        "\x1b[48;5;22mbackground\x1b[49m default",
+        "\x1b[2m\x1b[22mdim reset",
+        "\x1b[7m\x1b[27minverse reset",
+        "\x1b[9m\x1b[29mstrike reset",
+        "\x1b[5m\x1b[25mblink reset",
+        "\x1b[8m\x1b[28mhidden reset",
+        "\x1b[0m\x1b[31mreset then red",
+        "\x1b[m\x1b[32mempty reset then green",
+        "\x1b[38;5;240mgray \x1b[38;5;241mgray2\x1b[0m",
+        "\x1b[38;2;1;2;3mfg \x1b[48;2;4;5;6mbg\x1b[0m",
+        "\x1b[1m\x1b[3m\x1b[4mmany attrs\x1b[0m",
+        "plain \x1b[31mred\x1b[0m tail",
+        "\x1b]8;;https://example.com\x07\x1b[34mlink\x1b[0m\x1b]8;;\x07",
+        "\x1b]8;;https://example.com\x1b\\\x1b[34mlink st\x1b[0m\x1b]8;;\x1b\\",
+        "\x1b]8;id=1;https://example.com\x07\x1b[1mparam link\x1b[0m\x1b]8;;\x07",
+        "\x1b[31m\x1b]8;;https://example.com\x07mixed\x1b]8;;\x07\x1b[0m",
+        "terminator \x1b]8;;https://example.com\x07x\x1b]8;;\x07 \x1b[32mgreen\x1b[0m",
+        "\x1b[31mred\x1b[0m\x1b[2K\x1b[0m\x1b]8;;\x07clear guard",
+        "\x1b[31mred\x1b[39m\x1b[0mreset-heavy",
+        "\x1b[1mwide 漢字\x1b[22m tail",
+        "\x1b[38;5;33memoji 😀\x1b[0m tail",
+        "\x1b[31m\x1b[44mcombo \x1b[49mfg-only\x1b[39m",
+    ];
+
+    fn render_line(line: &str) -> Vec<maho_test_support::vterm::Cell> {
+        let mut vt = VirtualTerminal::new(96, 3);
+        vt.write(&format!("{line}\x1b[0m"));
+        vt.snapshot().cells.swap_remove(0)
+    }
+
+    #[test]
+    fn merges_immediately_adjacent_sgr_sequences_exactly() {
+        for (input, expected) in [
+            ("\x1b[31m\x1b[1mred", "\x1b[31;1mred"),
+            ("a\x1b[38;5;196m\x1b[48;5;16mb", "a\x1b[38;5;196;48;5;16mb"),
+            (
+                "\x1b[38;2;1;2;3m\x1b[48;2;4;5;6mtrue",
+                "\x1b[38;2;1;2;3;48;2;4;5;6mtrue",
+            ),
+            ("\x1b[m\x1b[31mempty-reset", "\x1b[0;31mempty-reset"),
+            ("\x1b[31mtext\x1b[1m", "\x1b[31mtext\x1b[1m"),
+            ("\x1b[2K\x1b[0m\x1b]8;;\x07", "\x1b[2K\x1b[0m\x1b]8;;\x07"),
+        ] {
+            assert_eq!(coalesce_adjacent_sgr(input), expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn is_a_virtual_terminal_semantic_no_op_for_the_sgr_osc_corpus() {
+        for line in SEMANTIC_CORPUS {
+            assert_eq!(
+                render_line(&coalesce_adjacent_sgr(line)),
+                render_line(line),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_idempotent() {
+        for line in SEMANTIC_CORPUS {
+            let once = coalesce_adjacent_sgr(line);
+            assert_eq!(coalesce_adjacent_sgr(&once), once, "{line:?}");
+        }
+    }
+
+    /// senpi's `bench/sgr-coalesce-report.json` has `"adopted": false` at the pin, so the
+    /// renderer must emit the original adjacent SGR bytes.
+    #[test]
+    fn emit_path_wiring_matches_report_adopted() {
+        struct Probe;
+        impl Component for Probe {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec!["\x1b[31m\x1b[1mcoalesce-probe".to_string()]
+            }
+        }
+        let mut terminal = RecordingTerminal {
+            columns: 60,
+            rows: 4,
+            out: String::new(),
+        };
+        let mut screen = TuiMainScreen::new();
+        screen.base.set_mux_detector(Box::new(|| false));
+        screen.base.add_child(Rc::new(RefCell::new(Probe)));
+        screen.base.reset_forced_render_state();
+        screen.base.do_render(&mut terminal);
+        assert!(terminal.out.contains("\x1b[31m\x1b[1mcoalesce-probe"));
+        assert!(!terminal.out.contains("\x1b[31;1mcoalesce-probe"));
+    }
+}
