@@ -665,3 +665,336 @@ mod sgr_coalesce {
         assert!(!terminal.out.contains("\x1b[31;1mcoalesce-probe"));
     }
 }
+
+/// Port of senpi `cursor-write-hygiene.test.ts`. senpi's `start()`/`stop()` are the
+/// `prepare_start`/`after_terminal_start` and `begin_stop`/`finish_stop_output`/`reset_for_stop`
+/// halves the hosts call; `waitForRender` is an explicit `do_render`.
+mod cursor_write_hygiene {
+    use super::*;
+    use maho_tui::components::input::{Input, InputOptions};
+    use maho_tui::tui::CURSOR_MARKER;
+
+    const FRAME_BEGIN: &str = "\x1b[?2026h";
+    const FRAME_END: &str = "\x1b[?2026l";
+    const HIDE_CURSOR: &str = "\x1b[?25l";
+    const SHOW_CURSOR: &str = "\x1b[?25h";
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Write,
+        HideCursor,
+        ShowCursor,
+    }
+
+    struct ChunkTerminal {
+        chunks: Vec<(Kind, String)>,
+    }
+
+    impl ChunkTerminal {
+        fn new() -> Self {
+            Self { chunks: Vec::new() }
+        }
+
+        fn output(&self) -> String {
+            self.chunks.iter().map(|(_, data)| data.as_str()).collect()
+        }
+
+        fn screen(&self) -> VirtualTerminal {
+            let mut vt = VirtualTerminal::new(40, 6);
+            vt.start();
+            vt.write(&self.output());
+            vt
+        }
+    }
+
+    impl Terminal for ChunkTerminal {
+        fn start(&mut self, _on_input: InputHandler, _on_resize: ResizeHandler) {}
+        fn stop(&mut self) -> Result<(), TerminalError> {
+            Ok(())
+        }
+        fn drain_input(&mut self, _max_ms: u64, _idle_ms: u64) {}
+        fn write(&mut self, data: &str) {
+            self.chunks.push((Kind::Write, data.to_string()));
+        }
+        fn columns(&self) -> u16 {
+            40
+        }
+        fn rows(&self) -> u16 {
+            6
+        }
+        fn kitty_protocol_active(&self) -> bool {
+            true
+        }
+        fn move_by(&mut self, lines: i64) {
+            if lines > 0 {
+                self.write(&format!("\x1b[{lines}B"));
+            } else if lines < 0 {
+                self.write(&format!("\x1b[{}A", -lines));
+            }
+        }
+        fn hide_cursor(&mut self) {
+            self.chunks
+                .push((Kind::HideCursor, HIDE_CURSOR.to_string()));
+        }
+        fn show_cursor(&mut self) {
+            self.chunks
+                .push((Kind::ShowCursor, SHOW_CURSOR.to_string()));
+        }
+        fn clear_line(&mut self) {
+            self.write("\x1b[K");
+        }
+        fn clear_from_cursor(&mut self) {
+            self.write("\x1b[J");
+        }
+        fn clear_screen(&mut self) {
+            self.write("\x1b[2J\x1b[H");
+        }
+        fn set_title(&mut self, title: &str) {
+            self.write(&format!("\x1b]0;{title}\x07"));
+        }
+        fn set_progress(&mut self, _active: bool) {}
+    }
+
+    /// A focusable component whose line is `line(marker)`.
+    struct MarkerLine {
+        focused: bool,
+        frame: usize,
+        line: fn(usize, &str) -> String,
+    }
+
+    impl Component for MarkerLine {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            let marker = if self.focused { CURSOR_MARKER } else { "" };
+            vec![(self.line)(self.frame, marker)]
+        }
+        fn handle_input(&mut self, _data: &str) {}
+        fn has_input_handler(&self) -> bool {
+            true
+        }
+        fn focusable_get(&self) -> Option<bool> {
+            Some(self.focused)
+        }
+        fn focusable_set(&mut self, focused: bool) {
+            self.focused = focused;
+        }
+    }
+
+    struct Harness {
+        screen: TuiMainScreen,
+        terminal: ChunkTerminal,
+    }
+
+    impl Harness {
+        fn new(show_hardware_cursor: bool, component: Rc<RefCell<dyn Component>>) -> Self {
+            let mut screen = TuiMainScreen::new();
+            screen.base.set_mux_detector(Box::new(|| false));
+            screen.base.set_show_hardware_cursor(show_hardware_cursor);
+            screen.base.add_child(Rc::clone(&component));
+            screen.base.set_focus(Some(component));
+            let mut harness = Self {
+                screen,
+                terminal: ChunkTerminal::new(),
+            };
+            harness.start();
+            harness
+        }
+
+        fn start(&mut self) {
+            self.screen.base.prepare_start();
+            self.screen.base.after_terminal_start(&mut self.terminal);
+            self.render();
+        }
+
+        fn render(&mut self) {
+            self.screen.base.do_render(&mut self.terminal);
+        }
+
+        fn stop(&mut self) {
+            self.screen.base.begin_stop(&mut self.terminal);
+            self.screen.before_terminal_stop(&mut self.terminal);
+            self.screen
+                .base
+                .finish_stop_output(&mut self.terminal, false);
+            self.screen.base.reset_for_stop();
+        }
+    }
+
+    fn cursor_component() -> Rc<RefCell<MarkerLine>> {
+        Rc::new(RefCell::new(MarkerLine {
+            focused: false,
+            frame: 0,
+            line: |frame, marker| format!("frame {frame} {marker}"),
+        }))
+    }
+
+    fn start_hidden_cursor_tui() -> (Harness, Rc<RefCell<MarkerLine>>) {
+        let component = cursor_component();
+        let harness = Harness::new(false, component.clone());
+        (harness, component)
+    }
+
+    fn render_next_frame(harness: &mut Harness, component: &Rc<RefCell<MarkerLine>>) {
+        component.borrow_mut().frame += 1;
+        harness.render();
+    }
+
+    fn count(text: &str, needle: &str) -> usize {
+        text.matches(needle).count()
+    }
+
+    fn assert_atomic_frame_writes(chunks: &[(Kind, String)]) {
+        let mut after_frame_end = false;
+        for (kind, data) in chunks {
+            if data.contains(FRAME_BEGIN) {
+                assert_eq!(*kind, Kind::Write);
+                assert!(data.starts_with(FRAME_BEGIN));
+                assert_eq!(count(data, FRAME_BEGIN), count(data, FRAME_END));
+                assert!(data.ends_with(FRAME_END));
+                after_frame_end = false;
+            }
+            assert!(
+                !after_frame_end,
+                "chunk {data:?} was written outside a synchronized frame"
+            );
+            if data.contains(FRAME_END) {
+                after_frame_end = true;
+            }
+        }
+    }
+
+    fn input_with(value: &str, key: &str) -> Rc<RefCell<dyn Component>> {
+        let mut input = Input::new(InputOptions::default());
+        input.set_value(value);
+        input.handle_input(key);
+        Rc::new(RefCell::new(input))
+    }
+
+    fn first_row(harness: &Harness) -> String {
+        harness.terminal.screen().viewport()[0]
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn omits_repeated_hidden_cursor_bytes_after_the_first_hidden_frame() {
+        let (mut harness, component) = start_hidden_cursor_tui();
+        render_next_frame(&mut harness, &component);
+        let after_frame_one = count(&harness.terminal.output(), HIDE_CURSOR);
+        render_next_frame(&mut harness, &component);
+        render_next_frame(&mut harness, &component);
+        assert_eq!(
+            count(&harness.terminal.output(), HIDE_CURSOR),
+            after_frame_one
+        );
+    }
+
+    #[test]
+    fn keeps_cursor_restoration_inside_each_synchronized_frame() {
+        let (mut harness, component) = start_hidden_cursor_tui();
+        render_next_frame(&mut harness, &component);
+        render_next_frame(&mut harness, &component);
+        assert_atomic_frame_writes(&harness.terminal.chunks);
+    }
+
+    #[test]
+    fn emits_show_cursor_bytes_exactly_once_when_hardware_cursor_visibility_is_enabled() {
+        let (mut harness, component) = start_hidden_cursor_tui();
+        render_next_frame(&mut harness, &component);
+        harness.screen.base.set_show_hardware_cursor(true);
+        harness.render();
+        render_next_frame(&mut harness, &component);
+        assert_eq!(count(&harness.terminal.output(), SHOW_CURSOR), 1);
+    }
+
+    #[test]
+    fn removes_a_focused_input_fake_cursor_when_the_hardware_cursor_is_visible() {
+        let harness = Harness::new(true, input_with("한글", "\x05"));
+        assert!(!harness.terminal.output().contains("\x1b[7m"));
+        assert_eq!(harness.terminal.screen().cursor_position().x, 6);
+        assert_eq!(first_row(&harness), "> 한글");
+    }
+
+    #[test]
+    fn preserves_cursor_content_and_surrounding_styles_when_removing_fake_cursor_styling() {
+        let component = Rc::new(RefCell::new(MarkerLine {
+            focused: false,
+            frame: 0,
+            line: |_, marker| format!("\x1b[1;31mA{marker}\x1b[7m한\x1b[27mB\x1b[0m"),
+        }));
+        let harness = Harness::new(true, component);
+        let rendered = harness.terminal.output();
+        assert!(rendered.contains("\x1b[1;31mA한B\x1b[0m"));
+        assert!(!rendered.contains("\x1b[7m") && !rendered.contains("\x1b[27m"));
+        assert_eq!(first_row(&harness), "A한B");
+    }
+
+    #[test]
+    fn removes_fake_cursor_styling_terminated_by_a_full_sgr_reset() {
+        let component = Rc::new(RefCell::new(MarkerLine {
+            focused: false,
+            frame: 0,
+            line: |_, marker| format!("\x1b[1;31mA{marker}\x1b[7mX\x1b[0mB"),
+        }));
+        let harness = Harness::new(true, component);
+        assert_eq!(first_row(&harness), "AXB");
+        let cells = harness.terminal.screen().snapshot().cells.swap_remove(0);
+        let cursor = &cells[1];
+        assert_eq!(cursor.ch, "X");
+        assert!(!cursor.attrs.iter().any(|attr| attr == "inverse"));
+        assert!(cursor.attrs.iter().any(|attr| attr == "bold"));
+        assert_ne!(cursor.fg, "default");
+        let trailing = &cells[2];
+        assert_eq!(trailing.ch, "B");
+        assert!(trailing.attrs.is_empty());
+        assert_eq!(trailing.fg, "default");
+    }
+
+    #[test]
+    fn keeps_visible_to_hidden_cursor_mode_toggles_inside_the_replacement_frame() {
+        let mut harness = Harness::new(true, input_with("한글", "\x05"));
+        let before_toggle = harness.terminal.chunks.len();
+        harness.screen.base.set_show_hardware_cursor(false);
+        harness.render();
+
+        let toggle = &harness.terminal.chunks[before_toggle..];
+        assert_eq!(
+            toggle.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            [Kind::Write]
+        );
+        let frame = &toggle[0].1;
+        assert!(frame.contains(FRAME_BEGIN));
+        assert!(frame.contains("\x1b[7m"));
+        let hide = frame.find(HIDE_CURSOR).expect("hide cursor in the frame");
+        assert!(hide < frame.find(FRAME_END).expect("frame end"));
+    }
+
+    #[test]
+    fn does_not_erase_content_under_a_visible_hardware_cursor_when_stopping() {
+        let mut harness = Harness::new(true, input_with("abc", "\x1b[C"));
+        let before_stop = first_row(&harness);
+        harness.stop();
+        assert_eq!(before_stop, "> abc");
+        assert_eq!(first_row(&harness), "> abc");
+    }
+
+    #[test]
+    fn does_not_erase_content_when_a_hide_cursor_replacement_frame_is_still_pending() {
+        let mut harness = Harness::new(true, input_with("abc", "\x1b[C"));
+        harness.screen.base.set_show_hardware_cursor(false);
+        harness.stop();
+        assert_eq!(first_row(&harness), "> abc");
+    }
+
+    #[test]
+    fn reasserts_hidden_cursor_visibility_on_the_first_frame_after_restart() {
+        let (mut harness, component) = start_hidden_cursor_tui();
+        render_next_frame(&mut harness, &component);
+        harness.stop();
+        let before_restart = count(&harness.terminal.output(), HIDE_CURSOR);
+        harness.start();
+        assert_eq!(
+            count(&harness.terminal.output(), HIDE_CURSOR),
+            before_restart + 1
+        );
+    }
+}
