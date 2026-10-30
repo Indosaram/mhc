@@ -48,6 +48,9 @@ struct Inner {
     holder: Option<LeaseRecord>,
     timer: Option<tokio::task::JoinHandle<()>>,
     on_tick: Option<Box<dyn FnMut() + Send>>,
+    /// Bumped by every `set_on_tick`, so a tick restores the callback it took out only when no
+    /// setter ran meanwhile (a `set_on_tick(None)` during the tick must stay cleared).
+    on_tick_generation: u64,
     in_flight: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -70,7 +73,9 @@ impl LeaseKeeper {
     }
 
     pub fn set_on_tick(&self, on_tick: Option<Box<dyn FnMut() + Send>>) {
-        self.lock().on_tick = on_tick;
+        let mut inner = self.lock();
+        inner.on_tick = on_tick;
+        inner.on_tick_generation += 1;
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -157,11 +162,14 @@ impl LeaseKeeper {
             return Ok(());
         }
         // Run the callback with the mutex released: it may call back into the keeper.
-        let on_tick = self.lock().on_tick.take();
+        let (on_tick, generation) = {
+            let mut inner = self.lock();
+            (inner.on_tick.take(), inner.on_tick_generation)
+        };
         if let Some(mut on_tick) = on_tick {
             on_tick();
             let mut inner = self.lock();
-            if inner.on_tick.is_none() {
+            if inner.on_tick_generation == generation {
                 inner.on_tick = Some(on_tick);
             }
         }
@@ -256,6 +264,7 @@ pub fn create_lease_keeper(options: LeaseKeeperOptions) -> LeaseKeeper {
             holder: None,
             timer: None,
             on_tick: None,
+            on_tick_generation: 0,
             in_flight: Arc::new(tokio::sync::Mutex::new(())),
         })),
     }
@@ -503,6 +512,29 @@ mod tests {
         assert_eq!(errors.load(Ordering::SeqCst), 2);
         assert!(tick_unlocked.load(Ordering::SeqCst));
         assert!(error_unlocked.load(Ordering::SeqCst));
+        assert_eq!(harness.keeper.state(), LeaseKeeperState::Waiting);
+        harness.keeper.stop();
+        *slot.lock().unwrap() = None;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn keeps_on_tick_cleared_when_it_is_cleared_during_a_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        write_foreign_lease(dir.path());
+        let harness = keeper_for(dir.path(), Arc::new(AtomicBool::new(true)));
+        let slot: Arc<Mutex<Option<LeaseKeeper>>> =
+            Arc::new(Mutex::new(Some(harness.keeper.clone())));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (clear_slot, count) = (slot.clone(), calls.clone());
+        harness.keeper.set_on_tick(Some(Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            let keeper = clear_slot.lock().unwrap().clone().unwrap();
+            keeper.set_on_tick(None);
+        })));
+        harness.keeper.start(holder());
+        ticks(&harness, 3).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(harness.keeper.lock().on_tick.is_none());
         assert_eq!(harness.keeper.state(), LeaseKeeperState::Waiting);
         harness.keeper.stop();
         *slot.lock().unwrap() = None;

@@ -4,7 +4,9 @@
 //! Native lease shape: `manifest_lease` records `{pid, startedAtMs}` without the upstream token or
 //! boot identity, so a lease is stale when it is unparseable or its pid is dead; a recycled pid
 //! (upstream `reused`) is a process that `read_process_start_ms` says started after the recorded
-//! acquisition instant (upstream's one-sided v1 rule).
+//! acquisition instant (upstream's one-sided v1 rule). Without a `read_process_start_ms` option
+//! the sweep reads start instants through `manifest_lease::read_process_start_ms`, as upstream
+//! defaults to `defaultReadProcessStartMs`.
 //! A stale lease is removed only through `manifest_lease::reclaim_inspected`, the same locked,
 //! inspected-bytes reclaim an acquire uses, so a lease another process published while the sweep
 //! probed is never deleted. A `<lease>.lock` goes only once `reclaim_lock_state` calls it stale.
@@ -21,6 +23,14 @@ const START_TOLERANCE_MS: f64 = 3_000.0;
 
 pub type AliveProbe<'a> = &'a dyn Fn(f64) -> bool;
 pub type StartProbe<'a> = &'a dyn Fn(f64) -> Option<f64>;
+
+/// `readProcessStartMs ?? defaultReadProcessStartMs`.
+fn read_start(options: &SweepOptions<'_>, pid: f64) -> Option<f64> {
+    match options.read_process_start_ms {
+        Some(probe) => probe(pid),
+        None => crate::manifest_lease::read_process_start_ms(pid),
+    }
+}
 
 pub struct SweepOptions<'a> {
     pub self_pid: f64,
@@ -61,12 +71,9 @@ fn lease_is_stale(raw: &[u8], options: &SweepOptions<'_>) -> bool {
     if !alive {
         return true;
     }
-    let Some(read_start) = options.read_process_start_ms else {
-        return false;
-    };
     // Upstream's v1 rule (`classifyLease`): the native `startedAtMs` is when the lease was taken, so
     // its holder started no later than that; only a process that started afterwards is a reuse.
-    read_start(record.pid)
+    read_start(options, record.pid)
         .is_some_and(|started| started > record.started_at_ms + START_TOLERANCE_MS)
 }
 
@@ -82,8 +89,7 @@ fn sweep_entry(
             None => crate::manifest_lease::probe_alive(pid),
         }
     };
-    let mut read_process_start_ms =
-        |pid: f64| options.read_process_start_ms.and_then(|probe| probe(pid));
+    let mut read_process_start_ms = |pid: f64| read_start(options, pid);
     let mut probes = LeaseProbes {
         is_process_alive: &mut is_process_alive,
         read_process_start_ms: &mut read_process_start_ms,
@@ -198,6 +204,7 @@ mod tests {
         std::fs::write(dir.path().join("bad.json"), "nope").unwrap();
         let keep = HashSet::from(["kept.lease".to_owned()]);
         let alive = |pid: f64| pid != 11.0;
+        let unknown_start = |_: f64| None;
         let result = sweep_terminal_state_dir(
             dir.path(),
             &SweepOptions {
@@ -205,7 +212,7 @@ mod tests {
                 keep: &keep,
                 limit: None,
                 is_process_alive: Some(&alive),
-                read_process_start_ms: None,
+                read_process_start_ms: Some(&unknown_start),
             },
         )
         .unwrap();
@@ -419,5 +426,70 @@ mod tests {
         .unwrap();
         assert!(!dir.path().join("dead.lease.lock").exists());
         assert!(dir.path().join("live.lease.lock").exists());
+    }
+
+    /// A reclaim lock held by a live process (this one) guards its lease: the sweep backs off
+    /// instead of deleting the dead-pid lease underneath it.
+    #[test]
+    fn keeps_a_dead_lease_while_a_live_process_holds_its_reclaim_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        lease(dir.path(), "s.lease", 11.0, 1.0);
+        let lock = dir.path().join("s.lease.lock");
+        std::fs::write(
+            &lock,
+            serde_json::to_vec(&crate::manifest_lease::ReclaimLockHolder {
+                pid: f64::from(std::process::id()),
+                boot_at_ms: crate::process_identity::process_boot_at_ms(None),
+                process_started_at_ms: crate::process_identity::own_process_started_at_ms(None),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let alive = |pid: f64| pid != 11.0;
+        let unknown_start = |_: f64| None;
+        let keep = HashSet::new();
+        let result = sweep_terminal_state_dir(
+            dir.path(),
+            &SweepOptions {
+                self_pid: 1.0,
+                keep: &keep,
+                limit: None,
+                is_process_alive: Some(&alive),
+                read_process_start_ms: Some(&unknown_start),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.removed_leases, 0);
+        assert!(dir.path().join("s.lease").exists());
+        assert!(lock.exists());
+    }
+
+    /// Without a start probe option the sweep reads real start instants: a lease taken long before
+    /// this (live) process started is a reused pid.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn defaults_to_the_real_start_probe_when_none_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        lease(
+            dir.path(),
+            "reused.lease",
+            f64::from(std::process::id()),
+            1.0,
+        );
+        let alive = |_: f64| true;
+        let keep = HashSet::new();
+        let result = sweep_terminal_state_dir(
+            dir.path(),
+            &SweepOptions {
+                self_pid: 1.0,
+                keep: &keep,
+                limit: None,
+                is_process_alive: Some(&alive),
+                read_process_start_ms: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.removed_leases, 1);
+        assert!(!dir.path().join("reused.lease").exists());
     }
 }
