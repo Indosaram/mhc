@@ -1,7 +1,8 @@
+use crate::goal_file_lock::with_goal_file_lock;
 pub use crate::persistence::goal_file_path;
 use crate::{
     errors::GoalError,
-    persistence::{encoded_thread_id, read_goal_file, write_goal_file},
+    persistence::{encoded_thread_id, read_goal_file},
     transitions::transition_goal_status,
     types::{
         Goal, GoalAccountingMode, GoalStatus, GoalStoreRef, GoalUpdate, GoalUpdateSource,
@@ -9,7 +10,6 @@ use crate::{
     },
     validation::{resolve_token_budget, validate_objective},
 };
-use maho_core::session_sidecar_store::serialize_by_key;
 use std::{fs, io::Write, path::PathBuf};
 pub fn goal_history_file_path(reference: &GoalStoreRef) -> PathBuf {
     reference
@@ -27,9 +27,16 @@ pub fn objective_full_text_file_path(reference: &GoalStoreRef) -> PathBuf {
 pub fn read_goal(reference: &GoalStoreRef) -> Result<Option<Goal>, GoalError> {
     read_goal_file(reference)
 }
+/// Imports a legacy pi-goal store under the goal lock, so a concurrent mutation cannot overwrite the import.
+pub async fn migrate_legacy_goal(reference: &GoalStoreRef) -> Result<Option<Goal>, GoalError> {
+    with_goal_file_lock(reference, |_held| async {
+        crate::persistence::migrate_legacy_goal_file_default(reference)
+    })
+    .await
+}
 pub async fn write_goal(reference: &GoalStoreRef, goal: Option<&Goal>) -> Result<(), GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
-        write_goal_file(reference, goal)?;
+    with_goal_file_lock(reference, |held| async move {
+        held.write(goal)?;
         crate::lifecycle_facts::notify_transition(reference, goal);
         Ok(())
     })
@@ -68,7 +75,7 @@ pub async fn create_goal(
     token_budget: Option<f64>,
     now: u64,
 ) -> Result<Goal, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let validated = validate_objective(objective, &objective_full_text_file_name(reference))?;
         let current = read_goal_file(reference)?;
         if current
@@ -80,9 +87,11 @@ pub async fn create_goal(
             ));
         }
         if validated.truncated {
+            held.assert_held()?;
             write_full_objective_text(reference, objective)?;
         }
         if let Some(current) = current {
+            held.assert_held()?;
             archive_goal(reference, &current)?;
         }
         let goal = fresh_goal(
@@ -92,7 +101,7 @@ pub async fn create_goal(
             resolve_token_budget(None, token_budget.map(Some))?,
             now,
         );
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         crate::lifecycle_facts::notify_transition(reference, Some(&goal));
         Ok(goal)
     })
@@ -104,7 +113,7 @@ pub async fn update_goal(
     source: GoalUpdateSource,
     now: u64,
 ) -> Result<Goal, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let current = read_goal_file(reference)?
             .ok_or_else(|| GoalError::NotFound("cannot update goal: no goal exists".into()))?;
         let validated = update
@@ -158,9 +167,10 @@ pub async fn update_goal(
             next
         };
         if validated.as_ref().is_some_and(|v| v.truncated) {
+            held.assert_held()?;
             write_full_objective_text(reference, update.objective.as_deref().unwrap_or(""))?;
         }
-        write_goal_file(reference, Some(&next))?;
+        held.write(Some(&next))?;
         crate::lifecycle_facts::notify_transition(reference, Some(&next));
         Ok(next)
     })
@@ -182,9 +192,9 @@ fn write_full_objective_text(reference: &GoalStoreRef, objective: &str) -> Resul
         .map_err(|e| GoalError::Io(e.to_string()))
 }
 pub async fn clear_goal(reference: &GoalStoreRef) -> Result<bool, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let existed = read_goal_file(reference)?.is_some();
-        write_goal_file(reference, None)?;
+        held.write(None)?;
         crate::lifecycle_facts::notify_transition(reference, None);
         Ok(existed)
     })
@@ -198,7 +208,7 @@ pub async fn account_goal_usage(
     expected_goal_id: Option<&str>,
     now: u64,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -221,7 +231,7 @@ pub async fn account_goal_usage(
             .min(9_007_199_254_740_991);
         goal.time_used_seconds += elapsed_seconds.trunc().max(0.0);
         goal.updated_at = now.max(goal.updated_at.saturating_add(1));
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
@@ -232,7 +242,7 @@ pub async fn record_continuation_delivered(
     expected_goal_id: Option<&str>,
     count_unattended: bool,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -251,7 +261,7 @@ pub async fn record_continuation_delivered(
         );
         goal.last_continuation_signature = Some(signature.into());
         goal.continuation_stopped_at = None;
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
@@ -260,7 +270,7 @@ pub async fn reset_continuation_streak(
     reference: &GoalStoreRef,
     unattended: bool,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -270,7 +280,7 @@ pub async fn reset_continuation_streak(
         }
         goal.last_continuation_signature = None;
         goal.continuation_stopped_at = None;
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
@@ -280,7 +290,7 @@ pub async fn record_goal_continuation_stopped(
     expected: &Goal,
     at: u64,
 ) -> Result<Option<Goal>, GoalError> {
-    serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
+    with_goal_file_lock(reference, |held| async move {
         let Some(mut goal) = read_goal_file(reference)? else {
             return Ok(None);
         };
@@ -298,7 +308,7 @@ pub async fn record_goal_continuation_stopped(
         goal.updated_at = goal.updated_at.saturating_add(1).max(at / 1000);
         goal.last_started_at = None;
         goal.continuation_stopped_at = Some(at);
-        write_goal_file(reference, Some(&goal))?;
+        held.write(Some(&goal))?;
         Ok(Some(goal))
     })
     .await
