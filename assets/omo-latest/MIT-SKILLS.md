@@ -59,3 +59,15 @@ for this file: the runtime crates under `crates/omo/**` (for example
 `maho-omo-onboarding`, `maho-omo-init-deep-advisor`) remain
 `LicenseRef-SUL-1.0`, as does the pool-root developer doc
 `assets/omo-latest/skills/AGENTS.md` (`poolDocs`), which is not a skill.
+
+## Sync to omo v5.1.52 (2026-10-30)
+
+Skills updated from `code-yeongyu/lazycodex` @ `e809c369053cd5eba7c6008c3dcdde8ac672f505`
+(2026-10-28, "sync Codex marketplace v5.1.51"; before the v5.1.52 tag, and its
+`plugins/omo/skills/<name>` files are byte-equal to the v5.1.52 contract). Changed
+files carry the manifest source `lazycodex@e809c369:plugins/omo/skills/<name>/<path> (MIT)`;
+mhc adaptations listed above are kept.
+
+| Skill | lazycodex SHA | Notes |
+| --- | --- | --- |
+| ast-grep | e809c369 | downloaded `sg` goes to the user cache (`OMO_AST_GREP_BIN_DIR`, else XDG/LOCALAPPDATA `omo-ast-grep/bin`), never the skill dir |
