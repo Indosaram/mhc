@@ -93,6 +93,27 @@ async fn host_tool_panic_settles_cell_and_releases_kernel_queue() {
         assert_ne!(next.expect("next cell finishes").expect("next result").is_error,Some(true));
     }
 }
+#[tokio::test]
+async fn load_magic_runs_the_file_read_when_its_turn_comes() {
+    let root=tempfile::tempdir().expect("root");
+    let kernel=Arc::new(JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"load-magic",4,None).await.expect("kernel"));
+    let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default())));
+    let (sender,_receiver)=tokio::sync::mpsc::unbounded_channel();
+    let options=Arc::new(CreateEvalToolOptions::new(Arc::new(Manager(kernel.clone())),Arc::new(Executor(sender)),cells,Arc::new(Images)));
+    let run=|code:&str| maho_codemode::tool::run_eval_cell::run_eval_cell(options.clone(),EvalCellInvocation {
+        cell_id:format!("load-{}",code.len()),
+        input:EvalToolInput {language:EvalLanguage::Js,code:code.into(),summary:"load".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None,isolate:None},
+        signal:maho_ai::utils::abort::AbortController::new().signal(),steering_signal:None,on_update:None,
+        context:Some(EvalInvocationContext {model:None,cwd:root.path().into(),thinking_level:None,goal_store_file:None}),model:None,mode:"print".into(),owner_session_id:None,
+    });
+    std::fs::write(root.path().join("cell.js"),"globalThis.loaded = 6 * 7; print(loaded)").expect("cell file");
+    let loaded=tokio::time::timeout(Duration::from_secs(10),run("%load cell.js")).await.expect("bounded").expect("loaded");
+    let missing=tokio::time::timeout(Duration::from_secs(10),run("%load nope.js")).await.expect("bounded");
+    kernel.close().await.expect("close kernel");
+    assert!(serde_json::to_string(&loaded.content).expect("content").contains("42"),"{:?}",loaded.content);
+    let missing=match missing {Ok(result)=>serde_json::to_string(&result.content).expect("content"),Err(error)=>error.to_string()};
+    assert!(missing.contains("file not found: nope.js"),"{missing}");
+}
 impl EvalKernel for CapacityKernel {
     fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {
         Box::pin(async move {
