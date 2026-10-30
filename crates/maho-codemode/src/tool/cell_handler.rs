@@ -264,7 +264,10 @@ impl CellHandler {
                         },
                     )
                     .await
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| {
+                        error_code = error.code();
+                        error.to_string()
+                    })
                     .map(|value| (value, true, None, None))
                 } else {
                     Err("eval handle requires an owning session id".to_string())
