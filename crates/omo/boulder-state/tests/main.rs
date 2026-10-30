@@ -13,5 +13,7 @@ mod plan_checklist;
 mod plan_progress;
 #[path = "read_state.rs"]
 mod read_state;
+#[path = "review_artifacts.rs"]
+mod review_artifacts;
 #[path = "stale_work.rs"]
 mod stale_work;
