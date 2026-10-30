@@ -13531,8 +13531,27 @@ impl AgentSession {
         if let Some(files) = self.state().loaded_context_files.clone() {
             return files;
         }
-        let files =
-            crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir());
+        let agent_dir = self.agent_dir();
+        let mut files = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir);
+        // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
+        // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
+        // lane owns, so the scope is applied here until it produces it itself.
+        let directory_key = |path: &std::path::Path| {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        };
+        let user_dirs = [
+            directory_key(std::path::Path::new(&agent_dir)),
+            directory_key(&crate::config::home_dir_path()),
+        ];
+        for file in &mut files {
+            if file.scope.is_none()
+                && std::path::Path::new(&file.path)
+                    .parent()
+                    .is_some_and(|dir| user_dirs.contains(&directory_key(dir)))
+            {
+                file.scope = Some(crate::system_prompt::ContextFileScope::User);
+            }
+        }
         self.state().loaded_context_files = Some(files.clone());
         files
     }
