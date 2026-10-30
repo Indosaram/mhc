@@ -124,6 +124,7 @@ extern "C" fn tap_callback(
         TapAction::ReEnable => {
             // SAFETY: [FFI] the port is live while its callback runs.
             unsafe { CGEventTapEnable(context.tap.get(), true) };
+            context.shared.stop_worker.reenabled(event_type);
         }
         TapAction::KeyDown if !event.is_null() => {
             // SAFETY: [FFI] `event` is the non-null key-down handed to this
@@ -268,6 +269,8 @@ mod hooks {
         pub(in crate::stop_path) simulated_step_live: Option<bool>,
         /// Times a tap went live.
         pub(in crate::stop_path) went_live: u64,
+        /// Event types the stop worker re-enabled the tap for.
+        pub(in crate::stop_path) reenabled: Vec<u32>,
     }
 
     pub(super) fn apply(context: &TapContext<'_>, user_info: *mut c_void) -> bool {
