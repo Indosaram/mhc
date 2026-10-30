@@ -1,3 +1,4 @@
+pub mod eval_cells_rpc;
 pub mod eval_notifier;
 pub mod eval_status;
 pub mod eval_status_ticker;
