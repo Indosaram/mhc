@@ -1370,11 +1370,46 @@ struct PendingKittyGraphicsProbe {
     started: std::time::Instant,
 }
 
+/// senpi's `onLateReply`: receives the replies when the query completes after its timeout.
+pub type TerminalColorsLateReply = Box<dyn FnMut(crate::terminal_colors::TerminalColors)>;
+
 struct PendingTerminalColorsQuery {
     ticket: TerminalQueryTicket<crate::terminal_colors::TerminalColors>,
     deadline_ms: u64,
     colors: crate::terminal_colors::TerminalColors,
     replied: std::collections::HashSet<String>,
+    /// Set once the timeout settled the ticket; later replies go to `on_late_reply`.
+    timed_out: bool,
+    /// Unset once the query completed; later replies are ignored until DA1.
+    completed: bool,
+    on_late_reply: Option<TerminalColorsLateReply>,
+}
+
+impl PendingTerminalColorsQuery {
+    /// senpi's `terminalColorQueryResult`: the palette is only kept when all 16 replied.
+    fn result(&self) -> crate::terminal_colors::TerminalColors {
+        let mut colors = self.colors.clone();
+        if colors.palette.iter().any(Option::is_none) {
+            colors.palette = Vec::new();
+        }
+        colors
+    }
+
+    /// senpi's `completeTerminalColorQuery`.
+    fn complete(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.completed = true;
+        let result = self.result();
+        if self.timed_out {
+            if let Some(late) = self.on_late_reply.as_mut() {
+                late(result);
+            }
+        } else {
+            self.ticket.settle(result);
+        }
+    }
 }
 
 impl TuiBase {
@@ -1625,13 +1660,26 @@ impl TuiBase {
         }
     }
 
-    /// senpi's `queryTerminalBackgroundColor` (OSC 11). The ticket settles with the parsed color,
-    /// or `None` once `now_ms + timeout_ms` passes in [`TuiBase::poll_terminal_queries`].
+    /// senpi's `queryTerminalColors`: OSC 10, OSC 11 and OSC 4 (0-15) plus a DA1 sentinel in one
+    /// write. The ticket settles on DA1 or once every color replied, or with the replies so far once
+    /// `now_ms + timeout_ms` passes in [`TuiBase::poll_terminal_queries`]. `palette` is empty unless
+    /// all 16 colors replied.
     pub fn query_terminal_colors(
         &mut self,
         terminal: &mut dyn Terminal,
         timeout_ms: u64,
         now_ms: u64,
+    ) -> TerminalQueryTicket<crate::terminal_colors::TerminalColors> {
+        self.query_terminal_colors_with_late_reply(terminal, timeout_ms, now_ms, None)
+    }
+
+    /// [`TuiBase::query_terminal_colors`] with senpi's `onLateReply`.
+    pub fn query_terminal_colors_with_late_reply(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        timeout_ms: u64,
+        now_ms: u64,
+        on_late_reply: Option<TerminalColorsLateReply>,
     ) -> TerminalQueryTicket<crate::terminal_colors::TerminalColors> {
         let ticket = TerminalQueryTicket::pending();
         self.pending_terminal_colors_queries
@@ -1643,12 +1691,16 @@ impl TuiBase {
                     ..Default::default()
                 },
                 replied: HashSet::new(),
+                timed_out: false,
+                completed: false,
+                on_late_reply,
             });
-        terminal.write("\x1b]10;?\x07\x1b]11;?\x07");
+        let mut query = String::from("\x1b]10;?\x07\x1b]11;?\x07");
         for index in 0..16 {
-            terminal.write(&format!("\x1b]4;{index};?\x07"));
+            query.push_str(&format!("\x1b]4;{index};?\x07"));
         }
-        terminal.write("\x1b[c");
+        query.push_str("\x1b[c");
+        terminal.write(&query);
         ticket
     }
 
@@ -1691,14 +1743,14 @@ impl TuiBase {
         {
             self.resolve_kitty_graphics_probe(false);
         }
-        self.pending_terminal_colors_queries.retain(|query| {
-            if query.deadline_ms <= now_ms {
-                query.ticket.settle(query.colors.clone());
-                false
-            } else {
-                true
+        // A timed-out query resolves with the replies so far and stays queued so its late
+        // replies are consumed (and reported) until its DA1 arrives.
+        for query in &mut self.pending_terminal_colors_queries {
+            if !query.timed_out && !query.completed && query.deadline_ms <= now_ms {
+                query.timed_out = true;
+                query.ticket.settle(query.result());
             }
-        });
+        }
         self.pending_terminal_color_scheme_queries.retain(|query| {
             if query.deadline_ms <= now_ms {
                 query.ticket.settle(None);
@@ -1714,8 +1766,8 @@ impl TuiBase {
             return false;
         };
         if is_terminal_color_da1(data) {
-            let query = self.pending_terminal_colors_queries.remove(0);
-            query.ticket.settle(query.colors);
+            let mut query = self.pending_terminal_colors_queries.remove(0);
+            query.complete();
             return true;
         }
         let Some(response) = parse_osc_color_response(data) else {
@@ -1729,7 +1781,7 @@ impl TuiBase {
             }
             crate::terminal_colors::OscColorTarget::Palette(_) => return true,
         };
-        if !query.replied.insert(key) {
+        if query.completed || !query.replied.insert(key) {
             return true;
         }
         match slot {
@@ -1738,8 +1790,7 @@ impl TuiBase {
             _ => query.colors.palette[slot - 2] = response.rgb,
         }
         if query.replied.len() == 18 {
-            let query = self.pending_terminal_colors_queries.remove(0);
-            query.ticket.settle(query.colors);
+            query.complete();
         }
         true
     }
@@ -4116,11 +4167,8 @@ impl TuiBase {
             let line_width = visible_width(line);
             if !is_image && line_width > width {
                 self.log_over_wide_render(&new_lines, width, i, line_width);
-                let truncated_line = format!(
-                    "{}{}",
-                    slice_by_column(line, 0, width, true),
-                    SEGMENT_RESET
-                );
+                let truncated_line =
+                    format!("{}{}", slice_by_column(line, 0, width, true), SEGMENT_RESET);
                 new_lines[i] = truncated_line.clone();
                 buffer += &truncated_line;
                 i += 1;
