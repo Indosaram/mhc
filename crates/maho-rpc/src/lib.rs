@@ -35,6 +35,7 @@ pub mod host_endpoint_names;
 pub mod host_endpoints;
 pub mod host_ensure;
 pub mod host_ensure_client;
+pub mod host_ensure_liveness;
 pub mod host_ensure_lock;
 pub mod host_gc;
 pub mod host_gc_pass_marker;
