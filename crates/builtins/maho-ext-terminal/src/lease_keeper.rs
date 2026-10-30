@@ -255,14 +255,14 @@ mod tests {
         let keeper = create_lease_keeper(LeaseKeeperOptions {
             dir: dir.to_path_buf(),
             encoded_session_id: "s".into(),
-            on_takeover: Box::new(move |_, _| {
+            on_takeover: Box::new(move |_: PathBuf, _: f64| {
                 count.fetch_add(1, Ordering::SeqCst);
             }),
             on_error: None,
             interval_ms: Some(TICK_MS),
             self_pid: SELF_PID,
             self_started_at_ms: 2.0,
-            is_process_alive: Some(Arc::new(move |pid| {
+            is_process_alive: Some(Arc::new(move |pid: f64| {
                 pid != HOLDER_PID || holder_alive.load(Ordering::SeqCst)
             })),
         });

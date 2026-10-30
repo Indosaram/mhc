@@ -134,7 +134,7 @@ mod tests {
             tokens_path: dir.join("server/tokens.json"),
             stale_ms: 200,
             disable_lock,
-            read: Box::new(|path| std::fs::read_to_string(path).ok()),
+            read: Box::new(|path: &std::path::Path| std::fs::read_to_string(path).ok()),
             write: Box::new({
                 let target = dir.join("server/tokens.json");
                 move |record: &String| {
@@ -142,7 +142,9 @@ mod tests {
                     std::fs::write(&target, record)
                 }
             }),
-            lock_error: Box::new(|cause| std::io::Error::other(format!("lock: {cause}"))),
+            lock_error: Box::new(|cause: std::io::Error| {
+                std::io::Error::other(format!("lock: {cause}"))
+            }),
         }
     }
 
