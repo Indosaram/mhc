@@ -25,7 +25,7 @@ Stack each of these on top of the first read when the request touches it:
 | Hero atmosphere, an animated background, a typographic reveal, scroll storytelling, or card surface effects (spotlight, tilt, glow) | `references/design/ambience-skill.md`; the react-bits catalog is required, its retrofit checklist runs every time, and its code is never vendored |
 | A tone neither catalog covers (AI-agent UI, charts, landing sections, brutalist or Tailwind-only builds) | `references/design/component-catalogs.md` |
 | A new screen or flow, a redesign, or creating or reworking a design system | `references/design/grounding.md`, before the brief (step 0 below) |
-| Writing, changing, or auditing frontend code | `references/perfection/README.md` and `references/perfection/craft-floor.md` (+ `react-perf-tooling.md` before a React audit): Lighthouse 100 on real Playwright Chromium, never the Lighthouse CLI, won through architecture |
+| Writing, changing, or auditing frontend code | `references/perfection/README.md`, `references/perfection/craft-floor.md`, and `references/perfection/detect.md` (+ `react-perf-tooling.md` before a React audit): Lighthouse 100 on real Playwright Chromium, never the Lighthouse CLI, won through architecture |
 | A concrete palette, font, chart, landing-structure, or UX lookup, or a design system generated from keywords | `references/ui-ux-db/README.md` and its CLI; a lookup tool, never the posture |
 | Any work that creates or updates `DESIGN.md`, or an explicit ask about personas, critique, design debt, handoff, or synthetic user testing | `references/designpowers/README.md` + `lane-c-review.md`. Lane C is the final reviewer for flatness and critique, and it fills the accessibility-constraint and accepted-debt sections. Other lanes load only when their phase applies |
 
@@ -127,6 +127,7 @@ Some tells regenerate by default, so they are kept out of the first draft rather
 - **No stat tile without a decision behind it.** A number earns a tile when someone acts on it.
 - **No subtitle under every heading.** Keep a subtitle only where the heading alone would be misread.
 - **One fact, one place.** A banner and a callout that restates it, a summary card and a table row with the same figure, a label repeated as its placeholder: keep one.
+- **Detect once the page renders.** Point the detect SDK at the rendered page at 1440 and 390 with reflow on (`references/perfection/detect.md`): call `detectPage({ kind: "url", url }, { reflow: true })` from `$SKILL_DIR/scripts/detect/index.ts`, or run `bun $SKILL_DIR/scripts/detect/cli.ts --reflow <url-or-html-files>`. It measures what the browser drew: contrast against the painted background, type scale, heading order, overflow down to 320 px, and decoration and copy tells. Clear every error and warning before `/visual-qa` and write down a decision for each advisory. The SDK is an SUL-1.0 subtree (`scripts/detect/LICENSE.md`), not part of the MIT skill.
 - **No made-up proof.** Every testimonial, quote, customer logo, rating, user count, and price comes from the project. If the project has none, drop the section or leave a clearly labelled empty slot for the owner; a placeholder testimonial is a fabricated one.
 - **No props for effect.** Tilted devices, floating reassurance cards, decorative coordinates, sparkles, and ornaments unrelated to the product are what generated "premium" looks like. A product preview shows a real product state with legible text at its rendered size.
 - **No formula on repeat.** A heading treatment (serif with an italic accent phrase, one gradient word, a label-heading-subtitle stack) or a single image used in every section turns into a template. Use each once, where it carries meaning.
@@ -205,6 +206,7 @@ React dev tooling:
 |---|---|
 | `perfection/README.md` | The seven tenets: real-browser audits only, 100 in every category, fix at the architecture, never weaken UX for points, design-system compliance, the audit report format |
 | `perfection/craft-floor.md` | The computed-style floors and defaults: themed browser surfaces, type-scale and spacing ratios, measure, display and tracking limits, and the generated scaffolds kept out of a first draft |
+| `perfection/detect.md` | The after-render detect SDK (SUL-1.0 subtree under `scripts/detect/`): API, CLI, config, waivers, and how to read findings |
 | `perfection/react-perf-tooling.md` | Playwright + `playwright-lighthouse` + `react-scan/lite` injection and per-route render budgets. A perfect score with 30+ unnecessary renders on a route is not done |
 
 Audit CLI, production build only:
