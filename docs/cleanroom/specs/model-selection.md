@@ -640,18 +640,29 @@ and before the GLM rung) names the current top model of the Kimi family, model i
 `kimi-k3.1-pro`. As §6.1 says, the id is sourced from the MIT `maho-ext-recommended-models`
 data, and the rung takes that data's provider ranking for the id as its provider list (same
 entries, same order) and that data's default level for the id as its level, which is `max` in
-this release. The previous-generation id `kimi-k3` no longer appears in any built-in chain.
+this release. The id `kimi-k3` no longer appears in any built-in chain.
+
+Prerequisite (MIT-direct port, census senpi-builtins-b-05): the mhc copy of
+`maho-ext-recommended-models` still lists `kimi-k3`. It must first be brought to the current MIT
+senpi data, which lists `kimi-k3.1-pro` at `max` with the Kimi provider ranking `kimi-coding`,
+`kimi-for-coding`, `moonshotai`, `opencode-go`.
+
+Provider id transform (extends §4, compatibility fact; MIT senpi recommended-models also notes
+that Kimi Code serves bare ids): Kimi Code publishes the new model under a bare id, so for
+`kimi-coding` and `kimi-for-coding` also map `kimi-k3.1-pro` → `k3.1-pro` and
+`kimi-k3.1-pro-highspeed` → `k3.1-pro-highspeed`. Without it the rung cannot match on the two
+providers it ranks first.
 
 Invariant: every rung of every built-in profile has a non-empty provider list. A built-in rung
-must never fall back to the empty-list meaning of §6 (any provider, including gateways and
+must never fall back to the empty-list meaning of §6.4 (any provider, including gateways and
 resellers), and must never be left without a level when the recommended data gives one. A
 built-in rung whose model id the recommended data does not rank is a data defect, to be caught
 by test, not a runtime condition.
 
 Review of the other built-in rungs against the recommended data's provider ranking (builtins-b
-lane): the only built-in rung whose model id is not ranked is the `daily-normal` Kimi rung
-(`kimi-k3`). Every other id used by the built-in chains (`claude-opus-5-5`, `glm-5.3`,
-`claude-fable-5-1`, `gpt-6.1-sol`, `gpt-6-astra`) is still ranked, so no other rung changes.
+lane): once the recommended data is current, the only built-in rung whose model id is not ranked
+is the `daily-normal` Kimi rung (`kimi-k3`). Every other id used by the built-in chains
+(`claude-opus-5-5`, `glm-5.3`, `claude-fable-5-1`, `gpt-6.1-sol`, `gpt-6-astra`) is still ranked, so no other rung changes.
 
 Inputs: the recommended-models data (ranking and default levels). Output: the built chain.
 Errors: none at runtime. The invariant is enforced by tests.
@@ -662,10 +673,14 @@ Tests:
    (same entries, same order) and whose level is `max`. No rung names `kimi-k3`.
 2. Given built-in profiles, when every rung of every built-in profile is inspected, then each
    has a non-empty provider list.
-3. Given `available` contains only a gateway provider that is not in the Kimi ranking and serves
-   `kimi-k3.1-pro` (for example `acme-gateway/kimi-k3.1-pro`), when `daily-normal` is resolved,
-   then the Kimi rung does not match through that gateway. Resolution moves to the next rung, or
-   reports unavailable if nothing else matches.
+3. Given `available` is exactly `["acme-gateway/kimi-k3.1-pro"]` (a provider not in the Kimi
+   ranking), when `daily-normal` is resolved, then the result is `Unavailable` listing all
+   three rungs; the Kimi rung does not match through that gateway.
+4. Given `available` is exactly `["kimi-coding/k3.1-pro"]`, when `daily-normal` is resolved,
+   then the result is `Resolved` with provider `kimi-coding`, model id `k3.1-pro`, reasoning
+   `max`, and the Claude rung as the only skipped label.
+5. `("kimi-for-coding","kimi-k3.1-pro")` → `k3.1-pro`; `("moonshotai","kimi-k3.1-pro")` →
+   unchanged.
 
 ### D5. Mapping table
 
@@ -675,7 +690,7 @@ Tests:
 | omo-components-19 | D2 | APPLIES | what the user sees and what the model reads |
 | omo-components-20 | D3 | APPLIES | notice facts the user reads |
 | omo-components-21 | D4 | APPLIES | changes which providers a session may start on |
-| omo-cores-02 | D6 | APPLIES | Kimi model id and provider set of a built-in chain are observable; root-found (builtins-b reverify) |
+| omo-cores-02 | D6 | APPLIES | Kimi model id and provider set of a built-in chain are observable; data prerequisite is senpi-builtins-b-05 |
 
 Leak self-check:
 - No fenced code from SUL: none used (no code blocks in this delta).
