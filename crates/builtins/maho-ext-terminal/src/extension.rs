@@ -479,6 +479,7 @@ fn wait_for_lease(
         self_pid: f64::from(std::process::id()),
         self_started_at_ms: crate::process_identity::own_process_started_at_ms(None),
         is_process_alive: None,
+        read_process_start_ms: None,
     });
     next.start(holder);
     if let Some(previous) = keeper
