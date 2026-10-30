@@ -3039,60 +3039,6 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/templates/playwright_real_chrome.js"
       },
       {
-        "path": "engine/tests/fixtures/amp_redirect_stub.html",
-        "bytes": 322,
-        "sha256": "3f0f3f3d211063323dfd6a9be95d9c1cde2263192f55c080a5f0b99d47181bd3",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/amp_redirect_stub.html"
-      },
-      {
-        "path": "engine/tests/fixtures/search_interstitial.html",
-        "bytes": 92530,
-        "sha256": "a855c2e4ad5c00359b772b3fabd59ce0e3c4f8e0581bbab64ecedb8bcfa27467",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/search_interstitial.html"
-      },
-      {
-        "path": "engine/tests/fixtures/wayback_available.json",
-        "bytes": 246,
-        "sha256": "4781b9daf4656b0b7bd25d9ef452c26e285ae2ebf5459c53718d084e0622c0cc",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/wayback_available.json"
-      },
-      {
-        "path": "engine/tests/fixtures/wayback_snapshot.html",
-        "bytes": 185773,
-        "sha256": "d75b37df9a1529bf475521da815041866859155122bf6406873061f3b96a6843",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/wayback_snapshot.html"
-      },
-      {
-        "path": "engine/tests/test_fetch_chain.py",
-        "bytes": 2770,
-        "sha256": "1e39af47d6c36643b6f94259936f068d8a7d93af182274993c1539827373e084",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_fetch_chain.py"
-      },
-      {
-        "path": "engine/tests/test_playwright_stealth.py",
-        "bytes": 4013,
-        "sha256": "22cd8d5dedd5f2f6a038ec87702431d2be4b3fd32ba159a9ccfa32467f472d65",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_playwright_stealth.py"
-      },
-      {
-        "path": "engine/tests/test_playwright_templates.py",
-        "bytes": 10989,
-        "sha256": "9c3d2c2aa491c96b03953f0e95fd2924e60feb7d9f1f3c027a88f4290ece1331",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_playwright_templates.py"
-      },
-      {
-        "path": "engine/tests/test_surrogate.py",
-        "bytes": 11568,
-        "sha256": "762a34188d49ccf762af2c17313258a92f7cb69f3919e834968ed2df6d7df7ac",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_surrogate.py"
-      },
-      {
-        "path": "engine/tests/test_surrogate_validators.py",
-        "bytes": 3582,
-        "sha256": "9f50b3a857ee97ae402839296e2dfa46b1ab782f7ed56ffe816ef5acedf4cfe1",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_surrogate_validators.py"
-      },
-      {
         "path": "engine/url_transforms.py",
         "bytes": 3287,
         "sha256": "091433e23b9f66bd6d6c0379c013589c6881d7e840c98aa6af0e018ef361de09",
@@ -7120,8 +7066,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 659,
-    "declaredSha256": 659,
+    "files": 650,
+    "declaredSha256": 650,
     "unbound": 0,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }
