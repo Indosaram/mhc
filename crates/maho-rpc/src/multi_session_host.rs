@@ -3193,7 +3193,7 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         )
         .unwrap_or(u64::MAX)
     }
-    fn prepare_outgoing_state(
+    async fn prepare_outgoing_state(
         &self,
         session_path: &str,
         move_id: &str,
@@ -3201,11 +3201,22 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
         crate::session_release::StagedState,
         crate::session_release_interrupt::ReleaseWriteError,
     > {
-        crate::session_release::prepare_outgoing_state(session_path, move_id)
-            .map_err(crate::session_release_interrupt::ReleaseWriteError::Other)
+        // senpi `await prepareOutgoingState`: the staging walk runs off the async workers.
+        let (session_path, move_id) = (session_path.to_owned(), move_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            crate::session_release::prepare_outgoing_state(&session_path, &move_id)
+        })
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result)
+        .map_err(crate::session_release_interrupt::ReleaseWriteError::Other)
     }
     fn discard_outgoing_state(&self, dir: &str) {
-        crate::session_release::discard_outgoing_state(dir);
+        // senpi `await rm(dir, { recursive, force })`. SAFETY-DIVERGENCE(senpi releaseSession): the discard runs from a
+        // drop guard that cannot await, so the removal is detached; a retry stages a fresh attempt folder and
+        // `prepare_outgoing_state` removes any dead attempt left behind, so the reply never depends on it.
+        let dir = dir.to_owned();
+        tokio::task::spawn_blocking(move || crate::session_release::discard_outgoing_state(&dir));
     }
     async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
         self.core.tear_down_released(session_id, session_path).await
