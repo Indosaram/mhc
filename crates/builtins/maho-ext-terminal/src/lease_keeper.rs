@@ -3,11 +3,13 @@
 //! when the holder is gone. Losing the race to another waiter is not an error: the keeper keeps
 //! waiting on the new holder.
 //!
-//! Native lease shape: the Rust `manifest_lease` records `{pid, startedAtMs}` and takes a
-//! synchronous liveness probe, so the keeper's holder is a `LeaseRecord` and acquisition goes
-//! through `acquire_terminal_lease` directly.
+//! Native lease shape: the Rust `manifest_lease` records `{pid, startedAtMs}` and takes
+//! synchronous probes, so the keeper's holder is a `LeaseRecord`. Like upstream, a tick only polls
+//! the file and pid liveness; a recycled holder pid is told apart by the start-instant check in
+//! `acquire_terminal_lease_with` (`classify_lease`, v1 rule) whenever the keeper acquires.
 use crate::manifest_lease::{
-    AcquireTerminalLeaseResult, LeaseRecord, acquire_terminal_lease, release_terminal_lease,
+    AcquireTerminalLeaseResult, LeaseProbes, LeaseRecord, acquire_terminal_lease_with,
+    release_terminal_lease,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,6 +25,7 @@ pub enum LeaseKeeperState {
 }
 
 pub type ProcessAliveProbe = Arc<dyn Fn(f64) -> bool + Send + Sync>;
+pub type ProcessStartProbe = Arc<dyn Fn(f64) -> Option<f64> + Send + Sync>;
 
 pub struct LeaseKeeperOptions {
     pub dir: PathBuf,
@@ -35,6 +38,8 @@ pub struct LeaseKeeperOptions {
     pub self_pid: f64,
     pub self_started_at_ms: f64,
     pub is_process_alive: Option<ProcessAliveProbe>,
+    /// Defaults to `manifest_lease::read_process_start_ms`.
+    pub read_process_start_ms: Option<ProcessStartProbe>,
 }
 
 struct Inner {
@@ -167,7 +172,7 @@ impl LeaseKeeper {
     }
 
     fn try_acquire(&self) -> std::io::Result<()> {
-        let (dir, encoded, pid, started, probe) = {
+        let (dir, encoded, pid, started, probe, start_probe) = {
             let inner = self.lock();
             let options = &inner.options;
             (
@@ -176,14 +181,27 @@ impl LeaseKeeper {
                 options.self_pid,
                 options.self_started_at_ms,
                 options.is_process_alive.clone(),
+                options.read_process_start_ms.clone(),
             )
         };
-        let result = acquire_terminal_lease(&dir, &encoded, pid, started, |holder| {
-            Ok(match &probe {
-                Some(probe) => probe(holder),
-                None => crate::manifest_lease::probe_alive(holder)?,
-            })
-        })?;
+        let result = acquire_terminal_lease_with(
+            &dir,
+            &encoded,
+            pid,
+            started,
+            &mut LeaseProbes {
+                is_process_alive: &mut |holder| {
+                    Ok(match &probe {
+                        Some(probe) => probe(holder),
+                        None => crate::manifest_lease::probe_alive(holder)?,
+                    })
+                },
+                read_process_start_ms: &mut |holder| match &start_probe {
+                    Some(start_probe) => start_probe(holder),
+                    None => crate::manifest_lease::read_process_start_ms(holder),
+                },
+            },
+        )?;
         if self.state() != LeaseKeeperState::Waiting {
             // stop() landed while the acquire was in flight: hand the lease straight back.
             if let AcquireTerminalLeaseResult::Acquired { path, pid } = result {
@@ -193,10 +211,17 @@ impl LeaseKeeper {
         }
         match result {
             AcquireTerminalLeaseResult::Acquired { path, pid } => {
-                let mut inner = self.lock();
-                inner.state = LeaseKeeperState::Owner;
-                inner.timer = None;
-                (inner.options.on_takeover)(path, pid);
+                // Run the callback with the mutex released: it may call back into the keeper.
+                let mut on_takeover = {
+                    let mut inner = self.lock();
+                    inner.state = LeaseKeeperState::Owner;
+                    inner.timer = None;
+                    std::mem::replace(
+                        &mut inner.options.on_takeover,
+                        Box::new(|_: PathBuf, _: f64| {}),
+                    )
+                };
+                on_takeover(path, pid);
             }
             AcquireTerminalLeaseResult::Held { holder } => {
                 self.lock().holder = Some(holder);
@@ -250,13 +275,26 @@ mod tests {
     }
 
     fn keeper_for(dir: &Path, holder_alive: Arc<AtomicBool>) -> Harness {
+        keeper_with(dir, holder_alive, None, None)
+    }
+
+    fn keeper_with(
+        dir: &Path,
+        holder_alive: Arc<AtomicBool>,
+        holder_start: Option<f64>,
+        on_takeover: Option<Box<dyn FnMut() + Send>>,
+    ) -> Harness {
         let takeovers = Arc::new(AtomicUsize::new(0));
         let count = takeovers.clone();
+        let mut on_takeover = on_takeover;
         let keeper = create_lease_keeper(LeaseKeeperOptions {
             dir: dir.to_path_buf(),
             encoded_session_id: "s".into(),
             on_takeover: Box::new(move |_: PathBuf, _: f64| {
                 count.fetch_add(1, Ordering::SeqCst);
+                if let Some(on_takeover) = on_takeover.as_mut() {
+                    on_takeover();
+                }
             }),
             on_error: None,
             interval_ms: Some(TICK_MS),
@@ -265,6 +303,7 @@ mod tests {
             is_process_alive: Some(Arc::new(move |pid: f64| {
                 pid != HOLDER_PID || holder_alive.load(Ordering::SeqCst)
             })),
+            read_process_start_ms: Some(Arc::new(move |_: f64| holder_start)),
         });
         let ticks = Arc::new(AtomicUsize::new(0));
         let tick_count = ticks.clone();
@@ -361,5 +400,44 @@ mod tests {
         assert_eq!(harness.keeper.state(), LeaseKeeperState::Waiting);
         assert_eq!(harness.takeovers.load(Ordering::SeqCst), 0);
         harness.keeper.stop();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn takes_over_from_a_live_pid_that_a_later_process_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        // The foreign lease was taken at 1 ms; the process now wearing its pid started at 60 s.
+        write_foreign_lease(dir.path());
+        let harness = keeper_with(
+            dir.path(),
+            Arc::new(AtomicBool::new(true)),
+            Some(60_000.0),
+            None,
+        );
+        harness.keeper.start(None);
+        ticks(&harness, 1).await;
+        assert_eq!(harness.keeper.state(), LeaseKeeperState::Owner);
+        assert_eq!(harness.takeovers.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runs_on_takeover_with_the_keeper_mutex_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot: Arc<Mutex<Option<LeaseKeeper>>> = Arc::new(Mutex::new(None));
+        let unlocked = Arc::new(AtomicBool::new(false));
+        let (seen, observed) = (slot.clone(), unlocked.clone());
+        let harness = keeper_with(
+            dir.path(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Some(Box::new(move || {
+                let keeper = seen.lock().unwrap().clone().unwrap();
+                observed.store(keeper.inner.try_lock().is_ok(), Ordering::SeqCst);
+            })),
+        );
+        *slot.lock().unwrap() = Some(harness.keeper.clone());
+        harness.keeper.start(None);
+        ticks(&harness, 1).await;
+        assert_eq!(harness.takeovers.load(Ordering::SeqCst), 1);
+        assert!(unlocked.load(Ordering::SeqCst));
     }
 }
