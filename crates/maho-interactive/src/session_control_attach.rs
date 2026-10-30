@@ -20,7 +20,11 @@ use crate::session_control_server::ControlConnection;
 use maho_core::agent_session::{AgentSession, AgentSessionSubscription};
 use maho_rpc::connection_roles::ConnectionRoles;
 use maho_rpc::session_event_fanout::SessionEventFanout;
-use maho_rpc::session_status_stream::{SessionStatusSource, SessionStatusStream};
+use maho_rpc::session_registry::RpcSessionState;
+use maho_rpc::session_status::{SessionStatusEntryView, SessionView};
+use maho_rpc::session_status_stream::{
+    SessionStatusDelivery, SessionStatusSource, SessionStatusStream,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, Weak};
@@ -45,7 +49,11 @@ pub struct TerminalInputReceipt {
 
 pub struct ControlAttachments {
     pub fanout: Arc<Mutex<SessionEventFanout>>,
-    pub status: Arc<SessionStatusStream>,
+    /// This terminal's one-session status stream (senpi `writer.status`), with the source it reads and
+    /// the delivery it writes through.
+    pub status: Mutex<SessionStatusStream>,
+    pub status_source: TerminalStatusSource,
+    pub status_delivery: TerminalStatusDelivery,
     pub roles: Mutex<ConnectionRoles>,
     pub receipts: Mutex<BTreeMap<String, TerminalInputReceipt>>,
     attached: Arc<Mutex<BTreeSet<String>>>,
@@ -54,35 +62,26 @@ pub struct ControlAttachments {
 }
 
 /// The status rows of this terminal's one session (senpi `writer.status.setSource`).
-struct TerminalStatusSource {
+pub struct TerminalStatusSource {
     session: Weak<AgentSession>,
     attached: Arc<Mutex<BTreeSet<String>>>,
     pending_questions: Arc<dyn Fn() -> usize + Send + Sync>,
 }
 
 impl TerminalStatusSource {
-    fn session_entry_view(&self, session: &AgentSession) -> Value {
-        let (cwd, name) = session.with_session_manager(|manager| {
-            (
-                manager.cwd().to_owned(),
-                manager.session_name().map(str::to_owned),
-            )
-        });
-        let mut view = json!({
-            "state": "open",
-            "kind": "interactive",
-            "cwd": cwd,
-            "attachments": 1 + lock(&self.attached).len(),
-            "durableSessionId": session.session_id(),
-            "context": {},
-        });
-        if let Some(path) = session.session_file() {
-            view["sessionPath"] = path.into();
+    fn entry_view(&self, session: &AgentSession) -> SessionStatusEntryView {
+        let attachments = 1 + lock(&self.attached).len();
+        SessionStatusEntryView {
+            state: RpcSessionState::Open,
+            kind: "interactive",
+            cwd: session.with_session_manager(|manager| manager.cwd().to_owned()),
+            attachments: i64::try_from(attachments).unwrap_or(i64::MAX),
+            durable_session_id: Some(session.session_id()),
+            session_path: session.session_file(),
+            name: session.session_name(),
+            context: serde_json::Map::new(),
+            open_context: None,
         }
-        if let Some(name) = name {
-            view["name"] = name.into();
-        }
-        view
     }
 }
 
@@ -94,22 +93,34 @@ impl SessionStatusSource for TerminalStatusSource {
             .unwrap_or_default()
     }
 
-    fn entry_view(&self, id: &str) -> Option<Value> {
+    fn view(&self, id: &str) -> Option<SessionView> {
         let session = self.session.upgrade()?;
-        (id == session.session_id()).then(|| self.session_entry_view(&session))
+        if id != session.session_id() {
+            return None;
+        }
+        let mut runtime = maho_rpc::session_status_source::session_runtime_view(&session);
+        // senpi `sessionRuntimeView(session, pendingQuestions())`: the terminal's own open questions.
+        runtime.pending_questions = (self.pending_questions)();
+        Some(SessionView {
+            entry: self.entry_view(&session),
+            runtime: Some(runtime),
+        })
+    }
+}
+
+/// The stream's delivery: the fanout's control lane of the subscribing connection.
+pub struct TerminalStatusDelivery {
+    fanout: Arc<Mutex<SessionEventFanout>>,
+}
+
+impl SessionStatusDelivery for TerminalStatusDelivery {
+    fn enqueue(&self, connection_id: &str, line: &str) -> bool {
+        lock(&self.fanout).enqueue_line(connection_id, line)
     }
 
-    fn view(&self, id: &str) -> Option<Value> {
-        let session = self.session.upgrade()?;
-        (id == session.session_id()).then(|| {
-            json!({
-                "entry": self.session_entry_view(&session),
-                "runtime": maho_rpc::session_status_source::session_runtime_view(
-                    &session,
-                    Some((self.pending_questions)()),
-                ),
-            })
-        })
+    /// The terminal's questions are counted by the source's runtime view, not by fanout frames.
+    fn pending_questions(&self, _session_id: &str) -> usize {
+        0
     }
 }
 
@@ -143,27 +154,14 @@ impl ControlAttachments {
     ) -> Self {
         let fanout = Arc::new(Mutex::new(SessionEventFanout::default()));
         let attached = Arc::new(Mutex::new(BTreeSet::new()));
-        let status_fanout = fanout.clone();
-        let status_questions = pending_questions.clone();
-        let status = Arc::new(SessionStatusStream::new(
-            maho_rpc::session_status_stream::SessionStatusDelivery {
-                // The fanout's control lane serializes the record itself.
-                enqueue: Arc::new(move |connection_id: &str, line: &str| {
-                    serde_json::from_str::<Value>(line).is_ok_and(|record| {
-                        lock(&status_fanout)
-                            .enqueue_control(connection_id, &record)
-                            .unwrap_or(false)
-                    })
-                }),
-                pending_questions: Arc::new(move |_session_id: &str| status_questions()),
-                now: None,
-            },
-        ));
-        status.set_source(Arc::new(TerminalStatusSource {
+        let status_source = TerminalStatusSource {
             session: Arc::downgrade(&session),
             attached: attached.clone(),
             pending_questions,
-        }));
+        };
+        let status_delivery = TerminalStatusDelivery {
+            fanout: fanout.clone(),
+        };
         let record_fanout = fanout.clone();
         let projected = Arc::downgrade(&session);
         let last_abort_source = maho_rpc::connection_handler::LastAbortSource::default();
@@ -182,13 +180,27 @@ impl ControlAttachments {
         }));
         Self {
             fanout,
-            status,
+            status: Mutex::new(SessionStatusStream::default()),
+            status_source,
+            status_delivery,
             roles: Mutex::new(ConnectionRoles::default()),
             receipts: Mutex::new(BTreeMap::new()),
             attached,
             records: Mutex::new(Some(records)),
             session,
         }
+    }
+
+    /// A client attached or detached (senpi `writer.status.publish(handle, cause, "client")`).
+    fn publish(&self, cause: &'static str) {
+        lock(&self.status).publish(
+            &self.status_source,
+            &self.status_delivery,
+            &self.handle(),
+            cause,
+            "client",
+            false,
+        );
     }
 
     /// The routing handle records carry: this terminal's session id.
@@ -207,10 +219,10 @@ impl ControlAttachments {
     pub fn closed(&self, connection: &ControlConnection) {
         let key = key_of(connection);
         if lock(&self.attached).remove(&key) {
-            self.status.publish(&self.handle(), "detach", "client");
+            self.publish("detach");
         }
         lock(&self.roles).release(&key);
-        self.status.drop_connection(&key);
+        lock(&self.status).drop_connection(&key);
         lock(&self.fanout).unregister(&key);
     }
 
@@ -221,7 +233,7 @@ impl ControlAttachments {
             return false;
         }
         lock(&self.fanout).detach(&key, &self.handle());
-        self.status.publish(&self.handle(), "detach", "client");
+        self.publish("detach");
         true
     }
 
@@ -237,7 +249,7 @@ impl ControlAttachments {
             &self.handle(),
             maho_rpc::connection_handler::now_ms(),
         ));
-        self.status.publish(&self.handle(), "attach", "client");
+        self.publish("attach");
         true
     }
 
