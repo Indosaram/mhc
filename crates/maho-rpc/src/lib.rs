@@ -128,6 +128,7 @@ pub mod socket_peer_recovery;
 pub mod socket_sink;
 pub mod socket_transport;
 pub mod supervisor_route;
+pub mod ui_answer_ledger;
 pub mod widget_line_renderer;
 pub mod worker_session_registry;
 pub use host_holder::{HostHolder, describe_host_holder};

@@ -586,6 +586,12 @@ pub fn build_rpc_session_state_with_dialogs(
     if let Some(rate) = usage_totals.latest_cache_hit_rate {
         state["usageTotals"]["latestCacheHitRate"] = rate.into();
     }
+    // Session-generation receipts of answered UI requests (senpi `answeredUiRequests`).
+    state["answeredUiRequests"] =
+        crate::ui_answer_ledger::session_ui_answer_ledger(&session.session_id())
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot();
     if let Some(thinking_selection) = session.thinking_selection()
         && let Ok(value) = serde_json::to_value(thinking_selection)
     {
@@ -1963,6 +1969,49 @@ impl RpcConnectionHandler {
                 Some("extension_ui_response" | "extension_ui_progress")
             )
         {
+            let reply_to = || {
+                serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response"})
+            };
+            // A named answer (`answerId`) asks for a receipt (senpi `settleExtensionUiResponse`).
+            let is_response = value["type"] == "extension_ui_response";
+            let answer_id = if is_response {
+                match crate::ui_answer_ledger::valid_answer_id(value) {
+                    Ok(answer_id) => answer_id.map(str::to_owned),
+                    Err(()) => {
+                        let mut reply = reply_to();
+                        reply["success"] = false.into();
+                        reply["error"] = "invalid_answer_id".into();
+                        return crate::jsonl::serialize_json_line(&reply).map(Some);
+                    }
+                }
+            } else {
+                None
+            };
+            let request_id = crate::extension_ui_response::answered_ui_request_id(value)
+                .unwrap_or_default()
+                .to_owned();
+            let ledger = crate::ui_answer_ledger::session_ui_answer_ledger(&self.session.session_id());
+            if answer_id.is_some() {
+                let receipt = ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lookup(&request_id, answer_id.as_deref());
+                if let Some(receipt) = receipt {
+                    let mut reply = reply_to();
+                    match receipt {
+                        crate::ui_answer_ledger::LedgerLookup::Replay => {
+                            reply["success"] = true.into();
+                            reply["disposition"] = "replay".into();
+                        }
+                        crate::ui_answer_ledger::LedgerLookup::AlreadyAnswered => {
+                            reply["success"] = false.into();
+                            reply["error"] = "already_answered".into();
+                            reply["disposition"] = "already_answered".into();
+                        }
+                    }
+                    return crate::jsonl::serialize_json_line(&reply).map(Some);
+                }
+            }
             let mut answer = value.clone();
             if let Some(id) = crate::extension_ui_response::answered_ui_request_id(value) {
                 answer["id"] = id.into();
@@ -1989,6 +2038,7 @@ impl RpcConnectionHandler {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            let mut dialog_matched = false;
             let (kind, resolved) = self
                 .questions
                 .lock()
@@ -1997,6 +2047,12 @@ impl RpcConnectionHandler {
             let error = match kind {
                 crate::connection_question_bridge::QuestionReply::Incomplete => {
                     Some("question_incomplete")
+                }
+                // A named answer to a settled question is unknown to it, never a second answer.
+                crate::connection_question_bridge::QuestionReply::AlreadyResolved
+                    if answer_id.is_some() =>
+                {
+                    Some("unknown_extension_ui_request")
                 }
                 crate::connection_question_bridge::QuestionReply::AlreadyResolved => {
                     Some("question_already_resolved")
@@ -2007,7 +2063,8 @@ impl RpcConnectionHandler {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .resolve(value.clone());
-                    if !matched && connection.is_some() {
+                    dialog_matched = matched;
+                    if !matched && (connection.is_some() || answer_id.is_some()) {
                         Some("unknown_extension_ui_request")
                     } else {
                         None
@@ -2018,13 +2075,34 @@ impl RpcConnectionHandler {
             if let Some(record) = resolved {
                 self.out_record(record);
             }
+            let applied = error.is_none()
+                && (kind == crate::connection_question_bridge::QuestionReply::Accepted
+                    || dialog_matched);
+            if applied && is_response {
+                ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(&request_id, answer_id.as_deref());
+            }
             if error.is_some()
                 || kind == crate::connection_question_bridge::QuestionReply::Accepted
                 || connection.is_some()
+                || answer_id.is_some()
             {
-                let mut reply = serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response","success":error.is_none()});
+                let mut reply = reply_to();
+                reply["success"] = error.is_none().into();
                 if let Some(error) = error {
                     reply["error"] = error.into();
+                    let disposition = match error {
+                        "question_already_resolved" => Some("already_answered"),
+                        "unknown_extension_ui_request" => Some("unknown"),
+                        _ => None,
+                    };
+                    if let Some(disposition) = disposition {
+                        reply["disposition"] = disposition.into();
+                    }
+                } else if is_response {
+                    reply["disposition"] = "applied".into();
                 }
                 return crate::jsonl::serialize_json_line(&reply).map(Some);
             }
