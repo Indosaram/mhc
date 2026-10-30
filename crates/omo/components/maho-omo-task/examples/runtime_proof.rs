@@ -1065,11 +1065,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(wake_subscription);
     {
-        let widgets = dag_ui
-            .widgets
+        let statuses = dag_ui
+            .status_log
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(widgets.iter().any(|(content, placement)| *placement == WidgetPlacement::BelowEditor && matches!(content, Some(WidgetContent::Lines(rows)) if rows.iter().any(|row| row.contains("native")))), "registered DAG did not render below editor");
+        assert!(statuses.iter().any(|(key, text)| key == "omo-dag" && text.as_deref().is_some_and(|text| text.starts_with("dag "))), "registered DAG did not publish its footer status: {statuses:?}");
     }
     println!("PASS registered DAG live wake source and shutdown clear");
     component.dispose();

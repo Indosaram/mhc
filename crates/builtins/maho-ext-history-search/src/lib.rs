@@ -6,7 +6,7 @@ pub mod overlay;
 use std::path::{Path,PathBuf};
 pub fn resolve_search_root(current:&Path,default:&Path)->PathBuf {
     let normalize=|path:&Path|{
-        let absolute=if path.is_absolute(){path.to_owned()}else{std::env::current_dir().expect("working directory available").join(path)};
+        let absolute=if path.is_absolute(){path.to_owned()}else{std::env::current_dir().unwrap_or_default().join(path)};
         let mut result=PathBuf::new();for component in absolute.components(){match component{std::path::Component::CurDir=>{},std::path::Component::ParentDir=>{result.pop();},component=>result.push(component.as_os_str())}}result
     };
     let default=normalize(default);

@@ -73,10 +73,10 @@ fn footer_model_context_and_ellipsis_survive_narrow_layout() {
     s.session_name = Some("deep-work-on-footer-layout".into());
     s.cost = 1.234;
     let p = plain(&s, 60);
-    assert!(p.contains("test-model:high"));
+    assert!(p.contains("test-model high"));
     assert!(p.contains("main"));
-    assert!(p.contains("(auto)"));
-    assert!(p.contains('…'));
+    assert!(p.contains("ctx 12%"));
+    assert!(!p.contains("deep-work-on-footer-layout"));
 }
 #[test]
 fn footer_path_elides_before_cache_and_cost() {
@@ -87,10 +87,13 @@ fn footer_path_elides_before_cache_and_cost() {
     s.cache_write = 50.;
     s.latest_cache_hit_rate = Some(25.);
     let p = plain(&s, 110);
-    assert!(p.starts_with('…'));
-    assert!(p.contains("coding-agent"));
-    assert!(p.contains("CH25.0%"));
-    assert!(p.contains("$1.234"));
+    assert!(p.starts_with("/…/packages/coding-agent"), "{p}");
+    assert!(p.contains("cache 25%"));
+    assert!(p.contains("$1.23"));
+    let narrow = plain(&s, 60);
+    assert!(narrow.starts_with('…') && narrow.contains("agent  main"), "{narrow}");
+    assert!(narrow.contains("$1.23") && narrow.contains("ctx 12%"), "{narrow}");
+    assert!(!narrow.contains("cache 25%"));
 }
 #[test]
 fn footer_model_survives_very_narrow_layout() {
@@ -99,15 +102,15 @@ fn footer_model_survives_very_narrow_layout() {
 #[test]
 fn footer_provider_prefix_requires_multiple_providers() {
     let mut s = snapshot();
-    assert!(plain(&s, 200).contains("(test) test-model • effort high"));
+    assert!(plain(&s, 200).contains("test test-model high"));
     s.provider_count = 1;
-    assert!(!plain(&s, 200).contains("(test)"));
+    assert!(!plain(&s, 200).contains("test test-model"));
 }
 #[test]
 fn fast_mode_marks_model_label() {
     let mut s = snapshot();
     s.fast_mode = true;
-    assert!(plain(&s, 120).contains("⚡ test-model • effort high"));
+    assert!(plain(&s, 120).contains("⚡ test test-model high"));
 }
 #[test]
 fn nonfast_mode_has_no_lightning() {
@@ -125,9 +128,9 @@ fn footer_cache_threshold_retains_ten_percent() {
     let mut s = snapshot();
     s.cache_read = 100.;
     s.latest_cache_hit_rate = Some(9.9);
-    assert!(!plain(&s, 160).contains("CH"));
+    assert!(!plain(&s, 160).contains("cache"));
     s.latest_cache_hit_rate = Some(10.);
-    assert!(plain(&s, 160).contains("CH10.0%"));
+    assert!(plain(&s, 160).contains("cache 10%"));
 }
 #[test]
 fn footer_context_not_obsolete_token_counters() {
@@ -138,25 +141,25 @@ fn footer_context_not_obsolete_token_counters() {
     s.cache_read = 1500000.;
     s.latest_cache_hit_rate = Some(97.1);
     let p = plain(&s, 160);
-    assert!(p.contains("44K/800K (5.5%) (auto)"));
-    assert!(p.contains("CH97.1%"));
-    assert!(!p.contains("cache "));
+    assert!(p.contains("ctx 6% 44K/800K"));
+    assert!(p.contains("cache 97%"));
+    assert!(!p.contains("1.5M"));
 }
 #[test]
 fn kimi_costs_are_subscription_estimates() {
     let mut s = snapshot();
     s.provider = Some("kimi-coding".into());
     s.cost = 1.234;
-    assert!(plain(&s, 120).contains("$1.234 (sub)"));
+    assert!(plain(&s, 120).contains("$1.23 sub"));
 }
 #[test]
 fn sdk_marker_toggles() {
     let mut f = FooterComponent::new(snapshot());
-    assert!(!f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains("SDK"));
+    assert!(!f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains(" sdk"));
     f.set_compaction_delegated(true);
-    assert!(f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains("SDK"));
+    assert!(f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains(" sdk"));
     f.set_compaction_delegated(false);
-    assert!(!f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains("SDK"));
+    assert!(!f.render(120, &theme()).expect("valid test fixture and successful operation")[0].contains(" sdk"));
 }
 #[test]
 fn sdk_marker_is_complete_or_absent_at_every_width() {
@@ -165,11 +168,7 @@ fn sdk_marker_is_complete_or_absent_at_every_width() {
     for w in 20..=100 {
         let p = maho_tui::utils::strip_terminal_sequences(&f.render(w, &theme()).expect("valid test fixture and successful operation")[0]);
         assert!(maho_tui::utils::visible_width(&p) <= w);
-        if !p.contains("(SDK)") {
-            assert!(!p.contains("SDK"));
-            assert!(!p.contains("DK)"));
-            assert!(!p.contains("K)"));
-        }
+        assert!(!p.contains(" sd ") && !p.ends_with(" sd") && !p.ends_with(" s"), "{w}: {p}");
     }
 }
 fn pooled(display: Option<&str>) -> maho_ai::auth::pool::slots::PooledCredential {

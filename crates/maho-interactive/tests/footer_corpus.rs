@@ -11,12 +11,15 @@ fn original_footer_corpus_is_byte_equal_at_required_widths() {
     }
 }
 #[test]
-fn extension_statuses_are_separated_by_pipes() {
+fn extension_statuses_are_gap_separated_with_memory_pinned_right() {
     let mut snapshot: FooterSnapshot = serde_json::from_str(include_str!("golden/footer-input.json")).unwrap();
-    snapshot.extension_statuses = [("brand".into(), "Maho Code".into()), ("memory".into(), "mem:agent 3h ago".into())].into_iter().collect();
+    snapshot.extension_statuses = [("brand".into(), "Maho Code".into()), ("goal".into(), "goal 3m".into()), ("memory".into(), "mem:agent 3h ago".into())].into_iter().collect();
     let theme = Theme::builtin("dark", ColorMode::Truecolor).unwrap();
     let lines = FooterComponent::new(snapshot).render(200, &theme).unwrap();
-    assert_eq!(lines.last().map(String::as_str), Some("Maho Code | mem:agent 3h ago"));
+    let last = maho_tui::utils::strip_terminal_sequences(lines.last().unwrap());
+    assert!(last.starts_with("goal 3m   Maho Code"), "{last}");
+    assert!(last.ends_with("mem agent 3h ago"), "{last}");
+    assert_eq!(maho_tui::utils::visible_width(&last), 200);
 }
 #[test]
 fn all_theme_tokens_match_pinned_palette_ansi() {

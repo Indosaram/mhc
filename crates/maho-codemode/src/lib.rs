@@ -92,13 +92,6 @@ pub fn register(
                     .upgrade()
                     .and_then(|state| state.lock().expect("extension state").context.clone());
                 if let Some(context) = context {
-                    let status = match status {
-                        Some(status) if context.mode == maho_ext_api::ExtensionMode::Tui => {
-                            let theme = context.ui.theme();
-                            Some(theme.bg("selectedBg", &theme.fg("text", &status)))
-                        }
-                        status => status,
-                    };
                     context.ui.set_status(
                         extension::eval_status::EVAL_CELLS_STATUS_KEY,
                         status.as_deref(),

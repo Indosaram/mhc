@@ -66,7 +66,10 @@ pub fn mask(region: &str) -> String {
         if matches!(c, '\r' | '\n') {
             out.push(c);
         } else {
-            out.push('\0');
+            // One NUL per UTF-8 byte keeps byte offsets aligned with the original text.
+            for _ in 0..c.len_utf8() {
+                out.push('\0');
+            }
         }
     }
     out

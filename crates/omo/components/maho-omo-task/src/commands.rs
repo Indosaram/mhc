@@ -1,22 +1,28 @@
 use std::sync::Arc;
 use maho_ext_api::{ExtensionApi, ExtensionContext, ExtensionFailure, ExtensionUiDialogOptions, NotificationType};
-use senpi_task::{manager::{TaskManager, types::ListScope}, state::{TaskRecord, TaskStatus}, steering::CancelOptions};
+use senpi_task::{manager::{TaskManager, types::ListScope}, state::{TaskRecord, TaskRunStats, TaskStatus}, steering::CancelOptions};
 use crate::status_row_format::{format_task_row, task_identity};
 
 pub trait CommandManager: Send + Sync {
     fn list(&self, scope: &ListScope) -> Vec<TaskRecord>;
     fn cancel_task(&self, id: &str, reason: &str) -> Result<(), ExtensionFailure>;
+    fn run_stats_snapshot(&self, _task: &str) -> Option<TaskRunStats> { None }
 }
 impl CommandManager for TaskManager {
     fn list(&self, scope: &ListScope) -> Vec<TaskRecord> { self.list(scope).into_iter().map(|entry| entry.record).collect() }
     fn cancel_task(&self, id: &str, reason: &str) -> Result<(), ExtensionFailure> {
         self.cancel_task(id, Some(reason), CancelOptions::default()).map(|_| ()).map_err(|error| ExtensionFailure::new(error.to_string()))
     }
+    fn run_stats_snapshot(&self, task: &str) -> Option<TaskRunStats> {
+        self.run_stats_snapshot(task)
+    }
 }
 pub fn task_list_text(manager: &dyn CommandManager, args: &str, session: Option<&str>) -> String {
     let all = args.split_whitespace().any(|token| token == "--all");
     let records = if all { manager.list(&ListScope::All) } else { session.map_or_else(Vec::new, |id| manager.list(&ListScope::ParentSession(id.into()))) };
-    if records.is_empty() { format!("No tasks in {}.", if all { "all sessions" } else { "this session" }) } else { records.iter().map(format_task_row).collect::<Vec<_>>().join("\n") }
+    if records.is_empty() { format!("No tasks in {}.", if all { "all sessions" } else { "this session" }) } else {
+        records.iter().map(|r| format_task_row(r, manager.run_stats_snapshot(&r.task_id).as_ref())).collect::<Vec<_>>().join("\n")
+    }
 }
 pub fn kill_option(record: &TaskRecord) -> String {
     let identity = task_identity(record);

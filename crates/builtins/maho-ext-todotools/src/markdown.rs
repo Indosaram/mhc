@@ -10,7 +10,7 @@ pub fn resolve_todo_markdown_path(input:&str,cwd:&Path)->PathBuf {
     let raw=raw.strip_suffix(['\'','"']).unwrap_or(raw);
     let raw=if raw.is_empty() { DEFAULT_TODO_MARKDOWN_FILE } else { raw };
     if Path::new(raw).is_absolute() { return PathBuf::from(raw); }
-    let base=if cwd.is_absolute() { cwd.to_path_buf() } else { std::env::current_dir().expect("process cwd").join(cwd) };
+    let base=if cwd.is_absolute() { cwd.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(cwd) };
     let path=base.join(raw);
     let mut resolved=PathBuf::new();
     for part in path.components() { match part { Component::CurDir=>{},Component::ParentDir=>{resolved.pop();},other=>resolved.push(other.as_os_str()) } }
