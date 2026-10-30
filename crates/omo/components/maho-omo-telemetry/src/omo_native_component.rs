@@ -534,35 +534,6 @@ impl Extension for OmoNativeTelemetryComponent {
                                     &format!("omo-native category config failed: {error}"),
                                 ),
                             }
-                            if consent.is_consented(false) {
-                                let crash_state = options
-                                    .state_dir
-                                    .clone()
-                                    .unwrap_or_else(|| get_omo_native_state_dir(&env));
-                                match crate::process_crash_records::claim_unreported_crash_records(
-                                    &ctx.agent_dir,
-                                    &crash_state,
-                                    options.now.unwrap_or_else(chrono::Utc::now),
-                                ) {
-                                    Ok(records) => {
-                                        for record in records {
-                                            session_capture(
-                                                "process_crashed",
-                                                crate::omo_native_crash::process_crashed_properties(
-                                                    &record,
-                                                    options.os_provider.as_deref().unwrap_or(
-                                                        telemetry_core::get_default_telemetry_os_provider(),
-                                                    ),
-                                                ),
-                                            );
-                                        }
-                                    }
-                                    Err(error) => warn(
-                                        ctx,
-                                        &format!("omo-native crash capture failed: {error}"),
-                                    ),
-                                }
-                            }
                             *shared_client
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner) = session;
@@ -919,7 +890,6 @@ mod tests {
             "ci",
             "event_id",
             "install_hash",
-            "machine_hash",
             "surface",
             "$process_person_profile",
             "package_version",
