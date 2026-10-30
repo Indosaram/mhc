@@ -2,31 +2,76 @@ use maho_ext_compaction::deterministic_fallback::*;
 
 #[test]
 fn provider_refusal_and_ordinary_errors_do_not_authorize_checkpoint() {
-    assert_eq!(classify_required_compaction_fallback_failure(SummaryFailure::Request { transient: false, refused: true, truncated: false }, "refused"), None);
-    assert_eq!(classify_required_compaction_fallback_failure(SummaryFailure::Other, "missing credentials"), None);
+    assert_eq!(
+        classify_required_compaction_fallback_failure(
+            SummaryFailure::Request {
+                transient: false,
+                refused: true,
+                truncated: false
+            },
+            "refused"
+        ),
+        None
+    );
+    assert_eq!(
+        classify_required_compaction_fallback_failure(SummaryFailure::Other, "missing credentials"),
+        None
+    );
 }
 
 #[test]
 fn truncated_transient_stream_has_specific_recovery_cause() {
-    assert_eq!(classify_required_compaction_fallback_failure(SummaryFailure::Request { transient: true, refused: false, truncated: true }, "truncated"), Some(RequiredCompactionFallbackFailure::UpstreamStreamTruncated));
+    assert_eq!(
+        classify_required_compaction_fallback_failure(
+            SummaryFailure::Request {
+                transient: true,
+                refused: false,
+                truncated: true
+            },
+            "truncated"
+        ),
+        Some(RequiredCompactionFallbackFailure::UpstreamStreamTruncated)
+    );
 }
 
 #[test]
 fn suppression_marker_authorizes_terminal_provider_recovery() {
-    assert_eq!(classify_required_compaction_fallback_failure(SummaryFailure::Other, "senpi:no-turn-retry:provider died"), Some(RequiredCompactionFallbackFailure::SummarizationProviderFailure));
+    assert_eq!(
+        classify_required_compaction_fallback_failure(
+            SummaryFailure::Other,
+            "senpi:no-turn-retry:provider died"
+        ),
+        Some(RequiredCompactionFallbackFailure::SummarizationProviderFailure)
+    );
 }
 
 #[test]
 fn checkpoint_retains_prepared_safe_suffix_through_real_session_reconstruction() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     use serde_json::json;
-    let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}})];
+    let entries = [
+        json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}),
+        json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}}),
+    ];
     let mut settings = default_compaction_settings();
     settings.keep_recent_tokens = 10;
     let mut preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
     preparation.first_kept_entry_id = "keep".into();
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
-    let result = create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, RecoveryMetadata { task_intent: Some("task"), ..Default::default() }, &entries, &mut diagnostics).unwrap();
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata {
+            task_intent: Some("task"),
+            ..Default::default()
+        },
+        &entries,
+        &mut diagnostics,
+    )
+    .unwrap();
     assert_eq!(result.first_kept_entry_id, "keep");
     assert_eq!(result.details.unwrap()["retainedSuffix"], "prepared");
     assert_eq!(diagnostics.candidates_checked, 1);
@@ -34,37 +79,71 @@ fn checkpoint_retains_prepared_safe_suffix_through_real_session_reconstruction()
 
 #[test]
 fn missing_boundary_rejects_without_touching_transcript() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     use serde_json::json;
-    let entries = [json!({"type":"message","id":"one","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task ".repeat(100),"timestamp":0}}), json!({"type":"message","id":"two","parentId":"one","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}})];
-    let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
+    let entries = [
+        json!({"type":"message","id":"one","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task ".repeat(100),"timestamp":0}}),
+        json!({"type":"message","id":"two","parentId":"one","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}}),
+    ];
+    let mut settings = default_compaction_settings();
+    settings.keep_recent_tokens = 1;
     let mut preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
     preparation.first_kept_entry_id = "missing".into();
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
-    let result = create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, RecoveryMetadata::default(), &entries, &mut diagnostics);
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata::default(),
+        &entries,
+        &mut diagnostics,
+    );
     assert!(result.is_none());
-    assert_eq!(diagnostics.rejection_reason, Some("missing-preparation-boundary"));
+    assert_eq!(
+        diagnostics.rejection_reason,
+        Some("missing-preparation-boundary")
+    );
 }
 
 #[test]
 fn malformed_custom_envelope_is_omitted_by_the_retained_projection_not_replayed() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     use serde_json::json;
     let entries = [
         json!({"type":"message","id":"keep","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task","timestamp":0}}),
         json!({"type":"message","id":"unsafe","parentId":"keep","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"custom","customType":"test","content":"apparently safe text","display":"not a boolean","timestamp":0}}),
     ];
-    let mut preparation = prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
+    let mut preparation =
+        prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
     preparation.first_kept_entry_id = "keep".into();
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
-    let result = create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, RecoveryMetadata::default(), &entries, &mut diagnostics).expect("omit-unsafe-v1 recovers instead of rejecting");
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata::default(),
+        &entries,
+        &mut diagnostics,
+    )
+    .expect("omit-unsafe-v1 recovers instead of rejecting");
     assert_eq!(result.first_kept_entry_id, "keep");
-    assert_eq!(result.details.as_ref().expect("details")["retainedMessagePolicy"], "omit-unsafe-v1");
+    assert_eq!(
+        result.details.as_ref().expect("details")["retainedMessagePolicy"],
+        "omit-unsafe-v1"
+    );
     // The persisted transcript is untouched; only the replay projection omits the malformed entry.
     let mut replay_entries = entries.to_vec();
     replay_entries.push(json!({"type":"compaction","id":"c","parentId":"unsafe","timestamp":"1970-01-01T00:00:00.000Z","summary":result.summary,"firstKeptEntryId":result.first_kept_entry_id,"tokensBefore":1,"details":result.details}));
     let replay = maho_core::session_manager::build_session_context(&replay_entries, None).messages;
-    assert!(!replay.iter().any(|message| message["display"] == "not a boolean"));
+    assert!(
+        !replay
+            .iter()
+            .any(|message| message["display"] == "not a boolean")
+    );
     assert_eq!(replay.last().expect("omitted placeholder")["role"], "user");
     assert_eq!(entries[1]["message"]["display"], "not a boolean");
 }
@@ -72,55 +151,97 @@ fn malformed_custom_envelope_is_omitted_by_the_retained_projection_not_replayed(
 #[test]
 fn rejection_diagnostic_bounds_identifiers_and_preserves_machine_fields() {
     let diagnostics = DeterministicFallbackDiagnostic {
-        rejection_reason: Some("unsafe-retained-content"), candidates_checked: 2,
-        candidate_rejections: vec![serde_json::json!({"firstKeptEntryId":"x".repeat(200),"unsafeEntryId":"y".repeat(200),"unsafeMessageRole":"z".repeat(60),"unsafeMessageIndex":7,"rejectionReason":"unsafe-retained-content"})],
+        rejection_reason: Some("unsafe-retained-content"),
+        candidates_checked: 2,
+        candidate_rejections: vec![
+            serde_json::json!({"firstKeptEntryId":"x".repeat(200),"unsafeEntryId":"y".repeat(200),"unsafeMessageRole":"z".repeat(60),"unsafeMessageIndex":7,"rejectionReason":"unsafe-retained-content"}),
+        ],
         ..Default::default()
     };
     let rendered = format_required_compaction_fallback_rejection(&diagnostics, false);
     let parsed: serde_json::Value = serde_json::from_str(rendered.lines().nth(1).unwrap()).unwrap();
     assert_eq!(parsed["candidatesChecked"], 2);
     assert_eq!(parsed["candidate"]["unsafeMessageIndex"], 7);
-    assert!(parsed["candidate"]["firstKeptEntryId"].as_str().unwrap().len() <= 128);
+    assert!(
+        parsed["candidate"]["firstKeptEntryId"]
+            .as_str()
+            .unwrap()
+            .len()
+            <= 128
+    );
     assert!(parsed["candidate"]["unsafeEntryId"].as_str().unwrap().len() <= 128);
-    assert!(parsed["candidate"]["unsafeMessageRole"].as_str().unwrap().len() <= 32);
+    assert!(
+        parsed["candidate"]["unsafeMessageRole"]
+            .as_str()
+            .unwrap()
+            .len()
+            <= 32
+    );
 }
 
 #[test]
 fn failed_turn_fragments_are_dropped_and_unsafe_tail_is_omitted_not_rejected() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     use serde_json::json;
     let entries = [
         json!({"type":"message","id":"keep","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task","timestamp":0}}),
         json!({"type":"message","id":"failed","parentId":"keep","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"assistant","content":[],"stopReason":"error","timestamp":0}}),
         json!({"type":"message","id":"unsafe","parentId":"failed","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":[{"type":"image","data":"x","mimeType":"image/png"}],"timestamp":0}}),
     ];
-    let mut preparation = prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
+    let mut preparation =
+        prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
     preparation.first_kept_entry_id = "keep".into();
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
-    let result = create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, RecoveryMetadata::default(), &entries, &mut diagnostics).expect("unsafe tail is omitted by the projection");
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata::default(),
+        &entries,
+        &mut diagnostics,
+    )
+    .expect("unsafe tail is omitted by the projection");
     assert_eq!(result.first_kept_entry_id, "keep");
     assert!(diagnostics.candidate_rejections.is_empty());
-    assert_eq!(entries[1]["message"]["stopReason"],"error");
+    assert_eq!(entries[1]["message"]["stopReason"], "error");
 }
 
 #[test]
 fn fallback_details_mark_the_omit_unsafe_retained_message_policy() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     use serde_json::json;
     let entries = [
         json!({"type":"message","id":"keep","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task","timestamp":0}}),
         json!({"type":"message","id":"next","parentId":"keep","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"more","timestamp":0}}),
     ];
-    let mut preparation = prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
+    let mut preparation =
+        prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
     preparation.first_kept_entry_id = "keep".into();
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
-    let result = create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, RecoveryMetadata::default(), &entries, &mut diagnostics).unwrap();
-    assert_eq!(result.details.unwrap()["retainedMessagePolicy"], "omit-unsafe-v1");
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata::default(),
+        &entries,
+        &mut diagnostics,
+    )
+    .unwrap();
+    assert_eq!(
+        result.details.unwrap()["retainedMessagePolicy"],
+        "omit-unsafe-v1"
+    );
 }
 
 #[test]
 fn unsafe_split_turn_advances_to_a_later_safe_boundary_and_probe_summary_is_honored() {
-    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
     use serde_json::json;
     // The prepared boundary is a malformed assistant with no user turn after it; omit-unsafe-v1
     // projection repairs it, so the prepared suffix is accepted and no later boundary is needed.
@@ -129,19 +250,145 @@ fn unsafe_split_turn_advances_to_a_later_safe_boundary_and_probe_summary_is_hono
         json!({"type":"message","id":"bad","parentId":"u","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"custom","customType":"t","content":"x","display":"nope","timestamp":0}}),
         json!({"type":"message","id":"tail","parentId":"bad","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":[{"type":"image","data":"x","mimeType":"image/png"}],"timestamp":0}}),
     ];
-    let mut preparation = prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
+    let mut preparation =
+        prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
     preparation.first_kept_entry_id = "u".into();
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
-    let result = create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, RecoveryMetadata { task_intent: None, summary: Some("") }, &entries, &mut diagnostics).unwrap();
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata {
+            task_intent: None,
+            summary: Some(""),
+        },
+        &entries,
+        &mut diagnostics,
+    )
+    .unwrap();
     assert_eq!(result.summary, "");
     assert!(diagnostics.candidates_checked >= 1);
-    assert_eq!(result.details.unwrap()["retainedMessagePolicy"], "omit-unsafe-v1");
+    assert_eq!(
+        result.details.unwrap()["retainedMessagePolicy"],
+        "omit-unsafe-v1"
+    );
 }
 
 #[test]
 fn unsafe_retained_suffix_error_renders_the_paused_notice() {
-    let error = UnsafeRetainedSuffixError { diagnostics: DeterministicFallbackDiagnostic { rejection_reason: Some("unsafe-retained-content"), ..Default::default() } };
+    let error = UnsafeRetainedSuffixError {
+        diagnostics: DeterministicFallbackDiagnostic {
+            rejection_reason: Some("unsafe-retained-content"),
+            ..Default::default()
+        },
+    };
     let text = error.to_string();
-    assert!(text.contains("Automatic compaction is paused for this unchanged transcript and model/settings."));
-    assert_eq!(classify_required_compaction_fallback_failure(SummaryFailure::UnsafeRetainedSuffix, &text), Some(RequiredCompactionFallbackFailure::UnsafeRetainedContent));
+    assert!(text.contains(
+        "Automatic compaction is paused for this unchanged transcript and model/settings."
+    ));
+    assert_eq!(
+        classify_required_compaction_fallback_failure(SummaryFailure::UnsafeRetainedSuffix, &text),
+        Some(RequiredCompactionFallbackFailure::UnsafeRetainedContent)
+    );
+}
+
+#[test]
+fn rejection_reason_is_chosen_by_priority_over_all_candidates() {
+    use serde_json::json;
+    let diagnostics = DeterministicFallbackDiagnostic {
+        rejection_reason: Some("atomic-tool-chain-cut"),
+        candidates_checked: 4,
+        candidate_rejections: vec![
+            json!({"firstKeptEntryId":"a","rejectionReason":"atomic-tool-chain-cut"}),
+            json!({"firstKeptEntryId":"b","rejectionReason":"retained-token-budget-exceeded","estimatedTokens":9000}),
+            json!({"firstKeptEntryId":"c","rejectionReason":"retained-token-budget-exceeded","estimatedTokens":7000}),
+            json!({"firstKeptEntryId":"d","rejectionReason":"atomic-tool-chain-cut"}),
+        ],
+        ..Default::default()
+    };
+    let rendered = format_required_compaction_fallback_rejection(&diagnostics, false);
+    let parsed: serde_json::Value = serde_json::from_str(rendered.lines().nth(1).unwrap()).unwrap();
+    assert_eq!(parsed["rejectionReason"], "retained-token-budget-exceeded");
+    assert_eq!(
+        parsed["rejectionCounts"],
+        json!({"atomic-tool-chain-cut":2,"retained-token-budget-exceeded":2})
+    );
+    assert_eq!(parsed["firstCandidate"]["firstKeptEntryId"], "a");
+    assert_eq!(parsed["bestCandidate"]["firstKeptEntryId"], "c");
+    assert_eq!(parsed["candidate"]["firstKeptEntryId"], "b");
+    assert!(rendered.contains("Use set_model to select a larger-context model"));
+}
+
+#[test]
+fn rejection_without_candidates_falls_back_to_the_recorded_reason() {
+    let diagnostics = DeterministicFallbackDiagnostic {
+        rejection_reason: Some("missing-preparation-boundary"),
+        ..Default::default()
+    };
+    let rendered = format_required_compaction_fallback_rejection(&diagnostics, false);
+    let parsed: serde_json::Value = serde_json::from_str(rendered.lines().nth(1).unwrap()).unwrap();
+    assert_eq!(parsed["rejectionReason"], "missing-preparation-boundary");
+    assert_eq!(parsed["rejectionCounts"], serde_json::json!({}));
+    assert!(parsed.get("candidate").is_none());
+}
+
+#[test]
+fn rejection_priority_orders_budget_above_invalid_cut_points() {
+    for (lower, higher) in [
+        (
+            "missing-preparation-boundary",
+            "context-reconstruction-failed",
+        ),
+        ("context-reconstruction-failed", "atomic-tool-chain-cut"),
+        ("atomic-tool-chain-cut", "unsafe-retained-content"),
+        ("unsafe-retained-content", "retained-token-budget-exceeded"),
+    ] {
+        assert!(rejection_reason_priority(lower) < rejection_reason_priority(higher));
+    }
+}
+
+#[test]
+fn over_budget_prepared_suffix_advances_to_a_later_safe_boundary() {
+    use maho_core::compaction::{
+        compaction::prepare_compaction, settings::default_compaction_settings,
+    };
+    use serde_json::json;
+    let entries = [
+        json!({"type":"message","id":"u","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task","timestamp":0}}),
+        json!({"type":"message","id":"big","parentId":"u","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"custom","customType":"t","content":"x ".repeat(400_000),"display":false,"timestamp":0}}),
+        json!({"type":"message","id":"small","parentId":"big","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"custom","customType":"t","content":"small","display":false,"timestamp":0}}),
+    ];
+    let mut preparation =
+        prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
+    preparation.first_kept_entry_id = "u".into();
+    let mut diagnostics = DeterministicFallbackDiagnostic::default();
+    let result = create_required_compaction_fallback(
+        &preparation,
+        100000,
+        RequiredCompactionFallbackFailure::SummarizationTimeout,
+        RecoveryMetadata::default(),
+        &entries,
+        &mut diagnostics,
+    )
+    .expect("a later boundary fits");
+    assert_eq!(result.first_kept_entry_id, "small");
+    assert_eq!(
+        result.details.unwrap()["retainedSuffix"],
+        "later-safe-boundary"
+    );
+    assert_eq!(
+        diagnostics.rejection_reason,
+        Some("retained-token-budget-exceeded")
+    );
+    let ids: Vec<_> = diagnostics
+        .candidate_rejections
+        .iter()
+        .map(|candidate| candidate["firstKeptEntryId"].as_str().unwrap().to_owned())
+        .collect();
+    let mut unique = ids.clone();
+    unique.dedup();
+    assert_eq!(
+        ids, unique,
+        "duplicate firstKeptEntryId candidates are skipped"
+    );
 }
