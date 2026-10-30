@@ -5,6 +5,8 @@ pub mod cooldown;
 pub mod expansion;
 pub mod hint_policy;
 pub mod log;
+pub mod pin;
+pub mod transient_network;
 pub mod probe_scheduler;
 pub mod profile_override;
 pub mod request_shape;

@@ -183,6 +183,32 @@ pub mod tool_call_display_name;
 pub mod usage_totals;
 pub mod user_text_blocks;
 
+// sync-5152 ledger lane (maho-core at-pin parity).
+pub mod agent_busy_error;
+pub mod agent_run_continuation;
+pub mod bootstrap_crash_listeners;
+pub mod browser_engine;
+pub mod continue_from_leaf;
+pub mod event_loop_slicer;
+pub mod extension_handler_stall_report;
+pub mod image_elision_placeholder;
+pub mod model_change_origin;
+pub mod model_config_thinking_schema;
+pub mod model_switch_auth_error;
+pub mod provider_default_selection;
+pub mod provider_rejected_images;
+pub mod reload_veto;
+pub mod reserved_keywords;
+pub mod session_extension_flags;
+pub mod session_failure_report;
+pub mod session_hold_errors;
+pub mod session_resident_store_size;
+pub mod session_title_reasoning;
+pub mod startup_model_pick;
+pub mod tool_result_user_words;
+pub mod turn_deadline;
+pub mod unknown_command;
+
 pub use auth_storage::{AuthStorage, CredentialKind, ReadOnlyAuthStorage, read_stored_credential};
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};
 pub use config::{
