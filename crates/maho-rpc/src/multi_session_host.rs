@@ -807,7 +807,13 @@ impl HostCore {
     fn respond_value(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
         self.respond_record(connection, session_id, value);
     }
-    fn respond_record(&self, connection: Option<&str>, session_id: &str, value: serde_json::Value) {
+    fn respond_record(
+        &self,
+        connection: Option<&str>,
+        session_id: &str,
+        mut value: serde_json::Value,
+    ) {
+        crate::lifecycle_delivery::observe_lifecycle_delivery(&mut value);
         if let Some(connection) = connection {
             match self
                 .fanout
@@ -3205,8 +3211,10 @@ fn route_session_record(
     writer: &crate::session_event_writer::SessionWriterActor,
     session_id: &str,
     owner: Option<&str>,
-    record: serde_json::Value,
+    mut record: serde_json::Value,
 ) {
+    // Every copy, socket or stdio, is stamped where the host enqueues it (senpi `observeLifecycleDelivery`).
+    crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
     let targeted = matches!(
         record["type"].as_str(),
         Some("response" | "bash_execution_update")
@@ -3657,6 +3665,26 @@ mod handoff_tests {
         let response = next(&mut second).await;
         assert_eq!(response["command"], "prompt");
         assert_eq!(response["sessionId"], "s");
+    }
+    #[tokio::test]
+    async fn socket_lifecycle_records_and_host_replies_carry_observed_at() {
+        let core = idle_core();
+        let mut client = peer(&core, "c");
+        core.fanout.lock().unwrap().attach("c", "s", 0.).unwrap();
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"session_lifecycle","lifecycle":{"seq":1}}),
+        );
+        assert!(next(&mut client).await["lifecycle"]["observedAt"].is_string());
+        core.respond_record(
+            Some("c"),
+            "s",
+            serde_json::json!({"type":"response","command":"open_session","success":true,"data":{"sessionId":"s","state":{"lifecycle":{"seq":1}}}}),
+        );
+        assert!(next(&mut client).await["data"]["state"]["lifecycle"]["observedAt"].is_string());
     }
     #[tokio::test]
     async fn late_joiner_replays_the_in_flight_message() {
