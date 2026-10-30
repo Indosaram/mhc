@@ -247,6 +247,7 @@ fn extension_registers_tool_command_and_handlers() {
     );
     SkillsExtension {
         bundled_root: Some(dir.path().to_path_buf()),
+        ..SkillsExtension::default()
     }
     .register(&mut api);
     assert!(
