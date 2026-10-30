@@ -1,7 +1,8 @@
-//! Port of senpi `utils/zip.ts` (pin 903b8336), named `zip_archive` so it does not shadow the `zip` crate.
-//! bug reports. senpi hand-writes the headers over `node:zlib`. This port uses the `zip` crate,
-//! which writes the same layout: deflate entries, UTF-8 names, a local-time DOS timestamp and no
-//! ZIP64 records for small inputs.
+//! Port of senpi `utils/zip.ts` (pin 903b8336), named `zip_archive` so it does not shadow the
+//! `zip` crate. It writes the small, classic deflate ZIP archives used by bug reports. senpi
+//! hand-writes the headers over `node:zlib`. This port uses the `zip` crate, which writes the same
+//! layout: deflate entries, UTF-8 names, a local-time DOS timestamp and no ZIP64 records for small
+//! inputs.
 
 use std::io::{Cursor, Write};
 use std::path::Path;
