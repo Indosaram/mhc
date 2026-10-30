@@ -5,8 +5,10 @@
 use crate::agents::AgentDefinition;
 use crate::ids::{IdAllocator, name_from_task};
 use crate::isolation::{TaskObserver, WorkspaceIsolation};
-use crate::models::ModelChoice;
-use crate::record::{PendingMessage, StateDir, TaskRecord, TaskStatus, now_ms, pid_alive, reconcile};
+use crate::credentials::{CredentialFailure, annotate, classify, split_model};
+use crate::models::{FallbackPlan, ModelChoice, resolve_without};
+use crate::record::{PendingMessage, StateDir, TaskRecord, TaskStatus, is_task_child, now_ms, reconcile};
+use crate::steering::{ACT_ON_RECEIVED, Admission, Transcript, read_transcript};
 use crate::runner::{CancelToken, RunOutcome, RunSpec, TaskRunner};
 use crate::settings::TaskSettings;
 use crate::summary::format_result;
@@ -344,12 +346,14 @@ impl TaskManager {
             owner_session: request.owner_session.clone(),
             root_session: request.root_session.clone(),
             pending_messages: Vec::new(),
+            dropped_providers: Vec::new(),
+            pid_started_at_ms: None,
         };
         state
             .save(&record)
             .map_err(|error| format!("cannot save the task record: {error}"))?;
         let prompt = compose_prompt(request.context.as_deref(), &request.task);
-        self.launch(record.clone(), prompt);
+        self.launch(record.clone(), prompt, request.choice.fallback.clone());
         Ok(record)
     }
 
@@ -380,8 +384,11 @@ impl TaskManager {
             .filter(|p| !p.is_empty())
             .unwrap_or(DEFAULT_RESUME_PROMPT)
             .to_owned();
-        // Messages left over from an earlier parent process run first, then the new prompt.
+        // Messages left over from an earlier parent process run first, then the new prompt; steers
+        // the child's transcript already holds are not sent again (task.md Delta D7).
+        let transcript = self.transcript(&record);
         let (record, prompt) = self.update(&record.id, |record| {
+            drop_admitted(&mut record.pending_messages, transcript.as_ref());
             let mut texts: Vec<String> = std::mem::take(&mut record.pending_messages)
                 .into_iter()
                 .map(|message| message.text)
@@ -390,11 +397,85 @@ impl TaskManager {
             prepare_next_run(record, background);
             texts.join("\n\n")
         })?;
-        self.launch(record.clone(), prompt);
+        self.launch(record.clone(), prompt, None);
         Ok(record)
     }
 
-    fn launch(self: &Arc<Self>, record: TaskRecord, prompt: String) {
+    /// The child's transcript of `record`'s session (`None` = not found or unreadable).
+    fn transcript(&self, record: &TaskRecord) -> Option<Transcript> {
+        read_transcript(&self.options.state.sessions_dir(), &record.session_id)
+    }
+
+    /// task.md Delta D4: after a failed **first** run whose text says the provider cannot
+    /// authenticate, moves the task to a model of another provider (fresh session, same first
+    /// prompt). Returns the re-queued record and the note to keep about the failed attempt.
+    fn reroute(&self, settled: &TaskRecord, plan: Option<&FallbackPlan>) -> Option<(TaskRecord, String)> {
+        let plan = plan?;
+        if settled.status != TaskStatus::Failed
+            || settled.runs != 1
+            || settled.model_source.starts_with("explicit")
+            || lock(&self.cancelling).contains_key(&settled.id)
+            || !self.options.state.read_output(&settled.id).trim().is_empty()
+        {
+            return None;
+        }
+        let (provider, id) = split_model(settled.model.as_deref()?)?;
+        let text = format!(
+            "{}\n{}",
+            settled.error.as_deref().unwrap_or_default(),
+            self.options.state.read_log_tail(&settled.id, 4_000)
+        );
+        let class = classify(&text, Some(id));
+        if !class.is_credential() {
+            return None;
+        }
+        let mut dropped = settled.dropped_providers.clone();
+        if !dropped.iter().any(|p| p == provider) {
+            dropped.push(provider.to_owned());
+        }
+        let (model, thinking) = resolve_without(plan, &dropped)?;
+        // Steers written to the refused attempt were never acted on; their pending entries ride
+        // the retry's prompt, so the inbox files go and they are not reclaimed again later.
+        for steer in lock(&self.steers).remove(&settled.id).unwrap_or_default() {
+            let _ = std::fs::remove_file(&steer.path);
+        }
+        let reason = match class {
+            CredentialFailure::Missing => "signed out",
+            _ => "credentials rejected",
+        };
+        let note = format!(
+            "First attempt on {} failed ({reason}); retried on {model}: {}",
+            settled.model.as_deref().unwrap_or_default(),
+            settled.error.as_deref().unwrap_or("credential failure").trim()
+        );
+        let base = settled
+            .model_source
+            .split(" (fallback")
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let (record, ()) = self
+            .update(&settled.id, |record| {
+                record.model = Some(model.clone());
+                record.thinking.clone_from(&thinking);
+                record.model_source = format!("{base} (fallback: {provider} {reason})");
+                record.dropped_providers.clone_from(&dropped);
+                // The failed session holds the refused turn: the retry starts a fresh one.
+                record.session_id = uuid::Uuid::new_v4().to_string();
+                record.status = TaskStatus::Queued;
+                record.pid = None;
+                record.pid_started_at_ms = None;
+                record.exit_code = None;
+                record.error = None;
+                record.finished_at_ms = None;
+                record.changed_files.clear();
+                record.hook_notes.clear();
+            })
+            .ok()?;
+        Some((record, note))
+    }
+
+    fn launch(self: &Arc<Self>, record: TaskRecord, prompt: String, plan: Option<FallbackPlan>) {
         let cancel = CancelToken::default();
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
         let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -409,17 +490,27 @@ impl TaskManager {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let id = record.id.clone();
+            let first_prompt = prompt.clone();
             let mut next = (record, prompt);
+            let mut notes = Vec::new();
             let settled = loop {
-                let settled = manager.execute(next.0, next.1, cancel.clone()).await;
-                match manager.follow_up(&settled) {
-                    Some(follow_up) => {
+                let settled = manager
+                    .execute(next.0, next.1, cancel.clone(), std::mem::take(&mut notes))
+                    .await;
+                if let Some((record, note)) = manager.reroute(&settled, plan.as_ref()) {
+                    // Not a new task and not a new delivery: the same first prompt again.
+                    notes.push(note);
+                    next = (record, first_prompt.clone());
+                    continue;
+                }
+                match manager.follow_up(settled) {
+                    Ok((settled, follow_up)) => {
                         // Each settled run of a background task is reported, also when queued
                         // messages start another run right away.
                         manager.deliver(&settled);
                         next = follow_up;
                     }
-                    None => break settled,
+                    Err(settled) => break settled,
                 }
             };
             lock(&manager.cancelling).remove(&id);
@@ -444,7 +535,13 @@ impl TaskManager {
         }
     }
 
-    async fn execute(&self, mut record: TaskRecord, prompt: String, cancel: CancelToken) -> TaskRecord {
+    async fn execute(
+        &self,
+        mut record: TaskRecord,
+        prompt: String,
+        cancel: CancelToken,
+        mut notes: Vec<String>,
+    ) -> TaskRecord {
         let state = &self.options.state;
         let permit = match &self.slots {
             Some(slots) => {
@@ -457,7 +554,7 @@ impl TaskManager {
             None => None,
         };
         if cancel.is_cancelled() {
-            return self.finish(record, &RunOutcome { cancelled: true, ..RunOutcome::default() }, Vec::new());
+            return self.finish(record, &RunOutcome { cancelled: true, ..RunOutcome::default() }, notes);
         }
         let mut prompt = prompt;
         {
@@ -480,7 +577,6 @@ impl TaskManager {
         for observer in &self.options.observers {
             observer.started_in(&record, state);
         }
-        let mut notes = Vec::new();
         let mut cwd = record.cwd.clone();
         let mut workspace = None;
         if record.isolated
@@ -519,8 +615,9 @@ impl TaskManager {
             log_path: state.log_path(&record.id),
             sessions_dir: state.sessions_dir(),
             root_session: record.root_session.clone(),
+            parent_session: record.owner_session.clone(),
         };
-        let pid_slot: Arc<Mutex<Option<u32>>> = Arc::default();
+        let pid_slot: Arc<Mutex<Option<(u32, u64)>>> = Arc::default();
         let pid_writer = Arc::clone(&pid_slot);
         let running = record.clone();
         let outcome = self
@@ -530,14 +627,18 @@ impl TaskManager {
                 &spec,
                 cancel,
                 Box::new(move |pid| {
-                    *lock(&pid_writer) = pid;
+                    let spawned_at = now_ms();
+                    *lock(&pid_writer) = pid.map(|pid| (pid, spawned_at));
                     let mut running = running;
                     running.pid = pid;
+                    running.pid_started_at_ms = pid.map(|_| spawned_at);
                     self.persist(&running);
                 }),
             )
             .await;
-        record.pid = *lock(&pid_slot);
+        let spawned = *lock(&pid_slot);
+        record.pid = spawned.map(|(pid, _)| pid);
+        record.pid_started_at_ms = spawned.map(|(_, at)| at);
         drop(permit);
         if let (Some(isolation), Some(workspace)) = (&self.options.isolation, &workspace) {
             match isolation.finish(workspace, outcome.succeeded()).await {
@@ -584,6 +685,16 @@ impl TaskManager {
         if let Some(Some(reason)) = cancel_reason {
             record.error = Some(reason);
         }
+        if record.status == TaskStatus::Failed
+            && let Some(error) = annotate(
+                record.error.as_deref(),
+                &self.options.state.read_log_tail(&record.id, 4_000),
+                record.model.as_deref(),
+            )
+        {
+            // task.md Delta D3: the remedy line for a credential failure.
+            record.error = Some(error);
+        }
         record.finished_at_ms = Some(now_ms());
         record.hook_notes = notes;
         if record.status == TaskStatus::Cancelled {
@@ -600,35 +711,84 @@ impl TaskManager {
         record
     }
 
-    /// After a run settled: reclaims steering deliveries the child did not drain, then starts the
-    /// pending messages as one follow-up run (task-control.md §1, §1.1).
-    fn follow_up(&self, settled: &TaskRecord) -> Option<(TaskRecord, String)> {
+    /// After a run settled: decides each steering delivery written during the run from the
+    /// child's transcript (task.md Delta D7), then starts the pending messages as one follow-up run
+    /// (task-control.md §1, §1.1). `Ok((settled, next run))` or `Err(settled)` when none follows;
+    /// `settled` carries a note for each steer whose fate is uncertain.
+    fn follow_up(&self, mut settled: TaskRecord) -> Result<(TaskRecord, (TaskRecord, String)), TaskRecord> {
         let written = lock(&self.steers).remove(&settled.id).unwrap_or_default();
-        let reclaimed: Vec<PendingMessage> = written
-            .into_iter()
-            .filter(|steer| std::fs::remove_file(&steer.path).is_ok())
-            .map(|steer| steer.message)
-            .collect();
-        if settled.status == TaskStatus::Cancelled || lock(&self.cancelling).contains_key(&settled.id) {
-            return None;
-        }
-        let (record, texts) = self
-            .update(&settled.id, |record| {
-                record.pending_messages.extend(reclaimed);
-                record.pending_messages.sort_by_key(|message| message.created_at);
-                if record.pending_messages.is_empty() {
-                    return Vec::new();
+        let transcript = self.transcript(&settled);
+        let mut reclaimed: Vec<PendingMessage> = Vec::new();
+        let mut settled_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut act_on_received = false;
+        let mut uncertain: Vec<String> = Vec::new();
+        for steer in written {
+            let present = steer.path.exists();
+            let _ = std::fs::remove_file(&steer.path);
+            let id = steer.message.id.clone();
+            match transcript.as_ref().map(|t| t.admission(&id)) {
+                Some(Admission::Answered) => {
+                    settled_ids.insert(id);
                 }
-                let texts: Vec<String> = std::mem::take(&mut record.pending_messages)
-                    .into_iter()
-                    .map(|message| message.text)
-                    .collect();
-                let background = record.background;
-                prepare_next_run(record, background);
-                texts
+                Some(Admission::Unanswered) => {
+                    settled_ids.insert(id);
+                    act_on_received = true;
+                }
+                Some(Admission::NotAdmitted) => reclaimed.push(steer.message),
+                None if present => reclaimed.push(steer.message),
+                None => {
+                    settled_ids.insert(id.clone());
+                    uncertain.push(id);
+                }
+            }
+        }
+        if settled.status == TaskStatus::Cancelled || lock(&self.cancelling).contains_key(&settled.id) {
+            return Err(settled);
+        }
+        let notes: Vec<String> = uncertain
+            .iter()
+            .map(|id| {
+                format!(
+                    "Steering message {id}: the child's transcript could not be read, so whether it was received is uncertain; it was not sent again."
+                )
             })
-            .ok()?;
-        (!texts.is_empty()).then(|| (record, texts.join("\n\n")))
+            .collect();
+        let result = self.update(&settled.id, |record| {
+            record.hook_notes.extend(notes.iter().cloned());
+            let notes_now = record.hook_notes.clone();
+            record.pending_messages.retain(|message| !settled_ids.contains(&message.id));
+            for message in reclaimed {
+                if !record.pending_messages.iter().any(|m| m.id == message.id) {
+                    record.pending_messages.push(message);
+                }
+            }
+            drop_admitted(&mut record.pending_messages, transcript.as_ref());
+            record.pending_messages.sort_by_key(|message| message.created_at);
+            let mut texts: Vec<String> = std::mem::take(&mut record.pending_messages)
+                .into_iter()
+                .map(|message| message.text)
+                .collect();
+            if act_on_received {
+                texts.insert(0, ACT_ON_RECEIVED.to_owned());
+            }
+            if texts.is_empty() {
+                return (notes_now, Vec::new());
+            }
+            let background = record.background;
+            prepare_next_run(record, background);
+            (notes_now, texts)
+        });
+        match result {
+            Ok((record, (notes_now, texts))) => {
+                settled.hook_notes = notes_now;
+                if texts.is_empty() {
+                    Err(settled)
+                } else {
+                    Ok((settled, (record, texts.join("\n\n"))))
+                }
+            }
+            Err(_) => Err(settled),
+        }
     }
 
     /// Waits until `id` settles or `timeout` passes (`None` = no limit); returns the current
@@ -679,7 +839,8 @@ impl TaskManager {
         if !record.status.is_active() {
             return format!("Task {id} is already {}", record.status.as_str());
         }
-        if let Some(pid) = record.pid.filter(|pid| pid_alive(*pid)) {
+        // Signal only a pid that is still this task's child (task.md Delta D8).
+        if let Some(pid) = record.pid.filter(|_| is_task_child(&record)) {
             terminate(pid);
         }
         let _ = self.update(id, |record| {
@@ -691,12 +852,21 @@ impl TaskManager {
     }
 }
 
+/// Drops pending entries whose id the child's transcript already holds (a steer recorded before
+/// the parent restarted; task.md Delta D7).
+fn drop_admitted(pending: &mut Vec<PendingMessage>, transcript: Option<&Transcript>) {
+    if let Some(transcript) = transcript {
+        pending.retain(|message| transcript.admission(&message.id) == Admission::NotAdmitted);
+    }
+}
+
 /// Resets `record` for another run in the same session.
 fn prepare_next_run(record: &mut TaskRecord, background: bool) {
     record.status = TaskStatus::Queued;
     record.runs += 1;
     record.background = background;
     record.pid = None;
+    record.pid_started_at_ms = None;
     record.exit_code = None;
     record.error = None;
     record.started_at_ms = now_ms();
