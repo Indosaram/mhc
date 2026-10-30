@@ -8605,11 +8605,7 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/resume" {
-            let view = crate::pause_footer::PauseView {
-                paused: self.session.paused(),
-                paused_notice_count: self.session.paused_notice_count(),
-                run_paused: self.session.run_paused(),
-            };
+            let view = crate::pause_footer::PauseView::of_session(&self.session);
             if crate::pause_footer::resume_command_target(&view)
                 == crate::pause_footer::ResumeCommandTarget::ResumeSession
             {
@@ -11641,11 +11637,7 @@ impl InteractiveMode {
             AgentSessionEvent::SessionPaused { .. }
             | AgentSessionEvent::SessionResumed { .. }
             | AgentSessionEvent::SessionNotice { .. } => {
-                let view = crate::pause_footer::PauseView {
-                    paused: self.session.paused(),
-                    paused_notice_count: self.session.paused_notice_count(),
-                    run_paused: self.session.run_paused(),
-                };
+                let view = crate::pause_footer::PauseView::of_session(&self.session);
                 let text = crate::pause_footer::pause_footer_text(&view);
                 self.set_extension_status(crate::pause_footer::PAUSE_STATUS_KEY, text.as_deref());
             }
