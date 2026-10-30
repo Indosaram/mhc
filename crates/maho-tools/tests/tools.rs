@@ -135,8 +135,8 @@ fn glob_is_registered_in_all_tool_index() {
 async fn exec_local(command: &str, env: std::collections::BTreeMap<String,String>) -> (Result<BashExit,ToolError>, String) {
     let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured = std::sync::Arc::clone(&output);
     let result = create_local_bash_operations(None).exec(command, std::path::Path::new("."), BashExecOptions {
-        on_data: std::sync::Arc::new(move |data| { captured.lock().expect("output lock").extend_from_slice(data); Ok(()) }),
-        signal: AbortSignal::default(), timeout: None, env,
+        on_data: std::sync::Arc::new(move |data, _| { captured.lock().expect("output lock").extend_from_slice(data); Ok(()) }),
+        redact_secrets_in_output: false, signal: AbortSignal::default(), timeout: None, env,
     }).await;
     let text = String::from_utf8_lossy(&output.lock().expect("output lock")).into_owned(); (result, text)
 }

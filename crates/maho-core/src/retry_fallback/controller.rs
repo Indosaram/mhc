@@ -44,6 +44,14 @@ mod tests {
     async fn exhausted_candidates_do_not_repeat_within_turn(){
         let mut controller=controller();assert!(controller.can_try_fallback());assert!(controller.try_fallback(FallbackReason::Transient,Default::default()).await.expect("fallback"));assert!(!controller.can_try_fallback());assert_eq!(controller.exhausted_chain_key.as_deref(),Some("p/a"));
     }
+    /// senpi test/suite/regressions/2491-request-refused.test.ts: a refused provider's candidates are skipped
+    /// for the rest of the turn.
+    #[test]
+    fn a_refused_provider_is_skipped_until_the_turn_resets(){
+        let mut controller=controller();assert!(!controller.can_try_fallback_refused(Some("p")));
+        controller.note_refused_provider("p");assert!(!controller.can_try_fallback());
+        controller.reset_turn();assert!(controller.can_try_fallback());
+    }
 }
 #[derive(Debug,Clone)]
 pub enum FallbackEvent {
@@ -69,10 +77,13 @@ pub enum FallbackLogLevel {Debug,Info}
 pub struct RetryFallbackController<D> {
     pub deps:D,pub cooldowns:SelectorCooldowns,pub state:Option<ActiveFallbackState>,pub exhausted_chain_key:Option<String>,
     tried:HashSet<String>,cache:Option<(FallbackChains,FallbackChains)>,
+    /// Conservatively skip the refused provider for this turn: this synchronous scan cannot resolve
+    /// asynchronously prepared request credentials, including per-model endpoints or keys (senpi#2491).
+    refused_providers:HashSet<String>,
 }
 impl<D:RetryFallbackDeps> RetryFallbackController<D> {
-    pub fn new(deps:D,cooldowns:SelectorCooldowns)->Self {Self{deps,cooldowns,state:None,exhausted_chain_key:None,tried:HashSet::new(),cache:None}}
-    pub fn reset_turn(&mut self){self.tried.clear();self.exhausted_chain_key=None;}
+    pub fn new(deps:D,cooldowns:SelectorCooldowns)->Self {Self{deps,cooldowns,state:None,exhausted_chain_key:None,tried:HashSet::new(),cache:None,refused_providers:HashSet::new()}}
+    pub fn reset_turn(&mut self){self.tried.clear();self.refused_providers.clear();self.exhausted_chain_key=None;}
     pub fn clear(&mut self){self.state=None;self.cache=None;self.reset_turn();}
     fn canonical_chains(&mut self)->FallbackChains {
         let chains=self.deps.settings().chains;
@@ -82,7 +93,7 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         self.cache=Some((chains,canonical.clone()));canonical
     }
     /// senpi `nextCandidate(reserve, logDecision)`: `canTryFallback` is silent, `tryFallback` logs.
-    fn next_candidate(&mut self,log_decision:bool)->Option<(String,FallbackSelector,Model)> {
+    fn next_candidate(&mut self,log_decision:bool,refused_provider:Option<&str>)->Option<(String,FallbackSelector,Model)> {
         if !self.deps.settings().model_fallback{return None;}
         let (current,thinking)=self.deps.current()?;let chains=self.canonical_chains();
         let Some((key,entries))=resolve_chain_key(&current,thinking,&chains).or_else(||self.state.as_ref().map(|s|s.chain_key.clone()))
@@ -94,6 +105,7 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         for raw in candidates_after(&entries,&format_selector(&current,thinking)) {
             let Some(selector)=parse_fallback_selector(raw,&models) else {self.skip(raw,"unknown");continue;};
             if selector.provider==current.provider&&selector.id==current.id{self.skip(raw,"self");continue;}
+            if refused_provider==Some(selector.provider.as_str())||self.refused_providers.contains(&selector.provider){self.skip(raw,"request-refused");continue;}
             let base=base_selector(&selector);
             if self.tried.contains(&base){self.skip(raw,"tried");continue;}
             if self.cooldowns.is_suppressed(&base){self.skip(raw,"suppressed");continue;}
@@ -106,11 +118,16 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         None
     }
     fn skip(&mut self,candidate:&str,skip_reason:&str){self.deps.log(FallbackLogLevel::Debug,"candidate_skipped",&[("candidate",Some(candidate)),("skipReason",Some(skip_reason))]);}
-    pub fn can_try_fallback(&mut self)->bool {self.next_candidate(false).is_some()}
+    pub fn can_try_fallback(&mut self)->bool {self.next_candidate(false,None).is_some()}
+    /// senpi `canTryFallback(refusedProvider)`: the provider whose request-level refusal is being decided,
+    /// before the walk records it.
+    pub fn can_try_fallback_refused(&mut self,refused_provider:Option<&str>)->bool {self.next_candidate(false,refused_provider).is_some()}
+    /// senpi `tryFallback(.., {refusedProvider})`: records the refused provider for the rest of the turn.
+    pub fn note_refused_provider(&mut self,provider:&str){self.refused_providers.insert(provider.to_owned());}
     pub fn has_configured_chain(&mut self)->bool {let Some((model,thinking))=self.deps.current() else{return false;};resolve_chain_key(&model,thinking,&self.canonical_chains()).is_some()}
     pub async fn try_fallback(&mut self,reason:FallbackReason,failure:SelectorFailure<'_>)->Result<bool,String> {
         let Some((current,current_thinking))=self.deps.current() else{return Ok(false);};
-        let Some((key,selector,model))=self.next_candidate(true) else{return Ok(false);};
+        let Some((key,selector,model))=self.next_candidate(true,None) else{return Ok(false);};
         let from=format_selector(&current,None);let to=format_selector(&model,None);
         if matches!(reason,FallbackReason::Transient|FallbackReason::HardError|FallbackReason::Billing){
             self.cooldowns.note(&from,failure);
