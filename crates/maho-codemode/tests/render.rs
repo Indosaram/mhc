@@ -26,9 +26,8 @@ fn live_cell_clock_and_reset_badges_are_rendered() {
     let mut result=AgentToolResult::text("");
     result.details=json!({"cells":[{"language":"js","code":"1+1","status":"running","startedAt":1000,"output":"2"}]});
     let lines=render_eval_result(&result,&args,&EvalRenderContext {now:4000.0,..Default::default()},80);
-    assert_eq!(lines[0],"╭─ eval js running ⠋ · 3s · reset · timeout 5s");
-    assert!(lines.contains(&"│ 2".into()));
-    assert_eq!(lines.last().unwrap(),"╰─");
+    // Pinned upstream (senpi 903b8336 render-live.ts): fixed-height live frame, headline first, elapsed protected last.
+    assert_eq!(lines,vec!["╭─ ⠋ 1+1 · eval js running · reset · timeout 5s · 3s","│ 1+1","│ ","│ ","├─ output","│ 2","│ ","╰─"]);
 }
 
 #[test]
