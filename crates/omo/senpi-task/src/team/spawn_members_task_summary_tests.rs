@@ -77,6 +77,7 @@ fn given_a_member_with_a_task_summary_when_spawned_then_the_manager_start_spec_c
         team_run_id: "run-1",
         manager: &manager,
         lead_session_id: "lead-session",
+        root_session_id: None,
         spawn_depth: 1,
         max_parallel: 1,
         deadline_at: now() + 60_000,
@@ -101,7 +102,7 @@ fn member_launch_extras_survive_the_manager_adapter() {
     let spec = normalize_senpi_team_spec(&json!({"members":[{"name":"worker","kind":"category","category":"quick","worktreePath":cwd,"task_summary":"Repair parser"}]}), "demo", None).expect("spec");
     let manager = CapturingManager::new();
     let result = spawn_team_members(&SpawnMembersInput {
-        spec:&spec, team_run_id:"run-1", manager:&manager, lead_session_id:"lead", spawn_depth:1,
+        spec:&spec, team_run_id:"run-1", manager:&manager, lead_session_id:"lead", root_session_id: None, spawn_depth:1,
         max_parallel:1, deadline_at:10, now:&|| 1,
         member_extension:Some(crate::team::runtime_types::SpawnMemberExtensionConfig {
             entry_path:"member-extension".into(), inherited_extensions:Some(vec!["inherited".into(),"member-extension".into()]), team_config:"{\"team\":1}".into(),
@@ -116,4 +117,33 @@ fn member_launch_extras_survive_the_manager_adapter() {
     assert_eq!(launch.member_env, Some([("SENPI_TASK_MEMBER".into(),"run-1::worker".into()),("SENPI_TASK_TEAM_CONFIG".into(),"{\"team\":1}".into())].into()));
     assert!(launch.run_in_background);
     assert_eq!(launch.root_session_id.as_deref(), Some("lead"));
+}
+
+// team/runtime.test.ts (40b6ad4796): a nested team's members record the tree root, not the lead.
+#[test]
+fn nested_team_members_record_the_tree_root() {
+    let spec = normalize_senpi_team_spec(
+        &json!({ "members": [{ "kind": "category", "category": "quick", "prompt": "work" }] }),
+        "demo",
+        None,
+    )
+    .expect("spec normalizes");
+    let manager = CapturingManager::new();
+    let result = spawn_team_members(&SpawnMembersInput {
+        spec: &spec,
+        team_run_id: "run-1",
+        manager: &manager,
+        lead_session_id: "lead",
+        root_session_id: Some("tree-root"),
+        spawn_depth: 2,
+        max_parallel: 1,
+        deadline_at: 10,
+        now: &|| 1,
+        member_extension: None,
+    });
+    assert!(result.failure.is_none());
+    let captured = manager.captured();
+    let launch = crate::manager::types::ManagerStartSpec::from(&captured[0]);
+    assert_eq!(launch.parent_session_id, "lead");
+    assert_eq!(launch.root_session_id.as_deref(), Some("tree-root"));
 }
