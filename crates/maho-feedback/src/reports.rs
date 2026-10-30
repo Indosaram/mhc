@@ -8,7 +8,7 @@ use crate::model::{
     SubmitResult,
 };
 use jiff::{SignedDuration, Timestamp};
-use maho_ext_api::SessionEntry;
+use maho_ext_api::{ComponentLogger, SessionEntry};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::future::Future;
@@ -27,7 +27,7 @@ pub const DEFAULT_SERVICE_URL: &str = "https://api.omo.dev";
 /// Report intake path under the origin.
 pub const REPORTS_PATH: &str = "/v1/reports";
 /// Version of the redaction applied to a report body.
-pub const REDACTOR_VERSION: &str = "1";
+pub const REDACTOR_VERSION: &str = "1.0.0";
 /// State directory under the agent dir (existing on-disk location).
 pub const STATE_DIR_NAME: &str = "omo-senpi";
 /// Directory under the state dir holding local reports and the sent ledger.
@@ -38,6 +38,8 @@ pub const SENT_LEDGER: &str = "sent.json";
 pub const DRAFT_TTL: SignedDuration = SignedDuration::from_secs(30 * 60);
 /// A prepare evicts the oldest drafts while this many or more are stored.
 pub const MAX_DRAFTS: usize = 8;
+/// Header carrying the lowercase hex SHA-256 of the exact body bytes sent.
+pub const CONTENT_SHA256_HEADER: &str = "x-omo-content-sha256";
 /// Longest report title, in characters.
 pub const TITLE_MAX_CHARS: usize = 120;
 
@@ -102,6 +104,8 @@ pub struct Host {
     pub os: String,
     pub arch: String,
     pub kernel: String,
+    /// Structured logger; `None` drops log lines.
+    pub logger: Option<Arc<dyn ComponentLogger>>,
 }
 
 impl Host {
@@ -373,9 +377,59 @@ pub fn report_title(description: &str) -> String {
         .collect()
 }
 
-/// Maps an intake response (spec 5.2 step 4). `caller_key` is whether the caller's own valid
-/// idempotency key was sent.
-pub fn map_response(response: &HttpResponse, caller_key: bool) -> SubmitResult {
+/// Error codes of the service contract that mean the user must sign in (again).
+pub const SIGN_IN_CODES: [&str; 7] = [
+    "unauthorized",
+    "forbidden",
+    "reauth_required",
+    "device_revoked",
+    "writer_floor_mismatch",
+    "account_deleted",
+    "anonymous_closed",
+];
+/// Error codes of the service contract that mean the service cannot take reports right now.
+pub const UNAVAILABLE_CODES: [&str; 4] = [
+    "not_available",
+    "not_configured",
+    "service_upgrade_required",
+    "internal",
+];
+/// The remaining error codes of the service contract: the report was not accepted.
+pub const REJECTED_CODES: [&str; 14] = [
+    "invalid_request",
+    "not_found",
+    "method_not_allowed",
+    "conflict",
+    "stale_base",
+    "quota_exceeded",
+    "entitlement_required",
+    "client_update_required",
+    "update_required",
+    "client_upgrade_required",
+    "unsupported_version",
+    "export_expired",
+    "step_up_required",
+    "access_not_open",
+];
+/// Code used when the answer carries no known contract code.
+pub const UNKNOWN_CODE: &str = "unknown";
+
+/// Whether a service request id is well formed: 1-128 characters of `A-Za-z0-9_-`.
+pub fn valid_request_id(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Maps an intake response (spec 5.2 step 4, delta D2). `caller_key` is whether the caller's own
+/// valid idempotency key was sent; `clean` says whether the upload redactor finds nothing in a
+/// text (a request id is kept only when it is well formed and clean).
+pub fn map_response(
+    response: &HttpResponse,
+    caller_key: bool,
+    clean: &dyn Fn(&str) -> bool,
+) -> SubmitResult {
     let body: Option<Value> = serde_json::from_str(&response.body).ok();
     if (200..300).contains(&response.status) {
         return match body
@@ -389,21 +443,39 @@ pub fn map_response(response: &HttpResponse, caller_key: bool) -> SubmitResult {
             None => SubmitResult::Refused(Refusal::Unavailable),
         };
     }
-    let code = body
-        .as_ref()
-        .and_then(|body| body.pointer("/error/code"))
+    let error = body.as_ref().and_then(|body| body.get("error"));
+    let code = error
+        .and_then(|error| error.get("code"))
         .and_then(Value::as_str);
     if response.status == 409 && code == Some("conflict") && caller_key {
         return SubmitResult::AlreadySent;
     }
-    SubmitResult::Refused(if code == Some("secret_detected") {
-        Refusal::SecretDetected
-    } else if response.status == 413 {
-        Refusal::TooLarge
-    } else if response.status == 429 {
-        Refusal::RateLimited
-    } else {
-        Refusal::Unavailable
+    let request_id = error
+        .and_then(|error| error.get("requestId"))
+        .and_then(Value::as_str)
+        .filter(|id| valid_request_id(id) && clean(id))
+        .map(str::to_owned);
+    let rejected = |code: &str| Refusal::ServiceRejected {
+        code: code.to_owned(),
+        request_id: request_id.clone(),
+    };
+    let unavailable = |code: &str| Refusal::ServiceUnavailable {
+        code: code.to_owned(),
+        request_id: request_id.clone(),
+    };
+    SubmitResult::Refused(match code {
+        Some("secret_detected") => Refusal::SecretDetected,
+        Some("rate_limited") => Refusal::RateLimited,
+        Some(code) if SIGN_IN_CODES.contains(&code) => Refusal::SignInRequired,
+        Some(code) if UNAVAILABLE_CODES.contains(&code) => unavailable(code),
+        Some(code) if REJECTED_CODES.contains(&code) => rejected(code),
+        _ => match response.status {
+            401 | 403 => Refusal::SignInRequired,
+            413 => Refusal::TooLarge,
+            429 => Refusal::RateLimited,
+            status if status >= 500 => unavailable(UNKNOWN_CODE),
+            _ => rejected(UNKNOWN_CODE),
+        },
     })
 }
 
@@ -595,16 +667,37 @@ impl Reports {
         if let Some(token) = &request.access_token {
             headers.push(("authorization".to_owned(), format!("Bearer {token}")));
         }
+        let body = body.to_string();
+        headers.push(("content-length".to_owned(), body.len().to_string()));
+        headers.push((
+            CONTENT_SHA256_HEADER.to_owned(),
+            crate::digest::sha256_hex(body.as_bytes()),
+        ));
         let http = HttpRequest {
             url: self.host.reports_url(),
             headers,
-            body: body.to_string(),
+            body,
         };
         let response = match (self.host.transport)(http).await {
             Ok(response) => response,
             Err(_) => return SubmitResult::Refused(Refusal::Unavailable),
         };
-        let result = map_response(&response, caller_key.is_some());
+        let clean = |text: &str| {
+            self.redact(text)
+                .is_some_and(|out| out.count == 0 && out.text == text)
+        };
+        let result = map_response(&response, caller_key.is_some(), &clean);
+        if let (SubmitResult::Refused(reason), Some(logger)) = (&result, &self.host.logger) {
+            logger.warn(
+                "feedback.submit.refused",
+                Some(&json!({
+                    "reason": reason.as_str(),
+                    "code": reason.code(),
+                    "requestId": reason.request_id(),
+                    "status": response.status,
+                })),
+            );
+        }
         if let SubmitResult::Sent { report_id } = &result
             && let Some(token) =
                 serde_json::from_str::<Value>(&response.body)
