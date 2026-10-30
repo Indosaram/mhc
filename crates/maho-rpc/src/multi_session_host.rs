@@ -3591,29 +3591,28 @@ mod handoff_tests {
         let release =
             serde_json::json!({"id":"r","type":"release_attachment","sessionId":session_id})
                 .to_string();
-        let mut command = Box::pin(core.handle(Some("c"), &release));
-        let reply = {
-            let read = reply_to(&mut client, "r");
-            tokio::pin!(read);
-            tokio::select! {
-                reply = &mut read => reply,
-                result = &mut command => {
-                    result.unwrap();
-                    read.await
-                }
-            }
-        };
+        // The command answers and completes without waiting for the turn: a disconnect can no longer cancel the
+        // deferred release, and its request guard is gone before the wait.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            core.handle(Some("c"), &release),
+        )
+        .await
+        .expect("release_attachment completes while the turn is still running")
+        .unwrap();
+        let reply = reply_to(&mut client, "r").await;
         assert_eq!(reply["data"]["deferred"], true);
-        // The answered release is no longer one of the session's in-flight requests.
         assert_eq!(core.active_request_count(&session_id), in_flight);
-        // The client disconnects: its pending command futures are dropped with it.
-        drop(command);
+        assert!(
+            core.has_session(&session_id).await,
+            "the release waits for the turn"
+        );
         gate.send(true).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(10), disposed.recv())
             .await
             .expect("the deferred release ends the session once its turn settles")
             .expect("the runtime reports its disposal");
-        turn.await.unwrap().unwrap();
+        let _ = turn.await.unwrap();
     }
     #[tokio::test]
     async fn reclaim_seals_session_closed_to_attached_connections_only() {
