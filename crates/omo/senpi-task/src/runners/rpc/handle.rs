@@ -277,7 +277,7 @@ impl RpcChildHandle {
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        Err(RpcCommandError::new(label, detail).into())
+        Err(RpcCommandError::with_refusal(label, detail, &response).into())
     }
 
     fn begin_turn(&self) {

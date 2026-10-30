@@ -47,6 +47,8 @@ impl RunnerFailureKind {
 pub struct RunnerFailure {
     pub kind: RunnerFailureKind,
     pub message: String,
+    /// The classified `failure.cause` (`classifyStartCause`); only typed facts, never the raw error.
+    pub cause: Option<crate::manager::start_failure_cause::StartCause>,
 }
 
 impl RunnerFailure {
@@ -54,7 +56,16 @@ impl RunnerFailure {
         Self {
             kind,
             message: message.into(),
+            cause: None,
         }
+    }
+
+    pub fn with_cause(
+        mut self,
+        cause: Option<crate::manager::start_failure_cause::StartCause>,
+    ) -> Self {
+        self.cause = cause;
+        self
     }
 }
 
