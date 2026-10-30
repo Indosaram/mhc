@@ -893,7 +893,11 @@ impl HostCore {
         );
     }
     /// Feed one inbound JSONL line on one connection (senpi's `handle` inside `createHostCore`).
-    pub async fn handle(&self, connection: Option<&str>, line: &str) -> Result<(), String> {
+    pub async fn handle(
+        self: &std::sync::Arc<Self>,
+        connection: Option<&str>,
+        line: &str,
+    ) -> Result<(), String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             self.error(
                 connection,
@@ -2227,17 +2231,7 @@ impl HostCore {
                         && let Some(worker) =
                             workers.worker(&session_id).filter(|worker| worker.busy())
                     {
-                        let mut settled = worker.settled();
-                        let core = std::sync::Arc::clone(self);
-                        let session_id = session_id.clone();
-                        tokio::spawn(async move {
-                            while worker.busy() && !worker.is_stopped() {
-                                if settled.changed().await.is_err() {
-                                    break;
-                                }
-                            }
-                            core.release_owned_session(&session_id).await;
-                        });
+                        self.release_worker_after_settle(worker, session_id.clone());
                         continue;
                     }
                     self.release_owned_session(&session_id).await;
@@ -2268,45 +2262,70 @@ impl HostCore {
                     && let Some(session) =
                         session.filter(maho_core::agent_session::AgentSession::is_streaming)
                 {
-                    let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
-                    let settled = std::sync::Arc::new(std::sync::Mutex::new(Some(settled_tx)));
-                    let notify = std::sync::Arc::clone(&settled);
-                    let subscription = session.subscribe(std::sync::Arc::new(
-                        move |event: &maho_ext_api::AgentSessionEvent| {
-                            if matches!(
-                                event,
-                                maho_ext_api::AgentSessionEvent::AgentSettled
-                                    | maho_ext_api::AgentSessionEvent::AgentIdle
-                            ) && let Some(sender) = notify
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .take()
-                            {
-                                let _ = sender.send(());
-                            }
-                        },
-                    ));
-                    // The turn may have settled between the check and the subscription.
-                    if !session.is_streaming()
-                        && let Some(sender) = settled
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take()
-                    {
-                        let _ = sender.send(());
-                    }
-                    let core = std::sync::Arc::clone(self);
-                    let session_id = session_id.clone();
-                    tokio::spawn(async move {
-                        let _ = settled_rx.await;
-                        drop(subscription);
-                        core.release_owned_session(&session_id).await;
-                    });
+                    self.release_after_settle(session, session_id.clone());
                     continue;
                 }
                 self.release_owned_session(&session_id).await;
             }
         }
+    }
+    /// senpi `releaseDisconnectAttachment`'s deferral: subscribes to the turn's settlement and releases the handle
+    /// from a detached task, so neither a dropped connection nor a cancelled command future can skip the release.
+    fn release_after_settle(
+        self: &std::sync::Arc<Self>,
+        session: maho_core::agent_session::AgentSession,
+        session_id: String,
+    ) {
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
+        let settled = std::sync::Arc::new(std::sync::Mutex::new(Some(settled_tx)));
+        let notify = std::sync::Arc::clone(&settled);
+        let subscription = session.subscribe(std::sync::Arc::new(
+            move |event: &maho_ext_api::AgentSessionEvent| {
+                if matches!(
+                    event,
+                    maho_ext_api::AgentSessionEvent::AgentSettled
+                        | maho_ext_api::AgentSessionEvent::AgentIdle
+                ) && let Some(sender) = notify
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    let _ = sender.send(());
+                }
+            },
+        ));
+        // The turn may have settled between the check and the subscription.
+        if !session.is_streaming()
+            && let Some(sender) = settled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            let _ = sender.send(());
+        }
+        let core = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = settled_rx.await;
+            drop(subscription);
+            core.release_owned_session(&session_id).await;
+        });
+    }
+    /// The worker form of [`Self::release_after_settle`] (senpi `worker.subscribeSettled`).
+    fn release_worker_after_settle(
+        self: &std::sync::Arc<Self>,
+        worker: std::sync::Arc<crate::session_worker_client::SessionWorkerClient>,
+        session_id: String,
+    ) {
+        let mut settled = worker.settled();
+        let core = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            while worker.busy() && !worker.is_stopped() {
+                if settled.changed().await.is_err() {
+                    break;
+                }
+            }
+            core.release_owned_session(&session_id).await;
+        });
     }
     /// One owned handle's refcounted detach (senpi `releaseOwnedSession`): tolerant of a lost race,
     /// and only the LAST attachment disposes the binding and closes the runtime.
@@ -2741,7 +2760,7 @@ impl HostCore {
     /// last one, and a turn in flight runs to settlement first (`deferred: true`). A drain owns every outstanding
     /// physical hold until its park, so it is never preempted.
     async fn release_attachment(
-        &self,
+        self: &std::sync::Arc<Self>,
         connection: Option<&str>,
         id: Option<String>,
         session_id: String,
@@ -2779,53 +2798,42 @@ impl HostCore {
         if last {
             self.release_owner_attachment(owner, &session_id).await;
         }
-        if self.is_draining() {
-            self.success(
-                connection,
-                id,
-                "release_attachment",
-                Some(crate::session_attachment_commands::release_reply(false)),
-                Some(session_id),
-            );
-            return;
-        }
-        // senpi `releaseDisconnectAttachment`: only the release that would end the session can abort its turn.
+        // The drain owns every outstanding physical hold until its park; never preempt it.
+        let deferred = !self.is_draining() && self.release_disconnect_attachment(&session_id).await;
+        self.success(
+            connection,
+            id,
+            "release_attachment",
+            Some(crate::session_attachment_commands::release_reply(deferred)),
+            Some(session_id),
+        );
+    }
+    /// senpi `releaseDisconnectAttachment`: only the release that would end the session can abort its turn, so that
+    /// one is deferred - never skipped - until the turn settles, from a task no connection owns. `true` means the
+    /// settlement owns the final release; otherwise the release has completed before this returns.
+    async fn release_disconnect_attachment(self: &std::sync::Arc<Self>, session_id: &str) -> bool {
         let ends_session = |retained: bool, attachments: i64| !retained && attachments <= 1;
         if let Some(workers) = self.workers.clone() {
             let busy = workers
-                .with_entry(&session_id, |entry| {
+                .with_entry(session_id, |entry| {
                     entry.close.state == crate::session_registry::RpcSessionState::Open
                         && ends_session(entry.close.retain_on_disconnect, entry.close.attachments)
                 })
                 .unwrap_or(false)
-                .then(|| workers.worker(&session_id))
+                .then(|| workers.worker(session_id))
                 .flatten()
                 .filter(|worker| worker.busy());
-            self.success(
-                connection,
-                id,
-                "release_attachment",
-                Some(crate::session_attachment_commands::release_reply(
-                    busy.is_some(),
-                )),
-                Some(session_id.clone()),
-            );
             if let Some(worker) = busy {
-                // The reply is out; this command stays in flight until the turn settles (senpi `subscribeSettled`).
-                let mut settled = worker.settled();
-                while worker.busy() && !worker.is_stopped() {
-                    if settled.changed().await.is_err() {
-                        break;
-                    }
-                }
+                self.release_worker_after_settle(worker, session_id.to_owned());
+                return true;
             }
-            self.release_owned_session(&session_id).await;
-            return;
+            self.release_owned_session(session_id).await;
+            return false;
         }
         let streaming = {
             let registry = self.registry.lock().await;
             registry
-                .get(&session_id)
+                .get(session_id)
                 .filter(|entry| {
                     entry.close.state == crate::session_registry::RpcSessionState::Open
                         && ends_session(entry.close.retain_on_disconnect, entry.close.attachments)
@@ -2834,47 +2842,12 @@ impl HostCore {
                 .map(|runtime| runtime.session().clone())
                 .filter(maho_core::agent_session::AgentSession::is_streaming)
         };
-        self.success(
-            connection,
-            id,
-            "release_attachment",
-            Some(crate::session_attachment_commands::release_reply(
-                streaming.is_some(),
-            )),
-            Some(session_id.clone()),
-        );
         if let Some(session) = streaming {
-            let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
-            let settled = std::sync::Arc::new(std::sync::Mutex::new(Some(settled_tx)));
-            let notify = std::sync::Arc::clone(&settled);
-            let subscription = session.subscribe(std::sync::Arc::new(
-                move |event: &maho_ext_api::AgentSessionEvent| {
-                    if matches!(
-                        event,
-                        maho_ext_api::AgentSessionEvent::AgentSettled
-                            | maho_ext_api::AgentSessionEvent::AgentIdle
-                    ) && let Some(sender) = notify
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                    {
-                        let _ = sender.send(());
-                    }
-                },
-            ));
-            // The turn may have settled between the check and the subscription.
-            if !session.is_streaming()
-                && let Some(sender) = settled
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-            {
-                let _ = sender.send(());
-            }
-            let _ = settled_rx.await;
-            drop(subscription);
+            self.release_after_settle(session, session_id.to_owned());
+            return true;
         }
-        self.release_owned_session(&session_id).await;
+        self.release_owned_session(session_id).await;
+        false
     }
     /// senpi `reclaimSession`: ends the live session holding `sessionPath` for a caller that names its durable id
     /// and this host, once no other connection is attached. Admission, the visible attach and the claim of ALL the
@@ -3369,6 +3342,223 @@ mod handoff_tests {
         .unwrap()
         .unwrap();
         serde_json::from_str(&line).unwrap()
+    }
+    /// A host whose in-process sessions run one faux turn held at its first chunk until `gate` opens; `disposed`
+    /// fires when a runtime is torn down.
+    fn gated_core(
+        dir: &std::path::Path,
+    ) -> (
+        std::sync::Arc<HostCore>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+    ) {
+        let (gate, gate_rx) = tokio::sync::watch::channel(false);
+        let (calls_tx, calls) = tokio::sync::mpsc::unbounded_channel();
+        let (disposed_tx, disposed) = tokio::sync::mpsc::unbounded_channel();
+        let cwd = dir.to_string_lossy().into_owned();
+        let factory_cwd = cwd.clone();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |_profile: crate::session_registry::RpcSessionLaunchProfile| {
+                let cwd = factory_cwd.clone();
+                let gate_rx = gate_rx.clone();
+                let calls_tx = calls_tx.clone();
+                let disposed_tx = disposed_tx.clone();
+                Box::pin(async move {
+                    use maho_ai::providers::faux::{
+                        FauxAssistantMessageOptions, FauxTokenSize, RegisterFauxProviderOptions,
+                        faux_assistant_message, faux_provider,
+                    };
+                    use maho_core::settings_manager::{InMemorySettingsStorage, SettingsManager};
+                    let provider = faux_provider(RegisterFauxProviderOptions {
+                        api: Some("faux".to_owned()),
+                        token_size: Some(FauxTokenSize {
+                            min: Some(1),
+                            max: Some(1),
+                        }),
+                        scheduler_hook: Some(std::sync::Arc::new(move || {
+                            let _ = calls_tx.send(());
+                            let mut gate = gate_rx.clone();
+                            Box::pin(async move {
+                                while !*gate.borrow_and_update() {
+                                    if gate.changed().await.is_err() {
+                                        break;
+                                    }
+                                }
+                            })
+                        })),
+                        ..Default::default()
+                    })
+                    .map_err(|error| error.to_string())?;
+                    let model = provider
+                        .get_model(Some("faux-1"))
+                        .ok_or("the faux provider registers faux-1")?;
+                    provider.set_responses(vec![
+                        faux_assistant_message("done", FauxAssistantMessageOptions::default())
+                            .into(),
+                    ]);
+                    let credentials =
+                        maho_core::auth_storage::AuthStorage::in_memory(Default::default());
+                    credentials.set(
+                        &model.provider,
+                        Some(serde_json::json!({"type":"api_key","key":"faux-test"})),
+                    )?;
+                    let dir = std::path::PathBuf::from(&cwd);
+                    let mut models = maho_core::model_runtime::ModelRuntime::create_sync(
+                        maho_core::model_runtime::CreateModelRuntimeOptions {
+                            models_path: Some(dir.join("models.json")),
+                            auth_path: Some(dir.join("auth.json")),
+                            credentials: Some(std::sync::Arc::new(credentials)),
+                            providers: Some(vec![provider.provider.clone()]),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                    models.register_provider(
+                        &model.provider,
+                        maho_core::provider_composer::ProviderConfigInput {
+                            config: maho_core::model_config_schema::ModelsJsonProvider {
+                                api_key: Some("faux-test".into()),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    )?;
+                    let session = maho_core::sdk::create_agent_session(
+                        maho_core::sdk::CreateAgentSessionOptions {
+                            cwd: Some(cwd.clone()),
+                            agent_dir: Some(cwd.clone()),
+                            model_runtime: Some(models),
+                            model: Some(model),
+                            session_manager: Some(
+                                maho_core::session_manager::SessionManager::in_memory(
+                                    &cwd, None, None,
+                                ),
+                            ),
+                            settings_manager: Some(SettingsManager::from_storage(
+                                Box::new(InMemorySettingsStorage::default()),
+                                false,
+                            )),
+                            no_tools: Some(maho_core::sdk::NoToolsMode::All),
+                            auto_title_sessions: Some(false),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .session;
+                    let registry = session.model_registry().clone();
+                    let services = maho_core::agent_session_services::AgentSessionServices {
+                        cwd: cwd.clone(),
+                        agent_dir: cwd,
+                        auth_storage: std::sync::Arc::clone(&registry.auth_storage),
+                        model_registry: registry,
+                        settings_manager: SettingsManager::from_storage(
+                            Box::new(InMemorySettingsStorage::default()),
+                            false,
+                        ),
+                        diagnostics: vec![],
+                    };
+                    let mut runtime = maho_core::agent_session_runtime::AgentSessionRuntime::new(
+                        session,
+                        services,
+                        vec![],
+                        None,
+                        None,
+                    );
+                    runtime.set_before_session_invalidate(Some(Box::new(move || {
+                        let _ = disposed_tx.send(());
+                    })));
+                    Ok(runtime)
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<
+                                        maho_core::agent_session_runtime::AgentSessionRuntime,
+                                        String,
+                                    >,
+                                > + Send,
+                        >,
+                    >
+            },
+        );
+        let writer = std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+            tokio::io::sink(),
+        ));
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: dir.to_path_buf(),
+                cwd,
+                create_runtime,
+                capabilities: Vec::new(),
+                close_grace_ms: 10_000,
+            },
+            writer,
+        ));
+        (core, gate, calls, disposed)
+    }
+    async fn reply_to(
+        reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
+        id: &str,
+    ) -> serde_json::Value {
+        loop {
+            let record = next(reader).await;
+            if record["id"] == id {
+                return record;
+            }
+        }
+    }
+    #[tokio::test]
+    async fn a_deferred_release_attachment_survives_its_connection_dropping_mid_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, gate, mut calls, mut disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        let opened = reply_to(&mut client, "o").await;
+        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
+        let prompt =
+            serde_json::json!({"id":"p","type":"prompt","sessionId":session_id,"message":"hi"})
+                .to_string();
+        let prompting = std::sync::Arc::clone(&core);
+        let turn = tokio::spawn(async move { prompting.handle(Some("c"), &prompt).await });
+        tokio::time::timeout(std::time::Duration::from_secs(10), calls.recv())
+            .await
+            .expect("the turn reaches the provider")
+            .expect("the provider stays alive");
+        let in_flight = core.active_request_count(&session_id);
+        let release =
+            serde_json::json!({"id":"r","type":"release_attachment","sessionId":session_id})
+                .to_string();
+        let mut command = Box::pin(core.handle(Some("c"), &release));
+        let reply = {
+            let read = reply_to(&mut client, "r");
+            tokio::pin!(read);
+            tokio::select! {
+                reply = &mut read => reply,
+                result = &mut command => {
+                    result.unwrap();
+                    read.await
+                }
+            }
+        };
+        assert_eq!(reply["data"]["deferred"], true);
+        // The answered release is no longer one of the session's in-flight requests.
+        assert_eq!(core.active_request_count(&session_id), in_flight);
+        // The client disconnects: its pending command futures are dropped with it.
+        drop(command);
+        gate.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), disposed.recv())
+            .await
+            .expect("the deferred release ends the session once its turn settles")
+            .expect("the runtime reports its disposal");
+        turn.await.unwrap().unwrap();
     }
     #[tokio::test]
     async fn a_dropped_connection_gives_up_every_attachment_it_held() {
