@@ -294,7 +294,7 @@ pub fn create_terminal_failure_assistant_message(
             error_message
         }),
         provider_diagnostic,
-        error_cause: partial_message.and_then(|message| message.error_cause),
+        error_cause: partial_message.and_then(|message| message.error_cause.clone()),
         abort_source,
         failure_source: None,
         raw_stop_reason: None,

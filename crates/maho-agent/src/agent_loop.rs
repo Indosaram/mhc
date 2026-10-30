@@ -1303,7 +1303,9 @@ async fn stream_assistant_response(
                     stop_details: None,
                     deferred: None,
                     error_message: None,
-                    error_cause: partial.as_ref().and_then(|message| message.error_cause),
+                    error_cause: partial
+                        .as_ref()
+                        .and_then(|message| message.error_cause.clone()),
                     provider_diagnostic: None,
                     abort_source: None,
                     failure_source: None,
