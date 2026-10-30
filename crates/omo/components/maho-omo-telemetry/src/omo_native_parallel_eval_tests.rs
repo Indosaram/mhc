@@ -9,3 +9,23 @@ fn record(r:&mut ParallelTelemetryRegistry,session:&str,kind:&str,at:u32) {r.rec
 #[test] fn rejected_consumes_correlation() {let mut r=ParallelTelemetryRegistry::default();record(&mut r,"s","start",1000);let mut e=event();e["version"]=json!(2);r.record_eval_execution(&e);r.record_eval_execution(&event());let s=r.snapshot("s").unwrap();assert_eq!(s.eval_execution.event_count,0);assert_eq!(s.eval_execution.rejected_count,1);}
 #[test] fn unavailable_bus_keeps_wave() {let mut r=ParallelTelemetryRegistry::default();record(&mut r,"s","start",1000);record(&mut r,"s","end",1030);let s=r.snapshot("s").unwrap();assert!(!s.eval_execution_event_bus_available);assert_eq!(s.assembly.counters.paired_calls,1);assert_eq!(s.eval_execution.event_count,0);}
 #[test] fn late_eval_after_clear_no_resurrection() {let mut r=ParallelTelemetryRegistry::default();record(&mut r,"s","start",1000);r.clear("s");r.record_eval_execution(&event());assert_eq!(r.size(),0);}
+
+// omo-native-parallel-eval.test.ts: an event-capable host installs exactly one eval event handler.
+// The native EventBus exposes no handler count, so a single emit must be consumed exactly once.
+#[tokio::test]
+async fn event_capable_host_installs_exactly_one_eval_handler() {
+    use crate::telemetry_test_support::{api, context, dispatch};
+    use maho_ext_api::ExtensionEvent;
+    use std::sync::{Arc, Mutex};
+    let home = tempfile::tempdir().expect("telemetry home");
+    let mut api = api();
+    let registry = Arc::new(Mutex::new(ParallelTelemetryRegistry::default()));
+    let _subscription = crate::omo_native_parallel::register_omo_native_parallel_telemetry(&mut api, Arc::clone(&registry), Arc::new(|| 1000.0));
+    let ctx = context(home.path(), "s");
+    dispatch(&api, ExtensionEvent::ToolExecutionStart { parent_tool_call_id: None, tool_call_id: "cell".into(), tool_name: "eval".into(), args: json!({}) }, &ctx).await;
+    api.events.emit(crate::omo_native_eval::SENPI_EVAL_EXECUTION_EVENT, &event());
+    let state = registry.lock().expect("registry");
+    let snapshot = state.snapshot("s").expect("session snapshot");
+    assert!(snapshot.eval_execution_event_bus_available);
+    assert_eq!(snapshot.eval_execution.event_count, 1);
+}
