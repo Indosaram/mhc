@@ -881,7 +881,7 @@ impl SessionSnapshots {
             .map(|line| match serde_json::from_str::<Value>(line) {
                 Ok(mut record) => {
                     crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
-                    serde_json::to_string(&record).unwrap_or_else(|_| line.clone())
+                    crate::jsonl::serialize_json_line(&record).unwrap_or_else(|_| line.clone())
                 }
                 Err(_) => line.clone(),
             })
@@ -947,10 +947,18 @@ mod tests {
         for seq in [1, 2] {
             let record =
                 json!({"type":"session_lifecycle","sessionId":"s","lifecycle":{"seq":seq}});
-            snapshots.remember("s", &record, record.to_string(), None, None);
+            snapshots.remember(
+                "s",
+                &record,
+                crate::jsonl::serialize_json_line(&record).unwrap(),
+                None,
+                None,
+            );
         }
         let replay = snapshots.replay("s", false, false, 0.).unwrap();
         assert_eq!(replay.len(), 1);
+        // The re-stamped lifecycle keeps its JSONL framing, or it runs into the next replayed record.
+        assert!(replay[0].ends_with('\n'));
         assert_eq!(
             serde_json::from_str::<Value>(&replay[0]).unwrap()["lifecycle"]["seq"],
             2
