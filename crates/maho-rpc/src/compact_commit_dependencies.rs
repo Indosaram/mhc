@@ -40,10 +40,7 @@ impl<Key: Clone + Eq + Hash> CompactCommitDependencies<Key> {
             return;
         }
         for id in &pending {
-            self.dependants
-                .entry(*id)
-                .or_default()
-                .insert(key.clone());
+            self.dependants.entry(*id).or_default().insert(key.clone());
         }
         self.pending.insert(key, pending);
     }
