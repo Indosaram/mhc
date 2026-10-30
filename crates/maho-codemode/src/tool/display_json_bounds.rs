@@ -42,9 +42,7 @@ fn serialized_length(value: &Value) -> usize {
             2 + entries.len().saturating_sub(1)
                 + entries
                     .iter()
-                    .map(|(key, value)| {
-                        json_string_length(key) + 1 + serialized_length(value)
-                    })
+                    .map(|(key, value)| json_string_length(key) + 1 + serialized_length(value))
                     .sum::<usize>()
         }
     }
