@@ -112,6 +112,24 @@ impl CredentialStore for AuthStorageCredentialStore {
         let Some(raw) = self.raw(provider_id) else {
             return Ok(None);
         };
+        // A configuration reference key resolves against the auth.json that declares it (senpi#3858).
+        if raw.get("key").is_some_and(serde_json::Value::is_object)
+            || raw
+                .get("accounts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|accounts| accounts.iter().any(|account| account.get("key").is_some_and(serde_json::Value::is_object)))
+        {
+            let auth_path = self.auth_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+            let mut resolved = crate::auth_credential_values::resolve_stored_credential(raw, provider_id, auth_path.as_deref())
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            // Pooled reference keys resolve only through `read_slot`; the flat read never carries them.
+            if let Some(accounts) = resolved.get_mut("accounts").and_then(serde_json::Value::as_array_mut) {
+                accounts.retain(|account| !account.get("key").is_some_and(serde_json::Value::is_object));
+            }
+            check_abort(&options)?;
+            return Self::decode(resolved).map(Some);
+        }
         let credential = Self::decode(raw)?;
         check_abort(&options)?;
         Ok(Some(match credential {
@@ -129,6 +147,39 @@ impl CredentialStore for AuthStorageCredentialStore {
             }
             other => other,
         }))
+    }
+
+    fn has_read_slot(&self) -> bool {
+        true
+    }
+
+    /// senpi `AuthStorage.readSlot`: a runtime key projects as the slot; otherwise only the selected slot's
+    /// reference resolves (senpi#3858).
+    async fn read_slot(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        check_abort(&options)?;
+        if let Some(key) = self.credentials.runtime_api_key(provider_id) {
+            let flat = PooledCredential::from(Credential::ApiKey(ApiKeyCredential {
+                key: Some(key),
+                env: None,
+                ..Default::default()
+            }));
+            return Ok(project_slot(Some(&flat), slot_name));
+        }
+        let raw = self.raw(provider_id);
+        check_abort(&options)?;
+        let auth_path = self.auth_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+        let flat_path = auth_path.clone();
+        let provider = provider_id.to_owned();
+        crate::auth_credential_values::resolve_stored_slot(raw, provider_id, slot_name, auth_path.as_deref(), |flat| async move {
+            crate::auth_credential_values::resolve_stored_credential(flat, &provider, flat_path.as_deref()).await
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!(error))
     }
 
     async fn list(
@@ -281,6 +332,11 @@ fn compose_provider_auth(
 }
 
 impl RuntimeAuth {
+    /// senpi `StoredProviderEnvReader` (senpi#4324): ambient auth reads another provider's stored api-key `env`
+    /// (routing metadata such as `GOOGLE_CLOUD_PROJECT`, never keys) through the auth context.
+    fn auth_context(&self) -> maho_ai::auth::context::StoredEnvAuthContext {
+        maho_ai::auth::context::StoredEnvAuthContext::new(Arc::new(DefaultAuthContext), self.store.clone())
+    }
     fn provider_auth(&self, provider: &dyn Provider) -> ProviderAuth {
         compose_provider_auth(&self.config, &self.extensions, provider)
     }
@@ -339,7 +395,7 @@ impl ModelsAuth for RuntimeAuth {
                 provider.id(),
                 &provider_auth,
                 &self.store,
-                &DefaultAuthContext,
+                &self.auth_context(),
                 Some(overrides),
                 &signal,
             )
@@ -393,7 +449,7 @@ impl ModelsAuth for RuntimeAuth {
                 id,
                 &provider_auth,
                 &self.store,
-                &DefaultAuthContext,
+                &self.auth_context(),
                 stored.as_ref(),
                 signal,
             )
@@ -444,7 +500,7 @@ impl ModelsAuth for RuntimeAuth {
                     return Ok(None);
                 };
                 return oauth
-                    .check(&DefaultAuthContext, Some(credential), signal)
+                    .check(&self.auth_context(), Some(credential), signal)
                     .await
                     .map_err(|error| check_error("OAuth", error));
             }
@@ -452,14 +508,14 @@ impl ModelsAuth for RuntimeAuth {
                 let stored = credential.as_ref().and_then(Credential::as_api_key);
                 if api_key.has_check() {
                     if let Some(check) = api_key
-                        .check(&DefaultAuthContext, stored, signal)
+                        .check(&self.auth_context(), stored, signal)
                         .await
                         .map_err(|error| check_error("API key", error))?
                     {
                         return Ok(Some(check));
                     }
                 } else if let Some(result) = api_key
-                    .resolve(&DefaultAuthContext, stored, signal)
+                    .resolve(&self.auth_context(), stored, signal)
                     .await
                     .map_err(|error| check_error("API key", error))?
                 {
@@ -472,7 +528,7 @@ impl ModelsAuth for RuntimeAuth {
             }
             match &provider_auth.oauth {
                 Some(oauth) => oauth
-                    .check(&DefaultAuthContext, None, signal)
+                    .check(&self.auth_context(), None, signal)
                     .await
                     .map_err(|error| check_error("OAuth", error)),
                 None => Ok(None),

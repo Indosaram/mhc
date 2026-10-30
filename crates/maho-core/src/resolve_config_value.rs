@@ -4,7 +4,13 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use maho_ai::utils::config_reference::{ConfigConcatPart, ConfigReference};
+use maho_ai::utils::config_reference_error::ConfigReferenceError;
 use regex::Regex;
+
+use crate::config_reference_resolver::{
+    ConfigReferenceContext, ConfigValue, assert_config_reference_authority, resolve_config_reference,
+};
 
 pub const COMMAND_EXECUTION_MAX_ATTEMPTS: usize = 3;
 pub const COMMAND_EXECUTION_BACKOFF_MS: [u64; 2] = [250, 1000];
@@ -104,10 +110,13 @@ pub fn parse_config_value_reference(config: &str) -> ConfigValueReference {
 }
 
 fn resolve_env_config_value(name: &str, env: Option<&HashMap<String, String>>) -> Option<String> {
-    if let Some(value) = env.and_then(|env| env.get(name)).filter(|value| !value.is_empty()) {
-        return Some(value.clone());
-    }
-    std::env::var(name).ok().filter(|value| !value.is_empty())
+    let value = env
+        .and_then(|env| env.get(name))
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| std::env::var(name).ok().filter(|value| !value.is_empty()));
+    crate::config_reference_env::warn_opaque_config_environment(name, value.as_deref());
+    value
 }
 
 fn template_env_var_names(parts: &[TemplatePart]) -> Vec<String> {
@@ -127,7 +136,10 @@ fn resolve_template(parts: &[TemplatePart], env: Option<&HashMap<String, String>
         match part {
             TemplatePart::Literal(value) => resolved.push_str(value),
             TemplatePart::Env(name) => {
-                let value = resolve_env_config_value(name, env)?;
+                let Some(value) = resolve_env_config_value(name, env) else {
+                    crate::config_reference_env::warn_missing_config_environment(name);
+                    return None;
+                };
                 resolved.push_str(&value);
             }
         }
@@ -231,6 +243,114 @@ pub async fn resolve_headers_or_throw(
     let mut resolved = HashMap::new();
     for (key, value) in headers {
         let resolved_value = resolve_config_value_or_throw(value, &format!("{description} header \"{key}\""), env).await?;
+        resolved.insert(key.clone(), resolved_value);
+    }
+    if resolved.is_empty() { Ok(None) } else { Ok(Some(resolved)) }
+}
+
+// ---- ConfigValue (string or reference) forms (senpi#3858). The `&str` functions above keep the string
+// semantics; these accept a `ConfigValue` as upstream's widened signatures do.
+
+pub fn get_config_value_env_var_name_of(config: &ConfigValue) -> Option<String> {
+    match config {
+        ConfigValue::String(value) => get_config_value_env_var_name(value),
+        ConfigValue::Reference { reference: ConfigReference::Env(name), .. } => Some(name.clone()),
+        ConfigValue::Reference { .. } => None,
+    }
+}
+
+pub fn get_config_value_env_var_names_of(config: &ConfigValue) -> Vec<String> {
+    match config {
+        ConfigValue::String(value) => get_config_value_env_var_names(value),
+        ConfigValue::Reference { reference: ConfigReference::Env(name), .. } => vec![name.clone()],
+        ConfigValue::Reference { reference: ConfigReference::Concat(parts), .. } => {
+            let mut names: Vec<String> = Vec::new();
+            for part in parts {
+                if let ConfigConcatPart::Env(name) = part
+                    && !names.contains(name)
+                {
+                    names.push(name.clone());
+                }
+            }
+            names
+        }
+        ConfigValue::Reference { .. } => Vec::new(),
+    }
+}
+
+pub fn get_missing_config_value_env_var_names_of(
+    config: &ConfigValue,
+    env: Option<&HashMap<String, String>>,
+) -> Vec<String> {
+    get_config_value_env_var_names_of(config)
+        .into_iter()
+        .filter(|name| resolve_env_config_value(name, env).is_none())
+        .collect()
+}
+
+pub fn is_command_config_value_of(config: &ConfigValue) -> bool {
+    config.as_str().is_some_and(is_command_config_value)
+}
+
+/// A reference counts as configured; it is resolved (and may fail) only at use.
+pub fn is_config_value_configured_of(config: &ConfigValue, env: Option<&HashMap<String, String>>) -> bool {
+    match config {
+        ConfigValue::String(value) => is_config_value_configured(value, env),
+        ConfigValue::Reference { .. } => true,
+    }
+}
+
+/// senpi `resolveConfigValue(config, env, context)`: a reference resolves through its trusted origin (or
+/// `context`); a reference failure is an error, a string resolves as before.
+pub async fn resolve_config_value_of(
+    config: &ConfigValue,
+    env: Option<&HashMap<String, String>>,
+    context: Option<&ConfigReferenceContext>,
+) -> Result<Option<String>, ConfigReferenceError> {
+    match config {
+        ConfigValue::String(value) => Ok(resolve_config_value(value, env).await),
+        reference => resolve_config_reference(reference, context, env).map(Some),
+    }
+}
+
+pub async fn resolve_config_value_uncached_of(
+    config: &ConfigValue,
+    env: Option<&HashMap<String, String>>,
+    context: Option<&ConfigReferenceContext>,
+) -> Result<Option<String>, ConfigReferenceError> {
+    match config {
+        ConfigValue::String(value) => Ok(resolve_config_value_uncached(value, env).await),
+        reference => resolve_config_reference(reference, context, env).map(Some),
+    }
+}
+
+pub async fn resolve_config_value_or_throw_of(
+    config: &ConfigValue,
+    description: &str,
+    env: Option<&HashMap<String, String>>,
+    context: Option<&ConfigReferenceContext>,
+) -> Result<String, String> {
+    match config {
+        ConfigValue::String(value) => resolve_config_value_or_throw(value, description, env).await,
+        reference => resolve_config_reference(reference, context, env).map_err(|error| error.to_string()),
+    }
+}
+
+/// senpi `resolveHeadersOrThrow` over `ConfigValue` headers: every value's authority is checked before any
+/// header resolves.
+pub async fn resolve_config_headers_or_throw(
+    headers: Option<&HashMap<String, ConfigValue>>,
+    description: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<Option<HashMap<String, String>>, String> {
+    let Some(headers) = headers else { return Ok(None) };
+    for value in headers.values() {
+        assert_config_reference_authority(value, None).map_err(|error| error.to_string())?;
+    }
+    let mut resolved = HashMap::new();
+    for (key, value) in headers {
+        let resolved_value =
+            resolve_config_value_or_throw_of(value, &format!("{description} header \"{key}\""), env, None).await?;
         resolved.insert(key.clone(), resolved_value);
     }
     if resolved.is_empty() { Ok(None) } else { Ok(Some(resolved)) }
