@@ -417,6 +417,10 @@ struct ClientInner {
     started: std::time::Instant,
     /// The host store's mirror listener posting each change to this worker (senpi `stopLimitMirror`).
     limit_mirror: std::sync::Mutex<Option<crate::session_worker_limit_mirror::LimitMirror>>,
+    /// The host's ordered acceptance lane for this worker incarnation, present only while the flag is on.
+    acceptance: Option<crate::session_registry::SharedAcceptanceLane>,
+    /// The next output frame ordinal this incarnation must send.
+    expected_ordinal: std::sync::Mutex<u64>,
 }
 /// Host-side handle of one session worker process (senpi \`SessionWorkerClient\`).
 pub struct SessionWorkerClient {
@@ -484,6 +488,9 @@ impl ClientInner {
             if state.stopped {
                 return;
             }
+        }
+        if let Some(lane) = &self.acceptance {
+            lock(lane).retire(crate::session_acceptance_lane::RetireReason::WorkerFailed);
         }
         (self.callbacks.failure)(error);
         self.quarantine();
@@ -627,6 +634,10 @@ impl ClientInner {
                 signal,
                 activity,
                 snapshot,
+                ordinal,
+                recovery,
+                transitions,
+                bootstrap,
             } => {
                 if !lock(&self.state).binding_ready {
                     self.credit(
@@ -635,6 +646,26 @@ impl ClientInner {
                         None,
                     );
                     return;
+                }
+                if self.acceptance.is_some() {
+                    // A gap, duplicate or reordered frame is denied and ends this incarnation before any mutation.
+                    let mut expected = lock(&self.expected_ordinal);
+                    if ordinal != Some(*expected) {
+                        let kind = if ordinal.is_some_and(|ordinal| ordinal < *expected) {
+                            "duplicate"
+                        } else {
+                            "gap"
+                        };
+                        drop(expected);
+                        self.credit(
+                            signal,
+                            crate::session_worker_protocol::WORKER_CREDIT_CODES.conflict,
+                            None,
+                        );
+                        self.fail(&format!("session_worker_frame_{kind}"));
+                        return;
+                    }
+                    *expected += 1;
                 }
                 // Identity and activity commit before publication; clients may attach or disconnect on that event.
                 if let Some(replacement) = &snapshot {
@@ -675,6 +706,23 @@ impl ClientInner {
                         return;
                     }
                 };
+                // Applied before routing, and so before this frame's credit returns.
+                if let Some(lane) = &self.acceptance {
+                    let mut lane = lock(lane);
+                    match bootstrap {
+                        Some(bootstrap) => lane.bootstrap(
+                            crate::session_acceptance_lane::SessionBootstrap {
+                                transcript: bootstrap.transcript,
+                            },
+                            None,
+                        ),
+                        None => {
+                            lane.apply_transcript(&transitions.unwrap_or_default());
+                            let carrier = recovery.map(Into::into);
+                            lane.accept(&record, carrier.as_ref());
+                        }
+                    }
+                }
                 (self.callbacks.output)(record, target);
                 self.credit(
                     signal,
@@ -768,6 +816,12 @@ impl SessionWorkerClient {
             grants,
             started: std::time::Instant::now(),
             limit_mirror: std::sync::Mutex::new(None),
+            acceptance: maho_core::engine_socket_flag::compact_updates_enabled().then(|| {
+                std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::session_acceptance_lane::SessionAcceptanceLane::default(),
+                ))
+            }),
+            expected_ordinal: std::sync::Mutex::new(0),
         });
         tokio::spawn(async move {
             while let Some(line) = lines.recv().await {
@@ -847,9 +901,27 @@ impl SessionWorkerClient {
         }
     }
     pub async fn commit(&self) -> Result<WorkerSnapshot, String> {
-        let result = self.request(serde_json::json!({"type":"commit"})).await?;
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let request = match &self.inner.acceptance {
+            Some(_) => {
+                serde_json::json!({"type":"commit","acceptance":true,"recoveryEpoch":nonce})
+            }
+            None => serde_json::json!({"type":"commit"}),
+        };
+        let result = self.request(request).await?;
         if result["type"] != "ready" {
             return Err("Invalid worker commit response".into());
+        }
+        if let Some(lane) = &self.inner.acceptance {
+            let bootstrap: crate::session_worker_protocol::WorkerBootstrap =
+                serde_json::from_value(result["bootstrap"].clone())
+                    .map_err(|_| "Invalid worker commit response".to_owned())?;
+            lock(lane).bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap {
+                    transcript: bootstrap.transcript,
+                },
+                Some(nonce),
+            );
         }
         let snapshot: WorkerSnapshot = serde_json::from_value(result["snapshot"].clone())
             .map_err(|error| error.to_string())?;
@@ -917,6 +989,10 @@ impl SessionWorkerClient {
     }
     pub fn dispose(&self) {
         self.inner.post(WorkerControl::CancelUi);
+    }
+    /// The host's acceptance lane for this incarnation (senpi `acceptance`); the binding registers it.
+    pub fn acceptance(&self) -> Option<crate::session_registry::SharedAcceptanceLane> {
+        self.inner.acceptance.clone()
     }
     pub fn snapshot(&self) -> Option<WorkerSnapshot> {
         lock(&self.inner.state).snapshot.clone()
