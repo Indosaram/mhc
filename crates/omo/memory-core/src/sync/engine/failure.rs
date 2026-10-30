@@ -54,4 +54,17 @@ mod tests {
             SyncFailureKind::Offline
         );
     }
+    #[test]
+    fn auth_expired_points_to_the_desktop_app_on_this_computer() {
+        let refused =
+            super::super::adapters::http_transport::SyncHttpError::new("auth", 401, false);
+        for error in [EngineError::Auth, EngineError::Http(refused)] {
+            let failure = describe_sync_failure(&error);
+            assert_eq!(failure.kind, SyncFailureKind::AuthExpired);
+            assert_eq!(
+                failure.action,
+                "Sign in to OmO again from the OmO desktop app on this computer."
+            );
+        }
+    }
 }

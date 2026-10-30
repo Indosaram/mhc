@@ -211,7 +211,11 @@ mod hook_behaviour {
             run(&["git", "config", "--local", key, val], dir, &[]);
         }
         if bare {
-            run(&["git", "config", "--local", "receive.autogc", "false"], dir, &[]);
+            run(
+                &["git", "config", "--local", "receive.autogc", "false"],
+                dir,
+                &[],
+            );
         }
     }
 
@@ -307,9 +311,33 @@ mod hook_behaviour {
     }
 
     #[test]
+    fn given_expires_frontmatter_when_committed_then_hook_accepts_it_as_a_known_key() {
+        let (_tmp, dir) = create_repo();
+
+        let result = commit(
+            &dir,
+            &[
+                (
+                    "system/outage.md",
+                    "---\ndescription: Outage\nexpires: 2026-10-27T06:33Z\n---\n\noutage\n",
+                ),
+                (
+                    "system/freeze.md",
+                    "---\ndescription: Freeze\nexpires: \"2026-10-28\"\n---\n\nfreeze\n",
+                ),
+            ],
+            "memory write",
+            &[],
+        );
+
+        assert_eq!(result.code, 0, "{}", result.output());
+    }
+
+    #[test]
     fn given_staged_provenance_header_when_committed_with_memory_tool_trailer_then_accepted() {
         let (_tmp, dir) = create_repo();
-        let note = "---\ndescription: Note\nprovenance: \"user replied \\\"yes\\\"\"\n---\n\nbody\n";
+        let note =
+            "---\ndescription: Note\nprovenance: \"user replied \\\"yes\\\"\"\n---\n\nbody\n";
         let result = commit(
             &dir,
             &[("reference/approved.md", note)],
@@ -322,7 +350,8 @@ mod hook_behaviour {
     #[test]
     fn given_staged_provenance_header_when_committed_by_hand_without_trailer_then_rejected() {
         let (_tmp, dir) = create_repo();
-        let note = "---\ndescription: Note\nprovenance: \"user replied \\\"yes\\\"\"\n---\n\nbody\n";
+        let note =
+            "---\ndescription: Note\nprovenance: \"user replied \\\"yes\\\"\"\n---\n\nbody\n";
         let result = commit(&dir, &[("reference/forged.md", note)], "hand commit", &[]);
         assert_ne!(result.code, 0);
         assert!(
@@ -512,7 +541,12 @@ mod hook_behaviour {
             let entries = crate::memfs::memory_hook_git::staged_entries(&dir).expect("staged");
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].path, "reference/z.md");
-            let result = commit(&dir, &[("reference/z.md", note)], "pathspec write", &[(var, "1")]);
+            let result = commit(
+                &dir,
+                &[("reference/z.md", note)],
+                "pathspec write",
+                &[(var, "1")],
+            );
             assert_eq!(result.code, 0, "pathspec commit failed with {var}=1");
         }
     }
