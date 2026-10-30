@@ -220,6 +220,15 @@ impl Extension for OmoNativeTelemetryComponent {
                 persisted_opt_out,
                 is_pid_alive: self.options.is_pid_alive.clone(),
             });
+            // The shared OTLP spool (beside the state dir) follows the same rule and is skipped while any
+            // writer is alive. No spool on disk means nothing to judge.
+            if persisted_opt_out && state_dir.join("..").join("otlp").exists() {
+                crate::session_summary_recovery::purge_senpi_otlp_spool_on_opt_out(
+                    &env,
+                    self.options.is_pid_alive.clone(),
+                    self.options.diagnostics.clone(),
+                );
+            }
         }
 
         let state = Arc::new(NativeCaptureState::default());
@@ -352,6 +361,7 @@ impl Extension for OmoNativeTelemetryComponent {
             let consent = Arc::clone(&consent);
             let hash = session_hasher(&consent, &state_dir);
             let purge_state = state_dir.clone();
+            let shutdown_env = env.clone();
             let options = self.options.clone();
             api.on(
                 EventKind::SessionShutdown,
@@ -370,6 +380,7 @@ impl Extension for OmoNativeTelemetryComponent {
                     let consent = Arc::clone(&consent);
                     let options = options.clone();
                     let purge_state = purge_state.clone();
+                    let shutdown_env = shutdown_env.clone();
                     Box::pin(async move {
                         match summary {
                             Some(summary) => {
@@ -382,13 +393,22 @@ impl Extension for OmoNativeTelemetryComponent {
                             None => {
                                 let persisted_opt_out = consent.persisted_opt_out();
                                 start_opt_out_purge(StartOptOutPurgeInput {
-                                    state_dir: purge_state,
+                                    state_dir: purge_state.clone(),
                                     is_scope_consented: Arc::new(move |scope| {
                                         consent.is_queue_scope_consented(scope)
                                     }),
                                     persisted_opt_out,
                                     is_pid_alive: options.is_pid_alive.clone(),
                                 });
+                                if persisted_opt_out
+                                    && purge_state.join("..").join("otlp").exists()
+                                {
+                                    crate::session_summary_recovery::purge_senpi_otlp_spool_on_opt_out(
+                                        &shutdown_env,
+                                        options.is_pid_alive.clone(),
+                                        options.diagnostics.clone(),
+                                    );
+                                }
                             }
                         }
                         Ok(EventResult::None)
@@ -440,7 +460,19 @@ impl Extension for OmoNativeTelemetryComponent {
         // The session component itself: session_start builds the client, installs the capture facade, and
         // reports the inventory, crashes, daily activity and category config.
         {
-            let options = self.options.clone();
+            let mut options = self.options.clone();
+            // The one shared transport factory, built here so its consent is the live send-time gate.
+            if options.transport_factory.is_none() {
+                let send_consent = Arc::clone(&consent);
+                options.transport_factory = Some(crate::otlp::create_senpi_telemetry_transport_factory(
+                    crate::otlp::TransportInput {
+                        env: env.clone(),
+                        consent: Arc::new(move || send_consent.is_consented(true)),
+                        diagnostics: options.diagnostics.clone(),
+                        source: Some("omo-native-component".into()),
+                    },
+                ));
+            }
             let state = Arc::clone(&state);
             let consent = Arc::clone(&consent);
             let hash = session_hasher(&consent, &state_dir);
@@ -655,9 +687,14 @@ impl Extension for OmoNativeTelemetryComponent {
             }));
         }
 
+        // A valid OMO_BUNDLED_SKILLS_DIR names the tree the bundled-skills loader reads; telemetry follows it.
+        let skills_root = crate::product_identity::resolve_bundled_skills_override(&env, &|message| {
+            maho_ext_api::diagnostic(message)
+        })
+        .unwrap_or_else(|| self.skills_root.clone());
         crate::omo_native_tools::register_omo_native_tool_telemetry(
             api,
-            self.skills_root.clone(),
+            skills_root,
             session_hasher(&consent, &state_dir),
             Arc::clone(&session_client),
             Some(Arc::new(|ctx, message, details| {
