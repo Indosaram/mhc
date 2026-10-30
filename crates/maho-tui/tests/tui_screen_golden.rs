@@ -998,3 +998,244 @@ mod cursor_write_hygiene {
         );
     }
 }
+
+/// Port of senpi `render-contract.test.ts`. `HOME`, `PI_TUI_TEST_SEAMS` and
+/// `PI_TUI_STRICT_RENDER` are layered per thread through `process_env::with_overrides`. The
+/// render-error dedupe is per component name for the whole process, so every case uses its own
+/// component types.
+mod render_contract {
+    use super::*;
+    use maho_tui::process_env::with_overrides;
+    use maho_tui::tui::{
+        render_diagnostic_lines_scanned_for_test, render_error_log_writes_for_test,
+    };
+    use maho_tui::utils::visible_width;
+
+    struct Harness {
+        screen: TuiMainScreen,
+        terminal: RecordingTerminal,
+    }
+
+    impl Harness {
+        fn new(columns: u16, rows: u16) -> Self {
+            let mut screen = TuiMainScreen::new();
+            screen.base.set_mux_detector(Box::new(|| false));
+            Self {
+                screen,
+                terminal: RecordingTerminal {
+                    columns,
+                    rows,
+                    out: String::new(),
+                },
+            }
+        }
+
+        fn add(&mut self, component: Rc<RefCell<dyn Component>>) {
+            self.screen.base.add_child(component);
+        }
+
+        fn drive_render(&mut self) {
+            self.screen.base.do_render(&mut self.terminal);
+        }
+
+        fn viewport(&self) -> Vec<String> {
+            let mut vt = VirtualTerminal::new(self.terminal.columns, self.terminal.rows);
+            vt.start();
+            vt.write(&self.terminal.out);
+            vt.viewport()
+        }
+    }
+
+    struct MutableLine(Rc<RefCell<String>>);
+
+    impl Component for MutableLine {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            vec![self.0.borrow().clone()]
+        }
+    }
+
+    macro_rules! throwing_component {
+        ($name:ident) => {
+            #[derive(Default)]
+            struct $name {
+                focused: bool,
+            }
+
+            impl Component for $name {
+                fn render(&mut self, _width: usize) -> Vec<String> {
+                    panic!("render exploded");
+                }
+                fn handle_input(&mut self, _data: &str) {}
+                fn has_input_handler(&self) -> bool {
+                    true
+                }
+                fn focusable_get(&self) -> Option<bool> {
+                    Some(self.focused)
+                }
+                fn focusable_set(&mut self, focused: bool) {
+                    self.focused = focused;
+                }
+            }
+        };
+    }
+
+    throwing_component!(ThrowingComponent);
+    throwing_component!(FocusedThrowingComponent);
+    throwing_component!(CountedThrowingComponent);
+    throwing_component!(DifferentThrowingComponent);
+    throwing_component!(HostLogDirectoryThrowingComponent);
+
+    fn seams<R>(home: Option<&str>, f: impl FnOnce() -> R) -> R {
+        with_overrides(
+            &[
+                ("HOME", home),
+                ("PI_TUI_TEST_SEAMS", Some("1")),
+                ("PI_TUI_STRICT_RENDER", None),
+            ],
+            f,
+        )
+    }
+
+    fn temp_home() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp home")
+    }
+
+    fn raw_over_wide(columns: u16) -> (Harness, Rc<RefCell<String>>) {
+        let line = Rc::new(RefCell::new("short".to_string()));
+        let mut harness = Harness::new(columns, 4);
+        harness.add(Rc::new(RefCell::new(MutableLine(Rc::clone(&line)))));
+        harness.drive_render();
+        (harness, line)
+    }
+
+    #[test]
+    fn renders_fallback_for_a_throwing_component_when_debug_logging_cannot_write() {
+        seams(Some("/dev/null"), || {
+            let mut harness = Harness::new(50, 4);
+            harness.add(Rc::new(RefCell::new(ThrowingComponent::default())));
+            harness.drive_render();
+            assert!(
+                harness
+                    .viewport()
+                    .join("\n")
+                    .contains("[render error: ThrowingComponent]")
+            );
+        });
+    }
+
+    #[test]
+    fn renders_fallback_for_a_throwing_component_and_continues_on_a_subsequent_frame() {
+        let home = temp_home();
+        seams(home.path().to_str(), || {
+            let mut harness = Harness::new(50, 4);
+            let component = Rc::new(RefCell::new(FocusedThrowingComponent::default()));
+            let after = Rc::new(RefCell::new("after survives".to_string()));
+            harness.add(component.clone());
+            harness.add(Rc::new(RefCell::new(MutableLine(Rc::clone(&after)))));
+            harness.screen.base.set_focus(Some(component.clone()));
+
+            harness.drive_render();
+            assert!(component.borrow().focused);
+            let screen = harness.viewport().join("\n");
+            assert!(screen.contains("[render error: FocusedThrowingComponent]"));
+            assert!(screen.contains("after survives"));
+
+            *after.borrow_mut() = "next frame".to_string();
+            harness.drive_render();
+            assert!(harness.viewport().join("\n").contains("next frame"));
+        });
+    }
+
+    #[test]
+    fn truncates_an_over_wide_raw_component_and_continues_in_release_with_test_seams_enabled() {
+        let home = temp_home();
+        seams(home.path().to_str(), || {
+            let (mut harness, line) = raw_over_wide(12);
+            *line.borrow_mut() = "x".repeat(30);
+            harness.drive_render();
+            assert_eq!(visible_width(&harness.viewport()[0]), 12);
+            assert!(harness.terminal.out.contains(&"x".repeat(12)));
+
+            *line.borrow_mut() = "ok".to_string();
+            harness.drive_render();
+            assert_eq!(harness.viewport()[0], "ok");
+        });
+    }
+
+    #[test]
+    fn truncates_an_over_wide_raw_component_when_crash_logging_cannot_write_in_release() {
+        seams(Some("/dev/null"), || {
+            let (mut harness, line) = raw_over_wide(12);
+            *line.borrow_mut() = "x".repeat(30);
+            harness.drive_render();
+            assert_eq!(visible_width(&harness.viewport()[0]), 12);
+            assert!(harness.terminal.out.contains(&"x".repeat(12)));
+        });
+    }
+
+    #[test]
+    fn writes_a_single_crash_dump_across_two_over_wide_release_frames() {
+        let home = temp_home();
+        seams(home.path().to_str(), || {
+            let (mut harness, line) = raw_over_wide(12);
+            let scans_before = render_diagnostic_lines_scanned_for_test().expect("test seam");
+
+            *line.borrow_mut() = "x".repeat(30);
+            harness.drive_render();
+            let scans_after_first = render_diagnostic_lines_scanned_for_test().expect("test seam");
+            let crash_log = home.path().join(".senpi/agent/senpi-crash.log");
+            assert!(crash_log.exists());
+            assert!(scans_after_first > scans_before);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&crash_log, std::fs::Permissions::from_mode(0o444))
+                    .expect("chmod crash log");
+            }
+
+            *line.borrow_mut() = "y".repeat(30);
+            harness.drive_render();
+            assert_eq!(
+                render_diagnostic_lines_scanned_for_test(),
+                Some(scans_after_first)
+            );
+            assert!(harness.viewport()[0].contains(&"y".repeat(12)));
+        });
+    }
+
+    #[test]
+    fn logs_render_errors_once_per_component_class() {
+        let home = temp_home();
+        seams(home.path().to_str(), || {
+            let initial = render_error_log_writes_for_test().expect("test seam");
+            let mut harness = Harness::new(50, 4);
+            harness.add(Rc::new(RefCell::new(CountedThrowingComponent::default())));
+            harness.drive_render();
+            harness.drive_render();
+            assert_eq!(render_error_log_writes_for_test(), Some(initial + 1));
+
+            harness.add(Rc::new(RefCell::new(DifferentThrowingComponent::default())));
+            harness.drive_render();
+            assert_eq!(render_error_log_writes_for_test(), Some(initial + 2));
+        });
+    }
+
+    #[test]
+    fn writes_the_render_error_diagnostic_to_the_host_provided_log_directory() {
+        let home = temp_home();
+        let log_directory = tempfile::tempdir().expect("log directory");
+        seams(home.path().to_str(), || {
+            let mut harness = Harness::new(50, 4);
+            harness
+                .screen
+                .base
+                .set_log_directory(log_directory.path().to_path_buf());
+            harness.add(Rc::new(RefCell::new(
+                HostLogDirectoryThrowingComponent::default(),
+            )));
+            harness.drive_render();
+        });
+        assert!(log_directory.path().join("senpi-debug.log").exists());
+        assert!(!home.path().join(".senpi/agent/senpi-debug.log").exists());
+    }
+}

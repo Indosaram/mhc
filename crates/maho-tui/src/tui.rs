@@ -322,9 +322,34 @@ static RENDER_ERROR_LOGGED_CLASSES: std::sync::Mutex<Option<HashSet<String>>> =
 static RENDER_ERROR_LOG_DIRECTORY: std::sync::Mutex<Option<std::path::PathBuf>> =
     std::sync::Mutex::new(None);
 
-/// senpi `defaultDiagnosticLogDirectory`: `~/.senpi/agent`.
+thread_local! {
+    /// senpi `renderErrorLogWrites` and `renderDiagnosticLineScans`. Per thread: a `TuiBase`
+    /// holds `Rc`s, so every render (and its containment) runs on the thread that owns it.
+    static RENDER_ERROR_LOG_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static RENDER_DIAGNOSTIC_LINE_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// senpi `__renderErrorLogStats`: render-error log writes on this thread, only under
+/// `PI_TUI_TEST_SEAMS=1`.
+pub fn render_error_log_writes_for_test() -> Option<u64> {
+    (crate::process_env::var("PI_TUI_TEST_SEAMS").as_deref() == Some("1"))
+        .then(|| RENDER_ERROR_LOG_WRITES.with(std::cell::Cell::get))
+}
+
+/// senpi `__renderDiagnosticStats`: lines scanned into over-wide crash dumps on this thread,
+/// only under `PI_TUI_TEST_SEAMS=1`.
+pub fn render_diagnostic_lines_scanned_for_test() -> Option<u64> {
+    (crate::process_env::var("PI_TUI_TEST_SEAMS").as_deref() == Some("1"))
+        .then(|| RENDER_DIAGNOSTIC_LINE_SCANS.with(std::cell::Cell::get))
+}
+
+/// senpi `defaultDiagnosticLogDirectory`: `~/.senpi/agent`. `os.homedir()` honors `HOME`, read
+/// through [`crate::process_env`] so tests can redirect it per thread.
 fn default_diagnostic_log_directory() -> std::path::PathBuf {
-    dirs::home_dir()
+    crate::process_env::var("HOME")
+        .filter(|home| !home.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::home_dir)
         .map(|home| home.join(".senpi").join("agent"))
         .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"))
 }
@@ -365,6 +390,7 @@ fn log_render_error_once(
             return;
         }
     }
+    RENDER_ERROR_LOG_WRITES.with(|writes| writes.set(writes.get() + 1));
     let error_text = error
         .downcast_ref::<&str>()
         .map(|message| (*message).to_owned())
@@ -439,6 +465,7 @@ fn format_over_wide_render_diagnostic(
     line_index: usize,
     line_width: usize,
 ) -> String {
+    RENDER_DIAGNOSTIC_LINE_SCANS.with(|scans| scans.set(scans.get() + lines.len() as u64));
     let mut parts = vec![
         format!("Crash at {}", diagnostic_timestamp()),
         format!("Terminal width: {terminal_width}"),
