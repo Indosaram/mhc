@@ -39,6 +39,9 @@ pub mod facts_runner_types;
 pub mod facts_terminal_writes;
 pub mod facts_wiring;
 pub mod guard;
+#[cfg(test)]
+#[path = "guard_raw_target_tests.rs"]
+mod guard_raw_target_tests;
 pub mod identity_adoption;
 pub mod identity_runtime;
 pub mod in_process_memory_child;
