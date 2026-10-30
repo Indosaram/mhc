@@ -1,5 +1,14 @@
 //! Bounded external-path projection with recency ordering and byte-budget fitting.
 use std::collections::BTreeMap;
+
+use super::external_projection_dirs::group_directories;
+use super::external_projection_names::{NAME_LEGEND, NAME_NOTE, ProjectionItem, directory_items};
+
+const MEMORY_DIR: &str = "$MEMORY_DIR";
+const OPEN: &str = "<external_projection>";
+const CLOSE: &str = "</external_projection>";
+
+/// `0` disables a limit; both at `0` reproduces the unbounded, name-ordered listing byte for byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct ExternalProjectionLimits {
     pub max_entries_per_directory: usize,
@@ -8,8 +17,8 @@ pub struct ExternalProjectionLimits {
 impl Default for ExternalProjectionLimits {
     fn default() -> Self {
         Self {
-            max_entries_per_directory: 40,
-            max_bytes: 24576,
+            max_entries_per_directory: 0,
+            max_bytes: 40_960,
         }
     }
 }
@@ -29,143 +38,214 @@ pub struct ExternalProjectionStats {
     pub overflow: bool,
     pub recency_unavailable: bool,
 }
-struct Directory {
+struct DirectoryListing {
     label: String,
     pointer: String,
-    names: Vec<String>,
+    items: Vec<ProjectionItem>,
+    item_bytes: Vec<usize>,
 }
-fn line(d: &Directory, n: usize) -> String {
-    let shown = d.names[..n].join(", ");
-    let omitted = d.names.len() - n;
-    if omitted == 0 {
-        format!("{}: {shown}", d.label)
-    } else {
-        format!(
-            "{}: {shown}{}(+{omitted} more; read {} to list)",
-            d.label,
-            if n > 0 { " " } else { "" },
-            d.pointer
-        )
+struct Layout {
+    root_bare: bool,
+    /// Some line folds or groups names, so the block opens with the full legend instead of the short note.
+    legend: bool,
+    directories: Vec<DirectoryListing>,
+    allowances: Vec<usize>,
+}
+
+fn files(items: &[ProjectionItem]) -> usize {
+    items.iter().map(|item| item.files).sum()
+}
+fn marker(omitted: usize, pointer: &str) -> String {
+    format!("(+{omitted} more; read {pointer} to list)")
+}
+fn layout(paths: &[String], input: Option<&ExternalProjectionInput>) -> Layout {
+    let limits = input.map_or(
+        ExternalProjectionLimits {
+            max_entries_per_directory: 0,
+            max_bytes: 0,
+        },
+        |input| input.limits,
+    );
+    let bounded = limits.max_entries_per_directory > 0 || limits.max_bytes > 0;
+    let groups = group_directories(paths, input.filter(|_| bounded).map(|input| &input.times));
+    let directories: Vec<DirectoryListing> = groups
+        .iter()
+        .map(|group| {
+            let items = directory_items(&group.files);
+            let item_bytes = items.iter().map(|item| item.text.len()).collect();
+            DirectoryListing {
+                label: group.label.clone(),
+                pointer: group.pointer.clone(),
+                items,
+                item_bytes,
+            }
+        })
+        .collect();
+    let cap = limits.max_entries_per_directory;
+    let mut allowances: Vec<usize> = directories
+        .iter()
+        .map(|directory| {
+            if cap > 0 {
+                cap.min(directory.items.len())
+            } else {
+                directory.items.len()
+            }
+        })
+        .collect();
+    let root_label = format!("{MEMORY_DIR}/");
+    let root_bare = !groups.iter().any(|group| group.label == root_label);
+    let legend = groups.iter().any(|group| group.grouped)
+        || directories
+            .iter()
+            .any(|directory| directory.items.iter().any(|item| item.files > 1));
+    if limits.max_bytes > 0 {
+        fit_to_budget(
+            &directories,
+            &mut allowances,
+            limits.max_bytes,
+            root_bare,
+            legend,
+        );
+    }
+    Layout {
+        root_bare,
+        legend,
+        directories,
+        allowances,
     }
 }
-fn render(dirs: &[Directory], counts: &[usize], bare: bool) -> String {
-    let mut lines = vec!["<external_projection>".to_owned()];
-    if bare {
-        lines.push("$MEMORY_DIR/".into());
+
+fn line_bytes(directories: &[DirectoryListing], index: usize, allowance: usize) -> usize {
+    let directory = &directories[index];
+    let mut size = format!("{}: ", directory.label).len();
+    for shown in 0..allowance {
+        size +=
+            directory.item_bytes.get(shown).copied().unwrap_or(0) + if shown > 0 { 2 } else { 0 };
     }
-    for (d, n) in dirs.iter().zip(counts) {
-        lines.push(line(d, *n));
+    let omitted = files(&directory.items[allowance.min(directory.items.len())..]);
+    if omitted > 0 {
+        size += usize::from(allowance > 0) + marker(omitted, &directory.pointer).len();
     }
-    lines.push("</external_projection>".into());
+    size
+}
+
+/// Shrinks the directory showing the most names by one until the block fits, so large directories
+/// give up names first and ties rotate in listing order. Never drops a directory line; when even
+/// the floor (every allowance zero) is over budget, the caller reports the overflow.
+fn fit_to_budget(
+    directories: &[DirectoryListing],
+    allowances: &mut [usize],
+    max_bytes: usize,
+    root_bare: bool,
+    legend: bool,
+) {
+    let start = allowances.to_vec();
+    let mut lines: Vec<usize> = (0..directories.len())
+        .map(|index| line_bytes(directories, index, allowances[index]))
+        .collect();
+    let fixed_lines = 3 + usize::from(root_bare);
+    let fixed_bytes = OPEN.len()
+        + (if legend { NAME_LEGEND } else { NAME_NOTE }).len()
+        + CLOSE.len()
+        + if root_bare {
+            format!("{MEMORY_DIR}/").len()
+        } else {
+            0
+        };
+    let mut total = fixed_bytes
+        + lines.iter().sum::<usize>()
+        + (fixed_lines + directories.len().saturating_sub(1));
+    while total > max_bytes {
+        let mut widest: Option<usize> = None;
+        for index in 0..allowances.len() {
+            if allowances[index] > widest.map_or(0, |at| allowances[at]) {
+                widest = Some(index);
+            }
+        }
+        let Some(widest) = widest else {
+            break;
+        };
+        allowances[widest] -= 1;
+        let before = lines[widest];
+        lines[widest] = line_bytes(directories, widest, allowances[widest]);
+        total = total + lines[widest] - before;
+    }
+    if total <= max_bytes {
+        return;
+    }
+    // An omitted-names marker can cost more than the names it replaces, so widest-first shrinking
+    // can miss the smallest listing. Lines are independent: each directory at its own smallest
+    // line is the true minimum, which may still fit; ties keep more names.
+    for (index, limit) in start.into_iter().enumerate() {
+        let mut best = limit;
+        for allowance in (0..limit).rev() {
+            if line_bytes(directories, index, allowance) < line_bytes(directories, index, best) {
+                best = allowance;
+            }
+        }
+        allowances[index] = best;
+    }
+}
+
+fn render(layout: &Layout) -> String {
+    let mut lines = vec![
+        OPEN.to_owned(),
+        (if layout.legend {
+            NAME_LEGEND
+        } else {
+            NAME_NOTE
+        })
+        .to_owned(),
+    ];
+    if layout.root_bare {
+        lines.push(format!("{MEMORY_DIR}/"));
+    }
+    for (directory, allowance) in layout.directories.iter().zip(&layout.allowances) {
+        let allowance = (*allowance).min(directory.items.len());
+        let shown = directory.items[..allowance]
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let omitted = files(&directory.items[allowance..]);
+        let suffix = if omitted > 0 {
+            format!(
+                "{}{}",
+                if shown.is_empty() { "" } else { " " },
+                marker(omitted, &directory.pointer)
+            )
+        } else {
+            String::new()
+        };
+        lines.push(format!("{}: {shown}{suffix}", directory.label));
+    }
+    lines.push(CLOSE.to_owned());
     lines.join("\n")
 }
-fn layout(paths: &[String], input: &ExternalProjectionInput) -> (Vec<Directory>, Vec<usize>, bool) {
-    let mut grouped: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for path in paths {
-        let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
-        if !name.is_empty() {
-            grouped
-                .entry(dir.to_owned())
-                .or_default()
-                .push((name.to_owned(), path.clone()));
-        }
-    }
-    let bare = !grouped.contains_key("");
-    let bounded = input.limits.max_entries_per_directory > 0 || input.limits.max_bytes > 0;
-    let dirs: Vec<Directory> = grouped
-        .into_iter()
-        .map(|(dir, mut names)| {
-            names.sort_by(|a, b| {
-                if bounded {
-                    let order = input.times.get(&b.1).cmp(&input.times.get(&a.1));
-                    if !order.is_eq() {
-                        return order;
-                    }
-                }
-                a.0.cmp(&b.0)
-            });
-            let parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
-            let safe = parts
-                .iter()
-                .map(|p| crate::sync::redact::redact_secret_like_material(p))
-                .collect::<Vec<_>>()
-                .join("/");
-            let readable = parts
-                .iter()
-                .take_while(|p| crate::sync::redact::redact_secret_like_material(p) == **p)
-                .copied()
-                .collect::<Vec<_>>()
-                .join("/");
-            Directory {
-                label: if dir.is_empty() {
-                    "$MEMORY_DIR/".into()
-                } else {
-                    format!("{safe}/")
-                },
-                pointer: if readable.is_empty() {
-                    "$MEMORY_DIR/".into()
-                } else {
-                    format!("$MEMORY_DIR/{readable}/")
-                },
-                names: names
-                    .into_iter()
-                    .map(|(n, _)| crate::sync::redact::redact_secret_like_material(&n))
-                    .collect(),
-            }
-        })
-        .collect();
-    let mut counts: Vec<usize> = dirs
-        .iter()
-        .map(|d| {
-            if input.limits.max_entries_per_directory == 0 {
-                d.names.len()
-            } else {
-                d.names.len().min(input.limits.max_entries_per_directory)
-            }
-        })
-        .collect();
-    let start = counts.clone();
-    if input.limits.max_bytes > 0 {
-        while render(&dirs, &counts, bare).len() > input.limits.max_bytes {
-            let mut widest = None;
-            for (i, n) in counts.iter().enumerate() {
-                if *n > widest.map_or(0, |j: usize| counts[j]) {
-                    widest = Some(i);
-                }
-            }
-            match widest {
-                Some(i) => counts[i] -= 1,
-                None => break,
-            }
-        }
-        if render(&dirs, &counts, bare).len() > input.limits.max_bytes {
-            for (i, d) in dirs.iter().enumerate() {
-                let mut best = start[i];
-                for n in (0..start[i]).rev() {
-                    if line(d, n).len() < line(d, best).len() {
-                        best = n;
-                    }
-                }
-                counts[i] = best;
-            }
-        }
-    }
-    (dirs, counts, bare)
+
+/// Renders the projection; no input means both limits disabled and name order.
+pub fn render_external_projection_unbounded(paths: &[String]) -> String {
+    render(&layout(paths, None))
 }
 pub fn render_external_projection(paths: &[String], input: &ExternalProjectionInput) -> String {
-    let (d, n, b) = layout(paths, input);
-    render(&d, &n, b)
+    render(&layout(paths, Some(input)))
 }
 pub fn render_external_projection_stats(
     paths: &[String],
     input: &ExternalProjectionInput,
 ) -> ExternalProjectionStats {
-    let (d, n, b) = layout(paths, input);
-    let bytes = render(&d, &n, b).len();
-    let shown = n.iter().sum();
+    let fitted = layout(paths, Some(input));
+    let bytes = render(&fitted).len();
+    let total: usize = fitted.directories.iter().map(|d| files(&d.items)).sum();
+    let shown: usize = fitted
+        .directories
+        .iter()
+        .zip(&fitted.allowances)
+        .map(|(d, allowance)| files(&d.items[..(*allowance).min(d.items.len())]))
+        .sum();
     ExternalProjectionStats {
         shown,
-        omitted: d.iter().map(|d| d.names.len()).sum::<usize>() - shown,
+        omitted: total - shown,
         bytes,
         max_bytes: input.limits.max_bytes,
         overflow: input.limits.max_bytes > 0 && bytes > input.limits.max_bytes,
@@ -174,28 +254,5 @@ pub fn render_external_projection_stats(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn recency_cap_and_byte_budget_are_machine_measurable() {
-        let paths = vec![
-            "notes/a.md".into(),
-            "notes/b.md".into(),
-            "notes/c.md".into(),
-        ];
-        let input = ExternalProjectionInput {
-            times: BTreeMap::from([("notes/c.md".into(), 10)]),
-            limits: ExternalProjectionLimits {
-                max_entries_per_directory: 1,
-                max_bytes: 0,
-            },
-            ..Default::default()
-        };
-        let stats = render_external_projection_stats(&paths, &input);
-        assert_eq!(stats.shown, 1);
-        assert_eq!(stats.omitted, 2);
-        let block = render_external_projection(&paths, &input);
-        assert!(block.contains("c.md"));
-        assert!(!block.contains("a.md"));
-    }
-}
+#[path = "external_projection_tests.rs"]
+mod tests;
