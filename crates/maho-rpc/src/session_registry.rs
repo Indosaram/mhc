@@ -20,6 +20,9 @@ pub struct RpcSessionLaunchProfile {
     pub retry_fallback: Option<serde_json::Value>,
     /// The host endpoint this session's holder record names (senpi `holderEndpoint`).
     pub holder_endpoint: Option<maho_core::session_holders::SessionHolderEndpoint>,
+    /// The validated ancestry of a child session, merged into the launch profile (senpi `spawnedBy`) for the
+    /// runtime factory to write into the new session's header.
+    pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
 }
 pub struct SessionIdentity {
     pub kind: maho_ext_api::SessionKind,

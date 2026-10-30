@@ -333,6 +333,11 @@ pub fn profile_to_wire(
         }
         value["holderEndpoint"] = serde_json::Value::Object(holder);
     }
+    if let Some(spawned_by) = &profile.spawned_by
+        && let Ok(ancestry) = serde_json::to_value(spawned_by)
+    {
+        value["spawnedBy"] = ancestry;
+    }
     value
 }
 pub fn profile_from_wire(
@@ -399,6 +404,9 @@ pub fn profile_from_wire(
                 endpoint != &maho_core::session_holders::SessionHolderEndpoint::default()
             })
         }),
+        spawned_by: value
+            .get("spawnedBy")
+            .and_then(|ancestry| serde_json::from_value(ancestry.clone()).ok()),
     })
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -567,6 +575,11 @@ mod tests {
                 host_instance: Some("i".into()),
                 host_socket: None,
                 host_daemon_dir: Some("/d".into()),
+            }),
+            spawned_by: Some(maho_core::session_lifecycle_types::SpawnedBy {
+                parent_session_id: "p".into(),
+                root_session_id: "r".into(),
+                task_id: "t".into(),
             }),
         };
         assert_eq!(
