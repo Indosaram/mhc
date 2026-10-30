@@ -1061,3 +1061,32 @@ async fn emits_a_tool_use_response_without_a_tool_call_already_normalized_on_mes
     )
     .await;
 }
+
+// senpi 034eda3565: only the provider stream `start` marks `message_start` as streaming.
+#[tokio::test]
+async fn marks_only_the_provider_stream_start_as_streaming() {
+    let partial = assistant(vec![], StopReason::Stop);
+    let done = assistant(vec![text_block("hi")], StopReason::Stop);
+    let events = collect_with_timeout(&agent_loop(
+        vec![user_message("Hello")],
+        context_with(Vec::new()),
+        AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
+        None,
+        Some(stream_fn_of(vec![
+            AssistantMessageEvent::Start { partial },
+            AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: done,
+            },
+        ])),
+    ))
+    .await;
+    let starts: Vec<(&str, Option<bool>)> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessageStart { message, streaming } => Some((message.role(), *streaming)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts, vec![("user", None), ("assistant", Some(true))]);
+}
