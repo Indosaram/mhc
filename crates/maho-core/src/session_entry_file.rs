@@ -71,6 +71,34 @@ pub fn load_entries_from_file_with_identity(file_path: &str) -> (Vec<Value>, Opt
     (accept_session_entries(entries), identity)
 }
 
+/// `loadEntriesFromFileAsync`: the same accepted entries as `load_entries_from_file`, read with asynchronous
+/// I/O so a move or rebind never blocks the runtime on a whole-file read (senpi#3518, no-sync move path).
+pub async fn load_entries_from_file_async(file_path: &std::path::Path) -> Vec<Value> {
+    use tokio::io::AsyncBufReadExt;
+    let resolved = normalize_path(&file_path.to_string_lossy(), &PathInputOptions::default());
+    let Ok(file) = tokio::fs::File::open(&resolved).await else {
+        return Vec::new();
+    };
+    let mut reader = tokio::io::BufReader::with_capacity(SESSION_READ_BUFFER_SIZE, file);
+    let mut entries = Vec::new();
+    let mut buffer: Vec<u8> = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buffer);
+                if let Some(entry) = crate::session_manager::parse_session_entry_line(
+                    line.trim_end_matches(['\n', '\r']),
+                ) {
+                    entries.push(entry);
+                }
+            }
+        }
+    }
+    accept_session_entries(entries)
+}
+
 /// What `fork_from` found in its source: the entries, whether the file had a header, and why it cannot be forked.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ForkSource {
@@ -276,6 +304,33 @@ mod tests {
             terminate_final_session_line(dir.path(), SessionRecoveryCause::Unknown)
                 .expect("repair"),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_async_loader_matches_the_sync_loader() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let headed = write(
+            dir.path(),
+            "s.jsonl",
+            "{\"type\":\"session\",\"id\":\"s\"}\nnot json\n{\"type\":\"message\",\"id\":\"a\"}",
+        );
+        let loaded = load_entries_from_file_async(&headed).await;
+        assert_eq!(
+            loaded,
+            crate::session_manager::load_entries_from_file(&headed.to_string_lossy())
+        );
+        assert_eq!(loaded.len(), 2);
+        let headerless = write(
+            dir.path(),
+            "h.jsonl",
+            "{\"type\":\"message\",\"id\":\"a\"}\n",
+        );
+        assert!(load_entries_from_file_async(&headerless).await.is_empty());
+        assert!(
+            load_entries_from_file_async(&dir.path().join("missing"))
+                .await
+                .is_empty()
         );
     }
 
