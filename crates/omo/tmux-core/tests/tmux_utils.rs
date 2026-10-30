@@ -94,6 +94,17 @@ fn is_server_running_returns_false_when_fetch_returns_not_ok() {
 }
 
 #[test]
+fn is_server_running_counts_a_password_protected_server_401_403_as_running() {
+    for status in [401, 403] {
+        // omo run gives its server a per-run password the probing process does not hold
+        let mut state = create_server_health_state_for_testing();
+        let (fetch, _) = fetch_recorder(Ok(status));
+        // alive, so the stale-pane sweep keeps its panes
+        assert!(check("http://localhost:4096", &fetch, &mut state), "{status}");
+    }
+}
+
+#[test]
 fn is_server_running_caches_successful_result() {
     let mut state = create_server_health_state_for_testing();
     let (fetch, calls) = fetch_recorder(Ok(200));

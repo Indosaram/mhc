@@ -15,6 +15,8 @@ pub mod pane_auth_env;
 pub mod pane_close;
 #[path = "pane_command.rs"]
 pub mod pane_command;
+#[path = "pane_password_channel.rs"]
+pub mod pane_password_channel;
 #[path = "pane_dimensions.rs"]
 pub mod pane_dimensions;
 #[path = "pane_replace.rs"]

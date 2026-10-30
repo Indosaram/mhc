@@ -12,22 +12,31 @@ use tmux_core::{
 
 const NATIVE_TMUX: (&str, &str) = ("TMUX", "/tmp/tmux-1000/default,1234,0");
 
-fn auth_deps(results: Vec<TmuxCommandResult>) -> (Recorder, TmuxDeps) {
+fn auth_deps(
+    results: Vec<TmuxCommandResult>,
+) -> (Recorder, TmuxDeps, tmux_core::PaneAuthDirectory) {
     let recorder = Recorder::new(results);
+    let directory = tmux_core::create_pane_auth_directory().expect("pane auth directory");
+    let directory_text = directory.path().to_string_lossy().into_owned();
     let deps = TmuxDeps {
         environment: env(&[
             NATIVE_TMUX,
             ("OPENCODE_SERVER_PASSWORD", "pa ss word"),
             ("OPENCODE_SERVER_USERNAME", "user name"),
+            ("OPENCODE_SERVER_PASSWORD_DIR", directory_text.as_str()),
         ]),
         ..healthy_deps(&recorder, "tmux")
     };
-    (recorder, deps)
+    (recorder, deps, directory)
 }
 
 fn expect_auth_env_args(args: &[String]) {
     assert!(args.contains(&"-e".to_owned()));
-    assert!(args.contains(&"OPENCODE_SERVER_PASSWORD=pa ss word".to_owned()));
+    assert!(!args.iter().any(|arg| arg.contains("pa ss word")));
+    assert!(
+        args.iter()
+            .any(|arg| arg.starts_with("OPENCODE_SERVER_PASSWORD_FILE="))
+    );
     assert!(args.contains(&"OPENCODE_SERVER_USERNAME=user name".to_owned()));
 }
 
@@ -48,7 +57,7 @@ fn expect_no_auth_env_args(args: &[String]) {
 #[test]
 fn auth_env_with_spaces_activate_respawns_attach_with_env_args_and_quoted_values() {
     // given
-    let (recorder, deps) = auth_deps(vec![success("")]);
+    let (recorder, deps, _directory) = auth_deps(vec![success("")]);
 
     // when
     activate_tmux_pane(
@@ -65,26 +74,27 @@ fn auth_env_with_spaces_activate_respawns_attach_with_env_args_and_quoted_values
     let args = recorder.call(0).1;
     assert_eq!(args[..2], strings(&["respawn-pane", "-k"]));
     expect_auth_env_args(&args);
-    assert_eq!(
-        args.last().unwrap(),
-        r#"/bin/sh -c "opencode attach 'http://127.0.0.1:4321/path with spaces' --session 'session with spaces' --dir '/tmp/project with spaces'""#
-    );
+    assert!(args.last().unwrap().contains(
+        "opencode attach 'http://127.0.0.1:4321/path with spaces' --session 'session with spaces' --dir '/tmp/project with spaces'"
+    ));
 }
 
 #[test]
 fn auth_env_every_lifecycle_call_site_receives_env_args() {
     // given
     let config = enabled_config();
-    let (pane, pane_deps) = auth_deps(vec![success("%pane"), success("")]);
-    let (window, window_deps) = auth_deps(vec![success("%window"), success("")]);
-    let (session, session_deps) = auth_deps(vec![
+    let (pane, pane_deps, _pane_directory) = auth_deps(vec![success("%pane"), success("")]);
+    let (window, window_deps, _window_directory) = auth_deps(vec![success("%window"), success("")]);
+    let (session, session_deps, _session_directory) = auth_deps(vec![
         success("120,40"),
         failed(),
         success("%session"),
         success(""),
     ]);
-    let (existing, existing_deps) = auth_deps(vec![failed(), success("%existing"), success("")]);
-    let (replace, replace_deps) = auth_deps(vec![success(""), success(""), success("")]);
+    let (existing, existing_deps, _existing_directory) =
+        auth_deps(vec![failed(), success("%existing"), success("")]);
+    let (replace, replace_deps, _replace_directory) =
+        auth_deps(vec![success(""), success(""), success("")]);
     let session_request = |source_pane_id| SpawnTmuxSessionRequest {
         session_id: "session-1",
         description: "worker",
