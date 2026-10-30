@@ -605,9 +605,11 @@ fn given_stdin_and_windows_fallback_when_bare_git_absent_then_stdin_reaches_fall
 fn early_stdin_close_does_not_mask_git_failure() {
     let root = tempfile::tempdir().unwrap();
     let exec = system_git_exec();
+    // Unknown commands make Git for Windows scan PATH for suggestions, which can exceed a few
+    // seconds on a loaded CI runner; use the module's default bound so only a real hang fails.
     let options = GitExecOptions {
         cwd: root.path().to_path_buf(),
-        timeout_ms: 5_000,
+        timeout_ms: 30_000,
         stdin: Some(vec![b'x'; 4 * 1024 * 1024]),
         ..Default::default()
     };
