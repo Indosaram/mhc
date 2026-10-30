@@ -206,7 +206,7 @@ pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_h
     let previous_hook = std::panic::take_hook();
     *process_panic_hook_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous_hook);
     std::panic::set_hook(Box::new(|info| {
-        let text = format!("{info}\n");
+        let text = describe_panic(info);
         let reentrant = IN_GUARDED_PANIC_HOOK.with(|active| active.replace(true));
         if reentrant {
             default_stderr_write()(&text);
@@ -235,6 +235,20 @@ pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_h
     }));
 }
 
+/// The std report prints nothing for a non-string payload (`panic_any(ExtensionFailure)`), which
+/// left only "panicked at <file>" in the debug log; name the payload type and its message instead.
+fn describe_panic(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = info.payload();
+    if payload.is::<&str>() || payload.is::<String>() {
+        return format!("{info}\n");
+    }
+    let location = info.location().map_or_else(String::new, |location| format!(" at {location}"));
+    let detail = payload
+        .downcast_ref::<maho_ext_api::ExtensionFailure>()
+        .map_or_else(|| "non-string panic payload".to_owned(), |failure| format!("ExtensionFailure: {}", failure.message));
+    format!("panicked{location}:\n{detail}\n")
+}
+
 fn process_stderr_before_takeover() -> &'static Mutex<Option<maho_tui::process_stdio::StreamWrite>> {
     static PREVIOUS: Mutex<Option<maho_tui::process_stdio::StreamWrite>> = Mutex::new(None);
     &PREVIOUS
@@ -246,11 +260,17 @@ fn process_panic_hook_before_takeover() -> &'static Mutex<Option<PanicHook>> {
 }
 
 pub fn restore_stderr() {
-    let mut guard = state().lock().expect("output guard lock");
+    // Called from drop guards, possibly while unwinding: a second panic here aborts the process.
+    let mut guard = state().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     guard.stderr_takeover = None;
     drop(guard);
     if let Some(previous) = process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
         maho_tui::process_stdio::set_stderr_writer(previous);
+        // take_hook/set_hook panic on a panicking thread; the guarded hook stays installed and
+        // falls through to plain stderr once the takeover state is cleared.
+        if std::thread::panicking() {
+            return;
+        }
         if let Some(previous_hook) = process_panic_hook_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
             drop(std::panic::take_hook());
             std::panic::set_hook(previous_hook);

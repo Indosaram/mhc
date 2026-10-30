@@ -22,12 +22,24 @@ pub fn route_label(route: &DagRoute) -> String {
 }
 pub struct DagRunRowsOptions { pub max_width: Option<usize>, pub now: Option<i64>, pub is_process_alive: Option<Arc<dyn Fn(i64)->bool + Send + Sync>> }
 pub fn run_rows(run: &DagRunSnapshot, activity: Option<&BTreeMap<String, String>>) -> Vec<String> { run_rows_with_options(run, activity, None) }
+/// Node and wave counts of one run: what the run header row and the footer DAG status both show.
+pub struct DagRunCounts { pub completed: usize, pub running: usize, pub failed: usize, pub nodes: usize, pub current_wave: usize, pub total_waves: usize }
+pub fn dag_run_counts(run: &DagRunSnapshot) -> DagRunCounts {
+    let total_waves = run.waves.len();
+    let current_wave = run.waves.iter().position(|wave| wave.node_ids.iter().any(|id| run.nodes.iter().find(|node| &node.id == id).is_none_or(|node| !node.state.is_terminal()))).map_or(total_waves, |index| index + 1);
+    let count = |state: &str| run.nodes.iter().filter(|node| node.state.as_str() == state).count();
+    DagRunCounts { completed: count("completed"), running: count("running"), failed: count("failed"), nodes: run.nodes.len(), current_wave, total_waves }
+}
+/// Footer status text for the live runs: the first run's progress, prefixed by the run count when several are live.
+pub fn dag_footer_status(runs: &[DagRunSnapshot]) -> Option<String> {
+    let first = runs.first()?;
+    let counts = dag_run_counts(first);
+    let mut text = format!("dag {}/{} wave {}/{}", counts.completed, counts.nodes, counts.current_wave, counts.total_waves);
+    if counts.failed > 0 { text.push_str(&format!(" {} failed", counts.failed)); }
+    Some(if runs.len() > 1 { format!("{} runs \u{b7} {text}", runs.len()) } else { text })
+}
 pub fn run_rows_with_options(run: &DagRunSnapshot, activity: Option<&BTreeMap<String, String>>, options: Option<&DagRunRowsOptions>) -> Vec<String> {
-    let total = run.waves.len();
-    let current = run.waves.iter().position(|wave| wave.node_ids.iter().any(|id| run.nodes.iter().find(|node| &node.id == id).is_none_or(|node| !node.state.is_terminal()))).map_or(total, |index| index + 1);
-    let completed = run.nodes.iter().filter(|node| node.state.as_str() == "completed").count();
-    let running = run.nodes.iter().filter(|node| node.state.as_str() == "running").count();
-    let failed = run.nodes.iter().filter(|node| node.state.as_str() == "failed").count();
+    let DagRunCounts { completed, running, failed, current_wave: current, total_waves: total, .. } = dag_run_counts(run);
     let mut counts = vec![format!("{completed}/{} done", run.nodes.len())];
     if running > 0 { counts.push(format!("{running} running")); }
     if failed > 0 { counts.push(format!("{failed} failed")); }

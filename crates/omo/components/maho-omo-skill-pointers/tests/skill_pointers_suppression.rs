@@ -165,3 +165,12 @@ async fn given_a_real_skills_root_when_a_matched_skill_is_not_shipped_then_its_p
     ]);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn strip_quoted_spans_preserves_byte_length_for_multibyte_text() {
+    for text in ["한글 설명\n```\ncode\n```\nulw-plan", "가나 `코드` \"인용\"\n~~~\n다라\n~~~\n```\n마바\n```\nmass-ulw"] {
+        let visible = strip_quoted_spans(text);
+        assert_eq!(visible.len(), text.len(), "{text}");
+        assert!(visible.ends_with(&text[text.rfind('\n').expect("newline")..]), "{text}");
+    }
+}

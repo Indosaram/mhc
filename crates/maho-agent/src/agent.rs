@@ -196,6 +196,17 @@ pub struct AgentOptions {
     pub cursor_exec_handlers: Option<CursorExecHandlersConfig>,
 }
 
+/// Why a continuation could not start; the senpi `continue()` throws with these messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AgentContinueError {
+    #[error("Agent is already processing. Wait for completion before continuing.")]
+    AlreadyProcessing,
+    #[error("No messages to continue from")]
+    NoMessages,
+    #[error("Cannot continue from message role: assistant")]
+    AssistantTail,
+}
+
 #[derive(Clone, Default)]
 pub struct AgentContinuationOptions {
     /// Keep queued steering and follow-up input out of the continuation's first provider request only.
@@ -723,9 +734,12 @@ impl Agent {
     /// Continue by delivering queued input first when a compaction leaves custom context at the tail.
     /// Queue-first recovery takes precedence over `deferQueuedMessages`: the selected queued message is
     /// the continuation input, while timeout overrides still apply to its first provider request.
-    pub async fn continue_with_queued_messages(&self, options: AgentContinuationOptions) {
+    pub async fn continue_with_queued_messages(
+        &self,
+        options: AgentContinuationOptions,
+    ) -> Result<(), AgentContinueError> {
         if lock(&self.inner.active_run).is_some() {
-            panic!("Agent is already processing. Wait for completion before continuing.");
+            return Err(AgentContinueError::AlreadyProcessing);
         }
 
         let last_role = lock(&self.inner.state)
@@ -733,8 +747,7 @@ impl Agent {
             .last()
             .map(|message| message.role().to_owned());
         if last_role.as_deref() == Some("assistant") {
-            self.continue_run(options).await;
-            return;
+            return self.continue_run(options).await;
         }
 
         if lock(&self.inner.steering_queue).has_items() {
@@ -747,7 +760,7 @@ impl Agent {
                 },
             )
             .await;
-            return;
+            return Ok(());
         }
 
         if lock(&self.inner.follow_up_queue).has_items() {
@@ -760,23 +773,26 @@ impl Agent {
                 },
             )
             .await;
-            return;
+            return Ok(());
         }
 
-        self.continue_run(options).await;
+        self.continue_run(options).await
     }
 
     /// Continue from the current transcript. The last message must be a user or tool-result message.
     /// Queue deferral and timeout overrides apply only to the first provider request; later requests in
     /// the same run and later runs use the configured Agent defaults.
-    pub async fn continue_run(&self, options: AgentContinuationOptions) {
+    pub async fn continue_run(
+        &self,
+        options: AgentContinuationOptions,
+    ) -> Result<(), AgentContinueError> {
         if lock(&self.inner.active_run).is_some() {
-            panic!("Agent is already processing. Wait for completion before continuing.");
+            return Err(AgentContinueError::AlreadyProcessing);
         }
 
         let last_message = lock(&self.inner.state).messages().last().cloned();
         let Some(last_message) = last_message else {
-            panic!("No messages to continue from");
+            return Err(AgentContinueError::NoMessages);
         };
 
         if last_message.role() == "assistant" {
@@ -790,7 +806,7 @@ impl Agent {
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
 
             if lock(&self.inner.follow_up_queue).has_items() {
@@ -803,13 +819,14 @@ impl Agent {
                     },
                 )
                 .await;
-                return;
+                return Ok(());
             }
 
-            panic!("Cannot continue from message role: assistant");
+            return Err(AgentContinueError::AssistantTail);
         }
 
         self.run_continuation(options).await;
+        Ok(())
     }
 
     fn normalize_prompt_input(&self, input: AgentPromptInput) -> Vec<AgentMessage> {
@@ -1684,7 +1701,8 @@ mod queue_ownership_tests {
             agent.continue_with_queued_messages(AgentContinuationOptions::default()),
         )
         .await
-        .expect("bounded continuation");
+        .expect("bounded continuation")
+        .expect("continuation admitted");
         // Then: input is restored, never emitted, and the run settles.
         assert!(agent.has_queued_messages());
         assert!(

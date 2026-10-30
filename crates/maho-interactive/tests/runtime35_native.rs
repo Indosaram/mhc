@@ -2998,12 +2998,26 @@ async fn faux_screen_hi_matches_pinned_interactive_cells() {
             serde_json::to_string(&terminal.writes).expect("ANSI evidence")
         );
         mounted.stop(&mut terminal, true).expect("restore terminal");
-        assert_eq!(
-            actual.cells, expected.cells,
-            "native viewport: {:?}",
-            actual.viewport
-        );
+        assert_footer_divergent_screen_matches(&actual, &expected);
     }
+}
+/// Every row matches the pinned senpi screen except the last, the footer, which diverges by
+/// design (docs/divergences.md UX-2) and is checked for the v7 layout instead.
+fn assert_footer_divergent_screen_matches(
+    actual: &maho_test_support::vterm::Screen,
+    expected: &maho_test_support::vterm::Screen,
+) {
+    let footer = actual.cells.len() - 1;
+    assert_eq!(
+        actual.cells[..footer], expected.cells[..footer],
+        "native viewport: {:?}",
+        actual.viewport
+    );
+    let row = actual.viewport[footer].trim_end();
+    assert!(
+        row.starts_with("/tmp ") && row.contains("ctx 0% 4/128K") && row.ends_with("faux-1"),
+        "v7 footer row: {row:?}"
+    );
 }
 #[tokio::test]
 async fn faux_screen_slash_hotkeys_matches_pinned_cells() {
@@ -3051,11 +3065,7 @@ async fn faux_screen_slash_hotkeys_matches_pinned_cells() {
         serde_json::to_string(&terminal.writes).expect("ANSI evidence")
     );
     mounted.stop(&mut terminal, true).expect("restore terminal");
-    assert_eq!(
-        actual.cells, expected.cells,
-        "native viewport: {:?}",
-        actual.viewport
-    );
+    assert_footer_divergent_screen_matches(&actual, &expected);
 }
 
 impl maho_tui::terminal::Terminal for ScreenTerminal {
@@ -6243,6 +6253,41 @@ async fn r11_paste_and_tree_copy_park_the_clipboard() {
         !rendered.contains("after-copy"),
         "the queued prompt has not started: {rendered}"
     );
+}
+
+#[tokio::test]
+async fn pasted_image_path_attaches_the_image() {
+    // A terminal that saves the clipboard bitmap to a file pastes its shell-quoted path.
+    let (mut mode, directory) = native_mode();
+    let image = directory.path().join("clip board.png");
+    std::fs::write(
+        &image,
+        [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99,
+            0x3d, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ],
+    )
+    .expect("write image");
+    let pasted = format!("\x1b[200~'{}' \x1b[201~", image.display());
+    mode.handle_runtime_input(&pasted, 0).await.expect("paste");
+    assert!(mode.has_parked_action_for_test(), "the file read is parked");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        std::future::poll_fn(|context| {
+            mode.poll_after_paint(context.waker());
+            if mode.has_parked_action_for_test() {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(())
+            }
+        }),
+    )
+    .await
+    .expect("the parked read settles");
+    assert_eq!(mode.editor.editor.get_text(), "[Image #1]");
 }
 
 #[tokio::test]

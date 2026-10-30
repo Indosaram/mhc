@@ -16,10 +16,10 @@ pub fn truncate_goal_objective(objective:&str,max_length:usize)->String {
 }
 pub fn goal_status_text(goal:&Goal,live_elapsed_seconds:Option<f64>)->String {
     match goal.status {
-        GoalStatus::Active=>if let Some(seconds)=live_elapsed_seconds { format!("Pursuing goal ({})",format_goal_elapsed_seconds(seconds)) } else if goal.time_used_seconds>0.0 { format!("Pursuing goal ({})",format_goal_elapsed_seconds(goal.time_used_seconds)) } else { "Pursuing goal".into() },
-        GoalStatus::Paused=>"Goal paused (/goal resume)".into(),
-        GoalStatus::Blocked=>goal.blocked_reason.as_ref().filter(|reason|!reason.is_empty()).map_or_else(||"Goal blocked".into(),|reason|format!("Goal blocked: {reason}")),
-        GoalStatus::Complete=>{ let elapsed=if goal.time_used_seconds>0.0 { format!(" ({})",format_goal_elapsed_seconds(goal.time_used_seconds)) } else { String::new() }; format!("{} \u{b7} Goal achieved{elapsed}",truncate_goal_objective(&goal.objective,OBJECTIVE_PREVIEW_MAX_LENGTH)) },
+        GoalStatus::Active=>if let Some(seconds)=live_elapsed_seconds { format!("goal {}",format_goal_elapsed_seconds(seconds)) } else if goal.time_used_seconds>0.0 { format!("goal {}",format_goal_elapsed_seconds(goal.time_used_seconds)) } else { "goal".into() },
+        GoalStatus::Paused=>"goal paused /goal resume".into(),
+        GoalStatus::Blocked=>goal.blocked_reason.as_ref().filter(|reason|!reason.is_empty()).map_or_else(||"goal blocked".into(),|reason|format!("goal blocked: {reason}")),
+        GoalStatus::Complete=>{ let elapsed=if goal.time_used_seconds>0.0 { format!(" ({})",format_goal_elapsed_seconds(goal.time_used_seconds)) } else { String::new() }; format!("{} \u{b7} goal achieved{elapsed}",truncate_goal_objective(&goal.objective,OBJECTIVE_PREVIEW_MAX_LENGTH)) },
     }
 }
 pub fn update_goal_ui(ctx:&ExtensionContext,goal:Option<&Goal>,live_elapsed_seconds:Option<f64>) { if !ctx.has_ui { return; } let status=goal.map(|goal|goal_status_text(goal,live_elapsed_seconds)); ctx.ui.set_status(STATUS_KEY,status.as_deref()); }
@@ -33,18 +33,18 @@ pub fn update_goal_ui(ctx:&ExtensionContext,goal:Option<&Goal>,live_elapsed_seco
     }
     fn goal(status:GoalStatus,seconds:f64)->Goal { serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"Ship the feature","status":status,"tokensUsed":0,"timeUsedSeconds":seconds,"createdAt":1,"updatedAt":1})).unwrap() }
     #[test] fn upstream_footer_derives_each_goal_state() {
-        for (status,seconds,expected) in [(GoalStatus::Active,0.0,"Pursuing goal"),(GoalStatus::Active,65.0,"Pursuing goal (1m)"),(GoalStatus::Paused,0.0,"Goal paused (/goal resume)"),(GoalStatus::Complete,0.0,"Ship the feature \u{b7} Goal achieved"),(GoalStatus::Complete,125.0,"Ship the feature \u{b7} Goal achieved (2m)")] { assert_eq!(goal_status_text(&goal(status,seconds),None),expected); }
-        let mut blocked=goal(GoalStatus::Blocked,0.0); blocked.blocked_reason=Some("Waiting for review".into()); assert_eq!(goal_status_text(&blocked,None),"Goal blocked: Waiting for review");
+        for (status,seconds,expected) in [(GoalStatus::Active,0.0,"goal"),(GoalStatus::Active,65.0,"goal 1m"),(GoalStatus::Paused,0.0,"goal paused /goal resume"),(GoalStatus::Complete,0.0,"Ship the feature \u{b7} goal achieved"),(GoalStatus::Complete,125.0,"Ship the feature \u{b7} goal achieved (2m)")] { assert_eq!(goal_status_text(&goal(status,seconds),None),expected); }
+        let mut blocked=goal(GoalStatus::Blocked,0.0); blocked.blocked_reason=Some("Waiting for review".into()); assert_eq!(goal_status_text(&blocked,None),"goal blocked: Waiting for review");
     }
     #[test] fn upstream_achieved_footer_truncates_objective_to_32_units() {
         let mut achieved=goal(GoalStatus::Complete,61.0); achieved.objective="Refactor the entire session persistence layer to support branching".into();
-        let preview=truncate_goal_objective(&achieved.objective,OBJECTIVE_PREVIEW_MAX_LENGTH); assert!(preview.ends_with('\u{2026}')); assert!(preview.encode_utf16().count()<=32); assert_eq!(goal_status_text(&achieved,None),format!("{preview} \u{b7} Goal achieved (1m)"));
+        let preview=truncate_goal_objective(&achieved.objective,OBJECTIVE_PREVIEW_MAX_LENGTH); assert!(preview.ends_with('\u{2026}')); assert!(preview.encode_utf16().count()<=32); assert_eq!(goal_status_text(&achieved,None),format!("{preview} \u{b7} goal achieved (1m)"));
     }
     #[test] fn upstream_live_elapsed_only_applies_to_active_goal() {
-        assert_eq!(goal_status_text(&goal(GoalStatus::Active,5.0),Some(42.0)),"Pursuing goal (42s)");
-        assert_eq!(goal_status_text(&goal(GoalStatus::Active,0.0),Some(0.0)),"Pursuing goal (0s)");
-        assert_eq!(goal_status_text(&goal(GoalStatus::Paused,0.0),Some(99.0)),"Goal paused (/goal resume)");
-        assert_eq!(goal_status_text(&goal(GoalStatus::Complete,0.0),Some(99.0)),"Ship the feature \u{b7} Goal achieved");
+        assert_eq!(goal_status_text(&goal(GoalStatus::Active,5.0),Some(42.0)),"goal 42s");
+        assert_eq!(goal_status_text(&goal(GoalStatus::Active,0.0),Some(0.0)),"goal 0s");
+        assert_eq!(goal_status_text(&goal(GoalStatus::Paused,0.0),Some(99.0)),"goal paused /goal resume");
+        assert_eq!(goal_status_text(&goal(GoalStatus::Complete,0.0),Some(99.0)),"Ship the feature \u{b7} goal achieved");
     }
     #[test] fn preview_normalizes_ecmascript_whitespace() { assert_eq!(truncate_goal_objective("\u{feff} ship\n  the\tfeature \u{feff}",32),"ship the feature"); }
 }

@@ -1636,8 +1636,6 @@ impl TaskDagEngine {
             Arc::new(self.manager.clone()),
             self.runtime.clone(),
             timers,
-            None,
-            None,
             logger.map(|logger| {
                 Arc::new(move |message: &str, error: &str| {
                     logger.warn(message, Some(&serde_json::json!({"error": error})))

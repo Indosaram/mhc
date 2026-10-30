@@ -5,14 +5,14 @@ pub fn resolve_patch_path(cwd:&Path,file_path:&Path)->PathBuf {
 }
 #[cfg(not(windows))]
 pub fn resolve_patch_path(cwd:&Path,file_path:&Path)->PathBuf {
-    let path=if file_path.is_absolute() { file_path.to_path_buf() } else { let cwd=if cwd.is_absolute() { cwd.to_path_buf() } else { std::env::current_dir().expect("process cwd").join(cwd) }; cwd.join(file_path) };
+    let path=if file_path.is_absolute() { file_path.to_path_buf() } else { let cwd=if cwd.is_absolute() { cwd.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(cwd) }; cwd.join(file_path) };
     let mut resolved=PathBuf::new();
     for part in path.components() { match part { Component::CurDir=>{},Component::ParentDir=>{resolved.pop();},other=>resolved.push(other.as_os_str()) } }
     resolved
 }
 #[cfg(windows)]
 fn resolve_windows_patch_path(cwd:&Path,file_path:&Path)->PathBuf {
-    let absolute=if file_path.is_absolute() {file_path.to_path_buf()} else {let base=if cwd.is_absolute(){cwd.to_path_buf()}else{std::env::current_dir().expect("process cwd").join(cwd)};base.join(file_path)};
+    let absolute=if file_path.is_absolute() {file_path.to_path_buf()} else {let base=if cwd.is_absolute(){cwd.to_path_buf()}else{std::env::current_dir().unwrap_or_default().join(cwd)};base.join(file_path)};
     let mut resolved=PathBuf::new();
     for component in absolute.components(){match component{Component::Prefix(prefix)=>resolved.push(prefix.as_os_str()),Component::RootDir=>resolved.push(component.as_os_str()),Component::CurDir=>{},Component::ParentDir=>{if resolved.file_name().is_some(){resolved.pop();}},Component::Normal(part)=>resolved.push(part)}}
     resolved

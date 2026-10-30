@@ -8,8 +8,8 @@ pub fn update_status(ctx: &ExtensionContext, cache: &InjectionCache, key: &str, 
  let count = cache.get_cache_size(key);
  let text = (count != 0).then(|| {
   let theme = ctx.ui.theme();
-  let mut text = theme.fg("dim", &format!("🤖 {count}"));
-  if has_errors { text.push_str(&theme.fg("warning", " ⚠️")); }
+  let mut text = theme.fg("muted", &format!("AGENTS.md {count}"));
+  if has_errors { text.push_str(&theme.fg("warning", " ⚠ failed")); }
   text
  });
  ctx.ui.set_status(STATUS_KEY, text.as_deref());

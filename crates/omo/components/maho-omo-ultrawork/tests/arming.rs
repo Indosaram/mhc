@@ -55,3 +55,4 @@ fn shared_snapshot_reads_leave_compact_pending_unchanged() {
     }
     assert!(ledger.lock().expect("ledger").is_compact_rearm_pending(Some(id)));
 }
+#[test] fn multibyte_text_before_fence_keeps_offsets_in_bounds() { for s in ["한글 설명\n```\ncode\n```\nulw", "“q” 한글\n```rust\n가나다\n```\n```\n라마\n```\nplease ulw"] { assert!(is_ultrawork_input(s), "{s}"); } assert!(!is_ultrawork_input("한글\n```\nulw\n```")); }
