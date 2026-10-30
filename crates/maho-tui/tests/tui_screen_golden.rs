@@ -1239,3 +1239,47 @@ mod render_contract {
         assert!(!home.path().join(".senpi/agent/senpi-debug.log").exists());
     }
 }
+
+/// Port of senpi `overlay-short-content.test.ts`.
+#[test]
+fn should_render_overlay_when_content_is_shorter_than_terminal_height() {
+    struct SimpleOverlay;
+    impl Component for SimpleOverlay {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            vec![
+                "OVERLAY_TOP".to_string(),
+                "OVERLAY_MID".to_string(),
+                "OVERLAY_BOT".to_string(),
+            ]
+        }
+    }
+
+    let mut terminal = RecordingTerminal {
+        columns: 80,
+        rows: 24,
+        out: String::new(),
+    };
+    let mut screen = TuiMainScreen::new();
+    screen.base.set_mux_detector(Box::new(|| false));
+    screen
+        .base
+        .add_child(Rc::new(RefCell::new(Text::with_padding(
+            "Line 1\nLine 2\nLine 3",
+            0,
+            0,
+        ))));
+    let _overlay = screen
+        .base
+        .show_overlay(Rc::new(RefCell::new(SimpleOverlay)), None);
+    screen.base.reset_forced_render_state();
+    screen.base.do_render(&mut terminal);
+
+    let mut vt = VirtualTerminal::new(80, 24);
+    vt.start();
+    vt.write(&terminal.out);
+    let viewport = vt.viewport();
+    assert!(
+        viewport.iter().any(|line| line.contains("OVERLAY")),
+        "Overlay should be visible when content is shorter than terminal: {viewport:?}"
+    );
+}
