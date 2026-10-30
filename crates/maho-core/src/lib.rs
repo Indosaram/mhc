@@ -219,6 +219,8 @@ pub mod session_failure_report;
 pub mod session_file_replace;
 pub mod session_hold_errors;
 pub mod session_resident_store_size;
+pub mod session_summary_index;
+pub mod session_summary_index_file;
 pub mod session_title_reasoning;
 pub mod session_write_recovery;
 pub mod settings_retired_keys;
