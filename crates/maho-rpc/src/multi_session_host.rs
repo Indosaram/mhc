@@ -1747,6 +1747,8 @@ impl HostCore {
                     .ok()
                     .filter(|dir| !dir.is_empty()),
             }),
+            // senpi `open`: `{ ...profile, spawnedBy: ancestry }` once validated.
+            spawned_by: serde_json::from_value(spawned_by.clone()).ok(),
         };
         let retain = retain_on_disconnect.unwrap_or(false);
         let opened = self
@@ -3646,6 +3648,57 @@ mod handoff_tests {
                 break;
             }
         }
+    }
+    #[tokio::test]
+    async fn open_session_merges_the_validated_spawned_by_into_the_launch_profile() {
+        let (profile_tx, mut profiles) = tokio::sync::mpsc::unbounded_channel();
+        let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
+            move |profile: crate::session_registry::RpcSessionLaunchProfile| {
+                let _ = profile_tx.send(profile);
+                Box::pin(async { Err("the profile is all this test needs".to_owned()) })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<
+                                        maho_core::agent_session_runtime::AgentSessionRuntime,
+                                        String,
+                                    >,
+                                > + Send,
+                        >,
+                    >
+            },
+        );
+        let core = std::sync::Arc::new(HostCore::new(
+            HostCoreOptions {
+                agent_dir: std::path::PathBuf::from("/tmp"),
+                cwd: "/tmp".to_owned(),
+                create_runtime,
+                capabilities: Vec::new(),
+                close_grace_ms: 0,
+            },
+            std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(
+                tokio::io::sink(),
+            )),
+        ));
+        let _client = peer(&core, "c");
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":"/tmp","spawnedBy":{"parentSessionId":"p","rootSessionId":"r","taskId":"t"}})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let profile = profiles
+            .try_recv()
+            .expect("the open reached the runtime factory");
+        assert_eq!(
+            profile.spawned_by,
+            Some(maho_core::session_lifecycle_types::SpawnedBy {
+                parent_session_id: "p".into(),
+                root_session_id: "r".into(),
+                task_id: "t".into(),
+            })
+        );
     }
     #[tokio::test]
     async fn a_dropped_connection_gives_up_every_attachment_it_held() {
