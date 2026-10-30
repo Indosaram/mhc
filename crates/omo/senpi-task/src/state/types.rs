@@ -626,6 +626,17 @@ pub struct TaskRecord {
     pub recovery_deadline_at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residency_claim: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effect_seq: Option<u64>,
+    /// The exact id of the last identified input this task sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_effect_id: Option<String>,
+    /// Inputs whose acknowledgement was lost (`runners/input-effects.ts`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncertain_inputs: Option<Vec<crate::runners::input_effects::IdentifiedInput>>,
+    /// Live overlay from the host-session handle; never persisted.
+    #[serde(skip)]
+    pub host_liveness: Option<crate::state::host_liveness::HostLivenessStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

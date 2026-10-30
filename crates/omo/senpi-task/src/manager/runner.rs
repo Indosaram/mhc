@@ -305,6 +305,7 @@ pub fn to_rpc_spec(spec: &ManagedStartSpec) -> RpcRunnerSpec {
         member_env: spec.member_env.clone(),
         parent_session_id: Some(spec.parent_session_id.clone()),
         root_session_id: Some(spec.root_session_id.clone()),
+        task_store_dir: crate::runners::types::task_store_dir_of(&spec.state_dir),
         ..RpcRunnerSpec::default()
     }
 }
