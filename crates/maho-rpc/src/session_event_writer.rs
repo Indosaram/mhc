@@ -123,6 +123,8 @@ impl SessionWriterActor{
         scheduler.reservations.reserve(session_id,response,terminal,buffered).map_err(|error|error.to_string())
     }
     pub fn release_close_response(&self,id:u64){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reservations.release(id);}
+    /// senpi `isSessionSealed`: the writer accepts no further output for this session.
+    pub fn is_session_sealed(&self,session_id:&str)->bool{self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed.contains(session_id)}
     pub fn forget_session(&self,session_id:&str){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed.remove(session_id);}
     pub fn complete_close_response(&self,id:u64,session_id:&str,mut response:Value,terminal:bool,reason:Option<&str>)->Result<(),String>{
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

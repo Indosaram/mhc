@@ -164,18 +164,29 @@ pub struct HostCore {
 struct OpenRefusal {
     message: String,
     code: Option<String>,
+    /// `errorData` a client acts on (`session_output_overflow { sessionId, sessionPath, action }`).
+    data: Option<serde_json::Value>,
 }
 impl OpenRefusal {
     fn plain(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: None,
+            data: None,
         }
     }
     fn from_registry(error: &crate::session_registry::RpcSessionRegistryError) -> Self {
         Self {
             message: error.to_string(),
             code: Some(error.code.clone()),
+            data: None,
+        }
+    }
+    fn sealed(data: serde_json::Value) -> Self {
+        Self {
+            message: crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW.to_owned(),
+            code: Some(crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW.to_owned()),
+            data: Some(data),
         }
     }
 }
@@ -1201,6 +1212,20 @@ impl HostCore {
                             None,
                         );
                     }
+                    Err(OpenRefusal {
+                        code: Some(code),
+                        data: Some(data),
+                        ..
+                    }) => {
+                        self.refuse(
+                            connection,
+                            command.id.clone(),
+                            "open_session",
+                            &code,
+                            data,
+                            None,
+                        );
+                    }
                     Err(refusal) => {
                         self.error(
                             connection,
@@ -1305,7 +1330,7 @@ impl HostCore {
                     Ok(Some((reservation, claim))) => {
                         self.default_writer.release_close_response(reservation);
                         if let Some(connection) = connection {
-                            self.release_owner_attachment(connection, &session_id);
+                            self.release_owner_attachment(connection, &session_id).await;
                         }
                         // Only the LAST attachment tears the session down; a surviving attachment keeps
                         // the shared binding and its event stream (senpi `close`/`claimClose`).
@@ -1385,6 +1410,20 @@ impl HostCore {
                     );
                     return Ok(());
                 };
+                // An open session whose output is sealed answers every command with the recovery it needs.
+                if self.default_writer.is_session_sealed(&session_id)
+                    && self.session_open(&session_id).await
+                {
+                    self.refuse(
+                        connection,
+                        command.id.clone(),
+                        value["type"].as_str().unwrap_or_default(),
+                        crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW,
+                        serde_json::json!({"sessionId":session_id,"action":"unload_and_reopen"}),
+                        Some(session_id),
+                    );
+                    return Ok(());
+                }
                 if let Some(workers) = &self.workers {
                     let kind = value["type"].as_str().unwrap_or_default().to_owned();
                     match workers.get_for_command(
@@ -1730,6 +1769,25 @@ impl HostCore {
         };
         match admitted {
             Err(error) => Err(OpenRefusal::from_registry(&error)),
+            Ok(crate::session_registry::OpenAdmission::Attached(handle))
+                if self.default_writer.is_session_sealed(&handle) =>
+            {
+                // A reattach to a session whose output is already sealed undoes only this attachment and keeps the
+                // seal intact until an explicit unload parks it for a fresh open by path (senpi#3913).
+                let session_path = {
+                    let mut registry = self.registry.lock().await;
+                    let path = registry
+                        .get(&handle)
+                        .and_then(|entry| entry.session_path.clone());
+                    let _ = registry.mark_close(&handle, true);
+                    path
+                };
+                let mut data = serde_json::json!({"sessionId":handle,"action":"unload_and_reopen"});
+                if let Some(path) = session_path {
+                    data["sessionPath"] = path.into();
+                }
+                Err(OpenRefusal::sealed(data))
+            }
             Ok(crate::session_registry::OpenAdmission::Attached(handle)) => {
                 // senpi session-registry.ts: an attach that ends a retained session's parked
                 // (zero-attachment) window tells its extensions `session_resumed`.
@@ -1971,7 +2029,7 @@ impl HostCore {
                 .await
         {
             if let Some(connection) = connection {
-                self.release_owner_attachment(connection, &handle);
+                self.release_owner_attachment(connection, &handle).await;
             }
             if workers.force_close(&handle).is_some() {
                 let _ = workers.close_marked(&handle).await;
@@ -2030,7 +2088,7 @@ impl HostCore {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .release(connection, &session_id);
-            self.release_owner_attachment(connection, &session_id);
+            self.release_owner_attachment(connection, &session_id).await;
         }
         if claim.finalizer != Some(true) {
             self.success(connection, id, "close_session", None, Some(session_id));
@@ -2147,6 +2205,9 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take(connection);
+        for session_id in owned.keys() {
+            self.connection_left(session_id, connection).await;
+        }
         if self
             .drain
             .lock()
@@ -2514,6 +2575,21 @@ impl HostCore {
     }
     /// Detaches the closing connection's UI/width state (senpi `releaseOwnerAttachment`); the
     /// ownership count itself was released by the close claim.
+    /// Whether the registry holds this handle in the `open` state (senpi `registry.peek(id)?.state === "open"`).
+    async fn session_open(&self, session_id: &str) -> bool {
+        let open = |state| state == crate::session_registry::RpcSessionState::Open;
+        match &self.workers {
+            Some(workers) => workers
+                .with_entry(session_id, |entry| open(entry.close.state))
+                .unwrap_or(false),
+            None => self
+                .registry
+                .lock()
+                .await
+                .get(session_id)
+                .is_some_and(|entry| open(entry.close.state)),
+        }
+    }
     /// The durable id an open handle runs now and whether it is open with a live binding (senpi
     /// `entry.runtime?.session.sessionId ?? entry.worker?.snapshot?.state.sessionId ?? entry.durableSessionId`).
     async fn live_identity(&self, session_id: &str) -> Option<(bool, Option<String>, i64)> {
@@ -2701,7 +2777,7 @@ impl HostCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .release(owner, &session_id);
         if last {
-            self.release_owner_attachment(owner, &session_id);
+            self.release_owner_attachment(owner, &session_id).await;
         }
         if self.is_draining() {
             self.success(
@@ -2911,7 +2987,7 @@ impl HostCore {
                 attachments.release(owner, &session_id);
             }
         }
-        self.release_owner_attachment(owner, &session_id);
+        self.release_owner_attachment(owner, &session_id).await;
         if let Some(dir) = self.handover_parked_dir.get() {
             crate::host_handover_parked::clear_handover_parked_session(dir, path).await;
         }
@@ -2952,7 +3028,16 @@ impl HostCore {
         self.forget_session(&session_id);
         Ok(session_id)
     }
-    fn release_owner_attachment(&self, owner: &str, session_id: &str) {
+    /// senpi `connectionLeft`: whenever a connection stops attaching (owner release, socket drop, reclaim), a
+    /// relocation request asked of that connection ends with it.
+    async fn connection_left(&self, session_id: &str, connection: &str) {
+        let binding = self.bindings.lock().await.get(session_id).cloned();
+        if let Some(binding) = binding {
+            binding.connection_detached(connection);
+        }
+    }
+    async fn release_owner_attachment(&self, owner: &str, session_id: &str) {
+        self.connection_left(session_id, owner).await;
         self.widths
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
