@@ -122,7 +122,11 @@ fn proven_live_generations(paths: &HostDaemonPaths, socket: &str) -> Vec<Candida
         if !same_endpoint {
             continue;
         }
-        if crate::host_reservations::read_process_start_time(pid).as_deref() == Some(start) {
+        // senpi `processMatchesPidFile`: the start must match AND the process must still run (a zombie keeps its
+        // /proc stat, and so its start, until it is reaped).
+        if crate::host_reservations::read_process_start_time(pid).as_deref() == Some(start)
+            && crate::host_reservations::process_is_running(pid)
+        {
             found.push(Candidate {
                 instance_id,
                 writer: record.get("writer").cloned(),
@@ -223,5 +227,31 @@ mod tests {
             elect_pointer(&paths, &socket, true).instance_id.as_deref(),
             Some("a")
         );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_generation_is_not_proven_live() {
+        let (_temp, paths, socket) = setup();
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        // Wait for the exit without reaping it, so the child stays a zombie with a readable start time.
+        rustix::process::waitid(
+            rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child)),
+            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .unwrap();
+        let pid = child.id();
+        let start = crate::host_reservations::read_process_start_time(pid);
+        assert!(start.is_some(), "a zombie keeps its start time");
+        let generation = generation_paths(&paths, "zombie");
+        crate::host_daemon_paths::create_generation_directory(&generation).unwrap();
+        fs::write(
+            generation.pid_file,
+            serde_json::json!({"pid":pid,"processStartTime":start,"instance_id":"zombie","socket":socket})
+                .to_string(),
+        )
+        .unwrap();
+        let state = elect_pointer(&paths, &socket, true);
+        child.wait().unwrap();
+        assert_eq!(state, HostPointerState::missing(Vec::new()));
     }
 }
