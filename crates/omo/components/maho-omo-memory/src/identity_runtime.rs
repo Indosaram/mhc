@@ -93,7 +93,29 @@ pub struct MemoryIdentityRuntime {
     pub store: Arc<ReflectionReservationStore>,
     pub runner: crate::worker::runner::SenpiSubprocessRunner,
     pub sandbox: IdentitySandbox,
+    /// The one identity-wide reconcile in flight (upstream `reconciliation`).
+    reconciliation: std::sync::Mutex<Option<ReconcileFlight>>,
 }
+type ReconcileOutcome = Result<Vec<(String, String)>, String>;
+/// The shared flight: its first observer owns cancellation; others wait for its outcome.
+struct ReconcileFlight {
+    id: u64,
+    signal: Option<maho_ext_api::AbortSignal>,
+    done: tokio::sync::watch::Receiver<Option<ReconcileOutcome>>,
+}
+struct ClearFlight<'a> {
+    slot: &'a std::sync::Mutex<Option<ReconcileFlight>>,
+    id: u64,
+}
+impl Drop for ClearFlight<'_> {
+    fn drop(&mut self) {
+        let mut slot = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|flight| flight.id == self.id) {
+            *slot = None;
+        }
+    }
+}
+static NEXT_FLIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub fn create_identity_runtime(
     identity: MemoryIdentityContext,
     settings: &serde_json::Value,
@@ -106,6 +128,7 @@ pub fn create_identity_runtime(
         store,
         runner,
         sandbox: Default::default(),
+        reconciliation: Default::default(),
     })
 }
 impl MemoryIdentityRuntime {
@@ -155,8 +178,75 @@ impl MemoryIdentityRuntime {
         recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
         launch: &dyn Fn(&memory_core::reflection::ReservedRun),
     ) -> Result<Vec<(String, String)>, String> {
+        self.reconcile_with_signal(now, recovery, launch, None).await
+    }
+    /// One identity-wide pass, including any already-admitted durable transition. Its first observer
+    /// owns cancellation; an independent caller retries a foreign abort once. The flight is never
+    /// cleared on timeout alone: a committed transition may still be finishing.
+    pub async fn reconcile_with_signal(
+        &self,
+        now: &dyn Fn() -> i64,
+        recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
+        launch: &dyn Fn(&memory_core::reflection::ReservedRun),
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<Vec<(String, String)>, String> {
+        use crate::worker::run_liveness::{OBSERVATION_ABORTED, throw_if_aborted};
+        let mut attempt = 0;
+        loop {
+            throw_if_aborted(signal)?;
+            // Join the flight in progress, or become its driver.
+            let joined = {
+                let mut slot = self.reconciliation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                match slot.as_ref() {
+                    Some(flight) => Err((flight.done.clone(), flight.signal.clone())),
+                    None => {
+                        let (publish, done) = tokio::sync::watch::channel(None);
+                        let id = NEXT_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        *slot = Some(ReconcileFlight { id, signal: signal.cloned(), done });
+                        Ok((id, publish))
+                    }
+                }
+            };
+            let outcome = match joined {
+                Ok((id, publish)) => {
+                    // Clears the flight even when the driver future is dropped mid-pass; joiners then
+                    // see the closed channel as a cancelled flight.
+                    let _clear = ClearFlight { slot: &self.reconciliation, id };
+                    let outcome = self.drive_reconcile(now, recovery, launch, signal).await;
+                    drop(_clear);
+                    let _ = publish.send(Some(outcome.clone()));
+                    outcome
+                }
+                Err((mut done, flight_signal)) => {
+                    let outcome = match done.wait_for(Option::is_some).await {
+                        Ok(value) => value.clone().unwrap_or_else(|| Err(OBSERVATION_ABORTED.to_owned())),
+                        // The driver was dropped before publishing: it was cancelled, not finished.
+                        Err(_) => Err(OBSERVATION_ABORTED.to_owned()),
+                    };
+                    // A foreign observer's abort is not this caller's: retry once as its own flight.
+                    let foreign_abort = outcome.as_ref().is_err_and(|error| error == OBSERVATION_ABORTED)
+                        && flight_signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted)
+                        && signal.map(|own| own.is_aborted()) != Some(true);
+                    if foreign_abort && attempt == 0 {
+                        attempt += 1;
+                        continue;
+                    }
+                    outcome
+                }
+            };
+            throw_if_aborted(signal)?;
+            return outcome;
+        }
+    }
+    async fn drive_reconcile(
+        &self,
+        now: &dyn Fn() -> i64,
+        recovery: &dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,
+        launch: &dyn Fn(&memory_core::reflection::ReservedRun),
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<Vec<(String, String)>, String> {
         let identity = as_memory_identity(&self.identity);
-        crate::worker::run_reconciliation::reconcile_reflection_runs_with_options(
+        crate::worker::run_reconciliation::reconcile_reflection_runs_with_signal(
             &crate::worker::run_finalization_types::RunFinalizationContext {
                 identity: &identity,
                 reservation: self.store.as_ref(),
@@ -168,6 +258,7 @@ impl MemoryIdentityRuntime {
             recovery,
             None,
             true,
+            signal,
         )
         .await
     }
@@ -245,10 +336,15 @@ mod tests {
             &'a self,
             _: &'a std::path::Path,
             _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
         ) -> crate::worker::run_reconciliation::ReconcileFuture<'a> {
             Box::pin(async { Ok(()) })
         }
-        fn wait_until(&self, _: f64) -> crate::worker::run_reconciliation::ReconcileFuture<'_> {
+        fn wait_until<'a>(
+            &'a self,
+            _: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> crate::worker::run_reconciliation::ReconcileFuture<'a> {
             Box::pin(async { Ok(()) })
         }
         fn signal_group(&self, _: u64, _: &str) -> Result<(), String> {
@@ -542,5 +638,29 @@ mod tests {
                 Some("/granted/agent")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_aborted_observer_stops_before_reconciling_and_a_clean_pass_leaves_no_flight() {
+        let root = tempfile::tempdir().unwrap();
+        let context = {
+            let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+            crate::engine_session::prepare_memory_engine_session("agent", &paths, Default::default()).unwrap();
+            MemoryIdentityContext::new(
+                "agent".into(),
+                paths,
+                crate::binding::MemorySessionBinding { identity: "agent".into(), repo_path_hash: "hash".into(), bound_at: 0.0 },
+            )
+        };
+        let runtime = create_identity_runtime(context, &crate::reflection_settings::resolve_memory_settings(None).unwrap()).unwrap();
+        let now = || 4_000_000_000_000_i64;
+        let launch = |_: &memory_core::reflection::ReservedRun| {};
+        let signal = maho_ext_api::AbortSignal::default();
+        signal.abort();
+        let aborted = runtime.reconcile_with_signal(&now, &SweepRecovery, &launch, Some(&signal)).await;
+        assert_eq!(aborted, Err(crate::worker::run_liveness::OBSERVATION_ABORTED.to_owned()));
+        assert!(runtime.reconciliation.lock().unwrap().is_none());
+        assert!(runtime.reconcile(&now, &SweepRecovery, &launch).await.is_ok());
+        assert!(runtime.reconciliation.lock().unwrap().is_none());
     }
 }

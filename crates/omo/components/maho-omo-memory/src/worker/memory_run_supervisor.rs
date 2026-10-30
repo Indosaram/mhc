@@ -153,23 +153,38 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
         },
     )
     .map_err(|error| error.to_string())?;
+    // TerminateProcess on the model alone leaves its descendants alive. Kill the model's whole tree so a
+    // terminated reflection cannot keep working after its worktree is reaped.
+    let model_pid = child.id();
+    let mut tree_kill: Option<bool> = None;
     let status = loop {
         tokio::select! {
             status = child.wait() => break status.map_err(|error| error.to_string()),
             signal = signals.receive() => {
                 signal.map_err(|error| error.to_string())?;
                 if runtime_platform(&env) == SupervisorRuntimePlatform::Win32 || cfg!(windows) {
-                    signal_model_gracefully(&mut child)?;
+                    kill_model_tree(&mut tree_kill, model_pid, &env).await?;
                 }
             }
             _ = &mut graceful_received, if runtime_platform(&env) == SupervisorRuntimePlatform::Win32 => {
-                signal_model_gracefully(&mut child)?;
+                // A bare kill only terminates the model CLI; its descendants survive and keep writing
+                // after the supervisor publishes timed_out. The bootstrap stays alive to record child-exit.
+                crate::worker::supervisor_process_identity::record_supervisor_graceful_deadline(model_pid, &env)
+                    .map_err(|error| error.to_string())?;
+                kill_model_tree(&mut tree_kill, model_pid, &env).await?;
                 break child.wait().await.map_err(|error| error.to_string());
             }
         }
     };
     let deadline_expired = deadline_fired.load(std::sync::atomic::Ordering::SeqCst);
     cancel_term.cancel();
+    // The model can close while taskkill is still killing its descendants, so the tree kill finishes
+    // before child-exit is recorded. If it failed, record nothing: without a child exit the timed-out
+    // supervisor still runs its own forced tree kill at the grace deadline.
+    if tree_kill == Some(false) {
+        cancel_kill.cancel();
+        return Err("the model's process tree could not be terminated".into());
+    }
     cancel_kill.cancel();
     let status = exit_status(status?);
     // Durable before it is reported: a supervisor that dies after this point loses the pipe message,
@@ -193,24 +208,20 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn signal_model_gracefully(child: &mut tokio::process::Child) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        let Some(pid) = child.id() else {
-            return Ok(());
-        };
-        match nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(pid as i32),
-            nix::sys::signal::Signal::SIGTERM,
-        ) {
-            Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-            Err(error) => Err(error.to_string()),
-        }
+/// Kills the model's whole tree once and remembers whether taskkill exited 0 (upstream `killModelTree`).
+async fn kill_model_tree(
+    done: &mut Option<bool>,
+    pid: Option<u32>,
+    env: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if done.is_none() {
+        *done = Some(
+            crate::worker::supervisor_process_identity::terminate_supervisor_win32_tree(pid, env)
+                .await
+                .map_err(|error| error.to_string())?,
+        );
     }
-    #[cfg(not(unix))]
-    {
-        child.start_kill().map_err(|error| error.to_string())
-    }
+    Ok(())
 }
 
 struct ContainedBootstrap {
