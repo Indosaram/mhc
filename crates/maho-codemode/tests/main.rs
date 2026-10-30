@@ -127,6 +127,9 @@ mod schema_hint;
 mod session_cwd;
 #[path = "session_manager_proxy.rs"]
 mod session_manager_proxy;
+#[path = "session_env.rs"]
+mod session_env;
+
 #[path = "settings.rs"]
 mod settings;
 #[path = "start_recovery.rs"]
