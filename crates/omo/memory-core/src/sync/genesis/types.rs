@@ -6,6 +6,7 @@ use crate::sync::recovery::key_material::WrapAddress;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenesisBootstrap {
     pub account: String,
     pub custody_nonce: String,
@@ -14,6 +15,7 @@ pub struct GenesisBootstrap {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenesisBody {
     pub kind: String,
     pub account: String,
