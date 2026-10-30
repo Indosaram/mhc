@@ -12,6 +12,7 @@ pub mod host_warmup;
 pub mod open_session;
 pub mod reattach_port;
 pub mod session_client_connection;
+pub mod session_client_opening;
 pub mod session_context;
 pub mod session_open;
 pub mod session_role;

@@ -167,24 +167,102 @@ fn normalize_senpi_launcher(executable: &str, runtime: &RpcSpawnRuntime) -> Opti
 }
 
 pub fn resolve_senpi_launcher(runtime: &RpcSpawnRuntime) -> Option<SenpiLauncher> {
+    resolve_senpi_launch_target(runtime, running_engine_version()).launcher
+}
+
+/// `readRunningEngineVersion()`: the version of the engine this process runs. The host binary
+/// records it once at startup ([`set_running_engine_version`]); unset means unreadable.
+static RUNNING_ENGINE_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn set_running_engine_version(version: impl Into<String>) {
+    let _ = RUNNING_ENGINE_VERSION.set(version.into());
+}
+
+pub fn running_engine_version() -> Option<&'static str> {
+    RUNNING_ENGINE_VERSION.get().map(String::as_str)
+}
+
+/// The launcher to spawn and the engine version it will run; `None` when that version is unreadable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenpiLaunchTarget {
+    pub launcher: Option<SenpiLauncher>,
+    pub engine_version: Option<String>,
+}
+
+const SENPI_PACKAGE_NAME: &str = "@code-yeongyu/senpi";
+const MANIFEST_WALK_MAX_LEVELS: usize = 3;
+
+fn read_candidate_senpi_version(executable: &str) -> Option<String> {
+    let mut dir = Path::new(executable).parent()?.to_path_buf();
+    for _ in 0..=MANIFEST_WALK_MAX_LEVELS {
+        if let Some(version) = std::fs::read_to_string(dir.join("package.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .filter(|pkg| pkg["name"] == SENPI_PACKAGE_NAME)
+            .and_then(|pkg| pkg["version"].as_str().map(str::to_string))
+            .filter(|version| !version.is_empty())
+        {
+            return Some(version);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// `isRunningCompiledEngine`: the resolved executable IS this running process.
+fn is_running_engine(executable: &str) -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| std::fs::canonicalize(exe).ok())
+        .is_some_and(|exe| exe.to_string_lossy() == executable)
+}
+
+/// The launcher plus the version of the engine it actually starts: the running engine for this
+/// process's own executable and the `execPath + rpc-entry` fallback (no launcher), otherwise the
+/// launched package's own manifest, read the same way for SENPI_BIN, PATH and Windows shim targets.
+pub fn resolve_senpi_launch_target(
+    runtime: &RpcSpawnRuntime,
+    running_version: Option<&str>,
+) -> SenpiLaunchTarget {
+    let from_manifest = |launcher: SenpiLauncher| SenpiLaunchTarget {
+        engine_version: read_candidate_senpi_version(
+            launcher.prefix_args.first().unwrap_or(&launcher.command),
+        ),
+        launcher: Some(launcher),
+    };
     let executable = match &runtime.resolve_senpi_executable {
         Some(resolver) => resolver(runtime),
         None => resolve_senpi_executable(runtime),
     };
-    if let Some(normalized) = executable
-        .as_deref()
-        .and_then(|executable| normalize_senpi_launcher(executable, runtime))
-    {
-        return Some(normalized);
+    if let Some(executable) = executable.as_deref() {
+        if is_running_engine(executable) {
+            return SenpiLaunchTarget {
+                launcher: Some(SenpiLauncher {
+                    command: executable.to_string(),
+                    prefix_args: Vec::new(),
+                }),
+                engine_version: running_version.map(str::to_string),
+            };
+        }
+        if let Some(normalized) = normalize_senpi_launcher(executable, runtime) {
+            return from_manifest(normalized);
+        }
     }
-    if runtime.platform != "win32" {
-        return None;
+    if runtime.platform == "win32" {
+        let path = runtime.parent_env.get("PATH").map(String::as_str);
+        if let Some(normalized) = ["senpi.cmd", "senpi"].iter().find_map(|name| {
+            scan_path_for_executable(name, path)
+                .and_then(|shim| normalize_senpi_launcher(&shim, runtime))
+        }) {
+            return from_manifest(normalized);
+        }
     }
-    let path = runtime.parent_env.get("PATH").map(String::as_str);
-    ["senpi.cmd", "senpi"].iter().find_map(|name| {
-        scan_path_for_executable(name, path)
-            .and_then(|shim| normalize_senpi_launcher(&shim, runtime))
-    })
+    SenpiLaunchTarget {
+        launcher: None,
+        engine_version: running_version.map(str::to_string),
+    }
 }
 
 /// A dag child (state dir `<state>/children/<task_id>` with a `dag` owner record) drops the first
@@ -297,12 +375,37 @@ fn build_child_profile(
 }
 
 pub fn build_rpc_spawn(spec: &RpcRunnerSpec, runtime: &RpcSpawnRuntime) -> RpcSpawnDescriptor {
+    build_rpc_spawn_for_engine(spec, runtime, running_engine_version())
+}
+
+/// [`build_rpc_spawn`] with the running engine's version injected (`RpcSpawnRuntime.engineVersion`).
+pub fn build_rpc_spawn_for_engine(
+    spec: &RpcRunnerSpec,
+    runtime: &RpcSpawnRuntime,
+    running_version: Option<&str>,
+) -> RpcSpawnDescriptor {
     let (env, profiled) = build_child_profile(spec, runtime);
     let child_args = build_child_args(&profiled);
-    if let Some(launcher) = resolve_senpi_launcher(runtime) {
+    let target = resolve_senpi_launch_target(runtime, running_version);
+    // Only an engine that proves it accepts the flag receives it; an older one may refuse to boot on it.
+    let ancestry_args = match crate::runners::child_ancestry::rpc_child_ancestry(spec) {
+        Some(spawned_by)
+            if crate::runners::engine_spawned_by::engine_accepts_spawned_by(
+                target.engine_version.as_deref(),
+            ) =>
+        {
+            vec![
+                "--spawned-by".to_string(),
+                serde_json::to_string(&spawned_by).expect("ancestry serializes"),
+            ]
+        }
+        _ => Vec::new(),
+    };
+    if let Some(launcher) = target.launcher {
         let mut args = launcher.prefix_args;
         args.extend(["--mode".to_string(), "rpc".to_string()]);
         args.extend(child_args);
+        args.extend(ancestry_args);
         return RpcSpawnDescriptor {
             command: launcher.command,
             args,
@@ -312,6 +415,7 @@ pub fn build_rpc_spawn(spec: &RpcRunnerSpec, runtime: &RpcSpawnRuntime) -> RpcSp
     }
     let mut args = vec![(runtime.resolve_rpc_entry)()];
     args.extend(child_args);
+    args.extend(ancestry_args);
     RpcSpawnDescriptor {
         command: runtime.exec_path.clone(),
         args,
