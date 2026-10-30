@@ -65,6 +65,7 @@ pub mod session_resident_store;
 pub mod session_title_generator;
 pub mod settings_manager;
 pub mod skill_discovery;
+pub mod skill_source_cache;
 pub mod skill_invocation;
 pub mod skills;
 pub mod source_info;
