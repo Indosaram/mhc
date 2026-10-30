@@ -60,3 +60,25 @@ fn keeps_mandatory_prompt_content_and_valid_tool_pairs_at_the_budget_boundary(){
     let tool_call_ids=context.messages.iter().flat_map(|message|match message{maho_ai::types::Message::Assistant(assistant)=>assistant.content.iter().filter_map(|block|match block{maho_ai::types::ContentBlock::ToolCall(call)=>Some(call.id.clone()),_=>None}).collect::<Vec<_>>(),_=>Vec::new()}).collect::<Vec<_>>();
     for message in &context.messages{if let maho_ai::types::Message::ToolResult(result)=message{assert!(tool_call_ids.contains(&result.tool_call_id));}}
 }
+fn assistant(text:&str,timestamp:i64)->Message{serde_json::from_value(json!({"role":"assistant","content":[{"type":"text","text":text}],"api":"faux","provider":"faux","model":"faux-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":timestamp})).expect("assistant")}
+fn user_text(message:&Message)->Option<String>{serde_json::to_value(message).expect("message")["content"].as_str().map(str::to_owned)}
+#[test]
+fn appends_the_side_instruction_to_the_system_prompt_and_the_question_as_the_final_user_message(){
+    let context=build_side_query_context("BASE PROMPT",vec![user("earlier")],"what did I ask?",&model(0)).expect("context");
+    let system_prompt=context.system_prompt.as_deref().expect("prompt");
+    assert!(system_prompt.contains("BASE PROMPT"));
+    assert!(system_prompt.contains(maho_ext_btw::side_query::SIDE_QUERY_INSTRUCTION));
+    assert_eq!(context.messages.len(),2);
+    assert!(matches!(context.messages[1],Message::User(_)));
+    assert_eq!(user_text(&context.messages[1]).as_deref(),Some("what did I ask?"));
+}
+#[test]
+fn bounds_an_oversized_snapshot_to_the_selected_model_prompt_window(){
+    let oldest=format!("oldest-{}","a".repeat(4_000)); let newest=format!("newest-{}","b".repeat(4_000));
+    let history=vec![user(&oldest),assistant("old answer",2),user(&newest),assistant("new answer",4)];
+    let context=build_side_query_context("BASE",history,"what is newest?",&sized_model(4_500,0)).expect("bounded context");
+    assert!(estimate_prompt_tokens(context.system_prompt.as_deref(),&context.messages)<=4_500);
+    let texts:Vec<_>=context.messages.iter().filter_map(user_text).collect();
+    assert!(!texts.contains(&oldest)); assert!(texts.contains(&newest));
+    assert_eq!(texts.last().map(String::as_str),Some("what is newest?"));
+}
