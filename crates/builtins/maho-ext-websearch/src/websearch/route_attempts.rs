@@ -37,20 +37,17 @@ pub fn attempt_route_label(
     }
 }
 
-/// `routeAttemptEntries`: the entry, then the same entry on its fallback model when that differs.
-/// The Rust entry carries no `fallbackModel` field, so the caller passes it.
-pub fn route_attempt_entries(
-    entry: &SearchProviderEntry,
-    fallback_model: Option<&str>,
-) -> Vec<SearchProviderEntry> {
-    let primary = entry.clone();
-    match fallback_model
-        .filter(|model| !model.is_empty() && Some(*model) != primary.config.model.as_deref())
-    {
+/// `routeAttemptEntries`: the entry, then the same entry on its `fallback_model` when that differs.
+pub fn route_attempt_entries(entry: &SearchProviderEntry) -> Vec<SearchProviderEntry> {
+    let mut primary = entry.clone();
+    let fallback_model = primary.fallback_model.take();
+    match fallback_model.filter(|model| {
+        !model.is_empty() && Some(model.as_str()) != primary.config.model.as_deref()
+    }) {
         None => vec![primary],
         Some(model) => {
             let mut fallback = primary.clone();
-            fallback.config.model = Some(model.into());
+            fallback.config.model = Some(model);
             vec![primary, fallback]
         }
     }
@@ -89,17 +86,22 @@ mod tests {
     fn adds_a_fallback_model_attempt_only_when_it_differs() {
         let mut config = SearchProviderConfig::new(SearchProvider::Anthropic);
         config.model = Some("claude-haiku-4-5".into());
-        let entry = SearchProviderEntry {
+        let mut entry = SearchProviderEntry {
             config,
             priority: None,
             weight: None,
+            fallback_model: None,
         };
-        assert_eq!(route_attempt_entries(&entry, None).len(), 1);
-        assert_eq!(
-            route_attempt_entries(&entry, Some("claude-haiku-4-5")).len(),
-            1
+        assert_eq!(route_attempt_entries(&entry).len(), 1);
+        entry.fallback_model = Some("claude-haiku-4-5".into());
+        assert_eq!(route_attempt_entries(&entry).len(), 1);
+        entry.fallback_model = Some("claude-opus-5-5".into());
+        let attempts = route_attempt_entries(&entry);
+        assert!(
+            attempts
+                .iter()
+                .all(|attempt| attempt.fallback_model.is_none())
         );
-        let attempts = route_attempt_entries(&entry, Some("claude-opus-5-5"));
         assert_eq!(attempts.len(), 2);
         assert_eq!(
             attempts[0].config.model.as_deref(),

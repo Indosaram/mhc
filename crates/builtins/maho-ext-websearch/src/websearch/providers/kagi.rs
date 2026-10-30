@@ -22,6 +22,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> BuiltSearchRequest {
         body["lens"] = Value::Object(lens);
     }
     BuiltSearchRequest {
+        form: None,
         url: ctx.base_url.unwrap_or(DEFAULT_URL).into(),
         method: "POST",
         headers: content_headers(BTreeMap::from([(

@@ -15,6 +15,8 @@ pub struct BuiltSearchRequest {
     pub method: &'static str,
     pub headers: BTreeMap<String, String>,
     pub body: Option<Value>,
+    /// A url-encoded form body (`application/x-www-form-urlencoded`), sent when `body` is absent.
+    pub form: Option<String>,
 }
 pub struct BuildContext<'a> {
     pub query: &'a str,

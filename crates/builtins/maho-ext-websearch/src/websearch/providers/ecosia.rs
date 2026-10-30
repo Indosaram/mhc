@@ -47,6 +47,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
         &append_domain_filters(ctx.query, ctx.allowed_domains, ctx.blocked_domains),
     );
     Ok(BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "GET",
         headers: browser_headers(Some(ECOSIA_HOME_URL), BTreeMap::new()),

@@ -25,6 +25,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
         )
         .append_pair("format", "json");
     Ok(BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "GET",
         headers: BTreeMap::from([("Accept".into(), "application/json".into())]),

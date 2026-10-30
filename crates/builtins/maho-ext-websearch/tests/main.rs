@@ -5,6 +5,8 @@
 mod config_source_cases;
 #[path = "endpoint_source_cases.rs"]
 mod endpoint_source_cases;
+#[path = "free_chain_routing.rs"]
+mod free_chain_routing;
 #[path = "native_execute.rs"]
 mod native_execute;
 #[path = "native_registry.rs"]

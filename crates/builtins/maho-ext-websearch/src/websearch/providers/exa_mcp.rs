@@ -135,6 +135,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
     let mut url = url::Url::parse(ctx.base_url.unwrap_or(DEFAULT_URL))?;
     url.query_pairs_mut().append_pair("tools", "web_search_exa");
     Ok(BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "POST",
         headers: BTreeMap::from([

@@ -87,6 +87,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
         &append_domain_filters(ctx.query, ctx.allowed_domains, ctx.blocked_domains),
     );
     Ok(BuiltSearchRequest {
+        form: None,
         url: url.into(),
         method: "GET",
         headers: browser_headers(Some(STARTPAGE_HOME_URL), BTreeMap::new()),
@@ -97,6 +98,7 @@ pub fn build_request(ctx: &BuildContext<'_>) -> Result<BuiltSearchRequest, url::
 /// The homepage request a browser opens first.
 pub fn home_request() -> BuiltSearchRequest {
     BuiltSearchRequest {
+        form: None,
         url: STARTPAGE_HOME_URL.into(),
         method: "GET",
         headers: browser_headers(None, BTreeMap::new()),
@@ -145,6 +147,7 @@ pub fn prepare_request(
         .finish();
     Prepared::Request {
         request: BuiltSearchRequest {
+            form: Some(form.clone()),
             url: ctx.base_url.unwrap_or(DEFAULT_URL).into(),
             method: "POST",
             headers: browser_headers(
