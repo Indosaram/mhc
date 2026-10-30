@@ -5,6 +5,7 @@ pub mod params;
 pub mod paths;
 pub mod reference_images;
 pub mod request;
+pub mod skill_path;
 pub mod state;
 pub mod tool;
 
