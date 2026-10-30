@@ -113,7 +113,19 @@ pub fn register(
         create_extension_cells(&host, &state, &ticker, &notifier, &Default::default(), None);
     state.lock().expect("extension state").cells = cells;
     api.register_removed_tool_hint("exec","exec was removed; use eval({ language: \"js\", code }) instead. Long eval cells detach on their own and notify when complete.");
-    api.register_removed_tool_hint("wait","wait was removed; detached eval cells notify when complete. Use eval({ action: \"peek\"|\"stop\", cell_id }) to inspect or stop one.");
+    api.register_removed_tool_hint(
+        "wait",
+        "wait is not a tool; inside a cell use the wait(handles) helper (tool_schema('eval:wait')), or let detached cells notify.",
+    );
+    let rpc_state = Arc::downgrade(&state);
+    extension::eval_cells_rpc::register_eval_cells_rpc(
+        api,
+        Arc::new(move || {
+            let state = rpc_state.upgrade()?;
+            let state = state.lock().expect("extension state");
+            state.runtime.as_ref().map(|_| state.cells.clone())
+        }),
+    )?;
     host.lock().expect("extension api").registered = api.registered.clone();
     let version = (options.js_runtime.name == "bun").then(|| options.js_runtime.version.clone());
     extension::skill_contribution::register_bun_skill_contribution(
@@ -402,7 +414,11 @@ fn reload_veto(cells: &EvalDetachedCellManager) -> Option<maho_ext_api::SessionB
     if live.is_empty() {
         return None;
     }
-    let ids = live.iter().map(|cell| cell.cell_id.as_str()).collect::<Vec<_>>().join(", ");
+    let ids = live
+        .iter()
+        .map(|cell| cell.cell_id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     Some(maho_ext_api::SessionBeforeEventResult {
         cancel: Some(true),
         reason: Some(format!(
@@ -862,16 +878,32 @@ mod reload_veto_tests {
     async fn live_detached_cell_vetoes_reload_until_it_settles() {
         let mut cells = EvalDetachedCellManager::new(Default::default());
         assert!(reload_veto(&cells).is_none());
-        let input = EvalToolInput { language: EvalLanguage::Js, code: "1".into(), summary: "check".into(), action: None, timeout: None, on_timeout: None, reset: None, isolate: None };
+        let input = EvalToolInput {
+            language: EvalLanguage::Js,
+            code: "1".into(),
+            summary: "check".into(),
+            action: None,
+            timeout: None,
+            on_timeout: None,
+            reset: None,
+            isolate: None,
+        };
         let cell = cells.create("cell-1".into(), input).expect("create cell");
-        cells.bind_kernel(&cell, Arc::new(|| maho_ext_api::AgentToolResult::text("")), Arc::new(|| (None, vec![])));
+        cells.bind_kernel(
+            &cell,
+            Arc::new(|| maho_ext_api::AgentToolResult::text("")),
+            Arc::new(|| (None, vec![])),
+        );
         assert!(cells.detach(&cell));
         let veto = reload_veto(&cells).expect("a live detached cell must veto reload");
         assert_eq!(veto.cancel, Some(true));
         assert!(veto.reason.expect("veto reason").contains("cell-1"));
         assert!(cells.cancel_without_interrupt(&cell));
         assert!(reload_veto(&cells).is_none());
-        cells.flush_notifications().await.expect("notification flush");
+        cells
+            .flush_notifications()
+            .await
+            .expect("notification flush");
     }
 }
 
