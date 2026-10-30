@@ -235,7 +235,7 @@ impl Installer<'_> {
         std::fs::create_dir_all(&browser_root)
             .map_err(|error| format!("{}: {error}", browser_root.display()))?;
         let archive = browser_root.join(url.rsplit('/').next().unwrap_or("chrome.zip"));
-        let outcome = (|| {
+        let outcome = (|| -> Result<PathBuf, String> {
             if !archive.exists() {
                 (self.fetch)(&url, &archive)?;
             }
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn macos_prefers_chrome_for_testing_over_a_system_chrome() {
-        let none = |_: &str| None;
+        let none = |_: &str| -> Option<String> { None };
         let system = "/Users/u/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
         assert_eq!(
             resolve_with(
