@@ -167,18 +167,42 @@ impl InteractiveExtensionUi {
     /// (`clearExtensionStatuses`, `clearExtensionTerminalInputListeners`) reset at once; the mode-owned
     /// parts reset when the queued request is drained.
     pub fn reset_before_session_invalidate(&self) {
+        // senpi `clearExtensionStatuses(HOST_STATUS_KEYS)`: host-owned statuses survive the reset.
         self.statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+            .retain(|key, _| key.as_str() == crate::lifecycle_status::LIFECYCLE_STATUS_KEY);
         self.terminal_input
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.send(UiRequest::ResetExtensionUi);
     }
-    /// senpi `withBlockedHostDialog`: announce the open host dialog before it is shown.
-    fn block_host_dialog(&self, label: &str) -> Option<BlockedHostDialog> {
+    /// The host's own status write (senpi `setExtensionStatus`); host-owned keys are writable here.
+    pub fn set_host_status(&self, key: &str, text: Option<&str>) {
+        let mut statuses = self
+            .statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(text) = text {
+            statuses.insert(key.into(), text.into());
+        } else {
+            statuses.remove(key);
+        }
+        drop(statuses);
+        // The footer reads the shared map; ask the host frame to show the change.
+        self.send(UiRequest::WidgetFrame);
+    }
+    /// senpi `withBlockedHostDialog`: announce the open host dialog before it is shown. An
+    /// ephemeral (private local) dialog is not bracketed (senpi v2026.10.27-2).
+    fn block_host_dialog(
+        &self,
+        label: &str,
+        opts: &ExtensionUiDialogOptions,
+    ) -> Option<BlockedHostDialog> {
+        if opts.ephemeral {
+            return None;
+        }
         let emit = self
             .blocked_emitter
             .lock()
@@ -194,6 +218,10 @@ impl InteractiveExtensionUi {
             &serde_json::json!({"active": true, "label": label, "id": id}),
         );
         Some(BlockedHostDialog { emit, id })
+    }
+    /// An ephemeral dialog whose signal is already aborted is never shown (senpi returns undefined).
+    fn settled_ephemeral(opts: &ExtensionUiDialogOptions) -> bool {
+        opts.ephemeral && opts.signal.as_ref().is_some_and(AbortSignal::is_aborted)
     }
     async fn wait<T: Default>(
         reply: tokio::sync::oneshot::Receiver<T>,
@@ -396,7 +424,7 @@ impl ExtensionUi for InteractiveExtensionUi {
         title: &'a str,
         prefill: Option<&'a str>,
     ) -> ExtensionFuture<'a, Option<String>> {
-        let blocked = self.block_host_dialog(title);
+        let blocked = self.block_host_dialog(title, &ExtensionUiDialogOptions::default());
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Editor {
             title: title.into(),
@@ -422,7 +450,10 @@ impl ExtensionUi for InteractiveExtensionUi {
         options: &'a [String],
         opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
-        let blocked = self.block_host_dialog(title);
+        if Self::settled_ephemeral(&opts) {
+            return Box::pin(async { None });
+        }
+        let blocked = self.block_host_dialog(title, &opts);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Select {
             title: title.into(),
@@ -441,7 +472,11 @@ impl ExtensionUi for InteractiveExtensionUi {
         message: &'a str,
         opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, bool> {
-        let blocked = self.block_host_dialog(title);
+        // senpi `confirm`: an undefined (already aborted ephemeral) answer is `false`.
+        if Self::settled_ephemeral(&opts) {
+            return Box::pin(async { false });
+        }
+        let blocked = self.block_host_dialog(title, &opts);
         let title = format!("{title}\n{message}");
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Select {
@@ -461,7 +496,10 @@ impl ExtensionUi for InteractiveExtensionUi {
         _placeholder: Option<&'a str>,
         opts: ExtensionUiDialogOptions,
     ) -> UiFuture<'a, Option<String>> {
-        let blocked = self.block_host_dialog(title);
+        if Self::settled_ephemeral(&opts) {
+            return Box::pin(async { None });
+        }
+        let blocked = self.block_host_dialog(title, &opts);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Input {
             title: title.into(),
@@ -489,19 +527,11 @@ impl ExtensionUi for InteractiveExtensionUi {
     fn set_subagent_cost(&self, cost_usd: Option<f64>) {
         self.send(UiRequest::SubagentCost(cost_usd));
     }
+    // The host owns the lifecycle status; an extension cannot overwrite or clear it.
     fn set_status(&self, key: &str, text: Option<&str>) {
-        let mut statuses = self
-            .statuses
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(text) = text {
-            statuses.insert(key.into(), text.into());
-        } else {
-            statuses.remove(key);
+        if key != crate::lifecycle_status::LIFECYCLE_STATUS_KEY {
+            self.set_host_status(key, text);
         }
-        drop(statuses);
-        // The footer reads the shared map; ask the host frame to show the change.
-        self.send(UiRequest::WidgetFrame);
     }
     fn set_widget(
         &self,

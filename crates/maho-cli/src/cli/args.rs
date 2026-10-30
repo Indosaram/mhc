@@ -111,19 +111,6 @@ impl Args {
         });
     }
 }
-/// senpi `isSpawnedBy` (core/session-spawned-by.ts): an object with non-empty `parentSessionId`,
-/// `rootSessionId` and `taskId` strings.
-fn spawned_by_from_json(value: &serde_json::Value) -> Option<maho_core::session_lifecycle_types::SpawnedBy> {
-    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned);
-    if !value.is_object() {
-        return None;
-    }
-    Some(maho_core::session_lifecycle_types::SpawnedBy {
-        parent_session_id: field("parentSessionId")?,
-        root_session_id: field("rootSessionId")?,
-        task_id: field("taskId")?,
-    })
-}
 fn positional(result: &mut Args, value: &str) {
     if let Some(file) = value.strip_prefix('@') {
         result.file_args.push(file.to_owned());
@@ -179,7 +166,7 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
                 Some(value) if !value.starts_with('-') => {
                     i += 1;
                     match serde_json::from_str::<serde_json::Value>(value) {
-                        Ok(ancestry) => match spawned_by_from_json(&ancestry) {
+                        Ok(ancestry) => match maho_core::session_spawned_by::read_spawned_by(&ancestry) {
                             Some(spawned_by) => result.spawned_by = Some(spawned_by),
                             None => result.diagnostic(
                                 true,

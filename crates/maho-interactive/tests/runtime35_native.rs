@@ -2498,6 +2498,7 @@ async fn live_deadline_does_not_use_the_fixed_attachment_timeout() {
             dialog: maho_ext_api::ExtensionUiDialogOptions {
                 signal: Some(signal.clone()),
                 timeout_ms: Some(1),
+                ..Default::default()
             },
             get_deadline_at_ms: Some(std::sync::Arc::new(|| 100_000)),
             ..Default::default()
@@ -2543,6 +2544,7 @@ async fn collapsed_and_expanded_countdowns_read_the_live_capped_deadline() {
             dialog: maho_ext_api::ExtensionUiDialogOptions {
                 signal: Some(signal.clone()),
                 timeout_ms: Some(1),
+                ..Default::default()
             },
             hard_deadline_at_ms: Some(1),
             get_deadline_at_ms: Some(std::sync::Arc::new(move || {
