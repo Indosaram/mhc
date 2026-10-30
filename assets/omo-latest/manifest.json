@@ -710,15 +710,15 @@
     "frontend": [
       {
         "path": "ATTRIBUTION.md",
-        "bytes": 14407,
-        "sha256": "2526fee38c557f7f130504c8bedc6f0077ffcaa2c18fbfb3deea1c958d64ce46",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/ATTRIBUTION.md"
+        "bytes": 15935,
+        "sha256": "6b5f73840207f59f1af712b34c3ed45de3da42920269d336ccbb1d23c34c74c9",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/ATTRIBUTION.md"
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 9052,
-        "sha256": "08fc725319a59c675f6f4dc31abe88704d93ef185b68b58dd1892aa624efb080",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/CLEANROOM.md"
+        "bytes": 10491,
+        "sha256": "1d5bf9ecc322ff942c194f66a7eb9a706a187e2dea82f35537ad2ebda8d446e9",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/CLEANROOM.md"
       },
       {
         "path": "LICENSE-Apache-2.0.txt",
@@ -728,21 +728,21 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 25099,
-        "sha256": "c5585b72fc5daaf6f3766e515a309d3892c04fcbe58c9a24f1f0be184f3315a7",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/SKILL.md"
+        "bytes": 32170,
+        "sha256": "c1cc725e9af62c66ff2187629c06063b5a1863921eca96a7fc149e8dcdfcad9b",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/SKILL.md"
       },
       {
         "path": "references/design/README.md",
-        "bytes": 23663,
-        "sha256": "a473a17f5a8f71dc0059ba8a63a8d5862e06d250f0e74680c3333fc8f92b01bc",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/README.md"
+        "bytes": 24745,
+        "sha256": "d07816d09b223d3d654aac77b0a4364dcfcaedd7f8c96a41d82f77c1bcb0f6d1",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/design/README.md"
       },
       {
         "path": "references/design/_INDEX.md",
-        "bytes": 17535,
-        "sha256": "514101add645ac16c84a781af5731acae12027724f1867c846c3907684f148aa",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/_INDEX.md"
+        "bytes": 17811,
+        "sha256": "d9bc7398dbe00eb7aec876321319d6ffbf3a2a57754bdca1e8336aa915453600",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/_INDEX.md (MIT)"
       },
       {
         "path": "references/design/airbnb.md",
@@ -842,9 +842,9 @@
       },
       {
         "path": "references/design/component-catalogs.md",
-        "bytes": 8807,
-        "sha256": "01ee071f308c87c489635fa86cc70fd4e634f6b0bf11f7ee3945671f3b5540bd",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/component-catalogs.md"
+        "bytes": 11458,
+        "sha256": "766732ce9b78757b01338b38a17ee29d6fad9db529774a919490cdab60b182bc",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/component-catalogs.md (MIT)"
       },
       {
         "path": "references/design/composio.md",
@@ -860,9 +860,9 @@
       },
       {
         "path": "references/design/design-system-architecture.md",
-        "bytes": 14806,
-        "sha256": "2556e3cb375719ed88e6ce28014ce0208d9cc088ee33ddfccb7012d896948011",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/design-system-architecture.md"
+        "bytes": 15819,
+        "sha256": "db5720856a8bc42155d9d6b855bf7fe99c85c7ab13e273ac7d12039994fd8c3b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/design-system-architecture.md (MIT)"
       },
       {
         "path": "references/design/elevenlabs.md",
@@ -899,6 +899,12 @@
         "bytes": 7857,
         "sha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/gpt-tasteskill.md"
+      },
+      {
+        "path": "references/design/grounding.md",
+        "bytes": 3822,
+        "sha256": "5bc2dbdf5b2309e81633372f6c995e288301cea8608f8a716a0d6966050beef4",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/design/grounding.md"
       },
       {
         "path": "references/design/hashicorp.md",
@@ -1591,6 +1597,12 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/perfection/README.md"
       },
       {
+        "path": "references/perfection/craft-floor.md",
+        "bytes": 5879,
+        "sha256": "58a7a3fa440e2f8f8b44f1fcff7c76223ea32cbade4ebee70b1782ef2da7a7f5",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/perfection/craft-floor.md"
+      },
+      {
         "path": "references/perfection/react-perf-tooling.md",
         "bytes": 7898,
         "sha256": "0ddf4845f9a772ea018eb6d44d46407efa3e96371e41eaecb774595412f50bf6",
@@ -1754,15 +1766,15 @@
       },
       {
         "path": "references/ui-ux-db/scripts/design_system.py",
-        "bytes": 47070,
-        "sha256": "f7a21e83739c5ac6ca3738846220f6a9eb7f3c1ae7a44989c5aaa2061ca60310",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/ui-ux-db/scripts/design_system.py"
+        "bytes": 47112,
+        "sha256": "93e9af66d94ae6bbce8771aede53fcd0d5720e587de1a83dccad9849978e3fa3",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/ui-ux-db/scripts/design_system.py (MIT)"
       },
       {
         "path": "references/ui-ux-db/scripts/search.py",
-        "bytes": 5493,
-        "sha256": "211546b262fb14d397228dbf982e32254c938d364b6386da69b62e7c3805b319",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/ui-ux-db/scripts/search.py"
+        "bytes": 5525,
+        "sha256": "d60109a67e11cb1cc569fcdeff68f25cffb03326dc84d1336e05dad9de821ade",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/ui-ux-db/scripts/search.py"
       },
       {
         "path": "scripts/perfection/accent-stripes/color.ts",
@@ -7066,8 +7078,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 650,
-    "declaredSha256": 650,
+    "files": 652,
+    "declaredSha256": 652,
     "unbound": 0,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }
