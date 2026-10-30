@@ -531,7 +531,7 @@ mod tests {
         r.sync_source("m", ObligationKind::Background, 1., Some(&serde_json::json!([{"id": "b", "description": "d"}])));
         assert_eq!(data.lock().unwrap().entries.len(), before + 1);
         let restored = SessionWorkObligations::new(Box::new(Store(data)));
-        assert_eq!(restored.active()[0].items.as_ref().expect("items")[0]["id"], "b");
+        assert_eq!(restored.active()[0].items.as_ref().expect("items")[0].id, "b");
     }
     /// senpi test/suite/regressions/4106-itemized-resend.test.ts: a plain re-send keeps the queued item ids.
     #[test]

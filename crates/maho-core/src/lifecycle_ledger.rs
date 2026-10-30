@@ -11,9 +11,6 @@ pub struct LifecycleLedger {
     goal_completed: Option<String>,
     run_completed: Option<String>,
     admission_write_failed: bool,
-    /// A revision or epoch no record carries yet (senpi#3980): written by the record that next carries it, or by
-    /// `publish_unwritten`.
-    unwritten: bool,
     pub run_id: Option<String>,
     pub run_active: bool,
     pub interrupted: bool,
@@ -72,7 +69,6 @@ impl LifecycleLedger {
             goal_completed,
             run_completed,
             admission_write_failed: false,
-            unwritten: false,
             run_id,
             run_active: false,
             interrupted,
@@ -104,13 +100,6 @@ impl LifecycleLedger {
             n["since"] = json!(at);
         }
         n["humanInputRevision"] = json!(n["humanInputRevision"].as_u64().unwrap_or(0) + 1);
-        // Input that opens a new epoch is recorded by that epoch's opening record (senpi#3980). Input into an
-        // open epoch is written at once: it must supersede a standing settle request durably.
-        if !self.run_active && (self.sealed || self.current["epoch"] == 0) {
-            self.current = n;
-            self.unwritten = true;
-            return true;
-        }
         let ok = self.write(n, append);
         if !ok {
             self.admission_write_failed = true;
@@ -120,10 +109,6 @@ impl LifecycleLedger {
     pub fn start_run(&mut self, origin: &str) {
         self.last_turn_end = None;
         self.interrupted = false;
-        // The previous run's stop never describes this one (senpi#3864).
-        if let Some(current) = self.current.as_object_mut() {
-            current.remove("lastStop");
-        }
         if self.sealed || self.current["epoch"] == 0 {
             self.sealed = false;
             self.request = None;
@@ -139,17 +124,6 @@ impl LifecycleLedger {
         self.run_id = Some(uuid::Uuid::new_v4().to_string());
         self.run_active = true;
         self.admission_write_failed = false;
-        // A new run is unsaved state even inside an open epoch: `update` treats records that differ only in
-        // run identity as equal, so without this a later run in the same epoch would never be recorded
-        // (senpi#3980).
-        self.unwritten = true;
-    }
-    /// senpi `publishUnwritten`: publishes a revision or epoch that no record carries yet, once.
-    pub fn publish_unwritten(&mut self, append: impl FnOnce(&Value) -> Result<(), String>) -> bool {
-        if !self.unwritten {
-            return false;
-        }
-        self.write(self.current.clone(), append)
     }
     pub fn mark_goal_completed(
         &mut self,
@@ -214,35 +188,13 @@ impl LifecycleLedger {
         failure: Option<Value>,
         append: impl FnOnce(&Value) -> Result<(), String>,
     ) -> bool {
-        self.update_with_stop(state, waits, holds, failure, None, append)
-    }
-    /// `update` with the run's `lastStop` (senpi#3864): an unchanged lifecycle writes nothing, a changed stop is
-    /// a durable change.
-    pub fn update_with_stop(
-        &mut self,
-        state: &str,
-        waits: Value,
-        holds: Vec<Value>,
-        failure: Option<Value>,
-        last_stop: Option<Value>,
-        append: impl FnOnce(&Value) -> Result<(), String>,
-    ) -> bool {
         if !holds.is_empty() || state == "failed" {
             self.request = None;
         }
         let terminal = state == "done" || state == "failed";
         let mut n = self.current.clone();
-        for k in [
-            "completionId",
-            "completion",
-            "failure",
-            "settleDecision",
-            "lastStop",
-        ] {
+        for k in ["completionId", "completion", "failure", "settleDecision"] {
             n.as_object_mut().expect("object").remove(k);
-        }
-        if let Some(stop) = last_stop {
-            n["lastStop"] = stop;
         }
         let now = chrono::Utc::now().to_rfc3339();
         let standing = self.request.as_ref().is_some_and(|r| {
@@ -303,11 +255,9 @@ impl LifecycleLedger {
             "waitingOn",
             "holds",
             "failure",
-            "lastStop",
         ]
         .iter()
         .all(|k| self.current[*k] == n[*k]);
-        // An unwritten revision waits for the record that carries it (senpi#3980).
         if self.current["persisted"] == true && same {
             return false;
         }
@@ -345,7 +295,6 @@ impl LifecycleLedger {
         if let Some(q) = &self.request {
             r["settleRequest"] = q.clone();
         }
-        self.unwritten = false;
         let ok = append(&r).is_ok();
         self.current = n;
         if !ok {
@@ -414,74 +363,6 @@ mod terminal_identity_tests {
             ledger.request_self_settle(|_| Ok(()))["reason"],
             "not_eligible"
         );
-    }
-}
-
-#[cfg(test)]
-mod record_volume_tests {
-    use super::*;
-    fn idle_waits() -> Value {
-        json!({"children":0,"background":[],"human":[]})
-    }
-
-    /// senpi test/suite/regressions/3980-lifecycle-record-volume.test.ts: input that opens an epoch is carried by
-    /// the epoch's opening record; a later run inside an open epoch is still recorded.
-    #[test]
-    fn one_opening_record_per_person_turn_and_later_runs_are_recorded() {
-        let mut ledger = LifecycleLedger::new("s", None, &[]);
-        ledger.release_restore_barrier();
-        let mut writes = 0;
-        assert!(ledger.human_input("now", |_| {
-            writes += 1;
-            Ok(())
-        }));
-        assert_eq!(writes, 0);
-        ledger.start_run("human");
-        let mut records = Vec::new();
-        assert!(ledger.publish_unwritten(|r| {
-            records.push(r.clone());
-            Ok(())
-        }));
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0]["humanInputRevision"], 1);
-        assert_eq!(records[0]["epoch"], 1);
-        assert!(!ledger.publish_unwritten(|_| Ok(())));
-        let first_run = ledger.run_id.clone();
-        ledger.start_run("automatic");
-        assert_ne!(ledger.run_id, first_run);
-        let mut later = Vec::new();
-        assert!(ledger.publish_unwritten(|r| {
-            later.push(r.clone());
-            Ok(())
-        }));
-        assert_eq!(later[0]["runId"], json!(ledger.run_id));
-        assert_eq!(later[0]["epoch"], 1);
-    }
-
-    /// senpi test/suite/regressions/3864-last-stop.test.ts: a stop is durable, survives restore and clears on the
-    /// next run.
-    #[test]
-    fn last_stop_is_recorded_and_cleared_by_the_next_run() {
-        let mut ledger = LifecycleLedger::new("s", None, &[]);
-        ledger.release_restore_barrier();
-        ledger.start_run("human");
-        ledger.publish_unwritten(|_| Ok(()));
-        let run = ledger.run_id.clone().expect("run");
-        let stop = json!({"runId": run, "epoch": 1, "at": "t", "cause": "no_wake"});
-        let mut saved = Value::Null;
-        assert!(ledger.update_with_stop("running", idle_waits(), vec![], None, Some(stop.clone()), |r| {
-            saved = r.clone();
-            Ok(())
-        }));
-        assert!(!ledger.update_with_stop("running", idle_waits(), vec![], None, Some(stop.clone()), |_| Ok(())));
-        let restored = LifecycleLedger::new(
-            "s",
-            None,
-            &[json!({"type":"custom","customType":"session-lifecycle","data":saved})],
-        );
-        assert_eq!(restored.snapshot()["lastStop"], stop);
-        ledger.start_run("automatic");
-        assert!(ledger.snapshot().get("lastStop").is_none());
     }
 }
 

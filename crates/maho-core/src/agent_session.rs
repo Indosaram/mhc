@@ -1111,30 +1111,40 @@ fn lifecycle_last_stop(
     input: Option<&Value>,
     stalled: bool,
 ) -> Option<Value> {
-    let existing = ledger.current.get("lastStop").cloned();
+    let existing_value = ledger.current.get("lastStop").cloned();
     let run_id = ledger.run_id.as_deref()?;
     if Some(run_id) == restored_run_id {
-        return existing;
+        return existing_value;
     }
     let Some(facts) = facts.filter(|facts| facts.run_id.as_deref() == Some(run_id)) else {
-        return existing;
+        return existing_value;
     };
     let Some(detail) = crate::lifecycle_stop::stop_detail(input, Some(facts), None, stalled) else {
-        return existing;
+        return existing_value;
     };
+    let existing = existing_value.as_ref().and_then(|stop| {
+        serde_json::from_value::<crate::session_lifecycle_types::LifecycleStop>(stop.clone()).ok()
+    });
     if existing
         .as_ref()
         .is_some_and(|existing| crate::lifecycle_stop::same_stop(existing, &detail))
     {
-        return existing;
+        return existing_value;
     }
-    let mut stop = detail;
-    stop["runId"] = json!(run_id);
-    stop["epoch"] = ledger.current["epoch"].clone();
-    if stop.get("at").is_none() {
-        stop["at"] = json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-    }
-    Some(stop)
+    let stop = crate::session_lifecycle_types::LifecycleStop {
+        cause: detail.cause,
+        run_id: run_id.to_owned(),
+        at: detail.at.unwrap_or_else(|| {
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        }),
+        epoch: ledger.current["epoch"].as_u64().unwrap_or(0),
+        deadline: detail.deadline,
+        guard: detail.guard,
+        todo: detail.todo,
+        abort_source: detail.abort_source,
+        persisted: detail.persisted,
+    };
+    serde_json::to_value(stop).ok()
 }
 
 /// senpi `_bindExtensionCore` provider callbacks: registration updates the catalog, then the live
@@ -5270,7 +5280,24 @@ impl AgentSession {
                 .unwrap_or(0)
                 .max(child_obligations)
         );
-        waits["background"] = json!(active.iter().filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background).map(|r| json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64})).collect::<Vec<_>>());
+        // Each wait source names the items it waits on (senpi#4106).
+        let project = |r: &crate::work_custody_record::WorkCustodyRecord| {
+            let mut wait = json!({"source":r.source.as_deref().unwrap_or(&r.key),"activeCount":r.active_count.unwrap_or(1.) as u64});
+            let named = crate::lifecycle_wait_items::project_wait_items(
+                &crate::lifecycle_wait_items::WaitSourceItems {
+                    items: r.items.clone(),
+                    omitted_items: r.omitted_items,
+                },
+            );
+            if let Some(items) = named.items {
+                wait["items"] = json!(items);
+            }
+            if let Some(omitted) = named.omitted_items {
+                wait["omittedItems"] = json!(omitted);
+            }
+            wait
+        };
+        waits["background"] = json!(active.iter().filter(|r| r.kind == crate::work_custody_record::ObligationKind::Background).map(project).collect::<Vec<_>>());
         if !custody_persisted {
             ledger.custody_write_failed();
         }
@@ -5352,9 +5379,17 @@ impl AgentSession {
                 }),
             )
         };
-        let changed = ledger.update_with_stop(&state, waits, holds, failure, last_stop, |record| {
-            self.persist_lifecycle_record(record)
-        });
+        let changed = ledger.update_with(
+            crate::lifecycle_ledger::LedgerUpdate {
+                state: state.clone(),
+                waits,
+                holds,
+                failure,
+                last_stop,
+                activity: None,
+            },
+            |record| self.persist_lifecycle_record(record),
+        );
         let snapshot = ledger.snapshot().clone();
         drop(ledger);
         if changed {

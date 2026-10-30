@@ -43,7 +43,7 @@ pub struct WorkCustodyRecord {
     pub active_count: Option<f64>,
     /// Named wait items (`{id, description?, startedAtMs?}`, senpi#4106).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub items: Option<Vec<Value>>,
+    pub items: Option<Vec<crate::lifecycle_wait_items::WakeSourceStateItem>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omitted_items: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

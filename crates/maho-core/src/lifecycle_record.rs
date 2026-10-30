@@ -136,7 +136,7 @@ pub fn read_lifecycle_record(v: &Value) -> Option<Value> {
         r["failure"] = f;
     }
     if let Some(stop) = crate::lifecycle_stop::read_last_stop(&v["lastStop"], &v["runId"]) {
-        r["lastStop"] = stop;
+        r["lastStop"] = json!(stop);
     }
     let t = &v["lastTurnEnd"];
     if [
