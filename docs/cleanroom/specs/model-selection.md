@@ -633,6 +633,40 @@ fingerprint and transport classification and no message text.
 28c. Same, but the model's headers fail → only that model is excluded (reason request). 28d. A
 plain refused refresh still excludes A with reason refresh.
 
+### D6. Kimi rung of daily-normal follows the current Kimi model
+
+Behaviour: the Kimi rung of the built-in `daily-normal` chain (second rung, after the Claude rung
+and before the GLM rung) names the current top model of the Kimi family, model id
+`kimi-k3.1-pro`. As §6.1 says, the id is sourced from the MIT `maho-ext-recommended-models`
+data, and the rung takes that data's provider ranking for the id as its provider list (same
+entries, same order) and that data's default level for the id as its level, which is `max` in
+this release. The previous-generation id `kimi-k3` no longer appears in any built-in chain.
+
+Invariant: every rung of every built-in profile has a non-empty provider list. A built-in rung
+must never fall back to the empty-list meaning of §6 (any provider, including gateways and
+resellers), and must never be left without a level when the recommended data gives one. A
+built-in rung whose model id the recommended data does not rank is a data defect, to be caught
+by test, not a runtime condition.
+
+Review of the other built-in rungs against the recommended data's provider ranking (builtins-b
+lane): the only built-in rung whose model id is not ranked is the `daily-normal` Kimi rung
+(`kimi-k3`). Every other id used by the built-in chains (`claude-opus-5-5`, `glm-5.3`,
+`claude-fable-5-1`, `gpt-6.1-sol`, `gpt-6-astra`) is still ranked, so no other rung changes.
+
+Inputs: the recommended-models data (ranking and default levels). Output: the built chain.
+Errors: none at runtime. The invariant is enforced by tests.
+
+Tests:
+1. Given built-in profiles, when `daily-normal` is inspected, then it contains a rung with model
+   `kimi-k3.1-pro` whose providers equal the recommended-models ranking for `kimi-k3.1-pro`
+   (same entries, same order) and whose level is `max`. No rung names `kimi-k3`.
+2. Given built-in profiles, when every rung of every built-in profile is inspected, then each
+   has a non-empty provider list.
+3. Given `available` contains only a gateway provider that is not in the Kimi ranking and serves
+   `kimi-k3.1-pro` (for example `acme-gateway/kimi-k3.1-pro`), when `daily-normal` is resolved,
+   then the Kimi rung does not match through that gateway. Resolution moves to the next rung, or
+   reports unavailable if nothing else matches.
+
 ### D5. Mapping table
 
 | census row | delta § | APPLIES/N-A | reason |
@@ -641,6 +675,7 @@ plain refused refresh still excludes A with reason refresh.
 | omo-components-19 | D2 | APPLIES | what the user sees and what the model reads |
 | omo-components-20 | D3 | APPLIES | notice facts the user reads |
 | omo-components-21 | D4 | APPLIES | changes which providers a session may start on |
+| omo-cores-02 | D6 | APPLIES | Kimi model id and provider set of a built-in chain are observable; root-found (builtins-b reverify) |
 
 Leak self-check:
 - No fenced code from SUL: none used (no code blocks in this delta).
@@ -648,7 +683,8 @@ Leak self-check:
   behaviour; messages are described by facts only. (Reviewer fixes in
   docs/cleanroom/reviews/model-selection-5152.md removed sentences in D1, D2 and D4 that echoed
   SUL comments and SUL implementation constants.)
-- No row-for-row table: only the single gated model id and two level names (interface facts) appear.
+- No row-for-row table: only the single gated model id, two level names, and (D6) model ids
+  and one level name appear (interface facts).
 - No OmO-original identifier: type ids stay `model-profile:*`; product name `mhc`.
 - No OmO-original feature: the persona/launch tooling of the upstream is not specified beyond the
   one gate that shapes a built-in chain.
