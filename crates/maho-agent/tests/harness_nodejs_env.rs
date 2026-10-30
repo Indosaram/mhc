@@ -113,9 +113,16 @@ async fn expands_home_relative_paths_and_file_urls() {
         std::path::Path::new(&home).join("x").to_string_lossy()
     );
     assert_eq!(
-        env.absolute_path(if cfg!(windows) { "file:///C:/tmp/x" } else { "file:///tmp/x" }, &context)
-            .await
-            .expect("file url"),
+        env.absolute_path(
+            if cfg!(windows) {
+                "file:///C:/tmp/x"
+            } else {
+                "file:///tmp/x"
+            },
+            &context
+        )
+        .await
+        .expect("file url"),
         std::path::Path::new(if cfg!(windows) { r"C:\tmp\x" } else { "/tmp/x" }).to_string_lossy()
     );
     assert_eq!(
@@ -912,5 +919,110 @@ async fn returns_a_file_error_for_a_missing_file() {
 
     let error = expect_reader_err(env.open_text_line_reader("missing.txt", &context).await);
     assert_eq!(error.code, FileErrorCode::NotFound);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn replaces_malformed_and_incomplete_utf8() {
+    let dir = unique_dir("tlrmalformed");
+    let env = env_for(&dir);
+    let context = bg_context();
+    env.write_file("bad.txt", &[0xff, 0x0a, 0xe2, 0x82], &context)
+        .await
+        .expect("write");
+    let reader = env
+        .open_text_line_reader("bad.txt", &context)
+        .await
+        .expect("open");
+    let first = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
+    assert_eq!((first.text.as_str(), first.terminated), ("\u{fffd}", true));
+    let second = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
+    assert_eq!(
+        (second.text.as_str(), second.terminated),
+        ("\u{fffd}", false)
+    );
+    assert!(reader.read_line(&context).await.expect("eof").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn does_not_consume_a_buffered_line_when_its_context_is_pre_aborted() {
+    let dir = unique_dir("tlrbuffered");
+    let env = env_for(&dir);
+    let context = bg_context();
+    env.write_file("a.txt", b"one\ntwo\n", &context)
+        .await
+        .expect("write");
+    let reader = env
+        .open_text_line_reader("a.txt", &context)
+        .await
+        .expect("open");
+    reader
+        .read_line(&context)
+        .await
+        .expect("first")
+        .expect("some");
+    let controller = AbortController::new();
+    controller.abort(Some(AbortReason::dom_default()));
+    let aborted = with_abort_signal(controller.signal(), &bg_context());
+    let error = reader.read_line(&aborted).await.expect_err("aborted");
+    assert_eq!(error.code, FileErrorCode::Aborted);
+    assert_eq!(
+        reader
+            .read_line(&context)
+            .await
+            .expect("second")
+            .expect("some")
+            .text,
+        "two"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Rust reader reads each 64 KiB chunk synchronously, so the abort lands before the pending
+/// read is first polled rather than between chunks; the retry contract (no line lost, every
+/// chunk decoded) is the same.
+#[tokio::test]
+async fn honors_cancellation_during_a_read_and_allows_retry() {
+    let dir = unique_dir("tlrretry");
+    let env = env_for(&dir);
+    let context = bg_context();
+    let long = "é".repeat(70_000);
+    env.write_file("a.txt", format!("{long}\nlast").as_bytes(), &context)
+        .await
+        .expect("write");
+    let reader = env
+        .open_text_line_reader("a.txt", &context)
+        .await
+        .expect("open");
+    let controller = AbortController::new();
+    let cancellable = with_abort_signal(controller.signal(), &bg_context());
+    let pending = reader.read_line(&cancellable);
+    controller.abort(Some(AbortReason::dom_default()));
+    assert_eq!(
+        pending.await.expect_err("aborted").code,
+        FileErrorCode::Aborted
+    );
+    let first = reader
+        .read_line(&context)
+        .await
+        .expect("first")
+        .expect("some");
+    assert_eq!(first.text, long);
+    let last = reader
+        .read_line(&context)
+        .await
+        .expect("last")
+        .expect("some");
+    assert_eq!((last.text.as_str(), last.terminated), ("last", false));
+    assert!(reader.read_line(&context).await.expect("eof").is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
