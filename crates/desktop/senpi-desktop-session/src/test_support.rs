@@ -5,7 +5,7 @@ mod panicky;
 
 use std::sync::Arc;
 
-pub(crate) use panicky::Panics;
+pub(crate) use panicky::{Panics, Watches};
 use parking_lot::Mutex;
 use senpi_desktop_backend_fake::{FakeBackend, FakeScenario, Faults, RecordingSink, SinkOp};
 use senpi_desktop_core::backend::{Backend, DeliveryMode, Modifiers, MouseButton, PointerEvent};
@@ -32,6 +32,7 @@ pub(crate) struct Harness {
     pub(crate) sink: RecordingSink,
     pub(crate) faults: Faults,
     pub(crate) panics: Panics,
+    pub(crate) watches: Watches,
     pub(crate) clock: Arc<FakeClock>,
     pub(crate) supervisor: Arc<Supervisor>,
     pub(crate) audits: Arc<Mutex<Vec<AuditEvent>>>,
@@ -43,6 +44,7 @@ struct Factory {
     scenario: FakeScenario,
     built: Built,
     panics: Panics,
+    watches: Watches,
 }
 
 impl BackendFactory for Factory {
@@ -52,6 +54,7 @@ impl BackendFactory for Factory {
         Ok(Box::new(panicky::PanickyFake {
             inner: backend,
             panics: self.panics.clone(),
+            watches: self.watches.clone(),
         }))
     }
 }
@@ -75,10 +78,12 @@ pub(crate) fn harness(overlay: &Value) -> Harness {
         audit: Box::new(move |event| recorded.lock().push(event.clone())),
     };
     let panics = Panics::default();
+    let watches = Watches::default();
     let factory = Factory {
         scenario,
         built: Arc::clone(&built),
         panics: panics.clone(),
+        watches: watches.clone(),
     };
     let capabilities = Arc::new(Mutex::new(DesktopCapabilities::unavailable()));
     let mut worker = Worker::new(Box::new(factory), capabilities, safety);
@@ -89,6 +94,7 @@ pub(crate) fn harness(overlay: &Value) -> Harness {
         sink,
         faults,
         panics,
+        watches,
         clock,
         supervisor,
         audits,
