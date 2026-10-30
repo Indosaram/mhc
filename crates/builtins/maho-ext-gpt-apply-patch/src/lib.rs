@@ -1,5 +1,6 @@
 pub mod types;
 pub mod text;
+pub mod line_endings;
 pub mod seek_sequence;
 pub mod parser;
 pub mod patch_replace;
