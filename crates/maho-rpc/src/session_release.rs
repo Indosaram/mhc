@@ -219,13 +219,14 @@ pub trait SessionReleasePort: ReleaseSettlePort {
     fn other_requests(&self, session_id: &str) -> usize;
     /// Clients attached to the session other than the connection asking for the release.
     fn other_attachments(&self, session_id: &str) -> u64;
-    /// Stages this release attempt's folder for a move (senpi `prepareOutgoingState`).
-    fn prepare_outgoing_state(
+    /// Stages this release attempt's folder for a move (senpi `prepareOutgoingState`, awaited: no sync fs on the move
+    /// path).
+    async fn prepare_outgoing_state(
         &self,
         session_path: &str,
         move_id: &str,
     ) -> Result<StagedState, ReleaseWriteError>;
-    /// Removes a staging folder an attempt that never sealed the file left behind.
+    /// Removes a staging folder an attempt that never sealed the file left behind, off the async workers.
     fn discard_outgoing_state(&self, dir: &str);
     /// Claims every attachment and tears the session down, sealing it as released. Its claim is taken before its
     /// first await. `false` when another close already owns the entry.
@@ -495,7 +496,9 @@ pub async fn release_session(
         // A move takes the extensions' out-of-folder state with it; they write it while their runtime is still live.
         let state_attempt = if command.reason_str() == Some("move") {
             let move_id = command.move_id.as_str().unwrap_or_default();
-            let staged_state = port.prepare_outgoing_state(&first.session_path, move_id)?;
+            let staged_state = port
+                .prepare_outgoing_state(&first.session_path, move_id)
+                .await?;
             let state_attempt = staged_state.attempt.clone();
             let dir = staged_state.dir.clone();
             staged = Some(staged_state);
@@ -807,7 +810,7 @@ mod tests {
         fn other_attachments(&self, _: &str) -> u64 {
             self.other_attachments
         }
-        fn prepare_outgoing_state(
+        async fn prepare_outgoing_state(
             &self,
             _session_path: &str,
             move_id: &str,
@@ -918,7 +921,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_export_abandons_its_staging_and_answers_release_failed() {
         let fake = fake();
-        *fake.export_error.lock().unwrap() = Some("ext could not write its state for the move".into());
+        *fake.export_error.lock().unwrap() =
+            Some("ext could not write its state for the move".into());
         let port = port(&fake);
         let answer = release_session(&port, &mover(json!("m-1"))).await;
         assert_eq!(code(&answer), RPC_ERROR_RELEASE_FAILED);
