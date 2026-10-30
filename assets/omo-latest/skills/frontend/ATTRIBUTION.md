@@ -191,7 +191,7 @@ SOFTWARE.
 ## 5. Project-original files
 
 `frontend/SKILL.md`, `frontend/references/design/README.md`, `_INDEX.md`, `aside.md`,
-`design-system-architecture.md`, `react-dev-tooling-skill.md`,
+`design-system-architecture.md`, `grounding.md`, `react-dev-tooling-skill.md`,
 `frontend/references/perfection/README.md`, `react-perf-tooling.md`, and
 `frontend/scripts/perfection/lighthouse-audit.py` are original to this project and require
 no third-party attribution. The perfection docs and script only invoke third-party tools
@@ -245,3 +245,28 @@ MIT-licensed `JCodesMore/ai-website-cloner-template` clone-website workflow that
 cites; no source from that template is copied. It carries no third-party attribution beyond
 that lineage note, and it grants no license to copy any target site's trademarks, brand
 assets, or proprietary copy.
+
+---
+
+## 6. Impeccable (Paul Bakaus): craft-floor guidance
+
+`frontend/references/perfection/craft-floor.md`, the "Browser surfaces", "Type and spacing
+floor" and "No generated scaffolding" rules in `frontend/SKILL.md`, and the `visual-qa`
+checklist items A3 (measure), A13, B8, E7, F8 and F9 adapt ideas from the craft-floor
+reference of the Impeccable project. The text is written for this skill (mhc clean-room);
+a few short phrases stay close to the source.
+
+- Source: https://github.com/pbakaus/impeccable
+- Copyright 2025 Paul Bakaus
+- Licensed under the Apache License, Version 2.0; the full text is in
+  `LICENSE-Apache-2.0.txt` beside this notice. Distributed on an "AS IS" basis, without
+  warranties or conditions of any kind.
+- **Changes (Apache-2.0 section 4(b)):** rules selected and restated. Kept: the list of
+  browser-drawn surfaces, more space above a heading than below it, the 65-75ch measure,
+  the 6rem display cap, the -0.04em tracking floor, and the scaffold and shadow patterns.
+  Added: a property per browser surface, the 1.25x type step, the 1.5x heading-space and 2x
+  group-gap ratios, the phone measure floor, the floor/default split (route-overridable
+  defaults, so a label above a heading is a default rather than a ban), and the
+  `visual-qa` item mapping. Left out because this skill disagrees: blur and
+  `backdrop-filter` as general motion materials, one theme per product category,
+  decorative custom scrollbars, a blanket bounce-easing ban, and banning common typefaces.
