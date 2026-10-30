@@ -711,9 +711,7 @@ impl ApiKeyAuth for ComposedApiKeyAuth {
         };
         // Stored-then-env (senpi#4324 `ambientApiKeyAuth`): the provider's own stored env wins over the env an
         // ambient resolver returned.
-        if let Some(stored) = credential.and_then(|c| c.env.as_ref())
-            && credential.and_then(|c| c.key.as_ref()).is_none_or(String::is_empty)
-        {
+        if let Some(stored) = credential.and_then(|c| c.env.as_ref()) {
             env.get_or_insert_with(Default::default)
                 .extend(stored.iter().map(|(k, v)| (k.clone(), v.clone())));
         }

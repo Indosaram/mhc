@@ -609,6 +609,10 @@ pub struct ModelRuntime {
     outer_slot_state_retired: Arc<tokio::sync::Mutex<HashSet<String>>>,
     model_network_enabled: bool,
     model_refresh_timeout_ms: u64,
+    /// senpi `servedCredentials` (senpi#2491): marks an auth failure on a credential that just served.
+    served_credentials: Arc<crate::served_credentials::ServedCredentials>,
+    /// The extension behind each registration that named one (senpi#4328).
+    provider_extension_paths: Arc<RwLock<HashMap<String, String>>>,
 }
 
 /// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
@@ -747,6 +751,8 @@ impl ModelRuntime {
             outer_slot_state_retired: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             model_network_enabled,
             model_refresh_timeout_ms,
+            served_credentials: Default::default(),
+            provider_extension_paths: Default::default(),
             availability: Arc::new(RwLock::new(AvailabilityState::default())),
         };
         runtime.rebuild_providers();
@@ -1800,6 +1806,33 @@ impl ModelRuntime {
         }
         Ok(())
     }
+    /// senpi `getProviderOrigin` (senpi#4328).
+    pub fn get_provider_origin(&self, provider_id: &str) -> Option<crate::provider_origin::ProviderOrigin> {
+        let id = normalize_provider_id(provider_id);
+        let paths = self.provider_extension_paths.read().unwrap_or_else(|p| p.into_inner());
+        let has_models_json = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(&id).is_some();
+        let models_path = self.models_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+        crate::provider_origin::provider_origin_of(crate::provider_origin::ProviderOriginFacts {
+            builtin: self.builtins.contains_key(&id),
+            native_extension: self.native.contains_key(&id),
+            extension: self.extensions.read().unwrap_or_else(|p| p.into_inner()).contains_key(&id),
+            extension_path: paths.get(&id).map(String::as_str),
+            models_json_path: if has_models_json { models_path.as_deref() } else { None },
+        })
+    }
+    /// senpi `noteExtensionPath`: `ProviderRegistrationOptions.extensionPath` of the latest registration.
+    pub fn note_extension_path(&self, provider_id: &str, extension_path: Option<&str>) {
+        let id = normalize_provider_id(provider_id);
+        let mut paths = self.provider_extension_paths.write().unwrap_or_else(|p| p.into_inner());
+        match extension_path {
+            Some(path) => {
+                paths.insert(id, path.to_owned());
+            }
+            None => {
+                paths.remove(&id);
+            }
+        }
+    }
     pub fn register_native_provider(&mut self, provider: Arc<dyn Provider>) {
         let id = normalize_provider_id(provider.id());
         self.native.insert(id.clone(), provider);
@@ -1810,6 +1843,10 @@ impl ModelRuntime {
     pub fn unregister_provider(&mut self, id: &str) {
         let id = normalize_provider_id(id);
         self.native.shift_remove(&id);
+        self.provider_extension_paths
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
         self.extensions
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -2039,6 +2076,17 @@ impl ModelRuntime {
         stream.end(Some(error));
         Some(stream)
     }
+    /// senpi `RequestCredential {provider, baseUrl, apiKey}` of one provider attempt (senpi#2491).
+    fn request_credential(
+        model: &Model,
+        request: &maho_ai::types::ProviderRequestOptions,
+    ) -> crate::served_credentials::OwnedRequestCredential {
+        crate::served_credentials::OwnedRequestCredential {
+            provider: model.provider.clone(),
+            base_url: Some(model.base_url.clone()),
+            api_key: request.api_key.clone(),
+        }
+    }
     pub fn stream(
         &self,
         model: &Model,
@@ -2057,6 +2105,7 @@ impl ModelRuntime {
         let semaphores = self.provider_semaphores.clone();
         let rotation = self.could_rotate_credentials(model, &options.request);
         let runtime = self.clone();
+        let served = self.served_credentials.clone();
         let inner = Self::lazy_request(model, async move {
             runtime.retire_outer_slot_state(&original.provider).await?;
             Self::apply_configured_headers(
@@ -2073,15 +2122,17 @@ impl ModelRuntime {
                       model: &Model,
                       request: maho_ai::types::ProviderRequestOptions| {
                     let mut options = options.clone();
+                    let credential = Self::request_credential(model, &request);
                     options.request = request;
-                    match target {
+                    let stream = match target {
                         CallTarget::Provider(provider) => {
                             provider.stream(model, &context, Some(options))
                         }
                         CallTarget::Models(models) => {
                             models.stream(model, &context, Some(options), Default::default())
                         }
-                    }
+                    };
+                    crate::served_credentials::observe_stream(served.clone(), stream, credential)
                 },
             );
             Self::rotating_stream(
@@ -2131,6 +2182,7 @@ impl ModelRuntime {
         let semaphores = self.provider_semaphores.clone();
         let rotation = self.could_rotate_credentials(model, &options.stream.request);
         let runtime = self.clone();
+        let served = self.served_credentials.clone();
         let inner = Self::lazy_request(model, async move {
             runtime.retire_outer_slot_state(&original.provider).await?;
             Self::apply_configured_headers(
@@ -2148,15 +2200,17 @@ impl ModelRuntime {
                       request: maho_ai::types::ProviderRequestOptions| {
                     let transforms = transforms.clone();
                     let mut options = options.clone();
+                    let credential = Self::request_credential(model, &request);
                     options.stream.request = request;
-                    match target {
+                    let stream = match target {
                         CallTarget::Provider(provider) => {
                             provider.stream_simple(model, &context, Some(options))
                         }
                         CallTarget::Models(models) => {
                             models.stream_simple(model, &context, Some(options), transforms)
                         }
-                    }
+                    };
+                    crate::served_credentials::observe_stream(served.clone(), stream, credential)
                 },
             );
             Self::rotating_stream(
