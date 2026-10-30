@@ -21,6 +21,7 @@ pub mod image;
 pub mod image_resize;
 pub mod interrupt_note;
 pub mod json_tree;
+pub mod load_cell;
 pub mod magic_cell_host;
 pub mod magic_cells;
 pub mod managed_cell;
