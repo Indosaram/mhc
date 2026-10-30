@@ -620,6 +620,19 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                         ));
                         return;
                     }
+                    Ok(SendOutcome::Unresponsive { reason, .. }) => {
+                        // Nothing was sent: the worker's session is unresponsive, so admission
+                        // is refused with the send's reason (TS refusal(): unresponsive).
+                        manager.release_reserved_slot(&task_id, &model, epoch);
+                        request.event(event(
+                            request.as_ref(),
+                            crate::workpool::types::WorkpoolEventKind::AdmissionFailed,
+                            &task_id,
+                            epoch,
+                            Some((WorkpoolErrorCode::AdmissionRefused, reason)),
+                        ));
+                        return;
+                    }
                     Ok(_) | Err(_) => {
                         manager.release_reserved_slot(&task_id, &model, epoch);
                         request.event(event(
