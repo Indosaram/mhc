@@ -666,7 +666,15 @@ fn failure(code: &str, message: &str) -> ExtensionFailure {
     ExtensionFailure::classified(message, Some("EvalHandleError".into()), Some(code.into()))
 }
 fn workpool_failure(error: senpi_task::workpool::types::WorkpoolError) -> ExtensionFailure {
-    failure(&format!("{:?}", error.code), &error.message)
+    use senpi_task::workpool::types::WorkpoolErrorCode;
+    // Pin `eval-handles/pool-refs.ts` loadOwnedPool: a foreign pool is forbidden, a missing one not found.
+    match error.code {
+        WorkpoolErrorCode::ScopeDenied => failure("Forbidden", &error.message),
+        WorkpoolErrorCode::PoolNotFound | WorkpoolErrorCode::InvalidPoolId => {
+            failure("NotFound", &error.message)
+        }
+        code => failure(&format!("{code:?}"), &error.message),
+    }
 }
 fn output_snapshot(
     reference: EvalHandleRef,
