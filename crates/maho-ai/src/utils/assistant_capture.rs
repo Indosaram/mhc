@@ -311,6 +311,40 @@ pub fn subscribe_assistant_capture() -> AssistantCaptureSubscription {
     AssistantCaptureSubscription::on(&SUBSCRIBERS)
 }
 
+#[cfg(test)]
+thread_local! {
+    static THREAD_SUBSCRIBERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A subscription that only streams first pushed on this thread see: the capture suites hold one
+/// per test (TS `subscribeCaptureForEachTest`) without turning capture on for tests other threads
+/// run in parallel. `#[tokio::test]` runs every spawned task on the test's own thread.
+#[cfg(test)]
+pub(crate) struct ThreadCaptureSubscription(());
+
+#[cfg(test)]
+impl Drop for ThreadCaptureSubscription {
+    fn drop(&mut self) {
+        THREAD_SUBSCRIBERS.with(|count| count.set(count.get() - 1));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn subscribe_assistant_capture_on_this_thread() -> ThreadCaptureSubscription {
+    THREAD_SUBSCRIBERS.with(|count| count.set(count.get() + 1));
+    ThreadCaptureSubscription(())
+}
+
+#[cfg(test)]
+fn thread_subscribed() -> bool {
+    THREAD_SUBSCRIBERS.with(|count| count.get() > 0)
+}
+
+#[cfg(not(test))]
+fn thread_subscribed() -> bool {
+    false
+}
+
 impl CaptureSlot {
     pub(crate) fn enable(&mut self) {
         self.enabled = true;
@@ -372,7 +406,7 @@ impl CaptureSlot {
             return None;
         }
         if self.decided.is_none() {
-            let on = SUBSCRIBERS.load(Ordering::SeqCst) > 0 || self.demanded;
+            let on = SUBSCRIBERS.load(Ordering::SeqCst) > 0 || self.demanded || thread_subscribed();
             self.decided = Some(on.then(CaptureState::default));
         }
         self.decided.as_mut().and_then(Option::as_mut)
