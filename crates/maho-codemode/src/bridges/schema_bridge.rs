@@ -69,6 +69,10 @@ pub fn run_eval_schema(
             tools: tools.iter().map(|tool| tool.name.clone()).collect(),
         });
     };
+    // Documentation-only entries; they are not tools and the listing above stays the ordinary catalog.
+    if let Some(virtual_entry) = super::eval_virtual_schemas::virtual_eval_schema(name) {
+        return Ok(virtual_entry);
+    }
     if let Some(tool) = tools.iter().find(|tool| tool.name == *name) {
         return Ok(EvalSchemaResult::Tool {
             name: tool.name.clone(),
