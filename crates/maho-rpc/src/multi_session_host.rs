@@ -3509,7 +3509,7 @@ pub fn host_shutdown_signals_from_env() -> HostShutdownSignals {
     let env: HashMap<String, String> = std::env::vars().collect();
     let policy = resolve_host_idle_policy(&env, None, None);
     HostShutdownSignals {
-        watchdog: crate::host_watchdog::read_host_watchdog_config_from_brand_env(&env),
+        watchdog: crate::host_internal_transport::host_watchdog_binding(),
         empty_exit_ms: Some(policy.empty_exit_ms),
     }
 }
@@ -3793,6 +3793,15 @@ async fn run_socket_host(
         watchdog,
         empty_exit_ms,
     } = signals;
+    // senpi `internalHostTransport`: the sealed hop (stdin key), the Windows secret, or the public key filter.
+    let transport = std::sync::Arc::new(crate::host_internal_transport::internal_host_transport(
+        watchdog,
+        secret.clone(),
+        (!pipe_address).then_some((core.options.agent_dir.as_path(), path.as_str())),
+    )?);
+    let watchdog = transport.watchdog_config.clone();
+    let handoff =
+        std::sync::Arc::new(crate::host_handoff_announcement::HandoffAnnouncement::default());
     let public_socket = watchdog
         .as_ref()
         .and_then(|config| config.public_socket.clone());
@@ -3924,6 +3933,24 @@ async fn run_socket_host(
     }
     let mut listener = HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?;
     let bound = crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
+    // A key record that cannot be published safely ends this host: held connections are refused, never served
+    // keyless (senpi `transport.publish(() => shutdown(1))`).
+    if transport.publish().is_err() {
+        watchdog_task.abort();
+        crate::socket_ownership::unlink_owned_socket(
+            &path,
+            bound,
+            if cfg!(windows) {
+                "win32"
+            } else {
+                std::env::consts::OS
+            },
+            |_| {},
+        );
+        transport.dispose();
+        std::process::exit(1);
+    }
+    let draining_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut next = 0u64;
     let mut draining = false;
@@ -3960,8 +3987,13 @@ async fn run_socket_host(
                     tick=std::time::Duration::from_millis(crate::session_command_router::DRAIN_SWEEP_MS);
                     eprintln!("senpi rpc host: draining for a generation handoff");
                     let superseded=endpoint_superseded(&path,&bound,handoff_public_socket.as_deref(),&public_owner);
-                    let successor=superseded.then(||crate::rpc_types::RpcHostSuccessor{socket:handoff_public_socket.clone().unwrap_or_else(||path.clone())});
-                    if let Ok(value)=serde_json::to_value(crate::rpc_types::RpcHostLifecycleEvent::HostSuperseded{instance_id:crate::protocol_identity::host_instance_id().to_owned(),generation:crate::protocol_identity::host_generation(&std::env::vars().collect::<std::collections::HashMap<String,String>>()),successor}){core.broadcast_record(&value);}
+                    let announced_socket=handoff_public_socket.clone().unwrap_or_else(||path.clone());
+                    let generation=crate::protocol_identity::host_generation(&std::env::vars().collect::<std::collections::HashMap<String,String>>());
+                    // The announcement is registered before the drain is visible to admitting connections.
+                    let announcing=handoff.begin(async{Ok(superseded)},crate::protocol_identity::host_instance_id(),generation,&announced_socket,|message|eprintln!("senpi rpc host: {message}"));
+                    draining_flag.store(true,std::sync::atomic::Ordering::SeqCst);
+                    // A failed announcement still drains: parking is what lets this generation exit (senpi#2285).
+                    if let Some(value)=announcing.await{core.broadcast_record(&value);}
                     core.begin_drain().await;
                 }
             },
@@ -3969,11 +4001,23 @@ async fn run_socket_host(
             accepted=listener.accept()=>{
                 let socket=accepted?;
                 if draining{drop(socket);continue;}
+                // The sealed hop authenticates before the host registers a connection: one that reached the listener
+                // before the drain began still gets the announcement, then a clean close (senpi `deliverLate`).
+                let arrived_before_drain=true;
                 next+=1;let connection=format!("socket-{next}");
                 connections.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                 empty_since=None;
-                let core=core.clone();let counter=connections.clone();let secret=secret.clone();
-                tokio::spawn(async move{serve_socket_connection(core,connection,socket,secret).await;counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);});
+                let core=core.clone();let counter=connections.clone();let transport=transport.clone();let handoff=handoff.clone();let draining_flag=draining_flag.clone();
+                tokio::spawn(async move{
+                    if let Some(stream)=transport.admit(socket).await{
+                        if draining_flag.load(std::sync::atomic::Ordering::SeqCst){
+                            let _=handoff.deliver_late(stream,arrived_before_drain);
+                        }else{
+                            serve_socket_connection(core,connection,stream).await;
+                        }
+                    }
+                    counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);
+                });
             }
             ()=tokio::time::sleep(tick)=>{
                 if draining&&core.drain_sweep().await{break;}
@@ -4003,6 +4047,7 @@ async fn run_socket_host(
         },
         |_| {},
     );
+    transport.dispose();
     if let Some(code) = signal_code {
         std::process::exit(code);
     }
@@ -4038,20 +4083,9 @@ fn endpoint_superseded(
 async fn serve_socket_connection(
     core: std::sync::Arc<HostCore>,
     connection: String,
-    mut socket: HostStream,
-    secret: Option<std::sync::Arc<Vec<u8>>>,
+    socket: crate::host_lifecycle_proxy::BoxedHop,
 ) {
-    // A wrong or missing secret ends the connection before any JSONL byte is read or answered.
-    if let Some(secret) = secret
-        && crate::socket_transport::authenticate_socket(&mut socket, &secret)
-            .await
-            .is_err()
-    {
-        return;
-    }
-    #[cfg(unix)]
-    let (read, write) = socket.into_split();
-    #[cfg(windows)]
+    // Admission (sealed hop, secret or public key filter) already ran in `InternalHostTransport::admit`.
     let (read, write) = tokio::io::split(socket);
     let failed = connection.clone();
     let actor = crate::socket_event_fanout::SocketEventSinkActor::new(
