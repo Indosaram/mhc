@@ -156,6 +156,7 @@ pub mod socket_peer_recovery;
 pub mod socket_sink;
 pub mod socket_transport;
 pub mod supervisor_route;
+pub mod tool_media_store;
 pub mod tui_socket;
 pub mod widget_line_renderer;
 pub mod worker_session_claims;
