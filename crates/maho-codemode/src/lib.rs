@@ -92,9 +92,12 @@ pub fn register(
                     .upgrade()
                     .and_then(|state| state.lock().expect("extension state").context.clone());
                 if let Some(context) = context {
+                    let themed = (context.mode == maho_ext_api::ExtensionMode::Tui)
+                        .then(|| context.ui.theme());
+                    let themed = themed_status(themed.as_ref(), status.as_deref());
                     context.ui.set_status(
                         extension::eval_status::EVAL_CELLS_STATUS_KEY,
-                        status.as_deref(),
+                        themed.as_deref(),
                     );
                 }
                 Ok(())
@@ -405,6 +408,17 @@ pub fn register(
         }),
     );
     Ok(())
+}
+
+/// index.ts status render: the TUI footer shows the detached-cell status as
+/// `theme.bg("selectedBg", theme.fg("text", status))`; other modes get the plain text.
+/// `tui_theme` is the UI theme in TUI mode and `None` otherwise.
+fn themed_status(tui_theme: Option<&maho_ext_api::Theme>, status: Option<&str>) -> Option<String> {
+    let status = status?;
+    Some(match tui_theme {
+        Some(theme) => theme.bg("selectedBg", &theme.fg("text", status)),
+        None => status.to_owned(),
+    })
 }
 
 /// A reload disposes the kernels together with every live cell, so it must wait for detached
@@ -855,6 +869,21 @@ async fn await_completion(
 #[cfg(test)]
 mod host_line_tests {
     use super::*;
+
+    #[test]
+    fn tui_status_is_themed_with_selected_background() {
+        let theme = maho_ext_api::Theme {
+            colors: [("text".to_owned(), "<fg>".to_owned())].into(),
+            backgrounds: [("selectedBg".to_owned(), "<bg>".to_owned())].into(),
+            ..Default::default()
+        };
+        assert_eq!(themed_status(None, Some("cells")).as_deref(), Some("cells"));
+        assert_eq!(
+            themed_status(Some(&theme), Some("cells")).as_deref(),
+            Some("<bg><fg>cells\u{1b}[39m\u{1b}[49m")
+        );
+        assert_eq!(themed_status(Some(&theme), None), None);
+    }
 
     #[test]
     fn host_line_names_platform_cores_and_js_runtime() {
