@@ -140,22 +140,27 @@ async fn fire_one<D: Delivery + ?Sized>(
 pub async fn run_due_jobs<D: Delivery + ?Sized>(
     options: &RunDueOptions<'_, D>,
 ) -> Result<RunDueResult> {
-    let mut listing = list_scheduled_jobs(options.dir)?;
-    if let Some(session_id) = options.session_id {
-        listing
-            .jobs
-            .retain(|record| record.job.session_id == session_id);
-    }
+    let listing = list_scheduled_jobs(options.dir)?;
+    // Narrow a copy, never the listing: tombstone pruning must see every session's live jobs.
+    let jobs: Vec<_> = listing
+        .jobs
+        .iter()
+        .filter(|record| {
+            options
+                .session_id
+                .is_none_or(|id| record.job.session_id == id)
+        })
+        .cloned()
+        .collect();
     let mut events: Vec<_> = listing.invalid.iter().map(|invalid| serde_json::json!({"event":"invalid","state":invalid.state,"file":invalid.file,"error":invalid.error})).collect();
     let mut next_due_at = None;
-    if listing
-        .jobs
+    if jobs
         .iter()
         .any(|record| record.state == ScheduledJobState::Firing)
     {
         let runners = live_runners(options.dir, options.probes).await?;
         let own = options.probes.own_identity();
-        for record in &listing.jobs {
+        for record in &jobs {
             if record.state != ScheduledJobState::Firing {
                 continue;
             }
@@ -185,7 +190,7 @@ pub async fn run_due_jobs<D: Delivery + ?Sized>(
     }
     prune_tombstones(options.dir, &listing, options.probes.now())?;
     let mut queues: BTreeMap<String, Vec<ScheduledJob>> = BTreeMap::new();
-    for record in listing.jobs {
+    for record in jobs {
         if record.state != ScheduledJobState::Pending {
             continue;
         }

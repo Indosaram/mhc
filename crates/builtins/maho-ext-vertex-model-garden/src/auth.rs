@@ -51,12 +51,13 @@ pub async fn resolve_vertex_model_garden_ambient(
     if project.is_none() {
         project = ctx.env("GCLOUD_PROJECT").await;
     }
-    if project.is_none()
-        && let Some(reader) = stored_provider_env
-    {
-        project = reader("google-vertex".into())
-            .await
-            .and_then(|env| env.get("GOOGLE_CLOUD_PROJECT").cloned());
+    if project.is_none() {
+        // An injected reader overrides the auth context's own stored-credential reader.
+        let stored = match stored_provider_env {
+            Some(reader) => reader("google-vertex".into()).await,
+            None => ctx.stored_provider_env("google-vertex").await,
+        };
+        project = stored.and_then(|env| env.get("GOOGLE_CLOUD_PROJECT").cloned());
     }
     let env = project
         .filter(|project| !project.is_empty())
@@ -69,7 +70,8 @@ pub async fn resolve_vertex_model_garden_ambient(
     }))
 }
 
-/// The `ambientAuth` registration of the `vertex-garden` provider.
+/// The `ambientAuth` registration of the `vertex-garden` provider. With no injected reader the
+/// stored google-vertex profile is read through `AuthContext::stored_provider_env`.
 pub struct VertexModelGardenAmbientAuth {
     pub stored_provider_env: Option<StoredProviderEnvReader>,
 }
@@ -192,6 +194,38 @@ mod tests {
             result.ambient
                 && result.env.is_none()
                 && result.source.as_deref() == Some(VERTEX_MODEL_GARDEN_ADC_SOURCE)
+        );
+    }
+
+    struct StoredCtx;
+    #[async_trait::async_trait]
+    impl AuthContext for StoredCtx {
+        async fn env(&self, _: &str) -> Option<String> {
+            None
+        }
+        async fn file_exists(&self, _: &str) -> bool {
+            true
+        }
+        async fn stored_provider_env(&self, provider_id: &str) -> Option<ProviderEnv> {
+            (provider_id == "google-vertex").then(|| {
+                ProviderEnv::from([("GOOGLE_CLOUD_PROJECT".to_owned(), "profile".to_owned())])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn default_registration_reads_the_stored_profile_through_the_auth_context() {
+        let auth = VertexModelGardenAmbientAuth {
+            stored_provider_env: None,
+        };
+        assert_eq!(
+            project(
+                auth.resolve(&StoredCtx, None, &AbortSignal::default())
+                    .await
+                    .unwrap()
+            )
+            .as_deref(),
+            Some("profile")
         );
     }
 }
