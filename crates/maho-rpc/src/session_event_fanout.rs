@@ -714,10 +714,7 @@ impl ConnectionTargets {
     pub fn connection_has(&self, connection: &str, capability: &str) -> bool {
         self.connections.iter().any(|candidate| {
             candidate.id == connection
-                && candidate
-                    .capabilities
-                    .iter()
-                    .any(|name| name == capability)
+                && candidate.capabilities.iter().any(|name| name == capability)
         })
     }
 
@@ -877,10 +874,17 @@ impl SessionSnapshots {
         placeholders: bool,
         now_ms: f64,
     ) -> Result<Vec<String>, serde_json::Error> {
+        // The remembered lifecycle is re-stamped for this delivery instead of replaying its stale `observedAt`.
         let mut lines = self
             .lifecycle
             .get(session_id)
-            .cloned()
+            .map(|line| match serde_json::from_str::<Value>(line) {
+                Ok(mut record) => {
+                    crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
+                    serde_json::to_string(&record).unwrap_or_else(|_| line.clone())
+                }
+                Err(_) => line.clone(),
+            })
             .into_iter()
             .collect::<Vec<_>>();
         for record in self.snapshots.get_mut(session_id).into_iter().flatten() {

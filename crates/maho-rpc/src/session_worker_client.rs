@@ -176,7 +176,9 @@ impl WorkerGrants {
                 .filter(|(_, grant)| grant.connection.as_deref() == Some(connection))
                 .map(|(id, _)| id.clone())
                 .collect();
-            ids.into_iter().filter_map(|id| pending.remove(&id)).collect()
+            ids.into_iter()
+                .filter_map(|id| pending.remove(&id))
+                .collect()
         };
         for grant in cancelled {
             (grant.cancel)();
@@ -185,8 +187,9 @@ impl WorkerGrants {
 
     /// `#stop`: every pending dialog is cancelled, so a closing worker is never left waiting on one.
     pub fn cancel_all(&self) {
-        let cancelled: Vec<PendingGrant> =
-            std::mem::take(&mut *lock(&self.pending)).into_values().collect();
+        let cancelled: Vec<PendingGrant> = std::mem::take(&mut *lock(&self.pending))
+            .into_values()
+            .collect();
         for grant in cancelled {
             (grant.cancel)();
         }
@@ -505,7 +508,8 @@ impl ClientInner {
     /// senpi `receive`'s `output` case before publication: the worker's security traffic is the host's to route, and a
     /// grant-select request goes to the one connection that can present it.
     fn relay_security(&self, record: &Value, connection: Option<&str>) -> SecurityRelay {
-        let (Some(grants), Some(session_id)) = (&self.grants, lock(&self.state).bound_session.clone())
+        let (Some(grants), Some(session_id)) =
+            (&self.grants, lock(&self.state).bound_session.clone())
         else {
             return SecurityRelay::Forward(connection.map(str::to_owned));
         };
@@ -540,22 +544,16 @@ impl ClientInner {
             let fallback = lock(&self.state).capabilities.clone();
             let cancel_id = id.to_owned();
             let client = self.outbox.clone();
-            let target = grants.route(
-                &session_id,
-                id,
-                connection,
-                &fallback,
-                move || {
-                    // `post({ type: "cancel_grant", id })`: the worker ends the dialog nobody can present.
-                    if let Ok(line) = serde_json::to_string(
-                        &crate::session_worker_protocol::HostToSessionWorker::CancelGrant {
-                            id: cancel_id.clone(),
-                        },
-                    ) {
-                        let _ = client.send(format!("{line}\n"));
-                    }
-                },
-            );
+            let target = grants.route(&session_id, id, connection, &fallback, move || {
+                // `post({ type: "cancel_grant", id })`: the worker ends the dialog nobody can present.
+                if let Ok(line) = serde_json::to_string(
+                    &crate::session_worker_protocol::HostToSessionWorker::CancelGrant {
+                        id: cancel_id.clone(),
+                    },
+                ) {
+                    let _ = client.send(format!("{line}\n"));
+                }
+            });
             if !target.accepted {
                 return SecurityRelay::Consumed;
             }
@@ -874,7 +872,8 @@ impl SessionWorkerClient {
         // A response to a grant dialog belongs to the worker only when it came from the connection the dialog was
         // routed to (senpi `acceptWorkerGrantResponse`); any other answer is dropped here.
         if command.get("type").and_then(Value::as_str) == Some("extension_ui_response")
-            && let Some(id) = command.get("id").and_then(Value::as_str)
+            // The answered request is `uiRequestId` when present, else the frame `id` (senpi#4348).
+            && let Some(id) = crate::extension_ui_response::answered_ui_request_id(&command)
             && self.inner.accept_grant_response(id, connection.as_deref()) == Some(false)
         {
             return Ok(());
@@ -1036,8 +1035,7 @@ mod tests {
             self.attached.clone()
         }
         fn has_capability(&self, connection: &str, capability: &str) -> bool {
-            capability == GRANT_SELECT_CAPABILITY
-                && self.capable.iter().any(|id| id == connection)
+            capability == GRANT_SELECT_CAPABILITY && self.capable.iter().any(|id| id == connection)
         }
         fn is_empty(&self) -> bool {
             self.empty
