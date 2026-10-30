@@ -144,8 +144,6 @@ pub mod sensitive_output;
 pub mod served_credentials;
 pub mod session_activity;
 pub mod lifecycle_session_binding;
-pub mod lifecycle_stop;
-pub mod lifecycle_wait_items;
 pub mod prompt_cache_prefix_request;
 pub mod prompt_size_extension_names;
 pub mod prompt_size_report;

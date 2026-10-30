@@ -27,7 +27,13 @@ fn read_source(source: &Value, with_retry: bool) -> Option<Value> {
         "activeCount".into(),
         Value::Number(source.get("activeCount")?.as_number()?.clone()),
     );
-    read_wait_items(source.get("items"), source.get("omittedItems")).spread_into(&mut item);
+    let named = read_wait_items(source.get("items"), source.get("omittedItems"));
+    if let Some(items) = named.items {
+        item.insert("items".into(), json!(items));
+    }
+    if let Some(omitted) = named.omitted_items {
+        item.insert("omittedItems".into(), json!(omitted));
+    }
     if with_retry && source["retryAtMs"].is_number() {
         item.insert("retryAtMs".into(), source["retryAtMs"].clone());
     }
