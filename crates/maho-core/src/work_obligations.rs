@@ -4,6 +4,7 @@ use crate::work_custody_record::{
     read_work_custody,
 };
 use serde_json::Value;
+pub use maho_ext_api::{ENGINE_CUSTODY_KEY_PREFIXES, ENGINE_DELIVERY_KEY_PREFIX, WAKE_SOURCE_KEY_PREFIX};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
