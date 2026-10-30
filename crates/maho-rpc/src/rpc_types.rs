@@ -490,6 +490,25 @@ pub enum RpcCommandBody {
     SetSessionContext {
         patch: Value,
     },
+    /// Live-only, identity-fenced attach to an open session (senpi `attach_session`); the session id travels in
+    /// the routing envelope. Ids stay raw so a malformed one is refused with `session_identity_mismatch`.
+    AttachSession {
+        #[serde(default)]
+        durable_session_id: Value,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        expected_host_instance: Value,
+    },
+    /// Gives up one attachment of the requesting connection (senpi `release_attachment`).
+    ReleaseAttachment,
+    /// Ends the live session holding a path once nobody else is attached (senpi `reclaim_session`).
+    ReclaimSession {
+        #[serde(default)]
+        session_path: Value,
+        #[serde(default)]
+        durable_session_id: Value,
+        #[serde(default)]
+        expected_host_instance: Value,
+    },
     /// Release a held wake (senpi `resume_session`); takes no arguments.
     ResumeSession,
     /// The user started typing a draft in this session's composer (senpi#3859); only `draft` is accepted.

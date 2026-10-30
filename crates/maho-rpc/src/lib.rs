@@ -91,6 +91,8 @@ pub mod run_hold_commands;
 pub mod security_presentations;
 pub mod session_attach_order;
 pub mod session_attribution;
+pub mod session_attachment_commands;
+pub mod session_attachment_gate;
 pub mod session_binding;
 pub mod session_command_activity;
 pub mod session_command_router;
