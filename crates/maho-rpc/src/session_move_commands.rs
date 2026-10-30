@@ -210,8 +210,9 @@ async fn load_entries(path: &Path) -> Vec<Value> {
         .await
         .unwrap_or_default()
 }
-// PERF-DIVERGENCE(senpi refuseOpenHere): the guard maho-core's export/finish/revoke options take is a sync closure,
-// so the hosted-path check still canonicalizes synchronously; the async guard needs the core signature change.
+// Open remainder (senpi refuseOpenHere): upstream resolves hosted paths with async realpath; the guard maho-core's
+// export/finish/revoke options take is a sync closure, so this check still canonicalizes synchronously until the core
+// guard signature becomes async. Not a divergence: the blocking fs the upstream change removed is still here.
 fn real(path: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
