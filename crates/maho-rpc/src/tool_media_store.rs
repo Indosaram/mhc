@@ -188,7 +188,7 @@ fn write_image(root: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut suffix = [0u8; 6];
     getrandom::fill(&mut suffix).map_err(|error| std::io::Error::other(error.to_string()))?;
     let staging = PathBuf::from(format!("{}.{}.tmp", path.display(), hex::encode(suffix)));
-    let written = (|| {
+    let written = (|| -> std::io::Result<()> {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
