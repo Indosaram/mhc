@@ -750,22 +750,36 @@ impl MemoryWiring {
         session: &str,
         identity: &crate::context::MemoryIdentityContext,
     ) {
+        let _ = self.recover_stale_holder_after_turn_observed(session, identity, None);
+    }
+    /// Observer-aware recovery: the attempted holder is recorded only after the recovery succeeded and
+    /// the session's identity context is unchanged, so an aborted or stale pass is retried next turn.
+    pub fn recover_stale_holder_after_turn_observed(
+        &mut self,
+        session: &str,
+        identity: &crate::context::MemoryIdentityContext,
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<(), String> {
+        use crate::worker::run_liveness::throw_if_aborted;
         if !self.user_activity.has(session) || !self.user_activity.has_reconciled(session) {
-            return;
+            return Ok(());
         }
         let reconcile_runs = self.seams.reconcile_runs.clone();
         if reconcile_runs.is_none() {
-            return;
+            return Ok(());
         }
         // A holder that one reconciliation could not release is reported, not reconciled every turn.
-        let settled = std::cell::RefCell::new(std::mem::take(&mut self.stale_holder_reconciles));
+        let known = self.stale_holder_reconciles.clone();
+        let attempted_key: std::cell::RefCell<Option<String>> = Default::default();
         let should_reconcile = |run_id: &str| {
-            let key = format!("{session}:{run_id}");
-            let mut settled = settled.borrow_mut();
-            if settled.contains(&key) {
+            if throw_if_aborted(signal).is_err() {
                 return false;
             }
-            settled.insert(key);
+            let key = format!("{session}:{run_id}");
+            if known.contains(&key) {
+                return false;
+            }
+            *attempted_key.borrow_mut() = Some(key);
             true
         };
         let reconcile = || reconcile_runs.as_ref().expect("checked reconcile seam")(identity);
@@ -777,17 +791,29 @@ impl MemoryWiring {
                 should_reconcile: Some(&should_reconcile),
             },
         );
-        self.stale_holder_reconciles = settled.into_inner();
+        throw_if_aborted(signal)?;
+        if self
+            .runtime
+            .resolve_context(session)
+            .map(|current| &current.binding)
+            != Some(&identity.binding)
+        {
+            return Ok(());
+        }
+        if let Some(key) = attempted_key.into_inner() {
+            self.stale_holder_reconciles.insert(key);
+        }
         let (Some(notice), Some(run_id)) = (recovery.notice, recovery.verdict.run_id()) else {
-            return;
+            return Ok(());
         };
         let key = format!("{session}:{run_id}");
         if !self.stale_lock_notices_shown.insert(key) {
-            return;
+            return Ok(());
         }
         if let Some((_, ui)) = self.live_host.clone() {
             ui.notify(&notice, maho_ext_api::NotificationType::Warning);
         }
+        Ok(())
     }
     pub fn record_provenance(&mut self, session: &str, provenance: maho_ext_api::ForkProvenance) {
         self.provenance_by_session
@@ -813,25 +839,65 @@ impl MemoryWiring {
         ui: Option<&mut dyn MemoryFooterUi>,
         warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
     ) -> Result<(), String> {
+        self.on_settled_observed(session, entries, api, now, ui, None, warn)
+    }
+    /// Settle-time wiring under a settle observer's signal: journal reconcile, facts enqueue,
+    /// stale-holder recovery and the status sync stop once it aborts, and each later step is skipped
+    /// when the session's identity context changed meanwhile.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_settled_observed(
+        &mut self,
+        session: &str,
+        entries: &[serde_json::Value],
+        api: &maho_ext_api::ExtensionApi,
+        now: i64,
+        ui: Option<&mut dyn MemoryFooterUi>,
+        signal: Option<&maho_ext_api::AbortSignal>,
+        warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
+    ) -> Result<(), String> {
+        use crate::worker::run_liveness::throw_if_aborted;
         let Some(identity) = self.runtime.resolve_context(session).cloned() else {
             return Ok(());
         };
+        let still_bound = |wiring: &Self| {
+            wiring
+                .runtime
+                .resolve_context(session)
+                .map(|current| &current.binding)
+                == Some(&identity.binding)
+        };
         // A holder that died after this session reconciled would keep the reflection lock for good, so each
         // later settled turn settles a provably dead one before anything else queues behind it.
-        self.recover_stale_holder_after_turn(session, &identity);
+        self.recover_stale_holder_after_turn_observed(session, &identity, signal)?;
         if !entries.is_empty() {
             self.runtime
                 .journal_wiring_for(&identity)
-                .reconcile_session(Some(session), entries, warn)
+                .reconcile_session_with_signal(Some(session), entries, signal, warn)
                 .map_err(|error| error.to_string())?;
+            throw_if_aborted(signal)?;
+            if !still_bound(self) {
+                return Ok(());
+            }
             if let Some(facts) = self.runtime.existing_facts_wiring(&identity.identity) {
                 if let Some(prov) = self.provenance_by_session.get(session) {
                     facts.set_provenance(session, Some(prov.clone()));
                 }
-                facts.on_settled(session);
+                let facts_signal =
+                    signal.map(|_| memory_core::facts::queue::FactsAbortSignal::new());
+                if let (Some(source), Some(target)) = (signal, &facts_signal)
+                    && source.is_aborted()
+                {
+                    target.abort();
+                }
+                facts.on_settled_with_signal(session, facts_signal.as_ref());
             }
         }
-        self.reflection_live.on_settled(session, api, now, ui)
+        throw_if_aborted(signal)?;
+        if !still_bound(self) {
+            return Ok(());
+        }
+        self.reflection_live
+            .on_settled_observed(session, api, now, ui, signal)
     }
     pub fn shutdown(&mut self, session: &str) {
         let identity = self

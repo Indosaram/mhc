@@ -26,10 +26,40 @@ pub fn classify_run_process(pid: Option<u32>, recorded_start: Option<Option<&str
     classify_run_process_with(pid, recorded_start, get_pid_liveness, get_process_start_identity)
 }
 
+/// The error an aborted observation reports (upstream rethrows `signal.reason`).
+pub const OBSERVATION_ABORTED: &str = "The reflection run observation was aborted.";
+
+/// `signal?.throwIfAborted()`: an aborted observation stops before any terminal claim.
+pub fn throw_if_aborted(signal: Option<&maho_ext_api::AbortSignal>) -> Result<(), String> {
+    if signal.is_some_and(maho_ext_api::AbortSignal::is_aborted) {
+        Err(OBSERVATION_ABORTED.to_owned())
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn wait_until(deadline_at: f64, now: impl FnOnce() -> f64) {
+    // Never aborted: the `signal` variant below is the cancellable one.
+    let _ = wait_until_signal(deadline_at, now, None).await;
+}
+
+/// `waitUntil(deadlineAt, now, signal)`: rejects as soon as the signal aborts, even mid-sleep.
+pub async fn wait_until_signal(
+    deadline_at: f64,
+    now: impl FnOnce() -> f64,
+    signal: Option<&maho_ext_api::AbortSignal>,
+) -> Result<(), String> {
+    throw_if_aborted(signal)?;
     let delay = (deadline_at - now()).max(0.0);
-    if delay == 0.0 { return; }
-    tokio::time::sleep(std::time::Duration::from_secs_f64(delay / 1000.0)).await;
+    if delay == 0.0 { return Ok(()); }
+    let sleep = tokio::time::sleep(std::time::Duration::from_secs_f64(delay / 1000.0));
+    match signal {
+        None => { sleep.await; Ok(()) }
+        Some(signal) => tokio::select! {
+            () = sleep => Ok(()),
+            () = signal.cancelled() => Err(OBSERVATION_ABORTED.to_owned()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -66,5 +96,16 @@ mod tests {
         let pid = std::process::id();
         let start = get_process_start_identity(pid);
         assert_eq!(classify_run_process(Some(pid), Some(start.as_deref())), if start.is_some() { RunProcessVerdict::Alive } else { RunProcessVerdict::Unknown });
+    }
+    #[tokio::test(start_paused = true)]
+    async fn an_abort_rejects_a_pending_wait_and_a_pre_aborted_signal_never_waits() {
+        let signal = maho_ext_api::AbortSignal::default();
+        let aborter = signal.clone();
+        let waiting = tokio::spawn(async move { wait_until_signal(60_000.0, || 0.0, Some(&signal)).await });
+        tokio::task::yield_now().await;
+        aborter.abort();
+        assert_eq!(waiting.await.unwrap(), Err(OBSERVATION_ABORTED.to_owned()));
+        assert_eq!(wait_until_signal(0.0, || 0.0, Some(&aborter)).await, Err(OBSERVATION_ABORTED.to_owned()));
+        assert_eq!(wait_until_signal(0.0, || 0.0, None).await, Ok(()));
     }
 }

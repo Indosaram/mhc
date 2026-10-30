@@ -30,6 +30,14 @@ pub type JournalWarning=std::sync::Arc<dyn Fn(&str,&JournalError)+Send+Sync>;
 impl MemoryJournalWiring{
     pub fn new(transcripts:PathBuf)->Self{Self{transcripts,journals:BTreeMap::new()}}
     pub fn journal_for(&mut self,session_id:&str)->&TranscriptJournal{self.journals.entry(session_id.into()).or_insert_with(||TranscriptJournal::new(TranscriptJournalOptions::new(self.transcripts.join(session_id))))}
+    /// `reconcileSession(eventCtx, signal)`: an aborted observer never starts or publishes a reconcile.
+    /// Cross-lane dependency: memory-core's `TranscriptJournal::reconcile` taking the signal into its
+    /// locked section (upstream `reconcile(messages, signal)`); until it lands the abort is honoured at
+    /// the entry and exit of this call.
+    pub fn reconcile_session_with_signal(&mut self,session_id:Option<&str>,entries:&[Value],signal:Option<&maho_ext_api::AbortSignal>,warn:impl FnOnce(&str,&JournalError))->Result<AppendResult,JournalError>{
+        if signal.is_some_and(maho_ext_api::AbortSignal::is_aborted){return Ok(AppendResult{appended:0,skipped:0});}
+        self.reconcile_session(session_id,entries,warn)
+    }
     pub fn reconcile_session(&mut self,session_id:Option<&str>,entries:&[Value],warn:impl FnOnce(&str,&JournalError))->Result<AppendResult,JournalError>{let Some(id)=session_id.filter(|id|!id.is_empty())else{return Ok(AppendResult{appended:0,skipped:0});};match self.journal_for(id).reconcile(&project_session_entries(entries)){Err(error) if matches!(&error,JournalError::LockTimeout(_))||matches!(&error,JournalError::Io(error) if error.kind()==std::io::ErrorKind::AlreadyExists)=>{warn(id,&error);Ok(AppendResult{appended:0,skipped:0})},result=>result}}
     pub fn register(wiring:std::sync::Arc<std::sync::Mutex<Self>>,api:&mut maho_ext_api::ExtensionApi,warn:JournalWarning) {
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::AgentSettled] {
@@ -58,4 +66,5 @@ mod tests{
     #[test]fn malformed_entries_and_missing_session_are_noop(){let values=[Value::Null,serde_json::json!({"type":"compaction"}),serde_json::json!({"type":"message","id":"x","message":{"role":"custom","content":"hidden"}})];assert!(project_session_entries(&values).is_empty());let dir=tempfile::tempdir().unwrap();assert_eq!(MemoryJournalWiring::new(dir.path().join("absent")).reconcile_session(None,&entries(),|_,_|panic!("warn")).unwrap().appended,0);assert!(!dir.path().join("absent").exists());}
     #[test]fn memory_owned_custom_channels_are_excluded_but_foreign_custom_is_ignored(){let values=project_session_entries(&[serde_json::json!({"type":"message","id":"hidden","message":{"role":"custom","customType":"omo-kibitzer:recall","content":"secret"}}),serde_json::json!({"type":"message","id":"foreign","message":{"role":"custom","customType":"other:notice","content":"foreign"}}),serde_json::json!({"type":"message","id":"answer","message":{"role":"assistant","content":"answer"}})]);assert_eq!(values.len(),1);assert!(matches!(&values[0],TranscriptProjection::Assistant{message_id,..} if message_id=="answer"));}
     #[test]fn tool_only_assistant_adds_no_step(){let dir=tempfile::tempdir().unwrap();let values=[serde_json::json!({"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"read"}]}})];let mut wiring=MemoryJournalWiring::new(dir.path().into());assert_eq!(wiring.reconcile_session(Some("session"),&values,|_,_|panic!("warn")).unwrap().appended,1);assert_eq!(wiring.journal_for("session").get_state().unwrap().total_completed_steps,0);}
+    #[test]fn an_aborted_observer_never_touches_the_journal(){let dir=tempfile::tempdir().unwrap();let signal=maho_ext_api::AbortSignal::default();signal.abort();let mut wiring=MemoryJournalWiring::new(dir.path().join("absent"));assert_eq!(wiring.reconcile_session_with_signal(Some("session"),&entries(),Some(&signal),|_,_|panic!("warn")).unwrap().appended,0);assert!(!dir.path().join("absent").exists());}
 }

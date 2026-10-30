@@ -5,6 +5,12 @@ use crate::context::MemoryPendingLedger;
 
 pub trait ReflectionTriggerEngine: Send + Sync {
     fn evaluate(&self, conversation: &str, event: ReflectionEvent) -> Result<Option<ReservationResult>, String>;
+    /// `evaluate(conversationId, event, signal)`. A committed reservation admission still completes
+    /// after an abort; only the observer stops. Engines that cannot observe the signal inherit this.
+    fn evaluate_with_signal(&self, conversation: &str, event: ReflectionEvent, signal: Option<&maho_ext_api::AbortSignal>) -> Result<Option<ReservationResult>, String> {
+        crate::worker::run_liveness::throw_if_aborted(signal)?;
+        self.evaluate(conversation, event)
+    }
 }
 impl ReflectionTriggerEngine for memory_core::reflection::ReflectionReservationStore {
     fn evaluate(&self, conversation: &str, event: ReflectionEvent) -> Result<Option<ReservationResult>, String> { memory_core::reflection::ReflectionReservationStore::evaluate(self, conversation, event).map_err(|error| error.to_string()) }
@@ -27,13 +33,21 @@ pub fn create_reflection_trigger_wiring(options: ReflectionTriggerWiringOptions)
     Arc::new(ReflectionTriggerWiring { options, outcomes:Mutex::new(BTreeMap::new()) })
 }
 impl ReflectionTriggerWiring {
-    fn evaluate_and_launch(&self, session: &ReflectionTriggerSession, event: ReflectionEvent) -> Result<(), String> {
-        if let Some(result) = session.engine.evaluate(&session.conversation_id, event)? && result.status == "active" && let Err(error) = (self.options.on_launch)(result.run.request) {
+    fn evaluate_and_launch(&self, session: &ReflectionTriggerSession, event: ReflectionEvent, signal: Option<&maho_ext_api::AbortSignal>) -> Result<(), String> {
+        crate::worker::run_liveness::throw_if_aborted(signal)?;
+        let result = session.engine.evaluate_with_signal(&session.conversation_id, event, signal)?;
+        crate::worker::run_liveness::throw_if_aborted(signal)?;
+        if let Some(result) = result && result.status == "active" && let Err(error) = (self.options.on_launch)(result.run.request) {
             (self.options.warn)(&format!("omo-senpi memory reflection launch failed: {error}"));
         }
         Ok(())
     }
     pub fn handle_event(&self, event: &ExtensionEvent, session_id: &str) {
+        self.handle_event_with_signal(event, session_id, None);
+    }
+    /// `agent_settled` with the settle observer's signal: every step stops once it aborts, and an
+    /// aborted observer never logs a failure.
+    pub fn handle_event_with_signal(&self, event: &ExtensionEvent, session_id: &str, signal: Option<&maho_ext_api::AbortSignal>) {
         let Some(session) = (self.options.resolve_session)(Some(session_id)) else { return; };
         match event {
             ExtensionEvent::AgentEnd { aborted, will_retry, .. } => { self.outcomes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session.conversation_id, (aborted.unwrap_or(false), will_retry.unwrap_or(false))); }
@@ -44,11 +58,18 @@ impl ReflectionTriggerWiring {
                 let mut ledger = session.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if !session.enabled { ledger.pending_compaction = false; return; }
                 let evaluate = || {
-                    if ledger.pending_compaction { session.engine.evaluate(&session.conversation_id, ReflectionEvent::CompactionAccepted)?; ledger.pending_compaction = false; }
-                    self.evaluate_and_launch(&session, ReflectionEvent::Settled { success:true })
+                    if ledger.pending_compaction {
+                        session.engine.evaluate_with_signal(&session.conversation_id, ReflectionEvent::CompactionAccepted, signal)?;
+                        crate::worker::run_liveness::throw_if_aborted(signal)?;
+                        ledger.pending_compaction = false;
+                    }
+                    self.evaluate_and_launch(&session, ReflectionEvent::Settled { success:true }, signal)
                 };
                 let mut evaluate = evaluate;
-                if let Err(error) = evaluate() { (self.options.warn)(&format!("omo-senpi memory reflection trigger failed: {error}")); }
+                if let Err(error) = evaluate() {
+                    if signal.is_some_and(maho_ext_api::AbortSignal::is_aborted) { return; }
+                    (self.options.warn)(&format!("omo-senpi memory reflection trigger failed: {error}"));
+                }
             }
             _ => {}
         }
@@ -64,7 +85,7 @@ impl ReflectionTriggerWiring {
     }
     pub fn request_manual_reflection(&self, focus: Option<String>, recent_n: Option<usize>, conversation_ids: Option<Vec<String>>) {
         let Some(session) = (self.options.resolve_session)(None).filter(|session| session.enabled) else { return; };
-        if let Err(error) = self.evaluate_and_launch(&session, ReflectionEvent::Manual { focus, recent_n, conversation_ids }) { (self.options.warn)(&format!("omo-senpi memory reflection trigger failed: {error}")); }
+        if let Err(error) = self.evaluate_and_launch(&session, ReflectionEvent::Manual { focus, recent_n, conversation_ids }, None) { (self.options.warn)(&format!("omo-senpi memory reflection trigger failed: {error}")); }
     }
 }
 
@@ -109,4 +130,5 @@ mod tests {
     #[test] fn disabled_clears_compaction_without_reserving() { let (wiring,events,ledger)=fixture(false); ledger.lock().unwrap().pending_compaction=true; wiring.handle_event(&end(false,false),"session"); wiring.handle_event(&ExtensionEvent::AgentSettled,"session"); wiring.request_manual_reflection(None,None,None); assert!(events.lock().unwrap().is_empty()); assert!(!ledger.lock().unwrap().pending_compaction); }
     #[test] fn manual_preserves_requested_focus_and_conversations() { let (wiring,events,_)=fixture(true); wiring.request_manual_reflection(Some("focus".into()),Some(3),Some(vec!["other".into()])); assert_eq!(*events.lock().unwrap(),[ReflectionEvent::Manual { focus:Some("focus".into()), recent_n:Some(3), conversation_ids:Some(vec!["other".into()]) }]); }
     #[test] fn imported_defaults_and_agent_override_resolve() { let mut settings=crate::reflection_settings::resolve_memory_settings(None).unwrap(); settings["agents"]["agent"]=serde_json::json!({"reflection":{"enabled":false,"trigger":{"step_count":0}}}); let resolved=resolve_reflection_trigger_config(&settings,Some("agent")).unwrap(); assert!(!resolved.enabled); assert_eq!(resolved.config.step_count,Some(0)); assert_eq!(resolved.config.on_compaction,Some(true)); }
+    #[test] fn an_aborted_settle_observer_evaluates_nothing_and_stays_quiet() { let (wiring,events,ledger)=fixture(true); ledger.lock().unwrap().pending_compaction=true; let signal=maho_ext_api::AbortSignal::default(); signal.abort(); wiring.handle_event(&end(false,false),"session"); wiring.handle_event_with_signal(&ExtensionEvent::AgentSettled,"session",Some(&signal)); assert!(events.lock().unwrap().is_empty()); assert!(ledger.lock().unwrap().pending_compaction); }
 }
