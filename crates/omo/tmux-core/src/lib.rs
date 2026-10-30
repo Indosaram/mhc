@@ -17,7 +17,8 @@ pub use cmux_detect::{is_cmux_compat, is_cmux_compat_environment};
 pub use constants::*;
 pub use env_source::{EnvSource, ProcessEnv};
 pub use pane_auth::{
-    PaneAuthDirectory, create_pane_auth_directory, with_pane_auth, with_pane_auth_from,
+    PaneAuthDirectory, PaneAuthFallbackDirectory, create_pane_auth_directory, with_pane_auth,
+    with_pane_auth_from,
 };
 pub use runner::{RunTmuxOptions, TmuxCommandResult, run_tmux_command};
 pub use tmux_utils::*;

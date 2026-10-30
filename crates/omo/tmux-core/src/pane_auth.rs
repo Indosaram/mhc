@@ -11,7 +11,8 @@ use std::sync::{Mutex, PoisonError};
 use crate::env_source::{EnvSource, ProcessEnv, is_set};
 
 /// The server owns the directory; pane shells consume and unlink individual files. Dropping the
-/// guard removes the directory (upstream removes it on cleanup or process exit).
+/// guard removes the directory with every file still in it (upstream removes it on cleanup or
+/// process exit).
 #[derive(Debug)]
 pub struct PaneAuthDirectory {
     path: PathBuf,
@@ -48,22 +49,35 @@ pub fn create_pane_auth_directory() -> std::io::Result<PaneAuthDirectory> {
     Ok(PaneAuthDirectory { path })
 }
 
-/// Process-wide directory for a standalone, user-password-configured server that set no
-/// `OPENCODE_SERVER_PASSWORD_DIR` (upstream creates it lazily and removes it at exit; a Rust
-/// static is never dropped, so only its already-consumed files' directory outlives the process).
-static FALLBACK_DIRECTORY: Mutex<Option<PaneAuthDirectory>> = Mutex::new(None);
+/// Lazily created directory for a standalone, user-password-configured server that set no
+/// `OPENCODE_SERVER_PASSWORD_DIR` (upstream `buildPaneAuthEnvironmentArgs` creates one and removes
+/// it at process exit).
+///
+/// SAFETY-DIVERGENCE(omo pane-auth): Rust has no safe exit hook and a `static` is never dropped,
+/// so the directory is owned by the injected dependencies (`TmuxDeps::pane_auth`, team-core
+/// `TeamLayoutDeps::pane_auth`) instead of the process. Dropping the last owner removes the
+/// directory together with every password file a pane has not consumed yet, so the owner must
+/// outlive the panes it spawns (upstream: the `omo run` server's lifetime).
+#[derive(Debug, Default)]
+pub struct PaneAuthFallbackDirectory {
+    directory: Mutex<Option<PaneAuthDirectory>>,
+}
 
-fn fallback_directory() -> std::io::Result<PathBuf> {
-    let mut slot = FALLBACK_DIRECTORY
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if let Some(directory) = slot.as_ref() {
-        return Ok(directory.path().to_path_buf());
+impl PaneAuthFallbackDirectory {
+    /// The directory, created on first use.
+    fn path(&self) -> std::io::Result<PathBuf> {
+        let mut slot = self
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(directory) = slot.as_ref() {
+            return Ok(directory.path().to_path_buf());
+        }
+        let directory = create_pane_auth_directory()?;
+        let path = directory.path().to_path_buf();
+        *slot = Some(directory);
+        Ok(path)
     }
-    let directory = create_pane_auth_directory()?;
-    let path = directory.path().to_path_buf();
-    *slot = Some(directory);
-    Ok(path)
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -71,10 +85,11 @@ fn shell_single_quote(value: &str) -> String {
 }
 
 /// `-e OPENCODE_SERVER_PASSWORD_FILE=<one-use file>` (plus username when set); empty when no
-/// password is set. Fails closed: an unwritable password file is an error, never a fallback to
-/// the password in argv.
+/// password is set. Without `OPENCODE_SERVER_PASSWORD_DIR` the file goes into `fallback`. Fails
+/// closed: an unwritable password file is an error, never a fallback to the password in argv.
 pub fn build_pane_auth_environment_args_from(
     environment: &dyn EnvSource,
+    fallback: &PaneAuthFallbackDirectory,
 ) -> std::io::Result<Vec<String>> {
     let password = environment.var("OPENCODE_SERVER_PASSWORD");
     let Some(password) = password.filter(|password| !password.is_empty()) else {
@@ -85,7 +100,7 @@ pub fn build_pane_auth_environment_args_from(
         .filter(|directory| !directory.is_empty())
     {
         Some(directory) => PathBuf::from(directory),
-        None => fallback_directory()?,
+        None => fallback.path()?,
     };
     let file = directory.join(format!("{}.sh", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
@@ -115,8 +130,10 @@ pub fn build_pane_auth_environment_args_from(
 }
 
 /// [`build_pane_auth_environment_args_from`] over the process environment.
-pub fn build_pane_auth_environment_args() -> std::io::Result<Vec<String>> {
-    build_pane_auth_environment_args_from(&ProcessEnv)
+pub fn build_pane_auth_environment_args(
+    fallback: &PaneAuthFallbackDirectory,
+) -> std::io::Result<Vec<String>> {
+    build_pane_auth_environment_args_from(&ProcessEnv, fallback)
 }
 
 /// Read once, unlink before launching the child, and fail closed if either fails.

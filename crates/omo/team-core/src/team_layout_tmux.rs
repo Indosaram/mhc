@@ -6,10 +6,10 @@ use std::sync::{Arc, LazyLock};
 use regex::Regex;
 use serde_json::{Value, json};
 use tmux_core::{
-    EnvSource, IsServerRunningOptions, RunTmuxOptions, SweepTmuxSessionsDeps,
-    SweepTmuxSessionsOptions, TmuxCommandResult, build_pane_auth_environment_args_from,
-    close_tmux_pane, escape_tmux_format, is_server_running, run_tmux_command,
-    sweep_tmux_sessions_with, with_pane_auth_from,
+    EnvSource, IsServerRunningOptions, PaneAuthFallbackDirectory, RunTmuxOptions,
+    SweepTmuxSessionsDeps, SweepTmuxSessionsOptions, TmuxCommandResult,
+    build_pane_auth_environment_args_from, close_tmux_pane, escape_tmux_format, is_server_running,
+    run_tmux_command, sweep_tmux_sessions_with, with_pane_auth_from,
 };
 
 use crate::logger;
@@ -81,6 +81,9 @@ pub struct TeamLayoutDeps {
     pub log: LayoutLogFn,
     pub env: EnvFn,
     pub cwd: CwdFn,
+    /// Owns the pane password directory used when [`Self::env`] sets no
+    /// `OPENCODE_SERVER_PASSWORD_DIR`; dropping the last clone removes unconsumed password files.
+    pub pane_auth: Arc<PaneAuthFallbackDirectory>,
 }
 
 impl Default for TeamLayoutDeps {
@@ -111,6 +114,7 @@ impl Default for TeamLayoutDeps {
                     .map(|dir| dir.display().to_string())
                     .unwrap_or_default()
             }),
+            pane_auth: Arc::default(),
         }
     }
 }
@@ -216,7 +220,7 @@ fn build_split_args(
 ) -> Result<Vec<String>, String> {
     let mut args = vec!["split-window".to_owned()];
     args.extend(
-        build_pane_auth_environment_args_from(&LayoutEnv(deps.env.clone()))
+        build_pane_auth_environment_args_from(&LayoutEnv(deps.env.clone()), &deps.pane_auth)
             .map_err(|error| error.to_string())?,
     );
     let directory = escape_tmux_format(&pane_working_directory(member, deps));
@@ -255,7 +259,6 @@ fn build_split_args(
     ]));
     Ok(args)
 }
-
 
 fn create_team_layout_in_caller_window(
     tmux_path: &str,
@@ -742,14 +745,28 @@ mod split_format_tests {
 
     #[test]
     fn split_directories_escape_format_syntax_for_first_and_later_panes() {
-        let deps = TeamLayoutDeps { env: Arc::new(|_| None), ..TeamLayoutDeps::default() };
+        let deps = TeamLayoutDeps {
+            env: Arc::new(|_| None),
+            ..TeamLayoutDeps::default()
+        };
         for (panes, path, expected) in [
-            (vec![], "/tmp/#{session_name}/#(touch c)", "/tmp/##{session_name}/##(touch c)"),
+            (
+                vec![],
+                "/tmp/#{session_name}/#(touch c)",
+                "/tmp/##{session_name}/##(touch c)",
+            ),
             (vec!["%2".to_owned()], "./w/#{pane_id}", "./w/##{pane_id}"),
         ] {
-            let member = TeamLayoutMember { name: "m1".to_owned(), session_id: "s-m1".to_owned(), worktree_path: Some(path.to_owned()) };
+            let member = TeamLayoutMember {
+                name: "m1".to_owned(),
+                session_id: "s-m1".to_owned(),
+                worktree_path: Some(path.to_owned()),
+            };
             let args = build_split_args("%1", &panes, &member, &deps).expect("split args");
-            let index = args.iter().position(|arg| arg == "-c").expect("directory flag");
+            let index = args
+                .iter()
+                .position(|arg| arg == "-c")
+                .expect("directory flag");
             assert_eq!(args[index + 1], expected);
         }
     }

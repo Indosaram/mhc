@@ -24,16 +24,17 @@ pub fn activate_tmux_pane(
         return false;
     }
 
-    let auth_env_args = match build_pane_auth_environment_args_from(&*deps.environment) {
-        Ok(args) => args,
-        Err(error) => {
-            deps.log(
-                "[activateTmuxPane] FAILED: could not write the pane password file",
-                Some(json!({ "error": error.to_string() })),
-            );
-            return false;
-        }
-    };
+    let auth_env_args =
+        match build_pane_auth_environment_args_from(&*deps.environment, &deps.pane_auth) {
+            Ok(args) => args,
+            Err(error) => {
+                deps.log(
+                    "[activateTmuxPane] FAILED: could not write the pane password file",
+                    Some(json!({ "error": error.to_string() })),
+                );
+                return false;
+            }
+        };
     if deps.cmux_compat() && !auth_env_args.is_empty() {
         deps.log(
             "[activateTmuxPane] SKIP: authenticated cmux panes are unsupported",

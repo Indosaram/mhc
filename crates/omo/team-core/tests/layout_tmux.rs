@@ -103,6 +103,7 @@ impl Harness {
             }),
             env: Arc::new(move |key| env.lock().expect("env").get(key).cloned()),
             cwd: Arc::new(|| "/cwd".to_owned()),
+            pane_auth: Arc::default(),
         }
     }
 

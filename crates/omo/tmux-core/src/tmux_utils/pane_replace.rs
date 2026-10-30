@@ -37,16 +37,17 @@ pub fn replace_tmux_pane(
         return SpawnPaneResult::failure();
     }
 
-    let auth_env_args = match build_pane_auth_environment_args_from(&*deps.environment) {
-        Ok(args) => args,
-        Err(error) => {
-            deps.log(
-                "[replaceTmuxPane] FAILED: could not write the pane password file",
-                Some(json!({ "error": error.to_string() })),
-            );
-            return SpawnPaneResult::failure();
-        }
-    };
+    let auth_env_args =
+        match build_pane_auth_environment_args_from(&*deps.environment, &deps.pane_auth) {
+            Ok(args) => args,
+            Err(error) => {
+                deps.log(
+                    "[replaceTmuxPane] FAILED: could not write the pane password file",
+                    Some(json!({ "error": error.to_string() })),
+                );
+                return SpawnPaneResult::failure();
+            }
+        };
     if deps.cmux_compat() && !auth_env_args.is_empty() {
         deps.log(
             "[replaceTmuxPane] SKIP: authenticated cmux panes are unsupported",
