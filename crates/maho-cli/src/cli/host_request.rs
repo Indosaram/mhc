@@ -296,24 +296,47 @@ pub fn build_host_request(
     }
 }
 
+/// senpi v2026.10.27-2 `runHostCommand` hands `--rpc-key-root`, the `--mcp-presenter-fd 4` bootstrap
+/// stream and `--mcp-presenter-enforcement` to `runHostRequest(request, options)`. maho-rpc's
+/// `run_host_request` takes the request alone on every branch (OPEN: `host_runner::RunHostRequestOptions`
+/// and `mcp_presenter_bootstrap::presenter_bootstrap_stream`, rows senpi-rpc-host host-09/host-10 and
+/// senpi-rpc-rest-31/45), so a request that names them is refused instead of run without them: a host
+/// ensured without the enforcement it was asked for, or probed with the wrong key root, must not
+/// look like success.
+pub fn unsupported_request_options(parsed: &ParsedHostArgs) -> Option<HostCommandError> {
+    let named = [
+        ("--rpc-key-root", parsed.key_root.is_some()),
+        (
+            "--mcp-presenter-fd",
+            parsed.presenter_bootstrap_fd.is_some(),
+        ),
+        (
+            "--mcp-presenter-enforcement",
+            parsed.mcp_presenter_enforcement,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(flag, given)| given.then_some(flag))
+    .collect::<Vec<_>>();
+    (!named.is_empty()).then(|| {
+        HostCommandError::Host(format!(
+            "{} not supported yet: this build's host request runner takes no request options",
+            named.join(", ")
+        ))
+    })
+}
+
 /// senpi `runHostCommand` body: perform the request and return its outcome.
 pub async fn run(
     parsed: &ParsedHostArgs,
     socket: &str,
     agent_dir: &Path,
 ) -> Result<HostOutcome, HostCommandError> {
+    if let Some(refused) = unsupported_request_options(parsed) {
+        return Err(refused);
+    }
     let request = build_host_request(parsed, socket, agent_dir)?;
-    // senpi v2026.10.27-2 `runHostCommand`: the presenter bootstrap stream lives for this request
-    // only (dropped, i.e. destroyed, when it settles); the key root selects endpoint credentials.
-    let presenter_bootstrap = parsed
-        .presenter_bootstrap_fd
-        .and_then(maho_rpc::mcp_presenter_bootstrap::presenter_bootstrap_stream);
-    let options = maho_rpc::host_runner::RunHostRequestOptions {
-        key_root: parsed.key_root.clone(),
-        presenter_bootstrap,
-        mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
-    };
-    run_host_request(request, options)
+    run_host_request(request)
         .await
         .map_err(|error| HostCommandError::Host(error.to_string()))
 }
