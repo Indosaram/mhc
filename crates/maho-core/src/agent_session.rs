@@ -958,6 +958,12 @@ pub struct AgentSessionInner {
     observed_held_inputs: Mutex<BTreeSet<String>>,
     stop_interrupt: Mutex<Option<Value>>,
     lifecycle_human_pending: std::sync::atomic::AtomicBool,
+    /// Mirrors `state.disposed` for the lifecycle write gate: lifecycle records are written while the
+    /// caller may hold the state lock (the AgentStart arm), so the gate must not lock state again.
+    lifecycle_disposed: std::sync::atomic::AtomicBool,
+    /// senpi agent_end `failure`: the structured provider failure of the last agent_end, naming the selected
+    /// model when the failing request ran on another one (senpi#4328). `None` after a success or an abort.
+    last_provider_failure: Mutex<Option<crate::provider_failure::ProviderFailure>>,
     lifecycle_goal: Mutex<Option<Value>>,
     lifecycle_turn_facts: Mutex<Option<Value>>,
     /// senpi `RunStopFacts` of the run whose agent_end was bound, and the run restored from disk, which keeps exactly
@@ -4169,6 +4175,8 @@ impl AgentSession {
                 external_admission: Default::default(),
                 stop_interrupt: Mutex::new(None),
                 lifecycle_human_pending: std::sync::atomic::AtomicBool::new(false),
+                lifecycle_disposed: std::sync::atomic::AtomicBool::new(false),
+                last_provider_failure: Mutex::new(None),
                 lifecycle_goal: Mutex::new(None),
                 lifecycle_turn_facts: Mutex::new(None),
                 lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
@@ -4574,6 +4582,30 @@ impl AgentSession {
                 self.emit_queue_update();
             }
         }
+        // senpi `_endSelectedModels`: frozen when the end arrives, before any await lets a queued run or a
+        // fallback switch replace the selection the failing request was dispatched under.
+        let selected_model = if let AgentEvent::AgentEnd { messages } = &event
+            && messages
+                .iter()
+                .rev()
+                .find_map(AgentMessage::as_assistant)
+                .is_some_and(|message| message.stop_reason == StopReason::Error)
+        {
+            let original_selector = self
+                .retry_fallback
+                .lock()
+                .await
+                .as_ref()
+                .and_then(|controller| controller.state.as_ref())
+                .map(|state| state.original_selector.clone());
+            crate::provider_failure::selected_model_of(
+                original_selector.as_deref(),
+                &self.model_registry.get_all(),
+                Some(&self.model()),
+            )
+        } else {
+            None
+        };
         let will_retry = if let AgentEvent::AgentEnd { messages } = &event {
             self.will_retry(messages.iter().rev().find_map(AgentMessage::as_assistant))
                 .await
@@ -4785,6 +4817,10 @@ impl AgentSession {
                     );
                 }
             }
+            *lock(&self.last_provider_failure) = crate::provider_failure::provider_failure_of(
+                &boundary.messages,
+                selected_model.as_ref(),
+            );
             self.emit(AgentSessionEvent::AgentEnd {
                 messages: boundary.messages.clone(),
                 aborted,
@@ -5093,6 +5129,12 @@ impl AgentSession {
         &self.external_admission
     }
 
+    /// The provider failure of the last agent_end (senpi agent_end `failure`). The maho-ext-api agent_end
+    /// envelope has no failure field, so subscribers read it here once the end is delivered.
+    pub fn last_provider_failure(&self) -> Option<crate::provider_failure::ProviderFailure> {
+        lock(&self.last_provider_failure).clone()
+    }
+
     /// Reads the lifecycle; every fact that feeds it raises its own change edge, so a read never writes
     /// (senpi#3980).
     pub fn lifecycle_snapshot(&self) -> Value {
@@ -5232,7 +5274,7 @@ impl AgentSession {
 
     fn refresh_lifecycle(&self) {
         // Work aborted by dispose() still unwinds afterwards; its edges must not write to the released session file.
-        if self.state().disposed {
+        if self.lifecycle_disposed.load(Ordering::SeqCst) {
             return;
         }
         let activity = self.activity_snapshot();
@@ -5399,7 +5441,7 @@ impl AgentSession {
 
     fn persist_lifecycle_record(&self, record: &Value) -> Result<(), String> {
         // Writes and emits nothing once disposed: the session file is no longer this session's (senpi#4149).
-        if self.state().disposed {
+        if self.lifecycle_disposed.load(Ordering::SeqCst) {
             return Ok(());
         }
         self.with_session_manager_mut(|manager| {
@@ -18494,6 +18536,7 @@ impl AgentSession {
         }
         self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         self.state().disposed = true;
+        self.lifecycle_disposed.store(true, Ordering::SeqCst);
         lock(&self.engine_turn_hold).invalidate();
         lock(&self.settled_delivery).cancel();
         self.fail_all_queued_custom_receipts("session disposed before custom message delivery");
@@ -27037,6 +27080,109 @@ mod tests {
             event,
             AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. })
         )));
+    }
+
+    /// senpi test/suite/regressions/3228-agent-end-provider-failure.test.ts and 4328-provider-failure-route:
+    /// the agent_end projection names the failing route and, when a fallback ran it, the selected model.
+    #[tokio::test]
+    async fn agent_end_failure_names_the_selected_model_of_an_active_fallback() {
+        use maho_ai::providers::faux::{
+            FauxAssistantMessageOptions, FauxModelDefinition, RegisterFauxProviderOptions,
+            faux_assistant_message, faux_provider, faux_streams,
+        };
+        let failed = || {
+            faux_assistant_message(
+                "",
+                FauxAssistantMessageOptions {
+                    stop_reason: Some(StopReason::Error),
+                    error_message: Some("provider failed".into()),
+                    ..Default::default()
+                },
+            )
+        };
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            models: Some(
+                ["faux-1", "faux-2"]
+                    .into_iter()
+                    .map(|id| FauxModelDefinition {
+                        id: id.to_owned(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(vec![failed().into(), failed().into()]);
+        let streams = faux_streams(provider.core.clone());
+        let session = test_session_with_stream_function(false);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        session
+            .agent
+            .set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session
+            .agent
+            .set_stream_function(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            }));
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global, &serde_json::from_value(
+            serde_json::json!({"retry":{"enabled":false,"maxRetries":0,"modelFallback":false,"fallbackRevertPolicy":"never"}})
+        ).expect("settings")).expect("save settings"));
+        let prompt = |text: &'static str| {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                session.prompt(text, PromptOptions::default()),
+            )
+        };
+        // The request ran on the selected model: no selection is reported beside it.
+        prompt("first")
+            .await
+            .expect("bounded prompt")
+            .expect("prompt");
+        let failure = session.last_provider_failure().expect("failure");
+        assert_eq!(
+            (failure.provider.as_str(), failure.model.as_deref()),
+            ("faux", Some("faux-1"))
+        );
+        assert_eq!(
+            (failure.selected_provider, failure.selected_model),
+            (None, None)
+        );
+        // A fallback rung ran the request: the chain original is the selection.
+        session
+            .retry_fallback
+            .lock()
+            .await
+            .as_mut()
+            .expect("controller")
+            .state = Some(crate::retry_fallback::controller::ActiveFallbackState {
+            chain_key: "fixture".to_owned(),
+            original_selector: "faux/faux-2".to_owned(),
+            original_thinking_level: None,
+            last_applied_thinking_level: None,
+            pinned_by_refusal: false,
+            pinned_by_billing: false,
+            pinned: false,
+        });
+        prompt("second")
+            .await
+            .expect("bounded prompt")
+            .expect("prompt");
+        let failure = session.last_provider_failure().expect("failure");
+        assert_eq!(failure.model.as_deref(), Some("faux-1"));
+        assert_eq!(
+            (
+                failure.selected_provider.as_deref(),
+                failure.selected_model.as_deref()
+            ),
+            (Some("faux"), Some("faux-2"))
+        );
+        assert!(
+            crate::provider_failure::format_provider_failure(&failure)
+                .starts_with("faux-1 on faux (selected: faux-2 on faux) failed: ")
+        );
     }
 
     #[tokio::test]
