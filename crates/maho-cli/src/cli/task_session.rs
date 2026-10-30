@@ -204,7 +204,18 @@ pub fn mount_team_runtime(
             now: None,
             new_message_id: None,
         })
-        .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?,
+        .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?
+        .with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(
+            component.engine.manager.clone(),
+            senpi_task::runners::rpc_host::session_role::read_session_ancestry(
+                &serde_json::json!({"sessionContext": api.profile.session_context}),
+                &std::env::vars().collect(),
+            )
+            .map(|ancestry| maho_omo_task::team_service::TeamLeadAncestry {
+                depth: ancestry.depth,
+                root_session_id: ancestry.root_session_id,
+            }),
+        )),
     );
     let config = senpi_task::team::runtime_config::to_team_core_config(
         &ownership.team_bounds,
