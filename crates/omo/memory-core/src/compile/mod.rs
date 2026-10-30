@@ -7,6 +7,8 @@ pub mod changes;
 pub mod compile;
 pub mod expiry_slot;
 pub mod external_projection;
+pub mod external_projection_dirs;
+pub mod external_projection_names;
 pub mod render;
 pub mod stored_block;
 
