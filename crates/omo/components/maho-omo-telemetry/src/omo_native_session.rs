@@ -133,7 +133,11 @@ pub fn is_inside_temp_dir(
         .clone()
         .unwrap_or_else(|| Arc::new(|candidate: &Path| std::fs::canonicalize(candidate).ok()));
     let resolve = |candidate: &Path| realpath(candidate);
-    let Some(target) = resolve(path) else {
+    // The install id is written under `home.join(...)`, which resolves `..` lexically, so every check below
+    // judges that lexically resolved path, not the raw HOME. A lexical HOME that does not exist yet cannot hold
+    // a stable id either: it counts as ephemeral (telemetry OFF).
+    let lexical = lexical_resolve(path);
+    let Some(target) = resolve(&lexical) else {
         return true;
     };
     let users_dirs: Vec<PathBuf> = if windows {
@@ -194,6 +198,32 @@ pub fn is_inside_temp_dir(
     })
 }
 
+/// `path.resolve`: absolute, with `.` and `..` segments folded lexically (no filesystem access).
+fn lexical_resolve(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    out.components().next_back(),
+                    None | Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// The automation check sits on the consent path, which must never panic: if it cannot decide, telemetry is off.
 pub fn not_automated(env: &telemetry_core::TelemetryEnv, deps: &TempDirDeps) -> bool {
     automated_run_reason(env, deps).is_none()
@@ -233,27 +263,26 @@ pub fn is_omo_native_telemetry_config_enabled(
     account_home_dir: Option<&Path>,
     selection: Option<&ConfigSelection>,
 ) -> bool {
-    let mut shared = env.clone();
+    let mut neutral = env.clone();
     for key in crate::session_summary_purge::CONFIG_SELECTION_ENV_KEYS {
-        shared.remove(key);
+        neutral.remove(key);
     }
-    // The account's own home, unless the record names the home its writer read.
-    let own_home = selection
-        .map(|selection| {
-            !selection.contains_key("HOME") && !selection.contains_key("USERPROFILE")
-        })
-        .unwrap_or(true);
-    if own_home && let Some(account_home_dir) = account_home_dir {
+    let mut shared = match selection {
+        None => neutral,
+        Some(selection) => with_config_selection(&neutral, selection),
+    };
+    // The account's own home, unless the record names the home its writer read (HOME, or USERPROFILE on
+    // Windows): applied after the selection, so a record naming only a profile is judged with the account home.
+    if !shared.contains_key("HOME")
+        && !shared.contains_key("USERPROFILE")
+        && let Some(account_home_dir) = account_home_dir
+    {
         shared.insert(
             "HOME".into(),
             account_home_dir.to_string_lossy().into_owned(),
         );
     }
-    let env = match selection {
-        None => shared,
-        Some(selection) => with_config_selection(&shared, selection),
-    };
-    config_enabled(options, cwd, &env)
+    config_enabled(options, cwd, &shared)
 }
 
 fn config_enabled(
@@ -326,16 +355,12 @@ pub fn start_native_session(
     let attribution = get_omo_native_attribution(&OmoNativeAttributionInput {
         env: Some(&env),
         state_dir: None,
-        now: options.now,
-        os_provider: Some(os),
     });
     let product = with_omo_native_attribution(
         product,
         &OmoNativeAttributionInput {
             env: Some(&env),
             state_dir: None,
-            now: options.now,
-            os_provider: Some(os),
         },
     );
     let mut allowlists: EventPropertyAllowlist = EVENT_PROPERTY_ALLOWLISTS

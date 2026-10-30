@@ -7,7 +7,6 @@ use telemetry_core::{
     record_daily_active,
 };
 pub const SENPI_TELEMETRY_EVENT_NAME: &str = "omo_senpi_daily_active";
-pub const SENPI_MACHINE_ID_PREFIX: &str = "omo-senpi:";
 #[derive(Clone, Default)]
 pub struct SenpiTelemetryOptions {
     pub env: Option<TelemetryEnv>,
@@ -38,7 +37,6 @@ pub fn create_senpi_telemetry_product_config() -> TelemetryProductConfig {
         default_api_key: DEFAULT_POSTHOG_API_KEY.into(),
         default_host: DEFAULT_POSTHOG_HOST.into(),
         event_name: SENPI_TELEMETRY_EVENT_NAME.into(),
-        machine_id_prefix: SENPI_MACHINE_ID_PREFIX.into(),
         package_name: "@oh-my-opencode/omo-senpi".into(),
         package_version: option_env!("CARGO_PKG_VERSION").unwrap_or("0.0.0").into(),
         platform: "omo-senpi".into(),
@@ -214,7 +212,7 @@ mod tests {
     async fn payload_matches_imported_builder() {
         use telemetry_core::{
             CreateTelemetryClientInput, TrackActiveInput, create_telemetry_client,
-            get_telemetry_distinct_id,
+            get_telemetry_install_distinct_id,
         };
         let t = tempfile::tempdir().unwrap();
         let (o, m) = options(t.path());
@@ -234,7 +232,9 @@ mod tests {
         });
         client.track_active(&TrackActiveInput {
             day_utc: "2026-07-03".into(),
-            distinct_id: get_telemetry_distinct_id(SENPI_MACHINE_ID_PREFIX, &Os),
+            distinct_id: get_telemetry_install_distinct_id(&get_senpi_telemetry_state_dir(
+                o.env.as_ref().unwrap(),
+            )),
             reason: "session_start".into(),
         });
         client.flush().await.unwrap();
