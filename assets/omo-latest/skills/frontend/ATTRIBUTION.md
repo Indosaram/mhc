@@ -16,6 +16,10 @@ scalar into a JSON-quoted YAML string so Codex/OpenCode frontmatter parsing rema
 deterministic; the description text itself is unchanged. The `Pinned upstream commit` line
 in each section below records the exact submodule commit that the materialization reads.
 
+Sections 6 and 7 are the exception: the files they cover are committed to this repository,
+and their text and code are written afresh for this project rather than copied from the
+upstream.
+
 ---
 
 ## 1. Open Design (brand design-system DESIGN.md references)
@@ -190,8 +194,10 @@ SOFTWARE.
 
 ## 5. Project-original files
 
-`frontend/SKILL.md`, `frontend/references/design/README.md`, `_INDEX.md`, `aside.md`,
-`design-system-architecture.md`, `grounding.md`, `react-dev-tooling-skill.md`,
+`frontend/SKILL.md` (apart from three rules credited in section 6: the browser-drawn
+surface rule, the type-and-spacing floor, and the generated-scaffold rule),
+`frontend/references/design/README.md`, `_INDEX.md`, `aside.md`, `grounding.md`,
+`design-system-architecture.md`, `react-dev-tooling-skill.md`,
 `frontend/references/perfection/README.md`, `react-perf-tooling.md`, and
 `frontend/scripts/perfection/lighthouse-audit.py` are original to this project and require
 no third-party attribution. The perfection docs and script only invoke third-party tools
@@ -248,65 +254,99 @@ assets, or proprietary copy.
 
 ---
 
-## 6. Impeccable (Paul Bakaus): craft-floor guidance
+## 6. Impeccable (Paul Bakaus) - craft-floor rules
 
-`frontend/references/perfection/craft-floor.md`, the "Browser surfaces", "Type and spacing
-floor" and "No generated scaffolding" rules in `frontend/SKILL.md`, and the `visual-qa`
-checklist items A3 (measure), A13, B8, E7, F8 and F9 adapt ideas from the craft-floor
-reference of the Impeccable project. The text is written for this skill (mhc clean-room);
-a few short phrases stay close to the source.
+The craft floor in this skill (the minimum finish for browser-drawn surfaces, the type and
+spacing thresholds, and the generated-scaffold patterns) builds on Impeccable's
+craft-floor reference. Nothing here is a copy: the covered files are committed to this
+repository and every sentence in them was written for this project.
 
 - Source: https://github.com/pbakaus/impeccable
+- Upstream file: `skill/reference/craft-floor.md`
+- Pinned upstream commit: 5e745ace7e151feb2a93d360d0281fe39448b857
 - Copyright 2025 Paul Bakaus
-- Licensed under the Apache License, Version 2.0; the full text is in
-  `LICENSE-Apache-2.0.txt` beside this notice. Distributed on an "AS IS" basis, without
-  warranties or conditions of any kind.
-- **Changes (Apache-2.0 section 4(b)):** rules selected and restated. Kept: the list of
-  browser-drawn surfaces, more space above a heading than below it, the 65-75ch measure,
-  the 6rem display cap, the -0.04em tracking floor, and the scaffold and shadow patterns.
-  Added: a property per browser surface, the 1.25x type step, the 1.5x heading-space and 2x
-  group-gap ratios, the phone measure floor, the floor/default split (route-overridable
-  defaults, so a label above a heading is a default rather than a ban), and the
-  `visual-qa` item mapping. Left out because this skill disagrees: blur and
-  `backdrop-filter` as general motion materials, one theme per product category,
-  decorative custom scrollbars, a blanket bounce-easing ban, and banning common typefaces.
+- Licence: Apache-2.0. The covered material may be used only under the terms of that
+  licence, and it is provided without warranties or conditions of any kind, express or
+  implied; read the licence for the exact permissions and limitations. The complete
+  licence text ships next to this notice as `LICENSE-Apache-2.0.txt`.
+
+Covered here:
+
+- `frontend/references/perfection/craft-floor.md`;
+- the three `frontend/SKILL.md` rules named in section 5;
+- the `visual-qa/SKILL.md` checklist items A3 (its line-length part), A13, B8, E7, F8 and
+  F9.
+
+**Changes (Apache-2.0 §4(b)).**
+
+- *Carried over from the source:* the list of browser-drawn surfaces; giving a heading more
+  space above than below; the 65-75ch measure; the 6rem cap on display type; the -0.04em
+  tracking floor; the scaffold and shadow patterns.
+- *Added in this project:* a concrete CSS property for each surface; the 1.25x type step;
+  the 1.5x above-to-below heading ratio; the 2x between-to-within group gap; a minimum
+  measure on phones; the split between floors and defaults a route may override (the
+  kicker is a removable default here, where the source forbids it outright); the mapping
+  onto `/visual-qa` items.
+- *Left out because it conflicts with this skill:* blur and `backdrop-filter` as a general
+  motion material (allowed here only inside an ambience reveal the brief requested); one
+  theme chosen per product category; decorative custom scrollbars; a blanket ban on
+  bounce easing; a ban on common typefaces.
+- The upstream `NOTICE.md` names only the MIT-licensed `platform-design-skills` project as
+  the origin of its iOS and Android references. None of those references are used here.
 
 ---
 
-## 7. frontend-detect SDK (SUL-1.0 subtree): Impeccable detector logic and a StyleGallery reflow check
+## 7. Detect SDK - Impeccable detector and StyleGallery reflow
 
-`frontend/scripts/detect/` (SDK, rules, CLI) and `frontend/references/perfection/detect.md`
-are **not MIT**. They are copied unchanged from oh-my-openagent v5.1.52
-(`354bcf9fc413a0bd67ce7d95acc25e04b2e4a8a9`) and stay under SUL-1.0; see
-`scripts/detect/LICENSE.md`. Upstream tests are not shipped.
+### Impeccable detector
 
-Upstream they reimplement in TypeScript the rule logic of the Impeccable detector (rule ids,
-thresholds, exemptions and the `data-impeccable-ignore` waiver follow it; no Impeccable source
-is copied). The Impeccable notice, copyright line and Apache-2.0 pointer in section 6 apply
-to that derived logic too. Upstream's recorded changes (Apache-2.0 section 4(b)): a
-TypeScript implementation over a browser-captured page snapshot instead of Impeccable's Rust
-engine; rewritten rule descriptions and fix hints; `low-contrast` raised to an error; project
-allowlists and design tokens as configuration; an added `data-detect-ignore` waiver.
+Same upstream, commit and licence as section 6 (https://github.com/pbakaus/impeccable,
+commit 5e745ace7e151feb2a93d360d0281fe39448b857, Copyright 2025 Paul Bakaus, Apache-2.0,
+full text in `LICENSE-Apache-2.0.txt`).
 
-The `viewport-reflow` rule and the reflow pass (render at 320, 375, 768, 1024 and 1440 px,
-append an unbroken stress string at 320 px, report horizontal overflow) follow the layout
-verification matrix of StyleGallery.
+Covered here:
+
+- `frontend/scripts/detect/` - the SDK, its `rules/`, the CLI and the tests;
+- `frontend/references/perfection/detect.md`;
+- the development scripts `packages/shared-skills/scripts/detect-parity.ts`,
+  `detect-source-parity.ts` and `detect-parity-oracle.ts`.
+
+The SDK is a TypeScript reimplementation of the rule logic found in the upstream
+`crates/core`, `crates/detect` and `crates/foundation/src/registry.rs`. No Rust or
+JavaScript source was copied. So that findings stay comparable with the upstream detector,
+this project reuses its waiver attribute `data-impeccable-ignore`, its rule ids, its
+thresholds and its exemptions; the unit tests are modelled on the upstream fixtures.
+`detect-parity-oracle.ts` does not ship. During development it extracts Impeccable's built
+browser-side detector from a local clone in order to record baseline results; nothing from
+that build is copied into this project.
+
+**Changes (Apache-2.0 §4(b)).**
+
+- A new TypeScript engine that runs over a snapshot captured in the browser, in place of
+  the upstream Rust + WASM engine.
+- Every rule description and fix hint is rewritten.
+- `low-contrast` is raised to an error.
+- `allowFonts`, `allowEasings` and the design tokens are configuration values, not files.
+- A project waiver attribute, `data-detect-ignore`, works alongside the upstream one.
+- Not ported: telemetry, the hosted design-direction service, the edit hook, live mode, and
+  the browser extension.
+
+### StyleGallery - viewport reflow
+
+The reflow pass in `detect.ts` and the `viewport-reflow` rule follow StyleGallery's idea of
+checking a layout across a width matrix: the page is rendered at 320, 375, 768, 1024 and
+1440 px, an unbroken stress string is appended at 320 px, and any horizontal overflow is
+reported. The idea comes from StyleGallery's `tests/pattern-runtime.spec.mjs` and its
+layout-verification matrix; no StyleGallery code is copied.
 
 - Source: https://github.com/changeroa/StyleGallery
-- Adapted from upstream commit: 0bf928f6269b1cb6cf24f04e0bf28a8ce2bbc0ff
-- Code licensed under the MIT License (Copyright (c) 2026 IYEN); documentation under CC BY 4.0.
+- Pinned upstream commit: 0bf928f6269b1cb6cf24f04e0bf28a8ce2bbc0ff
+- Licences: code under MIT, documentation under CC BY 4.0.
 
 ```
 MIT License
 
 Copyright (c) 2026 IYEN
-
-This license applies to the source code in this repository: scripts, CLI and
-MCP server implementations, the website and server code under `site/`,
-validators, and test code. The Markdown documentation, pattern and recipe
-prose, and domain documents are licensed separately under CC BY 4.0; see
-LICENSE-DOCS. Third-party material adapted into this repository keeps its
-original rights; see NOTICE.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -710,8 +710,8 @@
     "frontend": [
       {
         "path": "ATTRIBUTION.md",
-        "bytes": 18890,
-        "sha256": "b68ded8c054ed3f2918ce6f3a85fe2de754258e641799fcecef8698e2bf4021f",
+        "bytes": 20492,
+        "sha256": "5ad688f14149ebea59001065c811c48ced2a4e450ff5f7dfd10227d778db6704",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/ATTRIBUTION.md"
       },
       {
@@ -728,8 +728,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 33023,
-        "sha256": "3e668af339e333edcbc0c5905df9693f0856649cfbb3b6692615585f4521c81c",
+        "bytes": 32642,
+        "sha256": "4744d5b56f3a8e4d41759138c473dcc99e4e16cd42c91312e806ba64dc7d4a9f",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/SKILL.md"
       },
       {
@@ -1598,8 +1598,8 @@
       },
       {
         "path": "references/perfection/craft-floor.md",
-        "bytes": 5879,
-        "sha256": "58a7a3fa440e2f8f8b44f1fcff7c76223ea32cbade4ebee70b1782ef2da7a7f5",
+        "bytes": 7251,
+        "sha256": "c8a6006b225a5a3c68dcc60c3232ef5f26644101c23d7466e55d9f2fc498ce2e",
         "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/perfection/craft-floor.md"
       },
       {
@@ -4888,8 +4888,8 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 49336,
-        "sha256": "ca0dc27da4560fff166f89c700593051573ab53cd1ed3e03fa25a19ea3a13476",
+        "bytes": 49579,
+        "sha256": "d0647f85aaa6d35cb1eec3089dc91807d52e056c8cbc98eef8795ef3f2c2f5cf",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
