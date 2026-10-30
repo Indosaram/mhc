@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
 use crate::tool_call_middleware::protocols::antml::recovery_stream::create_antml_invoke_recovery_stream_parser;
 use crate::types::{AssistantMessage, AssistantMessageEvent, DoneReason, ErrorReason, Tool};
+use crate::utils::assistant_capture::{CaptureHint, Captured};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 use super::recovery_content_lifecycle::{RecoveryContentKind, RecoveryContentLifecycle};
@@ -531,10 +532,16 @@ pub fn wrap_stream_with_invoke_recovery(
                                     family,
                                 ),
                                 None => {
-                                    outer_for_task.push(AssistantMessageEvent::Done {
-                                        reason,
-                                        message: message.clone(),
-                                    });
+                                    outer_for_task.push_captured(
+                                        Captured {
+                                            value: AssistantMessageEvent::Done {
+                                                reason,
+                                                message: message.clone(),
+                                            },
+                                            capture: source_capture.clone(),
+                                        },
+                                        CaptureHint::default(),
+                                    );
                                     outer_for_task.end(Some(message));
                                 }
                             }
@@ -542,10 +549,16 @@ pub fn wrap_stream_with_invoke_recovery(
                         }
                         AssistantMessageEvent::Error { reason, error } => {
                             if projection.is_none() {
-                                outer_for_task.push(AssistantMessageEvent::Error {
-                                    reason,
-                                    error: error.clone(),
-                                });
+                                outer_for_task.push_captured(
+                                    Captured {
+                                        value: AssistantMessageEvent::Error {
+                                            reason,
+                                            error: error.clone(),
+                                        },
+                                        capture: source_capture.clone(),
+                                    },
+                                    CaptureHint::default(),
+                                );
                                 outer_for_task.end(Some(error));
                                 return;
                             }

@@ -277,13 +277,24 @@ static SUBSCRIBERS: AtomicUsize = AtomicUsize::new(0);
 /// The handle `subscribe_assistant_capture` returns; `release` (or drop) ends the subscription once.
 #[derive(Debug)]
 pub struct AssistantCaptureSubscription {
+    counter: &'static AtomicUsize,
     held: bool,
 }
 
 impl AssistantCaptureSubscription {
+    /// A subscription counted on `counter`; tests count on their own counter so they never turn
+    /// capture on for streams other tests drive in parallel.
+    fn on(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self {
+            counter,
+            held: true,
+        }
+    }
+
     pub fn release(&mut self) {
         if self.held {
-            SUBSCRIBERS.fetch_sub(1, Ordering::SeqCst);
+            self.counter.fetch_sub(1, Ordering::SeqCst);
         }
         self.held = false;
     }
@@ -297,8 +308,7 @@ impl Drop for AssistantCaptureSubscription {
 
 /// While held, every capture-enabled stream whose first push comes after it builds capture records.
 pub fn subscribe_assistant_capture() -> AssistantCaptureSubscription {
-    SUBSCRIBERS.fetch_add(1, Ordering::SeqCst);
-    AssistantCaptureSubscription { held: true }
+    AssistantCaptureSubscription::on(&SUBSCRIBERS)
 }
 
 impl CaptureSlot {

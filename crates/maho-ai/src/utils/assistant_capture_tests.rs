@@ -378,13 +378,19 @@ async fn rejects_post_done_pushes_before_capture_or_message_mutation() {
 
 #[test]
 fn a_held_subscription_is_released_exactly_once() {
-    let before = SUBSCRIBERS.load(Ordering::SeqCst);
-    let mut subscription = subscribe_assistant_capture();
-    assert!(SUBSCRIBERS.load(Ordering::SeqCst) >= 1);
+    // A counter of its own: the process-global one would turn capture on for streams other tests
+    // push in parallel.
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let mut subscription = AssistantCaptureSubscription::on(&COUNTER);
+    let second = AssistantCaptureSubscription::on(&COUNTER);
+    assert_eq!(COUNTER.load(Ordering::SeqCst), 2);
     subscription.release();
     subscription.release();
+    assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
     drop(subscription);
-    assert!(SUBSCRIBERS.load(Ordering::SeqCst) <= before);
+    assert_eq!(COUNTER.load(Ordering::SeqCst), 1);
+    drop(second);
+    assert_eq!(COUNTER.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
