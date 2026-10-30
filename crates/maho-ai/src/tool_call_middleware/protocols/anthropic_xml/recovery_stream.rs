@@ -894,5 +894,40 @@ mod tests {
                 }
             }
         }
+
+        /// invoke-recovery-resource-scenarios.test.ts "handles %s forms without generic tag
+        /// inference", asserted at the parser layer.
+        #[test]
+        fn handles_forms_without_generic_tag_inference() {
+            let ns = ["ant", "ml:"].concat();
+            let namespaced = format!(
+                r#"<{ns}invoke name="Bash"><{ns}parameter name="command">echo recovered</{ns}parameter></{ns}invoke>"#
+            );
+            let cases = [
+                (VALID_CALL.to_owned(), true),
+                (namespaced, true),
+                (
+                    r#"<foo:invoke name="Bash"><foo:parameter name="command">echo nope</foo:parameter></foo:invoke>"#
+                        .to_owned(),
+                    false,
+                ),
+                (
+                    r#"<tool name="Bash"><parameter name="command">echo nope</parameter></tool>"#.to_owned(),
+                    false,
+                ),
+            ];
+            for (input, recovers) in cases {
+                let (mut parser, _) = parser();
+                let mut events = parser.feed(&input);
+                events.extend(parser.finish());
+                let has_tool_events = events
+                    .iter()
+                    .any(|event| !matches!(event, StreamParserEvent::Text { .. }));
+                assert_eq!(has_tool_events, recovers, "{input}");
+                if !recovers {
+                    assert_eq!(text_output(&events), input);
+                }
+            }
+        }
     }
 }
