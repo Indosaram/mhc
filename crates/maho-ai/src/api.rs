@@ -61,6 +61,8 @@ pub mod openrouter_images_lazy;
 pub mod pi_messages;
 pub mod pi_messages_lazy;
 #[cfg(test)]
+mod pi_messages_producer_capture_tests;
+#[cfg(test)]
 mod producer_capture_native_tests;
 #[cfg(test)]
 mod producer_capture_tests;
