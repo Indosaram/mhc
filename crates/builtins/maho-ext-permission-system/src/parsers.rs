@@ -545,12 +545,52 @@ pub fn create_builtin_parser_registry_in(agent_dir: &Path) -> ParserRegistry {
     registry
 }
 
+/// Synchronous port of `resolveReadPath` (path-utils.ts), the same probing the read tool does in
+/// `maho_tools::path_utils::resolve_read_path_async`: the path as written if it exists, else the
+/// unquoted path (Windows "Copy as path" wraps it in quotes, senpi#2170), else the macOS
+/// screenshot AM/PM, NFD and curly-apostrophe spellings that exist, else the path as written.
+pub fn resolve_read_path(file_path: &str, cwd: &Path) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let exists = |path: &str| std::fs::metadata(path).is_ok();
+    let mut file_path = file_path.to_owned();
+    let resolved = loop {
+        let resolved = to_cwd(&file_path, cwd);
+        if exists(&resolved) {
+            return resolved;
+        }
+        match unquoted_path(&file_path) {
+            Some(unquoted) => file_path = unquoted,
+            None => break resolved,
+        }
+    };
+    let mut am_pm = resolved.clone();
+    for marker in ["AM", "PM", "am", "pm", "Am", "Pm", "aM", "pM"] {
+        am_pm = am_pm.replace(&format!(" {marker}."), &format!("\u{202f}{marker}."));
+    }
+    let nfd: String = resolved.nfd().collect();
+    let curly = resolved.replace('\'', "\u{2019}");
+    let nfd_curly = nfd.replace('\'', "\u{2019}");
+    [am_pm, nfd, curly, nfd_curly]
+        .into_iter()
+        .find(|candidate| *candidate != resolved && exists(candidate))
+        .unwrap_or(resolved)
+}
+/// `^@?(["'])(.+)\1$` on the trimmed path.
+fn unquoted_path(path: &str) -> Option<String> {
+    let path = path.trim();
+    let path = path.strip_prefix('@').unwrap_or(path);
+    let quote = path
+        .chars()
+        .next()
+        .filter(|quote| matches!(quote, '\'' | '"'))?;
+    let inner = path.strip_prefix(quote)?.strip_suffix(quote)?;
+    (!inner.is_empty()).then(|| inner.to_owned())
+}
+
 /// Port of `read-permission.ts`: classify the file the read tool opens, with one canonical
 /// external target, its lexical spelling as a rule alias and the raw path for display.
 ///
-/// DIVERGENCE: upstream resolves through `resolveReadPath` (which probes macOS screenshot and NFD
-/// spellings) and auto-approves bundled resources; this parser runs synchronously and resolves with
-/// `resolve_to_cwd`, and mhc ships no bundled read roots.
+/// DIVERGENCE: upstream also auto-approves bundled resources; mhc ships no bundled read roots.
 fn parse_read_permission(
     input: &Value,
     location: (&Path, &Path),
@@ -563,7 +603,8 @@ fn parse_read_permission(
     };
     let targets = vec![file_path.to_owned()];
     let mut requests = vec![request("read", targets.clone(), targets.clone())];
-    let read_path = to_cwd(file_path, cwd);
+    // Resolve the same file the read tool will open before classifying its ownership.
+    let read_path = resolve_read_path(file_path, cwd);
     if let Some(target) = resolve_external_path(&read_path, cwd, home) {
         requests.push(PermissionRequest {
             permission: "external_directory".into(),
@@ -574,5 +615,5 @@ fn parse_read_permission(
             auto_approve_ask: false,
         });
     }
-    credential(requests, &targets, location, agent_dir)
+    credential(requests, &[read_path], location, agent_dir)
 }
