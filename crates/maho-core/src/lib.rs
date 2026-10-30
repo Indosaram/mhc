@@ -103,6 +103,7 @@ pub mod engine_paused;
 pub mod engine_turn_hold;
 pub mod engine_turn_hold_notices;
 pub mod engine_turn_input;
+pub mod engine_socket_flag;
 pub mod engine_turn_limit;
 pub mod engine_turn_release;
 pub mod experimental;
