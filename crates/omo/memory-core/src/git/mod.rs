@@ -17,6 +17,7 @@ pub mod path_state_index;
 pub mod porcelain;
 pub mod repo;
 pub mod repo_arguments;
+pub mod repo_head;
 pub mod repo_log;
 pub mod repo_maintenance;
 pub mod repo_status;
