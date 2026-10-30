@@ -2018,6 +2018,11 @@ impl HostCore {
                 .attach(connection, &handle);
         }
         worker.set_connection_roles(std::sync::Arc::clone(&self.connection_roles));
+        // senpi `SessionWorkerClient.bind`: the host's lane for this worker registers with the writer.
+        if !attached && let Some(lane) = worker.acceptance() {
+            self.default_writer
+                .register_acceptance(&self.fanout, &handle, lane);
+        }
         if !attached
             && let Err(error) = worker
                 .bind(
