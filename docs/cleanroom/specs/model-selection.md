@@ -538,18 +538,19 @@ implementer's; only the facts below are mandated.
 
 Behaviour: a profile chain may contain a *launch-gated* model, i.e. a model id that is known to
 the product before the provider serves it. The one gated id in this release is `claude-fable-5-5`
-(compared after turning `.` into `-` and ignoring any `provider/` prefix). While the release flag
-for that model is off (it is off in this release), every built-in chain is built **without** any
-rung naming it, so no resolver, cache state (cold or warm) or fallback walk can ever see the id.
+(compared after turning `.` into `-` and ignoring any `provider/` prefix). The release flag is
+the one MIT `maho-ext-recommended-models` already carries for this model (off in this release).
+While it is off, the gated rung is removed from every built-in chain when the chain is built, so
+profile resolution, the default order and the probe only ever operate on chains without it.
 When the flag is on, a gated rung is kept only if its reasoning level is one of the *accepted
 levels* for that model (`xhigh`, `max`); a gated rung with another or no level is dropped, the
-drop is recorded in a process-local list and one warning is logged naming the level.
-Dropping must never prevent the profile list from loading.
+drop is made observable to tests (for example a list of dropped rungs) and one warning is logged
+naming the level. Building the built-in profiles always succeeds; a dropped rung is not an error.
 
 The built-in `daily-heavy` chain stages the gated rung first, at `xhigh`, on the Anthropic
-provider set, followed by the current top Anthropic model of the same family at `xhigh`
-(source the following rung's id from the MIT recommended-models data as §6.1 says). With the
-flag off the chain is therefore exactly the following rung alone.
+provider set, followed by the current top model of the same family at `xhigh` (source that id
+from the MIT recommended-models data as §6.1 says). Later rungs stay as §6.1 composes them. With
+the flag off the chain therefore starts with that same-family rung.
 
 Inputs: the built-in chain definitions; the flag; the accepted levels. Output: the built chain.
 Errors: none surfaced to the user beyond the one warning.
@@ -567,47 +568,68 @@ Tests:
 ### D2. Profile outcomes are not sent to the model
 
 Behaviour: the "applied / unavailable / unknown / registry no longer lists it" outcomes of §6.8
-are recorded as **session entries** that are not part of the model's input, plus a user-visible
-UI notification (level `info` for a clean applied outcome, otherwise `warning`). They are never
+are recorded as **session entries** that are not part of the model's input, and are never
 delivered as a custom message that enters the next model request. The entry carries the same
-type ids and details as §6.8 and is marked as start-up bookkeeping so it does not count as user
-activity. Hosts without a UI notification channel (headless json/print runs) skip the
-notification only; the entry and the log line remain. A runtime that cannot append entries logs a
-warning and notifies only.
+type ids and details as §6.8 and is appended with the MIT senpi (v2026.10.27-2)
+`appendEntry` start-up-bookkeeping option, so a session that never gets a conversation leaves no
+session file behind (the mhc `append_entry` action does not carry that option yet; porting it
+from senpi is a prerequisite).
 
-Tests: given an applied outcome in a run with a recording host, then exactly one entry with type
-`model-profile:applied` is appended, one notification is issued, and no message is sent to the
-model; given a host without UI, then the entry exists and nothing throws.
+UI notifications (in addition to the entry and the log line):
+- applied, no auth failures → none;
+- applied with auth failures → one `warning`;
+- unavailable / unknown → one notification, `info` when the profile came from the default order
+  (§6.5) and there were no auth failures, otherwise `warning`;
+- registry no longer lists the resolved model → one `warning`.
+
+Hosts without a UI notification channel (headless json/print runs) skip the notification only;
+the entry and the log line remain. A runtime that cannot append entries logs a warning and
+notifies only.
+
+Tests: given a clean applied outcome in a run with a recording host, then exactly one entry with
+type `model-profile:applied` is appended, no notification is issued, and no message is sent to
+the model; given an applied outcome with one auth failure, then one `warning` notification;
+given the unset default resolving to unavailable with no auth failures, then one `info`
+notification; given a host without UI, then the entry exists and nothing fails.
 
 ### D3. Notice facts for "no available model" and "registry dropped the model"
 
-1. Unavailable (no rung has an available model): the notice ends with a next step that depends
-   on the run mode. In rpc/desktop mode it says to sign in to one of the listed providers in the
-   client's provider settings or to choose a model in the composer. In every other mode it says to
-   log in to one of the listed providers from an interactive session with `/login`, or to start
-   with `--model`.
+1. Unavailable because no rung is in the registry (no auth failures): the notice ends with a
+   next step that depends on the run mode. In rpc/desktop mode: sign in to one of the listed
+   providers from the client's provider settings, or pick a model in the client. In every other
+   mode: log in to one of the listed providers from an interactive session (`/login`), or start
+   with `--model`. (The auth-failure variant keeps its per-failure advice from §6.8.)
 2. Resolved but the registry no longer lists the chosen model: the notice states the profile id,
    the `provider/model`, that the session keeps its current model, and asks the user to choose
    another model for this profile (rpc/desktop: in settings; otherwise via `/model` or `--model`).
    The product name in the message is `mhc`.
 
-Tests: unavailable in rpc mode contains "provider settings" semantics and no `/login`; in tui/print
-mode contains `/login` and `--model`; registry-dropped notice names the current-model fact.
+Tests: unavailable in rpc mode points to the provider settings and does not mention `/login`; in
+print/json mode it contains `/login` and `--model` (the TUI never applies a profile, §6.7);
+registry-dropped notice names the profile, the `provider/model` and that the current model is kept.
 
 ### D4. Transient OAuth refresh failure in the request-auth probe (§6.6)
 
-Behaviour: when resolving provider auth for a slot fails with an error that marks itself as a
-*transient refresh failure* (the engine's `StreamError::oauth_refresh_unavailable` family — found by
-walking the error's cause chain, at most 16 links, cycle-safe, not by type identity), the provider
-is **kept** as a candidate and is **not** reported as reason `refresh`. The model-scope check
-(§6.6 step 3, model request auth/headers) still runs on that candidate. While such a refresh is
-unresolved, one warning per probe is logged with only the error class and the kind of the cause
-(an error code, an HTTP status or a timeout class) — never a message, URL or body. A refresh that
-is refused (not transient) keeps the §6.6 behaviour (exclude, reason refresh). A probe cut short by
-the transient failure leaves the candidate kept and unchecked rather than excluded.
+Behaviour: an OAuth refresh failure in §6.6 step 2 is either *refused* (the token endpoint
+answered and rejected the stored grant) or *transient* (the endpoint could not be reached, timed
+out, or answered with a temporary error such as rate limiting or a server error). Only a refused
+refresh excludes the provider with reason `refresh`. On a transient one the provider is **kept**
+as a candidate and no `refresh` failure is reported; the model-scope check (§6.6 step 3) still
+runs on it, and if that check itself cannot complete because of the same transient refresh, the
+candidate stays kept without a model-scope result. Each kept candidate produces one warning log
+line that carries the provider, the model, the error fingerprint of §6.6 step 4 and a short
+transport classification (for example an OS error code, `http_<status>` or a timeout marker);
+it never carries an error message, URL or response body.
 
-Tests: 28b. Provider A's login fails transiently (marker on a wrapped cause) → A stays the chosen
-rung, the applied outcome lists no failure for A, one warning with class+kind and no message text.
+Prerequisite (MIT side): MIT senpi v2026.10.27-2 (`packages/ai/src/utils/oauth-refresh-error.ts`)
+separates the transient refresh failure from a refused one and supplies the transport
+classification; mhc's `maho-ai` still reports every OAuth refresh failure as the single `oauth`
+code. Port that MIT distinction first and expose it through `AuthProbe`'s error; the probe must
+recognise it even when the failure is wrapped by another error.
+
+Tests: 28b. Provider A's login refresh fails transiently (classification carried by a wrapped
+error) → A stays the chosen rung, the applied outcome lists no failure for A, one warning with
+fingerprint and transport classification and no message text.
 28c. Same, but the model's headers fail → only that model is excluded (reason request). 28d. A
 plain refused refresh still excludes A with reason refresh.
 
@@ -623,7 +645,9 @@ plain refused refresh still excludes A with reason refresh.
 Leak self-check:
 - No fenced code from SUL: none used (no code blocks in this delta).
 - No sentence paraphrases a SUL comment or prompt: the gate and probe are described from
-  behaviour; messages are described by facts only.
+  behaviour; messages are described by facts only. (Reviewer fixes in
+  docs/cleanroom/reviews/model-selection-5152.md removed sentences in D1, D2 and D4 that echoed
+  SUL comments and SUL implementation constants.)
 - No row-for-row table: only the single gated model id and two level names (interface facts) appear.
 - No OmO-original identifier: type ids stay `model-profile:*`; product name `mhc`.
 - No OmO-original feature: the persona/launch tooling of the upstream is not specified beyond the

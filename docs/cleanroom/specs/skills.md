@@ -129,17 +129,18 @@ Behaviour:
 
 ### D1. Validated bundled-root override
 
-§2's first rule is tightened. The override value (`MAHO_SKILLS_ROOT`, with the launcher's legacy
-`OMO_BUNDLED_SKILLS_DIR` accepted as a lower-precedence alias) is valid only if it is non-empty,
-an **absolute** path, accessible for reading and traversal, and can be listed as a directory (a
-file or missing path is invalid). An unset or empty value is simply absent (no notice).
+§2's first rule is tightened. The override value (`MAHO_SKILLS_ROOT`; when that is unset or
+empty, the launcher's legacy `OMO_BUNDLED_SKILLS_DIR` is read instead, and only the one value
+read is validated) is valid only if it is non-empty, an **absolute** path, and a directory this
+process can read and list (a file or missing path is invalid). An unset or empty value is simply
+absent (no notice).
 
 - Valid → it is the bundled root.
 - Invalid → it is ignored, the executable-sibling fallback of §2 applies, and the problem is
   reported: one error log line and one error UI notification, each **at most once per process**
-  per distinct message. The message names the variable, the value, the reason (`relative` or the
-  OS error code such as `ENOENT`, `EACCES`, `ENOTDIR`) and says an absolute readable directory is
-  needed. Consumers without a UI only log.
+  per distinct message. The message names the variable, the value, the reason (`relative`, or
+  the OS error name such as `ENOENT`, `EACCES`, `ENOTDIR`) and what a valid value must be.
+  Consumers without a UI only log.
 - An explicit directory handed in by code (an option) always wins over the environment and is
   not subject to the notice.
 
@@ -157,6 +158,8 @@ same resolved root (onboarding has no such step in the MIT spec; nothing to do t
    reason; readable absolute directory → used.
 3. Option + invalid env → option wins, no notice.
 4. `/skill` and `skill` tool see the same root; the notice is shown once across both.
+5. `MAHO_SKILLS_ROOT` empty and legacy variable set to a valid directory → legacy used;
+   `MAHO_SKILLS_ROOT` invalid and legacy valid → notice for `MAHO_SKILLS_ROOT`, sibling used.
 
 ### D4. Mapping table
 

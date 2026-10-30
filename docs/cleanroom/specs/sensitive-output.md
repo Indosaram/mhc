@@ -4,6 +4,14 @@ Covers `maho-core` (`sensitive_output`) and records the comment-checker decision
 behaviour stated in the census plus the public conventions of the credential formats; no SUL
 code is reproduced.
 
+Status (review 2026-10-30, docs/cleanroom/reviews/sensitive-output-5152.md): D1 and D2 are
+already satisfied on the MIT side. `crates/maho-core/src/sensitive_output.rs` is an MIT port of
+senpi `core/sensitive-output.ts` and senpi-ai `utils/secret-{redaction,classifier,lexer}.ts` at
+v2026.10.27-2 (branch `sync5152/omo-memory`, commit b0c3883a), which is the upstream these rules
+come from. D1-D2 are kept as an acceptance description only; where they and the MIT port differ
+(the port also reads percent escapes and HTML entities as the characters they encode), the MIT
+port wins. No clean-room implementation is to be written from this file.
+
 ## Delta (omo v5.1.52, 2026-10-30)
 
 ### D1. Credential-shape redaction (`redact_credential_shapes(text, replacement)`)
@@ -28,10 +36,10 @@ Recognised shapes (interface facts: the public formats of these providers):
 | `AKIA`, `ASIA` | exactly 16 | upper-case letters and digits |
 | `AIza` | 30 | letters, digits, `-`, `_` |
 
-Also recognised: a JSON web token, i.e. `eyJ`, then three dot-separated base64url segments (first
-at least 8 characters after the dot-free lead, the others at least 5), where the third segment is
-not directly followed by more base64url text. A trailing run of `.` at the end of a token is not
-part of the credential.
+Also recognised: a JSON web token, i.e. a run starting `eyJ` made of three base64url segments
+joined by `.` (the first segment, `eyJ` included, at least 8 characters, the other two at least
+5 each), where the third segment is not directly followed by more base64url text. A trailing run
+of `.` at the end of a token is not part of the credential.
 
 Where the match ends: at the first character outside the prefix's alphabet (so a key inside a URL
 or file name is cut at its boundary); for a JWT, at the end of the token.
@@ -64,8 +72,9 @@ the `Bearer sk-...` rule, then D1 with `[REDACTED]`; unchanged apart from D1 now
 shapes.
 
 Tests: `OPENAI_API_KEY=sk-live-abc` → `OPENAI_API_KEY=[REDACTED]`; `PATH=/usr/bin` unchanged;
-`HOME_DIR=/x` unchanged; `A=1 TOKEN_X=2` → only the second redacted; a 200 000-character upper-case
-word with no `=` completes quickly.
+`HOME_DIR=/x` unchanged; `A=1 MY_TOKEN=2` → only the second redacted; `TOKEN_X=2` unchanged (the
+word test skips the first character); a 200 000-character upper-case word with no `=` completes
+quickly.
 
 ### D3. Comment checker cache-dir name
 
@@ -77,8 +86,8 @@ share does not exist in its design.
 
 | census row | delta § | APPLIES/N-A | reason |
 | --- | --- | --- | --- |
-| omo-memory-30 | D1 | APPLIES | redaction output is user/log visible and a security boundary |
-| omo-memory-31 | D2 | APPLIES | same module, name test and delegation |
+| omo-memory-30 | D1 | APPLIES (satisfied by MIT port b0c3883a) | redaction output is user/log visible and a security boundary |
+| omo-memory-31 | D2 | APPLIES (satisfied by MIT port b0c3883a) | same module, name test and delegation |
 | omo-components-08 | D3 | N-A | N-A reason: no cache directory in the MIT comment-checker design |
 
 Leak self-check:

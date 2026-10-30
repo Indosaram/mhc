@@ -269,11 +269,11 @@ checked first.
 `requestId` (from `error.requestId`) is kept only if it matches 1-128 characters of
 `A-Za-z0-9_-` **and** the upload redactor finds nothing in it; otherwise it is omitted.
 
-Messages: sign-in-required tells the user to sign in; service-rejected says the service rejected
-the report, names the code, includes `Request ID: <id>` when present and says to update the
-client; service-unavailable names the code, includes the request id and says to retry later. A
-refusal that reached the service is logged as a warning (event name free) with reason, code and
-request id.
+Messages: sign-in-required tells the user to sign in; service-rejected says the service did not
+accept the report, names the code, shows the request id when present (labelled so the user can
+quote it to support) and suggests updating mhc; service-unavailable names the code, shows the
+request id when present and suggests trying again later. A refusal that reached the service is
+logged as a warning (event name free) with reason, code and request id.
 
 Tests: one case per table row group (a code from each group); 401 with no JSON body →
 sign-in-required; 500 HTML body → service-unavailable/unknown; request id `a b` or one containing a
@@ -282,34 +282,40 @@ secret-shaped token → omitted; `conflict` without a caller key → service-rej
 ### D3. Sign-in used by `/feedback` and `/bug`
 
 Where the product has a stored CLI sign-in (credential store for the service API origin), the
-command flow attaches its access token to `prepare`/`submit` as follows: uploads disabled
-(`OMO_DISABLE_FEEDBACK`) → no token, no store read. No stored sign-in → anonymous, silently. A
-stored sign-in whose access token has more than 30 seconds left and whose refresh state is not
-"uncertain" → send that token. The flow **never refreshes** the token (a refresh would spend the
-single-use refresh token). A stored sign-in that cannot be used (expired, uncertain, or the store
-read fails for a reason other than "signed out") → anonymous send plus one warning notification
-saying the report is sent without the user's account. In the MIT profile with no credential store
+command flow decides the access token for `submit` (the draft from `prepare` is built as before)
+as follows: uploads disabled (`OMO_DISABLE_FEEDBACK`) → no token, no store read. No stored
+sign-in → anonymous, silently. A stored sign-in whose access token is still valid for more than
+30 seconds and whose refresh state is not "uncertain" → send that token. The flow does not
+refresh an expiring token itself; a token that is not usable as stored is treated as unusable. A
+stored sign-in that cannot be used (expired, uncertain, or the store read fails for a reason other
+than "signed out") → anonymous send plus one warning notification, before sending, telling the
+user the report goes out without their account. In the MIT profile with no credential store
 configured, behaviour is the pre-existing "token supplied by the caller or none"; the store is an
 injectable dependency, as is the logger.
 
-Tests: valid token → bearer header; expired → anonymous + warning; store absent → anonymous, no
+Tests: valid token → bearer header; token valid for only 10 more seconds → anonymous + warning, and
+the store's refresh is never called; expired → anonymous + warning; store absent → anonymous, no
 warning; uploads off → store never read.
 
 ### D4. Missing-installation message
 
-When the feedback component cannot be loaded because part of the installation is missing, the
-message states what failed, that part of the installation is missing, a reinstall step, and that
-a new session is needed. The reinstall step is `reinstall mhc with: <command>` when the launcher
-set `MAHO_REINSTALL_COMMAND` (or the legacy `OMO_REINSTALL_COMMAND`) to a non-blank command (trimmed),
-else plain `reinstall mhc`. The same step is used by any other loader message of the product.
+`maho-feedback` is linked into the binary and has no separately loaded part, so it has no
+loader-failure message of its own. What applies is the reinstall step used by any message of the
+product that reports a missing part of the installation (today the launcher's messages for a
+missing or unreadable installed version). Such a message states what failed, that part of the
+installation is missing, a reinstall step, and, when a running session is affected, that a new
+session is needed. The reinstall step names the exact command when the launcher/installer set
+`MAHO_REINSTALL_COMMAND` (or the legacy `OMO_REINSTALL_COMMAND`) to a non-blank value (trimmed);
+otherwise it is a plain "reinstall mhc" instruction without a command.
 
-Tests: env set → message contains the command; blank/unset → no trailing `with:`.
+Tests: env set to `  curl -fsSL x | sh  ` → message contains the trimmed command; blank or unset →
+no command is named; `MAHO_REINSTALL_COMMAND` wins over the legacy name when both are set.
 
 ### D5. Mapping table
 
 | census row | delta § | APPLIES/N-A | reason |
 | --- | --- | --- | --- |
-| omo-components-06 | D4 | APPLIES | user-visible message and env interface |
+| omo-components-06 | D4 | APPLIES | user-visible reinstall step and env interface (no feedback loader in MIT; applies to the product's missing-installation messages) |
 | omo-components-15 | D1 | APPLIES | network payload fields |
 | omo-components-16 | D2 | APPLIES | refusal texts and codes |
 | omo-components-17 | D3 | APPLIES | user-visible fallback notice, token policy |
