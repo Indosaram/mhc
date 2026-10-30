@@ -1,0 +1,21 @@
+//! Port of senpi mcp/modern: the 2026-07-28 stateless MCP era (discovery, per-request metadata, MRTR).
+pub mod client;
+pub mod consent_queue;
+pub mod diagnostics;
+pub mod dispatch;
+pub mod elicitation;
+pub mod era;
+pub mod errors;
+pub mod form_schema;
+pub mod http_fetch;
+pub mod inputs;
+pub mod parameter_headers;
+pub mod request;
+pub mod sdk_bridge;
+pub mod stdio_probe;
+pub mod subscriptions;
+pub mod tasks;
+pub mod tool_schema;
+pub mod tools;
+pub mod transport;
+pub mod wire;
