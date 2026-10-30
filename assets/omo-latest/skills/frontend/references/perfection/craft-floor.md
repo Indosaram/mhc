@@ -23,7 +23,7 @@ A default gives way only to one of these:
 
 - words the brief literally states;
 - a concrete visual reference the brief supplies;
-- a route the brief selected that itself prescribes the value or pattern: a Layer A style skill or Layer B brand under `references/design/`, or the ambience route.
+- a route chosen by the brief whose own rules fix that value or pattern. Such routes are the ambience route and any Layer A style skill or Layer B brand in `references/design/`.
 
 Examples: a brutalist route that sets a larger display size and tighter letter spacing; a brand system that puts labels above its headings; ambience-route blur reveals and glowing-border cards.
 
@@ -48,9 +48,9 @@ Exempt: a surface type the page does not contain (no inputs means no caret rule)
 
 | Rule | Class | Threshold | Measure with |
 |---|---|---|---|
-| Type scale | floor | Each adjacent heading step (display, h1, h2, h3) and the step from the smallest heading to body is at least 1.25x in `font-size`. Body-family roles (caption, small, body, lead, label/overline) may sit closer than 1.25x, but every neighbouring pair must also differ in weight, colour or case; size by itself does not separate them. | computed `font-size` of each role in use |
-| Heading spacing | default | Space above a section heading is at least 1.5x the space below it, so the heading attaches to the content it introduces. | computed margin and padding plus the parent's `gap` |
-| Grouping | default | The gap between groups is at least 2x the gap inside a group. | computed `gap` and sibling margins |
+| Type scale | floor | Neighbouring heading levels (display, h1, h2, h3) differ by a `font-size` ratio of 1.25x or more; so do the last heading level and body text. Body-family roles (caption, small, body, lead, label/overline) may sit closer than 1.25x, but every neighbouring pair must also differ in weight, colour or case; size by itself does not separate them. | computed `font-size` of each role in use |
+| Heading spacing | default | A heading belongs to what follows it: its top spacing is 1.5x its bottom spacing or larger. | computed margin and padding plus the parent's `gap` |
+| Grouping | default | Separation between groups is 2x or more the separation among items of one group. | computed `gap` and sibling margins |
 | Measure | floor | Body lines run 65-75 characters on desktop and no fewer than 45 on a phone. | rendered lines at 1440 px and 390 px |
 | Display size | default | Display heading at most 6rem, unless the chosen route defines a larger display scale. | computed `font-size` |
 | Tracking | default | `letter-spacing` no tighter than -0.04em, unless the route sets tighter display tracking. Large type usually reads best between -0.02em and -0.03em; body text stays at 0. | computed `letter-spacing` divided by `font-size` |
@@ -75,7 +75,7 @@ A generator falls back on these when nothing in the brief chose otherwise, so th
 
 Some ideas in the source conflict with the rest of this skill. Here, this skill's rules win:
 
-- Blur (`backdrop-filter`, `filter: blur()`) is not a general animation material. It moves only inside an ambience reveal the brief requested (`references/design/ambience-skill.md`), and never under `prefers-reduced-motion` (`/visual-qa` G4).
+- Blur (`backdrop-filter`, `filter: blur()`) is not a general animation material. Use it solely for an ambience reveal that the brief asked for (`references/design/ambience-skill.md`); when `prefers-reduced-motion` is set, drop it entirely (`/visual-qa` G4).
 - A label over a heading is a default you remove, not a ban. When a route permits a bounded number of them (`taste-skill.md`), honour it.
 - Both themes always ship (`/visual-qa` E1). The theme is never picked by product category.
 - Spring easing is fine when `DESIGN.md` names it. Bounce easing is flagged only when no token asked for it.

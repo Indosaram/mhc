@@ -348,6 +348,13 @@ MIT License
 
 Copyright (c) 2026 IYEN
 
+This license applies to the source code in this repository: scripts, CLI and
+MCP server implementations, the website and server code under `site/`,
+validators, and test code. The Markdown documentation, pattern and recipe
+prose, and domain documents are licensed separately under CC BY 4.0; see
+LICENSE-DOCS. Third-party material adapted into this repository keeps its
+original rights; see NOTICE.
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
