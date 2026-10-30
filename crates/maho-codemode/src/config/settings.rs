@@ -94,9 +94,9 @@ pub struct CodemodeSettings {
     pub hard_limit_seconds: f64,
     pub max_detached_cells: f64,
     pub parallel_pool_width: f64,
-    pub memory_gc_watermark_bytes: f64,
-    pub memory_notice_bytes: f64,
-    pub memory_ceiling_bytes: f64,
+    /// Upstream `memory` (memory-settings.ts): thresholds and settled-cell budgets in MiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<super::memory_settings::CodemodeMemorySettingsInput>,
     pub task_tools: CodemodeTaskTools,
     pub output_sink: CodemodeOutputSink,
     pub status_events: bool,
@@ -118,9 +118,7 @@ impl Default for CodemodeSettings {
             hard_limit_seconds: DEFAULT_HARD_LIMIT_SECONDS,
             max_detached_cells: DEFAULT_MAX_DETACHED_CELLS,
             parallel_pool_width: 4.0,
-            memory_gc_watermark_bytes: 1_073_741_824.0,
-            memory_notice_bytes: 1_610_612_736.0,
-            memory_ceiling_bytes: 2_147_483_648.0,
+            memory: None,
             task_tools: CodemodeTaskTools::default(),
             output_sink: CodemodeOutputSink::default(),
             status_events: true,
@@ -173,6 +171,11 @@ pub async fn load_codemode_settings(
             .ok()
             .filter(valid_settings);
         let mut warnings = known.warnings;
+        if let Some(settings) = &settings {
+            warnings.extend(
+                super::memory_settings::validated_memory_settings(settings.memory.as_ref()).1,
+            );
+        }
         return Ok(match settings {
             Some(settings) => LoadedCodemodeSettings {
                 settings,
@@ -201,7 +204,11 @@ pub async fn load_codemode_settings(
 
 /// The top-level keys `CodemodeSettings` accepts (upstream `codemodeSettingsSchema.properties`).
 fn known_setting_keys() -> Vec<String> {
-    match serde_json::to_value(CodemodeSettings::default()) {
+    let defaults = CodemodeSettings {
+        memory: Some(Default::default()),
+        ..Default::default()
+    };
+    match serde_json::to_value(defaults) {
         Ok(serde_json::Value::Object(object)) => object.into_iter().map(|(key, _)| key).collect(),
         _ => Vec::new(),
     }
@@ -215,9 +222,6 @@ fn valid_settings(settings: &CodemodeSettings) -> bool {
         settings.hard_limit_seconds,
         settings.max_detached_cells,
         settings.parallel_pool_width,
-        settings.memory_gc_watermark_bytes,
-        settings.memory_notice_bytes,
-        settings.memory_ceiling_bytes,
     ]
     .iter()
     .all(|value| value.is_finite() && *value >= 1.0)
@@ -227,6 +231,15 @@ fn valid_settings(settings: &CodemodeSettings) -> bool {
         ]
         .iter()
         .all(|value| value.is_finite() && *value >= 0.0)
+        && settings.memory.as_ref().is_none_or(|memory| memory.valid())
+}
+
+impl CodemodeSettings {
+    /// The resolved `memory` settings: file values over defaults, thresholds out of order replaced
+    /// by the defaults (memory-settings.ts `validatedMemorySettings`).
+    pub fn memory(&self) -> super::memory_settings::CodemodeMemorySettings {
+        super::memory_settings::validated_memory_settings(self.memory.as_ref()).0
+    }
 }
 
 pub type Environment = HashMap<String, String>;

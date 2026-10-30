@@ -33,9 +33,7 @@ impl OutputExecuteTool for Executor {
 async fn session(root: &std::path::Path, id: &str, process: bool) -> CodemodeSessionManager {
     let settings = serde_json::from_value::<CodemodeSettings>(json!({
         "isolation":{"js":if process {"process"} else {"worker"}},
-        "memoryGcWatermarkBytes":1_000_000_000_000_u64,
-        "memoryNoticeBytes":1_000_000_000_000_u64,
-        "memoryCeilingBytes":1_000_000_000_000_u64
+        "memory":{"gcWatermarkMb":1_000_000,"noticeMb":1_000_000,"ceilingMb":1_000_000}
     }))
     .expect("settings");
     bounded(CodemodeSessionManager::start(

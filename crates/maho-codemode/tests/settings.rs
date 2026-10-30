@@ -385,3 +385,48 @@ async fn resolved_capacity_is_enforced_by_the_detached_manager() {
         manager.flush_notifications().await.expect("flush");
     }
 }
+
+/// senpi 903b8336 config.test.ts: settled-result and image-spill budgets resolve from defaults, the
+/// file and the environment (only a whole non-negative number of MiB overrides).
+#[tokio::test]
+async fn retained_budgets_resolve_from_defaults_file_and_environment() {
+    use maho_codemode::config::memory_settings::*;
+    let loaded = loaded(json!({"memory":{"retainedResultsMb":8,"retainedImagesMb":64}})).await;
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    const MIB: u64 = 1024 * 1024;
+    let defaults = CodemodeSettings::default();
+    let cases: [(fn(&CodemodeSettings, &Environment) -> u64, &str, u64, u64); 2] = [
+        (resolve_retained_results_bytes, RETAINED_RESULTS_ENVIRONMENT_FLAG, 32, 8),
+        (resolve_retained_images_bytes, RETAINED_IMAGES_ENVIRONMENT_FLAG, 256, 64),
+    ];
+    for (resolve, flag, fallback, from_file) in cases {
+        let env = |value: &str| Environment::from([(flag.to_owned(), value.to_owned())]);
+        assert_eq!(resolve(&defaults, &Environment::new()), fallback * MIB);
+        assert_eq!(resolve(&loaded.settings, &Environment::new()), from_file * MIB);
+        assert_eq!(resolve(&loaded.settings, &env("4")), 4 * MIB);
+        assert_eq!(resolve(&loaded.settings, &env("0")), 0);
+        for value in ["-1", "abc", "", "1.5"] {
+            assert_eq!(resolve(&loaded.settings, &env(value)), from_file * MIB, "{value}");
+        }
+    }
+}
+
+/// senpi 903b8336 memory-settings.test.ts: file validation of the memory object.
+#[tokio::test]
+async fn memory_file_values_validate_and_out_of_order_thresholds_warn() {
+    let disordered = loaded(json!({"memory":{"noticeMb":4096,"ceilingMb":2048}})).await;
+    assert_eq!(disordered.warnings.len(), 1);
+    assert_eq!(disordered.settings.memory(), maho_codemode::config::memory_settings::default_memory_settings());
+    let negative = loaded(json!({"memory":{"ceilingMb":-1}})).await;
+    assert_eq!(negative.warnings.len(), 1);
+    assert_eq!(negative.settings, CodemodeSettings::default());
+    let park = loaded(json!({"memory":{"idleParkMinutes":5}})).await;
+    assert!(park.warnings.is_empty());
+    assert_eq!(park.settings.memory().idle_park_minutes, Some(5.0));
+    let unset = loaded(json!({"memory":{"noticeMb":512}})).await;
+    assert!(unset.warnings.is_empty());
+    assert_eq!(unset.settings.memory().idle_park_minutes, None);
+    let too_long = loaded(json!({"memory":{"idleParkMinutes":35_792}})).await;
+    assert_eq!(too_long.warnings.len(), 1);
+    assert_eq!(too_long.settings.memory().idle_park_minutes, None);
+}
