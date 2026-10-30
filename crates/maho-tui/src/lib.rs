@@ -10,6 +10,8 @@ pub mod components; // todo 7-9
 pub mod dollar_invocation_autocomplete; // todo 8
 pub mod editor_component; // todo 8
 pub mod escape_window; // ledger sync-5152
+#[cfg(unix)]
+pub mod fd_redirect; // ledger sync-5152
 pub mod fuzzy; // todo 6
 pub mod image_markers; // todo 8
 pub mod image_stub; // todo 9 facade over terminal_image.rs, kept for the todo 7 renderer call sites
