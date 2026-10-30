@@ -739,3 +739,151 @@ fn normalizes_timestamps_like_the_ts_helpers() {
     );
     assert_eq!(numeric.timestamp, 7);
 }
+
+// prompt-templates.test.ts: loadPromptTemplates / loadSourcedPromptTemplates.
+mod prompt_template_loaders {
+    use maho_agent::harness::context::background_context;
+    use maho_agent::harness::env::nodejs::NodeExecutionEnv;
+    use maho_agent::harness::prompt_templates::{
+        PromptTemplateDiagnosticCode, load_prompt_templates, load_sourced_prompt_templates,
+    };
+    use maho_agent::harness::types::PromptTemplate;
+
+    fn template(name: &str, description: &str, content: &str) -> PromptTemplate {
+        PromptTemplate {
+            name: name.into(),
+            description: Some(description.into()),
+            content: content.into(),
+        }
+    }
+
+    fn env(root: &tempfile::TempDir) -> NodeExecutionEnv {
+        NodeExecutionEnv::new(root.path().to_string_lossy().into_owned())
+    }
+
+    #[tokio::test]
+    async fn loads_markdown_templates_non_recursively_from_one_or_more_dirs() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(root.path().join("a/nested")).expect("dirs");
+        std::fs::create_dir_all(root.path().join("b")).expect("dirs");
+        std::fs::write(
+            root.path().join("a/one.md"),
+            "---\ndescription: One template\n---\nHello $1",
+        )
+        .expect("write");
+        std::fs::write(root.path().join("a/nested/ignored.md"), "Ignored").expect("write");
+        std::fs::write(root.path().join("b/two.md"), "First line description\nBody")
+            .expect("write");
+
+        let (templates, diagnostics) = load_prompt_templates(
+            &env(&root),
+            vec!["a".into(), "b".into()],
+            &background_context(),
+        )
+        .await;
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            templates,
+            vec![
+                template("one", "One template", "Hello $1"),
+                template(
+                    "two",
+                    "First line description",
+                    "First line description\nBody"
+                ),
+            ]
+        );
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Source {
+        Project,
+        User,
+    }
+
+    #[tokio::test]
+    async fn preserves_source_info_for_sourced_prompt_templates() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(root.path().join("prompts")).expect("dirs");
+        std::fs::write(
+            root.path().join("prompts/example.md"),
+            "---\ndescription: Example\n---\nExample body",
+        )
+        .expect("write");
+
+        let (templates, diagnostics) = load_sourced_prompt_templates(
+            &env(&root),
+            vec![("prompts".into(), Source::Project)],
+            None,
+            &background_context(),
+        )
+        .await;
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            templates,
+            vec![(
+                template("example", "Example", "Example body"),
+                Source::Project
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn attaches_source_info_to_diagnostics() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("broken.md"),
+            "---\ndescription: [unterminated\n---\nBody",
+        )
+        .expect("write");
+
+        let (templates, diagnostics) = load_sourced_prompt_templates(
+            &env(&root),
+            vec![("broken.md".into(), Source::User)],
+            None,
+            &background_context(),
+        )
+        .await;
+
+        assert!(templates.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        let (diagnostic, source) = &diagnostics[0];
+        assert_eq!(diagnostic.kind, "warning");
+        assert_eq!(diagnostic.code, PromptTemplateDiagnosticCode::ParseFailed);
+        assert_eq!(
+            diagnostic.path,
+            root.path().join("broken.md").to_string_lossy()
+        );
+        assert_eq!(*source, Source::User);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn loads_explicit_markdown_files_and_symlinked_files() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("target.md"),
+            "---\ndescription: Target\n---\nTarget body",
+        )
+        .expect("write");
+        std::os::unix::fs::symlink(root.path().join("target.md"), root.path().join("link.md"))
+            .expect("symlink");
+
+        let (templates, _) = load_prompt_templates(
+            &env(&root),
+            vec!["target.md".into(), "link.md".into()],
+            &background_context(),
+        )
+        .await;
+
+        assert_eq!(
+            templates,
+            vec![
+                template("target", "Target", "Target body"),
+                template("link", "Target", "Target body"),
+            ]
+        );
+    }
+}
