@@ -54,3 +54,29 @@ pub trait OAuthLoginCallbacks: Send + Sync {
         None
     }
 }
+
+/// `export type { OAuthCredentials }`: the stored credential shape extension OAuth flows return.
+pub use crate::auth::types::OAuthCredential as OAuthCredentials;
+
+#[cfg(test)]
+mod tests {
+    use super::OAuthCredentials;
+
+    #[test]
+    fn re_exports_the_stored_oauth_credential_shape() {
+        let credentials: OAuthCredentials = serde_json::from_value(serde_json::json!({
+            "refresh": "r", "access": "a", "expires": 1.0, "enterpriseUrl": "https://ghe.example"
+        }))
+        .expect("credentials");
+        assert_eq!(
+            credentials,
+            crate::auth::types::OAuthCredential {
+                extra: serde_json::json!({ "enterpriseUrl": "https://ghe.example" })
+                    .as_object()
+                    .cloned()
+                    .expect("extra"),
+                ..crate::auth::types::OAuthCredential::new("a", "r", 1.0)
+            }
+        );
+    }
+}
