@@ -1,5 +1,7 @@
 //! Child runners (`runners/` in TypeScript): in-process sessions and RPC child processes.
 
+pub mod child_ancestry;
+pub mod engine_spawned_by;
 pub mod in_process;
 pub mod pinned_model_equivalence;
 pub mod rpc;

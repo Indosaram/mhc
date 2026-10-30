@@ -303,6 +303,8 @@ pub fn to_rpc_spec(spec: &ManagedStartSpec) -> RpcRunnerSpec {
         variant: spec.variant.clone(),
         extensions: spec.extensions.clone(),
         member_env: spec.member_env.clone(),
+        parent_session_id: Some(spec.parent_session_id.clone()),
+        root_session_id: Some(spec.root_session_id.clone()),
         ..RpcRunnerSpec::default()
     }
 }

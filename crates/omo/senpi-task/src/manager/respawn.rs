@@ -276,6 +276,8 @@ fn rpc_spec(
             .and_then(|model| model.variant.clone()),
         extensions: trusted.extensions,
         member_env: trusted.member_env,
+        parent_session_id: Some(record.parent_session_id.clone()),
+        root_session_id: Some(record.root_session_id.clone()),
         ..RpcRunnerSpec::default()
     }
 }

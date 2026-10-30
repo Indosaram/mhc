@@ -111,4 +111,7 @@ pub struct RpcRunnerSpec {
     pub member_env: Option<BTreeMap<String, String>>,
     /// Parent's explicit non-default permission preset; `None` keeps the child on its default.
     pub permission_preset: Option<String>,
+    /// The child's own place in the task tree (`--spawned-by` ancestry, #10782).
+    pub parent_session_id: Option<String>,
+    pub root_session_id: Option<String>,
 }
