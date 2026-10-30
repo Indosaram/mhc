@@ -297,15 +297,16 @@ default; a user who wants it adds it through `OTEL_RESOURCE_ATTRIBUTES`.
 Error cases: none (static property).
 
 Tests:
-- Given export to a capturing endpoint and a host name `test-host-7`, when one run completes,
-  then neither `test-host-7` nor its SHA-256 hex digest occurs anywhere in the three decoded
+- Given export to a capturing endpoint and a host name `build-box-gamma`, when one run completes,
+  then neither `build-box-gamma` nor its SHA-256 hex digest occurs anywhere in the three decoded
   payloads.
 - Given `SHELL=/opt/custom/bin/zsh` and `TERM_PROGRAM=SomeTerm`, when one run completes, then
   neither value occurs in any payload or in the ledger line.
 - Given a fresh agent dir, when a session with export and ledger on starts and ends, then the only
   file the crate created is `<usage dir>/usage.jsonl`.
-- Given a resource attribute list in the export, then it has no key `machine_hash`,
-  `omo.machine_hash` or any key ending in `.install.hash`.
+- Given no `OTEL_RESOURCE_ATTRIBUTES`, when one run is exported, then the resource keys are exactly
+  `service.name`, `service.version`, `process.pid`, `service.instance.id` and, where D5 maps the
+  platform, `os.type` and `host.arch`.
 
 ### D3. Exported input-token counts include cached prompt tokens
 
@@ -334,28 +335,27 @@ Tests:
 
 ### D4. `gen_ai.provider.name` uses the OpenTelemetry well-known values
 
-Behaviour: the exported `gen_ai.provider.name` (chat spans and metric points) is the
-OpenTelemetry well-known value when the mhc provider id has one; otherwise the mhc provider id
-passes through unchanged. The original mhc provider id is always exported as well, as attribute
-`mhc.provider.id` on chat spans and metric points, so no information is lost. The ledger and
-`mhc usage` keep the mhc provider id only.
+Behaviour: for the exported `gen_ai.provider.name` (chat spans and metric points) the
+OpenTelemetry conventions require their listed value whenever one applies and allow a custom value
+otherwise. mhc sends the listed value for the provider ids in the table below and sends the mhc
+provider id itself as the custom value for every other provider. The original mhc provider id is
+always exported as well, as attribute `mhc.provider.id` on chat spans and metric points, so no
+information is lost. The ledger and `mhc usage` keep the mhc provider id only.
 
 Mapping (interface facts; left = mhc provider id, right = well-known value):
 
 | mhc provider id | `gen_ai.provider.name` |
 | --- | --- |
 | `anthropic` | `anthropic` |
-| `openai`, `openai-codex` | `openai` |
+| `openai`, `chatgpt-subscription`, `openai-codex` (legacy id) | `openai` |
 | `azure-openai-responses` | `azure.ai.openai` |
 | `amazon-bedrock` | `aws.bedrock` |
-| `google`, `google-gemini-cli` | `gcp.gemini` |
+| `google` | `gcp.gemini` |
 | `google-vertex` | `gcp.vertex_ai` |
 | `mistral` | `mistral_ai` |
 | `xai` | `x_ai` |
 | `groq` | `groq` |
 | `deepseek` | `deepseek` |
-| `perplexity` | `perplexity` |
-| `cohere` | `cohere` |
 
 Any other id (for example `openrouter`, `kimi-coding`, `moonshotai`, a user-defined provider) is
 exported unchanged in both attributes. Matching is exact and case-sensitive.
@@ -378,8 +378,9 @@ attributes, set before `OTEL_RESOURCE_ATTRIBUTES` is applied so the user can ove
 
 - `service.instance.id`: a random UUID v4 generated once per process (not persisted, not derived
   from the machine);
-- `os.type`: from the build target OS: `linux`, `darwin` (macOS), `windows`, `freebsd`, `netbsd`,
-  `openbsd`, `dragonflybsd`, `solaris`, `aix`; any other OS → attribute omitted;
+- `os.type`: from the build target OS: `linux`, `macos` → `darwin`, `windows`, `freebsd`,
+  `netbsd`, `openbsd`, `dragonfly` → `dragonflybsd`, `solaris`, `aix`; any other OS → attribute
+  omitted;
 - `host.arch`: from the build target architecture: `x86_64` → `amd64`, `aarch64` → `arm64`,
   `x86` → `x86`, `arm` → `arm32`, `powerpc` → `ppc32`, `powerpc64` → `ppc64`, `s390x` → `s390x`;
   any other architecture → attribute omitted.
@@ -415,8 +416,10 @@ because it was turned off in the configuration and gives the number of discarded
 discards in the same session add no further lines. `mhc usage --status` reflects the current
 configuration.
 
-Error cases: if the configuration view cannot be read at push time, the push is treated as not
-allowed (fail closed) and reported through the same once-per-session diagnostic.
+Error cases: if the host returns no configuration view at push time (an error, not a config file
+that fails to parse: in that case the host keeps the previous view, config.md section 14),
+the push is treated as not allowed (fail closed) and reported through the same once-per-session
+diagnostic.
 
 Tests:
 - Given export on at startup and a capturing endpoint, when `telemetry.otlpExportEnabled` is set
@@ -448,7 +451,7 @@ Tests:
 | omo-telemetry-10 | - | N-A | N-A reason: no ephemeral-home consent rule; export depends only on `OTEL_*`/opt-out switches |
 | omo-telemetry-11 | - | N-A | N-A reason: config switches come from the `maho-config` merged view, which owns profile/home resolution; no separate consent re-evaluation record |
 | omo-telemetry-12 | D1 | APPLIES | model ids including `claude-fable-5-5` and the Kimi K3.1 ids pass through verbatim; no vocabulary list to extend |
-| omo-telemetry-13 | - | N-A | N-A reason: bundled skills root is not a telemetry concern in the MIT design (owned by `maho-skills`) |
+| omo-telemetry-13 | - | N-A | N-A reason: user-observable, but not telemetry: the validated `OMO_BUNDLED_SKILLS_DIR` override is specified in skills.md Delta D1/D2 (`maho-skills`) |
 | omo-telemetry-14 | D1 | N-A | N-A reason: export goes to the user's own collector; no pinned model list or `custom` masking (D1 forbids it) |
 | omo-telemetry-15 | D3, D4 | APPLIES | cache-inclusive `gen_ai.usage.input_tokens` (D3) and well-known `gen_ai.provider.name` (D4); the product-event projection, pinned enum values and cost fixed-point field are N-A (no product events) |
 | omo-telemetry-16 | - | N-A | N-A reason: no built-in ingest endpoint or key; export targets only user-configured `OTEL_*` endpoints |
