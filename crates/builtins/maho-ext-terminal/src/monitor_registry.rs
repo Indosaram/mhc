@@ -892,7 +892,10 @@ impl MonitorRegistry {
                     publish_snapshot(&records,&files,&transitions);
                     while let Ok(chunk)=output.try_recv() {let current=*guard.lock().expect("runaway guard");for event in record.consume(&chunk,now_ms(),&current) {emit(event);}}
                     let (reason,exit_code)=match &result {Ok(exit)=>(if exit.timed_out {MonitorEndedReason::Timeout} else if exit.cancelled {MonitorEndedReason::Killed} else {MonitorEndedReason::Exit},exit.exit_code),Err(_)=>(MonitorEndedReason::Exit,None)};
-                    let summary=match result {Ok(result)=>format!("watcher {}{}",crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned()),result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})"))),Err(error)=>format!("watcher error: {error}")};
+                    // A timed-out watch was KILLED by its own timeout_ms deadline; say so instead of a
+                    // passive "timed_out". The exit code is deliberately omitted in this branch: a
+                    // killed child's code is noise, and "killed at deadline" names the cause instead.
+                    let summary=match result {Ok(result)=>{let status=crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned());if result.timed_out {format!("watcher killed at deadline ({status})")} else {format!("watcher {status}{}",result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})")))}},Err(error)=>format!("watcher error: {error}")};
                     if let Some(event)=record.settle(summary,now_ms()) {emit(event);}
                     emit_ended(&ended,&record.snapshot,reason,exit_code,now_ms());
                     return;
@@ -1317,6 +1320,44 @@ mod registry_tests {
         );
         assert!(event.fire_count >= 1);
         assert!(ended.try_recv().is_err());
+        registry.dispose();
+        runtime.dispose().unwrap();
+    }
+    #[tokio::test]
+    async fn a_watch_killed_by_its_own_deadline_says_killed_at_deadline_without_exit_code() {
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let runtime = crate::runtime_session::TerminalRuntimeSession::start(
+            "sleep",
+            crate::shared::test_sh_options("stty -echo; sleep 30")
+                .timeout(std::time::Duration::from_millis(200)),
+        )
+        .unwrap();
+        registry
+            .register(
+                &runtime,
+                CommandMonitor::new(
+                    MonitorSnapshotEntry {
+                        id: "bash_1".to_owned(),
+                        description: "deadline".to_owned(),
+                        ..Default::default()
+                    },
+                    None,
+                ),
+            )
+            .unwrap();
+        let summary = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(MonitorEvent::Summary { summary, .. }) = events.recv().await {
+                    return summary;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(summary, "watcher killed at deadline (timed_out)");
         registry.dispose();
         runtime.dispose().unwrap();
     }

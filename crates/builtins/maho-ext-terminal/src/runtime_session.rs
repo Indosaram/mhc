@@ -56,7 +56,15 @@ impl OutputObserverGuard {
 }
 
 impl OutputState {
+    #[cfg(test)]
     fn ingest(&mut self, chunk: &[u8]) -> String {
+        let decoded = self.decode(chunk);
+        self.append(&decoded);
+        decoded
+    }
+
+    /// `TextDecoder.decode(chunk, { stream: true })`: a split UTF-8 sequence waits for its tail.
+    fn decode(&mut self, chunk: &[u8]) -> String {
         self.pending_utf8.extend_from_slice(chunk);
         let mut decoded = String::new();
         let mut consumed = 0;
@@ -82,11 +90,21 @@ impl OutputState {
             }
         }
         self.pending_utf8.drain(..consumed);
-        self.buffer.extend(decoded.encode_utf16());
+        decoded
+    }
+
+    /// `TextDecoder.decode()` at end of stream: an unfinished sequence becomes U+FFFD.
+    fn decode_end(&mut self) -> String {
+        let tail = String::from_utf8_lossy(&self.pending_utf8).into_owned();
+        self.pending_utf8.clear();
+        tail
+    }
+
+    fn append(&mut self, text: &str) {
+        self.buffer.extend(text.encode_utf16());
         let overflow = self.buffer.len().saturating_sub(MAX_SESSION_OUTPUT_CHARS);
         self.buffer.drain(..overflow);
         self.dropped_chars += overflow;
-        decoded
     }
 
     fn read_delta(&mut self) -> DeltaRead {
@@ -125,6 +143,124 @@ impl OutputState {
 }
 
 type ExitState = Arc<(Mutex<Option<Result<PtyExit, String>>>, Condvar)>;
+type OutputObservers = Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>;
+
+/// runtime-session.ts `ingest`: retain the text, feed the screen and hand it to the output listeners.
+fn deliver(
+    state: &mut OutputState,
+    text: String,
+    screen: &Mutex<Option<vt100::Parser>>,
+    listeners: &OutputObservers,
+) {
+    if text.is_empty() {
+        return;
+    }
+    state.append(&text);
+    let decoded = crate::screen_text::sanitize_string(&text);
+    if let Ok(mut screen) = screen.lock()
+        && let Some(screen) = screen.as_mut()
+    {
+        screen.process(decoded.as_bytes());
+    }
+    if !decoded.is_empty()
+        && let Ok(mut listeners) = listeners.lock()
+    {
+        let mut decoded = decoded;
+        let last = listeners.len();
+        let mut index = 0;
+        listeners.retain(|listener| {
+            index += 1;
+            let text = if index == last {
+                std::mem::take(&mut decoded)
+            } else {
+                decoded.clone()
+            };
+            listener.send(text).is_ok()
+        });
+    }
+}
+
+/// How long decoded output may sit in the redactor before held ordinary text is published (upstream `setTimeout(.., 50)`).
+const REDACTION_IDLE_FLUSH: Duration = Duration::from_millis(50);
+
+/// `redactSecretsInOutput`: the session's `SecretOutputRedactor` plus the idle-flush timer state. `pushes` counts
+/// every push so the flusher restarts its 50 ms window on new output; `done` ends the flusher (exit or dispose).
+#[derive(Default)]
+struct RedactionState {
+    redactor: maho_tools::secret_output_redactor::SecretOutputRedactor,
+    pushes: u64,
+    pending: bool,
+    done: bool,
+}
+type Redaction = Arc<(Mutex<RedactionState>, Condvar)>;
+
+/// The idle timer: 50 ms after the last push, publish what `flushIdle` releases. Lock order is output, then
+/// redaction, the same order the data path takes.
+fn spawn_redaction_flusher(
+    redaction: Redaction,
+    output: Arc<Mutex<OutputState>>,
+    screen: Arc<Mutex<Option<vt100::Parser>>>,
+    listeners: OutputObservers,
+) {
+    std::thread::spawn(move || {
+        loop {
+            let pushes = {
+                let (lock, signal) = &*redaction;
+                let guard = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let guard = signal
+                    .wait_while(guard, |state| !state.pending && !state.done)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.done {
+                    return;
+                }
+                let pushes = guard.pushes;
+                let (guard, _) = signal
+                    .wait_timeout_while(guard, REDACTION_IDLE_FLUSH, |state| {
+                        !state.done && state.pushes == pushes
+                    })
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.done {
+                    return;
+                }
+                if guard.pushes != pushes {
+                    continue;
+                }
+                pushes
+            };
+            let Ok(mut state) = output.lock() else {
+                return;
+            };
+            let text = {
+                let mut guard = redaction
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.done {
+                    return;
+                }
+                if guard.pushes != pushes {
+                    continue;
+                }
+                guard.pending = false;
+                guard.redactor.flush_idle()
+            };
+            deliver(&mut state, text, &screen, &listeners);
+        }
+    });
+}
+
+fn stop_redaction(redaction: Option<&Redaction>) {
+    if let Some(redaction) = redaction {
+        redaction
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .done = true;
+        redaction.1.notify_all();
+    }
+}
 
 // Both notification surfaces share one linearization point, including poisoned cleanup.
 fn settle_exit(
@@ -193,6 +329,7 @@ pub struct TerminalRuntimeSession {
     screen: Arc<Mutex<Option<vt100::Parser>>>,
     final_screen: Arc<Mutex<Option<TerminalScreenSnapshot>>>,
     scrollback: usize,
+    redaction: Option<Redaction>,
 }
 
 impl TerminalRuntimeSession {
@@ -204,10 +341,20 @@ impl TerminalRuntimeSession {
         options: PtySessionOptions,
         scrollback: usize,
     ) -> Result<Self, RuntimeError> {
+        Self::start_with_runtime_options(command, options, scrollback, false)
+    }
+    /// `new TerminalRuntimeSession(command, { ...options, scrollback, redactSecretsInOutput })`: with redaction on,
+    /// decoded PTY text goes through a `SecretOutputRedactor` before the buffer, the screen and the output listeners
+    /// see it; held text is published after 50 ms idle and the rest on exit.
+    pub fn start_with_runtime_options(
+        command: &str,
+        options: PtySessionOptions,
+        scrollback: usize,
+        redact_secrets_in_output: bool,
+    ) -> Result<Self, RuntimeError> {
         let output = Arc::new(Mutex::new(OutputState::default()));
         let sink = Arc::clone(&output);
-        let observers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>> =
-            Arc::new(Mutex::new(vec![]));
+        let observers: OutputObservers = Arc::new(Mutex::new(vec![]));
         let listeners = observers.clone();
         let screen = Arc::new(Mutex::new(Some(vt100::Parser::new(
             options.rows,
@@ -215,30 +362,36 @@ impl TerminalRuntimeSession {
             scrollback,
         ))));
         let projection = screen.clone();
+        let redaction: Option<Redaction> = redact_secrets_in_output
+            .then(|| Arc::new((Mutex::new(RedactionState::default()), Condvar::new())));
+        if let Some(redaction) = &redaction {
+            spawn_redaction_flusher(
+                redaction.clone(),
+                output.clone(),
+                screen.clone(),
+                observers.clone(),
+            );
+        }
+        let chunk_redaction = redaction.clone();
         let on_chunk = move |chunk: &[u8]| {
             if let Ok(mut state) = sink.lock() {
-                let decoded = crate::screen_text::sanitize_string(&state.ingest(chunk));
-                if let Ok(mut screen) = projection.lock()
-                    && let Some(screen) = screen.as_mut()
-                {
-                    screen.process(decoded.as_bytes());
-                }
-                if !decoded.is_empty()
-                    && let Ok(mut listeners) = listeners.lock()
-                {
-                    let mut decoded = decoded;
-                    let last = listeners.len();
-                    let mut index = 0;
-                    listeners.retain(|listener| {
-                        index += 1;
-                        let text = if index == last {
-                            std::mem::take(&mut decoded)
-                        } else {
-                            decoded.clone()
-                        };
-                        listener.send(text).is_ok()
-                    });
-                }
+                let decoded = state.decode(chunk);
+                let text = match &chunk_redaction {
+                    Some(redaction) => {
+                        let mut guard = redaction
+                            .0
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let text = guard.redactor.push(&decoded);
+                        guard.pushes += 1;
+                        guard.pending = true;
+                        drop(guard);
+                        redaction.1.notify_all();
+                        text
+                    }
+                    None => decoded,
+                };
+                deliver(&mut state, text, &projection, &listeners);
             }
         };
         let (session, waiter) =
@@ -260,6 +413,9 @@ impl TerminalRuntimeSession {
         let completion_sender = exit_sender.clone();
         let release_screen = screen.clone();
         let released_snapshot = final_screen.clone();
+        let exit_redaction = redaction.clone();
+        let exit_output = output.clone();
+        let exit_listeners = observers.clone();
         let exit_thread = std::thread::spawn(move || {
             // session-exit.ts `normalizeTerminalExit`: any requested kill (SIGTERM included) marks the exit cancelled.
             let result = match waiter.join() {
@@ -280,6 +436,23 @@ impl TerminalRuntimeSession {
                 }),
                 Err(_) => Err("terminal exit waiter panicked".to_owned()),
             };
+            // onExit: stop the idle timer and publish what the redactor still holds (`push(decode()) + finish()`).
+            if let Some(redaction) = &exit_redaction
+                && let Ok(mut state) = exit_output.lock()
+            {
+                let tail = state.decode_end();
+                let text = {
+                    let mut guard = redaction
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.done = true;
+                    let pushed = guard.redactor.push(&tail);
+                    pushed + &guard.redactor.finish()
+                };
+                redaction.1.notify_all();
+                deliver(&mut state, text, &release_screen, &exit_listeners);
+            }
             if let Ok(mut guard) = release_screen.lock()
                 && let Some(mut parser) = guard.take()
             {
@@ -310,6 +483,7 @@ impl TerminalRuntimeSession {
             screen,
             final_screen,
             scrollback,
+            redaction,
         })
     }
 
@@ -563,6 +737,8 @@ impl TerminalRuntimeSession {
 
 impl Drop for TerminalRuntimeSession {
     fn drop(&mut self) {
+        // dispose(): clear the idle timer so the flusher thread ends with the session.
+        stop_redaction(self.redaction.as_ref());
         match self.exited() {
             Ok(false) => {
                 if let Err(error) = self.kill() {
@@ -756,6 +932,74 @@ mod tests {
                 .any(|line| line.contains("three"))
         );
         assert_eq!(runtime.snapshot()?, snapshot);
+        runtime.dispose()
+    }
+
+    #[test]
+    fn redaction_off_keeps_secret_output_verbatim() -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            "printf",
+            crate::shared::test_sh_options("stty -echo; printf 'API_KEY=synthetic123\\n'")
+                .timeout(Duration::from_secs(5)),
+            crate::shared::DEFAULT_SCROLLBACK,
+            false,
+        )?;
+        runtime.wait(Duration::from_secs(10))?;
+        assert!(runtime.full_output()?.contains("API_KEY=synthetic123"));
+        runtime.dispose()
+    }
+
+    #[test]
+    fn redaction_hides_a_secret_in_retained_and_observed_output() -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            "printf",
+            crate::shared::test_sh_options(
+                "stty -echo; read go; printf 'API_KEY=synthetic123 done\\n'",
+            ),
+            crate::shared::DEFAULT_SCROLLBACK,
+            true,
+        )?;
+        let (history, mut observed) = runtime.subscribe_output()?;
+        assert!(history.is_empty());
+        let mut writer = runtime;
+        writer.write(b"go\n")?;
+        writer.wait(Duration::from_secs(10))?;
+        let output = writer.full_output()?;
+        assert!(!output.contains("synthetic123"), "{output:?}");
+        assert!(output.contains("API_KEY=<redacted> done"), "{output:?}");
+        let mut seen = String::new();
+        while let Ok(text) = observed.try_recv() {
+            seen.push_str(&text);
+        }
+        assert!(!seen.contains("synthetic123"), "{seen:?}");
+        assert!(seen.contains("<redacted>"), "{seen:?}");
+        writer.dispose()
+    }
+
+    #[tokio::test]
+    async fn redaction_publishes_an_idle_prompt_without_waiting_for_exit()
+    -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            "prompt",
+            crate::shared::test_sh_options("stty -echo; printf 'Enter name'; read value"),
+            crate::shared::DEFAULT_SCROLLBACK,
+            true,
+        )?;
+        let (history, mut observed) = runtime.subscribe_output()?;
+        let seen = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut seen = history;
+            while !seen.contains("Enter name") {
+                let Some(text) = observed.recv().await else {
+                    break;
+                };
+                seen.push_str(&text);
+            }
+            seen
+        })
+        .await
+        .expect("idle prompt published");
+        assert!(seen.contains("Enter name"), "{seen:?}");
+        assert!(!runtime.exited()?);
         runtime.dispose()
     }
 
