@@ -64,8 +64,13 @@ impl GenerationSessionControlActions {
     /// generation: the endpoint's `drain` is that generation's closure, so it must not outlive it
     /// (senpi#3246). Idempotent.
     pub async fn retire(&self) -> Result<(), String> {
-        self.retired.store(true, Ordering::SeqCst);
-        let registrations = std::mem::take(&mut *lock(&self.owned));
+        // `retired` is set under the `owned` lock, the same guard register() checks it under, so a
+        // registration either lands in the list taken here or sees `retired` and tears itself down.
+        let registrations = {
+            let mut owned = lock(&self.owned);
+            self.retired.store(true, Ordering::SeqCst);
+            std::mem::take(&mut *owned)
+        };
         let results =
             futures::future::join_all(registrations.into_iter().map(|(_, dispose)| dispose()))
                 .await;
@@ -100,8 +105,20 @@ impl GenerationSessionControlActions {
         let SessionControlRegistration::Registered { socket, dispose } = registration else {
             return registration;
         };
-        // Registered while this generation was being retired: it is released at once, never left serving.
-        if self.retired.load(Ordering::SeqCst) {
+        // The retired check and the push happen under one guard (no await while it is held): retire()
+        // sets `retired` under the same lock, so it either takes this entry or this sees `retired`.
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let stale = {
+            let mut owned = lock(&self.owned);
+            let stale = self.retired.load(Ordering::SeqCst);
+            if !stale {
+                owned.push((id, Arc::clone(&dispose)));
+            }
+            stale
+        };
+        // Registered while this generation was being retired: it is released at once (outside the
+        // lock), never left serving.
+        if stale {
             let teardown = match dispose().await {
                 Ok(()) => String::new(),
                 Err(error) => format!("; its teardown failed: {error}"),
@@ -110,8 +127,6 @@ impl GenerationSessionControlActions {
                 reason: format!("stale extension generation after reload{teardown}"),
             };
         }
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        lock(&self.owned).push((id, Arc::clone(&dispose)));
         let owned = Arc::clone(&self.owned);
         SessionControlRegistration::Registered {
             socket,
@@ -302,6 +317,69 @@ mod tests {
             result.to_json(),
             json!({"status":"failed","reason":"stale extension generation after reload; its teardown failed: socket busy"})
         );
+        assert_eq!(host.disposed.load(Ordering::SeqCst), 1);
+    }
+
+    /// Host whose registration parks until released, so the test fixes when retire() runs.
+    struct GatedHost {
+        disposed: Arc<AtomicUsize>,
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+    impl ControlEndpointHost for GatedHost {
+        fn register(
+            &self,
+            _options: RegisterControlEndpointOptions,
+        ) -> BoxFuture<'_, SessionControlRegistration> {
+            let entered = lock(&self.entered).take().expect("entered");
+            let release = lock(&self.release).take().expect("release");
+            let disposed = Arc::clone(&self.disposed);
+            Box::pin(async move {
+                entered.send(()).expect("test waits for entry");
+                release.await.expect("test releases the host");
+                SessionControlRegistration::Registered {
+                    socket: "/tmp/control.sock".into(),
+                    dispose: Arc::new(move || -> BoxFuture<'static, Result<(), String>> {
+                        disposed.fetch_add(1, Ordering::SeqCst);
+                        Box::pin(async { Ok(()) })
+                    }),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_cannot_survive_a_retire_that_lands_mid_registration() {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let host = Arc::new(GatedHost {
+            disposed: Arc::new(AtomicUsize::new(0)),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(Some(release_rx)),
+        });
+        let provided = Arc::clone(&host);
+        let actions = Arc::new(create_session_control_actions(SessionControlActionDeps {
+            base: Arc::new(Base),
+            host: Arc::new(move || Some(Arc::clone(&provided) as Arc<dyn ControlEndpointHost>)),
+        }));
+        // Forced order: the host has accepted the registration, retire() runs to completion, and only
+        // then does the host hand back the endpoint for register() to record.
+        let retirer = async {
+            entered_rx.await.expect("host entered");
+            actions.retire().await.expect("retire");
+            release_tx.send(()).expect("register is parked");
+        };
+        let (result, ()) = futures::join!(
+            actions.register_control_endpoint(options(Arc::new(AtomicUsize::new(0)))),
+            retirer
+        );
+        assert_eq!(
+            result.to_json(),
+            json!({"status":"failed","reason":"stale extension generation after reload"})
+        );
+        assert_eq!(host.disposed.load(Ordering::SeqCst), 1, "torn down once");
+        assert!(lock(&actions.owned).is_empty(), "nothing left registered");
+        actions.retire().await.expect("idempotent");
         assert_eq!(host.disposed.load(Ordering::SeqCst), 1);
     }
 }
