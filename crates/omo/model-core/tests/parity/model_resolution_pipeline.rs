@@ -1,6 +1,11 @@
+use model_core::AGENT_MODEL_REQUIREMENTS;
+use model_core::CATEGORY_MODEL_REQUIREMENTS;
+use model_core::FABLE_55_LAUNCH_ID;
+use model_core::FABLE_55_RELEASED;
 use model_core::ModelResolutionProvenance;
 use model_core::ModelResolutionRequest;
 use model_core::PipelineModelResolutionResult;
+use model_core::ResolutionConstraints;
 use model_core::ResolutionIntent;
 use model_core::ResolutionPolicy;
 use model_core::resolve_model_pipeline;
@@ -108,4 +113,74 @@ fn inherits_the_fallback_variant_for_an_explicit_transformed_gateway_model() {
     assert_eq!(result.model, "vercel/openai/gpt-5.6-sol");
     assert_eq!(result.provenance, ModelResolutionProvenance::Override);
     assert_eq!(result.variant.as_deref(), Some("high"));
+}
+
+// The provisional Fable 5.5 id must never reach live routing before release: a cold provider-models
+// cache with only anthropic connected gives no proof the model exists.
+fn launch_expected() -> String {
+    if FABLE_55_RELEASED {
+        format!("anthropic/{FABLE_55_LAUNCH_ID}")
+    } else {
+        "anthropic/claude-fable-5-1".to_string()
+    }
+}
+
+fn cold_anthropic() -> ResolutionConstraints {
+    ResolutionConstraints {
+        available_models: set(&[]),
+        connected_providers: Some(vec!["anthropic".to_string()]),
+    }
+}
+
+#[test]
+fn launch_gated_metis_and_prometheus_resolve_past_the_launch_rung() {
+    for agent in ["metis", "prometheus"] {
+        let result = resolve_model_pipeline(&ModelResolutionRequest {
+            constraints: cold_anthropic(),
+            policy: ResolutionPolicy {
+                fallback_chain: Some(AGENT_MODEL_REQUIREMENTS[agent].fallback_chain.clone()),
+                system_default_model: None,
+            },
+            ..Default::default()
+        });
+
+        assert_eq!(result.map(|result| result.model), Some(launch_expected()), "{agent}");
+    }
+}
+
+#[test]
+fn launch_gated_artistry_category_default_falls_through_to_its_chain() {
+    let result = resolve_model_pipeline(&ModelResolutionRequest {
+        intent: ResolutionIntent {
+            category_default_model: Some(format!("anthropic/{FABLE_55_LAUNCH_ID}")),
+            ..Default::default()
+        },
+        constraints: cold_anthropic(),
+        policy: ResolutionPolicy {
+            fallback_chain: Some(CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain.clone()),
+            system_default_model: None,
+        },
+    });
+
+    assert_eq!(result.map(|result| result.model), Some(launch_expected()));
+}
+
+#[test]
+fn launch_gated_chain_entries_are_skipped_on_a_cold_cache() {
+    let result = resolve_model_pipeline(&ModelResolutionRequest {
+        constraints: cold_anthropic(),
+        policy: ResolutionPolicy {
+            fallback_chain: Some(vec![
+                entry(&["anthropic"], FABLE_55_LAUNCH_ID, Some("max")),
+                entry(&["anthropic"], "claude-fable-5-1", Some("max")),
+            ]),
+            system_default_model: None,
+        },
+        ..Default::default()
+    });
+
+    assert_eq!(
+        result.map(|result| result.model),
+        Some(launch_expected())
+    );
 }
