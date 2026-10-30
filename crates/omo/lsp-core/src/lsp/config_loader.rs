@@ -168,7 +168,7 @@ fn merge_servers(configs: &[(ConfigSource, ConfigJson)]) -> Vec<ServerWithSource
                 extensions: builtin.extensions_vec(),
                 priority: -100.0,
                 env: None,
-                initialization: None,
+                initialization: builtin.initialization_map(),
             },
             source: ServerSource::Builtin,
         });
@@ -193,14 +193,17 @@ fn create_server_from_entry(
 ) -> Option<ServerWithSource> {
     let builtin = builtin_server(id);
     let priority = entry.priority.unwrap_or(0.0);
-    let make = |command: Vec<String>, extensions: Vec<String>, with_env: bool| ServerWithSource {
+    let make = |command: Vec<String>,
+                extensions: Vec<String>,
+                with_env: bool,
+                initialization: Option<Map<String, Value>>| ServerWithSource {
         server: ResolvedServer {
             id: id.to_string(),
             command,
             extensions,
             priority,
             env: if with_env { entry.env.clone() } else { None },
-            initialization: entry.initialization.clone(),
+            initialization,
         },
         source: source.into(),
     };
@@ -214,12 +217,24 @@ fn create_server_from_entry(
                 .clone()
                 .unwrap_or_else(|| builtin.extensions_vec()),
             false,
+            merge_initialization(builtin.initialization_map(), entry.initialization.clone()),
         ));
     }
     if let (Some(command), Some(extensions)) = (&entry.command, &entry.extensions) {
-        return Some(make(command.clone(), extensions.clone(), true));
+        return Some(make(
+            command.clone(),
+            extensions.clone(),
+            true,
+            entry.initialization.clone(),
+        ));
     }
     let builtin = builtin?;
+    // An entry with its own command gets no builtin initialization.
+    let builtin_initialization = if entry.command.is_none() {
+        builtin.initialization_map()
+    } else {
+        None
+    };
     Some(make(
         entry
             .command
@@ -230,7 +245,23 @@ fn create_server_from_entry(
             .clone()
             .unwrap_or_else(|| builtin.extensions_vec()),
         true,
+        merge_initialization(builtin_initialization, entry.initialization.clone()),
     ))
+}
+
+/// TS `mergeInitialization`: shallow merge, entry keys win.
+fn merge_initialization(
+    builtin: Option<Map<String, Value>>,
+    entry: Option<Map<String, Value>>,
+) -> Option<Map<String, Value>> {
+    match (builtin, entry) {
+        (None, entry) => entry,
+        (builtin, None) => builtin,
+        (Some(mut builtin), Some(entry)) => {
+            builtin.extend(entry);
+            Some(builtin)
+        }
+    }
 }
 
 fn parse_lsp_entry(value: &Value) -> Option<LspEntry> {
