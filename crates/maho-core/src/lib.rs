@@ -227,6 +227,7 @@ pub mod tool_result_user_words;
 pub mod turn_deadline;
 pub mod unknown_command;
 pub mod verify_api_key;
+pub mod virtual_models;
 
 pub use auth_storage::{AuthStorage, CredentialKind, ReadOnlyAuthStorage, read_stored_credential};
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};
