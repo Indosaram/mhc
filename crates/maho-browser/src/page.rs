@@ -830,6 +830,15 @@ impl Page {
             .map(drop)
     }
 
+    /// Applies oh-my-pi's stealth patches to this tab: the user-agent override and the patch
+    /// scripts on every new document (`applyStealthPatches`). Call before navigating.
+    pub fn apply_stealth(
+        &self,
+        state: &mut crate::launch::stealth::StealthState,
+    ) -> Result<(), String> {
+        crate::launch::stealth::apply_stealth_patches(&self.client, &self.session_id, state)
+    }
+
     /// A network snoop over this tab (omowright `createNetworkSnoop(page, options)`).
     pub fn network_snoop(
         &self,
@@ -964,6 +973,41 @@ mod tests {
                 .is_some_and(|expression| expression.contains("drain({\"limit\":5})"))
         );
         assert!(!CONSOLE_INTERCEPTOR.contains("__omowright"));
+    }
+
+    #[test]
+    fn stealth_resolves_the_user_agent_once_and_injects_the_patches() {
+        let cdp = fake_cdp::FakeCdp::new(Box::new(|method: &str, _: &Value, _: Option<&str>| {
+            Ok(match method {
+                "Target.attachToTarget" => json!({"sessionId": "S"}),
+                "Browser.getVersion" => json!({
+                    "product": "HeadlessChrome/150.0.7871.24",
+                    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/150.0.7871.24 Safari/537.36",
+                }),
+                _ => json!({}),
+            })
+        }));
+        let page = Page::attach(cdp.client.clone(), "T").unwrap_or_else(|error| panic!("{error}"));
+        let mut state = crate::launch::stealth::StealthState::default();
+        assert_eq!(page.apply_stealth(&mut state), Ok(()));
+        assert_eq!(page.apply_stealth(&mut state), Ok(()));
+        assert_eq!(cdp.calls_of("Browser.getVersion").len(), 1);
+        let overrides = cdp.calls_of("Emulation.setUserAgentOverride");
+        assert_eq!(overrides.len(), 2);
+        assert_eq!(overrides[0].session.as_deref(), Some("S"));
+        assert!(
+            overrides[0].params["userAgent"]
+                .as_str()
+                .is_some_and(|ua| !ua.contains("Headless") && ua.contains("Windows NT 10.0"))
+        );
+        assert_eq!(cdp.calls_of("Network.setUserAgentOverride").len(), 2);
+        let scripts = cdp.calls_of("Page.addScriptToEvaluateOnNewDocument");
+        assert_eq!(scripts.len(), 2);
+        assert!(
+            scripts[0].params["source"]
+                .as_str()
+                .is_some_and(|source| source.contains("functionToStringProxy"))
+        );
     }
 
     #[test]
