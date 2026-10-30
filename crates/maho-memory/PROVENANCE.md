@@ -43,3 +43,13 @@
   opened. The legacy format spec was written from user docs and MIT call sites only (see the spec's
   source table).
 - Tests were written for this crate; no upstream or OmO fixtures were reused.
+
+## memory-format-5152 (method C)
+
+- Unit: `memory-format-5152`. Method: **C** (clean-room) from the `## Delta (omo v5.1.52,
+  2026-10-30)` section of `docs/cleanroom/specs/memory-format.md` at spec commit `80074bfa`.
+- Implemented in `src/legacy.rs` (`parse_expires`, `expiry_of`, `format_instant`, `import_at`,
+  `ImportReport::expired_on_import`, `valid_until` and `metadata_json.expires` on imported rows)
+  and `src/recall.rs` (`RecallOptions::valid_at`, the instant `valid_until` is checked against;
+  defaults to the current clock). Only the spec and this MIT tree were used; no SUL or upstream
+  source was opened. Each given/when/then case of the delta has a test in `src/legacy.rs`.
