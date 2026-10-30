@@ -27,10 +27,13 @@ pub struct LoaderIndicatorOptions {
 const DEFAULT_INTERVAL_MS: u64 = 80;
 
 fn default_frames() -> Vec<String> {
-    ["\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280f}"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    [
+        "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}",
+        "\u{2827}", "\u{2807}", "\u{280f}",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 /// Loader component that updates with an optional spinning animation (senpi's `Loader` extends
@@ -88,7 +91,7 @@ impl Loader {
         if self.message_formatter.is_some() {
             self.message_animation_started_at_ms = now_ms;
         }
-        self.update_display(now_ms);
+        let _ = self.update_display(now_ms);
         self.restart_animation(now_ms);
     }
 
@@ -100,14 +103,27 @@ impl Loader {
 
     pub fn set_message(&mut self, message: impl Into<String>, now_ms: u64) {
         self.message = message.into();
-        self.update_display(now_ms);
+        let _ = self.update_display(now_ms);
+    }
+
+    /// `set_message` that reports whether senpi would have requested a render.
+    pub fn set_message_requesting_render(
+        &mut self,
+        message: impl Into<String>,
+        now_ms: u64,
+    ) -> bool {
+        self.message = message.into();
+        self.update_display(now_ms)
     }
 
     pub fn set_indicator(&mut self, indicator: Option<LoaderIndicatorOptions>, now_ms: u64) {
         self.render_indicator_verbatim = indicator.is_some();
         let indicator = indicator.unwrap_or_default();
         self.frames = indicator.frames.unwrap_or_else(default_frames);
-        self.interval_ms = indicator.interval_ms.filter(|&ms| ms > 0).unwrap_or(DEFAULT_INTERVAL_MS);
+        self.interval_ms = indicator
+            .interval_ms
+            .filter(|&ms| ms > 0)
+            .unwrap_or(DEFAULT_INTERVAL_MS);
         self.indicator_formatter = indicator.indicator_formatter;
         self.message_formatter = indicator.message_formatter;
         self.message_interval_ms = indicator
@@ -152,7 +168,8 @@ impl Loader {
         now_ms.saturating_sub(self.message_animation_started_at_ms)
     }
 
-    fn update_display(&mut self, now_ms: u64) {
+    /// Returns whether the displayed text changed (senpi requests a render only then).
+    fn update_display(&mut self, now_ms: u64) -> bool {
         let animation_elapsed_ms = self.animation_elapsed_ms(now_ms);
         let rendered_frame = self.get_rendered_indicator(animation_elapsed_ms);
         let indicator = if rendered_frame.is_empty() {
@@ -166,14 +183,15 @@ impl Loader {
         };
         let displayed_text = format!("{indicator}{rendered_message}");
         if self.last_displayed_text.as_deref() == Some(displayed_text.as_str()) {
-            return;
+            return false;
         }
         self.last_displayed_text = Some(displayed_text.clone());
         self.text.set_text(displayed_text);
+        true
     }
 
     /// Fire any due indicator/message timers and return whether a render was requested
-    /// (senpi's `ui.requestRender()` calls inside the `setInterval` callbacks). Every interval
+    /// (senpi's `updateDisplay` calls `ui.requestRender()` only when the displayed text changed). Every interval
     /// that elapsed since the last tick advances one frame, so a sparse caller stays on time.
     pub fn tick(&mut self, now_ms: u64) -> bool {
         if !self.running {
@@ -184,14 +202,12 @@ impl Loader {
             let steps = (now_ms - due) / self.interval_ms + 1;
             self.current_frame = (self.current_frame + steps as usize) % self.frames.len().max(1);
             self.next_indicator_due_ms = Some(due + steps * self.interval_ms);
-            self.update_display(now_ms);
-            requested = true;
+            requested |= self.update_display(now_ms);
         }
         if let Some(due) = self.next_message_due_ms.filter(|&due| due <= now_ms) {
             let steps = (now_ms - due) / self.message_interval_ms + 1;
             self.next_message_due_ms = Some(due + steps * self.message_interval_ms);
-            self.update_display(now_ms);
-            requested = true;
+            requested |= self.update_display(now_ms);
         }
         requested
     }
@@ -219,7 +235,13 @@ mod tests {
     use std::rc::Rc;
 
     fn loader_at_zero() -> Loader {
-        Loader::new(Rc::new(|s| s.to_string()), Rc::new(|s| s.to_string()), "loading", None, 0)
+        Loader::new(
+            Rc::new(|s| s.to_string()),
+            Rc::new(|s| s.to_string()),
+            "loading",
+            None,
+            0,
+        )
     }
 
     #[test]
@@ -230,6 +252,122 @@ mod tests {
         assert!(loader.tick(250));
         assert_eq!(loader.current_frame, 3);
         assert!(loader.render(40).concat().contains('\u{2838}'));
+    }
+
+    fn identity() -> Rc<dyn Fn(&str) -> String> {
+        Rc::new(|s: &str| s.to_string())
+    }
+
+    fn working(indicator: LoaderIndicatorOptions, now_ms: u64) -> Loader {
+        Loader::new(identity(), identity(), "Working", Some(indicator), now_ms)
+    }
+
+    // ---- loader.test.ts (manual clock instead of real timers) ----
+
+    #[test]
+    fn uses_a_message_formatter_with_elapsed_animation_time() {
+        let mut loader = working(
+            LoaderIndicatorOptions {
+                frames: Some(vec!["\u{2022}".to_string()]),
+                message_formatter: Some(Rc::new(|message: &str, _elapsed: u64| {
+                    // u64 elapsed is always finite.
+                    format!("[true]{message}")
+                })),
+                ..Default::default()
+            },
+            0,
+        );
+        loader.stop();
+        let rendered = loader.render(40)[1].clone();
+        assert!(rendered.contains("\u{2022} [true]Working"), "{rendered:?}");
+    }
+
+    #[test]
+    fn keeps_animating_formatted_messages_with_a_static_indicator_frame() {
+        let formatted = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = Rc::clone(&formatted);
+        let mut loader = working(
+            LoaderIndicatorOptions {
+                frames: Some(vec!["\u{2022}".to_string()]),
+                interval_ms: Some(1_000),
+                message_formatter: Some(Rc::new(move |message: &str, elapsed: u64| {
+                    let text = format!("{message}:{elapsed}");
+                    sink.borrow_mut().push(text.clone());
+                    text
+                })),
+                message_interval_ms: Some(5),
+                ..Default::default()
+            },
+            0,
+        );
+        for now in (5..=25).step_by(5) {
+            loader.tick(now);
+        }
+        loader.stop();
+        let formatted = formatted.borrow();
+        assert!(formatted.len() >= 2, "{formatted:?}");
+        assert_ne!(formatted.first(), formatted.last());
+        let line = loader.render(40)[1].trim().to_string();
+        let pattern = regex::Regex::new(r"^\u{2022} Working:\d+$").unwrap();
+        assert!(pattern.is_match(&line), "{line:?}");
+    }
+
+    #[test]
+    fn keeps_animating_formatted_indicators_with_a_static_indicator_frame() {
+        let formatted = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = Rc::clone(&formatted);
+        let mut loader = working(
+            LoaderIndicatorOptions {
+                frames: Some(vec!["\u{2022}".to_string()]),
+                interval_ms: Some(1_000),
+                indicator_formatter: Some(Rc::new(move |frame: &str, elapsed: u64| {
+                    let text = format!("{frame}:{elapsed}");
+                    sink.borrow_mut().push(text.clone());
+                    text
+                })),
+                message_interval_ms: Some(5),
+                ..Default::default()
+            },
+            0,
+        );
+        for now in (5..=25).step_by(5) {
+            loader.tick(now);
+        }
+        loader.stop();
+        let formatted = formatted.borrow();
+        assert!(formatted.len() >= 2, "{formatted:?}");
+        assert_ne!(formatted.first(), formatted.last());
+        let line = loader.render(40)[1].trim().to_string();
+        let pattern = regex::Regex::new(r"^\u{2022}:\d+ Working$").unwrap();
+        assert!(pattern.is_match(&line), "{line:?}");
+    }
+
+    #[test]
+    fn formats_messages_when_the_indicator_is_hidden() {
+        let mut loader = working(
+            LoaderIndicatorOptions {
+                frames: Some(Vec::new()),
+                message_formatter: Some(Rc::new(|message: &str, _| format!("[{message}]"))),
+                ..Default::default()
+            },
+            0,
+        );
+        loader.stop();
+        assert_eq!(loader.render(40)[1].trim(), "[Working]");
+    }
+
+    #[test]
+    fn does_not_request_renders_when_the_displayed_loader_text_is_unchanged() {
+        let mut loader = working(
+            LoaderIndicatorOptions {
+                frames: Some(vec!["\u{2022}".to_string()]),
+                ..Default::default()
+            },
+            0,
+        );
+        assert!(!loader.set_message_requesting_render("Working", 10));
+        loader.stop();
+        assert!(!loader.tick(1_000));
     }
 
     #[test]
