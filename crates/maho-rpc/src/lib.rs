@@ -67,6 +67,7 @@ pub mod host_watchdog;
 pub mod host_zero_session_trim;
 pub mod json_event;
 pub mod jsonl;
+pub mod lifecycle_delivery;
 pub mod login_prompts;
 pub mod loop_blocked_time;
 pub mod loop_lag_watchdog;

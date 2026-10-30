@@ -101,7 +101,9 @@ impl SessionWriterActor{
         });
         Self{scheduler,changed,state,task}
     }
-    pub fn enqueue(&self,session_id:&str,value:Value)->Result<(),String>{
+    pub fn enqueue(&self,session_id:&str,mut value:Value)->Result<(),String>{
+        // Lifecycle copies are stamped where the host enqueues them (senpi `observeLifecycleDelivery`).
+        crate::lifecycle_delivery::observe_lifecycle_delivery(&mut value);
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.state.borrow().clone()?;
         let incoming=crate::jsonl::serialize_json_line(&value).map_err(|error|error.to_string())?.len();
@@ -126,8 +128,8 @@ impl SessionWriterActor{
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.state.borrow().clone()?;
         if !scheduler.reservations.release(id){return Ok(());}
-        if terminal{
-            if !scheduler.sealed.insert(session_id.into()){return Ok(());}
+        // A terminal close racing an overflow/park seal does not re-seal: only the closed response is appended.
+        if terminal&&scheduler.sealed.insert(session_id.into()){
             let mut lifecycle=serde_json::json!({"type":"session_closed","sessionId":session_id});
             if let Some(reason)=reason{lifecycle["reason"]=reason.into();}
             scheduler.enqueue(session_id,None,lifecycle);
