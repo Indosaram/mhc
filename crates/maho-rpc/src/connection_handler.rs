@@ -925,7 +925,25 @@ async fn handle_session_command_with_sink(
             if let Some(usage)=stats.context_usage{value["contextUsage"]=serde_json::json!({"tokens":usage.tokens,"contextWindow":usage.context_window,"percent":usage.percent});}
             ("get_session_stats",Ok(Some(value)))
         },
-        RpcCommandBody::GetEntries{since}=>{let since=since.clone();("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since.as_deref(){let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))}))},
+        RpcCommandBody::GetEntries{since,before,limit,tail,max_bytes}=>{
+            // senpi `answerGetEntries`: one answer for every surface, forward (`limit`) or backward (`tail`) pages.
+            let args=crate::get_entries_command::GetEntriesArgs{since:since.clone(),before:before.clone(),page:crate::get_entries_page::EntryPageRequest{limit:limit.clone(),tail:tail.clone(),max_bytes:max_bytes.clone()}};
+            match session.with_session_manager(|manager|crate::get_entries_command::answer_get_entries(&manager.entries(),manager.leaf_id(),&args)){
+                Ok(data)=>("get_entries",Ok(Some(data))),
+                Err(refusal)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_entries".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:refusal.message,error_code:Some(refusal.code.into()),error_data:default_error_data(session,"get_entries")}}),
+            }
+        },
+        RpcCommandBody::GetSnapshot{tail,max_bytes}=>{
+            // Capture and mark on this loop, before any response-writing await (senpi `getSnapshot`).
+            let (tail,max_bytes)=match crate::get_snapshot::snapshot_bounds(tail.as_ref(),max_bytes.as_ref()){
+                Ok(bounds)=>bounds,
+                Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_snapshot".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error,error_code:Some(crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT.into()),error_data:default_error_data(session,"get_snapshot")}}),
+            };
+            let state=build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new());
+            let (data,marker_id)=session.with_session_manager(|manager|crate::get_snapshot::build_snapshot(state,&manager.entries(),tail,max_bytes));
+            if command.session_id.is_some()&&let Some(sink)=sink.as_ref(){sink(serde_json::json!({"type":crate::get_snapshot::SNAPSHOT_MARKER,"markerId":marker_id}));}
+            ("get_snapshot",Ok(Some(data)))
+        },
         RpcCommandBody::NavigateTree{entry_id,target_id,intent,expected_leaf_id,summarize,custom_instructions,replace_instructions,label}=>{
             if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None}});}
             if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires entryId or targetId".into(),error_code:None}});}

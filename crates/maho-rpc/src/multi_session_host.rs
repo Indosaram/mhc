@@ -405,6 +405,7 @@ impl HostCore {
         );
         for capability in [
             "multi_session",
+            SNAPSHOT_CURSOR_CAPABILITY,
             AUTO_TITLE_SESSIONS_CAPABILITY,
             MEDIA_PLACEHOLDERS_CAPABILITY,
             crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
@@ -413,6 +414,9 @@ impl HostCore {
             SESSION_HELD_CAPABILITY,
             RESUME_SESSION_CAPABILITY,
             ATTENDED_CAPABILITY,
+            // `get_state`/`get_entries` marked `observe` never attach, and history reads page backward too (senpi#4267).
+            OBSERVE_READS_CAPABILITY,
+            ENTRIES_TAIL_CAPABILITY,
             RETAIN_ON_DISCONNECT_CAPABILITY,
             SESSION_CONTEXT_CAPABILITY,
             SESSION_KIND_CAPABILITY,

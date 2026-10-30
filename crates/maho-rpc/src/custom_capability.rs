@@ -36,6 +36,14 @@ pub const SESSION_RELOCATION_CAPABILITY: &str = "session_relocation";
 /// The capability a client's handshake carries when it can present an MCP grant decision (senpi `grant_select`);
 /// only such a connection is ever asked, and only its answer counts.
 pub const GRANT_SELECT_CAPABILITY: &str = "grant_select";
+/// `get_state` and `get_entries` accept `observe: true` and then never count as an attachment (senpi#4267).
+pub const OBSERVE_READS_CAPABILITY: &str = "observe_reads";
+/// `get_entries` accepts `before` and `tail` and answers `next_before` (senpi#4267).
+pub const ENTRIES_TAIL_CAPABILITY: &str = "entries_tail";
+/// A terminal control endpoint serves the host's observe-and-drive command set (senpi#4267).
+pub const TUI_OBSERVER_CAPABILITY: &str = "tui_observer";
+/// `get_snapshot` answers state and history captured together with a `snapshot_marker` cursor.
+pub const SNAPSHOT_CURSOR_CAPABILITY: &str = "snapshot_cursor";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 
