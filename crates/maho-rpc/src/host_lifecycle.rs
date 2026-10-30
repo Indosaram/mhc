@@ -398,15 +398,23 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     } else {
         None
     };
-    let internal = create_internal_socket_path(&paths.dir, platform)?;
-    let internal_secret: Option<Vec<u8>> = if platform == "win32" {
-        let secret_path = internal
-            .secret_path
-            .as_deref()
-            .ok_or_else(|| std::io::Error::other("internal socket has no secret path"))?;
-        Some(crate::socket_transport::create_socket_secret(secret_path)?.to_vec())
-    } else {
+    // senpi `prepareInternalHop`: a Windows pipe secret, or a fresh memory-only POSIX key the child gets on stdin.
+    let hop = crate::host_lifecycle_internal_key::prepare_internal_hop(&paths.dir, platform)?;
+    let internal = hop.internal;
+    let internal_secret = hop.internal_secret;
+    let internal_key = hop.internal_key;
+    // The public endpoint's per-launch key (POSIX): published only after the public bind, disposed at teardown.
+    #[cfg(unix)]
+    let public_endpoint = if platform == "win32" {
         None
+    } else {
+        Some(std::sync::Arc::new(
+            crate::rpc_public_key::RpcPublicEndpoint::new(
+                std::path::Path::new(&agent_dir),
+                &public_socket,
+            )
+            .map_err(std::io::Error::other)?,
+        ))
     };
     let child_launch = resolve_host_child_launch(&launch, &internal.socket)?;
     let mut child_env = crate::host_successor::successor_env(
@@ -424,7 +432,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             public_socket.clone(),
         );
     }
-    if internal_secret.is_some()
+    // The secret file is win32-only: the sealed hop replaces it on POSIX.
+    if platform == "win32"
+        && internal_secret.is_some()
         && let Some(secret_path) = &internal.secret_path
     {
         child_env.insert(
@@ -463,23 +473,28 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     );
     // The child's lifetime poll compares the supervisor's start on one clock per platform: `/proc` start ticks on
     // Linux, the recorded start time elsewhere (senpi `prepareInternalHop` supervisorStart).
-    if platform == "linux" {
-        if let Some(ticks) =
-            crate::process_start_identity::read_process_start_ticks(std::process::id())
-        {
-            child_env.insert(crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(), ticks);
+    if let Some(start) = &hop.supervisor_start {
+        if let Some(time) = &start.time {
+            child_env.insert(
+                crate::host_watchdog::HOST_WATCH_PSTART_ENV.into(),
+                time.clone(),
+            );
         }
-    } else if platform != "win32"
-        && let Some(start) = crate::host_reservations::read_process_start_time(std::process::id())
-    {
-        child_env.insert(crate::host_watchdog::HOST_WATCH_PSTART_ENV.into(), start);
+        if let Some(ticks) = &start.ticks {
+            child_env.insert(
+                crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(),
+                ticks.clone(),
+            );
+        }
     }
     // Linux: supervisor death reaches the child as FIFO EOF; the held writer is never closed by this process.
-    let _lifetime_binding = internal
-        .dir
-        .as_deref()
-        .filter(|_| platform != "win32")
-        .and_then(|dir| crate::host_lifetime_binding::prepare_lifetime_binding(dir, platform));
+    let _lifetime_binding = hop.lifetime_binding;
+    if internal_key.is_some() {
+        child_env.insert(
+            crate::internal_bootstrap::INTERNAL_KEY_STDIN_ENV.into(),
+            "1".into(),
+        );
+    }
     if let Some(binding) = &_lifetime_binding {
         child_env.insert(
             crate::host_watchdog::HOST_WATCH_LIFETIME_FIFO_ENV.into(),
@@ -504,11 +519,26 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         .args(&spawnable.args)
         .env_clear()
         .envs(child_env)
-        .stdin(std::process::Stdio::null())
+        // POSIX stdin is the key pipe: one write, and its write end stays alive until this supervisor exits.
+        .stdin(if internal_key.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::null())
         .stderr(stderr)
         .process_group(0)
         .spawn()?;
+    #[cfg(unix)]
+    let _key_pipe = match (internal_key, child.stdin.take()) {
+        (Some(key), Some(mut stdin)) => {
+            use tokio::io::AsyncWriteExt;
+            // A write failure is the child's to report (internal_key_unavailable); it must not crash the supervisor.
+            let _ = stdin.write_all(&key).await;
+            Some(stdin)
+        }
+        (_, stdin) => stdin,
+    };
     // win32: no unix lifetime pipe and no process group. The supervisor is spawned detached and owns no console,
     // so CREATE_NO_WINDOW gives the child a console without a window (senpi `windowsHide`); the lifetime
     // binding is the ppid watch alone.
@@ -558,12 +588,57 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // that connects during startup would be proxied to nothing.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(30_000);
     let started = loop {
-        if let Some(protocol) = crate::host_probe::probe_protocol_info_with_secret(
-            &internal.socket,
-            internal_secret.as_deref(),
-            2000,
-        )
-        .await
+        #[cfg(unix)]
+        {
+            if let Some(key) = &internal_key {
+                // senpi `waitForListener` with the internal key: one sealed probe per attempt.
+                let probe_ms = crate::host_lifecycle_proxy::INTERNAL_READINESS_PROBE_MS.min(
+                    deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_millis()
+                        .max(1) as u64,
+                );
+                match crate::host_lifecycle_proxy::probe_internal_listener(
+                    std::path::Path::new(&internal.socket),
+                    key,
+                    probe_ms,
+                )
+                .await
+                {
+                    crate::host_lifecycle_proxy::ReadinessProbe::Ready(data) => {
+                        if let Some(protocol) =
+                            crate::host_protocol_info::parse_host_protocol_info(&data)
+                            && protocol.instance_id.as_deref() == Some(instance_id.as_str())
+                        {
+                            break protocol;
+                        }
+                    }
+                    crate::host_lifecycle_proxy::ReadinessProbe::Refused => {}
+                    crate::host_lifecycle_proxy::ReadinessProbe::Silent => {
+                        let _ = child.kill().await;
+                        return Err(std::io::Error::other(format!(
+                            "{}: host accepted the internal hop but did not answer within {probe_ms}ms",
+                            internal.socket
+                        )));
+                    }
+                    // A host that answered but could not prove the key will not start proving it: fail now, and say why.
+                    crate::host_lifecycle_proxy::ReadinessProbe::Unproven(reason) => {
+                        let _ = child.kill().await;
+                        return Err(std::io::Error::other(format!(
+                            "{}: {reason}",
+                            internal.socket
+                        )));
+                    }
+                }
+            }
+        }
+        if internal_key.is_none()
+            && let Some(protocol) = crate::host_probe::probe_protocol_info_with_secret(
+                &internal.socket,
+                internal_secret.as_deref(),
+                2000,
+            )
+            .await
             && protocol.instance_id.as_deref() == Some(instance_id.as_str())
         {
             break protocol;
@@ -613,6 +688,13 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bind_socket, std::fs::Permissions::from_mode(0o600))?;
+        }
+        // The key record only after the bind (senpi `publicEndpoint.publish()` after `listen`).
+        if let Some(endpoint) = &public_endpoint
+            && let Err(error) = endpoint.publish()
+        {
+            let _ = child.kill().await;
+            return Err(std::io::Error::other(error));
         }
         if launch.bind_socket.is_some() && bind_socket != public_socket {
             crate::socket_ownership::adopt_public_socket(
@@ -702,14 +784,22 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let observer_draining = draining_rx.clone();
     #[cfg(windows)]
     let observer_secret = internal_secret.clone();
+    #[cfg(unix)]
+    let observer_key = internal_key;
     let observer = tokio::spawn(async move {
         let mut observed = ObservedHostTurns::default();
         loop {
             if *observer_draining.borrow() {
                 return;
             }
+            // Sealed with the internal key and the 5 s handshake bound; a failed open drops the socket.
             #[cfg(unix)]
-            let connected = tokio::net::UnixStream::connect(&observer_socket).await.ok();
+            let connected = crate::host_lifecycle_activity::connect_observer(
+                std::path::Path::new(&observer_socket),
+                observer_key.as_ref(),
+            )
+            .await
+            .ok();
             #[cfg(windows)]
             let connected = async {
                 let mut stream =
@@ -762,12 +852,24 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     });
     #[cfg(unix)]
     let _ = &public_secret;
+    // senpi `createPublicProxy`: sealed internal side, public key filter, admission authority.
     #[cfg(unix)]
-    let proxy = run_socket_proxy(
+    let admission = std::sync::Arc::new(crate::host_admission::HostAdmission::new(
+        serde_json::json!({"protocolVersion":1,"serverVersion":maho_core::engine_build_identity::engine_build_identity().text,"capabilities":[],"instanceId":instance_id})
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    ));
+    #[cfg(unix)]
+    let proxy = crate::host_lifecycle_proxy::run_public_proxy(
         listener,
-        std::path::PathBuf::from(&internal.socket),
-        None,
-        None,
+        crate::host_lifecycle_proxy::PublicProxyOptions {
+            internal_socket: std::path::PathBuf::from(&internal.socket),
+            internal_key,
+            public_endpoint: public_endpoint.clone(),
+            require_token: crate::rpc_public_auth::PublicRpcConnection::require_token_from_env(),
+            admission: admission.clone(),
+        },
         draining_rx.clone(),
         connections_tx,
     );
@@ -815,6 +917,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             changed=drain_rx.changed()=>{
                 if changed.is_ok()&&*drain_rx.borrow()&&!draining{
                     draining=true;
+                    // senpi `SupervisorDrain.drain` -> `admission.stop()`: opens are refused from this instant.
+                    #[cfg(unix)]
+                    admission.stop();
                     eprintln!("senpi rpc host supervisor: draining into the next generation");
                     request_child_drain(child_pid,&child_running,Some(&drain_relay),std::env::consts::OS=="windows");
                     let grace_ms=resolve_handoff_grace_ms(&std::env::vars().collect::<HashMap<String,String>>());
@@ -829,7 +934,12 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         }
     }
     // Teardown: stop accepting, let the host exit, then remove only the entries this generation
-    // still owns so a replacement's freshly published socket survives.
+    // still owns so a replacement's freshly published socket survives. Admission stops first: pending opens are
+    // refused host_stopping, flushed within its bound (senpi `performShutdown`).
+    #[cfg(unix)]
+    {
+        admission.stop();
+    }
     supersession.stop();
     drain_request_watch.stop();
     child_pid_task.abort();
@@ -864,8 +974,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     crate::socket_ownership::unlink_owned_socket(&public_socket, bound, platform, |_| {});
     crate::host_daemon_registration::release_generation(&paths, &instance_id, child_pid)?;
     crate::host_daemon_registration::release_generation(&paths, &instance_id, std::process::id())?;
+    #[cfg(unix)]
+    admission.flush().await;
     if let Some(dir) = internal.dir {
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(unix)]
+    if let Some(endpoint) = &public_endpoint
+        && let Err(error) = endpoint.dispose()
+    {
+        eprintln!("senpi rpc host supervisor: endpoint key cleanup failed: {error}");
     }
     if let Some(code) = signal_code {
         std::process::exit(code);
