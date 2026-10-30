@@ -33,6 +33,7 @@ impl Fixture {
             "repository-identity",
             json!({"rootCommits":["a".repeat(40)]}),
         )
+        .await
         .expect("identity");
         let bundle = root.path().join("bundle");
         let receiver = root.path().join("receiver");
@@ -145,7 +146,7 @@ async fn import_fault_boundaries_reconcile_from_file_and_never_land_twice() {
             .is_err()
         );
         assert_ne!(
-            ownership::session_ownership(&entries(&f.sender)),
+            ownership::session_ownership(&entries(&f.sender).await),
             ownership::SessionOwnership::Writable
         );
     }
@@ -174,11 +175,11 @@ async fn revoke_fault_boundaries_preserve_the_mark_and_reclaim_sender() {
         f.revoke(&imported).await.expect("idempotent revoke");
         f.finish(&answer).await.expect("reclaim");
         assert_eq!(
-            ownership::session_ownership(&entries(&f.sender)),
+            ownership::session_ownership(&entries(&f.sender).await),
             ownership::SessionOwnership::Writable
         );
         assert_ne!(
-            ownership::session_ownership(&entries(&imported)),
+            ownership::session_ownership(&entries(&imported).await),
             ownership::SessionOwnership::Writable
         );
     }
@@ -207,6 +208,7 @@ async fn finish_fault_boundaries_requeue_exactly_once() {
         assert!(!f.bundle.exists());
         assert_eq!(
             entries(&f.sender)
+                .await
                 .iter()
                 .filter(|e| e["customType"] == "pending_input_transition"
                     && e["data"]["input"]["clientMessageId"] == "move:m1:0")
@@ -249,6 +251,7 @@ async fn payloads_are_verified_staged_and_redelivered_on_fresh_attempt_copies() 
     .expect("restore");
     assert!(
         extension_state::pending_moved_state(&imported)
+            .await
             .expect("pending")
             .is_none()
     );
@@ -271,22 +274,29 @@ async fn revoked_answer_cannot_reopen_an_already_moved_sender_and_wrong_status_p
             .contains("move_already_moved")
     );
 }
-#[test]
-fn sealed_attempt_is_the_only_attempt_selected_and_payload_tamper_is_refused() {
+#[tokio::test]
+async fn sealed_attempt_is_the_only_attempt_selected_and_payload_tamper_is_refused() {
     let root = tempfile::tempdir().expect("tempdir");
     let file = root.path().join("s.jsonl");
     std::fs::write(&file, "{\"type\":\"session\",\"id\":\"s\"}\n").expect("session");
-    let first = extension_state::prepare_outgoing_state(&file, "m1").expect("first");
-    let second = extension_state::prepare_outgoing_state(&file, "m1").expect("second");
+    let first = extension_state::prepare_outgoing_state(&file, "m1")
+        .await
+        .expect("first");
+    let second = extension_state::prepare_outgoing_state(&file, "m1")
+        .await
+        .expect("second");
     assert!(!first.dir.exists());
     append_custom(
         &file,
         ownership::SESSION_RELEASED,
         json!({"move_id":"m1","state_attempt":second.attempt}),
     )
+    .await
     .expect("seal");
     assert_eq!(
-        extension_state::sealed_outgoing_state_dir(&file, "m1").expect("sealed"),
+        extension_state::sealed_outgoing_state_dir(&file, "m1")
+            .await
+            .expect("sealed"),
         Some(second.dir)
     );
 }
@@ -411,13 +421,16 @@ fn payload_parser_checks_kind_prefix_and_traversal() {
 #[tokio::test]
 async fn sealed_release_payload_is_discovered_without_a_caller_override() {
     let f = Fixture::new().await;
-    let staged = extension_state::prepare_outgoing_state(&f.sender, "m1").expect("stage");
+    let staged = extension_state::prepare_outgoing_state(&f.sender, "m1")
+        .await
+        .expect("stage");
     std::fs::write(staged.dir.join("extension.json"), "state").expect("state");
     append_custom(
         &f.sender,
         ownership::SESSION_RELEASED,
         json!({"reason":"move","move_id":"m1","state_attempt":staged.attempt}),
     )
+    .await
     .expect("seal");
     let manifest = f.export(None).await.expect("export sealed state");
     assert!(
