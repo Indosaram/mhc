@@ -118,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn stores_validates_and_clears_the_account_order() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut storage = AuthStorage::create(&tmp.path().join("auth.json").to_string_lossy());
+        let storage = AuthStorage::create(&tmp.path().join("auth.json").to_string_lossy());
         let repository = CredentialSlotRepository::new(
             &tmp.path()
                 .join("credential-pool-state.json")
