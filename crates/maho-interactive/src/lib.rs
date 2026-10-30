@@ -21,6 +21,7 @@ pub mod interactive_terminal;
 pub mod interactive_ui_host;
 pub mod jsdiff;
 pub mod keybindings_command;
+pub mod lifecycle_status;
 pub mod loaded_resource_scopes;
 pub mod login_outcome;
 pub mod model_catalog_refresh;

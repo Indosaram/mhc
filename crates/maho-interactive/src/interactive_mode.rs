@@ -169,6 +169,9 @@ pub struct AuthNotices {
 type AuthUiEvents = tokio::sync::mpsc::UnboundedReceiver<AuthUiEvent>;
 /// senpi `FALLBACK_STATUS_KEY`.
 const FALLBACK_STATUS_KEY: &str = "fallback";
+/// senpi `HOST_STATUS_KEYS`: footer statuses the host owns; an extension UI reset (e.g. /reload)
+/// keeps them.
+const HOST_STATUS_KEYS: [&str; 1] = [crate::lifecycle_status::LIFECYCLE_STATUS_KEY];
 /// A queued tree-edit prefill: `(entryId, editedText, expectedLeafId)`.
 type PendingTreeEdit = (String, String, Option<String>);
 /// A queued tree-navigation choice: `(entryId, summarize, customInstructions)`.
@@ -1004,6 +1007,13 @@ pub struct InteractiveMode {
     side_column: Option<maho_ext_api::ExtensionSideColumn>,
     detach_mcp_grant_presentation: Option<Box<dyn FnOnce() + Send + 'static>>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
+    /// senpi `lifecycleStatus`: the footer's projection of the bound session's lifecycle.
+    lifecycle_status: crate::lifecycle_status::LifecycleStatus,
+    /// senpi `agentSubscriptionGeneration`: lifecycle records from a retired binding are dropped.
+    lifecycle_subscription_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// The `session_lifecycle` bus subscription of the bound session and its record channel.
+    lifecycle_subscription: Option<maho_core::event_bus::EventSubscription>,
+    lifecycle_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>>,
     side_column_widget_bounds: Option<(usize, usize)>,
     mounted_side_column: Option<crate::side_column::MountedSideColumn>,
     terminal_dimensions: Rc<std::cell::Cell<(u16, u16)>>,
@@ -2696,6 +2706,10 @@ impl InteractiveMode {
             side_column: None,
             detach_mcp_grant_presentation: None,
             unsubscribe_security_notices: None,
+            lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
+            lifecycle_subscription_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lifecycle_subscription: None,
+            lifecycle_rx: None,
             mounted_side_column: None,
             keyword_turn_glow: false,
             theme_rebuild_pending: false,
@@ -4717,7 +4731,7 @@ impl InteractiveMode {
                 Box::pin(async move {
                     use maho_ext_api::ExtensionUi;
                     let signal = maho_ext_api::AbortSignal::default();
-                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None });
+                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None, ..Default::default() });
                     tokio::select! {
                         answer = selection => Ok(answer),
                         () = opts.cancelled() => { signal.abort(); Ok(None) }
@@ -4743,12 +4757,86 @@ impl InteractiveMode {
         );
         self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
 
+        self.subscribe_to_lifecycle();
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
         loop {
             tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) }
         }
         self.finish_extension_binding().await;
+    }
+
+    /// senpi `showLifecycleStatus` + the `session_lifecycle` arm of `subscribeToAgent`: bind the
+    /// footer status to the current session, and drop records from a retired subscription.
+    fn subscribe_to_lifecycle(&mut self) {
+        use std::sync::atomic::Ordering;
+        let generation = self
+            .lifecycle_subscription_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        self.lifecycle_subscription = None;
+        let session_id = self.session.session_id();
+        self.lifecycle_status
+            .bind(&session_id, &self.session.lifecycle_snapshot());
+        let text = self.lifecycle_status.text();
+        self.set_extension_status(
+            crate::lifecycle_status::LIFECYCLE_STATUS_KEY,
+            text.as_deref(),
+        );
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let current = self.lifecycle_subscription_generation.clone();
+        self.lifecycle_subscription = Some(self.session.on_extension_event(
+            "session_lifecycle",
+            Arc::new(move |record: &serde_json::Value| {
+                if current.load(Ordering::SeqCst) == generation {
+                    drop(sender.send((generation, record.clone())));
+                }
+            }),
+        ));
+        self.lifecycle_rx = Some(receiver);
+    }
+
+    /// Apply queued `session_lifecycle` records of the current subscription.
+    fn drain_lifecycle_records(&mut self) {
+        use std::sync::atomic::Ordering;
+        let Some(receiver) = self.lifecycle_rx.as_mut() else {
+            return;
+        };
+        let mut records = Vec::new();
+        while let Ok(record) = receiver.try_recv() {
+            records.push(record);
+        }
+        let generation = self
+            .lifecycle_subscription_generation
+            .load(Ordering::SeqCst);
+        let session_id = self.session.session_id();
+        for (record_generation, record) in records {
+            if record_generation != generation
+                || record["sessionId"].as_str() != Some(session_id.as_str())
+            {
+                continue;
+            }
+            let lifecycle = &record["lifecycle"];
+            if !self.lifecycle_status.owns(lifecycle) {
+                self.lifecycle_status
+                    .bind(&session_id, &self.session.lifecycle_snapshot());
+            }
+            self.lifecycle_status.accept(lifecycle);
+            let text = self.lifecycle_status.text();
+            let current = self
+                .extension_ui
+                .statuses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(crate::lifecycle_status::LIFECYCLE_STATUS_KEY)
+                .cloned();
+            if current != text {
+                self.set_extension_status(
+                    crate::lifecycle_status::LIFECYCLE_STATUS_KEY,
+                    text.as_deref(),
+                );
+            }
+        }
     }
 
     /// The session-side half of `bind_extensions`. It does not borrow the mode, so the caller can
@@ -4767,6 +4855,12 @@ impl InteractiveMode {
     /// The mode-side half of `bind_extensions`, run once the binding future settles.
     pub async fn finish_extension_binding(&mut self) {
         self.drain_ui_requests();
+        // senpi v2026.10.27-2 `bindCurrentSessionExtensions`: a reopened interrupted/paused session
+        // shows its footer before any pause event.
+        let pause = crate::pause_footer::pause_footer_text(
+            &crate::pause_footer::PauseView::of_session(&self.session),
+        );
+        self.set_extension_status(crate::pause_footer::PAUSE_STATUS_KEY, pause.as_deref());
         self.register_discovered_themes();
         // senpi `rebindCurrentSession` -> `setupAutocompleteProvider`: extension commands and skills
         // are known only once the session is bound.
@@ -10353,6 +10447,7 @@ impl InteractiveMode {
         self.drain_remote_history();
         self.drain_remote_models();
         self.drain_remote_stats();
+        self.drain_lifecycle_records();
         while let Ok(event) = self.events.try_recv() {
             self.handle_session_event(&event);
         }
@@ -11136,7 +11231,7 @@ impl InteractiveMode {
 
     /// senpi `setExtensionStatus`.
     fn set_extension_status(&mut self, key: &str, text: Option<&str>) {
-        maho_ext_api::ExtensionUi::set_status(self.extension_ui.as_ref(), key, text);
+        self.extension_ui.set_host_status(key, text);
         self.editor_host.request_render();
     }
 
@@ -11627,6 +11722,8 @@ impl InteractiveMode {
             }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
+            // senpi v2026.10.27-2 `session_recovered`: a torn session tail was kept aside; say so once.
+            AgentSessionEvent::SessionRecovered { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
             // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
@@ -11999,7 +12096,14 @@ impl InteractiveMode {
     /// editor, autocomplete wrappers, the extension and active-tool terminal titles, and the working
     /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
     fn reset_extension_ui(&mut self) {
+        // senpi `clearExtensionStatuses(HOST_STATUS_KEYS)`: the rendered statuses live in
+        // `extension_ui.statuses`, which keeps the host-owned keys (`reset_before_session_invalidate`).
         self.footer_data.clear_extension_statuses();
+        self.extension_ui
+            .statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|key, _| HOST_STATUS_KEYS.contains(&key.as_str()));
         use crate::interactive_extension_ui::UiRequest;
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
@@ -14447,6 +14551,16 @@ impl Component for InteractiveMode {
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
             unsubscribe();
         }
+        // senpi `dispose`: retire the lifecycle subscription and clear its status without a frame.
+        self.lifecycle_subscription_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.lifecycle_subscription = None;
+        self.lifecycle_rx = None;
+        self.extension_ui
+            .statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(crate::lifecycle_status::LIFECYCLE_STATUS_KEY);
         self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets {
             widget.dispose();
