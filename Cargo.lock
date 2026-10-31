@@ -4981,7 +4981,9 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "futures",
  "icu_collator",
+ "libc",
  "maho-agent",
  "maho-ai",
  "maho-core",
@@ -4993,6 +4995,7 @@ dependencies = [
  "maho-tui",
  "notify",
  "regex",
+ "rustix 1.1.4",
  "semver",
  "serde",
  "serde_json",
@@ -5003,6 +5006,7 @@ dependencies = [
  "tokio",
  "two-face",
  "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]
@@ -5868,6 +5872,7 @@ dependencies = [
 name = "maho-rpc"
 version = "0.0.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -5876,6 +5881,8 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "hex",
+ "hkdf",
+ "hmac",
  "libc",
  "libproc",
  "maho-agent",

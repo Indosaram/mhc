@@ -298,7 +298,8 @@ pub fn parse_supervisor_args(argv: &[String]) -> Option<SupervisorLaunch> {
         if arg == crate::mcp_presenter_bootstrap::MCP_PRESENTER_FD_FLAG
             && argv.get(index + 1).map(String::as_str) == Some("4")
         {
-            launch.presenter_bootstrap_fd = Some(crate::mcp_presenter_bootstrap::MCP_PRESENTER_BOOTSTRAP_FD);
+            launch.presenter_bootstrap_fd =
+                Some(crate::mcp_presenter_bootstrap::MCP_PRESENTER_BOOTSTRAP_FD);
             index += 2;
             continue;
         }
@@ -586,16 +587,21 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // The opt-in relay runs beside the supervisor; the child's copy of the channel was handed over at spawn.
     #[cfg(unix)]
     let _presenter_relay = presenter.and_then(|(adopted, channel)| {
-        let crate::mcp_presenter_bootstrap::ChildBootstrap { parent, child: inherited } = channel;
+        let crate::mcp_presenter_bootstrap::ChildBootstrap {
+            parent,
+            child: inherited,
+        } = channel;
         drop(inherited);
         let upstream = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream_from(adopted)?;
         // Bounded by the relay's 30 s deadline and either side's EOF; the supervisor does not re-launch with it.
-        Some(tokio::spawn(crate::mcp_presenter_bootstrap::relay_presenter_bootstrap(
-            upstream,
-            parent,
-            None,
-            std::future::pending::<()>(),
-        )))
+        Some(tokio::spawn(
+            crate::mcp_presenter_bootstrap::relay_presenter_bootstrap(
+                upstream,
+                parent,
+                None,
+                std::future::pending::<()>(),
+            ),
+        ))
     });
     // win32: no unix lifetime pipe and no process group. The supervisor is spawned detached and owns no console,
     // so CREATE_NO_WINDOW gives the child a console without a window (senpi `windowsHide`); the lifetime
@@ -718,12 +724,13 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                 {
                     if let Some(key) = &internal_key {
                         // senpi `waitForListener` with the internal key: one sealed probe per attempt.
-                        let probe_ms = crate::host_lifecycle_proxy::INTERNAL_READINESS_PROBE_MS.min(
-                            deadline
-                                .saturating_duration_since(tokio::time::Instant::now())
-                                .as_millis()
-                                .max(1) as u64,
-                        );
+                        let probe_ms = crate::host_lifecycle_proxy::INTERNAL_READINESS_PROBE_MS
+                            .min(
+                                deadline
+                                    .saturating_duration_since(tokio::time::Instant::now())
+                                    .as_millis()
+                                    .max(1) as u64,
+                            );
                         match crate::host_lifecycle_proxy::probe_internal_listener(
                             std::path::Path::new(&internal_socket),
                             key,
@@ -2080,7 +2087,15 @@ mod tests {
     #[test]
     fn supervisor_parser_takes_only_the_reserved_presenter_descriptor() {
         let launch = parse_supervisor_args(
-            &["--socket", "sock", "--mcp-presenter-fd", "4", "--mode", "rpc"].map(str::to_owned),
+            &[
+                "--socket",
+                "sock",
+                "--mcp-presenter-fd",
+                "4",
+                "--mode",
+                "rpc",
+            ]
+            .map(str::to_owned),
         )
         .unwrap();
         assert_eq!(launch.presenter_bootstrap_fd, Some(4));
