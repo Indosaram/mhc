@@ -25,3 +25,44 @@ fn upstream_nested_network_errors_preserve_unique_errno_details() {
     assert_eq!(format_version_check_error("fetch failed", &[VersionCheckCause { code: None, message: Some("connect timeout") }]), "fetch failed (cause: connect timeout)");
     assert_eq!(format_version_check_error("root", &[]), "root");
 }
+// senpi version-check.test.ts and brand-update-channel.test.ts pure cases.
+#[test]
+fn upstream_compares_package_versions() {
+    assert!(compare_package_versions("0.70.6", "0.70.5").unwrap() > 0);
+    assert_eq!(compare_package_versions("0.70.5", "0.70.5"), Some(0));
+    assert!(compare_package_versions("0.70.4", "0.70.5").unwrap() < 0);
+    assert!(compare_package_versions("5.0.0-beta.20", "5.0.0-beta.9").unwrap() > 0);
+    assert!(!is_newer_package_version("0.70.5", "0.70.5"));
+    assert!(is_newer_package_version("0.70.6", "0.70.5"));
+}
+#[test]
+fn upstream_orders_same_day_calver_revisions_after_the_bare_release() {
+    assert!(compare_package_versions("2026.7.30-2", "2026.7.30").unwrap() > 0);
+    assert!(compare_package_versions("2026.7.30", "2026.7.30-2").unwrap() < 0);
+    assert!(compare_package_versions("2026.7.31", "2026.7.30-99").unwrap() > 0);
+    assert!(!is_newer_package_version("2026.7.30", "2026.7.30-2"));
+    assert!(is_newer_package_version("2026.7.30-2", "2026.7.30"));
+}
+#[test]
+fn upstream_never_advertises_an_update_for_branded_build_labels() {
+    let label = "omo@c6e7dd7 2026-09-04 10:17 +09:00";
+    assert!(!is_newer_package_version("2026.9.3-3", label));
+    assert!(!is_newer_package_version(label, "2026.9.3-3"));
+}
+#[test]
+fn upstream_release_changelog_urls_follow_the_channel_or_the_engine() {
+    assert_eq!(get_release_changelog_url("2026.6.28-4", None), "https://github.com/code-yeongyu/senpi/blob/v2026.6.28-4/packages/coding-agent/CHANGELOG.md");
+    assert_eq!(get_release_changelog_url("2026.8.10", None), "https://github.com/code-yeongyu/senpi/blob/v2026.8.10/packages/coding-agent/CHANGELOG.md");
+    assert_eq!(
+        get_release_changelog_url("5.0.0-0.beta.4", Some("https://github.com/code-yeongyu/oh-my-openagent/releases/tag/v{version}")),
+        "https://github.com/code-yeongyu/oh-my-openagent/releases/tag/v5.0.0-0.beta.4"
+    );
+}
+#[test]
+fn upstream_reads_the_branded_dist_tag_or_the_engine_version() {
+    let dist_tags = serde_json::json!({"latest": "0.0.0-beta.0", "beta": "5.0.0-0.beta.4"});
+    assert_eq!(read_available_version(&dist_tags, Some("beta")).as_deref(), Some("5.0.0-0.beta.4"));
+    assert_eq!(read_available_version(&dist_tags, Some("missing")), None);
+    assert_eq!(read_available_version(&serde_json::json!({"version": "2026.8.10"}), None).as_deref(), Some("2026.8.10"));
+    assert_eq!(read_available_version(&serde_json::json!({}), None), None);
+}
