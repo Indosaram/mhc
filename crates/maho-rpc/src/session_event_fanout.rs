@@ -590,7 +590,7 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         Ok(stdio)
     }
@@ -1280,6 +1280,49 @@ mod tests {
         fanout.unregister("c2");
         fanout.forget_session("s1");
         assert!(fanout.security_snapshot("s1").is_none());
+        assert!(fanout.attached_connections("s1").is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_enqueue_on_deliver_reaps_connection_and_revokes_grant() {
+        let mut fanout = SessionEventFanout::default();
+        let closed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = std::sync::Arc::clone(&closed);
+        fanout.set_on_connection_closed(std::sync::Arc::new(move |id: &str| {
+            seen.lock().unwrap().push(id.to_owned());
+        }));
+        let (w, _r) = tokio::io::duplex(1024);
+        // An 8-byte budget makes the first record overflow synchronously inside `enqueue`.
+        fanout.register(
+            "presenter",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                w,
+                8,
+                30000,
+                std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::loop_blocked_time::LoopBlockedTime::default(),
+                )),
+                |_| {},
+            ),
+        );
+        fanout
+            .set_capabilities("presenter", &["grant_select".into()])
+            .unwrap();
+        fanout.attach("presenter", "s1", 0.0).unwrap();
+        let grant_dialog = json!({
+            "type": "extension_ui_request",
+            "id": "grant-req-4",
+            "method": "select",
+            "grantSelect": true,
+            "title": "Select grant"
+        });
+
+        let stdio = fanout.deliver("s1", None, false, &grant_dialog).unwrap();
+
+        assert!(stdio.is_empty());
+        assert_eq!(*closed.lock().unwrap(), vec!["presenter".to_owned()]);
+        assert!(!fanout.is_registered("presenter"));
+        assert!(fanout.grants_for_connection("presenter").is_empty());
         assert!(fanout.attached_connections("s1").is_empty());
     }
 }
