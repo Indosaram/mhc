@@ -268,7 +268,7 @@ fn restore_digest_input(
                 outcome: result.outcome.to_owned(),
                 command: result.command.clone(),
                 path: result.path.clone(),
-                reason: None,
+                reason: result.reason.clone(),
                 orphan: None,
             })
             .collect(),
@@ -362,8 +362,97 @@ struct TakeoverContext {
     decided: Arc<tokio::sync::watch::Sender<u64>>,
     /// Upstream `restoreSessionTestHooks.keeperIntervalMs`; `None` in production.
     keeper_interval_ms: Option<u64>,
+    /// Upstream `restoreSessionTestHooks.graceMs`; `None` (RESTORE_GRACE_MS) in production.
+    restore_grace_ms: Option<u64>,
+    /// Upstream `own` ends with `flushRestoreDigest`: deliver the decided digest once a model is bound.
+    flush: Option<Arc<dyn Fn() + Send + Sync>>,
 }
+type ExitWatch = tokio::sync::watch::Receiver<Option<Result<maho_pty::PtyExit, String>>>;
 impl TakeoverContext {
+    /// Upstream durable-command `exitsWithin(runtime, graceMs)`: a respawned command watch is
+    /// restored only if it is still running when the grace window closes. An exit inside it is
+    /// `completed` (code 0) or `lost` with `exited <code> in <ms>ms: <first output line>`, and the
+    /// entry is not kept in the manifest (its id is returned). All windows share one deadline
+    /// (upstream `Promise.all`).
+    async fn settle_restored_commands(
+        &self,
+        digest: &mut crate::restore::RestoreDigest,
+    ) -> Vec<String> {
+        let watches: Vec<(usize, String, ExitWatch)> = {
+            let mut manager = self
+                .manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            digest
+                .results
+                .iter()
+                .enumerate()
+                .filter(|(_, result)| {
+                    !result.file && matches!(result.outcome, "restored" | "muted")
+                })
+                .filter_map(|(index, result)| {
+                    let id = manager.resolve_id(&result.monitor_id)?;
+                    let exit = manager.get(&id)?.subscribe_exit();
+                    Some((index, id, exit))
+                })
+                .collect()
+        };
+        let mut settled_ids = Vec::new();
+        if watches.is_empty() {
+            return settled_ids;
+        }
+        let started = std::time::Instant::now();
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(
+                self.restore_grace_ms
+                    .unwrap_or(crate::shared::RESTORE_GRACE_MS),
+            );
+        for (index, id, mut exit) in watches {
+            let code = match tokio::time::timeout_at(deadline, exit.wait_for(Option::is_some)).await
+            {
+                Ok(Ok(settled)) => settled
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .and_then(|exit| exit.exit_code),
+                _ => continue,
+            };
+            let result = &mut digest.results[index];
+            match result.outcome {
+                "muted" => digest.muted -= 1,
+                _ => digest.restored -= 1,
+            }
+            if code == Some(0) {
+                result.outcome = "completed";
+                digest.completed += 1;
+            } else {
+                let output = self
+                    .manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&id)
+                    .and_then(|runtime| runtime.full_output().ok())
+                    .unwrap_or_default();
+                let line = crate::output_format::sanitize_terminal_output(&output)
+                    .split('\n')
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(|line| line.chars().take(200).collect::<String>())
+                    .unwrap_or_default();
+                let exit =
+                    code.map_or_else(|| "exited".to_owned(), |code| format!("exited {code}"));
+                let elapsed = started.elapsed().as_millis();
+                result.outcome = "lost";
+                result.reason = Some(if line.is_empty() {
+                    format!("{exit} in {elapsed}ms")
+                } else {
+                    format!("{exit} in {elapsed}ms: {line}")
+                });
+                digest.lost += 1;
+            }
+            settled_ids.push(result.monitor_id.clone());
+        }
+        settled_ids
+    }
     /// Upstream `own(lease)`: restore the manifest, set the decided digest, sweep stale state.
     async fn own(&self, mut lifecycle: crate::terminal_state::TerminalStateLifecycle, now: f64) {
         // Upstream `startPersistence`: stale overflow files are swept fire-and-forget; errors are swallowed.
@@ -379,6 +468,7 @@ impl TakeoverContext {
             Ok(Some(manifest)) => (now - manifest.updated_at).max(0.0),
             _ => 0.0,
         };
+        let readable_manifest = matches!(restore_state, Ok(Some(_)));
         let digest = {
             let mut manager = self
                 .manager
@@ -397,6 +487,34 @@ impl TakeoverContext {
                 &self.settings,
             )
         };
+        // Bound before the grace window: monitors created meanwhile reach this recorder.
+        *self.state.lock().await = Some(lifecycle);
+        // Upstream restores on a detached promise: session_start never waits on a grace window.
+        let this = self.clone();
+        drop(tokio::spawn(async move {
+            this.decide(digest, downtime, readable_manifest).await;
+        }));
+    }
+
+    /// The rest of upstream `own(lease)` once the restore ran: settle the grace window, rewrite a
+    /// readable manifest, drop dead watches' state dirs, set the decided digest, sweep, signal.
+    async fn decide(
+        &self,
+        mut digest: crate::restore::RestoreDigest,
+        downtime: f64,
+        readable_manifest: bool,
+    ) {
+        let settled = self.settle_restored_commands(&mut digest).await;
+        if let Some(lifecycle) = self.state.lock().await.as_mut() {
+            for monitor_id in &settled {
+                lifecycle.writer.forget_restored(monitor_id);
+            }
+            // Upstream `persistRestored`: a readable manifest is rewritten to the restore's truth,
+            // so a watch that did not come back is gone from disk and never re-run.
+            if readable_manifest {
+                lifecycle.writer.persist_restored(terminal_now_ms()).await;
+            }
+        }
         // A watch that did not come back never runs again: its baseline dir goes with it.
         for result in digest
             .results
@@ -428,8 +546,10 @@ impl TakeoverContext {
                 ));
         }
         drop(digests);
-        *self.state.lock().await = Some(lifecycle);
         drop(sweep_terminal_state(&self.terminal_dir, &self.encoded));
+        if let Some(flush) = &self.flush {
+            flush();
+        }
         self.decided.send_replace(self.generation);
     }
 }
@@ -919,7 +1039,7 @@ impl Extension for TerminalExtension {
             let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
-            let context=TakeoverContext {state:state.clone(),manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None};
+            let context=TakeoverContext {state:state.clone(),manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
             acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
             flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
@@ -2437,6 +2557,8 @@ mod persistence_tests {
             generation,
             decided,
             keeper_interval_ms,
+            restore_grace_ms: None,
+            flush: None,
         };
         Fixture {
             dir,
@@ -2449,6 +2571,9 @@ mod persistence_tests {
     }
     /// A manifest the previous generation left: one persistent command watch.
     async fn persisted_watch(fixture: &Fixture, monitor_id: &str) {
+        persisted_command(fixture, monitor_id, "cat").await;
+    }
+    async fn persisted_command(fixture: &Fixture, monitor_id: &str, command: &str) {
         let mut writer = crate::terminal_manifest::TerminalManifestWriter::new(
             &fixture.session_dir,
             "terminal-persistence",
@@ -2459,7 +2584,7 @@ mod persistence_tests {
                     monitor_id: monitor_id.to_owned(),
                     spec: crate::terminal_manifest_model::MonitorSpec::Command {
                         description: format!("watch {monitor_id}"),
-                        command: "cat".into(),
+                        command: command.into(),
                         filter: None,
                         wakes_per_hour: None,
                         cwd: Some(fixture.session_dir.to_string_lossy().into_owned()),
@@ -2768,6 +2893,40 @@ mod persistence_tests {
             .map(|message| message.details.monitors.clone())
             .unwrap_or_default()
     }
+    fn manifest_ids(fixture: &Fixture) -> Vec<String> {
+        let path = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        let Ok(raw) = std::fs::read(&path) else {
+            return vec![];
+        };
+        let saved: JsonValue = serde_json::from_slice(&raw).unwrap();
+        saved["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["monitorId"].as_str().unwrap().to_owned())
+            .collect()
+    }
+    async fn own_once(fixture: &mut Fixture) {
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        assert_eq!(
+            lifecycle
+                .acquire(
+                    &fixture.terminal_dir,
+                    &fixture.encoded,
+                    f64::from(std::process::id()),
+                    terminal_now_ms()
+                )
+                .unwrap(),
+            crate::terminal_state::TerminalStateAdoption::Acquired
+        );
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        decided(fixture).await;
+    }
 
     /// terminal-restore-session.test.ts (c): a lease whose pid now belongs to a process that
     /// started long after the lease was taken is reclaimed at once - no "held by" wait.
@@ -2820,6 +2979,120 @@ mod persistence_tests {
         assert_eq!(monitors[0].monitor_id, "mon_PIDREUSED000001");
         assert_eq!(monitors[0].outcome, "restored");
         stop_waiting(&keeper).await;
+        teardown(&fixture);
+    }
+
+    /// terminal-restore-session.test.ts (a3): a watch that exits 0 inside the grace window is
+    /// `completed`, is dropped from the manifest at once, and a second start never re-runs it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_completed_watch_is_gone_from_the_manifest_and_never_rerun() {
+        let mut fixture = fixture(1, None);
+        let runs = fixture.dir.path().join("runs.log");
+        persisted_command(
+            &fixture,
+            "mon_COMPLETEDONCE01",
+            &format!("echo run >> '{}'", runs.display()),
+        )
+        .await;
+        own_once(&mut fixture).await;
+        let monitors = pending_monitors(&fixture);
+        assert_eq!(
+            monitors
+                .iter()
+                .map(|entry| entry.outcome.as_str())
+                .collect::<Vec<_>>(),
+            ["completed"]
+        );
+        assert!(
+            manifest_ids(&fixture).is_empty(),
+            "the completed watch is gone from disk before shutdown"
+        );
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        teardown(&fixture);
+
+        // The next process: nothing to restore, and the command never ran again.
+        let mut second = fixture;
+        second.context.generation = 2;
+        second.context.digests.lock().unwrap().generation = 2;
+        second.context.digests.lock().unwrap().slot = crate::restore_digest::create_digest_slot();
+        second.context.manager = Arc::new(Mutex::new(TerminalManager::default()));
+        second.context.monitors = Arc::new(Mutex::new(
+            crate::monitor_registry::MonitorRegistry::new(|_| {}),
+        ));
+        own_once(&mut second).await;
+        assert!(pending_monitors(&second).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&runs)
+                .unwrap()
+                .trim()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["run"]
+        );
+        teardown(&second);
+    }
+
+    /// terminal-restore-session.test.ts (d): a watch whose script is gone is lost with its non-zero
+    /// exit code and first output line; lost and expired state dirs are removed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lost_script_carries_its_exit_reason_and_lost_and_expired_state_dirs_go() {
+        let mut fixture = fixture(1, None);
+        let missing = fixture.dir.path().join("missing.sh");
+        persisted_command(
+            &fixture,
+            "mon_MISSINGSCRIPT01",
+            &format!("sh {}", missing.display()),
+        )
+        .await;
+        // An expired watch next to it: same manifest, deadline already passed.
+        let manifest = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        let mut saved: JsonValue =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        let mut expired = saved["monitors"][0].clone();
+        expired["monitorId"] = json!("mon_EXPIREDWATCH001");
+        expired["command"] = json!("cat");
+        expired["expiresAt"] = json!(terminal_now_ms() - 1_000.0);
+        saved["monitors"].as_array_mut().unwrap().push(expired);
+        std::fs::write(&manifest, saved.to_string()).unwrap();
+        for monitor_id in ["mon_MISSINGSCRIPT01", "mon_EXPIREDWATCH001"] {
+            let dir =
+                crate::monitor_state_dir::monitor_state_dir(&fixture.terminal_dir, monitor_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("base"), "baseline").unwrap();
+        }
+        own_once(&mut fixture).await;
+        let monitors = pending_monitors(&fixture);
+        assert_eq!(
+            monitors
+                .iter()
+                .map(|entry| (entry.monitor_id.as_str(), entry.outcome.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("mon_MISSINGSCRIPT01", "lost"),
+                ("mon_EXPIREDWATCH001", "expired")
+            ]
+        );
+        let reason = monitors[0].reason.clone().expect("lost reason");
+        assert!(
+            regex::Regex::new(r"^exited [1-9]\d* in \d+ms: .*missing\.sh")
+                .unwrap()
+                .is_match(&reason),
+            "{reason}"
+        );
+        for monitor_id in ["mon_MISSINGSCRIPT01", "mon_EXPIREDWATCH001"] {
+            assert!(
+                !crate::monitor_state_dir::monitor_state_dir(&fixture.terminal_dir, monitor_id)
+                    .exists(),
+                "{monitor_id} state dir removed"
+            );
+        }
+        assert!(manifest_ids(&fixture).is_empty());
         teardown(&fixture);
     }
 

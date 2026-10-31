@@ -201,4 +201,48 @@ mod tests {
         manager.teardown().unwrap();
         Ok(())
     }
+
+    /// terminal-restore-session.test.ts (e): two acquirers racing for one session - released at the
+    /// same instant by a barrier - leave exactly one owner. Both record this live process, so the
+    /// loser sees a live holder and never reclaims the winner's fresh lease.
+    #[test]
+    fn two_racing_acquirers_leave_exactly_one_owner() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let terminal_dir = dir.path().join("extensions/terminal");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
+        let barrier = &std::sync::Barrier::new(2);
+        let (session_dir, terminal_dir) = (dir.path(), &terminal_dir);
+        let outcomes = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let mut lifecycle = TerminalStateLifecycle::new(session_dir, "s");
+                        barrier.wait();
+                        lifecycle
+                            .acquire(terminal_dir, "s", f64::from(std::process::id()), now)
+                            .map(|adoption| (adoption, lifecycle.is_owner()))
+                    })
+                })
+                .collect();
+            racers
+                .into_iter()
+                .map(|racer| racer.join().expect("racer thread"))
+                .collect::<std::io::Result<Vec<_>>>()
+        })?;
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|(adoption, owner)| *adoption == TerminalStateAdoption::Acquired && *owner)
+                .count(),
+            1,
+            "exactly one acquirer owns the lease: {outcomes:?}"
+        );
+        assert!(outcomes.iter().any(|(adoption, owner)| matches!(
+            adoption,
+            TerminalStateAdoption::AttachedElsewhere { .. }
+        ) && !owner));
+        Ok(())
+    }
 }
