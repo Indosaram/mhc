@@ -16,6 +16,7 @@ use maho_agent::harness::runtime::drive::deferred::{run_deferred, run_deferred_s
 use maho_agent::harness::runtime::drive::drive_operation;
 use maho_agent::harness::runtime::drive::generation::run_generation;
 use maho_agent::harness::runtime::drive::reconcile::reconcile_operation;
+use maho_agent::harness::runtime::drive::retry::{DriveClock, with_drive_clock};
 use maho_agent::harness::runtime::lane::{
     CommitDecision, Drive, Lane, LaneCommand, OperationMismatch, ProcedureResult, PromptInput,
 };
@@ -1015,23 +1016,25 @@ async fn cancels_an_admitted_retry_timer_only_after_the_abort_marker_commits() {
     )
     .await;
     let drive = fixture.install_drive(Some(true), None);
-    // Pinned `vi.waitFor(setTimeoutSpy)`: `before_drive` is the drive's last hook before the
-    // retry timer; on the current-thread test runtime the drive runs from the hook straight to
-    // the timer's first yield before this task observes the handshake.
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
-    let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
-    fixture.on_hook(HookName::BeforeDrive, move |_| {
-        if let Some(entered) = entered_tx.lock().expect("entered").take() {
-            let _ = entered.send(());
-        }
-        HookResult::None
+    // Pinned `vi.waitFor(setTimeoutSpy)`: the retry wait reads the drive clock once to compare
+    // the deadline and once more in `wait_until`, immediately before it parks on the timer. The
+    // drive task cannot yield between that second read and the park, so once this task observes
+    // the second read the drive is waiting on the timer.
+    let (reads_tx, mut reads_rx) = tokio::sync::watch::channel(0usize);
+    let clock: DriveClock = Arc::new(move || {
+        reads_tx.send_modify(|reads| *reads += 1);
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as i64)
     });
     let lane = fixture.lane.clone();
     let running_drive = drive.clone();
-    let running =
-        tokio::spawn(async move { drive_operation(lane.as_ref(), running_drive.as_ref()).await });
-    bounded(entered_rx).await.expect("drive admitted");
-    tokio::task::yield_now().await;
+    let running = tokio::spawn(with_drive_clock(clock, async move {
+        drive_operation(lane.as_ref(), running_drive.as_ref()).await
+    }));
+    bounded(reads_rx.wait_for(|reads| *reads >= 2))
+        .await
+        .expect("drive parked on the retry timer");
     let requested = fixture
         .lane
         .request_operation_abort(OPERATION_ID.into(), &BACKGROUND_CONTEXT)
@@ -1341,29 +1344,40 @@ async fn admits_an_abort_aware_timer_only_for_local_waiting() {
     let fixture = create_fixture(FixtureOptions::default()).await;
     accept_prompt(&fixture).await;
     let ready = advance_to_ready(&fixture).await;
-    let not_before = maho_agent::harness::runtime::drive::retry::retry_not_before(
-        &maho_ai::utils::retry::RetryPolicy {
-            enabled: true,
-            max_retries: 1,
-            base_delay_ms: 100,
-            max_agent_delay_ms: None,
-            random: None,
-        },
-        1,
-        0,
-    );
-    replace_run_state(&fixture, retry_wait_from(&ready, not_before), Vec::new()).await;
+    replace_run_state(&fixture, retry_wait_from(&ready, 3_100), Vec::new()).await;
     let drive = fixture.install_drive(Some(true), None);
     fixture.storage.clear_commit_attempts();
     let retry_wait = fixture.current();
 
-    // A deadline already behind the wall clock admits the local timer and commits ready.
-    assert_eq!(
-        bounded(run_generation(fixture.lane.as_ref(), &drive, &retry_wait))
-            .await
-            .expect("local wait"),
-        ProcedureResult::Continue
+    // Pinned `vi.useFakeTimers(); vi.setSystemTime(3_000)`: the drive clock is 3_000 plus paused
+    // tokio time, so `tokio::time::advance` moves both the clock and the retry timer. Each clock
+    // read is counted; the second read is `wait_until` computing its delay immediately before it
+    // parks on the timer, so it proves the drive is waiting.
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let (reads_tx, mut reads_rx) = tokio::sync::watch::channel(0usize);
+    let clock: DriveClock = Arc::new(move || {
+        reads_tx.send_modify(|reads| *reads += 1);
+        3_000 + start.elapsed().as_millis() as i64
+    });
+    let waiting = with_drive_clock(
+        clock,
+        run_generation(fixture.lane.as_ref(), &drive, &retry_wait),
     );
+    let storage = fixture.storage.clone();
+    let timeline = async move {
+        reads_rx
+            .wait_for(|reads| *reads >= 2)
+            .await
+            .expect("drive clock read");
+        assert!(storage.get_commit_attempts().is_empty());
+        tokio::time::advance(Duration::from_millis(99)).await;
+        assert!(storage.get_commit_attempts().is_empty());
+        tokio::time::advance(Duration::from_millis(1)).await;
+    };
+    let (result, ()) = bounded(async { tokio::join!(waiting, timeline) }).await;
+    assert_eq!(result.expect("local wait"), ProcedureResult::Continue);
+    assert!(!fixture.storage.get_commit_attempts().is_empty());
     let state = fixture.current_json();
     assert_eq!(state["at"], "assistant.ready");
     assert_eq!(state["nextAttempt"], 2);
