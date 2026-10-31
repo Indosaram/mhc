@@ -91,17 +91,7 @@ pub async fn run_tui_rpc_command(
         "attach_session" => attach_session(context, connection, command),
         "release_attachment" => Answer(release_attachment(context, connection, command)),
         "abort" => Answer(abort(context, connection, command).await),
-        "get_effect_status" => Answer(
-            maho_rpc::effect_commands::run_get_effect_status(
-                &maho_rpc::effect_commands::EffectCommandContext {
-                    session: context.session.clone(),
-                    connection_id: Some(key_of(connection)),
-                    session_id: context.attachments.handle(),
-                },
-                command,
-            )
-            .await,
-        ),
+        "get_effect_status" => Answer(get_effect_status(context, command).await),
         _ => NotOwned,
     }
 }
