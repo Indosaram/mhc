@@ -2,7 +2,11 @@ use maho_core::model_runtime::ModelRuntime;
 pub fn format_token_count(count: u64) -> String {
     let count = count as f64;
     let (value, suffix) = if count >= 1_000_000.0 { (count / 1_000_000.0, "M") } else if count >= 1_000.0 { (count / 1_000.0, "K") } else { return count.to_string(); };
-    if value.fract() == 0.0 { format!("{value}{suffix}") } else { format!("{value:.1}{suffix}") }
+    if value.fract() == 0.0 { return format!("{value}{suffix}"); }
+    // JS `toFixed(1)` rounds an exact decimal tie up where Rust's formatter rounds it to even; at
+    // one decimal an exact binary tie only occurs on quarters (x.25, x.75).
+    if (value * 4.0).fract() == 0.0 && (value * 10.0).fract() == 0.5 { return format!("{:.1}{suffix}", (value * 10.0).ceil() / 10.0); }
+    format!("{value:.1}{suffix}")
 }
 pub fn list_models(runtime: &ModelRuntime, search: Option<&str>) -> String {
     let mut models = runtime.get_models(None);
