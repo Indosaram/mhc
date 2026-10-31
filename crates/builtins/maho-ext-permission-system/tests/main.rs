@@ -23,6 +23,8 @@ mod external_paths;
 mod guarded;
 #[path = "integration_source.rs"]
 mod integration_source;
+#[path = "integration_suite.rs"]
+mod integration_suite;
 #[path = "native_persistence.rs"]
 mod native_persistence;
 #[path = "non_interactive.rs"]
