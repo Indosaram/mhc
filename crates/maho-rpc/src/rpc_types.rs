@@ -485,6 +485,20 @@ pub enum RpcCommandBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
     },
+    /// Frees a session this host keeps loaded, keeping its transcript for a later reopen (senpi `unload_session`,
+    /// senpi#3225). The session id travels in the routing envelope; the flags are validated before parsing.
+    UnloadSession {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effect_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupt: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        clear_queue: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        children: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
     /// Subscribes this connection to `session_status` records (senpi `subscribe_sessions`). Every field stays raw
     /// (read off the request) so a malformed one is refused with `invalid_subscription` naming it.
     SubscribeSessions,
@@ -873,6 +887,9 @@ pub enum RpcSessionLifecycleEvent {
     SessionParked {
         session_id: String,
         session_path: String,
+        /// `idle`: the idle sweep parked it; `unloaded`: `unload_session` did.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     SessionClosed {
         session_id: String,

@@ -6515,6 +6515,15 @@ impl AgentSession {
     pub fn wake_source_counts(&self) -> crate::session_activity::ActiveCounts {
         self.state().wake_sources.active_counts()
     }
+    /// senpi `activeWakeSources`: the sources that currently publish live work.
+    pub fn active_wake_sources(&self) -> Vec<String> {
+        self.state()
+            .wake_sources
+            .active_sources()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
     pub fn paused_notice_count(&self) -> usize {
         lock(&self.engine_turn_hold).notice_count()
     }
