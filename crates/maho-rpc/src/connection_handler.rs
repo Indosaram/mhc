@@ -1451,6 +1451,7 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
             .ask(request.clone(), None, now);
         (self.out)(frame);
         let questions = self.questions.clone();
+        let out = self.out.clone();
         Box::pin(async move {
             match tokio::time::timeout(
                 std::time::Duration::from_millis(request.timeout_ms),
@@ -1460,11 +1461,19 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
             {
                 Ok(Ok(response)) => Ok(response),
                 _ => {
-                    let deadline = now.saturating_add(request.timeout_ms);
-                    questions
+                    let deadline = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or_else(
+                            |_| now.saturating_add(request.timeout_ms),
+                            |elapsed| elapsed.as_millis() as u64,
+                        );
+                    let resolved = questions
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .expire(deadline);
+                    for record in resolved {
+                        (out)(record);
+                    }
                     Ok(maho_ext_api::QuestionResponse {
                         status: maho_ext_api::QuestionStatus::TimedOut,
                         answers: Default::default(),
@@ -3445,6 +3454,41 @@ mod connection_events_tests {
 
         let response = question_task.await.expect("task join").expect("response ok");
         assert_eq!(response.answers.get("q1").unwrap().selected, vec!["B".to_string()]);
+        capable.release().await;
+    }
+
+    #[tokio::test]
+    async fn test_question_timeout_emits_question_resolved_event() {
+        let session = session();
+        let (capable, records) = handler(
+            &session,
+            &[crate::custom_capability::QUESTION_CAPABILITY],
+        )
+        .await;
+        let response = maho_ext_api::ExtensionUi::question(
+            capable.ui().as_ref(),
+            maho_ext_api::QuestionRequest {
+                request_id: "req_timeout".into(),
+                questions: vec![maho_ext_api::Question {
+                    id: "q1".into(),
+                    header: "h".into(),
+                    question: "prompt".into(),
+                    options: vec![],
+                    multi_select: false,
+                }],
+                wait_for_answer: true,
+                timeout_ms: 20,
+            },
+            Default::default(),
+        )
+        .await
+        .expect("response ok");
+        assert_eq!(response.status, maho_ext_api::QuestionStatus::TimedOut);
+
+        let resolved = of_type(&records, "question_resolved");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0]["outcome"], "timed_out");
+        assert_eq!(resolved[0]["requestId"], "req_timeout");
         capable.release().await;
     }
 }
