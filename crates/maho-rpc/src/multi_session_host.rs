@@ -4436,6 +4436,52 @@ mod handoff_tests {
             .expect("the runtime reports its disposal");
         let _ = turn.await.unwrap();
     }
+    // senpi-rpc-session-13 (`connectionLeft`): a connection that stops attaching ends the relocation request that
+    // was asked of it, through the session binding.
+    #[tokio::test]
+    async fn a_dropped_connection_ends_the_relocation_request_it_was_asked() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut client, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let binding = core
+            .bindings
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .unwrap();
+        let relocation = binding.relocation().clone();
+        let (asked_tx, asked_rx) = tokio::sync::oneshot::channel();
+        let asking = tokio::spawn(async move {
+            relocation
+                .targets(Some("c"), move |record| {
+                    let _ = asked_tx.send(record);
+                })
+                .await
+        });
+        let asked = tokio::time::timeout(std::time::Duration::from_secs(10), asked_rx)
+            .await
+            .expect("the request is sent to the connection")
+            .unwrap();
+        assert_eq!(asked["method"], "list_relocation_targets");
+        core.release_connection("c").await;
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asking)
+            .await
+            .expect("the request ends when its connection leaves")
+            .unwrap();
+        assert_eq!(answer["reason"], "app_disconnected");
+    }
     #[tokio::test]
     async fn reclaim_seals_session_closed_to_attached_connections_only() {
         let temp = tempfile::tempdir().unwrap();
