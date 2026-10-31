@@ -77,10 +77,10 @@ pub fn git_total_loc(root: &Path) -> io::Result<usize> {
     let files = run(root, &["ls-files", "-z"])?;
     let mut total = 0;
     for file in files.split('\0').filter(|s| !s.is_empty()) {
-        if Path::new(file).extension().and_then(|e|e.to_str()).is_some_and(|ext|SOURCE_EXTENSIONS.contains(&ext)) {
-            if let Ok(bytes) = fs::read(root.join(file)) {
-                total += bytes.iter().filter(|&&b| b == b'\n').count();
-            }
+        if Path::new(file).extension().and_then(|e|e.to_str()).is_some_and(|ext|SOURCE_EXTENSIONS.contains(&ext))
+            && let Ok(bytes) = fs::read(root.join(file))
+        {
+            total += bytes.iter().filter(|&&b| b == b'\n').count();
         }
     }
     Ok(total)

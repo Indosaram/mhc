@@ -211,7 +211,7 @@ fn lifecycle_ui_set_subagent_cost_on_invalidated_runtime_does_not_panic() {
         maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(|_| {}));
     runtime.invalidate("stale");
     assert!(!ui.supports_subagent_cost());
-    ui.set_subagent_cost(Some(0.5));
+    maho_ext_api::ExtensionUi::set_subagent_cost(&ui, Some(0.5));
 }
 
 #[tokio::test]

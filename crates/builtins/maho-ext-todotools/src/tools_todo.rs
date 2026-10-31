@@ -586,7 +586,7 @@ mod tests {
             "op": true,
         });
         let rendered = slots.render_result(&result, &theme, 80);
-        assert!(rendered.is_ok());
+        assert!(rendered.is_some());
     }
     #[derive(Default)]
     struct ExecutionFixture {
