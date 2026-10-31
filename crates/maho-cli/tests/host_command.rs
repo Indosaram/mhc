@@ -43,12 +43,22 @@ fn request_options_the_runner_cannot_carry_are_refused_by_name() {
     let plain = parse_host_args(&["ensure".to_owned()]).unwrap();
     assert!(maho_cli::cli::host_request::unsupported_request_options(&plain).is_none());
     let named = parse_host_args(
-        &["ensure", "--mcp-presenter-enforcement", "--rpc-key-root", "keys"].map(str::to_owned),
+        &[
+            "ensure",
+            "--mcp-presenter-enforcement",
+            "--rpc-key-root",
+            "keys",
+        ]
+        .map(str::to_owned),
     )
     .unwrap();
-    let refused = maho_cli::cli::host_request::unsupported_request_options(&named).expect("refused");
+    let refused =
+        maho_cli::cli::host_request::unsupported_request_options(&named).expect("refused");
     assert_eq!(refused.exit_code(), 1);
-    let detail = refused.payload()["detail"].as_str().unwrap_or_default().to_owned();
+    let detail = refused.payload()["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     assert!(detail.contains("--rpc-key-root"));
     assert!(detail.contains("--mcp-presenter-enforcement"));
     assert!(!detail.contains("--mcp-presenter-fd"));
