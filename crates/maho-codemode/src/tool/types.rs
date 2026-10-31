@@ -108,6 +108,10 @@ pub trait EvalKernel: Send + Sync {
     fn drain_pending(&self) -> Vec<EvalKernelRunInput> {
         Vec::new()
     }
+    /// Tools the kernel's cells defined (upstream `listKernelToolNames`, absent on the JS kernel).
+    fn list_kernel_tool_names(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 impl EvalKernel for crate::kernels::js::context_manager::JavaScriptKernel {

@@ -61,6 +61,8 @@ mod extension_bindings;
 mod extension_factory;
 #[path = "host_package_installs.rs"]
 mod host_package_installs;
+#[path = "idle_parking_kernel.rs"]
+mod idle_parking_kernel;
 #[path = "image_collector.rs"]
 mod image_collector;
 #[path = "image_resize.rs"]
