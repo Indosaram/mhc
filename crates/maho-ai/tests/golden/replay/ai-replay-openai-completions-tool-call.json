@@ -178,7 +178,6 @@
 				"output": 4,
 				"cacheRead": 0,
 				"cacheWrite": 0,
-				"reasoning": 0,
 				"totalTokens": 10,
 				"cost": {
 					"input": 0,
@@ -217,7 +216,6 @@
 				"output": 4,
 				"cacheRead": 0,
 				"cacheWrite": 0,
-				"reasoning": 0,
 				"totalTokens": 10,
 				"cost": {
 					"input": 0,
