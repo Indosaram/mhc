@@ -436,6 +436,8 @@ impl HostCore {
             ENTRIES_TAIL_CAPABILITY,
             RETAIN_ON_DISCONNECT_CAPABILITY,
             SESSION_CONTEXT_CAPABILITY,
+            SESSION_STATUS_CAPABILITY,
+            DIALOG_OBSERVER_CAPABILITY,
             SESSION_KIND_CAPABILITY,
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
@@ -495,8 +497,224 @@ impl HostCore {
             record,
         );
     }
+    /// Re-reads one session's registry half into the status source (senpi `registryStatusSource` reads it live);
+    /// a handle no registry holds any more leaves the source.
+    async fn sync_status(&self, session_id: &str) {
+        use crate::session_status_source::{RegistryEntryFields, StatusRuntime, entry_view};
+        let projected = match &self.workers {
+            Some(workers) => workers.with_entry(session_id, |entry| {
+                (
+                    entry_view(RegistryEntryFields {
+                        state: entry.close.state,
+                        kind: entry.identity.kind,
+                        cwd: &entry.cwd,
+                        attachments: entry.close.attachments,
+                        durable_session_id: entry.durable_session_id.clone(),
+                        session_path: entry.session_path.clone(),
+                        context: &entry.identity.context,
+                        overlay: entry.context_overlay.as_ref(),
+                    }),
+                    StatusRuntime::Worker(std::sync::Arc::clone(&entry.worker)),
+                )
+            }),
+            None => self.registry.lock().await.get(session_id).map(|entry| {
+                (
+                    entry_view(RegistryEntryFields {
+                        state: entry.close.state,
+                        kind: entry.identity.kind,
+                        cwd: entry
+                            .runtime
+                            .as_ref()
+                            .map_or(entry.profile.runtime.cwd.as_str(), |runtime| runtime.cwd()),
+                        attachments: entry.close.attachments,
+                        durable_session_id: entry.durable_session_id.clone(),
+                        session_path: entry.session_path.clone(),
+                        context: &entry.identity.context,
+                        overlay: entry.context_overlay.as_ref(),
+                    }),
+                    entry
+                        .runtime
+                        .as_ref()
+                        .map_or(StatusRuntime::None, |runtime| {
+                            StatusRuntime::Session(std::sync::Arc::clone(runtime))
+                        }),
+                )
+            }),
+        };
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut hub = fanout
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match projected {
+            Some((entry, runtime)) => hub.source.upsert(session_id, entry, runtime),
+            None => hub.source.remove(session_id),
+        }
+    }
+    /// Syncs the session's registry half, then publishes one status change (senpi `writer.status.publish`).
+    async fn publish_status(
+        &self,
+        session_id: &str,
+        cause: crate::session_status::SessionStatusCause,
+        by: crate::session_status::SessionStatusActor,
+        context_only: bool,
+    ) {
+        self.sync_status(session_id).await;
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = std::sync::Arc::clone(&fanout.status);
+        let mut guard = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hub = &mut *guard;
+        hub.stream
+            .publish(&hub.source, &*fanout, session_id, cause, by, context_only);
+    }
+    /// `subscribe_sessions` (senpi `answerSubscribeSessions` + the router's two-hop activation): the answer carrying
+    /// the `seq 0` snapshot is on the connection's FIFO before the subscription goes live.
+    fn subscribe_sessions(
+        &self,
+        connection: Option<&str>,
+        id: Option<String>,
+        request: &serde_json::Value,
+    ) {
+        let refuse = |code: &str, reason: &str, action: &str| {
+            self.refuse(
+                connection,
+                id.clone(),
+                "subscribe_sessions",
+                code,
+                serde_json::json!({"reason":reason,"action":action}),
+                None,
+            );
+        };
+        let Some(connection) = connection else {
+            return refuse(
+                crate::rpc_types::RPC_ERROR_UNSUPPORTED_TRANSPORT,
+                "stdio has no per-connection identity to deliver a subscription to",
+                "connect to the host socket (senpi --mode rpc --listen) and subscribe there",
+            );
+        };
+        let fanout = self
+            .fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = std::sync::Arc::clone(&fanout.status);
+        let mut guard = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hub = &mut *guard;
+        let limit = crate::session_status_stream::MAX_SUBSCRIPTIONS_PER_CONNECTION;
+        if hub.stream.connection_size(connection) >= limit {
+            drop(guard);
+            drop(fanout);
+            return refuse(
+                crate::rpc_types::RPC_ERROR_SUBSCRIPTION_LIMIT,
+                &format!("this connection already holds {limit} subscriptions"),
+                "unsubscribe_sessions the ones you no longer read, then subscribe again",
+            );
+        }
+        let options = match crate::session_status_subscriptions::parse_subscription(request) {
+            Ok(options) => options,
+            Err(refused) => {
+                drop(guard);
+                drop(fanout);
+                return refuse(
+                    crate::rpc_types::RPC_ERROR_INVALID_SUBSCRIPTION,
+                    &refused.reason,
+                    &refused.action,
+                );
+            }
+        };
+        let subscribed = hub
+            .stream
+            .subscribe(&hub.source, &*fanout, connection, options);
+        let mut answer = serde_json::json!({
+            "type": "response",
+            "command": "subscribe_sessions",
+            "success": true,
+            "data": {
+                "subscriptionId": subscribed.subscription_id,
+                "snapshot": subscribed.snapshot,
+                "seq": subscribed.seq,
+                "hostGeneration": crate::protocol_identity::host_generation(&std::env::vars().collect()).to_string(),
+                "hostInstanceId": crate::protocol_identity::host_instance_id(),
+            },
+        });
+        if let Some(id) = &id {
+            answer["id"] = id.clone().into();
+        }
+        // Both locks are held across the answer and the activation, so no delta can land between them.
+        match fanout.enqueue_control(connection, &answer) {
+            Ok(true) => hub.stream.activate(&*fanout, &subscribed.subscription_id),
+            Ok(false) | Err(_) => {
+                hub.stream
+                    .unsubscribe(connection, &subscribed.subscription_id);
+                eprintln!("senpi rpc subscribe answer could not be delivered to {connection}");
+            }
+        }
+    }
+    /// `unsubscribe_sessions` (senpi `answerUnsubscribeSessions`).
+    fn unsubscribe_sessions(
+        &self,
+        connection: Option<&str>,
+        id: Option<String>,
+        request: &serde_json::Value,
+    ) {
+        let Some(connection) = connection else {
+            return self.refuse(
+                connection,
+                id,
+                "unsubscribe_sessions",
+                crate::rpc_types::RPC_ERROR_UNSUPPORTED_TRANSPORT,
+                serde_json::json!({"reason":"stdio has no per-connection identity holding any subscription","action":"connect to the host socket (senpi --mode rpc --listen) and manage subscriptions there"}),
+                None,
+            );
+        };
+        let removed = request["subscriptionId"]
+            .as_str()
+            .is_some_and(|subscription| {
+                self.fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .stream
+                    .unsubscribe(connection, subscription)
+            });
+        if removed {
+            self.success(Some(connection), id, "unsubscribe_sessions", None, None);
+        } else {
+            self.refuse(
+                Some(connection),
+                id,
+                "unsubscribe_sessions",
+                crate::rpc_types::RPC_ERROR_UNKNOWN_SUBSCRIPTION,
+                serde_json::json!({"reason":"this connection holds no subscription with that id","action":"send the subscriptionId your subscribe_sessions answer returned, on the same connection"}),
+                None,
+            );
+        }
+    }
     /// Drops every per-connection record of a handle the host ended (senpi `forgetSessionOwnership`).
     fn forget_session(&self, session_id: &str) {
+        {
+            let fanout = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut hub = fanout
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            hub.source.remove(session_id);
+            hub.stream.forget(session_id);
+        }
         self.fanout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1280,6 +1498,12 @@ impl HostCore {
                 let response = crate::session_release::release_session(&port, &release).await;
                 self.respond_value(connection, &session_id, response);
             }
+            crate::rpc_types::RpcCommandBody::SubscribeSessions => {
+                self.subscribe_sessions(connection, command.id.clone(), &value);
+            }
+            crate::rpc_types::RpcCommandBody::UnsubscribeSessions => {
+                self.unsubscribe_sessions(connection, command.id.clone(), &value);
+            }
             crate::rpc_types::RpcCommandBody::SetSessionContext { patch } => {
                 let Some(session_id) = command.session_id.clone() else {
                     self.error(
@@ -1345,6 +1569,9 @@ impl HostCore {
                         // Only the LAST attachment tears the session down; a surviving attachment keeps
                         // the shared binding and its event stream (senpi `close`/`claimClose`).
                         if claim.finalizer != Some(true) {
+                            // senpi `close`: a surviving attachment is a detach; the last one seals instead.
+                            self.publish_status(&session_id, "detach", "client", false)
+                                .await;
                             self.success(
                                 connection,
                                 command.id.clone(),
@@ -1823,6 +2050,8 @@ impl HostCore {
                 // receives the session's records and the in-flight snapshot (senpi `open`).
                 self.attach_connection(connection, &handle).await;
                 let state = self.session_state(&handle).await;
+                self.publish_status(&handle, "attach", "client", false)
+                    .await;
                 Ok(serde_json::json!({"sessionId":handle,"state":state,"attached":true}))
             }
             Ok(crate::session_registry::OpenAdmission::Create(handle)) => {
@@ -1843,6 +2072,7 @@ impl HostCore {
                 }
                 let state = self.session_state(&handle).await;
                 self.attach_connection(connection, &handle).await;
+                self.publish_status(&handle, "open", "client", false).await;
                 Ok(serde_json::json!({"sessionId":handle,"state":state}))
             }
         }
@@ -1953,13 +2183,17 @@ impl HostCore {
                 &refused.reason,
                 &refused.action,
             ),
-            Ok(context) => self.success(
-                connection,
-                id,
-                "set_session_context",
-                Some(serde_json::json!({"context": context})),
-                Some(session_id),
-            ),
+            Ok(context) => {
+                self.publish_status(&session_id, "context", "client", true)
+                    .await;
+                self.success(
+                    connection,
+                    id,
+                    "set_session_context",
+                    Some(serde_json::json!({"context": context})),
+                    Some(session_id),
+                )
+            }
         }
     }
     async fn open_worker_session(
@@ -2076,6 +2310,13 @@ impl HostCore {
         if attached {
             data["attached"] = true.into();
         }
+        self.publish_status(
+            &handle,
+            if attached { "attach" } else { "open" },
+            "client",
+            false,
+        )
+        .await;
         Ok(data)
     }
     /// `close_session` on the worker runtime: only the LAST attachment ends the worker, whose actual
@@ -2123,6 +2364,8 @@ impl HostCore {
             self.release_owner_attachment(connection, &session_id).await;
         }
         if claim.finalizer != Some(true) {
+            self.publish_status(&session_id, "detach", "client", false)
+                .await;
             self.success(connection, id, "close_session", None, Some(session_id));
             return;
         }
@@ -2376,6 +2619,8 @@ impl HostCore {
                 return;
             };
             if claim.finalizer != Some(true) {
+                self.publish_status(session_id, "detach", "client", false)
+                    .await;
                 return;
             }
             if let Some(worker) = workers.worker(session_id) {
@@ -2394,7 +2639,10 @@ impl HostCore {
         let Ok(claim) = claim else {
             return;
         };
+        // senpi `releaseOwnedSession`: only a release that leaves the session running is a detach.
         if claim.finalizer != Some(true) {
+            self.publish_status(session_id, "detach", "client", false)
+                .await;
             return;
         }
         if let Some(binding) = self.bindings.lock().await.remove(session_id) {
@@ -2795,7 +3043,11 @@ impl HostCore {
         };
         self.attach_live(owner, session_id)
             .await
-            .map_err(|code| (code, serde_json::json!({})))
+            .map_err(|code| (code, serde_json::json!({})))?;
+        // senpi `attach`: every live attachment is published.
+        self.publish_status(session_id, "attach", "client", false)
+            .await;
+        Ok(())
     }
     /// senpi `releaseAttachment`: gives up one of the caller's attachments; the session ends only when that was the
     /// last one, and a turn in flight runs to settlement first (`deferred: true`). A drain owns every outstanding
@@ -2977,6 +3229,8 @@ impl HostCore {
         self.attach_live(owner, &session_id)
             .await
             .map_err(|code| (code, serde_json::json!({})))?;
+        self.publish_status(&session_id, "attach", "client", false)
+            .await;
         // claimClose { drainAttachments }: every outstanding hold of the caller goes with this one claim.
         let finalizer = loop {
             let claim = match &self.workers {
@@ -3807,6 +4061,94 @@ done"#
             workers.with_entry(&session_id, |entry| entry.close.attachments),
             Some(1)
         );
+    }
+    /// dialog-observer.test.ts (senpi#4266): a `dialogs: true` observer that is not attached receives the session's
+    /// dialog feed and its own snapshot marker, never another connection's marker; the owner keeps its content.
+    #[tokio::test]
+    async fn a_dialog_observer_receives_the_dialog_feed_without_attaching() {
+        let core = idle_core();
+        let mut owner = peer(&core, "owner");
+        let mut observer = peer(&core, "observer");
+        core.fanout
+            .lock()
+            .unwrap()
+            .attach("owner", "s", 0.)
+            .unwrap();
+        {
+            let fanout = core.fanout.lock().unwrap();
+            fanout.status.lock().unwrap().source.upsert(
+                "s",
+                crate::session_status_source::entry_view(
+                    crate::session_status_source::RegistryEntryFields {
+                        state: crate::session_registry::RpcSessionState::Open,
+                        kind: maho_ext_api::SessionKind::Interactive,
+                        cwd: "/w",
+                        attachments: 1,
+                        durable_session_id: Some("d1".into()),
+                        session_path: None,
+                        context: &std::collections::BTreeMap::new(),
+                        overlay: None,
+                    },
+                ),
+                crate::session_status_source::StatusRuntime::None,
+            );
+        }
+        core.handle(
+            Some("observer"),
+            r#"{"id":"sub","type":"subscribe_sessions","mirror":"all","dialogs":true,"observe":true}"#,
+        )
+        .await
+        .unwrap();
+        let answer = next(&mut observer).await;
+        assert_eq!(answer["command"], "subscribe_sessions");
+        assert_eq!(answer["data"]["snapshot"][0]["sessionId"], "s");
+        assert_eq!(answer["data"]["snapshot"][0]["seq"], 0);
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            Some("owner"),
+            serde_json::json!({"type":"snapshot_marker","markerId":"owner-marker"}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            Some("observer"),
+            serde_json::json!({"type":"snapshot_marker","markerId":"m1"}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"ui_request_pending","uiRequestId":"q1","method":"confirm","request":{"method":"confirm"}}),
+        );
+        route_session_record(
+            &core.fanout,
+            &core.default_writer,
+            "s",
+            None,
+            serde_json::json!({"type":"agent_end","messages":[]}),
+        );
+        let marker = next(&mut observer).await;
+        assert_eq!(
+            (marker["type"].as_str(), marker["markerId"].as_str()),
+            (Some("snapshot_marker"), Some("m1"))
+        );
+        let raised = next(&mut observer).await;
+        assert_eq!(raised["type"], "ui_request_pending");
+        assert_eq!(raised["sessionId"], "s");
+        // Mirrored content, then the status delta it caused, both after the dialog record.
+        assert_eq!(next(&mut observer).await["type"], "agent_end");
+        let status = next(&mut observer).await;
+        assert_eq!(
+            (status["type"].as_str(), status["seq"].as_u64()),
+            (Some("session_status"), Some(1))
+        );
+        // The owner never sees observation records, only the content it is attached to.
+        assert_eq!(next(&mut owner).await["type"], "agent_end");
+        assert!(!core.attachments.lock().unwrap().owns(Some("observer"), "s"));
     }
     #[tokio::test]
     async fn a_dropped_connection_gives_up_every_attachment_it_held() {

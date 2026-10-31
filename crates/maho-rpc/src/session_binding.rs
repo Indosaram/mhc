@@ -537,6 +537,8 @@ pub async fn create_rpc_session_binding(
         )
         .await;
     handler.last_abort_source = last_abort_source;
+    // A hosted session reports dialog registration and settlement to dialog observers (senpi `uiRequestChanged`).
+    handler.report_ui_request_changes(sink.clone());
     if let Some(roles) = &connection_roles {
         handler = handler.with_connection_roles(roles.clone());
     }

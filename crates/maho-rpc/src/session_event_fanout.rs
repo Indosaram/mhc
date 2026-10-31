@@ -25,6 +25,17 @@ pub struct SessionEventFanout {
     resync: std::sync::Arc<std::sync::Mutex<ResyncView>>,
     /// Each routing session's acceptance lane; retired when the session is sealed or forgotten.
     pub acceptance: SharedAcceptanceLanes,
+    /// Host-level `session_status` subscriptions (senpi `SessionEventWriter.status`); shared so a caller holding the
+    /// fanout lock can use the fanout itself as the stream's delivery.
+    pub status: std::sync::Arc<std::sync::Mutex<crate::session_status_source::SessionStatusHub>>,
+}
+impl crate::session_status_stream::SessionStatusDelivery for SessionEventFanout {
+    fn enqueue(&self, connection_id: &str, line: &str) -> bool {
+        self.enqueue_line(connection_id, line)
+    }
+    fn pending_questions(&self, session_id: &str) -> usize {
+        self.pending_question_count(session_id)
+    }
 }
 /// The acceptance lanes, shared with the writer and with the recovery cuts that freeze them at a shed.
 pub type SharedAcceptanceLanes = std::sync::Arc<
@@ -203,6 +214,11 @@ impl SessionEventFanout {
         self.actors.insert(id.into(), actor);
     }
     pub fn unregister(&mut self, id: &str) {
+        self.status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stream
+            .drop_connection(id);
         let sessions = self.attached_connections_for(id);
         for session in sessions {
             self.attach_order.detached(&session, id);
@@ -270,6 +286,24 @@ impl SessionEventFanout {
             })
             .map_err(|error| error.to_string())?;
         Ok(true)
+    }
+    /// Queues one already-serialized line on a registered connection's FIFO (senpi `actor.enqueue(line)` for
+    /// subscription records); `false` when the connection is gone or its queue overflowed.
+    pub fn enqueue_line(&self, id: &str, line: &str) -> bool {
+        self.actors.get(id).is_some_and(|actor| {
+            actor
+                .enqueue(crate::socket_event_fanout::QueueEntry {
+                    line: line.to_owned(),
+                    key: None,
+                    demoted_line: None,
+                    on_written: None,
+                })
+                .is_ok()
+        })
+    }
+    /// The session's pending `question` frames (replayed on attach), for `session_status`.
+    pub fn pending_question_count(&self, session: &str) -> usize {
+        self.snapshots.question_count(session)
     }
     pub fn broadcast_host_record(&mut self, record: &Value) -> Result<Option<Value>, String> {
         if self.actors.is_empty() {
@@ -546,6 +580,35 @@ impl SessionEventFanout {
             object.insert("sessionId".into(), session.into());
         }
         let line = crate::jsonl::serialize_json_line(&wire).map_err(|error| error.to_string())?;
+        // Observation records are per-subscription opt-ins on the subscriber's own FIFO: never attachments, the attach
+        // replay, response broadcast, or the stdio lane, which cannot subscribe (senpi `enqueue`, #4266).
+        let kind = wire["type"].as_str().unwrap_or_default();
+        if matches!(
+            kind,
+            "snapshot_marker" | "ui_request_pending" | "ui_request_settled"
+        ) {
+            let status = std::sync::Arc::clone(&self.status);
+            let hub = status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let targets = if kind == "snapshot_marker" {
+                // A marker belongs to the connection whose `get_snapshot` captured it.
+                hub.stream
+                    .mirror_targets(&hub.source, session, kind)
+                    .into_iter()
+                    .filter(|id| Some(id.as_str()) == target)
+                    .collect()
+            } else {
+                hub.stream.dialog_targets(&hub.source, session)
+            };
+            drop(hub);
+            for id in targets {
+                self.enqueue_line(&id, &line);
+            }
+            return Ok(Vec::new());
+        }
+        let seal = crate::session_status::terminal_of_lifecycle(&wire);
+        let cause = crate::session_status::cause_of_record(&wire);
         let terminal = matches!(
             wire["type"].as_str(),
             Some("session_closed" | "session_parked")
@@ -581,9 +644,28 @@ impl SessionEventFanout {
         } else {
             wire["type"].as_str()
         };
-        let targets = self
+        let mut targets = self
             .targets
             .targets(session, target, targeted, rendered, kind);
+        // Mirroring is an explicit per-subscription opt-in; it adds destinations, never an attachment.
+        if !targeted {
+            let status = std::sync::Arc::clone(&self.status);
+            let hub = status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for id in hub.stream.mirror_targets(
+                &hub.source,
+                session,
+                wire["type"].as_str().unwrap_or_default(),
+            ) {
+                if !targets
+                    .iter()
+                    .any(|existing| existing.as_deref() == Some(id.as_str()))
+                {
+                    targets.push(Some(id));
+                }
+            }
+        }
         let last = targets.len();
         // PERF-DIVERGENCE(senpi socket-event-fanout): upstream stringifies the scrubbed/demoted record per connection; we serialize each variant once per placeholders flag and share it across targets. Bytes on the wire are identical.
         let mut variant_lines: [Option<(String, Option<String>)>; 2] = [None, None];
@@ -657,6 +739,34 @@ impl SessionEventFanout {
         }
         for id in failed {
             self.unregister(&id);
+        }
+        // After the causing record is on every destination's FIFO, never before (ordering contract).
+        let by = if target.is_some() { "client" } else { "" };
+        let status = std::sync::Arc::clone(&self.status);
+        let mut guard = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hub = &mut *guard;
+        match (seal, cause) {
+            (Some(seal), Some(cause)) if terminal => {
+                hub.stream.seal(
+                    &hub.source,
+                    &*self,
+                    session,
+                    seal,
+                    cause,
+                    if by.is_empty() { "host" } else { by },
+                );
+            }
+            (_, Some(cause)) if !targeted => hub.stream.publish(
+                &hub.source,
+                &*self,
+                session,
+                cause,
+                if by.is_empty() { "agent" } else { by },
+                false,
+            ),
+            _ => {}
         }
         Ok(stdio)
     }
@@ -1015,6 +1125,11 @@ impl SessionSnapshots {
         }
         Ok(lines)
     }
+    pub fn question_count(&self, session_id: &str) -> usize {
+        self.questions
+            .get(session_id)
+            .map_or(0, serde_json::Map::len)
+    }
     pub fn forget(&mut self, session_id: &str) {
         self.lifecycle.remove(session_id);
         self.snapshots.remove(session_id);
@@ -1322,6 +1437,30 @@ mod tests {
         let stdio = fanout.deliver("s1", None, false, &grant_dialog).unwrap();
         assert_eq!(stdio.len(), 1);
         assert_eq!(stdio[0]["id"], "grant-req-3");
+    }
+
+    /// dialog-observer.test.ts "keeps observation records off the stdio lane" (senpi#4266): the stdio lane cannot
+    /// subscribe, so opt-in observation records never reach it, while an ordinary record still does.
+    #[tokio::test]
+    async fn observation_records_stay_off_the_stdio_lane() {
+        let mut fanout = SessionEventFanout::default();
+        let request = json!({"type":"extension_ui_request","id":"d","method":"confirm","title":"Confirm","message":"Proceed?"});
+        let mut stdio = Vec::new();
+        for record in [
+            json!({"type":"snapshot_marker","markerId":"m"}),
+            json!({"type":"ui_request_pending","uiRequestId":"d","method":"confirm","request":request}),
+            json!({"type":"ui_request_settled","uiRequestId":"d","disposition":"cancelled"}),
+            json!({"type":"agent_start"}),
+        ] {
+            stdio.extend(fanout.deliver_owned("s", None, false, record).unwrap());
+        }
+        assert_eq!(
+            stdio
+                .iter()
+                .map(|record| record["type"].as_str())
+                .collect::<Vec<_>>(),
+            [Some("agent_start")]
+        );
     }
 
     #[tokio::test]
