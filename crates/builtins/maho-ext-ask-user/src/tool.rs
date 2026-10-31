@@ -145,7 +145,7 @@ pub fn register_tool(
     };
     let mut definition = ToolDefinition::new(
         tool_name(variant),
-        "Ask a material question; choose explicitly whether to wait or receive the answer later.",
+        "Ask a material question; choose explicitly whether to wait or receive the answer later. When the user's instructions (in the conversation or their instruction files) say not to ask, or not to ask with choices, do not call it: take the safe default, keep working, and say what you chose.",
         params,
         Arc::new(|_| {
             Box::pin(async { Err(ToolError::Message("Extension context required".into())) })
