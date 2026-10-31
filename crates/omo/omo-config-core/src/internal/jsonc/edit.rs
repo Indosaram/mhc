@@ -171,7 +171,10 @@ fn set_property(
             return Err(JsoncEditError::CannotModifyParent);
         };
         if insert_index == -1 {
-            let new_property = to_json_text(value.as_ref().unwrap());
+            let Some(ref value) = value else {
+                return Ok(Vec::new());
+            };
+            let new_property = to_json_text(value);
             let edit = if parent.children.is_empty() {
                 JsoncEdit {
                     offset: parent.offset + 1,
