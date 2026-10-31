@@ -728,6 +728,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let turns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (activity_tx, activity_rx) = tokio::sync::watch::channel(HostActivity::default());
     let (connections_tx, connections_rx) = tokio::sync::watch::channel(0usize);
+    let connections_watch = connections_rx.clone();
     // win32: a child whose identity changed or vanished has exited even when no exit event came.
     let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     #[cfg(windows)]
@@ -861,6 +862,20 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     tokio::pin!(idle);
     let mut draining = false;
     let mut signal_code: Option<i32> = None;
+    let mut owner_gone = false;
+    // senpi `SupervisorOwner`: an ensured generation (or a launch carrying `--owner-fd`) binds its lifetime owner;
+    // a direct launch without an owner record has none. The owner leaving a quiescent host ends this generation.
+    let mut owner =
+        (launch.owner_fd.is_some() || generation_files.settings_file.exists()).then(|| {
+            let mut owner =
+                crate::host_lifecycle_activity::SupervisorOwner::new(generation_files.dir.clone());
+            owner.start(launch.owner_fd, owner_clock_ms());
+            owner
+        });
+    let mut owner_ticker = tokio::time::interval(std::time::Duration::from_millis(
+        crate::host_lifecycle_ticker::tick_interval_ms(policy.idle_exit_ms),
+    ));
+    owner_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // senpi `SupervisorDrain`: `admission.stop()` refuses opens from the drain on (senpi `beginStopping`).
     let supervisor_drain = crate::host_lifecycle_drain::SupervisorDrain::new(
         child_pid,
@@ -902,6 +917,14 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                 break;
             },
             _changed=shutdown_rx.changed()=>{if let Some(code)=*shutdown_rx.borrow(){signal_code=Some(code);break;}},
+            _=owner_ticker.tick(),if owner.is_some()&&!draining=>{
+                let busy=turns.load(std::sync::atomic::Ordering::SeqCst);let attached=*connections_watch.borrow();
+                let quiescent=||busy==0&&attached==0;
+                if let Some(owner)=owner.as_mut(){
+                    if attached>0||busy>0{owner.activity(owner_clock_ms());}
+                    if owner.should_exit(quiescent,owner_clock_ms(),crate::host_lifecycle_activity::host_owner_gone){owner_gone=true;break;}
+                }
+            },
             changed=drain_rx.changed()=>{
                 if changed.is_ok()&&*drain_rx.borrow()&&!draining{
                     draining=true;
@@ -927,8 +950,12 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     teardown
         .watchers
         .push(Box::new(move || identity_watch.abort()));
+    if let Some(mut owner) = owner {
+        owner.stop();
+    }
     let reason = match signal_code {
         Some(code) => crate::host_lifecycle_shutdown::signal_shutdown_reason(code),
+        None if owner_gone => "owner_gone".to_owned(),
         None => "rpc host child exited".to_owned(),
     };
     let exit_code = crate::host_lifecycle_shutdown::perform_shutdown(
@@ -943,6 +970,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         std::process::exit(exit_code);
     }
     Ok(())
+}
+/// The owner grace's monotonic clock, in milliseconds.
+#[cfg(any(unix, windows))]
+fn owner_clock_ms() -> f64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.
 }
 /// One generation's resources as [`crate::host_lifecycle_shutdown::perform_shutdown`] tears them down.
 #[cfg(any(unix, windows))]
