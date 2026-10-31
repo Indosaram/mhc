@@ -1309,4 +1309,160 @@ mod tests {
         assert!(fanout.security_snapshot("s1").is_none());
         assert!(fanout.attached_connections("s1").is_empty());
     }
+
+    /// senpi 4272-resync-root-release-paths: one `event_resync` peer attached to `s1`, whose lane the
+    /// shed freezes. The peer's socket is never read until a test asks, so its queue overflows.
+    struct ShedRig {
+        fanout: SessionEventFanout,
+        lane: crate::session_registry::SharedAcceptanceLane,
+        reader: Option<tokio::io::DuplexStream>,
+        failed: tokio::sync::oneshot::Receiver<String>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn shed_rig() -> ShedRig {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::new(
+            Some(crate::compact_content_store::CompactContentStoreOptions {
+                dir: dir.path().display().to_string(),
+                ..Default::default()
+            }),
+            None,
+        );
+        lane.bootstrap(Default::default(), None);
+        let lane = std::sync::Arc::new(std::sync::Mutex::new(lane));
+        let (writer, reader) = tokio::io::duplex(1);
+        let (failure, failed) = tokio::sync::oneshot::channel();
+        let failure = std::sync::Mutex::new(Some(failure));
+        let actor = crate::socket_event_fanout::SocketEventSinkActor::new(
+            writer,
+            256,
+            30_000,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::loop_blocked_time::LoopBlockedTime::default(),
+            )),
+            move |error| {
+                if let Some(failure) = failure.lock().unwrap().take() {
+                    let _ = failure.send(error);
+                }
+            },
+        );
+        let mut fanout = SessionEventFanout::default();
+        fanout
+            .acceptance
+            .lock()
+            .unwrap()
+            .insert("s1".into(), std::sync::Arc::clone(&lane));
+        fanout.register("peer", actor);
+        fanout
+            .set_capabilities(
+                "peer",
+                &[crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY.into()],
+            )
+            .unwrap();
+        fanout.attach("peer", "s1", 0.0).unwrap();
+        ShedRig {
+            fanout,
+            lane,
+            reader: Some(reader),
+            failed,
+            _dir: dir,
+        }
+    }
+
+    impl ShedRig {
+        fn live(&self) -> usize {
+            self.lane.lock().unwrap().live_roots()
+        }
+        fn retired(&self) -> bool {
+            self.lane.lock().unwrap().retired()
+        }
+        /// The actor has not run yet, so the second record overflows the 256-byte queue and sheds.
+        fn overflow(&self) {
+            let record = json!({"type":"extension_ui_request","pad":"x".repeat(200)});
+            for _ in 0..3 {
+                self.fanout.enqueue_control("peer", &record).unwrap();
+            }
+        }
+        async fn finish(self) {
+            let lane = std::sync::Arc::clone(&self.lane);
+            drop(self.fanout);
+            let mut lane = std::mem::take(&mut *lane.lock().unwrap());
+            lane.retire(crate::session_acceptance_lane::RetireReason::Close);
+            lane.idle().await;
+        }
+    }
+
+    fn within<T>(
+        what: &str,
+        future: impl std::future::Future<Output = T>,
+    ) -> impl std::future::Future<Output = T> {
+        let what = what.to_owned();
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), future)
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_delivered_resync_releases_the_root_the_shed_froze() {
+        use tokio::io::AsyncBufReadExt;
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1, "the shed froze the attached session's root");
+        let mut lines = tokio::io::BufReader::new(rig.reader.take().unwrap()).lines();
+        let delivered = within("the resync delivery", async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                if line.contains("\"sessionId\":\"s1\"") && line.contains("resync_required") {
+                    return line;
+                }
+            }
+            panic!("the peer closed before its resync");
+        })
+        .await;
+        assert!(delivered.contains("\"reason\":\"overflow\""), "{delivered}");
+        assert_eq!(rig.live(), 0, "live roots after delivery");
+        assert!(!rig.retired(), "the session is still live");
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_failing_peer_transport_releases_the_root_the_shed_froze() {
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1);
+        drop(rig.reader.take());
+        let error = within("the drain failure", &mut rig.failed).await.unwrap();
+        assert!(!error.is_empty());
+        assert_eq!(rig.live(), 0, "live roots after the drain failed");
+        assert!(!rig.retired());
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_the_peer_releases_the_root_the_shed_froze() {
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1);
+        rig.fanout.unregister("peer");
+        assert_eq!(rig.live(), 0, "live roots after the peer dropped");
+        assert!(!rig.retired(), "dropping one peer leaves the session live");
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_session_retires_its_lane_and_releases_the_shed_root() {
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1);
+        rig.fanout.forget_session("s1");
+        assert!(rig.retired(), "forget_session retires the lane");
+        assert_eq!(rig.live(), 0, "live roots after the seal");
+        assert!(rig.fanout.acceptance.lock().unwrap().is_empty());
+        // The peer's later close releases a root its retired lane no longer holds: a no-op.
+        rig.fanout.unregister("peer");
+        assert_eq!(rig.live(), 0);
+        rig.finish().await;
+    }
 }
