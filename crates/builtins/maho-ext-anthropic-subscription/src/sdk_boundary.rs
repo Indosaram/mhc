@@ -1,10 +1,13 @@
 //! Native Claude stream-json boundary. Owns the child until close or EOF settlement.
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::{collections::BTreeMap, path::Path, process::Stdio};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{mpsc, oneshot},
 };
+
+type MessageQueue = crate::bounded_queue::BoundedAsyncQueue<Value, ()>;
 
 enum Command {
     Send(Value, oneshot::Sender<anyhow::Result<()>>),
@@ -14,7 +17,9 @@ enum Command {
 
 pub struct SdkQueryHandle {
     commands: mpsc::UnboundedSender<Command>,
-    messages: mpsc::UnboundedReceiver<anyhow::Result<Value>>,
+    messages: Arc<MessageQueue>,
+    /// The reader's terminal failure, surfaced once the buffered messages are drained.
+    failure: Arc<Mutex<Option<anyhow::Error>>>,
     task: Option<tokio::task::JoinHandle<()>>,
     pub initialization: Value,
 }
@@ -139,6 +144,21 @@ async fn write_frame(stdin: &mut tokio::process::ChildStdin, frame: &Value) -> a
     Ok(())
 }
 
+/// Reads the next stdout line once the message queue has room, so the reader cannot outrun the consumer (senpi#2822).
+/// While a control request awaits its response the line is read regardless. The response shares stdout with the
+/// messages, and a caller that stopped draining to wait for it (an interrupt on abort, `set_model` between turns)
+/// would otherwise wait forever. Upstream's SDK transport reads control responses apart from the message stream.
+async fn next_line<R: AsyncBufRead + Unpin>(
+    lines: &mut tokio::io::Lines<R>,
+    queue: &MessageQueue,
+    awaiting_response: bool,
+) -> std::io::Result<Option<String>> {
+    if !awaiting_response {
+        queue.writable().await;
+    }
+    lines.next_line().await
+}
+
 async fn settle_child(
     child: &mut tokio::process::Child,
     commands: &mut mpsc::UnboundedReceiver<Command>,
@@ -161,6 +181,20 @@ impl SdkQueryHandle {
         executable: &Path,
         options: &Value,
         environment: &BTreeMap<String, String>,
+    ) -> anyhow::Result<Self> {
+        Self::spawn_with_capacity(
+            executable,
+            options,
+            environment,
+            crate::bounded_queue::SESSION_STREAM_QUEUE_CAPACITY,
+        )
+        .await
+    }
+    async fn spawn_with_capacity(
+        executable: &Path,
+        options: &Value,
+        environment: &BTreeMap<String, String>,
+        capacity: usize,
     ) -> anyhow::Result<Self> {
         // senpi `defaultSdkBoundary.query`: the query runs in the session cwd, never the host working directory.
         let cwd = crate::session_cwd::require_anthropic_subscription_cwd(
@@ -202,7 +236,9 @@ impl SdkQueryHandle {
         let mut stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let (commands, mut command_rx) = mpsc::unbounded_channel();
-        let (events, messages) = mpsc::unbounded_channel();
+        let messages = Arc::new(MessageQueue::new(capacity));
+        let failure = Arc::new(Mutex::new(None));
+        let (queue, terminal) = (messages.clone(), failure.clone());
         let custom_server = options["customTools"]
             .as_array()
             .and_then(|tools| crate::custom_tools::build_custom_tool_server(tools));
@@ -228,7 +264,7 @@ impl SdkQueryHandle {
                             },
                             Some(Command::Close) | None => { closed = true; child.start_kill()?; return Ok(()); },
                         },
-                        line = lines.next_line() => {
+                        line = next_line(&mut lines, &queue, !pending.is_empty()) => {
                             let Some(line) = line? else { return Ok(()); };
                             let frame: Value = serde_json::from_str(&line)?;
                             match frame["type"].as_str() {
@@ -259,7 +295,7 @@ impl SdkQueryHandle {
                                     write_frame(&mut stdin, &json!({"type":"control_response","response":response})).await?;
                                 },
                                 Some("keep_alive" | "control_cancel_request") => {},
-                                _ => { let _ = events.send(Ok(frame)); },
+                                _ => queue.push(frame),
                             }
                         }
                     }
@@ -283,12 +319,14 @@ impl SdkQueryHandle {
                 )));
             }
             if let Err(error) = result {
-                let _ = events.send(Err(error));
+                *terminal.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
             }
+            queue.close();
         });
         let mut handle = Self {
             commands,
             messages,
+            failure,
             task: Some(task),
             initialization: Value::Null,
         };
@@ -360,7 +398,15 @@ impl SdkQueryHandle {
         Ok(())
     }
     pub async fn next(&mut self) -> Option<anyhow::Result<Value>> {
-        self.messages.recv().await
+        match self.messages.next().await {
+            Ok(Some(message)) => Some(Ok(message)),
+            Ok(None) | Err(()) => self
+                .failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .map(Err),
+        }
     }
     pub async fn close(mut self) -> anyhow::Result<()> {
         let _ = self.commands.send(Command::Close);
@@ -1455,6 +1501,65 @@ mod tests {
             json!([])
         );
         query.set_model("claude-test").await.expect("model");
+        query.close().await.expect("reaped");
+    }
+    #[tokio::test]
+    async fn the_reader_waits_for_room_unless_a_control_response_is_due() {
+        let queue = MessageQueue::new(1);
+        queue.push(json!(0));
+        let mut lines = BufReader::new(&b"first\nsecond\n"[..]).lines();
+        {
+            let mut held = std::pin::pin!(next_line(&mut lines, &queue, false));
+            std::future::poll_fn(|cx| {
+                assert!(held.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        assert_eq!(
+            next_line(&mut lines, &queue, true).await.expect("line"),
+            Some("first".into())
+        );
+        assert_eq!(queue.next().await, Ok(Some(json!(0))));
+        assert_eq!(
+            next_line(&mut lines, &queue, false).await.expect("line"),
+            Some("second".into())
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_full_queue_still_reads_the_response_to_a_pending_request() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("dir");
+        let script = directory.path().join("claude");
+        std::fs::write(&script, "#!/usr/bin/python3\nimport sys,json\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{'still_queued':[]}}}),flush=True)\n else:\n  for i in range(6): print(json.dumps({'type':'stream_event','n':i}),flush=True)\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("permissions");
+        let mut query = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            SdkQueryHandle::spawn_with_capacity(
+                &script,
+                &json!({"cwd":directory.path()}),
+                &BTreeMap::new(),
+                2,
+            ),
+        )
+        .await
+        .expect("bounded init")
+        .expect("spawn");
+        query
+            .send(json!({"type":"user","message":{"role":"user","content":"hello"}}))
+            .await
+            .expect("send");
+        // Nothing is drained: the six messages fill the queue, and the response sits behind them.
+        let receipt = tokio::time::timeout(std::time::Duration::from_secs(5), query.interrupt())
+            .await
+            .expect("the response is read past a full queue")
+            .expect("interrupt");
+        assert_eq!(receipt["still_queued"], json!([]));
+        for n in 0..6 {
+            assert_eq!(query.next().await.expect("frame").expect("message")["n"], n);
+        }
         query.close().await.expect("reaped");
     }
     #[cfg(unix)]
