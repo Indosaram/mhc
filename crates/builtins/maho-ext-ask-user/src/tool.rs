@@ -315,11 +315,12 @@ pub(crate) async fn start_question(
     sender.append_entry(ASK_USER_QUESTION_ENTRY, Some(json!({"requestId":id,"headers":request.questions.iter().map(|question|&question.header).collect::<Vec<_>>()})))?;
     let (settled, mut completion) = tokio::sync::watch::channel(None::<QuestionResponse>);
     let (terminal, terminal_response) = tokio::sync::watch::channel(None::<QuestionResponse>);
-    let (owner, mut owners) = tokio::sync::watch::channel(Some(QuestionOwner {
+    let (owner, owners) = tokio::sync::watch::channel(Some(QuestionOwner {
         sender: sender.clone(),
         context: ctx.clone(),
         state: state.clone(),
     }));
+    let (attached, mut attachments) = tokio::sync::watch::channel(true);
     let (publishing, _) = tokio::sync::watch::channel(false);
     let publication = Arc::new(Mutex::new(publishing));
     let cancel_signal = AbortSignal::default();
@@ -341,7 +342,7 @@ pub(crate) async fn start_question(
     let pending = timer.clone();
     let cancel = cancel_signal.clone();
     let deadline = timer.clone();
-    let attachment = owner.subscribe();
+    let attachment = attached.subscribe();
     let loss_ui = ctx.ui.clone();
     register_pending_question(
         &session,
@@ -349,10 +350,11 @@ pub(crate) async fn start_question(
             request: request.clone(),
             completion: completion.clone(),
             owner,
+            attached,
             publication: publication.clone(),
             deadline_at_ms: Arc::new(move || deadline.absolute_deadline_at_ms()),
             cancel: Arc::new(move |origin, message, report_detached_loss| {
-                let lost = report_detached_loss && attachment.borrow().is_none();
+                let lost = report_detached_loss && !*attachment.borrow();
                 let mut response = pending.cancel(if lost {
                     QuestionStatus::OrphanedAfterRestart
                 } else {
@@ -397,7 +399,13 @@ pub(crate) async fn start_question(
         let mut completed = work_completion;
         let mut reattached = false;
         let response = loop {
-            let current = owners.borrow_and_update().clone();
+            // The UI opens only while attached; a re-bound owner stays closed until SessionStart
+            // re-attaches it after the disabled check (senpi rebind -> sync -> reattach).
+            let current = if *attachments.borrow_and_update() {
+                owners.borrow().clone()
+            } else {
+                None
+            };
             let progress = timer.clone();
             let progress_request = owner_request.clone();
             let remaining_ms = timer.remaining_ms();
@@ -452,7 +460,7 @@ pub(crate) async fn start_question(
             };
             let response = tokio::select! {
                 biased;
-                update = owners.changed() => { attachment_signal.abort(); reattached=true;if update.is_err() { Some(timer.cancel(QuestionStatus::Cancelled)) } else { None } },
+                update = attachments.changed() => { attachment_signal.abort(); reattached=true;if update.is_err() { Some(timer.cancel(QuestionStatus::Cancelled)) } else { None } },
                 () = async { if let Some(signal) = &signal { signal.cancelled().await; } else { std::future::pending::<()>().await; } } => Some(with_origin(timer.cancel(QuestionStatus::Cancelled), QuestionCancelOrigin::TurnAbort)),
                 () = async { if let Some(signal) = &context_signal { signal.cancelled().await; } else { std::future::pending::<()>().await; } } => Some(with_origin(timer.cancel(QuestionStatus::Cancelled), QuestionCancelOrigin::TurnAbort)),
                 () = async { loop { if completed.borrow().is_some() || completed.changed().await.is_err() { break; } } } => Some(completed.borrow().clone().unwrap_or_else(|| timer.cancel(QuestionStatus::Cancelled))),

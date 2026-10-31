@@ -73,6 +73,7 @@ struct Scenario {
     recovering: bool,
     fail_ui: bool,
     empty_submission: bool,
+    disable_on_reload: bool,
 }
 async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Scenario {
@@ -85,7 +86,10 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         recovering,
         fail_ui,
         empty_submission,
+        disable_on_reload,
     } = opts;
+    // Both leave the question unanswered across the reload.
+    let held = late_rebind || disable_on_reload;
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions {
@@ -304,7 +308,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     }));
     let mut completion = pending[0].completion.clone();
     if reload {
-        if !late_rebind {
+        if !held {
             responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None,cancel_origin:None,resolved_by:None}));
         }
         session.emit_session_shutdown(SessionReason::Reload).await;
@@ -320,10 +324,10 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     } else if cancel {
         session.emit_session_shutdown(SessionReason::Quit).await;
         if !get_pending_questions(&session.session_id()).is_empty() { return Err("Shutdown left pending question".into()); }
-    } else if !late_rebind {
+    } else if !held {
         responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:if empty_submission{Default::default()}else{[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into()},comment:None,unanswered:if empty_submission{vec![request.questions[0].id.clone()]}else{vec![]},auto_resolved_after_ms:None,cancel_origin:None,resolved_by:None}));
     }
-    if !late_rebind { tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    if !held { tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
         Ok::<(), tokio::sync::watch::error::RecvError>(())
     }).await??; }
@@ -335,6 +339,9 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         let captured = settlements.clone();
         let subscription = loaded.events.on_native::<AskUserSettledEvent>("ask-user:settled",Arc::new(move |value|captured.lock().expect("settlements").push(value.clone())));
         let runner = ExtensionRunner::new(loaded.extensions,loaded.runtime,loaded.events,context::create(&session,ui.clone()));
+        if disable_on_reload {
+            session.with_settings_manager_mut(|manager| manager.apply_overrides(&serde_json::Map::from_iter([("askUser".to_owned(), json!({"enabled":false}))])));
+        }
         session.set_extension_runner(runner).await;
         session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
         session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
@@ -348,6 +355,16 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
                 loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
                 Ok::<(), tokio::sync::watch::error::RecvError>(())
             }).await??;
+        }
+        if disable_on_reload {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
+                Ok::<(), tokio::sync::watch::error::RecvError>(())
+            }).await??;
+            if opened_rx.try_recv().is_ok() { return Err("Disabled reload reopened the question UI".into()); }
+            if session.get_active_tool_names().iter().any(|name| ["request_user_input", "ask_user_question"].contains(&name.as_str())) {
+                return Err("Disabled reload left the question tool active".into());
+            }
         }
         Some(subscription)
     } else { None };
@@ -380,7 +397,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         if persisted != 1 { return Err(format!("Reload settlement persistence: expected one, got {persisted}").into()); }
     }
     if fail_ui && !completion.borrow().as_ref().and_then(|response|response.comment.as_ref()).is_some_and(|comment|comment.contains("UI response channel closed")){return Err("UI failure lost error comment".into());}
-    let orphaned=fail_ui&&(recovering||reload);
+    let orphaned=(fail_ui&&(recovering||reload))||disable_on_reload;
     let silent=cancel||abort||(fail_ui&&!orphaned);
     if status != Some(if orphaned {QuestionStatus::OrphanedAfterRestart} else if silent {QuestionStatus::Cancelled} else if timeout {QuestionStatus::TimedOut} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!silent) || request.request_id != pending[0].request.request_id {
         return Err(format!("Settlement receipt: status={status:?}, notifications={notification_count}").into());
@@ -514,6 +531,19 @@ async fn detached_owner_rebinds_before_late_registered_publication() {
     })
     .await
     .expect("registered late rebind");
+}
+
+// senpi ask-user-reload.test.ts: reports a lost pending question through the new runner when reload
+// disables ask-user. Orphaned, delivered once by the new runner, UI opened once, tool removed.
+#[tokio::test]
+async fn reload_that_disables_ask_user_reports_lost_question_through_new_runner() {
+    scenario(Scenario {
+        reload: true,
+        disable_on_reload: true,
+        ..Default::default()
+    })
+    .await
+    .expect("disabled reload loss");
 }
 
 #[tokio::test]

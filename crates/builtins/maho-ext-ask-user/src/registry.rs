@@ -14,6 +14,9 @@ pub struct PendingQuestionEntry {
     /// progress) and that reports the loss settles orphaned-after-restart instead of cancelled.
     pub cancel: Arc<dyn Fn(QuestionCancelOrigin, Option<String>, bool) + Send + Sync>,
     pub owner: watch::Sender<Option<QuestionOwner>>,
+    /// Whether the question UI is open on the bound owner. A reload detaches it; SessionStart re-binds
+    /// the owner first and re-attaches only after the disabled check (senpi rebind/reattach).
+    pub attached: watch::Sender<bool>,
     pub publication: Arc<Mutex<watch::Sender<bool>>>,
     pub deadline_at_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -108,6 +111,7 @@ mod tests {
         let entry = |id: &str| {
             let (_, completion) = watch::channel(None);
             let (owner, _) = watch::channel(None);
+            let (attached, _) = watch::channel(true);
             let (publication, _) = watch::channel(false);
             Arc::new(PendingQuestionEntry {
                 request: QuestionRequest {
@@ -119,6 +123,7 @@ mod tests {
                 completion,
                 cancel: Arc::new(|_, _, _| {}),
                 owner,
+                attached,
                 publication: Arc::new(Mutex::new(publication)),
                 deadline_at_ms: Arc::new(|| 100),
             })

@@ -53,12 +53,19 @@ impl Extension for AskUser {
                     let mut active = actions.get_active_tools()?.into_iter().filter(|name| !TOOL_NAMES.contains(&name.as_str())).collect::<Vec<_>>();
                     let disabled = !ctx.get_ask_user_settings()?.enabled || sender.runtime.get_flag("no-ask-user") == Some(FlagValue::Boolean(true));
                     if disabled {
+                        // Still detached after a reload, so the loss settles orphaned-after-restart
+                        // and reaches the model through the owner re-bound above.
                         cancel_pending(ctx.session_manager.session_id(), QuestionCancelOrigin::AskUserDisabled, "The pending question was cancelled because ask-user is disabled.", true).await?;
                     } else if !state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unavailable {
                         let model = match event { ExtensionEvent::ModelSelect(event) => Some(&event.model), _ => ctx.model.as_ref() };
                         active.push(tool_name(pick_variant(model)).into());
                     }
                     actions.set_active_tools(active)?;
+                    if kind == EventKind::SessionStart {
+                        for entry in get_pending_questions(ctx.session_manager.session_id()) {
+                            entry.attached.send_if_modified(|attached| !std::mem::replace(attached, true));
+                        }
+                    }
                     Ok(EventResult::None)
                 })
             }));
@@ -83,6 +90,7 @@ impl Extension for AskUser {
                     let mut publishing = {
                         let publication = entry.publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         entry.owner.send_replace(None);
+                        entry.attached.send_replace(false);
                         publication.subscribe()
                     };
                     loop {
