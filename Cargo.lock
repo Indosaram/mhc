@@ -4382,6 +4382,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "globset",
+ "hmac",
  "icu_collator",
  "maho-agent",
  "maho-ai",
