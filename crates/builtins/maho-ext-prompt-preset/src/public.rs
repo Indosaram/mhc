@@ -57,7 +57,7 @@ mod tests {
     #[test]
     fn exports_the_runtime_resolver_not_a_second_implementation() {
         for id in ["claude-opus-5-5", "gpt-5.4", "unknown"] {
-            let public =
+            let exported =
                 public::resolve_preset(model(id, None), public::PromptPresetName::Auto, options());
             let runtime = crate::presets::resolve_preset(
                 model(id, None),
