@@ -17,10 +17,11 @@ use serde_json::{Map, Value, json};
 use crate::api::google_shared::{
     ConvertMessagesOptions, GoogleApiThinkingLevel, GoogleAuth, GoogleClientConfig,
     GoogleRequestError, GoogleSseDecoder, GoogleStreamRequest, ResolvedGoogleThinkingLevel,
-    convert_messages, convert_tools, is_thinking_part, js_json_stringify, js_truthy,
-    map_stop_reason, post_stream_generate_content, request_body,
+    convert_messages, convert_tools, get_disabled_google_thinking_config, is_thinking_part,
+    js_json_stringify, js_truthy, map_stop_reason, post_stream_generate_content, request_body,
     resolve_google_function_calling_mode, resolve_google_thinking_level, retain_thought_signature,
-    retry_google_request, supports_google_strict_tool_sampling, to_provider_native_content,
+    retry_google_request, supports_google_strict_tool_sampling, to_google_thinking_level,
+    to_provider_native_content, uses_google_thinking_level,
 };
 use crate::api::simple_options::{GOOGLE_RESERVED_BODY_KEYS, apply_extra_body, build_base_options};
 use crate::models::{calculate_cost, clamp_thinking_level};
@@ -132,7 +133,7 @@ pub fn stream(
 ) -> AssistantMessageEventStream {
     let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let sink = stream.clone();
     let model = model.clone();
     let context = context.clone();
@@ -198,11 +199,11 @@ pub fn stream_simple(
         Err(message) => return crate::utils::lazy::error_stream(model, &message),
     };
 
-    if is_gemini_3_pro_model(model) || is_gemini_3_flash_model(model) || is_gemma_4_model(model) {
+    if uses_google_thinking_level(model) {
         let thinking = GoogleThinkingOptions {
             enabled: true,
             budget_tokens: None,
-            level: Some(get_thinking_level(resolved_level, model)),
+            level: Some(to_google_thinking_level(resolved_level)),
         };
         return stream(model, context, Some(with_thinking(base, thinking)));
     }
@@ -343,7 +344,10 @@ pub fn build_params(
             config.insert("thinkingConfig".into(), Value::Object(thinking_config));
         }
         Some(thinking) if model.reasoning && !thinking.enabled => {
-            config.insert("thinkingConfig".into(), get_disabled_thinking_config(model));
+            config.insert(
+                "thinkingConfig".into(),
+                get_disabled_google_thinking_config(model).map_err(GoogleRequestError::Message)?,
+            );
         }
         _ => {}
     }
@@ -365,91 +369,6 @@ pub fn build_params(
         "contents": contents,
         "config": Value::Object(config),
     }))
-}
-
-fn is_gemma_4_model(model: &Model) -> bool {
-    let id = model.id.to_lowercase();
-    id.contains("gemma-4") || id.contains("gemma4")
-}
-
-fn is_gemini_3_pro_model(model: &Model) -> bool {
-    is_gemini_3_pro_id(&model.id)
-}
-
-fn is_gemini_3_pro_id(model_id: &str) -> bool {
-    let id = model_id.to_lowercase();
-    let Some(rest) = id.strip_prefix("gemini-3") else {
-        return false;
-    };
-    let rest = match rest.strip_prefix('.') {
-        Some(rest) => rest.trim_start_matches(|character: char| character.is_ascii_digit()),
-        None => rest,
-    };
-    rest.starts_with("-pro")
-}
-
-fn is_gemini_3_flash_model(model: &Model) -> bool {
-    let id = model.id.to_lowercase();
-    if let Some(rest) = id.strip_prefix("gemini-3") {
-        let rest = match rest.strip_prefix('.') {
-            Some(rest) => rest.trim_start_matches(|character: char| character.is_ascii_digit()),
-            None => rest,
-        };
-        if rest.starts_with("-flash") {
-            return true;
-        }
-    }
-    id == "gemini-flash-latest" || id == "gemini-flash-lite-latest"
-}
-
-fn get_disabled_thinking_config(model: &Model) -> Value {
-    // Google docs: Gemini 3.1 Pro cannot disable thinking, and Gemini 3 Flash / Flash-Lite
-    // do not support full thinking-off either. For Gemini 3 models, use the lowest supported
-    // thinkingLevel without includeThoughts so hidden thinking remains invisible to pi.
-    if is_gemini_3_pro_model(model) {
-        return json!({ "thinkingLevel": GoogleApiThinkingLevel::Low.as_str() });
-    }
-    if is_gemini_3_flash_model(model) {
-        return json!({ "thinkingLevel": GoogleApiThinkingLevel::Minimal.as_str() });
-    }
-    if is_gemma_4_model(model) {
-        return json!({ "thinkingLevel": GoogleApiThinkingLevel::Minimal.as_str() });
-    }
-
-    // Gemini 2.x supports disabling via thinkingBudget = 0.
-    json!({ "thinkingBudget": 0 })
-}
-
-fn get_thinking_level(
-    effort: ResolvedGoogleThinkingLevel,
-    model: &Model,
-) -> GoogleApiThinkingLevel {
-    if is_gemini_3_pro_model(model) {
-        match effort {
-            ResolvedGoogleThinkingLevel::Minimal | ResolvedGoogleThinkingLevel::Low => {
-                return GoogleApiThinkingLevel::Low;
-            }
-            ResolvedGoogleThinkingLevel::Medium | ResolvedGoogleThinkingLevel::High => {
-                return GoogleApiThinkingLevel::High;
-            }
-        }
-    }
-    if is_gemma_4_model(model) {
-        match effort {
-            ResolvedGoogleThinkingLevel::Minimal | ResolvedGoogleThinkingLevel::Low => {
-                return GoogleApiThinkingLevel::Minimal;
-            }
-            ResolvedGoogleThinkingLevel::Medium | ResolvedGoogleThinkingLevel::High => {
-                return GoogleApiThinkingLevel::High;
-            }
-        }
-    }
-    match effort {
-        ResolvedGoogleThinkingLevel::Minimal => GoogleApiThinkingLevel::Minimal,
-        ResolvedGoogleThinkingLevel::Low => GoogleApiThinkingLevel::Low,
-        ResolvedGoogleThinkingLevel::Medium => GoogleApiThinkingLevel::Medium,
-        ResolvedGoogleThinkingLevel::High => GoogleApiThinkingLevel::High,
-    }
 }
 
 pub fn get_google_budget(
@@ -504,6 +423,7 @@ fn budget_for_level(budgets: &ThinkingBudgets, level: ResolvedGoogleThinkingLeve
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -792,22 +712,32 @@ fn push_block_end(
                 Some(ContentBlock::Text(text)) => text.text.clone(),
                 _ => String::new(),
             };
-            sink.push(AssistantMessageEvent::TextEnd {
-                content_index: block_index(output),
-                content,
-                partial: output.clone(),
-            });
+            // block_index() drifts past the open block once a native part is appended; capture
+            // keeps the block's own index.
+            sink.push_with_hint(
+                AssistantMessageEvent::TextEnd {
+                    content_index: block_index(output),
+                    content,
+                    partial: output.clone(),
+                },
+                crate::utils::assistant_capture::CaptureHint::content_index(current_block.index),
+            );
         }
         CurrentBlockKind::Thinking => {
             let content = match output.content.get(current_block.index) {
                 Some(ContentBlock::Thinking(thinking)) => thinking.thinking.clone(),
                 _ => String::new(),
             };
-            sink.push(AssistantMessageEvent::ThinkingEnd {
-                content_index: block_index(output),
-                content,
-                partial: output.clone(),
-            });
+            // block_index() drifts past the open block once a native part is appended; capture
+            // keeps the block's own index.
+            sink.push_with_hint(
+                AssistantMessageEvent::ThinkingEnd {
+                    content_index: block_index(output),
+                    content,
+                    partial: output.clone(),
+                },
+                crate::utils::assistant_capture::CaptureHint::content_index(current_block.index),
+            );
         }
     }
 }
@@ -895,32 +825,62 @@ fn handle_chunk(
                             output.content.get_mut(current_block.index)
                         {
                             thinking.thinking.push_str(&text);
+                        }
+                        crate::utils::assistant_capture::push_assistant_signature(
+                            sink,
+                            current_block.index,
+                            &output.content[current_block.index],
+                            incoming_signature,
+                        );
+                        if let Some(ContentBlock::Thinking(thinking)) =
+                            output.content.get_mut(current_block.index)
+                        {
                             thinking.thinking_signature = retain_thought_signature(
                                 thinking.thinking_signature.take(),
                                 incoming_signature,
                             );
                         }
-                        sink.push(AssistantMessageEvent::ThinkingDelta {
-                            content_index: block_index(output),
-                            delta: text,
-                            partial: output.clone(),
-                        });
+                        sink.push_with_hint(
+                            AssistantMessageEvent::ThinkingDelta {
+                                content_index: block_index(output),
+                                delta: text,
+                                partial: output.clone(),
+                            },
+                            crate::utils::assistant_capture::CaptureHint::content_index(
+                                current_block.index,
+                            ),
+                        );
                     }
                     CurrentBlockKind::Text => {
                         if let Some(ContentBlock::Text(block)) =
                             output.content.get_mut(current_block.index)
                         {
                             block.text.push_str(&text);
+                        }
+                        crate::utils::assistant_capture::push_assistant_signature(
+                            sink,
+                            current_block.index,
+                            &output.content[current_block.index],
+                            incoming_signature,
+                        );
+                        if let Some(ContentBlock::Text(block)) =
+                            output.content.get_mut(current_block.index)
+                        {
                             block.text_signature = retain_thought_signature(
                                 block.text_signature.take(),
                                 incoming_signature,
                             );
                         }
-                        sink.push(AssistantMessageEvent::TextDelta {
-                            content_index: block_index(output),
-                            delta: text,
-                            partial: output.clone(),
-                        });
+                        sink.push_with_hint(
+                            AssistantMessageEvent::TextDelta {
+                                content_index: block_index(output),
+                                delta: text,
+                                partial: output.clone(),
+                            },
+                            crate::utils::assistant_capture::CaptureHint::content_index(
+                                current_block.index,
+                            ),
+                        );
                     }
                 }
             }
@@ -986,11 +946,16 @@ fn handle_chunk(
                     content_index: block_index(output),
                     partial: output.clone(),
                 });
-                sink.push(AssistantMessageEvent::ToolcallDelta {
-                    content_index: block_index(output),
-                    delta: js_json_stringify(&Value::Object(tool_call.arguments.clone())),
-                    partial: output.clone(),
-                });
+                // The adapter never parses its own spelling: the complete parsed seed stays
+                // authoritative.
+                sink.push_with_hint(
+                    AssistantMessageEvent::ToolcallDelta {
+                        content_index: block_index(output),
+                        delta: js_json_stringify(&Value::Object(tool_call.arguments.clone())),
+                        partial: output.clone(),
+                    },
+                    crate::utils::assistant_capture::CaptureHint::parsed_through(0),
+                );
                 sink.push(AssistantMessageEvent::ToolcallEnd {
                     content_index: block_index(output),
                     tool_call,
@@ -1004,6 +969,11 @@ fn handle_chunk(
                     .push(ContentBlock::ProviderNative(to_provider_native_content(
                         part,
                     )));
+                crate::utils::assistant_capture::push_assistant_complete_block(
+                    sink,
+                    block_index(output),
+                    &output.content[block_index(output)],
+                );
             }
         }
     }
@@ -1018,6 +988,11 @@ fn handle_chunk(
                 raw: grounding_metadata.clone(),
             },
         ));
+        crate::utils::assistant_capture::push_assistant_complete_block(
+            sink,
+            block_index(output),
+            &output.content[block_index(output)],
+        );
         state.grounding_metadata_emitted = true;
     }
 
@@ -1031,6 +1006,11 @@ fn handle_chunk(
                 raw: url_context_metadata.clone(),
             },
         ));
+        crate::utils::assistant_capture::push_assistant_complete_block(
+            sink,
+            block_index(output),
+            &output.content[block_index(output)],
+        );
         state.url_context_metadata_emitted = true;
     }
 
@@ -1067,7 +1047,8 @@ fn handle_chunk(
             .get("thoughtsTokenCount")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        output.usage = Usage { context_usage: None,
+        output.usage = Usage {
+            context_usage: None,
             input: prompt_tokens.saturating_sub(cached_tokens),
             output: candidate_tokens + thought_tokens,
             cache_read: cached_tokens,
@@ -1095,7 +1076,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gemini_3_family_detection_matches_the_ts_regexes() {
+    fn thinking_level_control_detection_matches_the_ts_regexes() {
         let model = |id: &str| {
             let mut model =
                 crate::models_generated::get_builtin_model("google", "gemini-2.5-flash")
@@ -1104,15 +1085,22 @@ mod tests {
             model.id = id.to_owned();
             model
         };
-        assert!(is_gemini_3_pro_model(&model("gemini-3-pro-preview")));
-        assert!(is_gemini_3_pro_model(&model("gemini-3.1-pro-preview")));
-        assert!(!is_gemini_3_pro_model(&model("gemini-3-flash-preview")));
-        assert!(is_gemini_3_flash_model(&model("gemini-3-flash-preview")));
-        assert!(is_gemini_3_flash_model(&model("gemini-3.1-flash-lite")));
-        assert!(is_gemini_3_flash_model(&model("gemini-flash-latest")));
-        assert!(!is_gemini_3_flash_model(&model("gemini-2.5-flash")));
-        assert!(is_gemma_4_model(&model("gemma-4-27b")));
-        assert!(!is_gemma_4_model(&model("gemma-3-27b")));
+        for id in [
+            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+            "gemma-4-27b",
+            "gemma4-e2b",
+            "gemini-4-argon",
+        ] {
+            assert!(uses_google_thinking_level(&model(id)), "{id}");
+        }
+        for id in ["gemini-2.5-flash", "gemma-3-27b", "gemini-40b"] {
+            assert!(!uses_google_thinking_level(&model(id)), "{id}");
+        }
     }
 
     #[test]

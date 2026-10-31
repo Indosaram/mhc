@@ -1,0 +1,241 @@
+[
+ {
+  "type": "toolcall_start",
+  "contentIndex": 0,
+  "partial": {
+   "role": "assistant",
+   "api": "openai-responses",
+   "provider": "openai",
+   "model": "gpt-5",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture|fc_fixture",
+     "name": "echo",
+     "arguments": {
+      "reset": true
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "responseId": "resp_fixture",
+   "rawStopReason": "completed"
+  }
+ },
+ {
+  "type": "toolcall_delta",
+  "contentIndex": 0,
+  "delta": "{ \"value\": \"\\uD83D\\u",
+  "partial": {
+   "role": "assistant",
+   "api": "openai-responses",
+   "provider": "openai",
+   "model": "gpt-5",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture|fc_fixture",
+     "name": "echo",
+     "arguments": {
+      "reset": true
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "responseId": "resp_fixture",
+   "rawStopReason": "completed"
+  }
+ },
+ {
+  "type": "toolcall_delta",
+  "contentIndex": 0,
+  "delta": "",
+  "partial": {
+   "role": "assistant",
+   "api": "openai-responses",
+   "provider": "openai",
+   "model": "gpt-5",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture|fc_fixture",
+     "name": "echo",
+     "arguments": {
+      "reset": true
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "responseId": "resp_fixture",
+   "rawStopReason": "completed"
+  }
+ },
+ {
+  "type": "toolcall_delta",
+  "contentIndex": 0,
+  "delta": "DE00\", \"quote\": \"\\\\\\\"𝄞\" }",
+  "partial": {
+   "role": "assistant",
+   "api": "openai-responses",
+   "provider": "openai",
+   "model": "gpt-5",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture|fc_fixture",
+     "name": "echo",
+     "arguments": {
+      "reset": true
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "responseId": "resp_fixture",
+   "rawStopReason": "completed"
+  }
+ },
+ {
+  "type": "toolcall_end",
+  "contentIndex": 0,
+  "toolCall": {
+   "type": "toolCall",
+   "id": "call_fixture|fc_fixture",
+   "name": "echo",
+   "arguments": {
+    "reset": true
+   }
+  },
+  "partial": {
+   "role": "assistant",
+   "api": "openai-responses",
+   "provider": "openai",
+   "model": "gpt-5",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture|fc_fixture",
+     "name": "echo",
+     "arguments": {
+      "reset": true
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "responseId": "resp_fixture",
+   "rawStopReason": "completed"
+  }
+ },
+ {
+  "type": "done",
+  "reason": "toolUse",
+  "message": {
+   "role": "assistant",
+   "api": "openai-responses",
+   "provider": "openai",
+   "model": "gpt-5",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture|fc_fixture",
+     "name": "echo",
+     "arguments": {
+      "reset": true
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "responseId": "resp_fixture",
+   "rawStopReason": "completed"
+  }
+ }
+]

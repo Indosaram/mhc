@@ -1,0 +1,661 @@
+[
+ {
+  "type": "start",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "text_start",
+  "contentIndex": 0,
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "text_delta",
+  "contentIndex": 0,
+  "delta": "answer",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "text_delta",
+  "contentIndex": 3,
+  "delta": " more",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "text_end",
+  "contentIndex": 3,
+  "content": "answer more",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "toolcall_start",
+  "contentIndex": 4,
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "toolcall_delta",
+  "contentIndex": 4,
+  "delta": "{\"text\":\"x\"}",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "toolcall_end",
+  "contentIndex": 4,
+  "toolCall": {
+   "type": "toolCall",
+   "id": "call_1",
+   "name": "echo",
+   "arguments": {
+    "text": "x"
+   }
+  },
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ },
+ {
+  "type": "done",
+  "reason": "toolUse",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "answer more",
+     "textSignature": "dHh0MQ=="
+    },
+    {
+     "type": "providerNative",
+     "subtype": "executableCode",
+     "raw": {
+      "executableCode": {
+       "language": "PYTHON",
+       "code": "print(1)"
+      }
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "groundingMetadata",
+     "raw": {
+      "webSearchQueries": [
+       "q"
+      ]
+     }
+    },
+    {
+     "type": "providerNative",
+     "subtype": "urlContextMetadata",
+     "raw": {
+      "urlMetadata": [
+       {
+        "retrievedUrl": "https://docs.example.com"
+       }
+      ]
+     }
+    },
+    {
+     "type": "toolCall",
+     "id": "call_1",
+     "name": "echo",
+     "arguments": {
+      "text": "x"
+     }
+    }
+   ],
+   "api": "google-generative-ai",
+   "provider": "google",
+   "model": "gemini-2.5-flash",
+   "usage": {
+    "input": 3,
+    "output": 4,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 7,
+    "cost": {
+     "input": 9e-07,
+     "output": 1e-05,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 1.09e-05
+    }
+   },
+   "stopReason": "toolUse",
+   "timestamp": 0,
+   "rawStopReason": "STOP"
+  }
+ }
+]

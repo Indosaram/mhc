@@ -1,0 +1,211 @@
+[
+ {
+  "type": "start",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture",
+     "name": "echo",
+     "arguments": {
+      "value": "😀",
+      "quote": "\\\"𝄞"
+     }
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "anthropic",
+   "model": "claude-haiku-4-5",
+   "usage": {
+    "input": 1,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 2,
+    "cost": {
+     "input": 1e-06,
+     "output": 5e-06,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 6e-06
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "stop",
+   "timestamp": 1,
+   "responseId": "msg_fixture",
+   "rawStopReason": "end_turn"
+  }
+ },
+ {
+  "type": "toolcall_start",
+  "contentIndex": 0,
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture",
+     "name": "echo",
+     "arguments": {
+      "value": "😀",
+      "quote": "\\\"𝄞"
+     }
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "anthropic",
+   "model": "claude-haiku-4-5",
+   "usage": {
+    "input": 1,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 2,
+    "cost": {
+     "input": 1e-06,
+     "output": 5e-06,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 6e-06
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "stop",
+   "timestamp": 1,
+   "responseId": "msg_fixture",
+   "rawStopReason": "end_turn"
+  }
+ },
+ {
+  "type": "toolcall_delta",
+  "contentIndex": 0,
+  "delta": "{ \"value\": \"\\uD83D\\uDE00\", \"quote\": \"\\\\\\\"𝄞\" }",
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture",
+     "name": "echo",
+     "arguments": {
+      "value": "😀",
+      "quote": "\\\"𝄞"
+     }
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "anthropic",
+   "model": "claude-haiku-4-5",
+   "usage": {
+    "input": 1,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 2,
+    "cost": {
+     "input": 1e-06,
+     "output": 5e-06,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 6e-06
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "stop",
+   "timestamp": 1,
+   "responseId": "msg_fixture",
+   "rawStopReason": "end_turn"
+  }
+ },
+ {
+  "type": "toolcall_end",
+  "contentIndex": 0,
+  "toolCall": {
+   "type": "toolCall",
+   "id": "call_fixture",
+   "name": "echo",
+   "arguments": {
+    "value": "😀",
+    "quote": "\\\"𝄞"
+   }
+  },
+  "partial": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture",
+     "name": "echo",
+     "arguments": {
+      "value": "😀",
+      "quote": "\\\"𝄞"
+     }
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "anthropic",
+   "model": "claude-haiku-4-5",
+   "usage": {
+    "input": 1,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 2,
+    "cost": {
+     "input": 1e-06,
+     "output": 5e-06,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 6e-06
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "stop",
+   "timestamp": 1,
+   "responseId": "msg_fixture",
+   "rawStopReason": "end_turn"
+  }
+ },
+ {
+  "type": "done",
+  "reason": "stop",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_fixture",
+     "name": "echo",
+     "arguments": {
+      "value": "😀",
+      "quote": "\\\"𝄞"
+     }
+    }
+   ],
+   "api": "anthropic-messages",
+   "provider": "anthropic",
+   "model": "claude-haiku-4-5",
+   "usage": {
+    "input": 1,
+    "output": 1,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 2,
+    "cost": {
+     "input": 1e-06,
+     "output": 5e-06,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 6e-06
+    },
+    "cacheWrite1h": 0
+   },
+   "stopReason": "stop",
+   "timestamp": 1,
+   "responseId": "msg_fixture",
+   "rawStopReason": "end_turn"
+  }
+ }
+]

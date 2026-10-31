@@ -400,6 +400,7 @@ mod tests {
     fn assistant_message(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
         Message::Assistant(Box::new(AssistantMessage {
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
             error_cause: None,
             prompt_cache_breakpoint: None,

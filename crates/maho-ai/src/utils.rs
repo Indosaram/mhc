@@ -2,10 +2,19 @@
 
 pub mod abort;
 pub mod abort_signals;
+pub mod assistant_capture;
+pub mod assistant_capture_record;
 pub mod assistant_message_frame;
+pub mod assistant_seed_frontier;
 pub mod block_symbols;
+#[cfg(test)]
+pub(crate) mod capture_test_records;
+#[cfg(test)]
+pub(crate) mod capture_test_server;
 pub mod chatgpt_subscription_auth;
 pub mod claude_code_version;
+pub mod config_reference;
+pub mod config_reference_error;
 pub mod cursor_context_limit;
 pub mod deferred_tools;
 pub mod diagnostics;
@@ -31,6 +40,7 @@ pub mod provider_diagnostic_carrier;
 pub mod provider_diagnostic_sources;
 pub mod provider_diagnostic_vocabulary;
 pub mod provider_env;
+pub mod provider_error;
 pub mod provider_failure_description;
 pub mod provider_retry;
 pub mod reported_count;
@@ -38,10 +48,14 @@ pub mod retry;
 pub mod retry_hint;
 pub mod retry_profile;
 pub mod sanitize_unicode;
+pub mod secret_classifier;
+pub mod secret_lexer;
+pub mod secret_redaction;
 pub mod server_fallback_receipt;
 pub mod sleep;
 pub mod stop_details;
 pub mod text;
+pub mod tool_argument_validator;
 pub mod tool_call_id;
 pub mod tool_choice_fallback;
 pub mod tool_pair_repair;
