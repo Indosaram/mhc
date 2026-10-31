@@ -212,8 +212,9 @@ pub async fn refresh_mcp_tools_on_list_changed(
             }
             let mut result = Ok(());
             for removed in &diff.removed {
-                if let Err(error) = target.registrar.register_tool(
+                if let Err(error) = target.registrar.register_tool_with_renderers(
                     crate::notifications::build_mcp_tombstone_definition(removed, &name),
+                    crate::notifications::mcp_tombstone_renderers(removed),
                 ) {
                     result = Err(McpError::new(
                         crate::errors::McpErrorKind::ToolExec,

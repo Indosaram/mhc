@@ -131,7 +131,7 @@ pub fn create_mcp_proxy_tool(
     );
     let tool_count = entries.len();
     let description = format!(
-        "Gateway to the '{server}' MCP server ({tool_count} tools). Use op:\"search\" with a query to find tools, op:\"describe\" with a tool name for its schema, then op:\"call\" with tool + args (args is a JSON object STRING - no strict validation, so match the described schema exactly)."
+        "Gateway to the '{server}' MCP server ({tool_count} tools). Use op:\"search\" with a query to find tools, op:\"describe\" with a tool name for its schema, then op:\"call\" with tool + args (args is a JSON object STRING: no strict validation, so match the described schema exactly)."
     );
     let server = server.to_owned();
     let closure_server = server.clone();
@@ -254,4 +254,67 @@ pub fn create_mcp_proxy_tool(
     ));
     definition.execution_mode = Some(ToolExecutionMode::Parallel);
     definition
+}
+
+/// A JSON argument as a JavaScript template literal interpolates it (`${value}`).
+fn template_text(value: Option<&Value>) -> String {
+    match value {
+        None => "undefined".into(),
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Object(_)) => "[object Object]".into(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Null => String::new(),
+                item => template_text(Some(item)),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// `args.<key> ?? ""` interpolated into a template literal.
+fn template_or_empty(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        value => template_text(value),
+    }
+}
+
+/// proxy.ts `renderCall`/`renderResult` for the Tier-C gateway: the call is the
+/// bold `toolTitle` `name op <query|tool>`, the result is the `toolOutput`
+/// `name: running` while partial, else `name: <details.preview ?? "done">`.
+pub fn mcp_proxy_renderers(name: &str) -> crate::tool_registrar::McpToolRenderers {
+    use super::register::{details_preview, js_trim};
+    use maho_tui::components::text::Text;
+    let call_name = name.to_owned();
+    let result_name = name.to_owned();
+    maho_ext_api::ToolRenderers {
+        render_call: Some(Arc::new(move |args, theme, _context| {
+            let op = args.get("op");
+            let detail = if op.and_then(Value::as_str) == Some("search") {
+                template_or_empty(args.get("query"))
+            } else {
+                template_or_empty(args.get("tool"))
+            };
+            let title = format!("{call_name} {} {detail}", template_text(op));
+            Box::new(Text::with_padding(
+                theme.fg("toolTitle", &theme.bold(js_trim(&title))),
+                0,
+                0,
+            ))
+        })),
+        render_result: Some(Arc::new(move |result, options, theme, _context| {
+            let title = if options.is_partial {
+                format!("{result_name}: running")
+            } else {
+                format!(
+                    "{result_name}: {}",
+                    details_preview(&result.details, "done")
+                )
+            };
+            Box::new(Text::with_padding(theme.fg("toolOutput", &title), 0, 0))
+        })),
+    }
 }

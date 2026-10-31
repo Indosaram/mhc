@@ -226,6 +226,53 @@ pub fn cached_mcp_catalog_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn entry(tool: &str, description: Option<&str>) -> McpToolCatalogEntry {
+        McpToolCatalogEntry {
+            server: "s".into(),
+            tool: tool.into(),
+            schema: json!({"type":"object"}),
+            output_schema: None,
+            modern: false,
+            description: description.map(str::to_owned),
+            annotations: None,
+            request_timeout: Duration::from_secs(1),
+            client: None,
+            runtime: None,
+            connection: None,
+            ensure_connected: None,
+            ensure_fresh: None,
+            agent_dir: None,
+            artifacts: None,
+            output_guard: None,
+            request_origin: None,
+        }
+    }
+    #[test]
+    fn registration_identity_tracks_tools_resources_and_prompts() {
+        let tools = vec![entry("a", Some("first"))];
+        assert_eq!(
+            mcp_registration_identity(&tools, None),
+            r#"[[["a","first",{"type":"object"},null,false,null]],[],[]]"#
+        );
+        assert_ne!(
+            mcp_registration_identity(&tools, None),
+            mcp_registration_identity(&[entry("a", Some("changed"))], None)
+        );
+        let catalog = crate::catalog_cache::McpCachedServerCatalog {
+            modern: false,
+            config_hash: "h".into(),
+            credential_identity: None,
+            fetched_at: 0.0,
+            tools: vec![],
+            resources: vec![json!({"uri":"r"})],
+            prompts: vec![json!({"name":"p"})],
+            instructions: None,
+        };
+        assert_eq!(
+            mcp_registration_identity(&tools, Some(&catalog)),
+            r#"[[["a","first",{"type":"object"},null,false,null]],[{"uri":"r"}],[{"name":"p"}]]"#
+        );
+    }
     #[test]
     fn null_next_cursor_is_not_exposed_to_pagination() {
         let response = json!({"tools":[],"nextCursor":null});

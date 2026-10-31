@@ -35,6 +35,10 @@ fn mkdir_private(path: &std::path::Path) -> std::io::Result<()> {
 
 /// `adoptLegacyRecord`: synchronous claim under the blocking lock.
 pub fn adopt_legacy_record<R>(options: &LegacyMigration<R>) -> std::io::Result<Option<R>> {
+    // Nothing to migrate needs no lock: every token lookup lands here when a server has no saved grant.
+    if !options.legacy_tokens.exists() {
+        return Ok(None);
+    }
     let release = acquire_sync(options)?;
     let result = claim(options);
     release();
@@ -45,6 +49,9 @@ pub fn adopt_legacy_record<R>(options: &LegacyMigration<R>) -> std::io::Result<O
 pub async fn read_record_async<R>(options: &LegacyMigration<R>) -> std::io::Result<Option<R>> {
     if let Some(record) = (options.read)(&options.tokens_path) {
         return Ok(Some(record));
+    }
+    if !options.legacy_tokens.exists() {
+        return Ok(None);
     }
     mkdir_private(&options.root_dir)?;
     let guard = if options.disable_lock {
