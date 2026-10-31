@@ -694,6 +694,29 @@ impl ExtensionContextActions for ContextSessionManager {
         self.active();
         self.actions.get_prompt_cache_keep_alive_settings()
     }
+    fn on_user_activity(
+        &self,
+        listener: maho_ext_api::UserActivityListener,
+    ) -> Option<maho_ext_api::UserActivityUnsubscribe> {
+        self.active();
+        // A listener outliving its runtime (reload, shutdown) is never invoked again.
+        let runtime = self.runtime.clone();
+        self.actions
+            .on_user_activity(std::sync::Arc::new(move |kind| {
+                if runtime.assert_active().is_ok() {
+                    listener(kind);
+                }
+            }))
+    }
+    fn get_prompt_cache_prefix_request(
+        &self,
+        options: maho_ext_api::PromptCachePrefixRequestOptions,
+    ) -> ExtensionFuture<'_, maho_ext_api::PromptCachePrefixResult> {
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            self.actions.get_prompt_cache_prefix_request(options).await
+        })
+    }
     fn get_look_at_settings(&self) -> LookAtSettings {
         self.active();
         self.actions.get_look_at_settings()

@@ -1,8 +1,9 @@
 //! Port of `cache-keepalive/startup-activity-gate.ts` (senpi 903b8336).
 //!
-//! Upstream subscribes through `ctx.onUserActivity`; maho-ext-api has no such context method yet,
-//! so the subscription is a caller-supplied seam (`subscribe`) that returns the unsubscribe hook,
-//! or `None` when the host cannot report activity (upstream's optional-chained `undefined`).
+//! Upstream subscribes through `ctx.onUserActivity`; the subscription is a caller-supplied seam
+//! (`subscribe`, the extension wiring passes `ExtensionContext::on_user_activity`) that returns the
+//! unsubscribe hook, or `None` when the host cannot report activity (upstream's optional-chained
+//! `undefined`).
 
 use std::sync::{Arc, Mutex, PoisonError};
 
