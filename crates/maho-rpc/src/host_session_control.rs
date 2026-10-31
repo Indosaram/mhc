@@ -258,6 +258,98 @@ impl HostSessionControl {
     }
 }
 
+/// senpi `runtimeHost.launchProfile?.sessionContext?.host_socket`: the public socket the session was opened on.
+pub fn profile_host_socket(
+    runtime: &maho_core::agent_session_runtime::AgentSessionRuntime,
+) -> Option<String> {
+    runtime
+        .launch_profile()?
+        .session_context
+        .as_ref()?
+        .get("host_socket")
+        .cloned()
+}
+
+/// The live `AgentSession` a host serves, as the control edges read it.
+pub struct AgentControlSession(pub maho_core::agent_session::AgentSession);
+
+impl ControlSession for AgentControlSession {
+    fn emit_wake(&self, event: Value) -> BoxFuture<'static, ()> {
+        let session = self.0.clone();
+        Box::pin(async move {
+            // senpi `extensionRunner.emit(event)`: an extension handler failure is the runner's own report and
+            // never fails the pass.
+            if let Err(error) = session.emit_session_control_wake(&event).await {
+                eprintln!("senpi rpc session control wake: {error}");
+            }
+        })
+    }
+    fn on_idle(&self, listener: Arc<dyn Fn() + Send + Sync>) -> EdgeSubscription {
+        Box::new(self.0.subscribe(Arc::new(move |event| {
+            if matches!(event, maho_ext_api::AgentSessionEvent::AgentIdle) {
+                listener();
+            }
+        })))
+    }
+    fn on_emitted(&self, listener: Arc<dyn Fn() + Send + Sync>) -> EdgeSubscription {
+        Box::new(
+            self.0
+                .external_admission()
+                .on_emitted(Arc::new(move |_delivery| listener())),
+        )
+    }
+}
+
+/// senpi `HostSessionControl implements ControlEndpointHost`: what `pi.session.registerControlEndpoint` reaches in a
+/// session this host serves.
+impl maho_core::session_control_actions::ControlEndpointHost for Arc<HostSessionControl> {
+    fn register(
+        &self,
+        options: maho_core::extensions::session_control_types::RegisterControlEndpointOptions,
+    ) -> BoxFuture<'_, maho_core::extensions::session_control_types::SessionControlRegistration>
+    {
+        use maho_core::extensions::session_control_types::{
+            ControlEndpointUnsupported, SessionControlRegistration,
+        };
+        Box::pin(async move {
+            let drain = options.drain.clone();
+            let drain: ControlDrain = Arc::new(move |event| {
+                let drain = drain.clone();
+                Box::pin(async move { Ok(drain(event).await) })
+            });
+            match self
+                .as_ref()
+                .register(std::path::Path::new(&options.inbox_dir), drain)
+                .await
+            {
+                ControlRegistration::Registered {
+                    socket,
+                    registration,
+                } => {
+                    let control = Arc::downgrade(self);
+                    SessionControlRegistration::Registered {
+                        socket,
+                        dispose: Arc::new(move || {
+                            if let Some(control) = control.upgrade() {
+                                control.dispose_registration(registration);
+                            }
+                            Box::pin(async { Ok(()) })
+                        }),
+                    }
+                }
+                ControlRegistration::Unsupported { .. } => {
+                    SessionControlRegistration::Unsupported {
+                        reason: ControlEndpointUnsupported::UnsupportedMode,
+                    }
+                }
+                ControlRegistration::Failed { reason } => {
+                    SessionControlRegistration::Failed { reason }
+                }
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

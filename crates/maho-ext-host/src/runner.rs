@@ -2921,8 +2921,13 @@ impl ExtensionRunner {
         source: String,
         reason: String,
     ) -> Result<(), ExtensionFailure> {
-        self.emit(ExtensionEvent::SessionControlWake { source, reason })
-            .await?;
+        self.emit(ExtensionEvent::SessionControlWake {
+            source,
+            reasons: vec![reason.clone()],
+            reason,
+            delivery_ids: None,
+        })
+        .await?;
         Ok(())
     }
     pub async fn emit_tool_activated(

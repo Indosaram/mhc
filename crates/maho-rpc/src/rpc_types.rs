@@ -313,6 +313,11 @@ pub enum RpcCommandBody {
     },
     GetSessionStats,
     MemoryReport,
+    /// senpi `{ type: "wake"; delivery_ids?: string[] }`: one control-endpoint drain pass (answered by the handler).
+    Wake {
+        #[serde(rename = "delivery_ids", skip_serializing_if = "Option::is_none")]
+        delivery_ids: Option<Vec<String>>,
+    },
     ExportHtml {
         #[serde(skip_serializing_if = "Option::is_none")]
         output_path: Option<String>,

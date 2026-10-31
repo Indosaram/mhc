@@ -564,6 +564,7 @@ pub async fn create_rpc_session_binding(
     sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
     capabilities: Vec<String>,
     connection_roles: Option<SharedConnectionRoles>,
+    control_socket: Option<String>,
 ) -> RpcSessionBinding {
     let hold_sink = sink.clone();
     let hold_subscription = session.on_extension_event(
@@ -625,6 +626,7 @@ pub async fn create_rpc_session_binding(
             sink.clone(),
             capabilities,
             Some(shutdown),
+            control_socket,
         )
         .await;
     handler.last_abort_source = last_abort_source;
