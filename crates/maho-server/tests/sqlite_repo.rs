@@ -227,3 +227,53 @@ fn metadata_without_a_path_still_deserializes() {
         serde_json::from_value(json!({"id":"s","createdAt":1,"storageVersion":1})).unwrap();
     assert_eq!(old.path, None);
 }
+
+/// senpi repo.test.ts "uses exact physical identity for foreign fork sources and rejects foreign writable metadata".
+#[tokio::test]
+async fn foreign_fork_sources_use_their_own_path_and_foreign_writable_metadata_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let left_repo = SqliteSessionRepo::new(root.path().join("left"), None, Arc::new(|| 1));
+    let right_repo = SqliteSessionRepo::new(root.path().join("right"), None, Arc::new(|| 1));
+    let context = background_context();
+    let create = SessionCreateOptions {
+        id: Some("same".into()),
+        ..Default::default()
+    };
+    let left = left_repo.create(create.clone(), &context).await.unwrap();
+    let right = right_repo.create(create, &context).await.unwrap();
+    left.set_name(Some("left".into()), &context).await.unwrap();
+    right.set_name(Some("right".into()), &context).await.unwrap();
+    let fork = right_repo
+        .fork(
+            left.metadata().clone(),
+            ForkOptions::Tree {
+                id: Some("fork-left".into()),
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.get_name(&context).await.unwrap(), Some("left".into()));
+    right.close(&context).await;
+    let opened = right_repo.open(left.metadata().clone(), &context).await;
+    assert!(
+        opened
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.message.contains("outside this repository")),
+        "open of foreign metadata must be refused"
+    );
+    let deleted = right_repo.delete(left.metadata().clone(), &context).await;
+    assert!(
+        deleted
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.message.contains("outside this repository")),
+        "delete of foreign metadata must be refused"
+    );
+    assert!(root.path().join("right/same.sqlite").exists());
+    left.close(&context).await;
+    fork.close(&context).await;
+    left_repo.close(&context).await;
+    right_repo.close(&context).await;
+}
