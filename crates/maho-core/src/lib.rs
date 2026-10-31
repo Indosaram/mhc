@@ -79,6 +79,7 @@ pub mod skills;
 #[path = "skill_stat_once_tests.rs"]
 mod skill_stat_once_tests;
 pub mod source_info;
+pub mod structured_session_lane;
 pub mod system_prompt;
 pub mod text;
 pub mod tool_child_host_calls;
