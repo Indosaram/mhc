@@ -7,8 +7,12 @@ use serde_json::Value;
 /// The largest answer one unpaged read may produce: well under the 64 MiB connection queue bound.
 pub const RPC_RESPONSE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
 pub const DEFAULT_ENTRY_PAGE_BYTES: usize = 8 * 1024 * 1024;
-/// How long a page walk may pause before the full-history view it holds is let go (senpi `holdEntryWalk`). This
-/// port's session manager keeps its entries resident, so `get_entries_command` holds no view between pages.
+/// How long a page walk may pause before the full-history view it holds is let go (senpi `holdEntryWalk`).
+///
+/// NATIVE-DIVERGENCE(senpi `holdEntryWalk`/`endEntryWalk`): upstream's paged session manager materializes a
+/// full-history view for a walk and must drop it after this idle window. The native session manager keeps its
+/// entries resident and every page reads them in place, so a walk holds nothing between pages and there is no view
+/// to release; the constant is kept for wire/parity reference only.
 pub const ENTRY_WALK_HOLD_MS: u64 = 30_000;
 
 thread_local! {
@@ -204,7 +208,7 @@ mod tests {
     #[test]
     fn the_unpaged_budget_stays_under_the_connection_queue_bound() {
         assert_eq!(RPC_RESPONSE_BYTE_BUDGET, 48 * 1024 * 1024);
-        assert!(RPC_RESPONSE_BYTE_BUDGET < crate::socket_event_fanout::DEFAULT_QUEUE_BYTES);
+        const { assert!(RPC_RESPONSE_BYTE_BUDGET < crate::socket_event_fanout::DEFAULT_QUEUE_BYTES) };
         assert_eq!(current_response_byte_budget(), RPC_RESPONSE_BYTE_BUDGET);
         {
             let _lowered = set_response_byte_budget_for_testing(10);
