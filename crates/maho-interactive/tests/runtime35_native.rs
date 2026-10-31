@@ -1403,6 +1403,21 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
 }
 
 #[tokio::test]
+async fn new_command_drops_the_previous_sessions_prompt_history() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.rebuild_history();
+    mode.editor.editor.add_to_history("old-session prompt");
+    mode.submit("/new", Default::default()).await.expect("new");
+    mode.handle_input("\x1b[A");
+    assert_eq!(mode.editor.editor.get_text(), "", "Up recalls nothing from the replaced session");
+    mode.editor.editor.add_to_history("new-session prompt");
+    mode.rebuild_history();
+    mode.handle_input("\x1b[A");
+    assert_eq!(mode.editor.editor.get_text(), "new-session prompt", "a same-session rebuild keeps history");
+}
+
+#[tokio::test]
 async fn new_command_confirms_with_the_accent_started_line() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

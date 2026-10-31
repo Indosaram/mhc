@@ -744,6 +744,13 @@ impl Editor {
         }
     }
 
+    /// Drop every history entry and leave history browsing (the session the entries came from was
+    /// replaced).
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.exit_history_browsing();
+    }
+
     fn is_editor_empty(&self) -> bool {
         self.state.lines.len() == 1 && self.state.lines[0].is_empty()
     }

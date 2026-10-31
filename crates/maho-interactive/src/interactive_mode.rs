@@ -1034,6 +1034,9 @@ pub struct InteractiveMode {
         serde_json::Value,
         maho_core::cache_stats::CacheMiss,
     )>,
+    /// The session whose prompts the editor history holds, so a rebuild for another session drops
+    /// them.
+    history_session_id: Option<String>,
     /// senpi `providerErrors`: the current provider-failure display episode, mounted in the chat.
     provider_errors:
         Option<Rc<RefCell<crate::provider_error_presentation::ProviderErrorPresentation>>>,
@@ -2843,6 +2846,7 @@ impl InteractiveMode {
             provider_errors: None,
             reload_box: None,
             history_cache_misses: Vec::new(),
+            history_session_id: None,
             external_owner_compaction_notice_shown: false,
             compaction_delegated: false,
             fallback_applied_before_retry_start: false,
@@ -4255,6 +4259,17 @@ impl InteractiveMode {
     }
 
     pub fn rebuild_history(&mut self) {
+        // senpi renderInitialMessages keeps the editor's prompt history across session replacement,
+        // so Up recalls the previous session's prompts; mhc drops it when the rebuilt session differs
+        // from the one the history came from (docs/divergences.md UX-3).
+        let session_id = match &self.session_host {
+            Some(host) => host.session_id(),
+            None => Some(self.session.session_id()),
+        };
+        if self.history_session_id.is_some() && self.history_session_id != session_id {
+            self.editor.editor.clear_history();
+        }
+        self.history_session_id = session_id;
         // senpi `renderInitialMessages`: a full transcript rerender ends the external-owner episode.
         self.external_owner_compaction_notice_shown = false;
         self.compaction_delegated = false;
