@@ -95,6 +95,11 @@ impl RpcPublicEndpoint {
         })
     }
 
+    /// The public endpoint this key authenticates (senpi `endpoint`).
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
     /// Writes the key record once, only after the listener is bound (senpi `publish`); every failure is
     /// `key_publication_failed` naming what was unsafe.
     pub fn publish(&self) -> Result<(), RpcIdentityError> {
