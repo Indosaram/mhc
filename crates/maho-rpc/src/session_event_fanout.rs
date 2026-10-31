@@ -1341,6 +1341,30 @@ mod tests {
         assert_eq!(stdio[0]["id"], "grant-req-3");
     }
 
+    /// dialog-observer.test.ts "keeps observation records off the stdio lane" (senpi#4266): the stdio lane cannot
+    /// subscribe, so opt-in observation records never reach it, while an ordinary record still does.
+    #[tokio::test]
+    async fn observation_records_stay_off_the_stdio_lane() {
+        let mut fanout = SessionEventFanout::default();
+        let request = json!({"type":"extension_ui_request","id":"d","method":"confirm","title":"Confirm","message":"Proceed?"});
+        let mut stdio = Vec::new();
+        for record in [
+            json!({"type":"snapshot_marker","markerId":"m"}),
+            json!({"type":"ui_request_pending","uiRequestId":"d","method":"confirm","request":request}),
+            json!({"type":"ui_request_settled","uiRequestId":"d","disposition":"cancelled"}),
+            json!({"type":"agent_start"}),
+        ] {
+            stdio.extend(fanout.deliver_owned("s", None, false, record).unwrap());
+        }
+        assert_eq!(
+            stdio
+                .iter()
+                .map(|record| record["type"].as_str())
+                .collect::<Vec<_>>(),
+            [Some("agent_start")]
+        );
+    }
+
     #[tokio::test]
     async fn security_notices_replay_and_cleanup() {
         let mut fanout = SessionEventFanout::default();
