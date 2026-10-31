@@ -18,6 +18,8 @@ const CONNECTION_ID: &str = "00000000-0000-4000-8000-000000000002";
 struct FakeSocket {
     protocol: Mutex<String>,
     sent: Mutex<Vec<RelayFrame>>,
+    /// The number of frames sent so far, so a test can await a write instead of polling.
+    wrote: tokio::sync::watch::Sender<usize>,
     closed: Mutex<Option<(u16, String)>>,
     events: mpsc::UnboundedSender<RelaySocketEvent>,
     incoming: tokio::sync::Mutex<mpsc::UnboundedReceiver<RelaySocketEvent>>,
@@ -42,7 +44,12 @@ impl RadiusRelayWebSocket for FakeSocket {
         self.protocol.lock().expect("protocol").clone()
     }
     async fn send(&self, frame: RelayFrame) -> Result<(), String> {
-        self.sent.lock().expect("sent").push(frame);
+        let count = {
+            let mut sent = self.sent.lock().expect("sent");
+            sent.push(frame);
+            sent.len()
+        };
+        self.wrote.send_replace(count);
         Ok(())
     }
     fn close(&self, code: u16, reason: &str) {
@@ -81,6 +88,7 @@ fn socket_factory() -> (
             let socket = Arc::new(FakeSocket {
                 protocol: Mutex::default(),
                 sent: Mutex::default(),
+                wrote: tokio::sync::watch::Sender::new(0),
                 closed: Mutex::default(),
                 events,
                 incoming: tokio::sync::Mutex::new(incoming),
@@ -338,4 +346,144 @@ async fn reports_a_useful_error_when_the_websocket_omits_failure_details() {
         panic!("the connection must fail")
     };
     assert_eq!(failure.to_string(), "Radius WebSocket connection failed");
+}
+
+async fn until_written(socket: &FakeSocket, count: usize) {
+    let mut wrote = socket.wrote.subscribe();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        wrote.wait_for(|sent| *sent >= count),
+    )
+    .await
+    .expect("timed out waiting for a socket write")
+    .expect("socket dropped");
+}
+
+fn sent_frame(socket: &FakeSocket, index: usize) -> Vec<u8> {
+    match socket.sent.lock().expect("sent").get(index).cloned() {
+        Some(RelayFrame::Binary(bytes)) => bytes,
+        other => panic!("expected binary frame {index}, got {other:?}"),
+    }
+}
+
+/// senpi `startServer` (server.ts:656): the backend `Server` is what the relay host accepts relay
+/// clients into, so a relay client completes the real server handshake.
+#[tokio::test]
+async fn start_server_relay_publishes_the_backend_server_through_the_radius_relay() {
+    use maho_cli::experimental::server_relay::{ServerRelayOptions, start_server_relay};
+    use maho_server::protocol::{
+        codec::{MessageDecoder, encode_client_message},
+        framing::DEFAULT_MAX_FRAME_LENGTH,
+    };
+    let backend = maho_server::server::testing::create_test_server(Default::default())
+        .expect("backend server");
+    let (factory, mut openings) = socket_factory();
+    let (on_status, mut status) = statuses();
+    let relay = start_server_relay(ServerRelayOptions {
+        server_id: SERVER_ID.into(),
+        server: backend.server.clone(),
+        auth: token_auth(),
+        web_socket_factory: Some(factory),
+        on_relay_status: Some(on_status),
+    });
+    let (socket, request, open) = within("the host socket", openings.recv()).await;
+    assert_eq!(request.protocol, RADIUS_RELAY_HOST_SUBPROTOCOL);
+    assert_eq!(
+        request.url,
+        format!("wss://radius.example.org/v1/session-relays/{SERVER_ID}/connect")
+    );
+    open.send(Ok(request.protocol.clone())).expect("open");
+    until_connected(&mut status).await;
+
+    socket.message(RelayFrame::Text(
+        serde_json::json!({"version": 1, "type": "connection_open", "connection_id": CONNECTION_ID}).to_string(),
+    ));
+    let hello = encode_client_message(
+        &maho_server::transport_json!({"type": "hello", "version": 8}),
+        DEFAULT_MAX_FRAME_LENGTH,
+    )
+    .expect("client hello");
+    socket.message(RelayFrame::Binary(
+        encode_relay_data_frame(CONNECTION_ID, &hello).expect("frame"),
+    ));
+    until_written(&socket, 1).await;
+    let (connection_id, payload) =
+        parse_relay_data_frame(&sent_frame(&socket, 0)).expect("relay data frame");
+    assert_eq!(connection_id, CONNECTION_ID);
+    let messages = MessageDecoder::server()
+        .push(&payload)
+        .expect("server frame");
+    assert_eq!(messages[0]["type"].as_str(), Some("hello"));
+    assert_eq!(messages[0]["serverId"].as_str(), Some(SERVER_ID));
+    relay.close().await;
+}
+
+/// Opens the next client relay socket and answers the client hello with `hello`.
+async fn answer_client(
+    openings: &mut mpsc::UnboundedReceiver<Opening>,
+    hello: &[u8],
+) -> Arc<FakeSocket> {
+    let (socket, request, open) = within("the client socket", openings.recv()).await;
+    assert_eq!(request.protocol, RADIUS_RELAY_CLIENT_SUBPROTOCOL);
+    assert_eq!(request.authorization, "Bearer secret");
+    open.send(Ok(request.protocol)).expect("open");
+    until_written(&socket, 1).await;
+    socket.message(RelayFrame::Binary(hello.to_vec()));
+    socket
+}
+
+/// senpi `openClientRuntime` (client-runtime.ts:129): a Radius route connects through the relay
+/// client transport and is kept connected by `RadiusClientReconnect`, which restores the session.
+#[tokio::test(start_paused = true)]
+async fn a_radius_route_connects_over_the_relay_and_reattaches_after_a_drop() {
+    use maho_cli::experimental::client_runtime::{
+        ClientRuntimeRoute, RadiusRouteOptions, connect_route,
+    };
+    use maho_server::protocol::{codec::encode_server_message, framing::DEFAULT_MAX_FRAME_LENGTH};
+    let (factory, mut openings) = socket_factory();
+    let (reattached, mut reattaches) = mpsc::unbounded_channel::<String>();
+    let reattach: RadiusReattach = Arc::new(move |session_id| {
+        let _ = reattached.send(session_id);
+        Box::pin(std::future::ready(Ok(())))
+    });
+    let radius = RadiusRouteOptions {
+        auth: token_auth(),
+        web_socket_factory: Some(factory),
+    };
+    let server_hello = encode_server_message(
+        &maho_server::transport_json!({"type": "hello", "version": 8, "serverId": SERVER_ID}),
+        DEFAULT_MAX_FRAME_LENGTH,
+    )
+    .expect("server hello");
+    let (connection, socket) = tokio::join!(
+        connect_route(
+            ClientRuntimeRoute::Radius {
+                server_id: SERVER_ID.into()
+            },
+            &radius,
+            reattach
+        ),
+        answer_client(&mut openings, &server_hello),
+    );
+    let connection = connection.expect("radius route");
+    assert!(connection.client.connected());
+    assert!(connection.reconnects());
+
+    let attachment = encode_server_message(
+        &maho_server::transport_json!({"type": "attachment", "attachment": {"serverId": SERVER_ID, "sessionId": "session-1", "attachmentId": "attachment-1"}}),
+        DEFAULT_MAX_FRAME_LENGTH,
+    )
+    .expect("attachment");
+    let mut changes = connection.client.attachment_changes();
+    socket.message(RelayFrame::Binary(attachment));
+    tokio::time::timeout(Duration::from_secs(5), changes.wait_for(Option::is_some))
+        .await
+        .expect("attachment timeout")
+        .expect("attachment");
+
+    socket.remote_close();
+    let _second = answer_client(&mut openings, &server_hello).await;
+    assert_eq!(within("the reattach", reattaches.recv()).await, "session-1");
+    assert!(connection.client.connected());
+    connection.dispose().await;
 }
