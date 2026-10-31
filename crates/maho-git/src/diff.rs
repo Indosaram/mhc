@@ -73,7 +73,21 @@ fn header_paths(header: &str) -> Option<(String, String)> {
     let rest = rest.trim_end_matches(['\n', '\r']);
     if let Some(stripped) = rest.strip_prefix('"') {
         // Quoted form: "a/x" "b/y".
-        let end = stripped.find("\" ")?;
+        let mut end = None;
+        let bytes = stripped.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'"' && bytes.get(i + 1) == Some(&b' ') {
+                end = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let end = end?;
         let a = &stripped[..end];
         let b = stripped[end + 2..].trim_matches('"');
         return Some((
@@ -466,6 +480,14 @@ mod tests {
         assert_eq!(
             header_paths(r#"diff --git a/plain.rs "b/with space.rs""#),
             Some(("plain.rs".into(), "with space.rs".into()))
+        );
+    }
+
+    #[test]
+    fn test_header_paths_escaped_quote() {
+        assert_eq!(
+            header_paths(r#"diff --git "a/foo\" bar" "b/foo\" bar""#),
+            Some(("foo\\\" bar".into(), "foo\\\" bar".into()))
         );
     }
 
