@@ -141,3 +141,5 @@ pub mod config_reference_admission;
 pub mod command_notify_redaction;
 #[path = "register_redaction.rs"]
 pub mod register_redaction;
+#[path = "sync_5152_rows.rs"]
+pub mod sync_5152_rows;
