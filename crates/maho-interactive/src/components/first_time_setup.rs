@@ -114,6 +114,13 @@ impl FirstTimeSetupComponent {
         self.step == Step::Theme
     }
 
+    /// senpi re-renders the dialog with the global theme after `setTheme`; the theme is held here,
+    /// so a preview or terminal-color update restyles the dialog without resetting its step.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.update();
+    }
+
     fn add_text(&mut self, text: String) {
         self.root
             .add_child(Rc::new(RefCell::new(Text::with_padding(text, 1, 0))));
