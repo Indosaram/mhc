@@ -77,10 +77,7 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
             let phases: Vec<crate::todo_types::TodoPhase> = result
                 .details
                 .get("phases")
-                .map(|value| {
-                    serde_json::from_value(value.clone())
-                        .unwrap_or_else(|error| std::panic::panic_any(error))
-                })
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
                 .unwrap_or_default();
             let ask = result.details.get("ask").and_then(|value| {
                 serde_json::from_value::<crate::todo_types::TodoAsk>(value.clone()).ok()
@@ -88,15 +85,12 @@ pub fn renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
             let completed: Vec<crate::todo_types::TodoCompletionTransition> = result
                 .details
                 .get("completedTasks")
-                .map(|value| {
-                    serde_json::from_value(value.clone())
-                        .unwrap_or_else(|error| std::panic::panic_any(error))
-                })
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
                 .unwrap_or_default();
-            let operation = result.details.get("op").map(|value| {
-                serde_json::from_value(value.clone())
-                    .unwrap_or_else(|error| std::panic::panic_any(error))
-            });
+            let operation = result
+                .details
+                .get("op")
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
             let visible: Vec<_> = phases
                 .into_iter()
                 .filter(|phase| !phase.tasks.is_empty())
@@ -558,6 +552,41 @@ mod tests {
                 serde_json::json!({"width":width,"states":states})
             );
         }
+    }
+    #[test]
+    fn render_result_with_malformed_details_does_not_panic() {
+        use maho_ext_api::{AgentToolResult, ToolRenderContext, ToolRendererSession};
+        let context = ToolRenderContext {
+            args: serde_json::json!({"op":"done","task":"Finished"}),
+            tool_call_id: "todo-render".into(),
+            invalidate: std::rc::Rc::new(|| {}),
+            last_component: None,
+            state: (),
+            cwd: Default::default(),
+            execution_started: false,
+            args_complete: true,
+            is_partial: false,
+            expanded: false,
+            show_images: false,
+            image_protocol: None,
+            is_error: false,
+            has_result: None,
+            spinner_frame: Some(8),
+        };
+        let mut slots = ToolRendererSession {
+            renderers: std::sync::Arc::new(renderers()),
+            context,
+        }
+        .into_slots();
+        let theme = maho_ext_api::Theme::default();
+        let mut result = AgentToolResult::text("fallback text");
+        result.details = serde_json::json!({
+            "phases": "invalid-phases-structure",
+            "completedTasks": 12345,
+            "op": true,
+        });
+        let rendered = slots.render_result(&result, &theme, 80);
+        assert!(rendered.is_ok());
     }
     #[derive(Default)]
     struct ExecutionFixture {
