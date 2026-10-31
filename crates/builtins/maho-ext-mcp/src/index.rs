@@ -231,6 +231,7 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 } else {
                     None
                 });
+                service.set_session_mode(ctx.mode);
                 // Bind the registration seam once; `attach_session` registers through it
                 // (upstream `attachSession`) and the deferred startup connects re-use it.
                 service.set_policy_notice_event(Arc::new({

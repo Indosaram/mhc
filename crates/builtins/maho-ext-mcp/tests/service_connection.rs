@@ -29,6 +29,7 @@ async fn session_connection_refreshes_catalog_and_disposes_registry_owner() {
         agent_dir: root.path(),
         env: None,
         elicitation_ui: None,
+        elicitation_enabled: true,
     })
     .unwrap();
     {
@@ -94,6 +95,7 @@ async fn literal_secret_warnings_read_the_declaration_not_the_resolved_generatio
         agent_dir: root.path(),
         env: None,
         elicitation_ui: None,
+        elicitation_enabled: true,
     })
     .unwrap();
     assert!(
@@ -115,9 +117,47 @@ async fn literal_secret_warnings_read_the_declaration_not_the_resolved_generatio
         agent_dir: root.path(),
         env: None,
         elicitation_ui: None,
+        elicitation_enabled: true,
     })
     .unwrap();
     assert!(warned(&session));
+    dispose_entry_connection(&session, &registry, 1)
+        .await
+        .unwrap();
+}
+
+/// service.ts: print and json sessions declare `elicitationEnabled: false`, which reaches the connection and
+/// keys pooled connections apart from interactive ones (host-registry.ts).
+#[tokio::test]
+async fn a_non_interactive_session_withholds_elicitation_from_its_connection() {
+    let root = tempfile::tempdir().unwrap();
+    let registry = HostMcpRegistry::default();
+    let config = McpServerConfig {
+        enabled: Some(true),
+        transport: Some(Transport::Stdio),
+        command: Some(support::node()),
+        args: Some(vec!["-e".into(), String::new()]),
+        ..Default::default()
+    };
+    let session = create_mcp_session_connection(SessionConnectionOptions {
+        registry: &registry,
+        owner: 1,
+        key: "print",
+        name: "fixture",
+        config_hash: "hash",
+        config,
+        declared: None,
+        agent_dir: root.path(),
+        env: None,
+        elicitation_ui: None,
+        elicitation_enabled: false,
+    })
+    .unwrap();
+    assert!(!session.entry.lock().await.connection.elicitation_enabled());
+    assert_ne!(
+        mcp_legacy_form_policy_key(None, false),
+        mcp_legacy_form_policy_key(None, true)
+    );
     dispose_entry_connection(&session, &registry, 1)
         .await
         .unwrap();

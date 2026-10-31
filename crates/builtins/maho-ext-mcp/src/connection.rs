@@ -34,6 +34,8 @@ pub struct ServerConnection {
     auth: Mutex<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
     auth_challenge_handler: Mutex<Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>>,
     elicitation_ui: Mutex<Option<Arc<dyn maho_ext_api::ExtensionUi>>>,
+    /// Upstream `#elicitationEnabled`: false withholds the elicitation capability from every transport.
+    elicitation_enabled: std::sync::atomic::AtomicBool,
     /// Upstream `requestLifetimeSignal`: aborted (and replaced) on renew, bump, disable and dispose, so an
     /// MRTR origin issued for an earlier transport never outlives it.
     request_lifetime: Mutex<maho_ext_api::AbortSignal>,
@@ -84,6 +86,7 @@ impl ServerConnection {
             auth: Mutex::new(None),
             auth_challenge_handler: Mutex::new(None),
             elicitation_ui: Mutex::new(None),
+            elicitation_enabled: std::sync::atomic::AtomicBool::new(true),
             request_lifetime: Mutex::new(maho_ext_api::AbortSignal::default()),
             resolve_config: Mutex::new(None),
             form_readiness: Mutex::new(None),
@@ -116,6 +119,14 @@ impl ServerConnection {
             .elicitation_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ui;
+    }
+    pub fn set_elicitation_enabled(&self, enabled: bool) {
+        self.elicitation_enabled
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+    pub fn elicitation_enabled(&self) -> bool {
+        self.elicitation_enabled
+            .load(std::sync::atomic::Ordering::Acquire)
     }
     pub fn elicitation_ui(&self) -> Option<Arc<dyn maho_ext_api::ExtensionUi>> {
         self.elicitation_ui
@@ -157,7 +168,7 @@ impl ServerConnection {
         crate::modern::request::legacy_mcp_forms_advertised(client)
             != Some(crate::elicitation::legacy_mcp_form_eligible(
                 ui.as_ref(),
-                true,
+                self.elicitation_enabled(),
             ))
     }
     /// Upstream `#refreshLegacyForms`: one renewal at a time; a failure degrades the connection.
@@ -441,6 +452,7 @@ impl ServerConnection {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
+                    transport.elicitation_enabled = self.elicitation_enabled();
                     Arc::new(transport)
                 }
                 Err(error) => {

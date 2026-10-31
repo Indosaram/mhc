@@ -33,6 +33,8 @@ pub struct SessionConnectionOptions<'a> {
     pub env: Option<BTreeMap<String, String>>,
     /// The declaring session's UI: keys pooled connections by legacy-form policy (host-registry.ts).
     pub elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// Upstream `elicitationEnabled`: false (print/json sessions) withholds the elicitation capability.
+    pub elicitation_enabled: bool,
 }
 /// host-registry.ts `attachShared`: an enforced private-form pool observes live readiness, so its key never
 /// freezes a creation-time readiness; other pools key by whether legacy forms are advertised.
@@ -83,6 +85,7 @@ fn create_session_connection(
         agent_dir,
         env,
         elicitation_ui,
+        elicitation_enabled,
     } = options;
     let logger = Arc::new(Mutex::new(McpLogger::new(name, agent_dir, None)?));
     let plan =
@@ -111,7 +114,7 @@ fn create_session_connection(
         .map(|_| {
             let pool_key = format!(
                 "{key}\0legacy-form:{}",
-                mcp_legacy_form_policy_key(elicitation_ui.as_ref(), true)
+                mcp_legacy_form_policy_key(elicitation_ui.as_ref(), elicitation_enabled)
             );
             registry.attach_shared(&pool_key, owner, || {
                 let connection =
@@ -142,6 +145,7 @@ fn create_session_connection(
             false,
         ),
     };
+    connection.set_elicitation_enabled(elicitation_enabled);
     if let Some(policy) = crate::transport::project_policy(config_hash) {
         connection.set_project_policy(policy);
     }
