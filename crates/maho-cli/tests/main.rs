@@ -97,6 +97,10 @@ pub mod management_http;
 #[cfg(feature = "omo")]
 #[path = "memory_recall_entry.rs"]
 pub mod memory_recall_entry;
+#[path = "micro_lock_loss.rs"]
+pub mod micro_lock_loss;
+#[path = "micro_lock_loss_tool.rs"]
+pub mod micro_lock_loss_tool;
 #[path = "migrations.rs"]
 pub mod migrations;
 #[path = "mini_entry.rs"]
@@ -142,6 +146,8 @@ pub mod project_trust;
 pub mod radius_auth;
 #[path = "radius_relay.rs"]
 pub mod radius_relay;
+#[path = "radius_relay_host.rs"]
+pub mod radius_relay_host;
 #[path = "reasoning_host.rs"]
 pub mod reasoning_host;
 #[path = "rpc_entry.rs"]

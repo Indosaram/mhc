@@ -12,7 +12,7 @@
 
 use std::io::{self, Write};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::stdout_guard;
 
@@ -61,22 +61,45 @@ fn capture_into<T, E>(
 
 /// Writes `text` and flushes on a helper thread, returning when the write is done, the reader is
 /// gone (any write error, EPIPE included), or `limit` has passed.
-fn delivered<W: Write + Send + 'static>(mut stream: W, text: String, limit: Duration) {
-    let (done, finished) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = stream
-            .write_all(text.as_bytes())
-            .and_then(|()| stream.flush());
-        let _ = done.send(());
-    });
-    let _ = finished.recv_timeout(limit);
+#[cfg(test)]
+fn delivered<W: Write + Send + 'static>(stream: W, text: String, limit: Duration) {
+    delivered_together(vec![(Box::new(stream), text)], limit);
 }
 
-/// senpi `exitAfterOutput`: delivers `output` to stdout, drains stderr, then exits with `code`.
+/// senpi `Promise.all([delivered(stdout, ..), delivered(stderr, ..)])`: every stream is written
+/// and flushed on its own helper thread at the same time, and the wait ends when all of them are
+/// done or gone, or when the one shared `limit` has passed.
+fn delivered_together(streams: Vec<(Box<dyn Write + Send>, String)>, limit: Duration) {
+    let deadline = Instant::now() + limit;
+    let (done, finished) = mpsc::channel();
+    let count = streams.len();
+    for (mut stream, text) in streams {
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let _ = stream
+                .write_all(text.as_bytes())
+                .and_then(|()| stream.flush());
+            let _ = done.send(());
+        });
+    }
+    for _ in 0..count {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if finished.recv_timeout(remaining).is_err() {
+            return;
+        }
+    }
+}
+
+/// senpi `exitAfterOutput`: delivers `output` to stdout and drains stderr together under one
+/// limit, then exits with `code`.
 pub fn exit_after_output(output: &str, code: i32) -> ! {
-    let limit = Duration::from_millis(OUTPUT_DELIVERY_LIMIT_MS);
-    delivered(io::stdout(), output.to_owned(), limit);
-    delivered(io::stderr(), String::new(), limit);
+    delivered_together(
+        vec![
+            (Box::new(io::stdout()), output.to_owned()),
+            (Box::new(io::stderr()), String::new()),
+        ],
+        Duration::from_millis(OUTPUT_DELIVERY_LIMIT_MS),
+    );
     std::process::exit(code)
 }
 
@@ -187,6 +210,73 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    /// Waits for `peer` to finish before writing.
+    struct AfterPeer(Mutex<mpsc::Receiver<()>>, Shared);
+    impl Write for AfterPeer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let _ = self.0.lock().expect("lock").recv();
+            self.1.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Writes, then tells its peer it is done.
+    struct ThenSignal(Mutex<Option<mpsc::Sender<()>>>, Shared);
+    impl Write for ThenSignal {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let written = self.1.write(bytes)?;
+            if let Some(peer) = self.0.lock().expect("lock").take() {
+                let _ = peer.send(());
+            }
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stdout_and_stderr_are_delivered_at_the_same_time() {
+        // stdout can only finish once stderr was written. Delivered one after the other, stdout
+        // would hold the wait for the whole (hour-long) limit; delivered together, both land.
+        let (signal, wait) = mpsc::channel::<()>();
+        let (out, err) = (Shared(Arc::default()), Shared(Arc::default()));
+        delivered_together(
+            vec![
+                (
+                    Box::new(AfterPeer(Mutex::new(wait), out.clone())),
+                    "out".to_owned(),
+                ),
+                (
+                    Box::new(ThenSignal(Mutex::new(Some(signal)), err.clone())),
+                    "err".to_owned(),
+                ),
+            ],
+            Duration::from_secs(3600),
+        );
+        assert_eq!(*out.0.lock().expect("lock"), b"out");
+        assert_eq!(*err.0.lock().expect("lock"), b"err");
+    }
+
+    #[test]
+    fn two_stalled_readers_share_one_limit() {
+        let (release_out, stalled_out) = mpsc::channel::<()>();
+        let (release_err, stalled_err) = mpsc::channel::<()>();
+        delivered_together(
+            vec![
+                (
+                    Box::new(Stalled(Mutex::new(stalled_out))),
+                    "row\n".to_owned(),
+                ),
+                (Box::new(Stalled(Mutex::new(stalled_err))), String::new()),
+            ],
+            Duration::ZERO,
+        );
+        drop((release_out, release_err));
     }
 
     #[test]

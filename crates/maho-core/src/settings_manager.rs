@@ -1139,6 +1139,36 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// senpi `getEnableAnalytics`: opt-in analytics data sharing, default false.
+    pub fn get_enable_analytics(&self) -> bool {
+        self.get_value("enableAnalytics")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// senpi `getTrackingId`: the analytics identifier, generated on the first opt-in.
+    pub fn get_tracking_id(&self) -> Option<String> {
+        self.get_string("trackingId")
+    }
+
+    /// senpi `setEnableAnalytics`: stores the opt-in globally and generates a tracking identifier
+    /// on the first opt-in; opting out keeps an existing identifier.
+    pub fn set_enable_analytics(&mut self, enabled: bool) -> Result<(), String> {
+        let mut values = Settings::from_iter([("enableAnalytics".into(), Value::Bool(enabled))]);
+        let has_tracking_id = self
+            .global_settings
+            .get("trackingId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+        if enabled && !has_tracking_id {
+            values.insert(
+                "trackingId".into(),
+                Value::String(uuid::Uuid::new_v4().to_string()),
+            );
+        }
+        self.set(SettingsScope::Global, &values)
+    }
+
     /// `handoffHint` settings with their defaults (senpi#3230).
     pub fn get_handoff_hint_settings(&self) -> crate::settings_shapes::ResolvedHandoffHintSettings {
         let configured = self
@@ -2591,6 +2621,42 @@ mod tests {
         );
         assert_eq!(storage.content(SettingsScope::Project), None);
         reset_self_write_tracker_for_tests();
+    }
+
+    // senpi `first-time-setup.test.ts` "analytics settings".
+    #[test]
+    fn analytics_defaults_to_disabled_with_no_tracking_identifier() {
+        let manager = SettingsManager::in_memory(Settings::new(), true);
+        assert!(!manager.get_enable_analytics());
+        assert_eq!(manager.get_tracking_id(), None);
+    }
+
+    #[test]
+    fn analytics_opt_in_generates_a_tracking_identifier() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        manager.set_enable_analytics(true).expect("opt in");
+        assert!(manager.get_enable_analytics());
+        let id = manager.get_tracking_id().expect("tracking id");
+        assert_eq!(id.len(), 36);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'), "{id}");
+    }
+
+    #[test]
+    fn analytics_opt_out_does_not_generate_a_tracking_identifier() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        manager.set_enable_analytics(false).expect("opt out");
+        assert!(!manager.get_enable_analytics());
+        assert_eq!(manager.get_tracking_id(), None);
+    }
+
+    #[test]
+    fn analytics_toggling_keeps_the_tracking_identifier() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        manager.set_enable_analytics(true).expect("opt in");
+        let id = manager.get_tracking_id();
+        manager.set_enable_analytics(false).expect("opt out");
+        manager.set_enable_analytics(true).expect("opt in again");
+        assert_eq!(manager.get_tracking_id(), id);
     }
 
     #[test]
