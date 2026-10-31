@@ -396,37 +396,164 @@ async fn retained_budgets_resolve_from_defaults_file_and_environment() {
     const MIB: u64 = 1024 * 1024;
     let defaults = CodemodeSettings::default();
     let cases: [(fn(&CodemodeSettings, &Environment) -> u64, &str, u64, u64); 2] = [
-        (resolve_retained_results_bytes, RETAINED_RESULTS_ENVIRONMENT_FLAG, 32, 8),
-        (resolve_retained_images_bytes, RETAINED_IMAGES_ENVIRONMENT_FLAG, 256, 64),
+        (
+            resolve_retained_results_bytes,
+            RETAINED_RESULTS_ENVIRONMENT_FLAG,
+            32,
+            8,
+        ),
+        (
+            resolve_retained_images_bytes,
+            RETAINED_IMAGES_ENVIRONMENT_FLAG,
+            256,
+            64,
+        ),
     ];
     for (resolve, flag, fallback, from_file) in cases {
         let env = |value: &str| Environment::from([(flag.to_owned(), value.to_owned())]);
         assert_eq!(resolve(&defaults, &Environment::new()), fallback * MIB);
-        assert_eq!(resolve(&loaded.settings, &Environment::new()), from_file * MIB);
+        assert_eq!(
+            resolve(&loaded.settings, &Environment::new()),
+            from_file * MIB
+        );
         assert_eq!(resolve(&loaded.settings, &env("4")), 4 * MIB);
         assert_eq!(resolve(&loaded.settings, &env("0")), 0);
         for value in ["-1", "abc", "", "1.5"] {
-            assert_eq!(resolve(&loaded.settings, &env(value)), from_file * MIB, "{value}");
+            assert_eq!(
+                resolve(&loaded.settings, &env(value)),
+                from_file * MIB,
+                "{value}"
+            );
         }
     }
 }
 
-/// senpi 903b8336 memory-settings.test.ts: file validation of the memory object.
-#[tokio::test]
-async fn memory_file_values_validate_and_out_of_order_thresholds_warn() {
-    let disordered = loaded(json!({"memory":{"noticeMb":4096,"ceilingMb":2048}})).await;
-    assert_eq!(disordered.warnings.len(), 1);
-    assert_eq!(disordered.settings.memory(), maho_codemode::config::memory_settings::default_memory_settings());
-    let negative = loaded(json!({"memory":{"ceilingMb":-1}})).await;
-    assert_eq!(negative.warnings.len(), 1);
-    assert_eq!(negative.settings, CodemodeSettings::default());
-    let park = loaded(json!({"memory":{"idleParkMinutes":5}})).await;
-    assert!(park.warnings.is_empty());
-    assert_eq!(park.settings.memory().idle_park_minutes, Some(5.0));
-    let unset = loaded(json!({"memory":{"noticeMb":512}})).await;
-    assert!(unset.warnings.is_empty());
-    assert_eq!(unset.settings.memory().idle_park_minutes, None);
-    let too_long = loaded(json!({"memory":{"idleParkMinutes":35_792}})).await;
-    assert_eq!(too_long.warnings.len(), 1);
-    assert_eq!(too_long.settings.memory().idle_park_minutes, None);
+mod memory_settings_cases {
+    //! senpi 903b8336 test/memory-settings.test.ts, one test per upstream case.
+    use super::loaded;
+    use maho_codemode::config::memory_settings::*;
+    use maho_codemode::config::settings::Environment;
+    use serde_json::json;
+
+    const MIB: u64 = 1024 * 1024;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    fn env(pairs: &[(&str, &str)]) -> Environment {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).into(), (*value).into()))
+            .collect()
+    }
+
+    fn bytes(
+        thresholds: &maho_codemode::bridge::protocol::KernelMemoryThresholds,
+    ) -> (u64, u64, u64) {
+        (
+            thresholds.gc_watermark_bytes,
+            thresholds.notice_bytes,
+            thresholds.ceiling_bytes,
+        )
+    }
+
+    #[test]
+    fn the_ceiling_defaults_to_a_quarter_of_memory_kept_within_two_to_eight_gib() {
+        for (total, ceiling) in [
+            (4.0 * GIB, 2048.0),
+            (16.0 * GIB, 4096.0),
+            (128.0 * GIB, 8192.0),
+        ] {
+            assert_eq!(default_memory_ceiling_mb(Some(total)), ceiling);
+        }
+    }
+
+    #[test]
+    fn without_a_settings_file_the_defaults_apply_in_bytes() {
+        let thresholds = resolve_kernel_memory_thresholds(None, &env(&[]));
+        assert_eq!(
+            bytes(&thresholds),
+            (
+                256 * MIB,
+                1024 * MIB,
+                default_memory_ceiling_mb(None) as u64 * MIB
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_overrides_win_over_the_file_and_zero_disables() {
+        let loaded =
+            loaded(json!({"memory":{"gcWatermarkMb":100,"noticeMb":500,"ceilingMb":3000}})).await;
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let memory = loaded.settings.memory();
+        assert_eq!(
+            bytes(&resolve_kernel_memory_thresholds(Some(&memory), &env(&[]))),
+            (100 * MIB, 500 * MIB, 3000 * MIB)
+        );
+        let overridden = resolve_kernel_memory_thresholds(
+            Some(&memory),
+            &env(&[
+                (MEMORY_NOTICE_ENVIRONMENT_FLAG, "0"),
+                (MEMORY_CEILING_ENVIRONMENT_FLAG, "1024"),
+                (MEMORY_GC_WATERMARK_ENVIRONMENT_FLAG, "bad"),
+            ]),
+        );
+        assert_eq!(bytes(&overridden), (100 * MIB, 0, 1024 * MIB));
+    }
+
+    #[tokio::test]
+    async fn file_thresholds_out_of_order_warn_and_fall_back_to_the_defaults() {
+        let loaded = loaded(json!({"memory":{"noticeMb":4096,"ceilingMb":2048}})).await;
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.settings.memory(), default_memory_settings());
+    }
+
+    #[test]
+    fn environment_overrides_out_of_order_fall_back_to_the_defaults() {
+        let thresholds = resolve_kernel_memory_thresholds(
+            None,
+            &env(&[(MEMORY_GC_WATERMARK_ENVIRONMENT_FLAG, "2048")]),
+        );
+        assert_eq!(thresholds.gc_watermark_bytes, 256 * MIB);
+    }
+
+    #[tokio::test]
+    async fn a_negative_file_threshold_rejects_the_file() {
+        let loaded = loaded(json!({"memory":{"ceilingMb":-1}})).await;
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(
+            loaded.settings.memory().ceiling_mb,
+            default_memory_ceiling_mb(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn without_an_idle_park_setting_kernels_are_never_parked() {
+        let loaded = loaded(json!({"memory":{"noticeMb":512}})).await;
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.settings.memory().idle_park_minutes, None);
+    }
+
+    #[tokio::test]
+    async fn an_idle_park_time_in_the_file_is_kept() {
+        let loaded = loaded(json!({"memory":{"idleParkMinutes":5}})).await;
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.settings.memory().idle_park_minutes, Some(5.0));
+    }
+
+    #[tokio::test]
+    async fn the_longest_timer_delay_is_kept_and_one_minute_more_is_rejected() {
+        let longest = loaded(json!({"memory":{"idleParkMinutes":35_791}})).await;
+        let too_long = loaded(json!({"memory":{"idleParkMinutes":35_792}})).await;
+        assert!(longest.warnings.is_empty());
+        assert_eq!(longest.settings.memory().idle_park_minutes, Some(35_791.0));
+        assert_eq!(too_long.warnings.len(), 1);
+        assert_eq!(too_long.settings.memory().idle_park_minutes, None);
+    }
+
+    #[tokio::test]
+    async fn a_negative_idle_park_time_rejects_the_file_and_parking_stays_off() {
+        let loaded = loaded(json!({"memory":{"idleParkMinutes":-1}})).await;
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.settings.memory().idle_park_minutes, None);
+    }
 }

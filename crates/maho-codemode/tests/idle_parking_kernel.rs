@@ -18,6 +18,13 @@ struct FakeKernel {
     closed: watch::Sender<bool>,
     queued: Mutex<Vec<String>>,
     tools: Mutex<Vec<String>>,
+    /// When set, `run` waits for this gate to open before settling.
+    run_gate: Mutex<Option<watch::Receiver<bool>>>,
+    /// When set, `close` waits for this gate to open before the kernel counts as closed.
+    close_gate: Mutex<Option<watch::Receiver<bool>>>,
+    /// When set, the kernel exposes kernel tools whose `invoke` waits for this gate.
+    tool_gate: Mutex<Option<watch::Receiver<bool>>>,
+    described: Mutex<Vec<Vec<String>>>,
 }
 
 impl FakeKernel {
@@ -28,6 +35,10 @@ impl FakeKernel {
             closed: watch::channel(false).0,
             queued: Mutex::new(vec![]),
             tools: Mutex::new(vec![]),
+            run_gate: Mutex::new(None),
+            close_gate: Mutex::new(None),
+            tool_gate: Mutex::new(None),
+            described: Mutex::new(vec![]),
         })
     }
     fn is_closed(&self) -> bool {
@@ -45,13 +56,51 @@ impl FakeKernel {
     }
 }
 
+struct FakeTools(Arc<FakeKernel>);
+
+impl maho_ext_api::ExtensionKernelTools for FakeTools {
+    fn invoke_scope(&self) -> bool {
+        true
+    }
+    fn describe<'a>(&'a self, names: &'a [String]) -> maho_ext_api::ExtensionFuture<'a, Value> {
+        Box::pin(async move {
+            self.0.described.lock().unwrap().push(names.to_vec());
+            Ok(json!({"results":[]}))
+        })
+    }
+    fn invoke(
+        &self,
+        _: maho_ext_api::KernelToolInvokeRequest,
+        _: maho_ext_api::KernelToolInvokeOptions,
+    ) -> maho_ext_api::ExtensionFuture<'_, Value> {
+        Box::pin(async move {
+            let gate = self.0.tool_gate.lock().unwrap().clone();
+            if let Some(mut gate) = gate {
+                let _ = gate.wait_for(|open| *open).await;
+            }
+            Ok(json!("done"))
+        })
+    }
+}
+
 impl EvalKernel for FakeKernel {
+    fn kernel_tools(self: Arc<Self>) -> Option<Arc<dyn maho_ext_api::ExtensionKernelTools>> {
+        if self.tool_gate.lock().unwrap().is_some() {
+            Some(Arc::new(FakeTools(self)))
+        } else {
+            None
+        }
+    }
     fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, Value> {
         Box::pin(async move {
             if self.is_closed() {
                 return Err(format!("kernel {} is closed", self.id));
             }
             self.ran.lock().unwrap().push(input.cell_id.clone());
+            let gate = self.run_gate.lock().unwrap().clone();
+            if let Some(mut gate) = gate {
+                let _ = gate.wait_for(|open| *open).await;
+            }
             Ok(
                 json!({"type":"result","cellId":input.cell_id,"ok":true,"valueRepr":format!("kernel {}", self.id),"durationMs":1}),
             )
@@ -83,6 +132,10 @@ impl EvalKernel for FakeKernel {
     }
     fn close(&self) -> EvalKernelFuture<'_, ()> {
         Box::pin(async {
+            let gate = self.close_gate.lock().unwrap().clone();
+            if let Some(mut gate) = gate {
+                let _ = gate.wait_for(|open| *open).await;
+            }
             self.closed.send_replace(true);
             Ok(())
         })
@@ -223,8 +276,7 @@ async fn defined_tools_keep_the_kernel_until_they_are_gone() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_kernel_without_kernel_tools_is_not_given_them_and_zero_minutes_returns_the_same_kernel()
-{
+async fn a_kernel_without_kernel_tools_is_not_given_them() {
     let (restart, _) = restarts(vec![]);
     let parked = Arc::new(IdleParkingKernel::new(
         EvalLanguage::Js,
@@ -235,8 +287,124 @@ async fn a_kernel_without_kernel_tools_is_not_given_them_and_zero_minutes_return
     ));
     assert!(parked.clone().kernel_tools().is_none());
     parked.close().await.unwrap();
+}
 
+#[tokio::test(start_paused = true)]
+async fn zero_minutes_returns_the_same_kernel() {
+    let (restart, _) = restarts(vec![]);
     let kernel: Arc<dyn EvalKernel> = FakeKernel::new(2);
     let wrapped = park_when_idle(EvalLanguage::Js, 0.0, kernel.clone(), restart, None);
     assert!(Arc::ptr_eq(&wrapped, &kernel));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_running_cell_keeps_the_kernel_and_the_idle_clock_starts_over_when_it_settles() {
+    let first = FakeKernel::new(1);
+    let (open, gate) = watch::channel(false);
+    *first.run_gate.lock().unwrap() = Some(gate);
+    let (restart, _) = restarts(vec![]);
+    let parked = Arc::new(IdleParkingKernel::new(
+        EvalLanguage::Js,
+        1.0,
+        first.clone(),
+        restart,
+        None,
+    ));
+
+    let running = tokio::spawn({
+        let parked = parked.clone();
+        async move { parked.run(cell("long")).await }
+    });
+    tokio::time::sleep(5 * MINUTE).await;
+    assert!(!first.is_closed());
+
+    open.send_replace(true);
+    running.await.unwrap().unwrap();
+    let settled_at = tokio::time::Instant::now();
+    first.wait_closed().await;
+    assert_eq!(
+        settled_at.elapsed(),
+        MINUTE,
+        "the idle clock restarted when the cell settled"
+    );
+    parked.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cell_submitted_while_the_parked_kernel_closes_runs_on_the_fresh_kernel() {
+    let (first, second) = (FakeKernel::new(1), FakeKernel::new(2));
+    let (release, gate) = watch::channel(false);
+    *first.close_gate.lock().unwrap() = Some(gate);
+    let (restart, _) = restarts(vec![Ok(second.clone())]);
+    let parked = Arc::new(IdleParkingKernel::new(
+        EvalLanguage::Js,
+        1.0,
+        first.clone(),
+        restart,
+        None,
+    ));
+
+    tokio::time::sleep(MINUTE).await;
+    let submitted = tokio::spawn({
+        let parked = parked.clone();
+        async move { parked.run(cell("during-close")).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(second.ran().is_empty());
+    assert_eq!(parked.queue_snapshot().1, ["during-close"]);
+
+    release.send_replace(true);
+    let result = submitted.await.unwrap().unwrap();
+    assert!(first.ran().is_empty());
+    assert_eq!(second.ran(), ["during-close"]);
+    assert_eq!(result["kernelState"], "restarted");
+    parked.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn kernel_tools_stay_reachable_and_a_tool_call_keeps_the_kernel_from_being_parked() {
+    let first = FakeKernel::new(1);
+    let (release, gate) = watch::channel(false);
+    *first.tool_gate.lock().unwrap() = Some(gate);
+    let (restart, _) = restarts(vec![]);
+    let parked = Arc::new(IdleParkingKernel::new(
+        EvalLanguage::Js,
+        1.0,
+        first.clone(),
+        restart,
+        None,
+    ));
+    let tools = parked
+        .clone()
+        .kernel_tools()
+        .expect("wrapper exposes the kernel's tools");
+
+    tools.describe(&["add".into()]).await.unwrap();
+    assert_eq!(*first.described.lock().unwrap(), [vec!["add".to_owned()]]);
+    let calling = tokio::spawn({
+        let tools = tools.clone();
+        async move {
+            tools
+                .invoke(
+                    maho_ext_api::KernelToolInvokeRequest {
+                        name: "add".into(),
+                        kernel_generation: 1,
+                        definition_revision: 1,
+                        args: json!({}),
+                        call_id: "idle-parking-probe".into(),
+                    },
+                    Default::default(),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(5 * MINUTE).await;
+    assert!(!first.is_closed());
+
+    release.send_replace(true);
+    assert_eq!(calling.await.unwrap().unwrap(), json!("done"));
+    first.wait_closed().await;
+    let error = tools.describe(&["add".into()]).await.unwrap_err();
+    assert_eq!(error.code.as_deref(), Some("tools_unavailable"));
+    parked.close().await.unwrap();
 }
