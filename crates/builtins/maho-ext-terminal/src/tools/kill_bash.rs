@@ -83,22 +83,21 @@ pub async fn execute_kill_bash_with_monitors(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .size();
-        // stop_file runs the monitor-ended callbacks, so the manager lock is not held across it.
-        let (monitor_ids, file_count) = {
+        // Upstream `stopAllFiles` + `stopAllRpc`: every file watch (and every registration still
+        // proving its target) and every rpc watch ends. They run the monitor-ended callbacks, so
+        // the manager lock is not held across them.
+        let (monitor_ids, file_count, rpc_count) = {
             let mut monitors = monitors
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let snapshot = monitors.snapshot();
-            let monitor_ids = snapshot
+            let monitor_ids = monitors
+                .snapshot()
                 .iter()
                 .filter_map(|entry| entry.monitor_id.clone())
                 .collect::<Vec<_>>();
-            let file_count = snapshot
-                .into_iter()
-                .filter(|entry| entry.id.starts_with("watch_"))
-                .filter(|entry| monitors.stop_file(&entry.id))
-                .count();
-            (monitor_ids, file_count)
+            let file_count = monitors.stop_all_files();
+            let rpc_count = monitors.stop_all_rpc();
+            (monitor_ids, file_count, rpc_count)
         };
         if let Err(error) = crate::manager::teardown_shared(manager).await {
             return error_result(error.to_string());
@@ -108,7 +107,7 @@ pub async fn execute_kill_bash_with_monitors(
         }
         return text_result(format!(
             "Killed {} session(s).",
-            terminal_count + file_count
+            terminal_count + file_count + rpc_count
         ));
     }
     let Some(id) = id.filter(|id| !id.is_empty()) else {
@@ -126,11 +125,13 @@ pub async fn execute_kill_bash_with_monitors(
         };
         (resolved, monitor_id)
     };
-    if monitors
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .stop_file(&resolved)
-    {
+    let stopped = {
+        let mut monitors = monitors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        monitors.stop_file(&resolved) || monitors.stop_rpc(&resolved)
+    };
+    if stopped {
         drop_state_dir(monitor_id.as_deref());
         return text_result(format!("Killed {id}."));
     }
@@ -266,6 +267,58 @@ mod tests {
         let empty =
             execute_kill_bash_with_monitors(&manager, &monitors, None, Some(""), false).await;
         assert_eq!(empty.is_error, Some(true));
+    }
+    /// kill-bash.ts `stopRpc` / `stopAllRpc`: an rpc watch is killed by its runtime id and by
+    /// `all`, which counts it with the terminals and file watches.
+    #[tokio::test]
+    async fn rpc_watches_are_killed_by_id_and_counted_by_all() {
+        let (manager, monitors, terminal) = shared_fixture();
+        let arm = |monitor_id: &str| {
+            let source = monitors.lock().unwrap().rpc_source();
+            let (id, _, _start) = source
+                .arm(crate::rpc_monitor_source::RegisterRpcMonitorOptions {
+                    description: "kids".into(),
+                    target: crate::rpc_monitor_targets::RpcTarget::All,
+                    target_text: "all".into(),
+                    events: crate::rpc_monitor_targets::RpcEvents::Kinds(vec![
+                        "session_status".into(),
+                    ]),
+                    exclude: vec![],
+                    filter: None,
+                    persistent: true,
+                    timeout_ms: None,
+                    expires_at: None,
+                    monitor_id: Some(monitor_id.to_owned()),
+                    agent_dir: terminal.path().into(),
+                    endpoints: Some(std::sync::Arc::new(
+                        || -> crate::rpc_monitor_watch::BoxFuture<Vec<String>> {
+                            Box::pin(async { vec![] })
+                        },
+                    )),
+                    opener: None,
+                    restored_from: None,
+                    on_checkpoint: None,
+                })
+                .unwrap();
+            id
+        };
+        let first = arm("mon_RPCKILL00000001");
+        let killed = execute_kill_bash_with_monitors(
+            &manager,
+            &monitors,
+            Some(terminal.path()),
+            Some(&first),
+            false,
+        )
+        .await;
+        assert_eq!(killed.content[0].text, format!("Killed {first}."));
+        assert!(monitors.lock().unwrap().snapshot().is_empty());
+        arm("mon_RPCKILL00000002");
+        let all =
+            execute_kill_bash_with_monitors(&manager, &monitors, Some(terminal.path()), None, true)
+                .await;
+        assert_eq!(all.content[0].text, "Killed 1 session(s).");
+        assert!(monitors.lock().unwrap().snapshot().is_empty());
     }
     #[test]
     fn stable_monitor_id_kills_live_runtime_and_all_clears_bindings() {
