@@ -1849,6 +1849,7 @@ fn stream_guidance_prioritizes_blocked_auth_and_appends_entitlement_guidance() {
             soonest_unblock_at: Some(1.0),
             block_reason: Some("auth_error"),
             unavailable_account: None,
+            limited_model: None,
         },
     );
     let text = with_auth_guidance(&blocked);
