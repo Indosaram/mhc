@@ -15,6 +15,8 @@ mod sdk_async_hook_contract;
 mod sdk_async_wire;
 #[path = "sdk_base_tool_context.rs"]
 mod sdk_base_tool_context;
+#[path = "sdk_builtin_dispatch.rs"]
+mod sdk_builtin_dispatch;
 #[path = "sdk_custom_tools.rs"]
 mod sdk_custom_tools;
 #[path = "sdk_extension_resources.rs"]
