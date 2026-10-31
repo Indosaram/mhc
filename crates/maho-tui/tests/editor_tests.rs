@@ -24,6 +24,7 @@ const ALT_RIGHT: &str = "\x1bf";
 const ARROW_LEFT: &str = "\x1b[D";
 const ARROW_RIGHT: &str = "\x1b[C";
 const LINE_START: &str = "\x01";
+const LINE_END: &str = "\x05";
 
 fn type_text(editor: &mut Editor, text: &str) {
     for ch in text.chars() {
@@ -931,6 +932,420 @@ fn keeps_paste_markers_working_alongside_image_markers() {
     paste(&mut editor, &body);
     assert_eq!(editor.get_text(), "[Image #1][paste #1 +12 lines]");
     assert_eq!(editor.get_expanded_text(), format!("[Image #1]{body}"));
+}
+
+#[test]
+fn restores_the_owners_attachment_payloads_when_undoing_a_marker_delete() {
+    use std::collections::BTreeMap;
+
+    let (mut editor, _host) = create_editor(30);
+    let payloads: Rc<RefCell<BTreeMap<u64, String>>> = Rc::new(RefCell::new(BTreeMap::new()));
+    let restored: Rc<RefCell<Vec<BTreeMap<u64, String>>>> = Rc::new(RefCell::new(Vec::new()));
+    let snapshot_source = payloads.clone();
+    editor.snapshot_attachment_state = Some(Box::new(move || {
+        let state: maho_tui::components::editor::AttachmentState =
+            Rc::new(snapshot_source.borrow().clone());
+        Some(state)
+    }));
+    let restore_sink = restored.clone();
+    editor.restore_attachment_state = Some(Box::new(
+        move |state: &maho_tui::components::editor::AttachmentState| {
+            let map = state
+                .downcast_ref::<BTreeMap<u64, String>>()
+                .expect("snapshot is the payload map")
+                .clone();
+            restore_sink.borrow_mut().push(map);
+        },
+    ));
+
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(1, "A".to_string());
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(2, "B".to_string());
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(3, "C".to_string());
+    editor.handle_editor_input(ARROW_LEFT);
+    editor.handle_editor_input(BACKSPACE);
+    assert_eq!(editor.get_text(), "[Image #1][Image #2]");
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "[Image #1][Image #2][Image #3]");
+    let last = restored
+        .borrow()
+        .last()
+        .cloned()
+        .expect("undo restored the payloads");
+    assert_eq!(
+        last.into_iter().collect::<Vec<_>>(),
+        vec![
+            (1, "A".to_string()),
+            (2, "B".to_string()),
+            (3, "C".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn renumbers_the_survivor_when_a_later_marker_is_backspaced() {
+    let (mut editor, _host) = create_editor(30);
+    editor.insert_image_marker();
+    type_text(&mut editor, " ");
+    editor.insert_image_marker();
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(BACKSPACE);
+
+    assert_eq!(editor.get_text(), "[Image #1] ");
+    assert_eq!(*orders.borrow(), vec![vec![1u64]]);
+}
+
+#[test]
+fn crosses_the_marker_as_one_unit_for_alt_left_alt_right_word_navigation() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "aa ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " bb");
+    assert_eq!(editor.get_text(), "aa [Image #1] bb");
+
+    editor.handle_editor_input(LINE_END);
+    editor.handle_editor_input(ALT_LEFT);
+    assert_eq!(editor.get_cursor().1, 14);
+    editor.handle_editor_input(ALT_LEFT);
+    assert_eq!(editor.get_cursor().1, 3);
+
+    editor.handle_editor_input(ALT_RIGHT);
+    assert_eq!(editor.get_cursor().1, 13);
+}
+
+fn content_lines(editor: &mut Editor, width: usize) -> Vec<String> {
+    let lines = editor.render_editor(width);
+    lines[1..lines.len() - 1]
+        .iter()
+        .map(|line| strip_terminal_sequences(line).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn wraps_the_marker_as_one_atomic_segment_and_never_breaks_at_its_inner_space() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "ab ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " cd");
+    assert_eq!(editor.get_text(), "ab [Image #1] cd");
+
+    // 13 usable columns + 1 reserved for the cursor.
+    assert_eq!(content_lines(&mut editor, 14), vec!["ab", "[Image #1] cd"]);
+}
+
+#[test]
+fn wraps_the_marker_onto_its_own_visual_line_when_it_does_not_fit() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "ab ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " cd");
+
+    // 10 usable columns + 1 reserved for the cursor.
+    assert_eq!(
+        content_lines(&mut editor, 11),
+        vec!["ab", "[Image #1]", " cd"]
+    );
+}
+
+#[test]
+fn restores_marker_text_and_registry_entry_when_undoing_a_delete() {
+    let (mut editor, _host) = create_editor(30);
+    editor.insert_image_marker();
+    editor.handle_editor_input(BACKSPACE);
+    assert_eq!(editor.get_text(), "");
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "[Image #1]");
+    assert_eq!(editor.get_image_marker_state().ids, vec![1]);
+    assert_eq!(*orders.borrow(), vec![vec![1u64]]);
+}
+
+#[test]
+fn drops_the_registry_entry_when_undoing_an_insert() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "hi");
+    editor.insert_image_marker();
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "hi");
+    assert!(editor.get_image_marker_state().ids.is_empty());
+    assert_eq!(*orders.borrow(), vec![Vec::<u64>::new()]);
+}
+
+// ---------- backslash+Enter newline workaround ----------
+
+fn submit_flag(editor: &mut Editor) -> Rc<RefCell<bool>> {
+    let submitted = Rc::new(RefCell::new(false));
+    let sink = submitted.clone();
+    editor.on_submit = Some(Box::new(move |_text: &str| {
+        *sink.borrow_mut() = true;
+    }));
+    submitted
+}
+
+#[test]
+fn inserts_newline_for_backslash_followed_by_lf_enter() {
+    let (mut editor, _host) = create_editor(30);
+    let submitted = submit_flag(&mut editor);
+
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\n");
+
+    assert_eq!(editor.get_text(), "\n");
+    assert!(!*submitted.borrow());
+}
+
+#[test]
+fn inserts_backslash_immediately_without_buffering() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    assert_eq!(editor.get_text(), "\\");
+}
+
+#[test]
+fn converts_standalone_backslash_to_newline_on_enter() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\r");
+    assert_eq!(editor.get_text(), "\n");
+}
+
+#[test]
+fn inserts_backslash_normally_when_followed_by_other_characters() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("x");
+    assert_eq!(editor.get_text(), "\\x");
+}
+
+#[test]
+fn does_not_trigger_newline_when_backslash_is_not_immediately_before_cursor() {
+    let (mut editor, _host) = create_editor(30);
+    let submitted = submit_flag(&mut editor);
+
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("x");
+    editor.handle_editor_input("\r");
+
+    assert!(*submitted.borrow());
+}
+
+#[test]
+fn only_removes_one_backslash_when_multiple_are_present() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\\");
+    assert_eq!(editor.get_text(), "\\\\\\");
+
+    editor.handle_editor_input("\r");
+    assert_eq!(editor.get_text(), "\\\\\n");
+}
+
+// ---------- character jump (Ctrl+]) ----------
+
+const JUMP_FORWARD: &str = "\x1d";
+const JUMP_BACKWARD: &str = "\x1b\x1d";
+
+#[test]
+fn jumps_forward_to_first_occurrence_of_character_on_same_line() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 4));
+}
+
+#[test]
+fn jumps_forward_to_next_occurrence_after_cursor() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+    for _ in 0..4 {
+        editor.handle_editor_input(ARROW_RIGHT);
+    }
+    assert_eq!(editor.get_cursor(), (0, 4));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 7));
+}
+
+#[test]
+fn jumps_forward_across_multiple_lines() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("abc\ndef\nghi");
+    editor.handle_editor_input("\x1b[A");
+    editor.handle_editor_input("\x1b[A");
+    editor.handle_editor_input(LINE_START);
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("g");
+
+    assert_eq!(editor.get_cursor(), (2, 0));
+}
+
+#[test]
+fn jumps_backward_to_first_occurrence_before_cursor_on_same_line() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    assert_eq!(editor.get_cursor(), (0, 11));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 7));
+}
+
+#[test]
+fn jumps_backward_across_multiple_lines() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("abc\ndef\nghi");
+    assert_eq!(editor.get_cursor(), (2, 3));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("a");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn does_nothing_when_character_is_not_found_forward() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("z");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn does_nothing_when_character_is_not_found_backward() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    assert_eq!(editor.get_cursor(), (0, 11));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("z");
+
+    assert_eq!(editor.get_cursor(), (0, 11));
+}
+
+#[test]
+fn jump_is_case_sensitive() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("Hello World");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("h");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("W");
+    assert_eq!(editor.get_cursor(), (0, 6));
+}
+
+#[test]
+fn cancels_jump_mode_when_ctrl_bracket_is_pressed_again() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input(JUMP_FORWARD);
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "ohello world");
+}
+
+#[test]
+fn cancels_jump_mode_on_escape_and_processes_the_escape() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("\x1b");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "ohello world");
+}
+
+#[test]
+fn cancels_backward_jump_mode_when_ctrl_alt_bracket_is_pressed_again() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input(JUMP_BACKWARD);
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "hello worldo");
+}
+
+#[test]
+fn jump_searches_for_special_characters() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("foo(bar) = baz;");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("(");
+    assert_eq!(editor.get_cursor(), (0, 3));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("=");
+    assert_eq!(editor.get_cursor(), (0, 9));
+}
+
+#[test]
+fn jump_handles_empty_text_gracefully() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("x");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn resets_last_action_when_jumping() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input("x");
+    assert_eq!(editor.get_text(), "xhello world");
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    editor.handle_editor_input("Y");
+    assert_eq!(editor.get_text(), "xhellYo world");
+
+    editor.handle_editor_input(UNDO);
+    assert_eq!(editor.get_text(), "xhello world");
 }
 
 // ---------- mention highlight ----------
