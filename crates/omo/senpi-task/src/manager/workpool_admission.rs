@@ -583,24 +583,27 @@ impl WorkpoolAdmission for ManagerWorkpoolAdmission {
                     ));
                     return;
                 }
-                if let Err(error) = crate::workpool::worker_turn::acknowledge_worker_turn(
-                    &store,
-                    manager.store(),
-                    &turn,
-                    &turn_prompt.entries,
-                ) {
-                    manager.release_reserved_slot(&task_id, &model, epoch);
-                    request.event(event(
-                        request.as_ref(),
-                        crate::workpool::types::WorkpoolEventKind::AdmissionFailed,
-                        &task_id,
-                        epoch,
-                        Some((WorkpoolErrorCode::DeliveryUncertain, error.to_string())),
-                    ));
-                    return;
-                }
+                // Upstream order: the turn is acknowledged only after the worker revived, so a
+                // refused revival (unresponsive, not continuable) keeps its queued entries.
                 match manager.revive_workpool_task(&task_id, epoch, &turn_prompt.message) {
-                    Ok(SendOutcome::Revived { .. }) => {}
+                    Ok(SendOutcome::Revived { .. }) => {
+                        // The revived worker owns its slot now (`transferred`): never release it.
+                        if let Err(error) = crate::workpool::worker_turn::acknowledge_worker_turn(
+                            &store,
+                            manager.store(),
+                            &turn,
+                            &turn_prompt.entries,
+                        ) {
+                            request.event(event(
+                                request.as_ref(),
+                                crate::workpool::types::WorkpoolEventKind::AdmissionFailed,
+                                &task_id,
+                                epoch,
+                                Some((WorkpoolErrorCode::DeliveryUncertain, error.to_string())),
+                            ));
+                            return;
+                        }
+                    }
                     Ok(SendOutcome::NotContinuable { reason, .. }) => {
                         let uncertain = manager
                             .get(&task_id)
