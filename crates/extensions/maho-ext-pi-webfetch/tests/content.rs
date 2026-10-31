@@ -329,7 +329,8 @@ fn markdown_normalizes_cr_without_collapsing_inline_spacing() {
 /// Readability fallback (`src/webfetch/readability.rs`): bylines, JSON-LD and meta titles, `<br>` chains, hidden
 /// nodes, noscript and lazy images, share/form/embed cleanup, data versus layout tables, the short-content retry,
 /// sibling merging, `javascript:` links under `<base>`, heading weight, nested-div simplification and class
-/// cleanup. Expected output is the pinned converter's (tests/evidence/readability-corpus-cases.ts).
+/// cleanup. Expected output is senpi fe8c564b's LinkeDOM content.ts oracle (14/14; pi-webfetch 8a4743da JSDOM
+/// matches 13/14, see docs/divergences.md SD-19); run in tests/evidence/readability-corpus-generation.log.
 #[test]
 fn pinned_readability_corpus_matches() {
     use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown, html_to_text};
@@ -363,7 +364,8 @@ fn readability_parse_returns_detached_article_and_reader_title() {
             .expect("article");
     assert_eq!(article.title, "A long readable article title");
     assert!(article.content.parent().is_none());
-    // Upstream `article.content` under JSDOM (pi-webfetch 8a4743da): `@mozilla/readability` 0.6.0 output.
+    // Upstream `article.content` under JSDOM (pi-webfetch 8a4743da): `@mozilla/readability` 0.6.0 output. LinkeDOM
+    // serializes the same tree as `<DIV class="page" id="readability-page-1">`; only text/markdown reach callers.
     assert_eq!(
         article.content.inner_html().as_ref(),
         "<div id=\"readability-page-1\" class=\"page\"><article><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></article></div>"

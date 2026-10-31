@@ -1,3 +1,5 @@
+// Inputs for tests/fixtures/pinned-readability-corpus.json; expectations come from
+// generate-readability-corpus.mjs (senpi fe8c564b LinkeDOM oracle, pi-webfetch 8a4743da JSDOM cross-check).
 const p = (s: string) => `<p>${s}</p>`;
 const long = "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.";
 const cases = [
