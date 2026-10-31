@@ -817,7 +817,24 @@ pub struct InteractiveModeOptions {
     /// senpi `mcpPresenterEnforcement` (`--mcp-presenter-enforcement`): the terminal enrolls as the
     /// `local_tui` MCP presenter.
     pub mcp_presenter_enforcement: bool,
+    /// senpi `registerLocalMcpPresenter`, injected by the CLI (`maho_cli::cli::mcp_local_presenter`) so
+    /// this crate does not depend on maho-ext-mcp. Called per extension binding under
+    /// `mcp_presenter_enforcement`.
+    pub local_mcp_presenter: Option<LocalMcpPresenterFactory>,
 }
+
+/// Builds a binding's private-forms presenter: `(ui, session_id, lifetime, admit)`. `admit` runs once
+/// per presenter action.
+pub type LocalMcpPresenterFactory = Arc<
+    dyn Fn(
+            Arc<dyn maho_ext_api::ExtensionUi>,
+            &str,
+            maho_ai::utils::abort::AbortSignal,
+            Arc<dyn Fn() + Send + Sync>,
+        ) -> maho_core::mcp_form_types::McpFormBinding
+        + Send
+        + Sync,
+>;
 
 pub struct InteractiveMode {
     session: Arc<AgentSession>,
@@ -1055,8 +1072,10 @@ pub struct InteractiveMode {
     mcp_mrtr_presentation_lifetime:
         std::sync::Mutex<Option<maho_ai::utils::abort::AbortController>>,
     /// senpi `options.mcpPresenterEnforcement`: private MCP forms go through the terminal's own
-    /// `local_tui` presenter (`crate::mcp_local_presenter`), and an ephemeral answer is no human admission.
+    /// `local_tui` presenter (`InteractiveModeOptions::local_mcp_presenter`), and an ephemeral answer is
+    /// no human admission.
     mcp_presenter_enforcement: bool,
+    local_mcp_presenter: Option<LocalMcpPresenterFactory>,
     /// The private form whose selector is mounted but not yet painted; marked presented at the next render.
     pending_mcp_form_presented: Option<maho_ext_api::DialogPresentedKey>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
@@ -2837,6 +2856,7 @@ impl InteractiveMode {
             detach_mcp_grant_presentation: None,
             mcp_mrtr_presentation_lifetime: std::sync::Mutex::new(None),
             mcp_presenter_enforcement: options.mcp_presenter_enforcement,
+            local_mcp_presenter: options.local_mcp_presenter,
             pending_mcp_form_presented: None,
             unsubscribe_security_notices: None,
             lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
@@ -5164,9 +5184,13 @@ impl InteractiveMode {
             previous.abort(None);
         }
         let ui: Arc<dyn maho_ext_api::ExtensionUi> = self.extension_ui.clone();
-        let private_forms = self.mcp_presenter_enforcement.then(|| {
+        let presenter = self
+            .local_mcp_presenter
+            .as_ref()
+            .filter(|_| self.mcp_presenter_enforcement);
+        let private_forms = presenter.map(|register_local_mcp_presenter| {
             let session = self.session.clone();
-            crate::mcp_local_presenter::register_local_mcp_presenter(
+            register_local_mcp_presenter(
                 ui.clone(),
                 &self.session.session_id(),
                 signal.clone(),
