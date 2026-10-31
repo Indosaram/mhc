@@ -358,12 +358,43 @@ pub async fn rebind_session_file(
         return Ok(target);
     }
 
-    let header = read_header_before_lock(&source, &target).await?;
-    if header.is_none() {
+    let Some(header) = read_header_before_lock(&source, &target).await? else {
         return Ok(target);
-    }
+    };
 
-    move_session_file(&source, &target, &cwd.to_string_lossy()).await
+    // senpi `withSessionMoveLock`: a session another live process holds is refused with
+    // `SessionHeldError` naming it, instead of being moved out from under it.
+    let holders = live_holders_of(&source, &header.id).await?;
+    if !holders.is_empty() {
+        return Err(std::io::Error::other(
+            crate::session_hold_errors::SessionHeldError::new(source.to_string_lossy(), holders),
+        ));
+    }
+    crate::session_move::session_lock::with_session_move_lock(
+        &source,
+        async { Ok(move_session_file(&source, &target, &cwd.to_string_lossy()).await) },
+        None,
+    )
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+async fn live_holders_of(
+    session_file: &Path,
+    session_id: &str,
+) -> Result<Vec<crate::session_holder_records::SessionHolder>, std::io::Error> {
+    let now: crate::schedule::native_probes::NowFn = std::sync::Arc::new(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
+    });
+    let probes = crate::schedule::native_probes::NativeProbes::new(now)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    crate::session_holder_records::live_session_holders(session_file, session_id, &probes)
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 #[cfg(test)]

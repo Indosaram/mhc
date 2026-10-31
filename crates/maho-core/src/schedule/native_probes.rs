@@ -63,6 +63,7 @@ impl ProcessProbes for NativeProbes {
             .map_err(|error| ScheduleError::Invalid(error.to_string()))?
     }
 }
+impl crate::session_holder_records::SessionHolderProbes for NativeProbes {}
 pub(crate) fn read_process_start_ms(pid: u32, boot: u64) -> Result<Option<u64>> {
     #[cfg(target_os = "linux")]
     {
