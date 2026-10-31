@@ -181,6 +181,7 @@ mod tests {
             pid: 1,
             engine_version: None,
             rss_mb: None,
+            host_rss_mb: None,
             sessions: 0,
             current: true,
             alive: true,

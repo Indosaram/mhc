@@ -334,8 +334,10 @@ mod tests {
             host_args: vec![],
             policy: None,
             env: Default::default(),
+            expected_runtime_build_id: None,
             launch_profile_id: String::new(),
             readiness_ms: 1,
+            launch: None,
         }
     }
     fn terms() -> IdleHandoverTerms {

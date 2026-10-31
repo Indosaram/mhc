@@ -168,6 +168,18 @@ pub struct HostCore {
     /// The private control endpoint a socket host opens when it was launched with enforcement and a bootstrap.
     presenter_control:
         std::sync::Mutex<Option<std::sync::Arc<crate::mcp_presenter_control::McpPresenterControl>>>,
+    /// The conditional idle handover a POSIX socket host can perform, with its endpoint and loaded runtime (senpi
+    /// `HostCoreGate`); unset, `begin_handover` is refused `handover_unsupported`.
+    handover: std::sync::OnceLock<HostHandoverGate>,
+    /// Requests in flight that carry no session (an open being admitted): the idle judgement waits for them.
+    sessionless_requests: std::sync::atomic::AtomicUsize,
+}
+/// senpi `HostCoreGate`'s state: the idle handover, this host's endpoint (a `begin_handover` naming another agent
+/// dir is refused), and the runtime build id `get_protocol_info` reports.
+pub struct HostHandoverGate {
+    pub handover: crate::host_idle_handover::HostIdleHandover,
+    pub endpoint: crate::host_handover_wire::HostEndpoint,
+    pub runtime_build_id: Option<String>,
 }
 /// A refused open: the wire message, and the registry code when one carried it (`session_path_in_use`).
 struct OpenRefusal {
@@ -196,6 +208,22 @@ impl OpenRefusal {
             message: crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW.to_owned(),
             code: Some(crate::rpc_types::RPC_ERROR_SESSION_OUTPUT_OVERFLOW.to_owned()),
             data: Some(data),
+        }
+    }
+}
+/// A sessionless request in flight, until dropped.
+struct SessionlessGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for SessionlessGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// Re-checks a pending handover once a routed request settles (senpi `handover?.observe()` in `dispatch`).
+struct HandoverObserve<'a>(Option<&'a crate::host_idle_handover::HostIdleHandover>);
+impl Drop for HandoverObserve<'_> {
+    fn drop(&mut self) {
+        if let Some(handover) = self.0 {
+            handover.observe();
         }
     }
 }
@@ -270,6 +298,103 @@ impl HostCore {
             presenters,
             presenter_bootstrap: std::sync::Mutex::new(None),
             presenter_control: std::sync::Mutex::new(None),
+            handover: std::sync::OnceLock::new(),
+            sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    /// Installs the conditional idle handover (senpi `runSocketHost` `canHandOver`): the operation judges idleness
+    /// over this core and performs the successor launch with this host's successor enrollment channel
+    /// ([`Self::presenter_successor_bootstrap`]). The first call wins.
+    pub fn enable_idle_handover(
+        self: &std::sync::Arc<Self>,
+        endpoint: crate::host_handover_wire::HostEndpoint,
+        runtime_build_id: String,
+    ) {
+        let idle = std::sync::Arc::downgrade(self);
+        let identity_build = runtime_build_id.clone();
+        let performer = std::sync::Arc::downgrade(self);
+        let perform_endpoint = endpoint.clone();
+        let handover = crate::host_idle_handover::HostIdleHandover::new(
+            crate::host_idle_handover::HostIdleHandoverOptions {
+                identity: Box::new(move || crate::host_idle_handover::HostIdentityView {
+                    instance_id: crate::protocol_identity::host_instance_id().to_owned(),
+                    generation: crate::protocol_identity::host_generation(
+                        &std::env::vars().collect(),
+                    ),
+                    runtime_build_id: Some(identity_build.clone()),
+                }),
+                is_idle: Box::new(move || idle.upgrade().is_some_and(|core| core.is_host_idle())),
+                perform: Box::new(move |request| {
+                    let core = performer.upgrade();
+                    let endpoint = perform_endpoint.clone();
+                    Box::pin(async move {
+                        let bootstrap = match &core {
+                            Some(core) => core.presenter_successor_bootstrap().await,
+                            None => None,
+                        };
+                        crate::host_handover_wire::perform_idle_handover(
+                            request,
+                            &endpoint.socket,
+                            &endpoint.agent_dir,
+                            bootstrap,
+                        )
+                        .await
+                    })
+                }),
+                poll_ms: None,
+                log: Some(Box::new(|line: &str| eprintln!("senpi rpc host: {line}"))),
+            },
+        );
+        let _ = self.handover.set(HostHandoverGate {
+            handover,
+            endpoint,
+            runtime_build_id: Some(runtime_build_id),
+        });
+    }
+    /// senpi `isHostIdle` over this core: no sessionless request in flight and every session settled.
+    fn is_host_idle(&self) -> bool {
+        let sessionless = self
+            .sessionless_requests
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0;
+        let in_flight = |id: &str| self.active_request_count(id) > 0;
+        match &self.workers {
+            Some(workers) => {
+                let rows = workers.list_sessions(true);
+                let candidates = rows
+                    .iter()
+                    .filter_map(|row| row["sessionId"].as_str())
+                    .map(|id| crate::session_drain::DrainCandidate {
+                        session_id: id,
+                        session_path: None,
+                        worker_handoff_busy: workers
+                            .worker(id)
+                            .is_some_and(|worker| worker.handoff_busy()),
+                        activity: None,
+                    })
+                    .collect();
+                crate::host_handover_wire::is_host_idle(candidates, sessionless, in_flight)
+            }
+            None => {
+                let Ok(registry) = self.registry.try_lock() else {
+                    return false;
+                };
+                let rows = registry.list_sessions(true);
+                let candidates = rows
+                    .iter()
+                    .filter_map(|row| row["sessionId"].as_str())
+                    .map(|id| crate::session_drain::DrainCandidate {
+                        session_id: id,
+                        session_path: None,
+                        worker_handoff_busy: false,
+                        activity: registry
+                            .get(id)
+                            .and_then(|entry| entry.runtime.as_ref())
+                            .map(|runtime| Ok(runtime.session().activity_snapshot())),
+                    })
+                    .collect();
+                crate::host_handover_wire::is_host_idle(candidates, sessionless, in_flight)
+            }
         }
     }
     /// Names the daemon directory the handoff-parked record lives under (senpi `handoverParkedDir`); the first
@@ -582,6 +707,10 @@ impl HostCore {
             if !capabilities.iter().any(|existing| existing == capability) {
                 capabilities.push(capability.to_owned());
             }
+        }
+        if self.handover.get().is_some() {
+            capabilities
+                .push(crate::host_handover_request::RUNTIME_IDENTITY_HANDOVER_CAPABILITY.into());
         }
         if self
             .handoff_enabled
@@ -1281,6 +1410,21 @@ impl HostCore {
             self.write_presenter_reply(connection, &reply);
             return Ok(());
         }
+        // senpi `gate.intercept`: the conditional idle handover's own request, answered with `success: true`
+        // whatever the verdict (a foreign agent dir is refused before the operation).
+        if value["type"] == crate::host_handover_wire::BEGIN_HANDOVER_COMMAND
+            && let Some(record) = value.as_object()
+        {
+            let gate = self.handover.get();
+            let answer = crate::host_handover_wire::answer_begin_handover(
+                gate.map(|gate| &gate.handover),
+                gate.map(|gate| &gate.endpoint),
+                record,
+            )
+            .await;
+            self.respond_record(connection, "", answer);
+            return Ok(());
+        }
         if let Some(error) = crate::rpc_input_validation::rpc_command_shape_error(&value) {
             self.error(
                 connection,
@@ -1355,6 +1499,22 @@ impl HostCore {
                 return Ok(());
             }
         }
+        // senpi `HostCoreGate.dispatch`: while a handover is pending, new work is refused; everything else is routed.
+        if let Some(gate) = self.handover.get()
+            && let Some(view) = gate.handover.view()
+            && !gate.handover.admits(kind)
+        {
+            let refusal =
+                crate::host_handover_wire::handover_refusal(command.id.as_deref(), kind, &view);
+            self.respond_record(connection, "", refusal);
+            return Ok(());
+        }
+        let _settled = HandoverObserve(self.handover.get().map(|gate| &gate.handover));
+        let _sessionless = command.session_id.is_none().then(|| {
+            self.sessionless_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            SessionlessGuard(&self.sessionless_requests)
+        });
         // senpi router `handle`: every routed request counts against its session until it answers, so a
         // release can tell other work from itself.
         let _request = self.begin_request(command.session_id.as_deref());
@@ -1455,6 +1615,13 @@ impl HostCore {
                     .into();
                 data["capabilities"] = serde_json::json!(self.advertised_capabilities());
                 data["mode"] = "multi".into();
+                if let Some(gate) = self.handover.get() {
+                    crate::host_handover_wire::with_host_identity(
+                        &mut data,
+                        gate.runtime_build_id.as_deref(),
+                        gate.handover.view().as_ref(),
+                    );
+                }
                 self.success(
                     connection,
                     command.id.clone(),
@@ -3868,6 +4035,67 @@ mod handoff_tests {
         assert!(core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));
     }
     #[tokio::test]
+    async fn begin_handover_reaches_the_gate_and_a_foreign_agent_dir_is_refused() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        let request = |agent_dir: &str| {
+            serde_json::json!({"type":"begin_handover","id":"h","operation_id":"op","if_instance_id":"i","if_generation":0,"target_runtime_build_id":"sha256:t","launch":{"command":"x","args":[]},"host_args":[],"env":{},"agent_dir":agent_dir}).to_string()
+        };
+        // Without the gate the request is refused as unsupported.
+        core.handle(Some("c"), &request("/tmp")).await.unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(answer["data"]["refused"], "handover_unsupported");
+        assert!(
+            !core
+                .advertised_capabilities()
+                .iter()
+                .any(|capability| capability
+                    == crate::host_handover_request::RUNTIME_IDENTITY_HANDOVER_CAPABILITY)
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let ours = temp.path().join("ours");
+        let theirs = temp.path().join("theirs");
+        std::fs::create_dir_all(&ours).unwrap();
+        std::fs::create_dir_all(&theirs).unwrap();
+        core.enable_idle_handover(
+            crate::host_handover_wire::HostEndpoint {
+                agent_dir: ours,
+                socket: temp.path().join("s.sock").to_string_lossy().into_owned(),
+            },
+            "sha256:loaded".into(),
+        );
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability
+                    == crate::host_handover_request::RUNTIME_IDENTITY_HANDOVER_CAPABILITY)
+        );
+        core.handle(Some("c"), &request(&theirs.to_string_lossy()))
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(answer["id"], "h");
+        assert_eq!(answer["success"], true);
+        assert_eq!(answer["data"]["refused"], "foreign_agent_dir");
+        assert!(core.handover.get().unwrap().handover.view().is_none());
+        // An idle host with no sessions and nothing in flight is at its safe idle point.
+        assert!(core.is_host_idle());
+    }
+    #[tokio::test]
     async fn protocol_info_advertises_host_capabilities_the_decision_requires() {
         let capabilities = idle_core().advertised_capabilities();
         for required in crate::host_decision::REQUIRED_HOST_CAPABILITIES {
@@ -5273,6 +5501,28 @@ async fn run_socket_host(
     )
     .dir;
     core.set_handover_parked_dir(daemon_dir.clone());
+    // senpi `runSocketHost`: the runtime this host loaded, computed once at startup. A successor an idle handover
+    // started for another runtime exits before it listens, leaving its predecessor serving.
+    let runtime_build_id = startup_runtime_build_id(&core.options.cwd);
+    if let Ok(expected) = std::env::var(crate::host_idle_handover::EXPECTED_RUNTIME_BUILD_ID_ENV)
+        && Some(expected.as_str()) != runtime_build_id.as_deref()
+    {
+        eprintln!(
+            "senpi rpc host: runtime {} is not the handover target {expected}; exiting",
+            runtime_build_id.as_deref().unwrap_or("unreadable")
+        );
+        std::process::exit(1);
+    }
+    #[cfg(unix)]
+    if let Some(runtime_build_id) = runtime_build_id {
+        core.enable_idle_handover(
+            crate::host_handover_wire::HostEndpoint {
+                agent_dir: core.options.agent_dir.clone(),
+                socket: endpoint_socket.clone(),
+            },
+            runtime_build_id,
+        );
+    }
     {
         let core = core.clone();
         let host_socket = endpoint_socket.clone();
@@ -5427,6 +5677,25 @@ async fn run_socket_host(
         std::process::exit(code);
     }
     Ok(())
+}
+/// senpi `startupRuntimeBuildId`: this process's runtime id over its launch profile, or `None` (logged) when unreadable.
+#[cfg(any(unix, windows))]
+fn startup_runtime_build_id(cwd: &str) -> Option<String> {
+    let argv = std::env::args().skip(1).collect::<Vec<_>>();
+    let computed = crate::protocol_identity::host_launch_profile(&argv, cwd)
+        .map_err(std::io::Error::other)
+        .and_then(|profile| {
+            crate::runtime_build_id::compute_runtime_build_id(
+                &crate::runtime_build_id::RuntimeBuildIdInput::from_profile(&profile.core),
+            )
+        });
+    match computed {
+        Ok(id) => Some(id),
+        Err(cause) => {
+            eprintln!("senpi rpc host: runtime identity unreadable: {cause}");
+            None
+        }
+    }
 }
 /// Whether the endpoint this host serves is held by another socket entry now (senpi
 /// `runSocketHost`'s `endpointSuperseded`): a supervised host answers for the PUBLIC path its

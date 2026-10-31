@@ -23,7 +23,8 @@ use maho_rpc::host_launch_spec::{
 };
 use maho_rpc::host_lifecycle::{DEFAULT_HOST_IDLE_EXIT_MS, HostLifecyclePolicy};
 use maho_rpc::host_runner::{
-    EnsureRequest, HostOutcome, HostRequest, HostTarget, run_host_request,
+    EnsureRequest, HostOutcome, HostRequest, HostTarget, RunHostRequestOptions,
+    run_host_request_with,
 };
 use maho_rpc::protocol_identity::{HOST_INSTANCE_ID_ENV, host_launch_profile, resolve_instance_id};
 
@@ -183,8 +184,10 @@ fn ensure_request(
         host_args: supervisor_args,
         policy: Some(host_policy),
         env: overrides.into_iter().collect(),
+        expected_runtime_build_id: None,
         launch_profile_id,
         readiness_ms: DEFAULT_READINESS_MS,
+        launch: None,
     };
     let env_keys = daemon_env_keys(&process_env(), &spec.env, platform());
     Ok(EnsureRequest {
@@ -249,8 +252,10 @@ pub fn build_host_request(
                 ),
                 policy: Some(host_policy),
                 env: overrides.into_iter().collect(),
+                expected_runtime_build_id: None,
                 launch_profile_id: String::new(),
                 readiness_ms: DEFAULT_READINESS_MS,
+                launch: None,
             };
             let env_keys = daemon_env_keys(&process_env(), &spec.env, platform());
             let handover = parsed.handover.as_ref().map(|terms| {
@@ -296,34 +301,17 @@ pub fn build_host_request(
     }
 }
 
-/// senpi v2026.10.27-2 `runHostCommand` hands `--rpc-key-root`, the `--mcp-presenter-fd 4` bootstrap
-/// stream and `--mcp-presenter-enforcement` to `runHostRequest(request, options)`. maho-rpc's
-/// `run_host_request` takes the request alone on every branch (OPEN: `host_runner::RunHostRequestOptions`
-/// and `mcp_presenter_bootstrap::presenter_bootstrap_stream`, rows senpi-rpc-host host-09/host-10 and
-/// senpi-rpc-rest-31/45), so a request that names them is refused instead of run without them: a host
-/// ensured without the enforcement it was asked for, or probed with the wrong key root, must not
-/// look like success.
-pub fn unsupported_request_options(parsed: &ParsedHostArgs) -> Option<HostCommandError> {
-    let named = [
-        ("--rpc-key-root", parsed.key_root.is_some()),
-        (
-            "--mcp-presenter-fd",
-            parsed.presenter_bootstrap_fd.is_some(),
-        ),
-        (
-            "--mcp-presenter-enforcement",
-            parsed.mcp_presenter_enforcement,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(flag, given)| given.then_some(flag))
-    .collect::<Vec<_>>();
-    (!named.is_empty()).then(|| {
-        HostCommandError::Host(format!(
-            "{} not supported yet: this build's host request runner takes no request options",
-            named.join(", ")
-        ))
-    })
+/// senpi v2026.10.27-2 `runHostCommand`: `--rpc-key-root`, the `--mcp-presenter-fd 4` bootstrap stream and
+/// `--mcp-presenter-enforcement` ride `runHostRequest(request, options)`. The descriptor is adopted here
+/// (close-on-exec from now on) and closed when the request's one spawn consumed it or the request ends.
+pub fn request_options(parsed: &ParsedHostArgs) -> RunHostRequestOptions {
+    RunHostRequestOptions {
+        key_root: parsed.key_root.as_ref().map(std::path::PathBuf::from),
+        presenter_bootstrap: parsed.presenter_bootstrap_fd.and_then(|fd| {
+            maho_rpc::mcp_presenter_bootstrap::presenter_bootstrap_stream(fd as i32)
+        }),
+        mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
+    }
 }
 
 /// senpi `runHostCommand` body: perform the request and return its outcome.
@@ -332,11 +320,8 @@ pub async fn run(
     socket: &str,
     agent_dir: &Path,
 ) -> Result<HostOutcome, HostCommandError> {
-    if let Some(refused) = unsupported_request_options(parsed) {
-        return Err(refused);
-    }
     let request = build_host_request(parsed, socket, agent_dir)?;
-    run_host_request(request)
+    run_host_request_with(request, request_options(parsed))
         .await
         .map_err(|error| HostCommandError::Host(error.to_string()))
 }

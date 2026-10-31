@@ -138,7 +138,8 @@ pub struct HostGcOptions {
     /// Also stop running stale older-engine hosts; `Some(Default::default())` judges against this build.
     pub stale_engine: Option<StaleEngineRequest>,
 }
-enum Judged {
+/// One endpoint's verdict (senpi `gcEndpoint`'s outcome).
+pub enum Judged {
     Removed {
         reason: &'static str,
         skipped: Vec<PathBuf>,
@@ -216,7 +217,7 @@ pub async fn gc_host_endpoints(agent_dir: &Path, options: &HostGcOptions) -> Hos
     result
 }
 /// One endpoint, judged and removed exactly as a full run does.
-async fn gc_endpoint(
+pub async fn gc_endpoint(
     socket: &str,
     dir: &Path,
     stale_engine: Option<&StaleEngineRequest>,

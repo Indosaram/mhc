@@ -5,7 +5,7 @@
 //! so a caller holding a deadline on this supervisor extends it instead of killing the supervisor mid-wait.
 use crate::host_daemon_paths::HostGenerationPaths;
 use crate::host_stalled_evidence::{
-    CHILD_STALLED_STOP_MAX_MS_ENV, STOP_STALL_EVIDENCE_MAX_AGE_MS, StopProgress,
+    CHILD_STALLED_STOP_MAX_MS_ENV, LoopStallWindow, STOP_STALL_EVIDENCE_MAX_AGE_MS, StopProgress,
     child_stalled_stop_max_ms, clear_stop_progress, host_loop_stalled, write_stop_progress,
 };
 use crate::host_supervisor_log::supervisor_log;
@@ -47,7 +47,16 @@ pub async fn wait_out_stalled_child(
     let max_ms = child_stalled_stop_max_ms(env) as i64;
     let until_at = signalled_at + max_ms;
     let error_ms = loop_lag_error_ms(env);
-    let stalled = || host_loop_stalled(generation, now(), error_ms, STOP_STALL_EVIDENCE_MAX_AGE_MS);
+    let stalled = || {
+        host_loop_stalled(
+            generation,
+            LoopStallWindow {
+                now: now(),
+                error_ms,
+                window_ms: STOP_STALL_EVIDENCE_MAX_AGE_MS as i64,
+            },
+        )
+    };
     let mut waited = 0;
     while now() < until_at && stalled() {
         if waited == 0 {
