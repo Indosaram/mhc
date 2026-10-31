@@ -66,7 +66,7 @@ fn marker(elided: usize) -> String {
 }
 
 /// Lengths and slicing follow JS semantics (UTF-16 code units).
-fn cap_text(text: String) -> (String, bool) {
+pub(crate) fn cap_text(text: String) -> (String, bool) {
     // UTF-16 units never outnumber UTF-8 bytes, so a short string needs no unit buffer or copy.
     if text.len() <= TRANSCRIPT_MAX_CHARS {
         return (text, false);
