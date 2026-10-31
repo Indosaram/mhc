@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use futures::future::BoxFuture;
 use crate::errors::McpError;
 use crate::transport_sdk::McpClient;
+use futures::future::BoxFuture;
+use std::sync::Arc;
 
 pub trait McpAuthChallengeHandler: Send + Sync {
     fn reauthorize(&self, scopes: Vec<String>) -> BoxFuture<'_, Result<(), McpError>>;
@@ -20,7 +20,9 @@ pub struct AuthChallenge {
 /// Parses a `Bearer` challenge; non-Bearer schemes and parameterless challenges yield `None`.
 pub fn parse_www_authenticate(header: &str) -> Option<AuthChallenge> {
     let header = header.trim_start();
-    let scheme_end = header.find(|c: char| c.is_whitespace()).unwrap_or(header.len());
+    let scheme_end = header
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(header.len());
     if !header[..scheme_end].eq_ignore_ascii_case("bearer") {
         return None;
     }
@@ -32,11 +34,19 @@ pub fn parse_www_authenticate(header: &str) -> Option<AuthChallenge> {
     for (name, value) in params {
         match name.to_ascii_lowercase().as_str() {
             "scope" if challenge.scopes.is_empty() => {
-                challenge.scopes = value.split(' ').filter(|s| !s.is_empty()).map(str::to_owned).collect();
+                challenge.scopes = value
+                    .split(' ')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
             }
             "error" if challenge.error.is_none() => challenge.error = Some(value),
-            "error_description" if challenge.error_description.is_none() => challenge.error_description = Some(value),
-            "resource_metadata" if challenge.resource_metadata.is_none() => challenge.resource_metadata = Some(value),
+            "error_description" if challenge.error_description.is_none() => {
+                challenge.error_description = Some(value)
+            }
+            "resource_metadata" if challenge.resource_metadata.is_none() => {
+                challenge.resource_metadata = Some(value)
+            }
             _ => {}
         }
     }
@@ -96,7 +106,8 @@ pub fn step_up_required(status: u16, www_authenticate: Option<&str>) -> Option<A
         return None;
     }
     let challenge = parse_www_authenticate(www_authenticate?)?;
-    (challenge.error.as_deref() == Some("insufficient_scope") || !challenge.scopes.is_empty()).then_some(challenge)
+    (challenge.error.as_deref() == Some("insufficient_scope") || !challenge.scopes.is_empty())
+        .then_some(challenge)
 }
 
 /// Union of both scope lists, first-seen order, no duplicates.

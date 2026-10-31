@@ -51,6 +51,11 @@ impl ServerConnection {
     pub fn config(&self) -> &McpServerConfig {
         &self.config
     }
+    /// Upstream `declarationIdentity`: the project authority's identity, when one admitted this server.
+    pub fn declaration_identity(&self) -> Option<String> {
+        crate::project_skill_policy::get_project_mcp_authority(&self.config)
+            .map(|authority| authority.identity.clone())
+    }
     pub fn env(&self) -> Option<&BTreeMap<String, String>> {
         self.env.as_ref()
     }
@@ -309,6 +314,7 @@ impl ServerConnection {
         inner.last_error = error.clone();
         self.transition(&mut inner, state, error);
     }
+    /// Upstream `markToolsChanged(cause = "notification")`.
     pub fn mark_tools_changed(&self) {
         self.emit_tools_changed(ServerConnectionToolsChangedCause::Notification);
     }
@@ -489,6 +495,13 @@ impl ServerConnection {
         }
         let result = match connect_mcp_transport(&transport).await {
             Ok(client) => Ok(client),
+            // connection.ts #connectTransport: modern discovery and needs-auth failures pass through undiagnosed.
+            Err(error)
+                if error.phase.as_deref() == Some("modern-stdio")
+                    || crate::needs_auth::is_mcp_needs_auth_error(&error) =>
+            {
+                Err(error)
+            }
             Err(error) => Err(crate::diagnose::diagnose_mcp_connect_failure(
                 &self.server_name,
                 &self.config,

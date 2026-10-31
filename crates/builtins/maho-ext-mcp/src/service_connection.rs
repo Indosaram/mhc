@@ -187,6 +187,8 @@ fn create_session_connection(
     }));
     if let Some(authority) = crate::project_skill_policy::get_project_mcp_authority(&config) {
         let weak = Arc::downgrade(&connection);
+        // host-registry.ts invalidateIdentity: a shared pool invalidates (dropping its catalog), not just bumps.
+        let shared_pool = shared.as_ref().map(|lease| Arc::downgrade(&lease.shared));
         let path = authority.store_path.clone();
         let identity = authority.identity.clone();
 
@@ -215,7 +217,11 @@ fn create_session_connection(
                         &observation.snapshot,
                         &identity,
                     ) != authority.started_grant_names())
-                    && let Err(error) = connection.bump_generation().await
+                    && let Err(error) =
+                        match shared_pool.as_ref().and_then(std::sync::Weak::upgrade) {
+                            Some(shared) => shared.invalidate().await,
+                            None => connection.bump_generation().await,
+                        }
                 {
                     maho_ext_api::diagnostic(&format!("MCP grant invalidation failed: {error}"));
                 }

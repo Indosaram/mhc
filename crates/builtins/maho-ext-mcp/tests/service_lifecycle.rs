@@ -43,6 +43,9 @@ impl McpToolRegistrar for RecordingRegistrar {
             .push(definition.name);
         Ok(())
     }
+    fn register_tool_with_renderers(&self, definition: ToolDefinition, _renderers: maho_ext_mcp::tool_registrar::McpToolRenderers) -> Result<(), ExtensionFailure> {
+        self.register_tool(definition)
+    }
 }
 
 fn declaration(
