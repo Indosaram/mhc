@@ -281,6 +281,34 @@ pub fn rpc_session_event_record(
     event: &maho_ext_api::AgentSessionEvent,
     last_abort_source: &LastAbortSource,
 ) -> Result<serde_json::Value, serde_json::Error> {
+    rpc_session_event_record_routed(session, event, last_abort_source, None)
+}
+/// [`rpc_session_event_record`] for a session the host routes as `route`: the turn facts senpi reads off the
+/// session (`ClientAdmissions.forSession(session).abortedBy`) come from the client-admission ledger published
+/// under that route. Only a ledger that already exists is read; none is built here (that would restore queued
+/// input). `deadline` stays empty: maho-core arms no turn deadline on a live session, so no turn ends on one.
+pub fn rpc_session_event_record_routed(
+    session: &AgentSession,
+    event: &maho_ext_api::AgentSessionEvent,
+    last_abort_source: &LastAbortSource,
+    route: Option<&str>,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let record = rpc_session_event_projection(session, event, last_abort_source)?;
+    let facts = crate::session_record_stream::TurnFacts {
+        aborted_by: route
+            .and_then(crate::client_admissions::ClientAdmissions::existing)
+            .and_then(|admissions| admissions.aborted_by()),
+        deadline: None,
+    };
+    Ok(crate::session_record_stream::session_record_with(
+        record, &facts,
+    ))
+}
+fn rpc_session_event_projection(
+    session: &AgentSession,
+    event: &maho_ext_api::AgentSessionEvent,
+    last_abort_source: &LastAbortSource,
+) -> Result<serde_json::Value, serde_json::Error> {
     let mut record = crate::session_binding::session_event_record(event)?;
     match event {
         maho_ext_api::AgentSessionEvent::ThinkingLevelChanged { .. }
@@ -317,7 +345,7 @@ pub fn rpc_session_event_record(
         }
         _ => {}
     }
-    Ok(crate::session_record_stream::session_record(record))
+    Ok(record)
 }
 fn current_abort_source(
     session: &AgentSession,
@@ -2899,6 +2927,54 @@ mod new_session_tests {
             .filter(|kind| kind.starts_with("bash_") && kind != "bash_execution_update")
             .collect::<Vec<_>>();
         assert_eq!(kinds, ["bash_start", "bash_end"]);
+    }
+    // senpi session-record-stream.ts: an aborted `agent_end` and `session_abort` name the client that aborted, read
+    // from the admission ledger of the session's route.
+    #[tokio::test]
+    async fn routed_records_name_the_client_that_aborted() {
+        use crate::client_admissions::ClientAdmissions;
+        use crate::client_admissions::test_session::FakeSession;
+        use crate::effect_session::EffectSession;
+        let session = session();
+        let last: LastAbortSource = Default::default();
+        let route = "routed-abort-record";
+        let ledger_session: std::sync::Arc<dyn EffectSession> =
+            std::sync::Arc::new(FakeSession::new(route));
+        let admissions = ClientAdmissions::for_session(&ledger_session).await;
+        admissions.note_abort(
+            crate::effect_record::EffectActor {
+                connection_id: "socket-1".into(),
+            },
+            Some("abort-1".into()),
+        );
+        let aborted_end = maho_ext_api::AgentSessionEvent::AgentEnd {
+            messages: vec![],
+            aborted: true,
+            will_retry: false,
+            abort_source: Some(maho_ext_api::AbortSource::User),
+        };
+        let routed =
+            rpc_session_event_record_routed(&session, &aborted_end, &last, Some(route)).unwrap();
+        assert_eq!(
+            routed["abortedBy"],
+            serde_json::json!({"connectionId":"socket-1","effectId":"abort-1"})
+        );
+        let abort = rpc_session_event_record_routed(
+            &session,
+            &maho_ext_api::AgentSessionEvent::SessionAbort,
+            &last,
+            Some(route),
+        )
+        .unwrap();
+        assert_eq!(abort["abortedBy"]["connectionId"], "socket-1");
+        // No route, or a route with no ledger, names no aborter.
+        let unrouted = rpc_session_event_record(&session, &aborted_end, &last).unwrap();
+        assert!(unrouted.get("abortedBy").is_none());
+        let other =
+            rpc_session_event_record_routed(&session, &aborted_end, &last, Some("no-ledger"))
+                .unwrap();
+        assert!(other.get("abortedBy").is_none());
+        ClientAdmissions::forget(route);
     }
     #[tokio::test]
     async fn agent_end_records_abort_source_for_get_state_and_omits_aborted_when_false() {
