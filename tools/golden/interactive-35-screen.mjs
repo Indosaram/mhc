@@ -49,7 +49,9 @@ await runtime.session.prompt(submission.text,mode.buildMainLoopPromptOptions(sub
 await Promise.race([completed,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("faux turn did not settle")),10000);timer.unref();})]);
 const command=process.env.GOLDEN_COMMAND;
 if(command){
- if(!["hotkeys","session","import"].includes(command))throw new Error("unsupported slash fixture");
+ // senpi core/slash-commands.ts BUILTIN_SLASH_COMMANDS minus new/quit/exit, which replace or end the
+ // session before a frame can be captured.
+ if(!["settings","model","tree","thinking","scoped-models","favorite-models","export","import","share","copy","rename","name","session","changelog","hotkeys","fork","clone","trust","login","logout","compact","resume","sessions","reload"].includes(command))throw new Error("unsupported slash fixture");
  await mode.defaultEditor.onSubmit(`/${command}`);
 }
 mode.ui.doRender(); await terminal.flush();
