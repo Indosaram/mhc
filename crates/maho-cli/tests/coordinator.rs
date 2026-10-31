@@ -107,3 +107,18 @@ async fn connection_events_track_peers_and_an_invalid_message_marks_it_replaced(
     };
     let (_coordinator, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async { tokio::join!(script, client) }).await.unwrap();
 }
+/// senpi coordinator-entry.ts: only an internal coordinator invocation runs the coordinator, and both socket paths are
+/// required before anything is bound.
+#[test]
+fn coordinator_entry_requires_the_coordinator_role_and_both_paths() {
+    use maho_cli::experimental::process::InternalProcessRole;
+    assert!(require_coordinator_role(Some(InternalProcessRole::Coordinator)).is_ok());
+    for role in [None, Some(InternalProcessRole::Server), Some(InternalProcessRole::SessionWorker)] {
+        assert_eq!(require_coordinator_role(role).unwrap_err(), "Coordinator entrypoint requires an internal coordinator invocation");
+    }
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn coordinator_process_requires_public_and_control_paths() {
+    assert_eq!(run_coordinator_process(&["only-one".to_owned()]).await.unwrap_err(), "Coordinator requires public and control socket paths");
+}
