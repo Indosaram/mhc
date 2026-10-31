@@ -259,6 +259,8 @@ fn sweep_terminal_state(
 #[derive(Clone)]
 struct TakeoverContext {
     state: Lifecycle,
+    /// Upstream `state.recordedBackgroundIds`, cleared when `own` installs its writer.
+    recorded: crate::extension_state::RecordedBackgroundIds,
     manager: Arc<Mutex<TerminalManager>>,
     monitors: Arc<Mutex<crate::monitor_registry::MonitorRegistry>>,
     digests: Digests,
@@ -449,7 +451,7 @@ impl TakeoverContext {
             terminal_now_ms(),
         )
         .await;
-        *slot = Some(lifecycle);
+        crate::extension_state::replace_lifecycle(&mut slot, &self.recorded, Some(lifecycle));
         drop(slot);
         // Upstream restores on a detached promise: session_start never waits on a grace window.
         let this = self.clone();
@@ -710,6 +712,8 @@ impl Extension for TerminalExtension {
             api.runtime.clone(),
         ));
         let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
+        let recorded_background_ids: crate::extension_state::RecordedBackgroundIds =
+            Arc::default();
         // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
         let terminal_state = crate::extension_state::TerminalExtensionState {
             sender: sender.clone(),
@@ -721,7 +725,7 @@ impl Extension for TerminalExtension {
             monitor_notifier: notifier.clone(),
             notifier: terminal_notifier.clone(),
             delivery: completion_delivery.clone(),
-            recorded_background_ids: Arc::default(),
+            recorded_background_ids: recorded_background_ids.clone(),
         };
         let sinks = crate::extension_state::bundle_sinks(&terminal_state);
         let (on_monitor_event, on_monitor_ended) = (
@@ -1006,6 +1010,7 @@ impl Extension for TerminalExtension {
         // a context without one keeps no durable terminal state, like upstream's SDK/in-memory
         // sessions. A reload generation keeps the lease: the same pid still owns it.
         let start_lifecycle = state_lifecycle.clone();
+        let start_recorded = recorded_background_ids.clone();
         let lifecycle_manager = manager.clone();
         let lifecycle_monitors = monitors.clone();
         let lifecycle_settings = configuration.clone();
@@ -1019,7 +1024,7 @@ impl Extension for TerminalExtension {
             Arc::new(Mutex::new(Arc::new(tokio::sync::watch::channel(false).0)));
         let start_restore_tasks = restore_tasks.clone();
         let start_grace_stop = grace_stop.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();Box::pin(async move {
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();let recorded=start_recorded.clone();Box::pin(async move {
             let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
             let session_id=ctx.session_manager.session_id().to_owned();
             let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
@@ -1036,13 +1041,13 @@ impl Extension for TerminalExtension {
                 // session bound while no lifecycle is installed (its spec would be dropped).
                 let mut slot=state.lock().await;
                 crate::tools::monitor_manifest_binding::bind_and_drain(&session_id,&mut lifecycle.writer,now).await;
-                *slot=Some(lifecycle);
+                crate::extension_state::replace_lifecycle(&mut slot,&recorded,Some(lifecycle));
                 return Ok(EventResult::None);
             }
             let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
-            let context=TakeoverContext {state:state.clone(),manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
+            let context=TakeoverContext {state:state.clone(),recorded,manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
             acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
             flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
@@ -1051,7 +1056,8 @@ impl Extension for TerminalExtension {
         let shutdown_monitors = monitors.clone();
         let shutdown_keeper = lease_keeper.clone();
         let shutdown_digests = digests.clone();
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
+        let shutdown_recorded = recorded_background_ids.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let recorded=shutdown_recorded.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                 // Upstream `detachPersistence`: the recorder detaches without writing and the
                 // session unbinds, so specs created until the next generation binds are queued for
@@ -1059,7 +1065,7 @@ impl Extension for TerminalExtension {
                 stop_waiting(&keeper).await;
                 stop_restores(&digests,&grace_stop,&restore_tasks).await;
                 let mut slot=state.lock().await;
-                if let Some(lifecycle)=slot.take() {crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());}
+                if let Some(lifecycle)=crate::extension_state::replace_lifecycle(&mut slot,&recorded,None) {crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());}
                 return Ok(EventResult::None);
             }
             // Upstream `stopPersistence`: stop waiting; a tick in flight either releases what it
@@ -1071,7 +1077,7 @@ impl Extension for TerminalExtension {
             // Unbound under the state lock, like the bind: a monitor call never sees the session
             // bound with no lifecycle installed.
             let mut slot=state.lock().await;
-            let Some(mut lifecycle)=slot.take() else {return Ok(EventResult::None);};
+            let Some(mut lifecycle)=crate::extension_state::replace_lifecycle(&mut slot,&recorded,None) else {return Ok(EventResult::None);};
             crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());
             drop(slot);
             // Upstream `retireLeaseToken(lease.token)`: dead before the slow flush below.
@@ -1264,6 +1270,7 @@ impl Extension for TerminalExtension {
         let restored_notifier = terminal_notifier.clone();
         let restored_tasks = completion_tasks.clone();
         let restored_lifecycle = state_lifecycle.clone();
+        let restored_recorded = recorded_background_ids.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, _| {
@@ -1274,6 +1281,7 @@ impl Extension for TerminalExtension {
                 let notifier = restored_notifier.clone();
                 let tasks = restored_tasks.clone();
                 let lifecycle = restored_lifecycle.clone();
+                let recorded = restored_recorded.clone();
                 Box::pin(async move {
                     publish_backgrounds(&backgrounds, &sender);
                     let entries = backgrounds
@@ -1283,19 +1291,12 @@ impl Extension for TerminalExtension {
                         .cloned()
                         .collect::<Vec<_>>();
                     // Upstream `onBackgroundState`: each live background session is recorded once per writer.
-                    if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                        for entry in &entries {
-                            lifecycle
-                                .writer
-                                .record_background_start(
-                                    &entry.id,
-                                    &entry.description,
-                                    entry.started_at_ms,
-                                    manifest_now_ms(),
-                                )
-                                .await;
-                        }
-                    }
+                    crate::extension_state::record_background_starts(
+                        &lifecycle,
+                        &recorded,
+                        entries.clone(),
+                    )
+                    .await;
                     let ids = entries
                         .into_iter()
                         .map(|entry| entry.id)
@@ -2515,6 +2516,7 @@ mod persistence_tests {
         digests.lock().unwrap().generation = generation;
         let context = TakeoverContext {
             state: Arc::new(tokio::sync::Mutex::new(None)),
+            recorded: Arc::default(),
             manager: Arc::new(Mutex::new(TerminalManager::default())),
             monitors: Arc::new(Mutex::new(crate::monitor_registry::MonitorRegistry::new(
                 |_| {},
