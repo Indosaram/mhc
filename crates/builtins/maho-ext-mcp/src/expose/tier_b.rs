@@ -53,6 +53,15 @@ pub fn build_mcp_stub_definition(name: &str, promotion: Option<McpStubPromotion>
     definition.execution_mode = Some(ToolExecutionMode::Parallel); definition
 }
 
+/// tier-b.ts stub `renderCall`: `theme.fg("toolOutput", `${name} (deferred stub)`)`; no `renderResult`.
+pub fn mcp_stub_renderers(name:&str)->crate::tool_registrar::McpToolRenderers {
+    let name=name.to_owned();
+    maho_ext_api::ToolRenderers {
+        render_call:Some(Arc::new(move |_args,theme,_context|Box::new(maho_tui::components::text::Text::with_padding(theme.fg("toolOutput",&format!("{name} (deferred stub)")),0,0)))),
+        render_result:None,
+    }
+}
+
 pub struct SearchableMcpTool {pub name:String,pub tool_name:String,pub description:Option<String>,pub server:String}
 
 pub struct McpTierBRegistrationInput {
@@ -144,7 +153,7 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
         if direct_active.contains(&definition.name) || promoted_snapshot.contains(&definition.name) {let renderers=mcp_tool_renderers(&definition.name);to_register.push((definition,Some(renderers)));continue;}
         poisoned(&stubbed).insert(definition.name.clone());
         let activate=activate.clone();let stub_name=definition.name.clone();let promote_name=definition.name.clone();
-        to_register.push((build_mcp_stub_definition(&stub_name,Some(McpStubPromotion {full:definition,promote:Arc::new(move || activate(std::slice::from_ref(&promote_name)))})),None));
+        to_register.push((build_mcp_stub_definition(&stub_name,Some(McpStubPromotion {full:definition,promote:Arc::new(move || activate(std::slice::from_ref(&promote_name)))})),Some(mcp_stub_renderers(&stub_name))));
     }
     let all_mcp_names:Vec<String>=full_by_name.keys().cloned().collect();
     let intended=order_active_set(&current_base.iter().cloned().chain(all_mcp_names).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
