@@ -10,19 +10,41 @@ pub struct McpServiceRegistrationEntry {
     pub artifacts: Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
     pub ensure_fresh: McpCatalogCallback,
     pub ensure_cached_tool_connected: McpCatalogCallback,
+    /// service-register.ts `requestOrigin: () => options.requestOrigin?.(entry)`.
+    pub request_origin: Option<crate::request_origin::McpRequestOriginFactory>,
+    pub bind_presentation: Option<McpBindPresentation>,
 }
 
 pub async fn prepare_mcp_service_registration_entries(
     config: &ResolvedMcpConfig,
     entries: &[Arc<tokio::sync::Mutex<McpConnectionEntry>>],
 ) -> Vec<McpServiceRegistrationEntry> {
+    prepare_mcp_service_registration_entries_with(config, entries, None).await
+}
+/// Presentation rebinding for a registration's UI entry point (upstream `bindPresentation`).
+pub type McpBindPresentation = Arc<dyn Fn(&Arc<dyn maho_ext_api::ExtensionUi>) + Send + Sync>;
+/// `binding`: the issuing session binding; registrations hold it weakly, so a released binding issues no origin.
+pub async fn prepare_mcp_service_registration_entries_with(
+    config: &ResolvedMcpConfig,
+    entries: &[Arc<tokio::sync::Mutex<McpConnectionEntry>>],
+    binding: Option<&Arc<crate::service::McpSessionBinding>>,
+) -> Vec<McpServiceRegistrationEntry> {
+    let binding = binding.map(Arc::downgrade);
     let mut prepared = Vec::with_capacity(entries.len());
     for entry in entries {
         let snapshot = entry.lock().await;
         let server_config = config.servers.get(&snapshot.name).and_then(|server| server.config.clone());
         let refresh_entry = entry.clone();
         let auth_entry = entry.clone();
+        let origin = binding.clone().map(|binding| {
+            let name = snapshot.name.clone(); let connection = snapshot.connection.clone();
+            Arc::new(move || Some(binding.upgrade()?.request_origin(&name, &connection))) as crate::request_origin::McpRequestOriginFactory
+        });
+        let bind_presentation = binding.clone().map(|binding| {
+            Arc::new(move |ui: &Arc<dyn maho_ext_api::ExtensionUi>| if let Some(binding) = binding.upgrade() {binding.bind_presentation(ui);}) as McpBindPresentation
+        });
         prepared.push(McpServiceRegistrationEntry {
+            request_origin: origin, bind_presentation,
             name: snapshot.name.clone(), connection: snapshot.connection.clone(), logger: snapshot.logger.clone(),
             agent_dir: snapshot.agent_dir.clone(), cached_catalog: snapshot.cached_catalog.clone(),
             artifacts: snapshot.artifacts.clone(),
@@ -51,7 +73,8 @@ pub async fn register_mcp_service_direct_tools(
     tool_search: Option<&mut maho_ext_tool_search::service::ToolSearchService>,
     registry: &mut crate::expose::tier_b::McpTierBRegistry,
     refresh_active_set_when_empty: bool,
+    binding: Option<&Arc<crate::service::McpSessionBinding>>,
 ) -> Result<Option<crate::expose::session::McpSessionRegistration>, maho_ext_api::ExtensionFailure> {
-    let prepared = prepare_mcp_service_registration_entries(config, entries).await;
+    let prepared = prepare_mcp_service_registration_entries_with(config, entries, binding).await;
     crate::expose::session::register_direct_mcp_tools(registrar, config, prepared, tool_search, registry, refresh_active_set_when_empty).await
 }

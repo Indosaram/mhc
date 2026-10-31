@@ -25,6 +25,10 @@ pub struct CustodyPayload {
     pub message: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deliver_as: Option<String>,
+    /// The item ids of the itemized batch this payload carries, so a restored carrier still knows them
+    /// (senpi#4106).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_ids: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +41,11 @@ pub struct WorkCustodyRecord {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_count: Option<f64>,
+    /// Named wait items (`{id, description?, startedAtMs?}`, senpi#4106).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Vec<crate::lifecycle_wait_items::WakeSourceStateItem>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_items: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,6 +66,10 @@ pub fn is_record(value: &Value) -> bool {
 }
 pub fn read_work_custody(value: &Value) -> Option<WorkCustodyRecord> {
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let items = crate::lifecycle_wait_items::normalize_wait_items(
+        value.get("items"),
+        value.get("omittedItems"),
+    );
     Some(WorkCustodyRecord {
         id: text("id")?,
         key: text("key")?,
@@ -64,6 +77,8 @@ pub fn read_work_custody(value: &Value) -> Option<WorkCustodyRecord> {
         state: serde_json::from_value(value.get("state")?.clone()).ok()?,
         source: text("source"),
         active_count: value.get("activeCount").and_then(Value::as_f64),
+        items: items.items,
+        omitted_items: items.omitted_items,
         detail: text("detail"),
         ticket_id: text("ticketId"),
         payload: value.get("payload").and_then(read_payload),
@@ -91,6 +106,14 @@ pub fn read_payload(value: &Value) -> Option<CustodyPayload> {
             .and_then(Value::as_str)
             .filter(|s| matches!(*s, "steer" | "followUp" | "nextTurn"))
             .map(str::to_owned),
+        item_ids: value
+            .get("itemIds")
+            .and_then(Value::as_array)
+            .and_then(|ids| {
+                ids.iter()
+                    .map(|id| id.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            }),
     })
 }
 fn is_message_content(value: &Value) -> bool {

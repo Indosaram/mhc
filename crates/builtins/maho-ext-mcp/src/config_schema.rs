@@ -84,6 +84,15 @@ pub struct ServerConfigWire {
     pub project_authority: Option<crate::project_skill_policy::ProjectPolicyHandle>,
     #[serde(skip)]
     pub session_dependent: bool,
+    /// The declared configuration references of `headers.*`, `env.*` and `args[]`, keyed by that field path
+    /// (`headers.X`, `env.X`, `args.N`). The slot itself holds an empty placeholder until a connection generation
+    /// resolves it.
+    /// DIVERGENCE: senpi types these slots `ConfigValue` (string | reference object) and splits
+    /// `McpServerDeclaredConfig` from the resolved `McpServerConfig`. Here one struct carries both forms: a config
+    /// with an empty `references` map is a resolved snapshot. `declared_json` restores the upstream declared shape
+    /// for identity hashing.
+    #[serde(skip)]
+    pub references: BTreeMap<String, maho_core::config_reference_resolver::ConfigValue>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub transport: Option<Transport>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,6 +137,31 @@ pub struct ServerConfigWire {
     pub log_level: Option<LogLevel>,
 }
 pub type McpServerConfig = ServerConfigWire;
+/// A server as declared: its `headers.*`, `env.*` and `args[]` may hold reference objects (see `references`).
+pub type McpServerDeclaredConfig = ServerConfigWire;
+impl ServerConfigWire {
+    /// The upstream declared shape: each reference object back at the slot it was declared in.
+    pub fn declared_json(&self) -> serde_json::Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self)?;
+        for (field, reference) in &self.references {
+            let mut parts = field.splitn(2, '.');
+            let (Some(slot), Some(key)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let target = match slot {
+                "args" => key
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| value.get_mut("args")?.get_mut(index)),
+                _ => value.get_mut(slot).and_then(|map| map.get_mut(key)),
+            };
+            if let Some(target) = target {
+                *target = reference.to_json();
+            }
+        }
+        Ok(value)
+    }
+}
 impl From<&maho_ext_api::McpServerDeclaration> for ServerConfigWire {
     fn from(value: &maho_ext_api::McpServerDeclaration) -> Self {
         use maho_ext_api::{
@@ -136,6 +170,7 @@ impl From<&maho_ext_api::McpServerDeclaration> for ServerConfigWire {
         Self {
             project_authority: None,
             session_dependent: false,
+            references: BTreeMap::new(),
             transport: value.transport.map(|v| match v {
                 McpTransport::Stdio => Transport::Stdio,
                 McpTransport::Http => Transport::Http,

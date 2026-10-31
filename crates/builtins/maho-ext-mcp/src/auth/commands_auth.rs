@@ -33,6 +33,6 @@ where F:FnOnce(url::Url)->Fut,Fut:std::future::Future<Output=Result<(),OAuthRequ
     on_authorization(authorization).await?;
     let callback=channel.wait_for_code().await.map_err(|error|OAuthRequestError::Flow(Box::new(error)))?;
     let provider=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().expect("loopback provider initialized before callback");
-    super::oauth::finish_authorization(&provider,&callback.code,client).await
+    super::oauth::finish_authorization(&provider,&callback.code,callback.iss.as_deref(),client).await
 }
 pub fn run_logout(name:&str,provider:&McpOAuthProvider,pending:&mut BTreeMap<String,McpOAuthProvider>)->Result<(),OAuthRequestError> {logout(provider)?;pending.remove(name);Ok(())}

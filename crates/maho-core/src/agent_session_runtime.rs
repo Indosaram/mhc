@@ -11,7 +11,7 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
     fn register_provider(
         &self,
         registration: maho_ext_api::ProviderRegistration,
-        _: &str,
+        extension_path: &str,
     ) -> Result<(), maho_ext_api::ExtensionFailure> {
         let mut runtime = self
             .0
@@ -19,6 +19,8 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (name, config, model_options, retry_policy) = match registration {
             maho_ext_api::ProviderRegistration::Native(provider) => {
+                // The registering extension is reported as the provider's origin (senpi#4328).
+                runtime.note_extension_path(provider.id(), Some(extension_path));
                 runtime.register_native_provider(provider);
                 return Ok(());
             }
@@ -71,9 +73,10 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
             config: crate::model_config_schema::ModelsJsonProvider {
                 name: config.name,
                 base_url: config.base_url,
-                api_key: config.api_key,
+                api_key: config.api_key.map(Into::into),
                 api: config.api,
-                headers: config.headers,
+                // Extension values are plain strings: an extension can never declare a reference (senpi#3858).
+                headers: config.headers.map(|headers| headers.into_iter().map(|(name, value)| (name, value.into())).collect()),
                 extra_body: config
                     .extra_body
                     .and_then(|value| value.as_object().cloned()),
@@ -93,7 +96,9 @@ impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
         };
         runtime
             .register_provider(&name, input)
-            .map_err(maho_ext_api::ExtensionFailure::new)
+            .map_err(maho_ext_api::ExtensionFailure::new)?;
+        runtime.note_extension_path(&name, Some(extension_path));
+        Ok(())
     }
     fn unregister_provider(
         &self,
@@ -133,7 +138,7 @@ fn extension_provider_model(
         cost: Some(model.cost),
         context_window: Some(model.context_window as f64),
         max_tokens: Some(model.max_tokens as f64),
-        headers: model.headers,
+        headers: model.headers.map(|headers| headers.into_iter().map(|(name, value)| (name, value.into())).collect()),
         extra_body: model
             .extra_body
             .and_then(|value| value.as_object().cloned()),
