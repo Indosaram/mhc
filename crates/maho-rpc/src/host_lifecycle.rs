@@ -15,7 +15,7 @@ pub const CHILD_WATCH_FD: u32 = 3;
 /// alive for the whole supervisor run (senpi host-lifecycle.ts:513-544, stdio slot 3).
 ///
 /// senpi duplicates the read end into stdio slot 3. Rust's `Command` exposes only the three
-/// standard slots and `pre_exec` is unavailable under this crate's `unsafe_code = "forbid"`, so the
+/// standard slots and `pre_exec` is unavailable under this crate's `unsafe_code = "deny"`, so the
 /// read end's close-on-exec flag is cleared instead: the child inherits the pipe at the number this
 /// process holds it at, and `HOST_WATCH_FD_ENV` carries exactly that number. The write end stays
 /// here, close-on-exec, is never inherited and is never written - only its close matters.
@@ -512,15 +512,19 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     };
     let mut spawnable = spawnable_child_launch(&child_launch, platform);
     // senpi `spawnHostChild`: a shell wrapper cannot prove preservation of the private inherited handle.
+    // The inherited fd 4 is adopted (close-on-exec) before anything is spawned; a shell launch just closes it.
     #[cfg(unix)]
-    let presenter = match launch.presenter_bootstrap_fd {
-        Some(fd) if !spawnable.shell => {
+    let presenter = match launch
+        .presenter_bootstrap_fd
+        .and_then(crate::mcp_presenter_bootstrap::adopt_presenter_bootstrap_fd)
+    {
+        Some(adopted) if !spawnable.shell => {
             let channel = crate::mcp_presenter_bootstrap::ChildBootstrap::new()?;
             spawnable.args.extend([
                 crate::mcp_presenter_bootstrap::MCP_PRESENTER_FD_FLAG.to_owned(),
                 "4".to_owned(),
             ]);
-            Some((fd, channel))
+            Some((adopted, channel))
         }
         _ => None,
     };
@@ -549,10 +553,10 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     };
     // The opt-in relay runs beside the supervisor; the child's copy of the channel was handed over at spawn.
     #[cfg(unix)]
-    let _presenter_relay = presenter.and_then(|(fd, channel)| {
+    let _presenter_relay = presenter.and_then(|(adopted, channel)| {
         let crate::mcp_presenter_bootstrap::ChildBootstrap { parent, child: inherited } = channel;
         drop(inherited);
-        let upstream = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream(fd)?;
+        let upstream = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream_from(adopted)?;
         // Bounded by the relay's 30 s deadline and either side's EOF; the supervisor does not re-launch with it.
         Some(tokio::spawn(crate::mcp_presenter_bootstrap::relay_presenter_bootstrap(
             upstream,
