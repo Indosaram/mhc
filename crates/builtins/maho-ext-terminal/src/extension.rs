@@ -10,7 +10,7 @@ use crate::tools::{
     bash_input::{BashInputInput, execute_bash_input},
     bash_output::execute_bash_output_view,
     bash_resize::execute_bash_resize,
-    context::TerminalToolResult,
+    context::{TerminalToolResult, error_result},
 };
 use maho_ext_api::types::{EventKind, EventResult, Extension, ExtensionApi, ExtensionFailure};
 use maho_tools::definition::{ToolContent, ToolDefinition, ToolError, ToolResult};
@@ -177,7 +177,7 @@ fn restore_digest_input(
                 command: result.command.clone(),
                 path: result.path.clone(),
                 reason: result.reason.clone(),
-                orphan: None,
+                orphan: result.orphan.clone(),
             })
             .collect(),
         // A background session never survives its generation: it is reported, never respawned.
@@ -420,6 +420,11 @@ impl TakeoverContext {
             _ => 0.0,
         };
         let readable_manifest = matches!(restore_state, Ok(Some(_)));
+        // Upstream restartable-command `reapOrphan`: a watcher a crashed generation left running is
+        // confirmed and stopped before its respawn; this awaits with no manager/registry lock held.
+        if let Ok(Some(manifest)) = &restore_state {
+            lifecycle.writer.reap_orphans(manifest, now).await;
+        }
         let digest = {
             let mut manager = self
                 .manager
@@ -644,6 +649,79 @@ async fn acquire_or_wait(
     }
 }
 
+/// The monitor tool's rpc branch (monitor.ts `source === "rpc"` + monitor-rpc.ts
+/// `createRpcMonitor`): refuse `human_input`, cap a durable create, arm the watch through the
+/// registry's rpc source with no std lock held across the arm, bind its `mon_` id and hand its
+/// spec to the session's writer (or queue it until one binds).
+async fn create_rpc_monitor_call(
+    input: &Value,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    session_key: Option<String>,
+    manager: &Arc<Mutex<TerminalManager>>,
+    monitors: &Arc<Mutex<crate::monitor_registry::MonitorRegistry>>,
+    lifecycle: Option<&mut crate::terminal_state::TerminalStateLifecycle>,
+) -> TerminalToolResult {
+    if let Some(refused) = crate::tools::monitor_rpc::precheck_create(
+        input,
+        crate::tools::monitor_rpc::MonitorSource::Rpc,
+    ) {
+        return refused;
+    }
+    if input.get("persistent").and_then(Value::as_bool) == Some(true)
+        && let Some(refused) = crate::tools::monitor_manifest_binding::durable_admission_error(
+            settings.max_durable_monitors,
+            session_key.as_deref(),
+            lifecycle.as_deref().map(|lifecycle| &lifecycle.writer),
+        )
+    {
+        return refused;
+    }
+    let source = monitors
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .rpc_source();
+    let (result, created) = crate::tools::monitor_rpc::create_rpc_monitor(
+        crate::tools::monitor_rpc::RpcMonitorContext {
+            source,
+            session_id: session_key.clone(),
+            agent_dir: maho_core::config::get_agent_dir().into(),
+            endpoints: None,
+            opener: None,
+            now_ms: manifest_now_ms(),
+        },
+        input,
+    )
+    .await;
+    let Some(created) = created else {
+        return result;
+    };
+    manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .bind_monitor_id(&created.monitor_id, &created.runtime_id);
+    match lifecycle {
+        Some(lifecycle) => {
+            lifecycle
+                .writer
+                .record_register_with(created.registration, manifest_now_ms())
+                .await;
+        }
+        None => {
+            if crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                session_key.as_deref(),
+                created.registration.registration,
+            )
+            .is_some()
+            {
+                maho_ext_api::diagnostic(
+                    "terminal manifest: a writer is bound for this session but not held by this generation; the monitor spec was not recorded",
+                );
+            }
+        }
+    }
+    result
+}
+
 /// Upstream `stopPersistence` (first half): stop waiting; a tick in flight either releases what it
 /// acquired or finishes its takeover before the caller flushes the manifest.
 async fn stop_waiting(keeper: &Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>>) {
@@ -711,8 +789,9 @@ impl Extension for TerminalExtension {
             api.runtime.clone(),
         ));
         let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
-        let recorded_background_ids: crate::extension_state::RecordedBackgroundIds =
-            Arc::default();
+        let recorded_background_ids: crate::extension_state::RecordedBackgroundIds = Arc::default();
+        // Upstream `state.ensurePersistence`: set by a start with nothing to restore.
+        let ensure_persistence: crate::extension_state::EnsurePersistence = Arc::default();
         // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
         let terminal_state = crate::extension_state::TerminalExtensionState {
             sender: sender.clone(),
@@ -725,6 +804,7 @@ impl Extension for TerminalExtension {
             notifier: terminal_notifier.clone(),
             delivery: completion_delivery.clone(),
             recorded_background_ids: recorded_background_ids.clone(),
+            ensure_persistence: ensure_persistence.clone(),
         };
         let sinks = crate::extension_state::bundle_sinks(&terminal_state);
         let (on_monitor_event, on_monitor_ended) = (
@@ -1023,7 +1103,9 @@ impl Extension for TerminalExtension {
             Arc::new(Mutex::new(Arc::new(tokio::sync::watch::channel(false).0)));
         let start_restore_tasks = restore_tasks.clone();
         let start_grace_stop = grace_stop.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();let recorded=start_recorded.clone();Box::pin(async move {
+        let start_ensure = ensure_persistence.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let ensure=start_ensure.clone();let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();let recorded=start_recorded.clone();Box::pin(async move {
+            *ensure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;
             let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
             let session_id=ctx.session_manager.session_id().to_owned();
             let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
@@ -1050,6 +1132,21 @@ impl Extension for TerminalExtension {
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
             let context=TakeoverContext {state:state.clone(),recorded,manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
+            // Upstream `startPersistence`: nothing on disk to restore means the lease and the
+            // recorder wait for the first durable need (`ensurePersistence`); the restore is
+            // decided at once.
+            if !std::path::Path::new(lifecycle.writer.store.file_path()).exists() {
+                context.decided.send_replace(generation);
+                let (ctx,keeper)=(ctx.clone(),keeper.clone());
+                *ensure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(crate::extension_state::LazyPersistence::new(move || {
+                    let (ctx,context,keeper,session_dir,session_id)=(ctx.clone(),context.clone(),keeper.clone(),session_dir.clone(),session_id.clone());
+                    Box::pin(async move {
+                        let lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
+                        acquire_or_wait(&ctx,&context,&keeper,lifecycle,session_dir,session_id,terminal_now_ms()).await;
+                    })
+                }));
+                return Ok(EventResult::None);
+            }
             acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
             flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
@@ -1059,7 +1156,8 @@ impl Extension for TerminalExtension {
         let shutdown_keeper = lease_keeper.clone();
         let shutdown_digests = digests.clone();
         let shutdown_recorded = recorded_background_ids.clone();
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let recorded=shutdown_recorded.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
+        let shutdown_ensure = ensure_persistence.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {*shutdown_ensure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;let state=shutdown_lifecycle.clone();let recorded=shutdown_recorded.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                 // Upstream `detachPersistence`: the recorder detaches without writing and the
                 // session unbinds, so specs created until the next generation binds are queued for
@@ -1331,6 +1429,7 @@ impl Extension for TerminalExtension {
         );
         let bash_backgrounds = backgrounds.clone();
         let bash_lifecycle = state_lifecycle.clone();
+        let bash_ensure = ensure_persistence.clone();
         // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
         // session cwd, the shell environment, and the hooks a background session that lives on the child reports to.
         let terminal_context = crate::extension_state::build_tool_context(&terminal_state);
@@ -1347,6 +1446,7 @@ impl Extension for TerminalExtension {
                 let bash_configuration = bash_configuration.clone();
                 let backgrounds = bash_backgrounds.clone();
                 let lifecycle = bash_lifecycle.clone();
+                let ensure = bash_ensure.clone();
                 Box::pin(async move {
                     let (settings, shell) = bash_configuration
                         .lock()
@@ -1394,6 +1494,9 @@ impl Extension for TerminalExtension {
                                 },
                             );
                         publish_backgrounds(&backgrounds, &sender);
+                        // Upstream `onBackgroundState`: a live background session with no
+                        // recorder bound yet binds persistence first.
+                        crate::extension_state::ensure_persistence(&ensure).await;
                         if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
                             lifecycle
                                 .writer
@@ -1604,9 +1707,10 @@ impl Extension for TerminalExtension {
         let tool_notifier = notifier.clone();
         let tool_configuration = configuration.clone();
         let tool_lifecycle = state_lifecycle.clone();
+        let tool_ensure = ensure_persistence.clone();
         let mut monitor_tool = ToolDefinition::new(
             "monitor",
-            "Subscribe to a change instead of polling. Pass command XOR path, never both: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected. Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",
+            "Subscribe to a change instead of polling. Pass one source: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected; target (type rpc) watches sessions' status, effects and content on every RPC host and terminal (\"children\", \"all\" or one session). Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",
             crate::tools::monitor::monitor_schema(),
             Arc::new(move |call| {
                 let manager = tool_manager.clone();
@@ -1614,6 +1718,7 @@ impl Extension for TerminalExtension {
                 let notifier = tool_notifier.clone();
                 let configuration = tool_configuration.clone();
                 let lifecycle = tool_lifecycle.clone();
+                let ensure = tool_ensure.clone();
                 Box::pin(async move {
                     let cwd = call
                         .context
@@ -1629,9 +1734,51 @@ impl Extension for TerminalExtension {
                     // Upstream monitor.ts:164/:315 hand the captured spec to the session's manifest writer
                     // and :207-217 caps durable creates before any spawn. The writer lock is async; the
                     // manager/registry locks are held only across the synchronous registration.
+                    // Upstream monitor.ts:189-215: a create names exactly one source and passes
+                    // the pure checks (wakes_per_hour, rpc human_input) BEFORE persistence is
+                    // bound, so a refused create takes no lease and writes no state. Only a
+                    // valid rpc, file or command create binds persistence (lazy lease +
+                    // recorder), before durable admission and before the writer lock is taken
+                    // (the bind installs the lifecycle under that lock).
+                    let source =
+                        if call.params.get("action").and_then(Value::as_str) != Some("rearm") {
+                            let source =
+                                match crate::tools::monitor_rpc::monitor_source_of(&call.params) {
+                                    Ok(source) => source,
+                                    Err(error) => return tool_result(error_result(error)),
+                                };
+                            if let Some(refused) =
+                                crate::tools::monitor_rpc::precheck_create(&call.params, source)
+                            {
+                                return tool_result(refused);
+                            }
+                            if source == crate::tools::monitor_rpc::MonitorSource::Rpc
+                                || crate::tools::monitor_schema::is_file_create_input(&call.params)
+                                || crate::tools::monitor_schema::is_create_input(&call.params)
+                            {
+                                crate::extension_state::ensure_persistence(&ensure).await;
+                            }
+                            Some(source)
+                        } else {
+                            None
+                        };
                     let mut lifecycle = lifecycle.lock().await;
                     let session_key =
                         crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
+                    // The rpc branch (monitor-rpc.ts) arms a watch over every RPC host and terminal.
+                    if let Some(crate::tools::monitor_rpc::MonitorSource::Rpc) = source {
+                        return tool_result(
+                            create_rpc_monitor_call(
+                                &call.params,
+                                &settings,
+                                session_key,
+                                &manager,
+                                &monitors,
+                                lifecycle.as_mut(),
+                            )
+                            .await,
+                        );
+                    }
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(
                         &call.params,
                         settings.max_durable_monitors,
@@ -1640,6 +1787,25 @@ impl Extension for TerminalExtension {
                     ) {
                         return tool_result(refused);
                     }
+                    // Upstream `registerFile` is awaited: the file branch proves its target
+                    // with no manager/registry lock held across the await.
+                    let file_result =
+                        if crate::tools::monitor_schema::is_file_create_input(&call.params)
+                            && call.params.get("action").and_then(Value::as_str) != Some("rearm")
+                        {
+                            Some(
+                                crate::tools::monitor::create_file_monitor(
+                                    &manager,
+                                    &monitors,
+                                    &call.params,
+                                    &cwd,
+                                    approved_parent.as_deref(),
+                                )
+                                .await,
+                            )
+                        } else {
+                            None
+                        };
                     let (result, recorded) = {
                         let mut manager = manager
                             .lock()
@@ -1647,18 +1813,21 @@ impl Extension for TerminalExtension {
                         let mut monitors = monitors
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let result = crate::tools::monitor::execute_configured_monitor_in(
-                            &mut manager,
-                            &mut monitors,
-                            &call.params,
-                            &cwd,
-                            approved_parent.as_deref(),
-                            shell.as_deref(),
-                            &settings,
-                            lifecycle
-                                .as_ref()
-                                .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
-                        );
+                        let result = match file_result {
+                            Some(result) => result,
+                            None => crate::tools::monitor::execute_configured_monitor_in(
+                                &mut manager,
+                                &mut monitors,
+                                &call.params,
+                                &cwd,
+                                approved_parent.as_deref(),
+                                shell.as_deref(),
+                                &settings,
+                                lifecycle
+                                    .as_ref()
+                                    .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
+                            ),
+                        };
                         if call.params.get("action").and_then(Value::as_str) == Some("rearm")
                             && let Some(notifier) = notifier
                                 .lock()
@@ -1692,7 +1861,13 @@ impl Extension for TerminalExtension {
                                 .flatten();
                             let deadline_ms =
                                 crate::tools::monitor::registration_deadline_ms(&monitors, &id);
-                            (registration.with_deadline_ms(deadline_ms), checkpoint)
+                            let runtime = manager.get(&id).and_then(|runtime| runtime.identity());
+                            (
+                                registration
+                                    .with_deadline_ms(deadline_ms)
+                                    .with_runtime(runtime),
+                                checkpoint,
+                            )
                         });
                         (result, recorded)
                     };
@@ -1734,6 +1909,7 @@ impl Extension for TerminalExtension {
             r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already; when the run creates that directory too, use the `command` branch instead."#.to_owned(),
             r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
             "A non-persistent command watch is a watcher with a deadline: timeout_ms KILLS the watched command when it fires (the summary says killed at deadline). Put long jobs in a run_in_background session and only watch them.".to_owned(),
+            r#"Waiting on other sessions (your children, a task, every session) is the rpc branch: `monitor({ type: "rpc", target: "children", description: "children status" })` reports each status change and effect receipt as it happens; `events: "all"` adds their content (streaming collapses to one line per 2 s), `exclude` drops kinds."#.to_owned(),
             "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
         ]);
         api.register_tool_with_renderers(monitor_tool, crate::tools::render::monitor_renderers())
@@ -1905,6 +2081,54 @@ mod tests {
         })
         .await?;
         Ok(())
+    }
+    /// monitor.ts: a create names one source (`monitorSourceOf`), and the rpc branch refuses
+    /// `human_input` before arming anything.
+    #[tokio::test]
+    async fn registered_monitor_resolves_one_source_and_refuses_rpc_human_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = ExtensionApi::new(
+            LoadedExtension::new("terminal", dir.path().to_owned(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            ExtensionRuntime::default(),
+        );
+        TerminalExtension.register(&mut api);
+        let monitor = &api.registered.tools[5].definition;
+        for (params, expected) in [
+            (
+                json!({"description":"d","command":"true","path":"file"}),
+                "monitor takes one source; this call names command and path.",
+            ),
+            (
+                json!({"description":"d","type":"rpc"}),
+                "monitor type \"rpc\" needs target; pass target: \"children\", \"all\" or a session id.",
+            ),
+            (
+                json!({"description":"d","target":"all","human_input":true}),
+                "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
+            ),
+            // monitor.ts:189: wakes_per_hour is refused on an rpc watch, ahead of human_input.
+            (
+                json!({"description":"d","target":"all","wakes_per_hour":12,"human_input":true}),
+                "wakes_per_hour applies to persistent command monitors (command with persistent: true); other watches are not wake-paced.",
+            ),
+            (
+                json!({"description":"d","target":"all","persistent":true,"wakes_per_hour":12}),
+                "wakes_per_hour applies to persistent command monitors (command with persistent: true); other watches are not wake-paced.",
+            ),
+        ] {
+            let error = (monitor.execute)(maho_tools::definition::ToolCall {
+                id: "source",
+                params,
+                signal: Default::default(),
+                on_update: None,
+                context: None,
+            })
+            .await
+            .expect_err("refused before arming");
+            assert_eq!(error.to_string(), expected);
+        }
     }
     #[tokio::test]
     async fn registered_file_monitor_stable_id_kill_releases_shared_capacity()
