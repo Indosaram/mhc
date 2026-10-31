@@ -218,6 +218,68 @@ pub fn host_owner_gone(owner: &HostLifetimeOwner) -> bool {
     observed.is_some() && recorded.is_some() && !same_process_start_ms(observed, recorded)
 }
 
+/// senpi `writeHostOwner`: `owner.json` replaced atomically; `None` records an explicitly unowned generation.
+pub fn write_host_owner(
+    generation_dir: &std::path::Path,
+    owner: Option<&HostLifetimeOwner>,
+) -> std::io::Result<()> {
+    let owner = owner.map_or(
+        serde_json::Value::Null,
+        |owner| serde_json::json!({ "pid": owner.pid, "startTime": owner.start_time }),
+    );
+    let path = generation_dir.join(OWNER_RECORD_FILE);
+    let temporary = generation_dir.join(format!(
+        "{OWNER_RECORD_FILE}.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(
+        &temporary,
+        serde_json::json!({ "owner": owner }).to_string(),
+    )?;
+    std::fs::rename(&temporary, &path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
+}
+
+/// senpi `callerHostOwner`: this process, by its OS start identity.
+pub fn caller_host_owner() -> std::io::Result<HostLifetimeOwner> {
+    let pid = std::process::id();
+    crate::host_reservations::read_process_start_time(pid)
+        .filter(|start| maho_tool_child::group_ownership::process_start_time_ms(start).is_some())
+        .map(|start_time| HostLifetimeOwner { pid, start_time })
+        .ok_or_else(|| std::io::Error::other("cannot establish RPC host owner OS start identity"))
+}
+
+/// senpi `claimHostOwner`, called inside the ensure lock: a live or unknown different owner is never silently
+/// replaced, and a generation with no owner record cannot take one.
+pub fn claim_host_owner(
+    generation_dir: &std::path::Path,
+    next: HostLifetimeOwner,
+) -> std::io::Result<()> {
+    let previous = read_host_owner(generation_dir);
+    if previous == OwnerRecord::Unknown {
+        return Err(std::io::Error::other(
+            "RPC host does not support owner lifetime registration",
+        ));
+    }
+    let next = OwnerRecord::Owned(next);
+    if same_host_owner(&previous, &next) {
+        return Ok(());
+    }
+    if let OwnerRecord::Owned(previous) = &previous
+        && !host_owner_gone(previous)
+    {
+        return Err(std::io::Error::other(
+            "RPC host lifetime owner is still alive or its identity is unknown",
+        ));
+    }
+    let OwnerRecord::Owned(next) = next else {
+        return Ok(());
+    };
+    write_host_owner(generation_dir, Some(&next))
+}
+
 /// The owner identity probe's bound (senpi `hostOwnerGone` reads the identity with a 1 s timeout).
 pub const OWNER_PROBE_TIMEOUT_MS: u64 = 1_000;
 
@@ -508,6 +570,30 @@ mod activity_tests {
         assert!(!activity.quiescent());
         activity.set_clients(1, 0);
         assert_eq!(activity.current(0.).connections, 1);
+    }
+
+    /// senpi `claimHostOwner`: an unowned generation takes the caller, the same caller claims again, a live other
+    /// owner is kept, and a generation without an owner record refuses.
+    #[test]
+    fn a_claim_takes_an_unowned_generation_and_keeps_a_live_other_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let caller = caller_host_owner().unwrap();
+        assert!(claim_host_owner(dir.path(), caller.clone()).is_err());
+        write_host_owner(dir.path(), None).unwrap();
+        assert_eq!(read_host_owner(dir.path()), OwnerRecord::Unowned);
+        claim_host_owner(dir.path(), caller.clone()).unwrap();
+        assert_eq!(
+            read_host_owner(dir.path()),
+            OwnerRecord::Owned(caller.clone())
+        );
+        claim_host_owner(dir.path(), caller.clone()).unwrap();
+        // The same live pid under another incarnation: a different owner whose death is not proven.
+        let other = HostLifetimeOwner {
+            pid: caller.pid,
+            start_time: "1".into(),
+        };
+        assert!(claim_host_owner(dir.path(), other).is_err());
+        assert_eq!(read_host_owner(dir.path()), OwnerRecord::Owned(caller));
     }
 
     fn owner_record(dir: &std::path::Path, owner: serde_json::Value) {
