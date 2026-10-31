@@ -33,7 +33,7 @@ pub struct McpCommandHost {
     pub append_entry: Option<Arc<dyn Fn(&str) + Send + Sync>>,
     /// Runs after `/mcp reconnect` so wire status follows the reconnect.
     pub after_reconnect:
-        Option<Arc<dyn Fn(&McpService) -> futures::future::BoxFuture<'_, ()> + Send + Sync>>,
+        Option<Arc<dyn Fn(crate::service_types::McpWireStatusSnapshot) + Send + Sync>>,
     pub open_browser: Option<crate::auth::challenge_login::BrowserOpener>,
 }
 
