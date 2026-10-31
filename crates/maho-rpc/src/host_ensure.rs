@@ -514,47 +514,7 @@ fn is_host_start_failure(error: &std::io::Error) -> bool {
         || message.starts_with("RPC socket host did not become ready")
 }
 
-/** Whether a newer build may take the socket over from the running host (senpi `HostUpgradePolicy`). */
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HostUpgradePolicy {
-    #[default]
-    Never,
-    IfEngineDiffers,
-}
-/** One ensure request: the endpoint, what to launch, and the lifecycle policy to record. */
-#[derive(Debug, Clone)]
-pub struct EnsureHostOptions {
-    pub socket: String,
-    pub agent_dir: Option<std::path::PathBuf>,
-    pub policy: Option<crate::host_launch_spec::HostLifecyclePolicyInput>,
-    pub host_args: Vec<String>,
-    /** Extensions the spawned host loads; they form its launch profile. */
-    pub extensions: Vec<String>,
-    pub env: HashMap<String, Option<String>>,
-    pub upgrade: HostUpgradePolicy,
-    pub readiness_ms: u64,
-}
-impl Default for EnsureHostOptions {
-    fn default() -> Self {
-        Self {
-            socket: String::new(),
-            agent_dir: None,
-            policy: None,
-            host_args: vec![],
-            extensions: vec![],
-            env: HashMap::new(),
-            upgrade: HostUpgradePolicy::Never,
-            readiness_ms: 10_000,
-        }
-    }
-}
-/** The host a client ended up attached to, and whether this call started it. */
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnsuredHostInfo {
-    pub pid: u32,
-    pub socket: String,
-    pub reused: bool,
-}
+pub use crate::host_ensure_types::{EnsureHostOptions, EnsuredHostInfo, HostUpgradePolicy};
 #[derive(Debug, thiserror::Error)]
 pub enum EnsureHostError {
     #[error("host ensure refused: {0}")]
