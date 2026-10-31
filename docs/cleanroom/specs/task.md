@@ -188,13 +188,15 @@ Matching rules (clarified 2026-11-01):
   only as whole words; a plural with a trailing "s" also counts ("tokens revoked",
   "invalid credentials"). A word that only contains one of them ("keyword", "monkey") does not
   count.
-- An "expired session" text counts as `rejected` only when the same text also mentions `/login`.
-  A bare "token expired" or "session expired" line without `/login` is not evidence; the input
-  includes the child's log tail, and such lines may come from unrelated output.
+- An "expired session" text counts as `rejected` only when the sentence that directly follows the
+  expiry statement tells the user to run `/login`. A bare "token expired" or "session expired"
+  is not evidence, and neither is one with a `/login` hint somewhere else in the text: the input
+  includes the child's log tail, where such lines may come from unrelated output.
 
 10. "403 forbidden: invalid credentials" -> rejected. "403: tokens revoked" -> rejected.
     "403: invalid keyword in request" -> none.
-11. "session expired" (no `/login`) -> none. "token expired" -> none.
+11. "session expired" (no `/login`) -> none. "token expired" -> none. "Session expired. Please
+    contact support. Run /login zeta" -> none (the `/login` sentence does not directly follow).
 
 ### D3. Remedy line for a credential failure
 
@@ -238,11 +240,11 @@ remains:
 - the record's `model`/`thinking` become the new choice, `model_source` gets a suffix naming the
   dropped provider (for example `category:quick (fallback: openai signed out)`), the failed
   attempt's error is kept in a hook note so it stays visible in the envelope;
-- the run is retried with the same first prompt in a **fresh** session id. "The same first prompt"
-  includes any messages that were queued before the first run and merged into its prompt; none
-  of them is lost or delivered twice because of the retry (clarified 2026-11-01) (the failed session
+- the run is retried with the same first prompt in a **fresh** session id (the failed session
   contains the refused turn; this is the one exception to "the session id is fixed for the life
-  of the task" in §2); `runs` stays 1;
+  of the task" in §2); `runs` stays 1. "The same first prompt" includes any messages that were
+  queued before the first run and merged into its prompt (task-control.md §1); none of them is
+  lost or delivered twice because of the retry (clarified 2026-11-01);
 - the retry is not a new task: same id, same output files (overwritten), no extra background
   delivery for the failed attempt.
 
