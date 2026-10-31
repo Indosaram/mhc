@@ -9,7 +9,9 @@
 //! response carrying the snapshot, then [`SessionStatusStream::activate`]. Deltas published in between are held and
 //! flushed onto the connection the moment `activate` runs, so no `seq > 0` record overtakes the `seq 0` snapshot.
 //!
-//! `effect_status` publication (senpi `publishEffect`) needs the effect ledger, which this crate does not carry yet.
+//! `effects: true` subscriptions also receive `effect_status` records ([`SessionStatusStream::publish_effect`]) on
+//! the same per-subscription `seq`, and every `session_status` record carries `lastEffect` when the host installed a
+//! provider ([`SessionStatusStream::set_last_effect_provider`]).
 use crate::session_status::{
     SessionStatusActor, SessionStatusCause, SessionStatusTerminal, SessionView,
     derive_session_status,
@@ -38,6 +40,9 @@ fn iso_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Fills `session_status.lastEffect` (senpi `SessionLastEffectProvider`): `{ effectId, kind, state }`.
+pub type SessionLastEffectProvider = Box<dyn Fn(&str) -> Option<Value> + Send + Sync>;
+
 /// One connection may hold at most this many subscriptions.
 pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 64;
 
@@ -63,6 +68,7 @@ pub struct SessionStatusStream {
     last_changes: BTreeMap<String, Value>,
     next_subscription: u64,
     now: Box<dyn Fn() -> String + Send + Sync>,
+    last_effect: Option<SessionLastEffectProvider>,
 }
 
 impl Default for SessionStatusStream {
@@ -80,7 +86,12 @@ impl SessionStatusStream {
             last_changes: BTreeMap::new(),
             next_subscription: 0,
             now,
+            last_effect: None,
         }
+    }
+
+    pub fn set_last_effect_provider(&mut self, provider: Option<SessionLastEffectProvider>) {
+        self.last_effect = provider;
     }
 
     /// Live subscriptions (pending ones excluded).
@@ -225,6 +236,55 @@ impl SessionStatusStream {
                 None => {
                     if !delivery.enqueue(&subscription.connection_id, &line) {
                         dropped.push(id);
+                    }
+                }
+            }
+        }
+        for id in dropped {
+            self.subscriptions.remove(&id);
+        }
+    }
+
+    /// Publishes one effect transition to every matched `effects: true` subscriber, sharing its `seq` (senpi
+    /// `publishEffect`).
+    pub fn publish_effect(
+        &mut self,
+        source: &dyn SessionStatusSource,
+        delivery: &dyn SessionStatusDelivery,
+        session_id: &str,
+        status: &crate::effect_record::EffectStatus,
+    ) {
+        if self.subscriptions.is_empty() {
+            return;
+        }
+        let Some(view) = self.current_view(source, session_id) else {
+            return;
+        };
+        let at = status
+            .updated_at
+            .clone()
+            .or_else(|| status.accepted_at.clone())
+            .unwrap_or_else(|| (self.now)());
+        let mut dropped = Vec::new();
+        for (id, subscription) in &mut self.subscriptions {
+            if !subscription.options.effects
+                || !subscription_matches(&subscription.options, session_id, &view.entry)
+            {
+                continue;
+            }
+            let seq = subscription.seq + 1;
+            let record = crate::session_effect_status::effect_status_record(
+                id, seq, session_id, status, &at,
+            );
+            let Ok(line) = crate::jsonl::serialize_json_line(&record) else {
+                continue;
+            };
+            subscription.seq = seq;
+            match &mut subscription.held {
+                Some(held) => held.push(line),
+                None => {
+                    if !delivery.enqueue(&subscription.connection_id, &line) {
+                        dropped.push(id.clone());
                     }
                 }
             }
@@ -394,6 +454,13 @@ impl SessionStatusStream {
         {
             record.insert("context".into(), context);
         }
+        if let Some(last_effect) = self
+            .last_effect
+            .as_ref()
+            .and_then(|provider| provider(session_id))
+        {
+            record.insert("lastEffect".into(), last_effect);
+        }
         record.insert("lastChange".into(), change);
         Value::Object(record)
     }
@@ -478,6 +545,75 @@ mod tests {
         assert_eq!(seqs, [1, 2]);
         assert!(stream.unsubscribe("c1", &subscribed.subscription_id));
         assert!(!stream.unsubscribe("c1", &subscribed.subscription_id));
+    }
+
+    /// rpc-session-status.test.ts effect subscriptions: an `effects: true` subscription gets `effect_status` on its
+    /// own seq, held behind the snapshot until activation; a plain one gets none; `lastEffect` rides every record.
+    #[test]
+    fn effect_transitions_reach_only_effect_subscriptions_on_their_seq() {
+        let (mut stream, sent) = stream();
+        stream.set_last_effect_provider(Some(Box::new(|session_id: &str| {
+            (session_id == "s1").then(|| json!({"effectId":"e1","kind":"input","state":"accepted"}))
+        })));
+        let effects = stream.subscribe(
+            &OneSession,
+            &*sent,
+            "effects",
+            parse_subscription(&json!({"effects":true})).unwrap(),
+        );
+        assert_eq!(effects.snapshot[0]["lastEffect"]["effectId"], "e1");
+        let plain = stream.subscribe(
+            &OneSession,
+            &*sent,
+            "plain",
+            parse_subscription(&json!({})).unwrap(),
+        );
+        let status: crate::effect_record::EffectStatus = serde_json::from_value(json!({
+            "effectId":"e1","kind":"input","state":"done","updatedAt":"2026-10-27T00:00:01.000Z",
+            "durableSessionId":"d"
+        }))
+        .unwrap();
+        stream.publish_effect(&OneSession, &*sent, "s1", &status);
+        assert!(sent.0.lock().unwrap().is_empty());
+        stream.activate(&*sent, &effects.subscription_id);
+        stream.activate(&*sent, &plain.subscription_id);
+        stream.publish(&OneSession, &*sent, "s1", "agent_end", "agent", false);
+        let lines = sent.0.lock().unwrap().clone();
+        let records = lines
+            .iter()
+            .map(|(connection, line)| {
+                let record = serde_json::from_str::<Value>(line).unwrap();
+                (
+                    connection.clone(),
+                    record["type"].as_str().unwrap().to_owned(),
+                    record["seq"].as_u64().unwrap(),
+                    record["at"].clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records,
+            [
+                (
+                    "effects".to_owned(),
+                    "effect_status".to_owned(),
+                    1,
+                    json!("2026-10-27T00:00:01.000Z")
+                ),
+                (
+                    "effects".to_owned(),
+                    "session_status".to_owned(),
+                    2,
+                    Value::Null
+                ),
+                (
+                    "plain".to_owned(),
+                    "session_status".to_owned(),
+                    1,
+                    Value::Null
+                ),
+            ]
+        );
     }
 
     /// dialog-observer.test.ts: dialog records reach only `dialogs: true` subscriptions with a mirror; a snapshot
