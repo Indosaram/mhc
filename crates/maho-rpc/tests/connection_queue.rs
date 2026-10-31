@@ -97,3 +97,77 @@ use maho_rpc::{connection_handler::handle_session_command,rpc_types::RpcCommand}
     }
     let scope=maho_ai::node::provider_scope::ProviderScope::new();let observed=Arc::new(std::sync::atomic::AtomicBool::new(false));let observed_hook=Arc::clone(&observed);let scope_hook=scope.clone();let registry=session.model_registry().clone();let services=maho_core::agent_session_services::AgentSessionServices{cwd:temp.path().to_string_lossy().into_owned(),agent_dir:temp.path().to_string_lossy().into_owned(),auth_storage:Arc::clone(&registry.auth_storage),model_registry:registry,settings_manager:SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false),diagnostics:vec![]};let mut runtime=maho_core::agent_session_runtime::AgentSessionRuntime::new(session,services,vec![],None,None);runtime.set_before_session_invalidate(Some(Box::new(move||{assert_eq!(scope_hook.state(),maho_ai::node::provider_scope::ScopeState::Active);assert!(maho_ai::node::provider_scope::active_provider_scope().is_some());observed_hook.store(true,std::sync::atomic::Ordering::SeqCst);})));match maho_rpc::session_teardown::close_runtime_with_grace(Arc::new(runtime),scope.clone(),30000).await{maho_rpc::session_teardown::RuntimeCloseCompletion::Settled(result)=>result.unwrap().unwrap(),maho_rpc::session_teardown::RuntimeCloseCompletion::Draining(task)=>task.await.unwrap().unwrap()};assert!(observed.load(std::sync::atomic::Ordering::SeqCst));assert_eq!(scope.state(),maho_ai::node::provider_scope::ScopeState::Closed);
 }
+
+#[tokio::test]
+async fn test_rpc_mode_eof_flushes_pending_command() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+        models_path: Some(temp.path().join("models.json")),
+        auth_path: Some(temp.path().join("auth.json")),
+        providers: Some(vec![]),
+        ..Default::default()
+    })
+    .expect("valid model runtime");
+    let session = AgentSession::new(AgentSessionConfig {
+        agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+            stream_fn: Some(Arc::new(|_, _, _| {
+                maho_ai::types::AssistantMessageEventStream::assistant()
+            })),
+            ..Default::default()
+        }),
+        session_manager: SessionManager::in_memory(&cwd, None, None),
+        settings_manager: SettingsManager::from_storage(
+            Box::new(InMemorySettingsStorage::default()),
+            false,
+        ),
+        cwd: cwd.clone(),
+        agent_dir: Some(cwd),
+        fallback_now: None,
+        retry_random: None,
+        scoped_models: vec![],
+        favorite_models: vec![],
+        flag_values: Default::default(),
+        custom_tools: vec![],
+        model_runtime: Some(runtime),
+        model_registry: None,
+        uses_default_stream_function: Some(false),
+        initial_active_tool_names: None,
+        default_tool_names: None,
+        eval_only_tool_names: None,
+        allowed_tool_names: None,
+        excluded_tool_names: None,
+        base_tools_override: None,
+        session_start_event: None,
+        auto_title_sessions: Some(false),
+    })
+    .unwrap();
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut client, host) = tokio::net::UnixStream::pair().unwrap();
+    let (input, output) = host.into_split();
+    let run = maho_rpc::rpc_mode::run_command_stream(&session, input, output);
+    let drive = async {
+        client
+            .write_all(b"{\"id\":\"slow_prompt\",\"type\":\"prompt\",\"message\":\"hello\"}\n")
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut received = String::new();
+        client.read_to_string(&mut received).await.unwrap();
+        received
+    };
+    let (result, received) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(run, drive)
+    })
+    .await
+    .expect("bounded stream");
+    result.expect("stream");
+    let responses = received
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["type"] == "response" && record["id"] == "slow_prompt")
+        .collect::<Vec<_>>();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["success"], true);
+}

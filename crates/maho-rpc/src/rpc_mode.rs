@@ -80,7 +80,7 @@ async fn pump(
             continue;
         }
         // Dropping this owned future drops every pending command and the sole writer.
-        if eof {
+        if eof && commands.is_empty() {
             finish_command(output, events, Ok(None)).await?;
             return Ok(0);
         }
@@ -91,7 +91,7 @@ async fn pump(
                 for(index,command)in commands.iter_mut().enumerate(){if let Poll::Ready(response)=command.as_mut().poll(cx){return Poll::Ready((index,response));}}
                 Poll::Pending
             }),if !commands.is_empty()=>{let(index,response)=completed;drop(commands.remove(index));finish_command(output,events,response).await?;if handler.is_shutdown_requested(){return Ok(0);}continue;},
-            count=input.read(&mut bytes)=>count?,
+            count=input.read(&mut bytes), if !eof => count?,
         };
         let records = if count == 0 {
             reader.finish()
