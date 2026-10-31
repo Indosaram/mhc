@@ -928,6 +928,19 @@ async fn returns_async_on_chunk_failures_without_an_unhandled_rejection() {
 
 #[tokio::test]
 #[cfg(unix)]
+async fn maps_signal_killed_processes_to_a_non_zero_exit_code() {
+    let dir = unique_dir("sigkill");
+    let env = env_for(&dir);
+    let result = env
+        .exec("kill -9 $$", None, &bg_context())
+        .await
+        .expect("signal-killed shell is a completed execution");
+    assert_eq!(result.exit_code, 128 + 9);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[cfg(unix)]
 async fn fails_rather_than_silently_losing_a_requested_spill() {
     let dir = unique_dir("failingspill");
     let missing = dir.join("missing").join("spill.log");
