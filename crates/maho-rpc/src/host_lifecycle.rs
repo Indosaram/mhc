@@ -982,7 +982,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             _changed=shutdown_rx.changed()=>{if let Some(code)=*shutdown_rx.borrow(){signal_code=Some(code);break;}},
             _=owner_ticker.tick(),if owner.is_some()&&!draining=>{
                 if let Some(owner)=owner.as_mut()
-                    && owner.should_exit(owner_clock_ms(),crate::host_lifecycle_activity::host_owner_gone){owner_gone=true;break;}
+                    && owner.tick(owner_clock_ms()).await{owner_gone=true;break;}
             },
             changed=drain_rx.changed()=>{
                 if changed.is_ok()&&*drain_rx.borrow()&&!draining{

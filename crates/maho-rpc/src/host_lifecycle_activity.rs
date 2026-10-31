@@ -218,6 +218,23 @@ pub fn host_owner_gone(owner: &HostLifetimeOwner) -> bool {
     observed.is_some() && recorded.is_some() && !same_process_start_ms(observed, recorded)
 }
 
+/// The owner identity probe's bound (senpi `hostOwnerGone` reads the identity with a 1 s timeout).
+pub const OWNER_PROBE_TIMEOUT_MS: u64 = 1_000;
+
+/// `host_owner_gone` off the supervisor's select loop: the probe runs on the blocking pool (on win32 it spawns a
+/// process-table query) and an answer slower than `OWNER_PROBE_TIMEOUT_MS` is unknown, never death.
+pub async fn host_owner_gone_bounded(owner: HostLifetimeOwner) -> bool {
+    let probe = tokio::task::spawn_blocking(move || host_owner_gone(&owner));
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(OWNER_PROBE_TIMEOUT_MS),
+            probe
+        )
+        .await,
+        Ok(Ok(true))
+    )
+}
+
 /// senpi `SupervisorOwner`: a fresh start inherits the caller's lifetime pipe; an existing supervisor (or a foreign
 /// handoff caller) binds the owner by its OS start identity, probed with a backoff. Failed observations are never
 /// death. The owner record is re-read on every check (the polling form upstream degrades to when its directory watch
@@ -278,14 +295,9 @@ impl SupervisorOwner {
         self.idle.update(1, 0, now);
     }
 
-    /// senpi `shouldExit`: the owner is gone (pipe EOF or a probed identity), the host is quiescent, and both stayed
-    /// so for `OWNER_EXIT_GRACE_MS`; the record is re-read before authorizing, so a new owner's write wins.
-    pub fn should_exit(
-        &mut self,
-        quiescent: impl Fn() -> bool,
-        now: f64,
-        owner_gone: impl FnOnce(&HostLifetimeOwner) -> bool,
-    ) -> bool {
+    /// Re-reads the record and the pipe; the bound owner when its identity probe is due now (no pipe, not yet gone,
+    /// backoff elapsed). `should_exit` probes exactly this owner.
+    pub fn due_probe(&mut self, now: f64) -> Option<HostLifetimeOwner> {
         self.reload(now);
         if let Some(pipe) = &mut self.pipe {
             match pipe.try_recv() {
@@ -297,13 +309,28 @@ impl SupervisorOwner {
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
             }
         }
+        match &self.owner {
+            OwnerRecord::Owned(bound)
+                if self.pipe.is_none() && !self.gone && now >= self.next_probe_at =>
+            {
+                Some(bound.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// senpi `shouldExit`: the owner is gone (pipe EOF or a probed identity), the host is quiescent, and both stayed
+    /// so for `OWNER_EXIT_GRACE_MS`; the record is re-read before authorizing, so a new owner's write wins.
+    pub fn should_exit(
+        &mut self,
+        quiescent: impl Fn() -> bool,
+        now: f64,
+        owner_gone: impl FnOnce(&HostLifetimeOwner) -> bool,
+    ) -> bool {
+        let due = self.due_probe(now);
         let owner = self.owner.clone();
-        if let OwnerRecord::Owned(bound) = &owner
-            && self.pipe.is_none()
-            && !self.gone
-            && now >= self.next_probe_at
-        {
-            self.gone = owner_gone(bound);
+        if let Some(bound) = due {
+            self.gone = owner_gone(&bound);
             self.next_probe_at = now + self.probe_interval_ms;
             self.probe_interval_ms = (self.probe_interval_ms * 2.).min(OWNER_PROBE_MAX_INTERVAL_MS);
         }
@@ -389,6 +416,19 @@ impl OwnerCheck {
         let activity = &self.activity;
         self.owner
             .should_exit(|| lock_activity(activity).quiescent(), now, owner_gone)
+    }
+
+    /// The supervisor's ticker pass: a due identity probe runs bounded off the select loop
+    /// (`host_owner_gone_bounded`) before the synchronous decision consumes its answer. No lock is held across it.
+    pub async fn tick(&mut self, now: f64) -> bool {
+        let probed = match self.owner.due_probe(now) {
+            Some(bound) => Some((host_owner_gone_bounded(bound.clone()).await, bound)),
+            None => None,
+        };
+        // A record rewritten while the probe ran names a different owner: the answer is not about it.
+        self.should_exit(now, |owner| {
+            probed.is_some_and(|(gone, bound)| gone && *owner == bound)
+        })
     }
 }
 
@@ -597,6 +637,25 @@ mod activity_tests {
         assert!(!check.should_exit(7_100., |_| true));
         assert!(!check.should_exit(9_099., |_| true));
         assert!(check.should_exit(9_100., |_| true));
+    }
+
+    #[tokio::test]
+    async fn the_ticker_probes_a_live_owner_off_the_loop_and_never_exits_for_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut check = owner_check(temp.path());
+        lock_activity(&check.activity).observer_opened(1);
+        let OwnerRecord::Owned(owner) = read_host_owner(temp.path()) else {
+            unreachable!()
+        };
+        assert!(!host_owner_gone_bounded(owner).await);
+        // Every probe the backoff allows over 30 s answers "alive": a quiescent host is never ended.
+        for now in [0., 1_000., 3_000., 7_000., 12_000., 17_000., 30_000.] {
+            assert!(!check.tick(now).await);
+        }
+        // A record that names nobody is never probed and never authorizes exit.
+        owner_record(temp.path(), serde_json::Value::Null);
+        assert_eq!(check.owner.due_probe(31_000.), None);
+        assert!(!check.tick(40_000.).await);
     }
 
     #[cfg(unix)]
