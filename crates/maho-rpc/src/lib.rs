@@ -204,6 +204,7 @@ pub mod session_move_wire;
 pub mod session_open_turns;
 pub mod session_path_key;
 pub mod session_path_reservations;
+pub mod session_record_accounting;
 pub mod session_record_stream;
 pub mod session_registry;
 pub mod session_registry_moved_path;
