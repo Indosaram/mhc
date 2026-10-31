@@ -1,3 +1,10 @@
+pub use crate::extension_state::monitor_state_payload;
+#[cfg(test)]
+use crate::extension_state::remove_ended_monitor_state_dir;
+use crate::extension_state::{
+    Backgrounds, Lifecycle, bind_monitor_events, manifest_now_ms, publish_backgrounds,
+    send_completion_notice,
+};
 use crate::manager::TerminalManager;
 use crate::tools::{
     bash_input::{BashInputInput, execute_bash_input},
@@ -8,24 +15,11 @@ use crate::tools::{
 };
 use maho_ext_api::types::{EventKind, EventResult, Extension, ExtensionApi, ExtensionFailure};
 use maho_tools::definition::{ToolContent, ToolDefinition, ToolError, ToolResult};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 pub struct TerminalExtension;
-type Backgrounds = Arc<Mutex<indexmap::IndexMap<String, crate::session_bundle::BackgroundSession>>>;
-/// The session's manifest recorder (upstream `state.manifestWriter`), bound while a lifecycle owns it.
-type Lifecycle = Arc<tokio::sync::Mutex<Option<crate::terminal_state::TerminalStateLifecycle>>>;
-fn manifest_now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
-}
-fn publish_backgrounds(backgrounds: &Backgrounds, sender: &ExtensionApi) {
-    let items=backgrounds.lock().expect("terminal backgrounds").values().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>();
-    sender.events.emit(
-        "wake_source_state",
-        &json!({"source":"terminal-background-sessions","activeCount":items.len(),"items":items}),
-    );
-}
 fn bind_completion(
     id: String,
     manager: Arc<Mutex<TerminalManager>>,
@@ -72,117 +66,6 @@ fn bind_completion(
         };
         send_completion_notice(&id, &view, &sender, &delivery, &notifier);
     }))
-}
-/// `state.notifier?.notifyCompletion(id, runtime)`: the once-only completion notice of a background session, read
-/// through `TerminalExitView` (a live session's, or the summary a tool child sent).
-fn send_completion_notice(
-    id: &str,
-    view: &crate::tools::context::TerminalExitView,
-    sender: &Arc<ExtensionApi>,
-    delivery: &Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
-    notifier: &Arc<Mutex<crate::notify::TerminalNotifier>>,
-) {
-    notifier
-        .lock()
-        .expect("terminal notifier")
-        .notify_completion(
-            id,
-            *delivery.lock().expect("terminal delivery"),
-            view,
-            |content, delivery| {
-                use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
-                if let Err(error) = sender.send_message(
-                    CustomMessage {
-                        custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
-                        content: vec![ToolContent::text(content)],
-                        display: false,
-                        details: None,
-                    },
-                    SendMessageOptions {
-                        trigger_turn: true,
-                        deliver_as: Some(
-                            if delivery == crate::notify::NotificationDelivery::Steer {
-                                DeliverAs::Steer
-                            } else {
-                                DeliverAs::FollowUp
-                            },
-                        ),
-                    },
-                ) {
-                    maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
-                }
-            },
-        );
-}
-pub fn monitor_state_payload(snapshot: &[crate::monitor_registry::MonitorSnapshotEntry]) -> Value {
-    let monitors=snapshot.iter().map(|entry| {
-        let mut value=json!({"id":entry.id,"description":entry.description,"paused":entry.paused,"startedAtMs":entry.started_at_ms,"command":entry.command,"filter":entry.filter,"deadlineMs":entry.deadline_ms,"lastFiredAtMs":entry.last_fired_at_ms});
-        for (key,field) in [("command",entry.command.as_ref().map(|value|json!(value))),("filter",entry.filter.as_ref().map(|value|json!(value))),("persistent",entry.persistent.map(|value|json!(value))),("deadlineMs",entry.deadline_ms.map(|value|json!(value))),("fireCount",entry.fire_count.map(|value|json!(value))),("lastFiredAtMs",entry.last_fired_at_ms.map(|value|json!(value)))] {if let Some(field)=field {value[key]=field;}}
-        value
-    }).collect::<Vec<_>>();
-    json!({"activeCount":snapshot.len(),"monitors":monitors})
-}
-/// Upstream extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended in this process
-/// (its command exited, it was killed or expired) never runs again, so its restore baseline goes.
-/// Disposal is a shutdown or reload: the watch is suspended, not ended, and a later restore still
-/// needs the dir.
-fn remove_ended_monitor_state_dir(
-    event: &crate::monitor_registry::MonitorEndedEvent,
-    ctx: Option<&maho_ext_api::types::ExtensionContext>,
-) {
-    if event.reason == crate::monitor_registry::MonitorEndedReason::Disposed {
-        return;
-    }
-    let (Some(dir), Some(monitor_id)) = (
-        crate::monitor_state_dir::terminal_state_dir(ctx),
-        event.monitor_id.as_deref(),
-    ) else {
-        return;
-    };
-    if let Err(error) = crate::monitor_state_dir::remove_monitor_state_dir_sync(&dir, monitor_id)
-        && let Some(ctx) = ctx
-    {
-        ctx.ui.notify(
-            &format!("Could not remove the state dir of {monitor_id}: {error}"),
-            maho_ext_api::types::NotificationType::Warning,
-        );
-    }
-}
-fn monitor_ended_payload(event: &crate::monitor_registry::MonitorEndedEvent) -> Value {
-    json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
-}
-fn bind_monitor_events(
-    mut state: tokio::sync::watch::Receiver<Vec<crate::monitor_registry::MonitorSnapshotEntry>>,
-    sender: Arc<ExtensionApi>,
-    lifecycle: Lifecycle,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let snapshot = state.borrow_and_update().clone();
-            let payload = monitor_state_payload(&snapshot);
-            sender.events.emit("terminal_monitor_state", &payload);
-            if let Err(error) = sender.rpc_emit("terminal_monitor_state", &payload) {
-                maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));
-            }
-            // The stable "mon_" id: runtime ids churn on restore, and item ids feed the custody signature.
-            sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.monitor_id.as_ref().unwrap_or(&entry.id),"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
-            // Upstream `onMonitorState`: the manifest mirrors mute state and burned fire windows and
-            // prunes monitors that ended.
-            if let Some(lifecycle) = lifecycle.lock().await.as_mut()
-                && let Err(error) = lifecycle
-                    .writer
-                    .observe_monitor_state(&snapshot, manifest_now_ms())
-                    .await
-            {
-                maho_ext_api::diagnostic(&format!(
-                    "terminal manifest monitor sync failed: {error}"
-                ));
-            }
-            if state.changed().await.is_err() {
-                return;
-            }
-        }
-    })
 }
 fn tool_result(result: TerminalToolResult) -> Result<ToolResult, ToolError> {
     if result.is_error == Some(true) {
@@ -820,31 +703,35 @@ impl Extension for TerminalExtension {
         let terminal_notifier = Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
         let notifier: Arc<Mutex<Option<crate::monitor_notify::MonitorNotifier>>> =
             Arc::new(Mutex::new(None));
-        let event_notifier = notifier.clone();
-        let ended_bus = api.events.clone();
+        let sender = Arc::new(ExtensionApi::new(
+            api.registered.clone(),
+            api.profile.clone(),
+            api.events.clone(),
+            api.runtime.clone(),
+        ));
+        let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
+        // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
+        let terminal_state = crate::extension_state::TerminalExtensionState {
+            sender: sender.clone(),
+            ctx: session_ctx,
+            configuration: configuration.clone(),
+            session_cwd,
+            backgrounds: backgrounds.clone(),
+            lifecycle: state_lifecycle.clone(),
+            monitor_notifier: notifier.clone(),
+            notifier: terminal_notifier.clone(),
+            delivery: completion_delivery.clone(),
+            recorded_background_ids: Arc::default(),
+        };
+        let sinks = crate::extension_state::bundle_sinks(&terminal_state);
+        let (on_monitor_event, on_monitor_ended) = (
+            sinks.on_monitor_event.clone(),
+            sinks.on_monitor_ended.clone(),
+        );
         let monitors = Arc::new(Mutex::new(
             crate::monitor_registry::MonitorRegistry::new_with_ended(
-                move |event| {
-                    if let Some(notifier) =
-                        event_notifier.lock().expect("monitor notifier").as_ref()
-                        && let Err(error) = notifier.notify_event(event)
-                    {
-                        maho_ext_api::diagnostic(&format!("monitor delivery failed: {error}"));
-                    }
-                },
-                move |event| {
-                    let payload = monitor_ended_payload(&event);
-                    ended_bus.emit(crate::shared::TERMINAL_MONITOR_ENDED_EVENT, &payload);
-                    ended_bus.emit(
-                        "senpi:extension-rpc-event",
-                        &json!({"name":crate::shared::TERMINAL_MONITOR_ENDED_EVENT,"data":payload}),
-                    );
-                    let ctx = session_ctx
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone();
-                    remove_ended_monitor_state_dir(&event, ctx.as_ref());
-                },
+                move |event| on_monitor_event(event),
+                move |event| on_monitor_ended(event),
             ),
         ));
         let bundle = Arc::new(Mutex::new(
@@ -857,7 +744,7 @@ impl Extension for TerminalExtension {
         let reload_bundle = bundle.clone();
         let reload_configuration = configuration.clone();
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let bundle=reload_bundle.clone();let configuration=reload_configuration.clone();Box::pin(async move {
-            let previous=crate::session_bundle::claim_parked_bundle(ctx.session_manager.session_id());
+            let previous=crate::extension_state::session_key_of(Some(ctx)).and_then(|key|crate::session_bundle::claim_parked_bundle(&key));
             if let Some(mut previous)=previous {
                 if matches!(event,maho_ext_api::types::ExtensionEvent::SessionStart(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                     let live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.adopt(&previous);live.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).configure(&configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.0);
@@ -965,13 +852,6 @@ impl Extension for TerminalExtension {
                 })
             }),
         );
-        let sender = Arc::new(ExtensionApi::new(
-            api.registered.clone(),
-            api.profile.clone(),
-            api.events.clone(),
-            api.runtime.clone(),
-        ));
-        let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
         let digests: Digests = Arc::new(Mutex::new(DigestState::default()));
         let lease_keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> =
             Arc::new(Mutex::new(None));
@@ -1446,82 +1326,7 @@ impl Extension for TerminalExtension {
         let bash_lifecycle = state_lifecycle.clone();
         // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
         // session cwd, the shell environment, and the hooks a background session that lives on the child reports to.
-        let mut terminal_context = crate::tools::context::TerminalToolContext::new(
-            configuration.clone(),
-            Arc::new(maho_core::utils::shell::get_shell_env),
-        );
-        terminal_context.session_cwd = session_cwd;
-        {
-            let (backgrounds, sender, lifecycle) = (
-                backgrounds.clone(),
-                bash_sender.clone(),
-                state_lifecycle.clone(),
-            );
-            terminal_context.on_background_start = Some(Arc::new(
-                move |id: &str, description: &str, started_at_ms: f64| {
-                    backgrounds
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(
-                            id.to_owned(),
-                            crate::session_bundle::BackgroundSession {
-                                id: id.to_owned(),
-                                description: description.to_owned(),
-                                started_at_ms,
-                            },
-                        );
-                    publish_backgrounds(&backgrounds, &sender);
-                    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-                        return;
-                    };
-                    let (lifecycle, id, description) =
-                        (lifecycle.clone(), id.to_owned(), description.to_owned());
-                    handle.spawn(async move {
-                        if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                            lifecycle
-                                .writer
-                                .record_background_start(
-                                    &id,
-                                    &description,
-                                    started_at_ms,
-                                    manifest_now_ms(),
-                                )
-                                .await;
-                        }
-                    });
-                },
-            ));
-        }
-        {
-            let (backgrounds, sender, lifecycle, delivery, notifier) = (
-                backgrounds.clone(),
-                bash_sender.clone(),
-                state_lifecycle.clone(),
-                completion_delivery.clone(),
-                terminal_notifier.clone(),
-            );
-            terminal_context.on_background_exit = Some(Arc::new(
-                move |id: &str, view: crate::tools::context::TerminalExitView| {
-                    backgrounds
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .shift_remove(id);
-                    publish_backgrounds(&backgrounds, &sender);
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        let (lifecycle, id) = (lifecycle.clone(), id.to_owned());
-                        handle.spawn(async move {
-                            if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                                lifecycle
-                                    .writer
-                                    .record_background_exit(&id, manifest_now_ms())
-                                    .await;
-                            }
-                        });
-                    }
-                    send_completion_notice(id, &view, &sender, &delivery, &notifier);
-                },
-            ));
-        }
+        let terminal_context = crate::extension_state::build_tool_context(&terminal_state);
         let mut bash = ToolDefinition::new(
             "bash",
             r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops: subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
