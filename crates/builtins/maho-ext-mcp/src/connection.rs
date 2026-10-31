@@ -49,6 +49,11 @@ impl ServerConnection {
     pub fn config(&self) -> &McpServerConfig {
         &self.config
     }
+    /// Upstream `declarationIdentity`: the project authority's identity, when one admitted this server.
+    pub fn declaration_identity(&self) -> Option<String> {
+        crate::project_skill_policy::get_project_mcp_authority(&self.config)
+            .map(|authority| authority.identity.clone())
+    }
     pub fn env(&self) -> Option<&BTreeMap<String, String>> {
         self.env.as_ref()
     }
