@@ -126,6 +126,8 @@ pub mod native_update_update;
 #[cfg(feature = "omo")]
 #[path = "omo_mount.rs"]
 pub mod omo_mount;
+#[path = "package_command_paths.rs"]
+pub mod package_command_paths;
 #[path = "package_commands.rs"]
 pub mod package_commands;
 #[path = "paths.rs"]
