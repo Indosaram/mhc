@@ -165,7 +165,7 @@ impl NativeEvalHandleHost {
         let engine = self.workpools.lock().await;
         let record = engine
             .inspect(caller, &reference.id)
-            .map_err(workpool_failure)?;
+            .map_err(|error| inspect_failure(&reference.id, error))?;
         Ok(record)
     }
     async fn snapshot(
@@ -408,7 +408,7 @@ impl maho_ext_api::EvalHandleHost for NativeEvalHandleHost {
             let mut engine = self.workpools.lock().await;
             let current = engine
                 .inspect(&caller, &reference.id)
-                .map_err(workpool_failure)?;
+                .map_err(|error| inspect_failure(&reference.id, error))?;
             if pool_settled(&current) {
                 return Ok(EvalHandleCancelReceipt {
                     reference,
@@ -664,6 +664,19 @@ fn failure(code: &str, message: &str) -> ExtensionFailure {
     };
     ExtensionFailure::classified(message, Some("EvalHandleError".into()), Some(code.into()))
 }
+// Pin `eval-handles/pool-refs.ts` loadOwnedPool: a foreign pool is forbidden, any other inspect error not found.
+fn inspect_failure(
+    id: &str,
+    error: senpi_task::workpool::types::WorkpoolError,
+) -> ExtensionFailure {
+    match error.code {
+        senpi_task::workpool::types::WorkpoolErrorCode::ScopeDenied => {
+            failure("Forbidden", &format!("{id} belongs to another session"))
+        }
+        _ => failure("NotFound", &format!("no workpool {id}")),
+    }
+}
+// `engine.cancel` errors are not wrapped upstream, so they keep their raw code.
 fn workpool_failure(error: senpi_task::workpool::types::WorkpoolError) -> ExtensionFailure {
     failure(&format!("{:?}", error.code), &error.message)
 }

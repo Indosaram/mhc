@@ -8,3 +8,8 @@ pub fn render_fallback_tip(text:&str,dim:impl Fn(&str)->String)->Vec<String> {
         dim(&if index==0 {format!("Tip: {line}")}else{line})
     }).collect()
 }
+
+/// Upstream `renderFallbackTip`: every line dimmed through the host theme, first line labelled `Tip:`.
+pub fn render_fallback_tip_with_theme(text: &str, theme: &maho_ext_api::Theme) -> Vec<String> {
+    render_fallback_tip(text, |line| theme.fg("dim", line))
+}
