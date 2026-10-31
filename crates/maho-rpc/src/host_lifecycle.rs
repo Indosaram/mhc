@@ -1139,7 +1139,7 @@ struct GenerationTeardown {
     #[cfg(unix)]
     admission: std::sync::Arc<crate::host_admission::HostAdmission>,
 }
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 impl GenerationTeardown {
     /// Waits up to `bound` for the child's exit; `true` once it is observed.
     async fn wait_for_exit(&mut self, bound: std::time::Duration) -> std::io::Result<bool> {
@@ -1158,32 +1158,46 @@ impl crate::host_lifecycle_shutdown::SupervisorTeardown for GenerationTeardown {
         self.admission.stop();
         self.draining_tx.send_replace(true);
     }
-    async fn stop_child(&mut self, _reason: &str) -> std::io::Result<()> {
-        if self.child.try_wait()?.is_some() {
-            return Ok(());
-        }
+    async fn stop_child(&mut self, reason: &str) -> std::io::Result<()> {
+        // senpi `stopChild`: the intent on record first, SIGTERM, the stall wait for a stalled child, then SIGKILL.
         #[cfg(unix)]
-        crate::host_stop::signal_generation(self.child_pid, rustix::process::Signal::TERM).ok();
+        {
+            let generation =
+                crate::host_daemon_paths::generation_paths(&self.paths, &self.instance_id);
+            crate::host_lifecycle_shutdown::stop_child(
+                &mut self.child,
+                &generation,
+                &self.instance_id,
+                reason,
+            )
+            .await
+        }
         // win32 has no SIGTERM: Node's `process.kill(pid, "SIGTERM")` there is TerminateProcess.
         #[cfg(windows)]
-        let _ = self.child.start_kill();
-        if self
-            .wait_for_exit(std::time::Duration::from_secs(5))
-            .await?
         {
-            return Ok(());
+            let _ = reason;
+            if self.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            let _ = self.child.start_kill();
+            if self
+                .wait_for_exit(std::time::Duration::from_secs(5))
+                .await?
+            {
+                return Ok(());
+            }
+            self.child.start_kill()?;
+            if self
+                .wait_for_exit(std::time::Duration::from_secs(5))
+                .await?
+            {
+                return Ok(());
+            }
+            Err(std::io::Error::other(format!(
+                "host child pid {} exit unobserved after SIGKILL",
+                self.child_pid
+            )))
         }
-        self.child.start_kill()?;
-        if self
-            .wait_for_exit(std::time::Duration::from_secs(5))
-            .await?
-        {
-            return Ok(());
-        }
-        Err(std::io::Error::other(format!(
-            "host child pid {} exit unobserved after SIGKILL",
-            self.child_pid
-        )))
     }
     async fn child_exit_recorded(&mut self) {
         // The exit is recorded in the supervisor loop when the child ends on its own (`note_child_exit`).
@@ -1225,12 +1239,18 @@ impl crate::host_lifecycle_shutdown::SupervisorTeardown for GenerationTeardown {
         )
     }
     async fn reap_child_after_failure(&mut self) -> std::io::Result<()> {
-        if self.child.try_wait()?.is_none() {
-            self.child.start_kill()?;
-            self.wait_for_exit(std::time::Duration::from_secs(5))
-                .await?;
+        #[cfg(unix)]
+        return crate::host_lifecycle_shutdown::reap_child_after_failure(&mut self.child, false)
+            .await;
+        #[cfg(windows)]
+        {
+            if self.child.try_wait()?.is_none() {
+                self.child.start_kill()?;
+                self.wait_for_exit(std::time::Duration::from_secs(5))
+                    .await?;
+            }
+            Ok(())
         }
-        Ok(())
     }
     fn dispose_public_endpoint(&mut self) -> std::io::Result<()> {
         #[cfg(unix)]
