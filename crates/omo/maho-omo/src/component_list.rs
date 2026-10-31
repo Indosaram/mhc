@@ -204,8 +204,9 @@ pub fn omo_components(
         "side-panel",
         maho_omo_side_panel::native::NativeSidePanel,
     ));
-    components.push(component(
-        "telemetry",
+    // Upstream registers telemetry with `ctx.logger`, so an invalid skills override reaches the component
+    // log; bind the shared runtime logger at register time (same pattern as config-watch below).
+    let telemetry = std::sync::Arc::new(std::sync::Mutex::new(
         maho_omo_telemetry::omo_native_component::OmoNativeTelemetryComponent::with_default_config(
             maho_omo_telemetry::index::SenpiTelemetryOptions {
                 env: Some(
@@ -220,6 +221,17 @@ pub fn omo_components(
             },
             skills_root.clone(),
         ),
+    ));
+    components.push(OmoSenpiComponent::from_context_register(
+        "telemetry",
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            let mut telemetry = telemetry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            telemetry.logger = Some(runtime.logger());
+            telemetry.register(api);
+        },
     ));
     components.push(component(
         "ultrawork",
