@@ -252,6 +252,14 @@ impl PtySession {
         self.pid
     }
 
+    /// The process group the session's signals target (the PTY's foreground group on Unix, else
+    /// the child pid), as resolved at spawn; `None` when the backend exposes neither.
+    pub fn process_group(&self) -> Option<u32> {
+        self.process_group
+            .filter(|group| *group > 0)
+            .map(|group| group as u32)
+    }
+
     pub fn write(&mut self, bytes: &[u8]) -> PtyResult<()> {
         if self.finished.load(Ordering::SeqCst) {
             return Err(PtyError::new("pty session is closed"));

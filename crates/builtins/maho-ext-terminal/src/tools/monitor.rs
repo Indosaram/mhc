@@ -554,7 +554,12 @@ pub async fn execute_monitor_recorded(
         let monitor_id = registration.monitor_id.clone();
         let deadline_ms = registration_deadline_ms(registry, &id);
         writer
-            .record_register_with(registration.with_deadline_ms(deadline_ms), now)
+            .record_register_with(
+                registration
+                    .with_deadline_ms(deadline_ms)
+                    .with_runtime(manager.get(&id).and_then(|runtime| runtime.identity())),
+                now,
+            )
             .await;
         if let Some(checkpoint) = registry.file_checkpoint(&id) {
             writer.schedule_checkpoint(&monitor_id, checkpoint);
