@@ -920,13 +920,11 @@ impl Extension for Task {
                         resolve_ancestry: Some(Arc::new(move |session| manager.list(&senpi_task::manager::types::ListScope::All).into_iter()
                             .find(|entry| entry.record.child_session_id.as_deref() == Some(session))
                             .map(|entry| senpi_task::tools::task::execute_spec::TaskAncestry { root_session_id: entry.record.root_session_id, depth: u64::from(entry.record.depth) }))),
-                        // pin `task/index.ts:79` + `task-skill-loader.ts:18-36`: the packaged omo skills root joins the
-                        // loader as an extra dir, kept only when it exists (`packagedSkillDirs` existsSync filter).
+                        // pin `task/index.ts:102` + `task-skill-loader.ts:31-47`: the loader's default resolves the
+                        // packaged skill roots (`OMO_BUNDLED_SKILLS_DIR` override, then `skills-conditional`).
                         load_skills: Some(maho_omo_task::task_skill_loader::create_task_skill_loader(maho_omo_task::task_skill_loader::TaskSkillLoaderOptions {
                             home_dir: maho_core::config::home_dir().into(), agent_dir: maho_core::config::get_agent_dir().into(),
-                            plugin_skills_dirs: [environment.get(maho_omo::SKILLS_ROOT_ENV).filter(|root| !root.is_empty()).map(std::path::PathBuf::from)
-                                .or_else(|| environment.get("OMO_SENPI_PLUGIN_ROOT").map(|root| std::path::Path::new(root).join("skills")))
-                                .unwrap_or_else(maho_omo::builtin_skills_root)].into_iter().filter(|dir| dir.is_dir()).collect(),
+                            plugin_skills_dirs: None, env: Some(environment.clone()), logger: Some(shared.logger()),
                             load_settings: None,
                         })),
                         agents: engine.agents.iter().map(|(name, agent)| (name.clone(), senpi_task::tools::task::execute_spec::TaskAgentDefinition { execution_mode: agent.execution_mode.clone() })).collect(),

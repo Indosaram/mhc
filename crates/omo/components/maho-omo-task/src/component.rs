@@ -128,6 +128,8 @@ pub struct TaskComponent {
     /// `event-bridge.ts` pause custody: restored before the reconcile, applied on the host's Resume.
     pause_custody: Mutex<Option<crate::event_bridge::TaskPauseCustody>>,
     pause_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
+    /// The latest session start's reconcile gate and recovery chain (`EventBridge`).
+    pub bridge: crate::event_bridge::EventBridge,
 }
 impl TaskComponent {
     /// `event-bridge.ts` pause custody: restored on session start, applied on the host's Resume edge.
@@ -184,9 +186,10 @@ impl TaskComponent {
                         for record in &records {
                             if sessions.contains(&record.parent_session_id)
                                 && let Some(child) = &record.child_session_id
-                                    && !sessions.contains(child) {
-                                        sessions.push(child.clone());
-                                    }
+                                && !sessions.contains(child)
+                            {
+                                sessions.push(child.clone());
+                            }
                         }
                         if sessions.len() == before {
                             break;
@@ -341,6 +344,7 @@ impl TaskComponent {
             dag: Mutex::new(None),
             pause_custody: Mutex::new(None),
             pause_subscription: Mutex::new(None),
+            bridge: crate::event_bridge::EventBridge::default(),
         });
         let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
         *component
@@ -567,111 +571,36 @@ impl TaskComponent {
                                         "task session start restored a Stop at pause sequence {pause_seq}"
                                     ));
                                 }
-                                let (lifecycle, owned_session) =
-                                    (component.engine.lifecycle.clone(), session.to_owned());
-                                let reconciliation = tokio::task::spawn_blocking(move || {
-                                    lifecycle.reconcile_on_session_start(Some(&owned_session))
-                                })
-                                .await
-                                .map_err(|error| {
-                                    maho_ext_api::ExtensionFailure::new(error.to_string())
-                                })?
-                                .map_err(|error| {
-                                    maho_ext_api::ExtensionFailure::new(error.to_string())
-                                })?;
-                                let mut records = Vec::<senpi_task::state::TaskRecord>::new();
-                                for outcome in reconciliation.outcomes {
-                                    if let Some(record) =
-                                        component.engine.manager.get(&outcome.task_id)
+                                // Admission restores local pause/transition state and attaches RPC without
+                                // waiting on a host; durable recovery keeps its order in the background
+                                // and a newer start, a switch or a shutdown retires its tail.
+                                let start = component.bridge.begin();
+                                let recovery = component.clone();
+                                let owned_session = session.to_owned();
+                                let recovery_start = start.clone();
+                                tokio::spawn(async move {
+                                    if let Err(error) = recovery
+                                        .recover_session(&owned_session, &recovery_start)
+                                        .await
                                     {
-                                        records.push(record);
+                                        maho_ext_api::diagnostic(&format!(
+                                            "omo-senpi task session recovery failed: {}",
+                                            error.message
+                                        ));
                                     }
-                                }
-                                for entry in component
-                                    .engine
-                                    .manager
-                                    .list(&ListScope::ParentSession(session.into()))
-                                {
-                                    if let Some(record) = records
-                                        .iter_mut()
-                                        .find(|record| record.task_id == entry.record.task_id)
-                                    {
-                                        *record = entry.record;
-                                    } else {
-                                        records.push(entry.record);
-                                    }
-                                }
-                                for record in &records {
-                                    component.notify_owned_terminal(record);
-                                }
-                                component
-                                    .channels
-                                    .emit_session_start()
-                                    .await
-                                    .map_err(maho_ext_api::ExtensionFailure::new)?;
-                                let team = component
-                                    .team
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .clone();
-                                if let Some(team) = &team {
-                                    team.service.reconcile_mailbox();
-                                }
-                                let parent_state = component
-                                    .engine
-                                    .runtime
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .parent_state();
-                                let delivery = component
-                                    .delivery
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner);
-                                component
-                                    .engine
-                                    .notifier
-                                    .reconcile_unnotified_notifications(
-                                        ReconcileUnnotifiedNotificationsInput {
-                                            session_id: session,
-                                            parent_state,
-                                        },
-                                    )
-                                    .map_err(|error| {
-                                        maho_ext_api::ExtensionFailure::new(error.to_string())
-                                    })?;
-                                drop(delivery);
-                                let lifecycle = component.engine.lifecycle.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    lifecycle.cleanup_expired_records()
-                                })
-                                .await
-                                .map_err(|error| {
-                                    maho_ext_api::ExtensionFailure::new(error.to_string())
-                                })?
-                                .map_err(|error| {
-                                    maho_ext_api::ExtensionFailure::new(error.to_string())
-                                })?;
-                                if let Some(team) = team
-                                    && let Err(error) = team.pollers.tick()
-                                {
-                                    maho_ext_api::diagnostic(&format!(
-                                        "task session-start lead poll failed: {error}"
-                                    ));
-                                }
-                                // Upstream order: statusUi.scheduleSync() then taskRpc.attach().
+                                    // A failed reconcile must not strand DAG recovery: it proceeds as before.
+                                    recovery_start.settle_reconciled();
+                                    recovery_start.finish();
+                                });
                                 component.status.schedule_sync();
                                 if let Some(rpc) =
                                     &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner)
                                 {
                                     rpc.attach();
                                 }
-                                // Native-only tail: arm completion waiters for still-running tasks. Its terminal
-                                // re-delivery cannot double-notify what reconcile_unnotified_notifications already
-                                // queued: the notifier skips notified_epoch >= run_epoch and in-flight `pending`
-                                // keys, and owned-member liveness is deduped by `terminal_epochs`.
-                                component.sync();
                             }
                             ExtensionEvent::SessionBeforeSwitch { .. } => {
+                                component.bridge.abort();
                                 if let Some(rpc) =
                                     &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner)
                                 {
@@ -706,6 +635,7 @@ impl TaskComponent {
                                 component.sync();
                             }
                             ExtensionEvent::SessionShutdown(shutdown) => {
+                                component.bridge.abort();
                                 let manager = component.engine.manager.clone();
                                 tokio::task::spawn_blocking(move || manager.settle_launches_for_shutdown(std::time::Duration::from_secs(30)))
                                     .await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -866,6 +796,114 @@ impl TaskComponent {
         dag.register_tool(api, component.clone());
         *component.dag.lock().unwrap_or_else(PoisonError::into_inner) = Some(dag);
         Ok(Some(component))
+    }
+    /// `event-bridge.ts` `recoverSession`: the durable recovery chain in strict order, each stage
+    /// re-checking that its start is still current.
+    ///
+    /// PERF-DIVERGENCE: the lifecycle reconcile is one blocking call without a cancellation signal,
+    /// so a superseded start abandons its result when the call returns instead of interrupting it.
+    async fn recover_session(
+        self: &Arc<Self>,
+        session: &str,
+        start: &crate::event_bridge::StartState,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let component = self;
+        let (lifecycle, owned_session) = (component.engine.lifecycle.clone(), session.to_owned());
+        let reconciliation = tokio::task::spawn_blocking(move || {
+            lifecycle.reconcile_on_session_start(Some(&owned_session))
+        })
+        .await
+        .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?
+        .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        // Upstream `onReconciled`: DAG recovery waits on this ONE gate, then the tail may be retired.
+        start.settle_reconciled();
+        if !start.active() {
+            return Ok(());
+        }
+        let mut records = Vec::<senpi_task::state::TaskRecord>::new();
+        for outcome in reconciliation.outcomes {
+            if let Some(record) = component.engine.manager.get(&outcome.task_id) {
+                records.push(record);
+            }
+        }
+        for entry in component
+            .engine
+            .manager
+            .list(&ListScope::ParentSession(session.into()))
+        {
+            if let Some(record) = records
+                .iter_mut()
+                .find(|record| record.task_id == entry.record.task_id)
+            {
+                *record = entry.record;
+            } else {
+                records.push(entry.record);
+            }
+        }
+        for record in &records {
+            component.notify_owned_terminal(record);
+        }
+        component
+            .channels
+            .emit_session_start()
+            .await
+            .map_err(maho_ext_api::ExtensionFailure::new)?;
+        if !start.active() {
+            return Ok(());
+        }
+        let team = component
+            .team
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(team) = &team {
+            team.service.reconcile_mailbox();
+        }
+        if !start.active() {
+            return Ok(());
+        }
+        let parent_state = component
+            .engine
+            .runtime
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .parent_state();
+        let delivery = component
+            .delivery
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        component
+            .engine
+            .notifier
+            .reconcile_unnotified_notifications(ReconcileUnnotifiedNotificationsInput {
+                session_id: session,
+                parent_state,
+            })
+            .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        drop(delivery);
+        if !start.active() {
+            return Ok(());
+        }
+        let lifecycle = component.engine.lifecycle.clone();
+        tokio::task::spawn_blocking(move || lifecycle.cleanup_expired_records())
+            .await
+            .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?
+            .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        if !start.active() {
+            return Ok(());
+        }
+        if let Some(team) = team
+            && let Err(error) = team.pollers.tick()
+        {
+            maho_ext_api::diagnostic(&format!("task session-start lead poll failed: {error}"));
+        }
+        // Upstream tail: statusUi.scheduleSync() then taskRpc.sync(); `sync` does both, and
+        // natively also arms completion waiters for still-running tasks. Native-only tail: arm completion waiters for still-running tasks. Its terminal
+        // re-delivery cannot double-notify what reconcile_unnotified_notifications already
+        // queued: the notifier skips notified_epoch >= run_epoch and in-flight `pending`
+        // keys, and owned-member liveness is deduped by `terminal_epochs`.
+        component.sync();
+        Ok(())
     }
     pub fn sync(self: &Arc<Self>) {
         if self.disposed.load(std::sync::atomic::Ordering::SeqCst) {

@@ -15,7 +15,7 @@ use maho_ext_api::{
     SlashCommandInfo, SourceInfo, SourceOrigin, SourceScope, SwitchSessionOptions, Theme,
     ThinkingLevel, ToolSessionManager, TuiComponentFactory, UiFuture, WidgetContent,
 };
-use maho_omo_computer_use::index::{COMPUTER_UNAVAILABLE, COMPUTER_USE_COMPONENT_NAME};
+use maho_omo_computer_use::index::{COMPUTER_USE_COMPONENT_NAME, ComputerUnavailableReason};
 use maho_omo_computer_use::runtime_loader::{
     ComputerHostApi, ComputerRuntimeLoader, ComputerRuntimeLoaderOptions,
 };
@@ -492,8 +492,44 @@ async fn test_given_unsupported_host_when_command_runs_then_notifies_unavailable
 
     let msgs = notifies.lock().expect("test value");
     assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].0, COMPUTER_UNAVAILABLE);
+    assert_eq!(
+        msgs[0].0,
+        ComputerUnavailableReason::UnsupportedHost.message()
+    );
     assert_eq!(msgs[0].1, NotificationType::Warning);
+}
+
+#[tokio::test]
+async fn test_given_disabled_or_invalid_settings_when_command_runs_then_each_reason_notifies() {
+    for (invalid, reason) in [
+        (false, ComputerUnavailableReason::Disabled),
+        (true, ComputerUnavailableReason::InvalidSettings),
+    ] {
+        let mut api = make_api();
+        let comp = ComputerUseComponent::new(ComputerUseComponentOptions {
+            platform: Some("linux".to_string()),
+            load_settings: Some(Arc::new(move |_, _| {
+                if invalid {
+                    Err("bad".to_string())
+                } else {
+                    Ok(sample_settings(false, true))
+                }
+            })),
+            ..Default::default()
+        });
+        comp.register(&mut api);
+        let handler = api
+            .registered
+            .command_context_handlers
+            .get("computer")
+            .cloned()
+            .expect("test value");
+        let (ctx, notifies) = command_context(Path::new("/tmp"), ExtensionMode::Tui);
+        handler("status", &ctx).await.expect("test value");
+        let msgs = notifies.lock().expect("test value");
+        assert_eq!(msgs[0].0, reason.message());
+        assert_eq!(msgs[0].1, NotificationType::Warning);
+    }
 }
 
 #[test]
@@ -660,8 +696,8 @@ fn test_given_custom_env_when_registered_then_used_for_ancestry_detection() {
 fn test_component_constant_name_parity() {
     assert_eq!(COMPUTER_USE_COMPONENT_NAME, "computer-use");
     assert_eq!(
-        COMPUTER_UNAVAILABLE,
-        "Computer use is unavailable in this session."
+        ComputerUnavailableReason::UnsupportedHost.message(),
+        "Computer use isn't supported on this system."
     );
     assert_eq!(COMPUTER_SKILL_NAME, "computer-use");
 }

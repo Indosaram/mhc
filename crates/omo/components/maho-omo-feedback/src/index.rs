@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use maho_ext_api::{
     EventKind, EventResult, Extension, ExtensionApi, ExtensionContext, ExtensionUi,
-    ExtensionUiDialogOptions, JsonValue, NotificationType,
-    UiFuture,
+    ExtensionUiDialogOptions, JsonValue, NotificationType, UiFuture,
 };
 use maho_omo_agent_home::resolve_agent_home;
 use serde_json::json;
@@ -29,10 +28,23 @@ pub const DEFAULT_API_ORIGIN: &str = "https://api.omo.dev";
 pub const FEEDBACK_RUNTIME_ARTIFACT: &str = "extensions/omo-feedback.js";
 pub const FEEDBACK_UNAVAILABLE: &str = "Feedback needs an OmO runtime that can remove secrets before upload. Update OmO and try again.";
 
+/// Upstream `reinstallStep()` (`reinstall/reinstall-step.ts`): the reinstall clause for a missing
+/// plugin file, with the launcher's exact command (`OMO_REINSTALL_COMMAND`) when it set one.
+pub fn reinstall_step(env: &BTreeMap<String, String>) -> String {
+    match env
+        .get("OMO_REINSTALL_COMMAND")
+        .map(|command| command.trim())
+    {
+        Some(command) if !command.is_empty() => format!("reinstall omo with: {command}"),
+        _ => "reinstall omo".to_string(),
+    }
+}
+
 /// Upstream's loader-failure message for a missing/broken feedback runtime payload.
 pub fn feedback_runtime_load_failure(cause: &str) -> String {
     format!(
-        "Feedback is unavailable: the feedback runtime ({FEEDBACK_RUNTIME_ARTIFACT}) failed to load: {cause}. This build's plugin payload is incomplete; reinstall omo, then start a new session."
+        "Feedback is unavailable: the feedback runtime ({FEEDBACK_RUNTIME_ARTIFACT}) failed to load: {cause}. Part of this omo installation is missing; {}, then start a new session.",
+        reinstall_step(&process_env())
     )
 }
 
@@ -50,6 +62,11 @@ pub struct FeedbackComponentOptions {
     /// such hook yet, so the wiring passes it here; without it nothing is ever uploaded.
     pub redact_for_upload: Option<UploadRedactor>,
     pub home_dir: Option<PathBuf>,
+    /// Upstream `credentialStore`: where the CLI sign-in is read for `/bug` and `/feedback`.
+    pub credential_store:
+        Option<Arc<dyn maho_omo_memory::device_session::account_source::CredentialStore>>,
+    /// Shared component logger supplied by the composition (`feedback.report_rejected`).
+    pub logger: Option<Arc<dyn maho_ext_api::ComponentLogger>>,
 }
 
 #[derive(Clone, Default)]
@@ -183,6 +200,7 @@ impl Extension for FeedbackComponent {
         let fixed_state_dir = options.state_dir.clone();
         let state_env = env.clone();
         let origin_env = env.clone();
+        let env_for_commands = env.clone();
 
         let core = Arc::new(FeedbackCore::new(FeedbackCoreConfig {
             env,
@@ -202,7 +220,10 @@ impl Extension for FeedbackComponent {
                     .unwrap_or_else(|| DEFAULT_API_ORIGIN.into())
             }),
             transport: options.transport.clone().unwrap_or_else(default_transport),
+            logger: options.logger.clone(),
         }));
+        let command_env = env_for_commands;
+        let command_store = options.credential_store.clone();
         let redactor = options.redact_for_upload.clone();
 
         let live: Arc<Mutex<LiveSessions>> = Arc::default();
@@ -302,6 +323,8 @@ impl Extension for FeedbackComponent {
         ] {
             let command_core = Arc::clone(&core);
             let command_redactor = redactor.clone();
+            let command_env = command_env.clone();
+            let command_store = command_store.clone();
             api.register_command(
                 name,
                 Some(description.into()),
@@ -309,6 +332,8 @@ impl Extension for FeedbackComponent {
                 Arc::new(move |args: &str, ctx: &ExtensionContext| {
                     let core = Arc::clone(&command_core);
                     let redactor = command_redactor.clone();
+                    let command_env = command_env.clone();
+                    let command_store = command_store.clone();
                     Box::pin(async move {
                         let ui = UiAdapter(Arc::clone(&ctx.ui));
                         let Some(redact) = redactor else {
@@ -321,6 +346,8 @@ impl Extension for FeedbackComponent {
                             kind,
                             args,
                             &ui,
+                            &command_env,
+                            command_store,
                             || async move {
                                 Ok(prepare_core.prepare(
                                     Some(session_view(ctx)),
@@ -349,7 +376,7 @@ mod tests {
         assert_eq!(FEEDBACK_SUBMIT_RPC_METHOD, "omo.feedback.submit");
         assert_eq!(
             feedback_runtime_load_failure("boom"),
-            "Feedback is unavailable: the feedback runtime (extensions/omo-feedback.js) failed to load: boom. This build's plugin payload is incomplete; reinstall omo, then start a new session."
+            "Feedback is unavailable: the feedback runtime (extensions/omo-feedback.js) failed to load: boom. Part of this omo installation is missing; reinstall omo, then start a new session."
         );
     }
 

@@ -13,7 +13,7 @@ const OPUS_ZEN: &str = "opencode/claude-opus-5-5";
 const OPUS_API: &str = "anthropic-api/claude-opus-5-5";
 const FABLE: &str = "anthropic-subscription/claude-fable-5-1";
 const FABLE_ZEN: &str = "opencode/claude-fable-5-1";
-const KIMI: &str = "moonshotai/kimi-k3";
+const KIMI: &str = "moonshotai/kimi-k3.1-pro";
 const FLASH: &str = "deepseek/deepseek-flash";
 const LUNA: &str = "openai/gpt-5.6-luna-fast";
 const SOL_FAST: &str = "chatgpt-subscription/gpt-6-sol-fast";
@@ -117,7 +117,7 @@ fn picks_the_first_rung_the_registry_can_serve_and_names_the_skipped_ones() {
     let result = resolve("daily-normal", &[KIMI, FLASH], None);
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "moonshotai");
-    assert_eq!(resolved.model_id, "kimi-k3");
+    assert_eq!(resolved.model_id, "kimi-k3.1-pro");
     assert_eq!(resolved.reasoning, Some("max"));
     assert_eq!(resolved.skipped, [OPUS_SUBSCRIPTION.to_owned()]);
     assert_eq!(profile_of(&result).id, "daily-normal");
@@ -223,7 +223,7 @@ fn reports_an_empty_registry_as_unavailable_and_lists_the_chain() {
     let result = resolve("daily-normal", &[], None);
     assert_eq!(
         chain_of(&result),
-        [OPUS_SUBSCRIPTION.to_owned(), "kimi-coding/kimi-k3".to_owned(), "zai/glm-5.3".to_owned()]
+        [OPUS_SUBSCRIPTION.to_owned(), "kimi-coding/kimi-k3.1-pro".to_owned(), "zai/glm-5.3".to_owned()]
     );
 }
 
