@@ -942,3 +942,158 @@ async fn real_http_manager_deduplicates_lists_pages_and_reconnects_after_reload(
     server.abort();
     assert!(server.await.expect_err("aborted").is_cancelled());
 }
+
+// abort-signal.test.ts (#3364): a cancelled prompt must stop its in-flight MCP call, not only stop
+// waiting for it. "sse" opens the event stream and leaves it open, "pending" never sends headers.
+async fn start_hanging_server(
+    mode: &'static str,
+) -> (
+    std::net::SocketAddr,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let address = listener.local_addr().expect("address");
+    let (received_tx, received_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (closed_tx, closed_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let received_tx = received_tx.clone();
+            let closed_tx = closed_tx.clone();
+            tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                let header_end = loop {
+                    let mut chunk = [0u8; 1024];
+                    let Ok(read) = stream.read(&mut chunk).await else {
+                        return;
+                    };
+                    if read == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&chunk[..read]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+                if !headers.starts_with("POST ") {
+                    let _ = stream.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                    return;
+                }
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':')
+                            .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                while bytes.len() < header_end + length {
+                    let mut chunk = [0u8; 1024];
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let request: serde_json::Value =
+                    serde_json::from_slice(&bytes[header_end..header_end + length])
+                        .expect("request JSON");
+                if request.get("id").is_none() || request["method"] != "tools/call" {
+                    let body = match request["method"].as_str() {
+                        Some("initialize") => json!({"jsonrpc":"2.0","id":request["id"],"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"hanging","version":"1"}}}).to_string(),
+                        _ if request.get("id").is_none() => String::new(),
+                        _ => json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Method not found"}}).to_string(),
+                    };
+                    let status = if body.is_empty() {
+                        "202 Accepted"
+                    } else {
+                        "200 OK"
+                    };
+                    let _ = stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
+                    return;
+                }
+                let _ = received_tx.send(());
+                if mode == "sse" {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n8\r\n: open\n\n\r\n").await;
+                }
+                // The client cancellation closes this socket; read returns 0 (or errors) then.
+                let mut byte = [0u8; 64];
+                loop {
+                    match stream.read(&mut byte).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                let _ = closed_tx.send(());
+            });
+        }
+    });
+    (address, received_rx, closed_rx)
+}
+
+async fn abort_hanging_call(
+    mode: &'static str,
+) -> (String, tokio::sync::mpsc::UnboundedReceiver<()>) {
+    let (address, mut received, closed) = start_hanging_server(mode).await;
+    let root = tempfile::tempdir().expect("root");
+    let manager = SkillMcpManager::new(Some(root.path()), None, None);
+    let info = SkillMcpClientInfo {
+        session_id: format!("abort-{mode}"),
+        skill_name: "test".into(),
+        server_name: "hanging".into(),
+        scope: Some("user".into()),
+        ..Default::default()
+    };
+    let context = SkillMcpServerContext {
+        config: json!({"url":format!("http://{address}/mcp")}),
+        skill_name: "test".into(),
+    };
+    let signal = maho_ext_api::AbortSignal::default();
+    let options = SkillMcpClientOptions {
+        signal: Some(signal.clone()),
+        ..Default::default()
+    };
+    let abort_after_receipt = async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+            .await
+            .expect("the server to receive tools/call")
+            .expect("received signal");
+        signal.abort();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(7), async {
+        tokio::join!(
+            manager.call_tool(&info, &context, "never_answers", json!({}), Some(&options)),
+            abort_after_receipt
+        )
+    })
+    .await
+    .expect("the tool call to reject after abort");
+    let error = result.expect_err("the hanging call resolved");
+    manager.disconnect_all().await;
+    (error, closed)
+}
+
+#[tokio::test]
+async fn aborting_the_caller_signal_rejects_an_in_flight_skill_mcp_tool_call_with_the_abort_reason()
+{
+    let (error, _closed) = abort_hanging_call("sse").await;
+    assert_eq!(error, SKILL_MCP_ABORTED_MESSAGE);
+}
+
+#[tokio::test]
+async fn aborting_the_caller_signal_closes_the_in_flight_http_request_so_the_server_sees_the_disconnect()
+ {
+    for mode in ["sse", "pending"] {
+        let (_error, mut closed) = abort_hanging_call(mode).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), closed.recv())
+            .await
+            .unwrap_or_else(|_| panic!("the server to see the {mode} request disconnect"))
+            .expect("closed signal");
+    }
+}

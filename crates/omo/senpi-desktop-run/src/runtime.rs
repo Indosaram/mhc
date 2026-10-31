@@ -1,21 +1,24 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_codemode::kernels::js::context_manager::JavaScriptKernel;
 use maho_codemode::kernels::shared::subprocess_contract::KernelRunInput;
 use senpi_desktop_protocol::{
-    AuditEvent, AuditRecord, AuditStatus, ComputerRunOk, ComputerSessionSnapshot, ErrorCode,
+    AuditCode, AuditEvent, AuditRecord, AuditStatus, ComputerRunOk, ComputerSessionSnapshot,
+    ErrorCode,
 };
 use senpi_desktop_service::rpc_client::{CallOptions, DesktopError};
 use senpi_desktop_service::service::DesktopService;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::context::{ComputerRunError, ComputerRunErrorReason, DesktopRunError, EngineCall, RunContext, RunScope};
+use crate::context::{
+    ComputerRunError, ComputerRunErrorReason, DesktopRunError, EngineCall, RunContext, RunScope,
+};
 use crate::facade::DesktopFacade;
 
 pub type ExecuteTool = Arc<
@@ -23,7 +26,8 @@ pub type ExecuteTool = Arc<
             String,
             Value,
             AbortSignal,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -42,10 +46,10 @@ pub struct ComputerRunHost {
 }
 
 fn audit_record(event: AuditEvent, session_id: &str, run_id: &str) -> AuditRecord {
-    let code: Option<ErrorCode> = event.code;
+    let code: Option<AuditCode> = event.code;
     let status = match code {
         None => AuditStatus::Success,
-        Some(ErrorCode::Suspended) => AuditStatus::Suspended,
+        Some(AuditCode::Known(ErrorCode::Suspended)) => AuditStatus::Suspended,
         Some(_) => AuditStatus::Error,
     };
     AuditRecord {
@@ -81,7 +85,8 @@ pub async fn run_computer_code(
     let context = RunContext::new(snapshot.clone());
 
     if let Some(signal) = &request.signal
-        && signal.aborted() {
+        && signal.aborted()
+    {
         return Err(ComputerRunError::aborted().into());
     }
 
@@ -91,14 +96,11 @@ pub async fn run_computer_code(
         Some(k) => (k, false),
         None => {
             let cwd = std::path::PathBuf::from(&snapshot.cwd);
-            let k = JavaScriptKernel::start(
-                &cwd,
-                &format!("desktop-run-{run_id}"),
-                1,
-                None,
-            )
-            .await
-            .map_err(|e| ComputerRunError::new(ComputerRunErrorReason::Window, e.to_string()))?;
+            let k = JavaScriptKernel::start(&cwd, &format!("desktop-run-{run_id}"), 1, None)
+                .await
+                .map_err(|e| {
+                    ComputerRunError::new(ComputerRunErrorReason::Window, e.to_string())
+                })?;
             (Arc::new(k), true)
         }
     };
@@ -110,7 +112,10 @@ pub async fn run_computer_code(
 
     let sub = host.service.on_audit(move |event| {
         let rec = audit_record(event, &session_id_str, &run_id_str);
-        audit_sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(rec);
+        audit_sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(rec);
     });
 
     let (cancel_broadcast, _) = broadcast::channel::<()>(16);
@@ -168,7 +173,8 @@ pub async fn run_computer_code(
     let kernel_for_pump = kernel.clone();
     let context_for_pump = context.clone();
 
-    let call_error: Arc<Mutex<HashMap<String, DesktopError>>> = Arc::new(Mutex::new(HashMap::new()));
+    let call_error: Arc<Mutex<HashMap<String, DesktopError>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let call_error_pump = Arc::clone(&call_error);
 
     let mut in_flight_tasks = tokio::task::JoinSet::new();
@@ -571,7 +577,9 @@ return await (async () => {{
         tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
         run_timed_out_clone.store(true, Ordering::SeqCst);
         let _ = cancel_tx_timeout.send(());
-        let _ = kernel_run.interrupt("timeout", Some(&run_id_interrupt)).await;
+        let _ = kernel_run
+            .interrupt("timeout", Some(&run_id_interrupt))
+            .await;
     });
 
     let (msg_sender, mut msg_receiver) = tokio::sync::mpsc::unbounded_channel::<Value>();
@@ -614,7 +622,8 @@ return await (async () => {{
             }
         } else if msg_type == "display" {
             let mime = msg.get("mimeType").and_then(|v| v.as_str()).unwrap_or("");
-            let data = msg.get("dataBase64")
+            let data = msg
+                .get("dataBase64")
                 .or_else(|| msg.get("data"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
@@ -665,7 +674,10 @@ return await (async () => {{
 
                 let displays = context.output.finish().await;
                 let screenshots = context.screenshots.lock().await.clone();
-                let audit_events = audit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                let audit_events = audit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
 
                 Ok(ComputerRunOk {
                     displays,
@@ -678,13 +690,18 @@ return await (async () => {{
                 let err_obj = &val["error"];
 
                 if let Some(code) = err_obj.get("code").and_then(Value::as_str)
-                    && let Some(typed_err) = call_error.lock().await.remove(code) {
+                    && let Some(typed_err) = call_error.lock().await.remove(code)
+                {
                     return Err(DesktopRunError::Engine(typed_err));
                 }
 
                 let err_name = err_obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let err_code = err_obj.get("code").and_then(|v| v.as_str()).unwrap_or("");
-                let err_msg = err_obj.get("message").and_then(|v| v.as_str()).unwrap_or("unknown error").to_string();
+                let err_msg = err_obj
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error")
+                    .to_string();
 
                 if err_name == "ComputerRunError" {
                     let reason = match err_code {
@@ -703,5 +720,45 @@ return await (async () => {{
             let err_str = e.to_string();
             Err(ComputerRunError::new(ComputerRunErrorReason::Window, err_str).into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(code: Option<AuditCode>) -> AuditEvent {
+        AuditEvent {
+            action: "click".to_string(),
+            target: "window".to_string(),
+            delivery: "background".to_string(),
+            frame_id: None,
+            code,
+            duration_ms: 3,
+            focus_restored: None,
+            text_length: None,
+            text_delivered: None,
+            text_sha256: None,
+            keys: None,
+        }
+    }
+
+    #[test]
+    fn audit_record_status_follows_the_audit_code() {
+        let ok = audit_record(event(None), "s", "r");
+        assert_eq!(ok.status, AuditStatus::Success);
+        assert_eq!(ok.code, None);
+
+        let suspended = audit_record(
+            event(Some(AuditCode::Known(ErrorCode::Suspended))),
+            "s",
+            "r",
+        );
+        assert_eq!(suspended.status, AuditStatus::Suspended);
+        assert_eq!(suspended.code, Some(AuditCode::Known(ErrorCode::Suspended)));
+
+        let unknown = audit_record(event(Some(AuditCode::UNKNOWN)), "s", "r");
+        assert_eq!(unknown.status, AuditStatus::Error);
+        assert_eq!(unknown.code, Some(AuditCode::UNKNOWN));
     }
 }

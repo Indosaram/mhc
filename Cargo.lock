@@ -3575,10 +3575,12 @@ name = "maho-boulder-state"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "hex",
  "jiff",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
@@ -6349,6 +6351,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "url",
+ "uuid",
 ]
 
 [[package]]

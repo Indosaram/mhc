@@ -2,10 +2,9 @@
 
 use serde_json::json;
 
+use crate::pane_auth::build_pane_auth_environment_args_from;
 use crate::tmux_utils::deps::{ActivateTmuxPaneDeps, strings};
-use crate::tmux_utils::pane_command::{
-    build_pane_auth_environment_args_from, build_tmux_attach_command,
-};
+use crate::tmux_utils::pane_command::build_tmux_attach_command_from;
 
 #[derive(Debug, Clone)]
 pub struct ActivateTmuxPaneRequest<'a> {
@@ -25,7 +24,17 @@ pub fn activate_tmux_pane(
         return false;
     }
 
-    let auth_env_args = build_pane_auth_environment_args_from(&*deps.environment);
+    let auth_env_args =
+        match build_pane_auth_environment_args_from(&*deps.environment, &deps.pane_auth) {
+            Ok(args) => args,
+            Err(error) => {
+                deps.log(
+                    "[activateTmuxPane] FAILED: could not write the pane password file",
+                    Some(json!({ "error": error.to_string() })),
+                );
+                return false;
+            }
+        };
     if deps.cmux_compat() && !auth_env_args.is_empty() {
         deps.log(
             "[activateTmuxPane] SKIP: authenticated cmux panes are unsupported",
@@ -39,10 +48,11 @@ pub fn activate_tmux_pane(
         return false;
     };
 
-    let opencode_cmd = build_tmux_attach_command(
+    let opencode_cmd = build_tmux_attach_command_from(
         request.server_url,
         request.session_id,
         Some(request.directory),
+        &*deps.environment,
     );
     let mut args = strings(&["respawn-pane", "-k"]);
     args.extend(auth_env_args);

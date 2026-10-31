@@ -17,6 +17,7 @@ fn keeps_luna_fast_aligned_with_its_bundled_canonical_model() {
         "gpt-6-sol-fast",
         "gpt-6.1-sol",
         "gpt-6.1-sol-fast",
+        "kimi-k3.1-pro",
     ] {
         let issues =
             collect_model_capability_guardrail_issues(CollectModelCapabilityGuardrailIssuesInput {
@@ -47,6 +48,7 @@ fn requires_built_in_requirement_models_to_stay_unique_and_sorted() {
     assert!(!model_ids.iter().any(|id| id == "gpt-5.5"));
     assert!(model_ids.iter().any(|id| id == "gpt-5.6-sol"));
     assert!(model_ids.iter().any(|id| id == "kimi-k3"));
+    assert!(model_ids.iter().any(|id| id == "kimi-k3.1-pro"));
 }
 
 #[test]

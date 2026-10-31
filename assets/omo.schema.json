@@ -5,6 +5,42 @@
   "description": "Configuration schema for the omo.json / omo.jsonc harness-neutral config surface",
   "type": "object",
   "properties": {
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "git_owners": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "side_panel": {
       "type": "object",
       "properties": {
@@ -897,7 +933,7 @@
         },
         "include_co_authored_by": {
           "type": "boolean",
-          "default": false
+          "default": true
         },
         "git_env_prefix": {
           "type": "string",
@@ -1392,6 +1428,9 @@
           "display_name": {
             "type": "string"
           },
+          "caution": {
+            "type": "string"
+          },
           "family": {
             "enum": [
               "daily",
@@ -1516,9 +1555,6 @@
                 }
               ]
             }
-          },
-          "caution": {
-            "type": "string"
           }
         },
         "additionalProperties": false
@@ -1526,6 +1562,30 @@
     },
     "model_profile": {
       "type": "string"
+    },
+    "model_pad": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "object",
+          "properties": {
+            "daily": {
+              "type": "string"
+            },
+            "geeky": {
+              "type": "string"
+            },
+            "normal": {
+              "type": "string"
+            },
+            "heavy": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "memory": {
       "type": "object",
@@ -1539,25 +1599,32 @@
           "minLength": 1,
           "default": "auto"
         },
+        "auto_identity": {
+          "enum": [
+            "path",
+            "git"
+          ],
+          "default": "path"
+        },
         "projection": {
           "type": "object",
           "properties": {
             "max_entries_per_directory": {
               "type": "integer",
               "minimum": 0,
-              "default": 40
+              "default": 0
             },
             "max_bytes": {
               "type": "integer",
               "minimum": 0,
-              "default": 24576
+              "default": 40960
             }
           },
           "required": [],
           "additionalProperties": false,
           "default": {
-            "max_entries_per_directory": 40,
-            "max_bytes": 24576
+            "max_entries_per_directory": 0,
+            "max_bytes": 40960
           }
         },
         "reflection": {
@@ -1604,6 +1671,11 @@
               "exclusiveMinimum": 0,
               "default": 15
             },
+            "max_concurrent_runs": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 1
+            },
             "sandbox": {
               "enum": [
                 "auto",
@@ -1611,12 +1683,6 @@
                 "off"
               ],
               "default": "auto"
-            },
-            "max_concurrent_runs": {
-              "default": 1,
-              "type": "integer",
-              "exclusiveMinimum": 0,
-              "maximum": 9007199254740991
             }
           },
           "required": [],
@@ -1630,8 +1696,8 @@
             "merge": "auto",
             "category": "quick",
             "timeout_minutes": 15,
-            "sandbox": "auto",
-            "max_concurrent_runs": 1
+            "max_concurrent_runs": 1,
+            "sandbox": "auto"
           }
         },
         "nudge": {
@@ -1927,6 +1993,25 @@
             "query_expansion": false
           }
         },
+        "project_scope": {
+          "type": "object",
+          "properties": {
+            "nudge": {
+              "type": "boolean",
+              "default": true
+            },
+            "recall": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [],
+          "additionalProperties": false,
+          "default": {
+            "nudge": true,
+            "recall": true
+          }
+        },
         "compile_warn_tokens": {
           "type": "integer",
           "exclusiveMinimum": 0,
@@ -2201,32 +2286,6 @@
             "additionalProperties": false
           },
           "default": {}
-        },
-        "auto_identity": {
-          "default": "path",
-          "type": "string",
-          "enum": [
-            "path",
-            "git"
-          ]
-        },
-        "project_scope": {
-          "default": {
-            "nudge": true,
-            "recall": true
-          },
-          "type": "object",
-          "properties": {
-            "nudge": {
-              "default": true,
-              "type": "boolean"
-            },
-            "recall": {
-              "default": true,
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false
         }
       },
       "required": [],
@@ -2325,6 +2384,12 @@
         "type": "string"
       }
     },
+    "exclude_models": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "[opencode]": {
       "type": "object",
       "additionalProperties": {}
@@ -2332,6 +2397,42 @@
     "[native]": {
       "type": "object",
       "properties": {
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "workspaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "git_owners": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "side_panel": {
           "type": "object",
           "properties": {
@@ -3619,6 +3720,9 @@
               "display_name": {
                 "type": "string"
               },
+              "caution": {
+                "type": "string"
+              },
               "family": {
                 "enum": [
                   "daily",
@@ -3743,9 +3847,6 @@
                     }
                   ]
                 }
-              },
-              "caution": {
-                "type": "string"
               }
             },
             "additionalProperties": false
@@ -3753,6 +3854,30 @@
         },
         "model_profile": {
           "type": "string"
+        },
+        "model_pad": {
+          "type": "object",
+          "properties": {
+            "labels": {
+              "type": "object",
+              "properties": {
+                "daily": {
+                  "type": "string"
+                },
+                "geeky": {
+                  "type": "string"
+                },
+                "normal": {
+                  "type": "string"
+                },
+                "heavy": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         },
         "memory": {
           "type": "object",
@@ -3763,6 +3888,12 @@
             "agent": {
               "type": "string",
               "minLength": 1
+            },
+            "auto_identity": {
+              "enum": [
+                "path",
+                "git"
+              ]
             },
             "projection": {
               "type": "object",
@@ -3811,17 +3942,16 @@
                   "type": "integer",
                   "exclusiveMinimum": 0
                 },
+                "max_concurrent_runs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
                 "sandbox": {
                   "enum": [
                     "auto",
                     "required",
                     "off"
                   ]
-                },
-                "max_concurrent_runs": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -4013,6 +4143,18 @@
                   "exclusiveMinimum": 0
                 },
                 "query_expansion": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "project_scope": {
+              "type": "object",
+              "properties": {
+                "nudge": {
+                  "type": "boolean"
+                },
+                "recall": {
                   "type": "boolean"
                 }
               },
@@ -4290,25 +4432,6 @@
                 },
                 "additionalProperties": false
               }
-            },
-            "auto_identity": {
-              "type": "string",
-              "enum": [
-                "path",
-                "git"
-              ]
-            },
-            "project_scope": {
-              "type": "object",
-              "properties": {
-                "nudge": {
-                  "type": "boolean"
-                },
-                "recall": {
-                  "type": "boolean"
-                }
-              },
-              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -4403,45 +4526,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "provenance": {
-          "type": "object",
-          "properties": {
-            "workspaces": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": "\\S"
-                  },
-                  "git_owners": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    }
-                  },
-                  "paths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    }
-                  }
-                },
-                "required": [
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "additionalProperties": false
         },
         "exclude_models": {
           "type": "array",
@@ -4455,6 +4539,42 @@
     "[senpi]": {
       "type": "object",
       "properties": {
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "workspaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "git_owners": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "side_panel": {
           "type": "object",
           "properties": {
@@ -5742,6 +5862,9 @@
               "display_name": {
                 "type": "string"
               },
+              "caution": {
+                "type": "string"
+              },
               "family": {
                 "enum": [
                   "daily",
@@ -5866,9 +5989,6 @@
                     }
                   ]
                 }
-              },
-              "caution": {
-                "type": "string"
               }
             },
             "additionalProperties": false
@@ -5876,6 +5996,30 @@
         },
         "model_profile": {
           "type": "string"
+        },
+        "model_pad": {
+          "type": "object",
+          "properties": {
+            "labels": {
+              "type": "object",
+              "properties": {
+                "daily": {
+                  "type": "string"
+                },
+                "geeky": {
+                  "type": "string"
+                },
+                "normal": {
+                  "type": "string"
+                },
+                "heavy": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         },
         "memory": {
           "type": "object",
@@ -5886,6 +6030,12 @@
             "agent": {
               "type": "string",
               "minLength": 1
+            },
+            "auto_identity": {
+              "enum": [
+                "path",
+                "git"
+              ]
             },
             "projection": {
               "type": "object",
@@ -5934,17 +6084,16 @@
                   "type": "integer",
                   "exclusiveMinimum": 0
                 },
+                "max_concurrent_runs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
                 "sandbox": {
                   "enum": [
                     "auto",
                     "required",
                     "off"
                   ]
-                },
-                "max_concurrent_runs": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -6136,6 +6285,18 @@
                   "exclusiveMinimum": 0
                 },
                 "query_expansion": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "project_scope": {
+              "type": "object",
+              "properties": {
+                "nudge": {
+                  "type": "boolean"
+                },
+                "recall": {
                   "type": "boolean"
                 }
               },
@@ -6413,25 +6574,6 @@
                 },
                 "additionalProperties": false
               }
-            },
-            "auto_identity": {
-              "type": "string",
-              "enum": [
-                "path",
-                "git"
-              ]
-            },
-            "project_scope": {
-              "type": "object",
-              "properties": {
-                "nudge": {
-                  "type": "boolean"
-                },
-                "recall": {
-                  "type": "boolean"
-                }
-              },
-              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -6526,45 +6668,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "provenance": {
-          "type": "object",
-          "properties": {
-            "workspaces": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": "\\S"
-                  },
-                  "git_owners": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    }
-                  },
-                  "paths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    }
-                  }
-                },
-                "required": [
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "additionalProperties": false
         },
         "exclude_models": {
           "type": "array",
@@ -6578,6 +6681,42 @@
     "[codex]": {
       "type": "object",
       "properties": {
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "workspaces": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "git_owners": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "side_panel": {
           "type": "object",
           "properties": {
@@ -7865,6 +8004,9 @@
               "display_name": {
                 "type": "string"
               },
+              "caution": {
+                "type": "string"
+              },
               "family": {
                 "enum": [
                   "daily",
@@ -7989,9 +8131,6 @@
                     }
                   ]
                 }
-              },
-              "caution": {
-                "type": "string"
               }
             },
             "additionalProperties": false
@@ -7999,6 +8138,30 @@
         },
         "model_profile": {
           "type": "string"
+        },
+        "model_pad": {
+          "type": "object",
+          "properties": {
+            "labels": {
+              "type": "object",
+              "properties": {
+                "daily": {
+                  "type": "string"
+                },
+                "geeky": {
+                  "type": "string"
+                },
+                "normal": {
+                  "type": "string"
+                },
+                "heavy": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         },
         "memory": {
           "type": "object",
@@ -8009,6 +8172,12 @@
             "agent": {
               "type": "string",
               "minLength": 1
+            },
+            "auto_identity": {
+              "enum": [
+                "path",
+                "git"
+              ]
             },
             "projection": {
               "type": "object",
@@ -8057,17 +8226,16 @@
                   "type": "integer",
                   "exclusiveMinimum": 0
                 },
+                "max_concurrent_runs": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
                 "sandbox": {
                   "enum": [
                     "auto",
                     "required",
                     "off"
                   ]
-                },
-                "max_concurrent_runs": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -8259,6 +8427,18 @@
                   "exclusiveMinimum": 0
                 },
                 "query_expansion": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "project_scope": {
+              "type": "object",
+              "properties": {
+                "nudge": {
+                  "type": "boolean"
+                },
+                "recall": {
                   "type": "boolean"
                 }
               },
@@ -8536,25 +8716,6 @@
                 },
                 "additionalProperties": false
               }
-            },
-            "auto_identity": {
-              "type": "string",
-              "enum": [
-                "path",
-                "git"
-              ]
-            },
-            "project_scope": {
-              "type": "object",
-              "properties": {
-                "nudge": {
-                  "type": "boolean"
-                },
-                "recall": {
-                  "type": "boolean"
-                }
-              },
-              "additionalProperties": false
             }
           },
           "additionalProperties": false
@@ -8649,45 +8810,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "provenance": {
-          "type": "object",
-          "properties": {
-            "workspaces": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": "\\S"
-                  },
-                  "git_owners": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    }
-                  },
-                  "paths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    }
-                  }
-                },
-                "required": [
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          },
-          "additionalProperties": false
         },
         "exclude_models": {
           "type": "array",
@@ -8703,6 +8825,42 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "workspaces": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "git_owners": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
           "side_panel": {
             "type": "object",
             "properties": {
@@ -9990,6 +10148,9 @@
                 "display_name": {
                   "type": "string"
                 },
+                "caution": {
+                  "type": "string"
+                },
                 "family": {
                   "enum": [
                     "daily",
@@ -10114,9 +10275,6 @@
                       }
                     ]
                   }
-                },
-                "caution": {
-                  "type": "string"
                 }
               },
               "additionalProperties": false
@@ -10124,6 +10282,30 @@
           },
           "model_profile": {
             "type": "string"
+          },
+          "model_pad": {
+            "type": "object",
+            "properties": {
+              "labels": {
+                "type": "object",
+                "properties": {
+                  "daily": {
+                    "type": "string"
+                  },
+                  "geeky": {
+                    "type": "string"
+                  },
+                  "normal": {
+                    "type": "string"
+                  },
+                  "heavy": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
           },
           "memory": {
             "type": "object",
@@ -10134,6 +10316,12 @@
               "agent": {
                 "type": "string",
                 "minLength": 1
+              },
+              "auto_identity": {
+                "enum": [
+                  "path",
+                  "git"
+                ]
               },
               "projection": {
                 "type": "object",
@@ -10182,17 +10370,16 @@
                     "type": "integer",
                     "exclusiveMinimum": 0
                   },
+                  "max_concurrent_runs": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
                   "sandbox": {
                     "enum": [
                       "auto",
                       "required",
                       "off"
                     ]
-                  },
-                  "max_concurrent_runs": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
                   }
                 },
                 "additionalProperties": false
@@ -10384,6 +10571,18 @@
                     "exclusiveMinimum": 0
                   },
                   "query_expansion": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "project_scope": {
+                "type": "object",
+                "properties": {
+                  "nudge": {
+                    "type": "boolean"
+                  },
+                  "recall": {
                     "type": "boolean"
                   }
                 },
@@ -10661,25 +10860,6 @@
                   },
                   "additionalProperties": false
                 }
-              },
-              "auto_identity": {
-                "type": "string",
-                "enum": [
-                  "path",
-                  "git"
-                ]
-              },
-              "project_scope": {
-                "type": "object",
-                "properties": {
-                  "nudge": {
-                    "type": "boolean"
-                  },
-                  "recall": {
-                    "type": "boolean"
-                  }
-                },
-                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -10775,6 +10955,12 @@
               "type": "string"
             }
           },
+          "exclude_models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "[opencode]": {
             "type": "object",
             "additionalProperties": {}
@@ -10782,6 +10968,42 @@
           "[native]": {
             "type": "object",
             "properties": {
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "workspaces": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "git_owners": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
               "side_panel": {
                 "type": "object",
                 "properties": {
@@ -12069,6 +12291,9 @@
                     "display_name": {
                       "type": "string"
                     },
+                    "caution": {
+                      "type": "string"
+                    },
                     "family": {
                       "enum": [
                         "daily",
@@ -12193,9 +12418,6 @@
                           }
                         ]
                       }
-                    },
-                    "caution": {
-                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -12203,6 +12425,30 @@
               },
               "model_profile": {
                 "type": "string"
+              },
+              "model_pad": {
+                "type": "object",
+                "properties": {
+                  "labels": {
+                    "type": "object",
+                    "properties": {
+                      "daily": {
+                        "type": "string"
+                      },
+                      "geeky": {
+                        "type": "string"
+                      },
+                      "normal": {
+                        "type": "string"
+                      },
+                      "heavy": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
               },
               "memory": {
                 "type": "object",
@@ -12213,6 +12459,12 @@
                   "agent": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "auto_identity": {
+                    "enum": [
+                      "path",
+                      "git"
+                    ]
                   },
                   "projection": {
                     "type": "object",
@@ -12261,17 +12513,16 @@
                         "type": "integer",
                         "exclusiveMinimum": 0
                       },
+                      "max_concurrent_runs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      },
                       "sandbox": {
                         "enum": [
                           "auto",
                           "required",
                           "off"
                         ]
-                      },
-                      "max_concurrent_runs": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
                       }
                     },
                     "additionalProperties": false
@@ -12463,6 +12714,18 @@
                         "exclusiveMinimum": 0
                       },
                       "query_expansion": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "project_scope": {
+                    "type": "object",
+                    "properties": {
+                      "nudge": {
+                        "type": "boolean"
+                      },
+                      "recall": {
                         "type": "boolean"
                       }
                     },
@@ -12740,25 +13003,6 @@
                       },
                       "additionalProperties": false
                     }
-                  },
-                  "auto_identity": {
-                    "type": "string",
-                    "enum": [
-                      "path",
-                      "git"
-                    ]
-                  },
-                  "project_scope": {
-                    "type": "object",
-                    "properties": {
-                      "nudge": {
-                        "type": "boolean"
-                      },
-                      "recall": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -12853,45 +13097,6 @@
                 "items": {
                   "type": "string"
                 }
-              },
-              "provenance": {
-                "type": "object",
-                "properties": {
-                  "workspaces": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "minLength": 1,
-                          "pattern": "\\S"
-                        },
-                        "git_owners": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "pattern": "\\S"
-                          }
-                        },
-                        "paths": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "pattern": "\\S"
-                          }
-                        }
-                      },
-                      "required": [
-                        "name"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "additionalProperties": false
               },
               "exclude_models": {
                 "type": "array",
@@ -12905,6 +13110,42 @@
           "[senpi]": {
             "type": "object",
             "properties": {
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "workspaces": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "git_owners": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
               "side_panel": {
                 "type": "object",
                 "properties": {
@@ -14192,6 +14433,9 @@
                     "display_name": {
                       "type": "string"
                     },
+                    "caution": {
+                      "type": "string"
+                    },
                     "family": {
                       "enum": [
                         "daily",
@@ -14316,9 +14560,6 @@
                           }
                         ]
                       }
-                    },
-                    "caution": {
-                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -14326,6 +14567,30 @@
               },
               "model_profile": {
                 "type": "string"
+              },
+              "model_pad": {
+                "type": "object",
+                "properties": {
+                  "labels": {
+                    "type": "object",
+                    "properties": {
+                      "daily": {
+                        "type": "string"
+                      },
+                      "geeky": {
+                        "type": "string"
+                      },
+                      "normal": {
+                        "type": "string"
+                      },
+                      "heavy": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
               },
               "memory": {
                 "type": "object",
@@ -14336,6 +14601,12 @@
                   "agent": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "auto_identity": {
+                    "enum": [
+                      "path",
+                      "git"
+                    ]
                   },
                   "projection": {
                     "type": "object",
@@ -14384,17 +14655,16 @@
                         "type": "integer",
                         "exclusiveMinimum": 0
                       },
+                      "max_concurrent_runs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      },
                       "sandbox": {
                         "enum": [
                           "auto",
                           "required",
                           "off"
                         ]
-                      },
-                      "max_concurrent_runs": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
                       }
                     },
                     "additionalProperties": false
@@ -14586,6 +14856,18 @@
                         "exclusiveMinimum": 0
                       },
                       "query_expansion": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "project_scope": {
+                    "type": "object",
+                    "properties": {
+                      "nudge": {
+                        "type": "boolean"
+                      },
+                      "recall": {
                         "type": "boolean"
                       }
                     },
@@ -14863,25 +15145,6 @@
                       },
                       "additionalProperties": false
                     }
-                  },
-                  "auto_identity": {
-                    "type": "string",
-                    "enum": [
-                      "path",
-                      "git"
-                    ]
-                  },
-                  "project_scope": {
-                    "type": "object",
-                    "properties": {
-                      "nudge": {
-                        "type": "boolean"
-                      },
-                      "recall": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -14976,45 +15239,6 @@
                 "items": {
                   "type": "string"
                 }
-              },
-              "provenance": {
-                "type": "object",
-                "properties": {
-                  "workspaces": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "minLength": 1,
-                          "pattern": "\\S"
-                        },
-                        "git_owners": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "pattern": "\\S"
-                          }
-                        },
-                        "paths": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "pattern": "\\S"
-                          }
-                        }
-                      },
-                      "required": [
-                        "name"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "additionalProperties": false
               },
               "exclude_models": {
                 "type": "array",
@@ -15028,6 +15252,42 @@
           "[codex]": {
             "type": "object",
             "properties": {
+              "provenance": {
+                "type": "object",
+                "properties": {
+                  "workspaces": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "git_owners": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "paths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
               "side_panel": {
                 "type": "object",
                 "properties": {
@@ -16315,6 +16575,9 @@
                     "display_name": {
                       "type": "string"
                     },
+                    "caution": {
+                      "type": "string"
+                    },
                     "family": {
                       "enum": [
                         "daily",
@@ -16439,9 +16702,6 @@
                           }
                         ]
                       }
-                    },
-                    "caution": {
-                      "type": "string"
                     }
                   },
                   "additionalProperties": false
@@ -16449,6 +16709,30 @@
               },
               "model_profile": {
                 "type": "string"
+              },
+              "model_pad": {
+                "type": "object",
+                "properties": {
+                  "labels": {
+                    "type": "object",
+                    "properties": {
+                      "daily": {
+                        "type": "string"
+                      },
+                      "geeky": {
+                        "type": "string"
+                      },
+                      "normal": {
+                        "type": "string"
+                      },
+                      "heavy": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
               },
               "memory": {
                 "type": "object",
@@ -16459,6 +16743,12 @@
                   "agent": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "auto_identity": {
+                    "enum": [
+                      "path",
+                      "git"
+                    ]
                   },
                   "projection": {
                     "type": "object",
@@ -16507,17 +16797,16 @@
                         "type": "integer",
                         "exclusiveMinimum": 0
                       },
+                      "max_concurrent_runs": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0
+                      },
                       "sandbox": {
                         "enum": [
                           "auto",
                           "required",
                           "off"
                         ]
-                      },
-                      "max_concurrent_runs": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
                       }
                     },
                     "additionalProperties": false
@@ -16709,6 +16998,18 @@
                         "exclusiveMinimum": 0
                       },
                       "query_expansion": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "project_scope": {
+                    "type": "object",
+                    "properties": {
+                      "nudge": {
+                        "type": "boolean"
+                      },
+                      "recall": {
                         "type": "boolean"
                       }
                     },
@@ -16986,25 +17287,6 @@
                       },
                       "additionalProperties": false
                     }
-                  },
-                  "auto_identity": {
-                    "type": "string",
-                    "enum": [
-                      "path",
-                      "git"
-                    ]
-                  },
-                  "project_scope": {
-                    "type": "object",
-                    "properties": {
-                      "nudge": {
-                        "type": "boolean"
-                      },
-                      "recall": {
-                        "type": "boolean"
-                      }
-                    },
-                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false
@@ -17100,45 +17382,6 @@
                   "type": "string"
                 }
               },
-              "provenance": {
-                "type": "object",
-                "properties": {
-                  "workspaces": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "minLength": 1,
-                          "pattern": "\\S"
-                        },
-                        "git_owners": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "pattern": "\\S"
-                          }
-                        },
-                        "paths": {
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "minLength": 1,
-                            "pattern": "\\S"
-                          }
-                        }
-                      },
-                      "required": [
-                        "name"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "additionalProperties": false
-              },
               "exclude_models": {
                 "type": "array",
                 "items": {
@@ -17147,51 +17390,6 @@
               }
             },
             "additionalProperties": false
-          },
-          "provenance": {
-            "type": "object",
-            "properties": {
-              "workspaces": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "type": "string",
-                      "minLength": 1,
-                      "pattern": "\\S"
-                    },
-                    "git_owners": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "\\S"
-                      }
-                    },
-                    "paths": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "\\S"
-                      }
-                    }
-                  },
-                  "required": [
-                    "name"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "additionalProperties": false
-          },
-          "exclude_models": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
           }
         },
         "additionalProperties": false
@@ -17207,51 +17405,6 @@
     "legacy_migrations": {
       "type": "object",
       "additionalProperties": {}
-    },
-    "provenance": {
-      "type": "object",
-      "properties": {
-        "workspaces": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1,
-                "pattern": "\\S"
-              },
-              "git_owners": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "\\S"
-                }
-              },
-              "paths": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "\\S"
-                }
-              }
-            },
-            "required": [
-              "name"
-            ],
-            "additionalProperties": false
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "exclude_models": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
     }
   },
   "required": [],

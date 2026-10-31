@@ -10,7 +10,13 @@ use std::{path::Path, sync::Arc, time::Duration};
 pub struct SkillMcpClientOptions {
     pub cdp_url: Option<String>,
     pub env: Environment,
+    /// Caller cancellation: aborting it cancels the in-flight call/read/get request (the server
+    /// gets `notifications/cancelled` and its HTTP request is dropped) and stops the retry loop.
+    pub signal: Option<maho_ext_api::AbortSignal>,
 }
+
+/// The rejection an aborted caller signal produces (DOM `AbortError` default reason).
+pub const SKILL_MCP_ABORTED_MESSAGE: &str = "AbortError: This operation was aborted";
 pub fn build_skill_mcp_client_key(
     info: &SkillMcpClientInfo,
     options: Option<&SkillMcpClientOptions>,
@@ -253,20 +259,38 @@ impl SkillMcpManager {
         method: &str,
         params: Value,
     ) -> super::Result<Value> {
+        let signal = options.and_then(|options| options.signal.as_ref());
         for attempt in 1..=3 {
             let result = async {
                 let client = self
                     .get_or_create_client_with_retry(info, config, options)
                     .await?;
-                client
-                    .request(method, params.clone(), Duration::from_secs(30))
-                    .await
-                    .map_err(|error| error.to_string())
+                match signal {
+                    Some(signal) => {
+                        client
+                            .request_with_signal(
+                                method,
+                                params.clone(),
+                                Duration::from_secs(30),
+                                signal,
+                            )
+                            .await
+                    }
+                    None => {
+                        client
+                            .request(method, params.clone(), Duration::from_secs(30))
+                            .await
+                    }
+                }
+                .map_err(|error| error.to_string())
             }
             .await;
             match result {
                 Ok(value) => return Ok(value),
                 Err(error) => {
+                    if signal.is_some_and(maho_ext_api::AbortSignal::is_aborted) {
+                        return Err(SKILL_MCP_ABORTED_MESSAGE.to_string());
+                    }
                     if !error.to_lowercase().contains("not connected") {
                         return Err(error);
                     }
