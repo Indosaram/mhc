@@ -5,7 +5,7 @@ pub mod clipboard;
 pub mod clipboard_command;
 pub mod deprecation;
 pub mod duration;
-pub mod exif_orientation;
+pub use maho_core::utils::exif_orientation;
 pub mod frontmatter;
 pub mod fs_watch;
 pub mod html;
@@ -30,3 +30,6 @@ pub use maho_core::utils::tool_result_images;
 pub mod child_process;
 pub mod piped_stdin;
 pub mod version_check;
+// ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
+pub mod zip_archive;
+pub mod process_identity;

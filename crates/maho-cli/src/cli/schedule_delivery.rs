@@ -44,7 +44,10 @@ pub struct ProcessDelivery {
 
 pub fn moved_job_paths(job: &ScheduledJob) -> ScheduledJob {
     ScheduledJob {
-        session_file: job.session_file.as_deref().map(maho_core::session_manager::resolve_moved_session_path),
+        session_file: job
+            .session_file
+            .as_deref()
+            .map(maho_core::session_manager::resolve_moved_session_path),
         cwd: maho_core::session_manager::resolve_moved_session_path(&job.cwd),
         ..job.clone()
     }
@@ -213,7 +216,9 @@ impl ProcessDelivery {
             if let Err(error) = lock.attach_delivery(pid, probes.now()) {
                 kill_tree(pid).await?;
                 child.wait().await?;
-                return Err(error);
+                return Err(ScheduleError::Invalid(format!(
+                    "could not register the delivery: {error}"
+                )));
             }
             let work = async {
                 let mut stdin = child
@@ -238,9 +243,10 @@ impl ProcessDelivery {
         };
         match tokio::time::timeout(Duration::from_millis(timeout_ms), delivery).await {
             Ok(Ok((status, _))) if status.success() => Ok(()),
-            Ok(Ok((status, tail))) => {
-                Err(ScheduleError::Invalid(format!("{status}: {}", tail.trim())))
-            }
+            Ok(Ok((status, tail))) => Err(ScheduleError::Invalid(delivery_failure(
+                exit_status_label(&status),
+                &tail,
+            ))),
             Ok(Err(error)) => {
                 kill_tree(pid).await?;
                 child.wait().await?;
@@ -261,6 +267,34 @@ impl ProcessDelivery {
         }
     }
 }
+/// senpi's failed-delivery status: `exit code N` or `signal SIG`.
+fn exit_status_label(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return match nix::sys::signal::Signal::try_from(signal) {
+                Ok(signal) => format!("signal {}", signal.as_str()),
+                Err(_) => format!("signal {signal}"),
+            };
+        }
+    }
+    status.to_string()
+}
+
+/// senpi `runDeliveryProcess` close handler: the status, then the trimmed stderr tail when any.
+fn delivery_failure(status: String, stderr_tail: &str) -> String {
+    let tail = stderr_tail.trim();
+    if tail.is_empty() {
+        status
+    } else {
+        format!("{status}: {tail}")
+    }
+}
+
 async fn kill_tree(pid: u32) -> Result<()> {
     #[cfg(unix)]
     {
@@ -285,4 +319,32 @@ async fn kill_tree(pid: u32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod delivery_failure_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_delivery_reports_the_status_and_only_a_non_empty_stderr_tail() {
+        assert_eq!(
+            delivery_failure("exit code 3".into(), "  boom\n"),
+            "exit code 3: boom"
+        );
+        assert_eq!(delivery_failure("exit code 3".into(), " \n"), "exit code 3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_statuses_use_the_upstream_labels() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            exit_status_label(&std::process::ExitStatus::from_raw(3 << 8)),
+            "exit code 3"
+        );
+        assert_eq!(
+            exit_status_label(&std::process::ExitStatus::from_raw(9)),
+            "signal SIGKILL"
+        );
+    }
 }

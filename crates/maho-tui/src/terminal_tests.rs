@@ -121,19 +121,63 @@ fn err(message: &str) -> TerminalError {
     TerminalError::new(message)
 }
 
+// ---- terminal.test.ts: resolveBurstWindowMs ----
+
+#[test]
+fn uses_pi_tui_burst_window_ms_when_configured_including_0_to_never_hold() {
+    assert_eq!(
+        resolve_burst_window_ms(&env_from(&[("PI_TUI_BURST_WINDOW_MS", "80")])),
+        80.0
+    );
+    assert_eq!(
+        resolve_burst_window_ms(&env_from(&[
+            ("PI_TUI_BURST_WINDOW_MS", "80"),
+            ("SSH_TTY", "/dev/pts/1")
+        ])),
+        80.0
+    );
+    assert_eq!(
+        resolve_burst_window_ms(&env_from(&[("PI_TUI_BURST_WINDOW_MS", "0")])),
+        0.0
+    );
+}
+
+#[test]
+fn waits_longer_over_ssh_where_paste_chunks_arrive_further_apart() {
+    assert!(
+        resolve_burst_window_ms(&env_from(&[("SSH_TTY", "/dev/pts/1")]))
+            > resolve_burst_window_ms(&env_from(&[]))
+    );
+    assert_eq!(
+        resolve_burst_window_ms(&env_from(&[("SSH_CONNECTION", "1 2 3 4")])),
+        resolve_burst_window_ms(&env_from(&[("SSH_TTY", "/dev/pts/1")]))
+    );
+}
+
+#[test]
+fn ignores_invalid_pi_tui_burst_window_ms_values() {
+    for value in ["abc", "-5", "Infinity", ""] {
+        assert_eq!(
+            resolve_burst_window_ms(&env_from(&[("PI_TUI_BURST_WINDOW_MS", value)])),
+            resolve_burst_window_ms(&env_from(&[])),
+            "{value:?}"
+        );
+    }
+}
+
 // ---- terminal.test.ts: resolveEscapeTimeoutMs ----
 
 #[test]
 fn uses_pi_tui_esc_timeout_when_configured() {
     assert_eq!(
-        resolve_escape_timeout_ms(&env_from(&[("PI_TUI_ESC_TIMEOUT", "80")])),
+        resolve_escape_timeout_ms(&env_from(&[("PI_TUI_ESC_TIMEOUT", "80")]), "darwin"),
         80.0
     );
     assert_eq!(
-        resolve_escape_timeout_ms(&env_from(&[
-            ("PI_TUI_ESC_TIMEOUT", "80"),
-            ("SSH_TTY", "/dev/pts/1")
-        ])),
+        resolve_escape_timeout_ms(
+            &env_from(&[("PI_TUI_ESC_TIMEOUT", "80"), ("SSH_TTY", "/dev/pts/1")]),
+            "darwin"
+        ),
         80.0
     );
 }
@@ -142,8 +186,8 @@ fn uses_pi_tui_esc_timeout_when_configured() {
 fn ignores_invalid_pi_tui_esc_timeout_values() {
     for value in ["abc", "0", "-5", ""] {
         assert_eq!(
-            resolve_escape_timeout_ms(&env_from(&[("PI_TUI_ESC_TIMEOUT", value)])),
-            10.0,
+            resolve_escape_timeout_ms(&env_from(&[("PI_TUI_ESC_TIMEOUT", value)]), "darwin"),
+            50.0,
             "{value:?}"
         );
     }
@@ -152,29 +196,102 @@ fn ignores_invalid_pi_tui_esc_timeout_values() {
 #[test]
 fn defaults_to_100ms_over_ssh() {
     assert_eq!(
-        resolve_escape_timeout_ms(&env_from(&[("SSH_CONNECTION", "10.0.0.1 22")])),
+        resolve_escape_timeout_ms(&env_from(&[("SSH_CONNECTION", "10.0.0.1 22")]), "darwin"),
         100.0
     );
     assert_eq!(
-        resolve_escape_timeout_ms(&env_from(&[("SSH_TTY", "/dev/pts/1")])),
+        resolve_escape_timeout_ms(&env_from(&[("SSH_TTY", "/dev/pts/1")]), "darwin"),
         100.0
     );
 }
 
 #[test]
-fn defaults_to_10ms_otherwise() {
-    assert_eq!(resolve_escape_timeout_ms(&env_from(&[])), 10.0);
+fn defaults_to_100ms_on_the_wsl_environment_markers() {
+    assert_eq!(
+        resolve_escape_timeout_ms(&env_from(&[("WSL_DISTRO_NAME", "Ubuntu")]), "linux"),
+        100.0
+    );
+    assert_eq!(
+        resolve_escape_timeout_ms(
+            &env_from(&[("WSL_INTEROP", "/run/WSL/123_interop")]),
+            "linux"
+        ),
+        100.0
+    );
+    assert_eq!(
+        resolve_escape_timeout_ms(&env_from(&[("WSLENV", "WT_SESSION")]), "linux"),
+        100.0
+    );
+}
+
+#[test]
+fn defaults_to_the_standard_50ms_otherwise() {
+    assert_eq!(resolve_escape_timeout_ms(&env_from(&[]), "darwin"), 50.0);
 }
 
 #[test]
 fn escape_timeout_follows_js_number_coercion() {
-    let t = |v: &str| resolve_escape_timeout_ms(&env_from(&[("PI_TUI_ESC_TIMEOUT", v)]));
+    let t = |v: &str| resolve_escape_timeout_ms(&env_from(&[("PI_TUI_ESC_TIMEOUT", v)]), "darwin");
     assert_eq!(t(" 25 "), 25.0);
     assert_eq!(t("0x20"), 32.0);
     assert_eq!(t("1e2"), 100.0);
     assert_eq!(t("12.5"), 12.5);
-    assert_eq!(t("Infinity"), 10.0);
-    assert_eq!(t("12px"), 10.0);
+    assert_eq!(t("Infinity"), 50.0);
+    assert_eq!(t("12px"), 50.0);
+}
+
+// ---- terminal.test.ts: isWslSession (#3628) ----
+
+mod wsl_session_cases {
+    use std::path::{Path, PathBuf};
+
+    use crate::process_env::env_from;
+    use crate::wsl_session::is_wsl_session;
+
+    fn fixtures() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let microsoft = dir.path().join("microsoft-version");
+        let plain = dir.path().join("plain-linux-version");
+        std::fs::write(
+            &microsoft,
+            "Linux version 5.15.167.4-microsoft-standard-WSL2 (root@x86_64) GNU/Linux\n",
+        )
+        .expect("write");
+        std::fs::write(&plain, "Linux version 6.8.0-45-generic GNU/Linux\n").expect("write");
+        (dir, microsoft, plain)
+    }
+
+    #[test]
+    fn detects_wsl_through_each_env_marker() {
+        let missing = Path::new("/nonexistent/proc-version");
+        for (key, value) in [
+            ("WSL_DISTRO_NAME", "Ubuntu"),
+            ("WSL_INTEROP", "/run/WSL/123_interop"),
+            ("WSLENV", "WT_SESSION"),
+        ] {
+            assert!(is_wsl_session(&env_from(&[(key, value)]), "linux", missing));
+        }
+    }
+
+    #[test]
+    fn falls_back_to_the_kernel_version_file_when_the_environment_is_sanitized() {
+        let (dir, microsoft, plain) = fixtures();
+        assert!(is_wsl_session(&env_from(&[]), "linux", &microsoft));
+        assert!(!is_wsl_session(&env_from(&[]), "linux", &plain));
+        assert!(!is_wsl_session(
+            &env_from(&[]),
+            "linux",
+            &dir.path().join("missing")
+        ));
+    }
+
+    #[test]
+    fn stays_false_off_linux() {
+        let (_dir, microsoft, _plain) = fixtures();
+        let env = env_from(&[("WSL_DISTRO_NAME", "Ubuntu")]);
+        assert!(!is_wsl_session(&env, "win32", Path::new("/proc/version")));
+        assert!(!is_wsl_session(&env, "darwin", &microsoft));
+    }
 }
 
 // ---- normalizeNativeShiftEnterInput / normalizeAppleTerminalInput ----
@@ -539,12 +656,49 @@ fn falls_back_to_modify_other_keys_for_device_attributes_without_kitty_flags() {
 }
 
 #[test]
+fn forwards_device_attributes_replies_that_answer_other_queries() {
+    with_env(&[], || {
+        let mut h = Negotiation::new();
+        h.send("\x1b[?7u");
+        h.send("\x1b[?62;4;52c");
+        assert_eq!(h.input(), None);
+
+        // The TUI's color query uses DA1 as its own sentinel.
+        h.send("\x1b[?62;4;52c");
+        assert_eq!(h.input().as_deref(), Some("\x1b[?62;4;52c"));
+        h.cleanup();
+    });
+}
+
+#[test]
 fn forwards_normal_input_while_waiting_for_kitty_response() {
     with_env(&[], || {
         let mut h = Negotiation::new();
         h.send("a");
         assert_eq!(h.input().as_deref(), Some("a"));
         assert!(!h.terminal.kitty_protocol_active());
+        h.cleanup();
+    });
+}
+
+#[test]
+fn holds_a_newline_that_follows_text_within_the_burst_window_by_default() {
+    with_env(&[("PI_TUI_BURST_WINDOW_MS", None)], || {
+        let mut h = Negotiation::new();
+        h.send("a");
+        h.send("b\n");
+        assert_eq!(h.input().as_deref(), Some("b"));
+        h.cleanup();
+    });
+}
+
+#[test]
+fn forwards_a_newline_that_follows_text_at_once_when_pi_tui_burst_window_ms_is_0() {
+    with_env(&[("PI_TUI_BURST_WINDOW_MS", Some("0"))], || {
+        let mut h = Negotiation::new();
+        h.send("a");
+        h.send("b\n");
+        assert_eq!(h.input().as_deref(), Some("\n"));
         h.cleanup();
     });
 }

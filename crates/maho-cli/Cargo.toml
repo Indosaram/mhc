@@ -155,6 +155,7 @@ maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subsc
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }
 async-trait = "=0.1.92"
 anyhow = "=1.0.104"
+futures.workspace = true
 crossterm = "=0.29.0"
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }

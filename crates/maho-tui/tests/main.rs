@@ -7,6 +7,8 @@ pub mod autocomplete_slash_dollar_tests;
 pub mod editor_marker_tests;
 #[path = "editor_tests.rs"]
 pub mod editor_tests;
+#[path = "input_tests.rs"]
+pub mod input_tests;
 #[path = "layout_tests.rs"]
 pub mod layout_tests;
 #[path = "markdown_golden.rs"]

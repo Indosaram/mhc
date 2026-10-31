@@ -3617,6 +3617,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "flate2",
+ "futures",
  "icu_collator",
  "indexmap",
  "libproc",
