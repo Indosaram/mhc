@@ -286,8 +286,11 @@ impl SessionLifecycleController {
             } => self
                 .outstanding_tools
                 .retain(|tool| &tool.tool_call_id != tool_call_id),
-            // maho's assistant `message_start` is the stream start: it carries no separate `streaming` flag.
-            AgentEvent::MessageStart { message } if message.role() == "assistant" => {
+            // Only the provider stream start is live model activity; prepared/synthetic starts are not.
+            AgentEvent::MessageStart {
+                message,
+                streaming: Some(true),
+            } if message.role() == "assistant" => {
                 self.model_since = Some(now_iso());
             }
             AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
@@ -870,6 +873,41 @@ mod tests {
                 .iter()
                 .all(|r| r.get("activity").is_none())
         );
+    }
+    // senpi 034eda3565 (senpi#3864): only the provider stream start records model activity.
+    #[test]
+    fn model_since_is_recorded_only_at_the_assistant_streaming_start() {
+        use maho_agent::types::{AgentEvent, AgentMessage};
+        use maho_ai::types::{Message, UserContent, UserMessage};
+        let mut c = controller();
+        c.restore_complete();
+        c.start_run(None);
+        let assistant = |text: &str| {
+            AgentMessage::from(Message::Assistant(Box::new(
+                maho_ai::providers::faux::faux_assistant_message(text, Default::default()),
+            )))
+        };
+        let user = AgentMessage::from(Message::User(UserMessage {
+            content: UserContent::Text("Hi".into()),
+            timestamp: 1,
+        }));
+        c.observe_activity(&AgentEvent::MessageStart {
+            message: user,
+            streaming: Some(true),
+        });
+        c.observe_activity(&AgentEvent::MessageStart {
+            message: assistant("Prepared, not streaming"),
+            streaming: None,
+        });
+        assert!(c.ledger.snapshot().get("activity").is_none());
+        let message = assistant("Streaming");
+        c.observe_activity(&AgentEvent::MessageStart {
+            message: message.clone(),
+            streaming: Some(true),
+        });
+        assert_eq!(c.ledger.snapshot()["activity"]["kind"], "model");
+        c.observe_activity(&AgentEvent::MessageEnd { message });
+        assert!(c.ledger.snapshot().get("activity").is_none());
     }
     #[test]
     fn an_admitted_run_writes_one_opening_record() {
