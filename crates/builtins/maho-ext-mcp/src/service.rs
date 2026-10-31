@@ -112,6 +112,14 @@ pub struct McpSessionBinding {
     /// Pooled servers: this owner's lease, whose own request lifetime also bounds the origin.
     leases:
         std::sync::Mutex<BTreeMap<String, std::sync::Weak<crate::shared_lease::SharedMcpLease>>>,
+    /// The connection each server the binding's config declares maps to, with its credential check
+    /// (upstream `declares(binding.config, entry.name, entry.configHash)` and `entry.credentialsCurrent`).
+    declared: std::sync::Mutex<BTreeMap<String, McpDeclaredServer>>,
+}
+/// One declared server as of the binding's last sync.
+struct McpDeclaredServer {
+    connection: std::sync::Weak<crate::connection::ServerConnection>,
+    credentials_current: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 impl McpSessionBinding {
     pub fn bind_presentation(&self, ui: &Arc<dyn maho_ext_api::ExtensionUi>) {
@@ -145,6 +153,29 @@ impl McpSessionBinding {
     }
     fn release(&self) {
         self.lifetime().abort();
+    }
+    /// The binding's config still declares `name` on exactly this connection, and its credentials are the ones
+    /// the connection was keyed by (upstream request-origin `isCurrent`).
+    fn declares(&self, name: &str, connection: &Arc<crate::connection::ServerConnection>) -> bool {
+        let credentials_current = {
+            let declared = self
+                .declared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match declared.get(name) {
+                Some(server)
+                    if server
+                        .connection
+                        .upgrade()
+                        .is_some_and(|current| Arc::ptr_eq(&current, connection)) =>
+                {
+                    server.credentials_current.clone()
+                }
+                _ => return false,
+            }
+        };
+        // Read outside the lock: the credential check reads the token store.
+        credentials_current()
     }
     /// Upstream `#requestOrigin(binding, entry)`: the binding-issued owner of every MRTR/private-form request
     /// made on this session's behalf.
@@ -194,6 +225,7 @@ impl McpSessionBinding {
         let current_connection = Arc::downgrade(connection);
         let authority_connection = Arc::downgrade(connection);
         let binding = Arc::downgrade(self);
+        let declared_name = name.to_owned();
         crate::request_origin::create_mcp_request_origin(
             crate::request_origin::McpRequestOrigin::new(
                 Arc::as_ptr(self) as usize,
@@ -207,11 +239,14 @@ impl McpSessionBinding {
                 Arc::new(move || {
                     // The linked signal lives as long as this check: dropping the origin ends its watcher.
                     let _keep = &linked;
+                    let Some(connection) = current_connection.upgrade() else {
+                        return false;
+                    };
                     !lifetime.is_aborted()
-                        && binding.strong_count() > 0
-                        && current_connection
+                        && connection.generation() == generation
+                        && binding
                             .upgrade()
-                            .is_some_and(|connection| connection.generation() == generation)
+                            .is_some_and(|binding| binding.declares(&declared_name, &connection))
                 }),
                 Arc::new(
                     move |_signal| -> futures::future::BoxFuture<
@@ -648,6 +683,48 @@ impl McpService {
                 .await;
             }))
             .await;
+        let mut declared = BTreeMap::new();
+        for (name, connection) in &self.connections {
+            let entry = connection.entry.lock().await;
+            let server = config
+                .servers
+                .get(name)
+                .and_then(|server| server.config.clone());
+            let credentials_current: Arc<dyn Fn() -> bool + Send + Sync> = match server {
+                Some(server) => {
+                    // Upstream `credentialsCurrent`: the identity the connection was admitted under is still live.
+                    let admitted = crate::auth::catalog_identity::mcp_credential_identity(
+                        &server,
+                        name,
+                        Some(agent_dir),
+                        Some(env),
+                    );
+                    let (name, agent_dir, env) =
+                        (name.clone(), agent_dir.to_path_buf(), env.clone());
+                    Arc::new(move || {
+                        crate::auth::catalog_identity::mcp_credential_identity(
+                            &server,
+                            &name,
+                            Some(&agent_dir),
+                            Some(&env),
+                        ) == admitted
+                    })
+                }
+                None => Arc::new(|| true),
+            };
+            declared.insert(
+                name.clone(),
+                McpDeclaredServer {
+                    connection: Arc::downgrade(&entry.connection),
+                    credentials_current,
+                },
+            );
+        }
+        *self
+            .binding
+            .declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = declared;
         self.agent_dir = Some(agent_dir.into());
         self.session_cwd = Some(cwd.into());
         self.session_env = env.clone();
