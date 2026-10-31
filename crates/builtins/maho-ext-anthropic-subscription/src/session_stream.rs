@@ -71,6 +71,8 @@ impl SessionRegistry {
         input: ResidentInput<'_>,
         deliver: impl FnMut(Value),
     ) -> anyhow::Result<crate::session_registry_pump::TurnResult> {
+        // senpi resets the dispatch shape per stream call: a turn that fails before dispatch has none.
+        self.dispatch_shapes.remove(input.session);
         if let Some(reaper) = self.reapers.remove(input.session) {
             reaper.abort();
             let _ = reaper.await;
