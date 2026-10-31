@@ -204,9 +204,20 @@ impl TerminalManifestWriter {
                 return digest;
             }
         };
+        let restored =
+            |monitor: &ManifestMonitor, outcome: &'static str| crate::restore::RestoredMonitor {
+                monitor_id: monitor.monitor_id.clone(),
+                description: monitor.description.clone(),
+                file: monitor.runtime_kind
+                    == crate::terminal_manifest_model::MonitorRuntimeKind::File,
+                outcome,
+                command: monitor.command.clone(),
+                path: monitor.path.clone(),
+            };
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry| expiry <= now) {
                 digest.expired += 1;
+                digest.results.push(restored(&monitor, "expired"));
                 continue;
             }
             let outcome = match monitor.durability_class {
@@ -230,6 +241,7 @@ impl TerminalManifestWriter {
                 RestoreOutcome::Lost => digest.lost += 1,
                 RestoreOutcome::AttachedElsewhere => digest.attached_elsewhere += 1,
             }
+            digest.results.push(restored(&monitor, outcome.bucket()));
             if matches!(outcome, RestoreOutcome::Restored | RestoreOutcome::Muted) {
                 self.adopt_restored(monitor.clone());
                 registry.adopt_fire_window(&monitor.monitor_id, &monitor.fire_window);
@@ -241,6 +253,14 @@ impl TerminalManifestWriter {
             }
         }
         digest.lost += state.background_sessions.len();
+        digest.background_sessions = state
+            .background_sessions
+            .iter()
+            .map(|session| crate::restore::RestoredBackground {
+                id: session.id.clone(),
+                command: session.command.clone(),
+            })
+            .collect();
         digest
     }
     pub async fn observe_monitor_state(
@@ -427,11 +447,16 @@ mod tests {
         let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
         let digest = next.restore_live(&mut manager, &mut registry, 30.0).await;
         assert_eq!(
-            digest,
-            crate::restore::RestoreDigest {
-                muted: 1,
-                ..Default::default()
-            }
+            (digest.muted, digest.restored, digest.lost, digest.expired),
+            (1, 0, 0, 0)
+        );
+        assert_eq!(
+            digest
+                .results
+                .iter()
+                .map(|result| (result.monitor_id.as_str(), result.outcome))
+                .collect::<Vec<_>>(),
+            [("mon_saved", "muted")]
         );
         assert_eq!(next.durable_count(), 1);
         assert!(!next.entries["mon_saved"].suspended);
@@ -509,12 +534,16 @@ mod tests {
             )
             .await;
         assert_eq!(
-            digest,
-            crate::restore::RestoreDigest {
-                expired: 1,
-                lost: 2,
-                ..Default::default()
-            }
+            (digest.expired, digest.lost, digest.restored, digest.muted),
+            (1, 2, 0, 0)
+        );
+        assert_eq!(
+            digest
+                .results
+                .iter()
+                .filter(|result| result.outcome == "expired")
+                .count(),
+            1
         );
         assert_eq!(manager.size(), 0);
         assert!(registry.snapshot().is_empty());

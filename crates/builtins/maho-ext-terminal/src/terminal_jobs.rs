@@ -46,6 +46,7 @@ pub struct TerminalJobArgs {
     pub shell_path: Option<String>,
     pub default_cols: f64,
     pub default_rows: f64,
+    pub redact_secrets_in_output: bool,
     pub timeout_action: Option<TimeoutAction>,
 }
 
@@ -83,6 +84,7 @@ pub fn parse_args(value: &Value) -> Result<TerminalJobArgs, ToolChildJobError> {
             .map(str::to_owned),
         default_cols: number_or_zero(field("defaultCols")),
         default_rows: number_or_zero(field("defaultRows")),
+        redact_secrets_in_output: field("redactSecretsInOutput") == Some(&Value::Bool(true)),
         timeout_action: match field("timeoutAction").and_then(Value::as_str) {
             Some("background") => Some(TimeoutAction::Background),
             Some("kill") => Some(TimeoutAction::Kill),
@@ -362,6 +364,7 @@ async fn run_job(
         if let Some(action) = args.timeout_action {
             settings.timeout_action = action;
         }
+        settings.redact_secrets_in_output = args.redact_secrets_in_output;
         let update = job.update.clone();
         let update_call_id = args.tool_call_id.clone();
         let on_update: ToolUpdateCallback = Arc::new(move |result: ToolResult| {

@@ -15,7 +15,7 @@ fn generate_content_url(base_url:Option<&str>,model:Option<&str>)->String {
 pub fn build_request(ctx:&BuildContext<'_>,model:Option<&str>)->BuiltSearchRequest {
     let query=append_domain_filters(ctx.query,ctx.allowed_domains,ctx.blocked_domains);
     let prompt=format!("Search the web with Google Search and answer briefly, citing the pages you used. Query: {query}");
-    BuiltSearchRequest{url:generate_content_url(ctx.base_url,model),method:"POST",headers:content_headers(BTreeMap::from([("x-goog-api-key".into(),ctx.api_key.unwrap_or_default().into())])),body:Some(json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"tools":[{"google_search":{}}]}))}
+    BuiltSearchRequest{form:None,url:generate_content_url(ctx.base_url,model),method:"POST",headers:content_headers(BTreeMap::from([("x-goog-api-key".into(),ctx.api_key.unwrap_or_default().into())])),body:Some(json!({"contents":[{"role":"user","parts":[{"text":prompt}]}],"tools":[{"google_search":{}}]}))}
 }
 fn support_snippets(metadata:Option<&Value>)->BTreeMap<u64,String> {
     let mut snippets=BTreeMap::new();

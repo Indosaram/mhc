@@ -42,6 +42,11 @@ impl TerminalStateLifecycle {
             }
         }
     }
+    /// Binds a lease the lease keeper acquired on this generation's behalf (upstream keeper
+    /// `onTakeover` -> `own(lease)`).
+    pub fn adopt_lease(&mut self, path: PathBuf, pid: f64) {
+        self.lease = Some((path, pid));
+    }
     pub async fn restore(
         &mut self,
         manager: &mut crate::manager::TerminalManager,

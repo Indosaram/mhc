@@ -41,7 +41,7 @@ const ENABLE_ACCOUNT_FALLBACK: &str = "  Set anthropicSubscriptionProvider.accou
 
 /// How to move off a pinned account. `/claude-account pin` only writes the stored pin, which a CLI or a
 /// settings pin outranks, so for those it would change nothing (senpi#3672).
-fn switch_account_line(pinned_by: Option<PinSource>) -> &'static str {
+pub fn switch_account_line(pinned_by: Option<PinSource>) -> &'static str {
     match pinned_by {
         Some(PinSource::Cli) => {
             "  This session was started with --claude-account; start a new session with another --claude-account to switch."
@@ -117,7 +117,9 @@ pub fn version_floor_guidance(
     executable: &str,
 ) -> Option<String> {
     // PERF-DIVERGENCE(omo anthropic-subscription guidance.ts): upstream uses a regex literal compiled once by the JS engine; this port compiled per call, so we hoist it into a LazyLock. Matches are identical.
-    static FLOOR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)does not support this model; version (\S+?) or newer is required|claude_code_version_too_old").expect("version floor"));
+    static FLOOR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)does not support this model; version (\S+?) or newer is required|claude_code_version_too_old").expect("version floor")
+    });
     let floor = &*FLOOR;
     if let Some(captures) = floor.captures(text) {
         let target = captures.get(1).map_or_else(
@@ -145,7 +147,10 @@ pub fn version_floor_guidance(
         });
     }
     // PERF-DIVERGENCE(omo anthropic-subscription guidance.ts): upstream uses a regex literal compiled once by the JS engine; this port compiled per call, so we hoist it into a LazyLock. Matches are identical.
-    static MODEL_MISSING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\bmodel_not_found\b|unrecognized_model|not found for provider").expect("model missing"));
+    static MODEL_MISSING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\bmodel_not_found\b|unrecognized_model|not found for provider")
+            .expect("model missing")
+    });
     MODEL_MISSING.is_match(text).then(|| "The bundled Claude Code binary does not know this model id; update senpi/omo or set CLAUDE_CODE_EXECUTABLE to a newer Claude Code binary.".into())
 }
 

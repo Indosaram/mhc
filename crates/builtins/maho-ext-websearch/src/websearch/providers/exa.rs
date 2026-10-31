@@ -6,7 +6,7 @@ pub fn build_request(ctx:&BuildContext<'_>)->BuiltSearchRequest {
     let mut body=json!({"query":ctx.query,"numResults":json_count(clamp(ctx.max_results,1.0,20.0))});
     if let Some(domains)=ctx.allowed_domains { body["includeDomains"]=json!(domains); }
     if let Some(domains)=ctx.blocked_domains { body["excludeDomains"]=json!(domains); }
-    BuiltSearchRequest{url:provider_url(SearchProvider::Exa,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("x-api-key".into(),ctx.api_key.unwrap_or("").into())])),body:Some(body)}
+    BuiltSearchRequest{form:None,url:provider_url(SearchProvider::Exa,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("x-api-key".into(),ctx.api_key.unwrap_or("").into())])),body:Some(body)}
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> { normalize_results(data,"text",Some("snippet")) }
 #[cfg(test)] mod tests {
