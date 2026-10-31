@@ -237,3 +237,78 @@ fn sanitizes_tool_output_and_spill_files_without_changing_the_wire_reply() {
     }
     artifacts.cleanup().expect("cleanup");
 }
+
+/// `redacts needs_auth errors in real service snapshots and RPC inventory snapshots`.
+#[tokio::test]
+async fn redacts_needs_auth_errors_in_service_and_wire_status_snapshots() {
+    let secret = resolve_env("VALUE", "synthetic/3858 needs-auth?+alpha");
+    let stub = crate::reference_support::HeaderStub::start().await;
+    let agent = tempfile::tempdir().expect("agent dir");
+    std::fs::write(
+        agent.path().join("mcp.json"),
+        json!({"mcpServers": {"fx": {
+            "type": "http",
+            "url": stub.url,
+            "auth": false,
+            "exposure": "direct",
+            "connectTimeoutMs": 5000,
+        }}})
+        .to_string(),
+    )
+    .expect("global mcp.json");
+    let registry = Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default());
+    let mut service = maho_ext_mcp::service::McpService::new(registry.clone(), 3861);
+    service
+        .attach_session(
+            agent.path(),
+            agent.path(),
+            &std::collections::BTreeMap::new(),
+            true,
+            &[],
+        )
+        .await
+        .expect("attach");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        service.connect_server("fx"),
+    )
+    .await
+    .expect("bounded connect")
+    .expect("connect");
+    let connection = service.connections["fx"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    let error = McpError::new(McpErrorKind::Connect, format!("authenticate {secret}"));
+    connection.mark_failure(ServerConnectionState::NeedsAuth, Some(error.clone()));
+
+    let snapshots = service.server_snapshots().await;
+    assert_eq!(
+        snapshots[0].last_error.as_deref(),
+        Some("authenticate <redacted>")
+    );
+    let wire = service.wire_status_snapshot().await;
+    assert_eq!(
+        wire.servers[0].status,
+        Some(
+            maho_ext_mcp::service_types::McpWireServerStatus::Connection(
+                ServerConnectionState::NeedsAuth
+            )
+        )
+    );
+    assert_eq!(
+        wire.servers[0].last_error.as_deref(),
+        Some("authenticate <redacted>")
+    );
+    let serialized = serde_json::to_value(&wire).expect("wire json");
+    assert_eq!(
+        serialized["servers"][0]["lastError"],
+        "authenticate <redacted>"
+    );
+    assert_eq!(error.message, format!("authenticate {secret}"));
+    service.dispose().await.expect("dispose");
+    registry.dispose().await.expect("registry dispose");
+    stub.close().await;
+}

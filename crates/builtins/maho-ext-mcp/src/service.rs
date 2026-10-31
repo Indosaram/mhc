@@ -1293,6 +1293,25 @@ impl McpService {
                 }
                 _ => McpWireAuthStatus::Unsupported,
             };
+            // service.ts #captureWireStatusServer: the diagnostic snapshot's redacted last error; a server whose
+            // references failed reports `degraded` with the reference error.
+            let reference_error = entry
+                .is_none()
+                .then(|| self.reference_errors.get(name))
+                .flatten();
+            let last_error = match reference_error {
+                Some(error) => Some(error.to_string()),
+                None => entry
+                    .as_ref()
+                    .and_then(|entry| entry.connection.last_error())
+                    .map(|error| error.message),
+            }
+            .map(|message| {
+                maho_core::config_reference_redaction::redact_resolved_reference_values(
+                    &message,
+                    "<redacted>",
+                )
+            });
             let mut wire = McpWireStatusServer {
                 name: name.clone(),
                 server_info: None,
@@ -1300,13 +1319,14 @@ impl McpService {
                 resources: Vec::new(),
                 resource_templates: Vec::new(),
                 auth_status,
-                status: Some(
-                    entry
-                        .as_ref()
-                        .map_or(McpWireServerStatus::Config(server.state), |entry| {
-                            McpWireServerStatus::Connection(entry.connection.state())
-                        }),
-                ),
+                status: Some(match (&entry, reference_error) {
+                    (Some(entry), _) => McpWireServerStatus::Connection(entry.connection.state()),
+                    (None, Some(_)) => McpWireServerStatus::Connection(
+                        crate::connection::ServerConnectionState::Degraded,
+                    ),
+                    (None, None) => McpWireServerStatus::Config(server.state),
+                }),
+                last_error,
             };
             if let Some(cached) = entry
                 .as_ref()
