@@ -14,8 +14,13 @@ pub async fn config_with_native_routes(mut config:super::types::WebsearchConfig,
     let Some(registry)=registry else{return Ok(config)};
     let mut models=registry.get_available();if let Some(model)=model{models.insert(0,model.clone());}
     let available=models.iter().map(model_info).collect::<Vec<_>>();let active=model.map(model_info);
-    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers:auth.auth.headers.map(|headers|headers.into_iter().filter_map(|(name,value)|value.map(|value|(name,value))).collect()),base_url:auth.auth.base_url})),None=>None}}};
+    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|{let headers=super::hosted_routes::credential_headers(model.headers.as_ref(),auth.auth.headers.as_ref());auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers,base_url:auth.auth.base_url})}),None=>None}}};
     let mut entries=build_native_entries(active.as_ref(),Some(&available),Some(&auth),signal).await?;
+    // The active route searches on the resolved native search model, falling back to the session model.
+    let active_entry=active.as_ref().and_then(|active|entries.first_mut().filter(|entry|entry.config.model.as_deref()==Some(active.id.as_str())&&!entry.config.id.as_deref().is_some_and(|id|id.starts_with("native-"))));
+    if let Some(entry)=active_entry && let Some(choice)=super::search_model::resolve_native_search_model(model,&registry.get_available(),config.native_model.as_deref()) {
+        entry.config.model=Some(choice.model);entry.fallback_model=choice.fallback_model;
+    }
     if !entries.is_empty(){entries.extend(config.providers);config.providers=entries;}
     Ok(config)
 }
@@ -37,7 +42,7 @@ where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAut
     let mut config=super::types::SearchProviderConfig::new(mapping.provider);
     config.id=Some(id.map_or_else(||mapping.route_label.map_or_else(||"native".into(),|label|format!("{label}/native")),String::from));
     config.api_key=Some(auth.api_key);config.headers=auth.headers;config.base_url=Some(base_url);config.model=Some(model.id.clone());
-    Ok(Some(super::types::SearchProviderEntry{config,priority:Some(-1.),weight:None}))
+    Ok(Some(super::types::SearchProviderEntry{config,priority:Some(-1.),weight:None,fallback_model:None}))
 }
 pub async fn build_native_entries<F,Fut>(model:Option<&NativeModelInfo>,available:Option<&[NativeModelInfo]>,auth:Option<&F>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<Vec<super::types::SearchProviderEntry>,maho_tools::definition::ToolError>
 where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAuth>> {

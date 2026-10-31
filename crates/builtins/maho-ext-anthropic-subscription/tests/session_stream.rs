@@ -15,7 +15,7 @@ async fn registry_reuses_process_for_delta_and_resumes_on_prompt_drift() {
         let messages: Vec<_> = (0..=index).map(|i| json!({"role":"user","content":format!("turn {i}")})).collect();
         let context = json!({"messages":messages}); let options = json!({"cwd":directory.path(),"systemPrompt":prompt});
         let mut delivered = Vec::new();
-        tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:index as u64,transcript_available:true,signal:None }, |message| delivered.push(message))).await.expect("bounded turn").expect("resident turn");
+        tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:index as u64,transcript_available:true,signal:None,credential_digest:None,context_window:0 }, |message| delivered.push(message))).await.expect("bounded turn").expect("resident turn");
         processes.push(delivered.last().expect("result")["result"].clone());
         assert_eq!(registry.bindings.get("session").expect("binding").sent_count,index+1);
         assert!(registry.entries["session"].assistant_uuid_by_index.contains_key(&(index+1)));
@@ -47,7 +47,7 @@ async fn persisted_binding_reattaches_only_with_verified_transcript() {
         let environment=BTreeMap::from([("CLAUDE_CONFIG_DIR".into(),config.to_string_lossy().into_owned()),("CLAUDE_CODE_PROJECT_DIR_NAME".into(),"fixture-project".into())]);let custom=BTreeMap::new();let mut registry=SessionRegistry::default();
         registry.bindings.remember("session",&Snapshot {sdk_session_id:sdk.into(),account_name:"default".into(),model_id:"model".into(),system_prompt_hash:fingerprint.system_prompt_hash,toolset_hash:fingerprint.toolset_hash,sent_count:1,sent_hashes:Vec::new(),sent_prefix_hash:Some(session_sync::sent_hash_prefix_digest(&hashes,1)),last_assistant_uuid:Some("anchor".into()),sdk_session_id_confirmed:Some(true),..Default::default()});
         let context=json!({"messages":[{"role":"user","content":"previous"},{"role":"user","content":"next"}]});
-        tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput {session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None},|_|{})).await.expect("bounded turn").expect("turn");
+        tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput {session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None,credential_digest:None,context_window:0},|_|{})).await.expect("bounded turn").expect("turn");
         assert_eq!(registry.last_decisions["session"].reason,if verified {"registry_miss"}else {"transcript_missing"});
         assert_eq!(registry.last_decisions["session"].delta_messages,if verified {1}else {2});
         assert_eq!(registry.entries["session"].pump.sdk_session_id==sdk,verified);
@@ -64,7 +64,7 @@ async fn interrupt_receipt_controls_keep_or_close_without_taint() {
         let environment = BTreeMap::new(); let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
         let context = json!({"messages":[{"role":"user","content":"interrupt"}]}); let options = json!({"cwd":directory.path()});
         let controller = maho_ai::utils::abort::AbortController::new(); let signal = controller.signal();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:Some(&signal) }, |message| {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:Some(&signal),credential_digest:None,context_window:0 }, |message| {
             if message["type"] == "stream_event" { controller.abort(None); }
             assert_ne!(message["type"], "result");
         })).await.expect("bounded interrupt").expect("interrupted turn");
@@ -88,7 +88,7 @@ async fn incomplete_interrupt_completion_expires_grace_and_closes_child() {
     let environment=BTreeMap::new();let custom=BTreeMap::new();let mut registry=SessionRegistry::default();
     let context=json!({"messages":[{"role":"user","content":"interrupt"}]});let options=json!({"cwd":directory.path()});
     let controller=maho_ai::utils::abort::AbortController::new();let signal=controller.signal();
-    let result=tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput {session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:Some(&signal)},|message| {
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput {session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:Some(&signal),credential_digest:None,context_window:0},|message| {
         if message["type"]=="stream_event" {controller.abort(None);}
         assert_ne!(message["type"],"result");
     })).await.expect("bounded interrupt grace").expect("aborted completion");
@@ -110,11 +110,115 @@ async fn abort_from_stream_callback_wins_over_already_queued_result() {
     let environment=BTreeMap::new();let custom=BTreeMap::new();let mut registry=SessionRegistry::default();
     let context=json!({"messages":[{"role":"user","content":"interrupt"}]});let options=json!({"cwd":directory.path()});
     let controller=maho_ai::utils::abort::AbortController::new();let signal=controller.signal();
-    let result=tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput {session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:Some(&signal)},|message| {
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),registry.turn(ResidentInput {session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:Some(&signal),credential_digest:None,context_window:0},|message| {
         if message["type"]=="stream_event" {controller.abort(None);}
         assert_ne!(message["type"],"result","an aborted turn cannot publish a success result");
     })).await.expect("bounded abort").expect("completion");
     assert!(result.aborted);
     assert!(registry.entries["session"].evictable());
+    registry.close_all().await.expect("cleanup");
+}
+
+fn echo_script(directory: &std::path::Path) -> std::path::PathBuf {
+    let executable = directory.join("claude");
+    std::fs::write(&executable, "#!/usr/bin/python3\nimport json,sys,os\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}}),flush=True)\n else:\n  print(json.dumps({'type':'user','isReplay':True,'uuid':f['uuid']}),flush=True)\n  print(json.dumps({'type':'assistant','uuid':'assistant-'+f['uuid'],'parent_tool_use_id':None}),flush=True)\n  print(json.dumps({'type':'result','subtype':'success','user_message_uuid':f['uuid'],'result':str(os.getpid())}),flush=True)\n").expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    executable
+}
+
+#[tokio::test]
+async fn a_refreshed_credential_reattaches_instead_of_reusing_the_old_process() {
+    let directory = tempfile::tempdir().expect("dir");
+    let executable = echo_script(directory.path());
+    let environment = BTreeMap::new(); let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
+    let options = json!({"cwd":directory.path()});
+    let mut processes = Vec::new();
+    for (index, digest) in ["token-1", "token-1", "token-2"].into_iter().enumerate() {
+        let messages: Vec<_> = (0..=index).map(|i| json!({"role":"user","content":format!("turn {i}")})).collect();
+        let context = json!({"messages":messages});
+        let mut delivered = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:index as u64,transcript_available:true,signal:None,credential_digest:Some(digest),context_window:0 }, |message| delivered.push(message))).await.expect("bounded turn").expect("resident turn");
+        processes.push(delivered.last().expect("result")["result"].clone());
+        assert_eq!(registry.entries["session"].credential_digest.as_deref(), Some(digest));
+    }
+    assert_eq!(processes[0], processes[1]);
+    assert_ne!(processes[1], processes[2]);
+    assert_eq!(registry.last_decisions["session"].reason, "credential_refreshed");
+    registry.close_all().await.expect("reaped");
+}
+
+#[tokio::test]
+async fn a_cold_seed_over_the_window_is_refused_before_dispatch() {
+    let directory = tempfile::tempdir().expect("dir");
+    let executable = directory.path().join("claude");
+    let log = directory.path().join("prompts");
+    std::fs::write(&executable, format!("#!/usr/bin/python3\nimport json,sys\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  print(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\n else:\n  open({},'a').write('sent\\n')\n", serde_json::to_string(log.to_str().expect("path")).expect("literal"))).expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let environment = BTreeMap::new(); let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
+    let options = json!({"cwd":directory.path()});
+    let context = json!({"messages":[{"role":"user","content":"x".repeat(4_000)}]});
+    let error = tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"cold",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None,credential_digest:None,context_window:100 }, |_| {})).await.expect("bounded turn").expect_err("over budget");
+    assert!(error.downcast_ref::<maho_ext_anthropic_subscription::cold_seed_budget::ColdSeedOverflowError>().is_some());
+    assert!(!log.exists());
+    assert!(registry.entries.is_empty());
+    assert!(registry.dispatch_shapes["cold"].cold_seed);
+    assert!(registry.dispatch_shapes["cold"].estimated_tokens.expect("estimate") > 100);
+    assert_eq!(registry.last_decisions["cold"].kind, "failed");
+}
+
+#[tokio::test]
+async fn a_turn_that_fails_before_dispatch_drops_the_previous_dispatch_shape() {
+    use maho_ext_anthropic_subscription::session_stream::DispatchShape;
+    let directory = tempfile::tempdir().expect("dir");
+    let executable = directory.path().join("missing-claude");
+    let environment = BTreeMap::new(); let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
+    registry.dispatch_shapes.insert("session".into(), DispatchShape { cold_seed: true, estimated_tokens: Some(9) });
+    let options = json!({"cwd":directory.path()});
+    let context = json!({"messages":[{"role":"user","content":"hello"}]});
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None,credential_digest:None,context_window:0 }, |_| {})).await.expect("bounded turn");
+    assert!(result.is_err());
+    assert!(!registry.dispatch_shapes.contains_key("session"));
+}
+
+#[tokio::test]
+async fn a_failed_attempt_is_observed_as_failed_not_flatten() {
+    let directory = tempfile::tempdir().expect("dir");
+    let executable = directory.path().join("claude");
+    std::fs::write(&executable, "#!/usr/bin/python3\nimport json,sys\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}}),flush=True)\n else:\n  print(json.dumps({'type':'user','isReplay':True,'uuid':f['uuid']}),flush=True)\n  sys.exit(3)\n").expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let environment = BTreeMap::new(); let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
+    let options = json!({"cwd":directory.path()});
+    let context = json!({"messages":[{"role":"user","content":"hello"}]});
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None,credential_digest:None,context_window:0 }, |_| {})).await.expect("bounded turn");
+    assert!(result.is_err());
+    assert_eq!(registry.last_decisions["session"].kind, "failed");
+}
+
+#[tokio::test]
+async fn a_rejected_fork_point_recovers_at_an_earlier_verified_boundary() {
+    use maho_ext_anthropic_subscription::{session_continuity::Snapshot, session_sync};
+    let directory = tempfile::tempdir().expect("directory");
+    let executable = directory.path().join("claude");
+    let spawns = directory.path().join("spawns");
+    std::fs::write(&executable, format!("#!/usr/bin/python3\nimport json,sys\nopen({},'a').write(' '.join(sys.argv[1:])+'\\n')\nat=[a for a in sys.argv if a.startswith('--resume-session-at=')]\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  if at and at[0].endswith('=a2'):\n   print(json.dumps({{'type':'control_response','response':{{'subtype':'error','request_id':f['request_id'],'error':'No message found with message.uuid of: a2'}}}}),flush=True)\n   sys.exit(0)\n  print(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\n else:\n  print(json.dumps({{'type':'user','isReplay':True,'uuid':f['uuid']}}),flush=True)\n  print(json.dumps({{'type':'result','subtype':'success','user_message_uuid':f['uuid']}}),flush=True)\n", serde_json::to_string(spawns.to_str().expect("path")).expect("literal"))).expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let options = json!({"cwd":directory.path(),"systemPrompt":"original"});
+    let messages: Vec<_> = (1..=3).map(|i| json!({"role":"user","content":format!("m{i}")})).collect();
+    let previous = json!({"messages":messages});
+    let hashes = session_sync::sent_message_hashes(&session_sync::sent_messages(&previous));
+    let fingerprint = session_sync::config_fingerprint(&options, &previous, "ambient", "default");
+    let sdk = "00000000-0000-0000-0000-000000000002";
+    let config = directory.path().join("config"); let project = config.join("projects").join("fixture-project"); std::fs::create_dir_all(&project).expect("project");
+    let transcript = format!("{{\"type\":\"assistant\",\"uuid\":\"a1\",\"parentUuid\":null,\"sessionId\":\"{sdk}\",\"message\":{{\"content\":[]}}}}\n{{\"type\":\"assistant\",\"uuid\":\"a2\",\"parentUuid\":\"a1\",\"sessionId\":\"{sdk}\",\"message\":{{\"content\":[]}}}}\n");
+    std::fs::write(project.join(format!("{sdk}.jsonl")), transcript).expect("transcript");
+    let environment = BTreeMap::from([("CLAUDE_CONFIG_DIR".into(), config.to_string_lossy().into_owned()), ("CLAUDE_CODE_PROJECT_DIR_NAME".into(), "fixture-project".into())]);
+    let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
+    registry.bindings.remember("session", &Snapshot { sdk_session_id: sdk.into(), account_name: "default".into(), model_id: "model".into(), system_prompt_hash: fingerprint.system_prompt_hash, toolset_hash: fingerprint.toolset_hash, sent_count: 3, sent_hashes: hashes.clone(), last_assistant_uuid: Some("a2".into()), assistant_uuid_by_index: [(1, "a1".into()), (2, "a2".into())].into(), sdk_session_id_confirmed: Some(true), ..Default::default() });
+    let mut changed = messages.clone(); changed[2] = json!({"role":"user","content":"edited"}); changed.push(json!({"role":"user","content":"next"}));
+    let context = json!({"messages":changed});
+    tokio::time::timeout(std::time::Duration::from_secs(20), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None,credential_digest:None,context_window:0 }, |_| {})).await.expect("bounded turn").expect("recovered turn");
+    assert_eq!(registry.checkpoint_recoveries.get("session"), Some(&(2, 1)));
+    let spawned = std::fs::read_to_string(&spawns).expect("spawns");
+    assert!(spawned.lines().any(|line| line.contains("--resume-session-at=a1")), "{spawned}");
     registry.close_all().await.expect("cleanup");
 }

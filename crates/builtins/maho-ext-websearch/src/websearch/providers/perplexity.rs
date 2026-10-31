@@ -7,7 +7,7 @@ pub fn build_request(ctx:&BuildContext<'_>,model:Option<&str>,search_context_siz
     if let Some(domains)=ctx.allowed_domains { body["search_domain_filter"]=json!(domains); }
     else if let Some(domains)=ctx.blocked_domains { body["search_domain_filter"]=json!(domains.iter().map(|domain|format!("-{domain}")).collect::<Vec<_>>()); }
     if model.is_some_and(|model|!model.is_empty()) && let Some(size)=search_context_size.filter(|size|!size.is_empty()) { body["web_search_options"]=json!({"search_context_size":size}); }
-    BuiltSearchRequest{url:provider_url(SearchProvider::Perplexity,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(body)}
+    BuiltSearchRequest{form:None,url:provider_url(SearchProvider::Perplexity,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(body)}
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> {
     let normalize=|field|data.get(field).and_then(Value::as_array).into_iter().flatten().filter_map(|item| {

@@ -6,7 +6,7 @@ pub fn build_request(ctx:&BuildContext<'_>,model:Option<&str>)->BuiltSearchReque
     let mut tool=json!({"type":"web_search"});
     if let Some(domains)=ctx.allowed_domains { tool["filters"]=json!({"allowed_domains":domains.iter().take(5).collect::<Vec<_>>()}); }
     else if let Some(domains)=ctx.blocked_domains { tool["filters"]=json!({"excluded_domains":domains.iter().take(5).collect::<Vec<_>>()}); }
-    BuiltSearchRequest{url:provider_url(SearchProvider::Xai,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(json!({"model":model.unwrap_or("grok-4.3"),"input":ctx.query,"tools":[tool],"tool_choice":"required"}))}
+    BuiltSearchRequest{form:None,url:provider_url(SearchProvider::Xai,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(json!({"model":model.unwrap_or("grok-4.3"),"input":ctx.query,"tools":[tool],"tool_choice":"required"}))}
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> { normalize_responses_payload(data,true) }
 #[cfg(test)]

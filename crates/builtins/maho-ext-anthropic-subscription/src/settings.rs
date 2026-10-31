@@ -2,9 +2,12 @@ use serde_json::{Map, Value};
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
+#[derive(Clone, Debug, Default)]
 pub struct ProviderSettings {
     pub values: Map<String, Value>,
     pub prompt_mode_from_env: bool,
+    /// senpi `resumeModeSource`: the layer that set `resumeMode`; `None` for settings built outside [`load`].
+    pub resume_mode_source: Option<&'static str>,
 }
 fn valid_choice(key: &str, value: &Value) -> bool {
     let choices: &[&str] = match key {
@@ -23,7 +26,9 @@ fn parse(value: &Value) -> Map<String, Value> {
     };
     for (key, value) in object {
         let valid = match key.as_str() {
-            "enabled" | "appendSystemPrompt" | "strictMcpConfig" => value.is_boolean(),
+            "enabled" | "appendSystemPrompt" | "strictMcpConfig" | "accountFallback" => {
+                value.is_boolean()
+            }
             "systemPromptFile" | "pinnedAccount" => value.as_str().is_some_and(|s| !s.is_empty()),
             "settingSources" => value.as_array().is_some_and(|items| {
                 items.iter().all(|v| {
@@ -70,15 +75,20 @@ pub fn load(
             env.insert(key.into(), Value::String(value.clone()));
         }
     }
-    if let Some(value) = environment.get("SENPI_CLAUDE_SDK_OAUTH_ENABLED") {
-        match value.to_lowercase().as_str() {
-            "true" | "1" => {
-                env.insert("enabled".into(), Value::Bool(true));
+    for (name, key) in [
+        ("SENPI_CLAUDE_SDK_OAUTH_ENABLED", "enabled"),
+        ("SENPI_CLAUDE_SDK_OAUTH_ACCOUNT_FALLBACK", "accountFallback"),
+    ] {
+        if let Some(value) = environment.get(name) {
+            match value.to_lowercase().as_str() {
+                "true" | "1" => {
+                    env.insert(key.into(), Value::Bool(true));
+                }
+                "false" | "0" => {
+                    env.insert(key.into(), Value::Bool(false));
+                }
+                _ => {}
             }
-            "false" | "0" => {
-                env.insert("enabled".into(), Value::Bool(false));
-            }
-            _ => {}
         }
     }
     if let Some(value) = environment.get("SENPI_CLAUDE_SDK_OAUTH_SETTING_SOURCES") {
@@ -97,9 +107,13 @@ pub fn load(
     let env = parse(&Value::Object(env));
     let prompt_mode_from_env = env.contains_key("systemPromptMode");
     values.extend(env);
+    let resume_mode_source = values
+        .contains_key("resumeMode")
+        .then(|| resume_mode_source(project, environment));
     ProviderSettings {
         values,
         prompt_mode_from_env,
+        resume_mode_source,
     }
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -140,6 +154,36 @@ pub fn resolve_prompt_mode(settings: &ProviderSettings) -> ResolvedPromptMode {
         source: "default",
         conflict: false,
     }
+}
+/// `resumeModeSource`: which layer set `resumeMode` (environment, project, else global), so a
+/// `disabled`/`resume_mode_off` notice can name it.
+pub fn resume_mode_source(project: &Value, environment: &BTreeMap<String, String>) -> &'static str {
+    let block = |settings: &Value| {
+        settings
+            .get("anthropicSubscriptionProvider")
+            .filter(|v| !v.is_null())
+            .or_else(|| settings.get("claudeSdkOauthProvider"))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    if environment
+        .get("SENPI_CLAUDE_SDK_OAUTH_RESUME")
+        .is_some_and(|value| valid_choice("resumeMode", &Value::String(value.clone())))
+    {
+        return "env";
+    }
+    if parse(&block(project)).contains_key("resumeMode") {
+        return "project";
+    }
+    "global"
+}
+/// `accountFallback` (senpi#3465): whether another managed account may serve after a failure. Defaults to true.
+pub fn account_fallback(settings: &ProviderSettings) -> bool {
+    settings
+        .values
+        .get("accountFallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 pub fn resolve_compaction_owner(settings: &ProviderSettings) -> &str {
     settings
@@ -295,6 +339,61 @@ mod tests {
         let second =
             load_from_disk(directory.path(), &agent, directory.path(), &env).expect("settings");
         assert_eq!(second.values["enabled"], false);
+    }
+    #[test]
+    fn account_fallback_and_resume_mode_source_follow_layer_precedence() {
+        assert!(account_fallback(&load(
+            &json!({}),
+            &json!({}),
+            &BTreeMap::new()
+        )));
+        let global =
+            json!({"anthropicSubscriptionProvider":{"accountFallback":false,"resumeMode":"off"}});
+        assert!(!account_fallback(&load(
+            &global,
+            &json!({}),
+            &BTreeMap::new()
+        )));
+        assert!(!account_fallback(&load(
+            &json!({}),
+            &json!({"anthropicSubscriptionProvider":{"accountFallback":"no"}}),
+            &[("SENPI_CLAUDE_SDK_OAUTH_ACCOUNT_FALLBACK".into(), "0".into())].into()
+        )));
+        assert!(account_fallback(&load(
+            &global,
+            &json!({}),
+            &[(
+                "SENPI_CLAUDE_SDK_OAUTH_ACCOUNT_FALLBACK".into(),
+                "TRUE".into()
+            )]
+            .into()
+        )));
+        let project = json!({"claudeSdkOauthProvider":{"resumeMode":"auto"}});
+        assert_eq!(resume_mode_source(&json!({}), &BTreeMap::new()), "global");
+        let project = json!({"anthropicSubscriptionProvider":{"resumeMode":"off"}});
+        assert_eq!(
+            load(&json!({}), &project, &BTreeMap::new()).resume_mode_source,
+            Some("project")
+        );
+        assert_eq!(
+            load(&json!({}), &json!({}), &BTreeMap::new()).resume_mode_source,
+            None
+        );
+        assert_eq!(resume_mode_source(&project, &BTreeMap::new()), "project");
+        assert_eq!(
+            resume_mode_source(
+                &project,
+                &[("SENPI_CLAUDE_SDK_OAUTH_RESUME".into(), "off".into())].into()
+            ),
+            "env"
+        );
+        assert_eq!(
+            resume_mode_source(
+                &project,
+                &[("SENPI_CLAUDE_SDK_OAUTH_RESUME".into(), "sometimes".into())].into()
+            ),
+            "project"
+        );
     }
     #[test]
     fn compaction_owner_resolves_with_environment_precedence() {

@@ -10,9 +10,13 @@ autotests = false
 url = "=2.5.8"
 serde_json = { version = "=1.0.149", features = ["raw_value"] }
 regex = "=1.12.3"
+dom_query = { version = "=0.27.0", default-features = false }
 sha2.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ai = { path = "../../maho-ai" }
+maho-core = { path = "../../maho-core" }
+maho-ext-anthropic-web-search = { path = "../maho-ext-anthropic-web-search" }
+maho-ext-openai-web-search = { path = "../maho-ext-openai-web-search" }
 maho-tools = { path = "../../maho-tools" }
 maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }
@@ -22,8 +26,6 @@ tokio = { version = "=1.52.3", features = ["time", "net", "io-util", "macros", "
 [dev-dependencies]
 tempfile.workspace = true
 maho-ext-host = { path = "../../maho-ext-host" }
-maho-ext-openai-web-search = { path = "../maho-ext-openai-web-search" }
-maho-ext-anthropic-web-search = { path = "../maho-ext-anthropic-web-search" }
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 
 [lints]

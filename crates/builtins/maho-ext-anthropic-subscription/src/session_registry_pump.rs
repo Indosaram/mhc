@@ -1,5 +1,5 @@
 use serde_json::Value;
-use crate::{session_registry_state::{SessionState,transition_session_state},session_turn_claim::{PreReplayBuffer,is_replay_for,result_matches_turn},errors::sdk_result_failure,refusal::refusal_error};
+use crate::{session_registry_state::{SessionState,transition_session_state},session_turn_claim::{PreReplayBuffer,is_foreign_result,is_replay_for,result_matches_turn},errors::sdk_result_failure,refusal::refusal_error};
 pub const DEFAULT_PRE_REPLAY_MAX_MESSAGES:usize=64;
 pub const DEFAULT_PRE_REPLAY_MAX_BYTES:usize=256*1024;
 pub const SESSION_TURN_ABORT_GRACE_MS:u64=1000;
@@ -14,7 +14,7 @@ impl PumpEntry {
         if self.active_turn.is_some() {anyhow::bail!("Concurrent Anthropic Subscription turn admission for session {session}");}
         if self.state==SessionState::Starting {transition_session_state(&mut self.state,SessionState::IdleSynced)?;}
         transition_session_state(&mut self.state,SessionState::TurnWaiting)?;
-        self.active_turn=Some(ActiveTurn {uuid:uuid.clone(),generation:self.generation,messages:Vec::new(),claimed:false,aborted:false,interrupt_receipt:None,buffer:PreReplayBuffer {messages:Vec::new(),bytes:0,max_messages,max_bytes}});
+        self.active_turn=Some(ActiveTurn {uuid:uuid.clone(),generation:self.generation,messages:Vec::new(),claimed:false,aborted:false,interrupt_receipt:None,buffer:PreReplayBuffer {messages:Vec::new(),bytes:0,max_messages,max_bytes,overflowed:false}});
         transition_session_state(&mut self.state,SessionState::TurnSent)?;
         Ok(serde_json::json!({"type":"user","message":message,"parent_tool_use_id":null,"uuid":uuid,"session_id":self.sdk_session_id}))
     }
@@ -43,10 +43,16 @@ impl PumpEntry {
         if !turn.claimed {
             if is_replay_for(&message,&turn.uuid) {self.sdk_session_id_confirmed=true;for buffered in self.claim()? {if buffered["type"]=="result" {self.finish(buffered,&mut output)?;}else {self.deliver(buffered,&mut output)?;}}}
             else if message["type"]=="stream_event" {self.active_turn.as_mut().expect("turn").buffer.push(message,current_generation)?;}
+            else if message["type"]=="result"&&result_matches_turn(&message,&turn.uuid,turn.claimed) {
+                if let Some(failure)=sdk_result_failure(&message) {return Err(failure.into());}
+                for buffered in self.claim()? {self.deliver(buffered,&mut output)?;}self.finish(message,&mut output)?;
+            }
+            // A foreign turn's result ends the segment the buffer dropped (senpi#2192).
+            else if message["type"]=="result"&&is_foreign_result(&message,&turn.uuid) {self.active_turn.as_mut().expect("turn").buffer.end_foreign_turn();}
+            // A result that fails before the replay surfaces as that failure; only a genuine success is an attribution error.
             else if message["type"]=="result" {
                 if let Some(failure)=sdk_result_failure(&message) {return Err(failure.into());}
-                if !result_matches_turn(&message,&turn.uuid,turn.claimed) {anyhow::bail!("Anthropic Subscription result arrived before replay claim");}
-                for buffered in self.claim()? {self.deliver(buffered,&mut output)?;}self.finish(message,&mut output)?;
+                anyhow::bail!("Anthropic Subscription result arrived before replay claim");
             }
             return Ok(output);
         }
@@ -68,6 +74,18 @@ mod tests {
         assert!(entry.handle(json!({"type":"stream_event","event":{"type":"content_block_delta"}}),true).expect("buffer").delivered.is_empty());
         let claim=entry.handle(json!({"type":"user","uuid":"u","isReplay":true}),true).expect("claim");assert_eq!(claim.delivered.len(),1);assert!(entry.sdk_session_id_confirmed);
         let result=entry.handle(json!({"type":"result","subtype":"success","user_message_uuid":"u"}),true).expect("result");assert_eq!(result.completion.expect("completion").messages.len(),2);assert_eq!(entry.state,SessionState::IdleSynced);
+    }
+    #[test]
+    fn foreign_result_before_replay_ends_the_foreign_segment_issue_2192() {
+        let mut entry=entry();entry.submit("s","u".into(),json!({}),1,262144).expect("submit");
+        for n in 0..3 {entry.handle(json!({"type":"stream_event","parent_tool_use_id":null,"n":n}),true).expect("foreign events are dropped, never fatal");}
+        let foreign=entry.handle(json!({"type":"result","subtype":"success","user_message_uuid":"other"}),true).expect("foreign result");
+        assert!(foreign.completion.is_none());
+        entry.handle(json!({"type":"stream_event","parent_tool_use_id":null,"n":"ours"}),true).expect("ours");
+        let claim=entry.handle(json!({"type":"user","uuid":"u","isReplay":true}),true).expect("claim");
+        assert_eq!(claim.delivered,[json!({"type":"stream_event","parent_tool_use_id":null,"n":"ours"})]);
+        let failed=entry.handle(json!({"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}),true);
+        assert!(failed.is_err());
     }
     #[test]
     fn result_only_uuid_is_supported_but_unattributed_success_is_rejected() {

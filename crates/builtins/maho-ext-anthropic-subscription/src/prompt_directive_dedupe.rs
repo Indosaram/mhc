@@ -2,7 +2,7 @@
 //! latest copy. Which tags are collapsed is registered at startup by whoever injects them, so this
 //! crate names no directive of its own.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::RwLock;
 
 /// A directive wrapped as `<name>...</name>`; earlier copies are replaced by `superseded`.
@@ -107,7 +107,10 @@ pub fn dedupe_directive_blocks(blocks: &[Value], tag: &DirectiveTag) -> DedupeRe
             offset = span.end;
         }
         replaced.push_str(&text[offset..]);
-        json!({"type":"text", "text":replaced})
+        // senpi `{ ...block, text }`: only the text changes, so a cache breakpoint on the block survives.
+        let mut block = block.clone();
+        block["text"] = Value::String(replaced);
+        block
     }).collect();
     DedupeResult { blocks: next, collapsed_directives: total - 1 }
 }
@@ -115,6 +118,7 @@ pub fn dedupe_directive_blocks(blocks: &[Value], tag: &DirectiveTag) -> DedupeRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     const OPEN: &str = "<focus-mode>";
     const CLOSE: &str = "</focus-mode>";
     const SUPERSEDED: &str = "[focus directive superseded; the latest focus directive block below applies]";
@@ -193,6 +197,14 @@ mod tests {
         assert_eq!(result.collapsed_directives, 1);
         assert_eq!(result.blocks[0], block("[registry test directive superseded; the latest registry test directive block below applies]"));
         assert_eq!(result.blocks[1], block(&directive("b")));
+    }
+    #[test]
+    fn a_rewritten_block_keeps_its_cache_control_and_other_fields() {
+        let mut marked = block(&format!("history {}", directive("prior")));
+        marked["cache_control"] = json!({"type":"ephemeral","ttl":"1h"});
+        let result = dedupe(&[marked, block(&directive("last"))]);
+        assert_eq!(result.collapsed_directives, 1);
+        assert_eq!(result.blocks[0], json!({"type":"text","text":format!("history {SUPERSEDED}"),"cache_control":{"type":"ephemeral","ttl":"1h"}}));
     }
     #[test]
     fn payload_counts_utf8_not_utf16() {
