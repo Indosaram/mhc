@@ -87,6 +87,7 @@ impl GoalRuntime {
                 }
             }),
         );
+        events.emit("wake_source_state_request", &serde_json::json!({}));
         Ok(())
     }
     async fn refresh(
