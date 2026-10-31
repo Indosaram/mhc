@@ -7,7 +7,10 @@ const HANDOFF_PROBE_TIMEOUT_MS:u64=10_000;
 /// The longest a handoff holds the ensure lock: its probe of the running host, the two session counts an
 /// unregistered host gets (before the swap and the recount after it), then the successor's start.
 pub const HANDOFF_LOCK_HOLD_MS:u64=HANDOFF_PROBE_TIMEOUT_MS+2*crate::host_handoff_unregistered::SESSION_COUNT_TIMEOUT_MS+crate::host_successor::SUCCESSOR_START_BUDGET_MS;
-pub struct HandoffOptions{pub host_args:Vec<String>,pub policy:Option<crate::host_lifecycle::HostLifecyclePolicy>,pub env:std::collections::HashMap<String,Option<String>>,pub launch_profile_id:String,pub readiness_ms:u64}
+/// One handoff request. `launch` is how the successor is launched from supervisor argv: `None` is THIS process's
+/// runtime; a running host performing an idle handover passes the runtime of the CLI that asked for it (its
+/// `command` and leading `args`, the supervisor argv appended).
+pub struct HandoffOptions{pub host_args:Vec<String>,pub policy:Option<crate::host_lifecycle::HostLifecyclePolicy>,pub env:std::collections::HashMap<String,Option<String>>,pub launch_profile_id:String,pub readiness_ms:u64,pub launch:Option<crate::host_launch::HostLaunch>}
 pub async fn handoff_host(socket:&str,agent_dir:&std::path::Path,options:HandoffOptions)->std::io::Result<Result<crate::host_successor::RunningSuccessor,HandoffRefusal>>{
     let socket=crate::host_ensure::normalize_socket_path(socket);
     let paths=crate::host_daemon_paths::create_host_daemon_paths(socket,agent_dir);
@@ -35,7 +38,11 @@ pub async fn launch_successor(socket:&str,agent_dir:&std::path::Path,options:Han
         Err(crate::host_successor::PrepareSuccessorError::SocketReplaced)=>return Ok(Err(HandoffRefusal{reason:"socket_replaced",upgradeable:true,detail:None})),
         Err(error)=>return Err(std::io::Error::other(error)),
     };
-    let launch=match crate::host_launch::default_host_launch(&prepared.argv){Ok(launch)=>launch,Err(error)=>{restore_settings(&context.paths,boot_settings.as_deref());return Err(error);}};
+    let launch=match &options.launch{
+        Some(base)=>Ok(crate::host_launch::HostLaunch{command:base.command.clone(),args:base.args.iter().chain(&prepared.argv).cloned().collect()}),
+        None=>crate::host_launch::default_host_launch(&prepared.argv),
+    };
+    let launch=match launch{Ok(launch)=>launch,Err(error)=>{restore_settings(&context.paths,boot_settings.as_deref());return Err(error);}};
     let env=crate::host_successor::successor_env(std::env::vars().collect(),generation,&instance_id,&context.paths.dir.to_string_lossy(),Some(&agent_dir.to_string_lossy()),&options.env);
     crate::host_successor::start_successor_gated(context,socket,prepared.replaced,crate::host_successor::SuccessorLaunchOptions{launch,env,instance_id,generation,launch_profile_id:options.launch_profile_id,readiness_ms:options.readiness_ms},Some(boot_settings),drain_gate).await
 }

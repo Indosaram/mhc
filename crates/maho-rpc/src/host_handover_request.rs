@@ -336,6 +336,7 @@ mod tests {
             env: Default::default(),
             launch_profile_id: String::new(),
             readiness_ms: 1,
+            launch: None,
         }
     }
     fn terms() -> IdleHandoverTerms {
