@@ -7,13 +7,13 @@ use maho_ext_tool_search::engine::marker::derive_mcp_registration_id;
 use maho_ext_tool_search::service::{FeederActivate,ToolSearchService};
 use serde_json::json;
 
-use crate::active_set::register_tools_preserving_active_set_with;
+use crate::active_set::register_rendered_tools_preserving_active_set_with;
 use crate::catalog::McpToolCatalogEntry;
 use crate::config_schema::{McpSettings,OutputGuardSettings};
 use crate::guard::output_guard::McpOutputArtifacts;
 use crate::tool_registrar::McpToolRegistrar;
 use super::proxy::create_mcp_proxy_tool;
-use super::register::{build_mcp_tool_definitions,map_mcp_catalog_names};
+use super::register::{build_mcp_tool_definitions,map_mcp_catalog_names,mcp_tool_renderers};
 
 fn poisoned<T>(lock:&Mutex<T>)->std::sync::MutexGuard<'_,T> {lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
 
@@ -72,6 +72,7 @@ pub struct McpTierBRegistration {pub searchable:Vec<SearchableMcpTool>,pub activ
 #[derive(Default)]
 pub struct McpTierBRegistry {pub managed_names:BTreeSet<String>,pub promoted_names:Option<Arc<Mutex<BTreeSet<String>>>>}
 
+fn with_mcp_tool_renderers(definitions:Vec<ToolDefinition>)->Vec<(ToolDefinition,Option<crate::tool_registrar::McpToolRenderers>)> {definitions.into_iter().map(|definition|{let renderers=mcp_tool_renderers(&definition.name);(definition,Some(renderers))}).collect()}
 fn is_legacy_mcp_registration_name(name:&str)->bool {name.starts_with("mcp_")}
 fn union_stable(current:&[String],added:&[String])->Vec<String> {let mut seen=BTreeSet::new();current.iter().chain(added.iter()).filter(|name|seen.insert((*name).clone())).cloned().collect()}
 
@@ -109,7 +110,7 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
                 for name in &known {
                     let is_stub=poisoned(&stubbed).contains(name);
                     if is_stub && let Some(full)=full_by_name.get(name) {
-                        registrar.register_tool(full.clone())?;
+                        registrar.register_tool_with_renderers(full.clone(),mcp_tool_renderers(name))?;
                         poisoned(&stubbed).remove(name);
                         poisoned(&promoted).insert(name.clone());
                     }
@@ -127,25 +128,25 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
     let current_base:Vec<String>=reference.iter().filter(|name|!is_legacy_mcp_registration_name(name) && !previous_managed_names.contains(*name) && !managed_names.contains(*name)).cloned().collect();
     if !input.search_mode {
         let intended=order_active_set(&current_base.iter().cloned().chain(active_mcp_names.iter().cloned()).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
-        register_tools_preserving_active_set_with(registrar.as_ref(),full_defs,Some(intended))?;
+        register_rendered_tools_preserving_active_set_with(registrar.as_ref(),with_mcp_tool_renderers(full_defs),Some(intended))?;
         return Ok(McpTierBRegistration {searchable,activate});
     }
     if !stub_swap {
         let intended=order_active_set(&current_base.iter().cloned().chain(active_mcp_names.iter().cloned()).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
-        register_tools_preserving_active_set_with(registrar.as_ref(),full_defs,Some(intended))?;
+        register_rendered_tools_preserving_active_set_with(registrar.as_ref(),with_mcp_tool_renderers(full_defs),Some(intended))?;
         return Ok(McpTierBRegistration {searchable,activate});
     }
     let direct_active:BTreeSet<String>=active_mcp_names.iter().cloned().collect();
     let promoted_snapshot:BTreeSet<String>=poisoned(&promoted).clone();
-    let mut to_register:Vec<ToolDefinition>=Vec::new();
+    let mut to_register:Vec<(ToolDefinition,Option<crate::tool_registrar::McpToolRenderers>)>=Vec::new();
     for definition in full_defs {
-        if direct_active.contains(&definition.name) || promoted_snapshot.contains(&definition.name) {to_register.push(definition);continue;}
+        if direct_active.contains(&definition.name) || promoted_snapshot.contains(&definition.name) {let renderers=mcp_tool_renderers(&definition.name);to_register.push((definition,Some(renderers)));continue;}
         poisoned(&stubbed).insert(definition.name.clone());
         let activate=activate.clone();let stub_name=definition.name.clone();let promote_name=definition.name.clone();
-        to_register.push(build_mcp_stub_definition(&stub_name,Some(McpStubPromotion {full:definition,promote:Arc::new(move || activate(std::slice::from_ref(&promote_name)))})));
+        to_register.push((build_mcp_stub_definition(&stub_name,Some(McpStubPromotion {full:definition,promote:Arc::new(move || activate(std::slice::from_ref(&promote_name)))})),None));
     }
     let all_mcp_names:Vec<String>=full_by_name.keys().cloned().collect();
     let intended=order_active_set(&current_base.iter().cloned().chain(all_mcp_names).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
-    register_tools_preserving_active_set_with(registrar.as_ref(),to_register,Some(intended))?;
+    register_rendered_tools_preserving_active_set_with(registrar.as_ref(),to_register,Some(intended))?;
     Ok(McpTierBRegistration {searchable,activate})
 }
