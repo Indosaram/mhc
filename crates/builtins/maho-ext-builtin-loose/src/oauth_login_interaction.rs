@@ -79,7 +79,7 @@ impl AuthInteraction for ExtensionLoginInteraction {
         }
         let result = async {
             if signal.aborted() { anyhow::bail!(LOGIN_CANCELLED_MESSAGE); }
-            let options = ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: None };
+            let options = ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: None, ..Default::default() };
             let answer = match prompt.kind {
                 AuthPromptKind::Select { message, options: choices } => {
                     let labels: Vec<String> = choices.iter().map(|choice| choice.label.clone()).collect();

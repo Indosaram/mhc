@@ -1637,6 +1637,25 @@ async fn compaction_and_retry_events_mount_status_indicators() {
     );
 }
 
+/// senpi#4295 (a37de3fcb3): `session_recovered` is shown as `showWarning(sanitizeTerminalLabel(notice))`.
+#[tokio::test]
+async fn session_recovered_shows_the_sanitized_notice_as_a_warning() {
+    use maho_ext_api::AgentSessionEvent;
+    use maho_tui::{tui::Component, utils::strip_terminal_sequences};
+    let (mut mode, _directory) = native_mode();
+    mode.handle_session_event(&AgentSessionEvent::SessionRecovered {
+        cause: "disk_full".into(),
+        backup_path: "/tmp/session.jsonl.torn".into(),
+        dropped_bytes: 42,
+        notice: "The last message wasn't saved\u{1b}[31m completely\n(disk full).".into(),
+    });
+    let frame = strip_terminal_sequences(&mode.render(200).join("\n"));
+    assert!(
+        frame.contains("Warning: The last message wasn't saved completely (disk full)."),
+        "the notice is a sanitized one-line warning: {frame}"
+    );
+}
+
 #[tokio::test]
 async fn idle_mode_skips_frame_rebuilds_until_a_state_change() {
     use maho_ext_api::AgentSessionEvent;
@@ -1860,6 +1879,7 @@ fn extension_select_counts_down_its_timeout_in_the_title_from_the_mode_tick() {
             options: vec!["a".into(), "b".into()],
             timeout_ms: Some(2_000),
             reply,
+            private: Default::default(),
         },
     );
     assert!(mode.render(80).join("\n").contains("Pick (2s)"));

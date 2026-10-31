@@ -151,14 +151,11 @@ async fn open_endpoint(
     // write and the bind instead of running inside the registry lock.
     drop(maho_rpc::host_daemon_registration::this_process_start_time());
     // Bound while the header is written, awaited before the endpoint is registered.
-    // mhc's `AgentSession` has no `persistHeaderNow`; maho-rpc's release adapter writes the header from
-    // the manager's own header and entries, as a host release does.
+    // senpi `sessionManager.persistHeaderNow()`: the manager writes its header and records the file as
+    // the one this process created, which the header-only rule may later remove.
     let header_session = session.clone();
-    let header_durable = tokio::spawn(async move {
-        use maho_rpc::session_release_interrupt::ReleasableSession;
-        maho_rpc::session_release_adapter::AgentSessionRelease::new((*header_session).clone())
-            .persist_header_now()
-            .await
+    let header_durable = tokio::task::spawn_blocking(move || {
+        header_session.with_session_manager_mut(|manager| manager.persist_header_now())
     });
     let instance_id = uuid::Uuid::new_v4().to_string();
     let socket = resolve_tui_socket(agent_dir, &instance_id)?;
@@ -174,23 +171,25 @@ async fn open_endpoint(
     let pass_failing = failing.clone();
     let error_failing = failing.clone();
     let error_surface = surface.clone();
+    let wake_session = session.clone();
     let scheduler = WakeScheduler::new(
         Arc::new(
             move |event: Value| -> BoxFuture<'static, Result<Value, String>> {
                 let drain = drain.clone();
                 let failing = pass_failing.clone();
+                let session = wake_session.clone();
                 Box::pin(async move {
                     // senpi emits the wake into the session's extensions first
-                    // (`extensionRunner.emit(event)`). OPEN: `AgentSession` exposes no way to emit a
-                    // `session_control_wake` extension event (the runner's `emit_session_control_wake`
-                    // is unreachable from here), so only the registrant's drain runs.
-                    // senpi's drain may throw; mhc's returns no error, so a panicking drain is the
-                    // failed pass (and must not take the scheduler's task down with it).
+                    // (`extensionRunner.emit(event)`); handler failures go to the runner's error
+                    // listeners, and only an inactive runner fails the pass.
+                    session.emit_session_control_wake(&event).await?;
+                    // senpi's drain may throw: an `Err` is the failed pass. A panicking drain fails
+                    // the pass too, and must not take the scheduler's task down with it.
                     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
                         async move { drain(event).await },
                     ))
                     .await
-                    .map_err(|panic| panic_reason(panic.as_ref()))?
+                    .map_err(|panic| panic_reason(panic.as_ref()))??
                     .unwrap_or_else(|| json!({"admitted": []}));
                     *failing
                         .lock()
@@ -224,6 +223,32 @@ async fn open_endpoint(
     cleanups.push(Box::pin(async move { disposed_attachments.dispose() }));
     let command_scheduler = scheduler.clone();
     let hold_context = context.clone();
+    // The effect ledger's view of this session, and the session events its ledgers react to; both go
+    // with the endpoint (senpi keys the ledgers by the session object).
+    let effect_route = format!("tui:{instance_id}");
+    let effect_session: Arc<dyn maho_rpc::effect_session::EffectSession> =
+        Arc::new(maho_rpc::agent_effect_session::AgentEffectSession::new(
+            (**session).clone(),
+            effect_route.clone(),
+        ));
+    let effect_events = Arc::new(Mutex::new(Some(
+        maho_rpc::agent_effect_session::AgentEffectSession::observe(
+            session,
+            effect_session.clone(),
+        ),
+    )));
+    let release_effects: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        drop(
+            effect_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+        maho_rpc::client_admissions::ClientAdmissions::forget(&effect_route);
+        maho_rpc::effect_ledger::EffectLedger::forget(&effect_route);
+    });
+    let released_effects = release_effects.clone();
+    cleanups.push(Box::pin(async move { released_effects() }));
     let commands = Arc::new(ControlCommandContext {
         instance_id: instance_id.clone(),
         session: session.clone(),
@@ -236,7 +261,7 @@ async fn open_endpoint(
             session: session.clone(),
             attachments: attachments.clone(),
             editor_hold: Arc::new(move || editor_hold(&hold_context)),
-            effect_session: None,
+            effect_session: Some(effect_session),
         },
     });
     let server: Arc<ControlServer> = Arc::new(
@@ -282,6 +307,7 @@ async fn open_endpoint(
         scheduler,
         feed,
         stop_inbox,
+        release_effects,
         wake,
     });
     // Anything that reached the inbox before this point is picked up by this first pass, and

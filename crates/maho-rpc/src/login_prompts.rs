@@ -28,7 +28,7 @@ impl Drop for DialogSignal{fn drop(&mut self){for (signal,id) in self.listeners.
 pub async fn on_prompt(ui:&dyn ExtensionUi,login:&AbortSignal,prompt:OAuthPrompt)->Result<String,ExtensionFailure>{
     let dialog=DialogSignal::new(login,prompt.signal.as_ref());
     if dialog.signal.is_aborted(){return Err(ExtensionFailure::new("Login cancelled"));}
-    let value=ui.input(&prompt.message,prompt.placeholder.as_deref(),ExtensionUiDialogOptions{signal:Some(dialog.signal.clone()),timeout_ms:None}).await;
+    let value=ui.input(&prompt.message,prompt.placeholder.as_deref(),ExtensionUiDialogOptions{signal:Some(dialog.signal.clone()),timeout_ms:None,..Default::default()}).await;
     if dialog.signal.is_aborted()||value.is_none(){return Err(ExtensionFailure::new("Login cancelled"));}
     Ok(value.expect("prompt value checked"))
 }
@@ -36,7 +36,7 @@ pub async fn on_select(ui:&dyn ExtensionUi,login:&AbortSignal,prompt:OAuthSelect
     let dialog=DialogSignal::new(login,prompt.signal.as_ref());
     if dialog.signal.is_aborted(){return Err(ExtensionFailure::new("Login cancelled"));}
     let labels=prompt.options.iter().map(|option|option.label.clone()).collect::<Vec<_>>();
-    let value=ui.select(&prompt.message,&labels,ExtensionUiDialogOptions{signal:Some(dialog.signal.clone()),timeout_ms:None}).await;
+    let value=ui.select(&prompt.message,&labels,ExtensionUiDialogOptions{signal:Some(dialog.signal.clone()),timeout_ms:None,..Default::default()}).await;
     if dialog.signal.is_aborted(){return Err(ExtensionFailure::new("Login cancelled"));}
     Ok(value.and_then(|label|prompt.options.iter().find(|option|option.label==label).map(|option|option.id.clone())))
 }

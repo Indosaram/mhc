@@ -6672,35 +6672,6 @@ impl AgentSession {
         }
     }
 
-    /// senpi `session.extensionRunner.emit(event)` for one `session_control_wake` pass (`{reason, reasons,
-    /// delivery_ids?}`); a session with no runner bound emits nothing.
-    pub async fn emit_session_control_wake(&self, event: &Value) -> Result<(), String> {
-        let mut runner = self.extension_runner.lock().await.clone();
-        let Some(runner) = runner.as_mut() else {
-            return Ok(());
-        };
-        let strings = |value: &Value| {
-            value.as_array().map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-        };
-        let reason = event["reason"].as_str().unwrap_or("command").to_owned();
-        runner
-            .emit(maho_ext_api::ExtensionEvent::SessionControlWake {
-                source: "session_control".to_owned(),
-                reasons: strings(&event["reasons"]).unwrap_or_else(|| vec![reason.clone()]),
-                reason,
-                delivery_ids: strings(&event["delivery_ids"]),
-            })
-            .await
-            .map(|_| ())
-            .map_err(|failure| failure.message)
-    }
-
     async fn emit_held_wakes_released(
         &self,
         sources: BTreeMap<String, usize>,
@@ -20521,6 +20492,37 @@ impl AgentSession {
             };
             let _ = runner.emit_session_shutdown_event(event, false).await;
         }
+    }
+
+    /// senpi `session.extensionRunner.emit(event)` for a `session_control_wake` event (the control
+    /// endpoints' wake pass). A handler's failure is reported through the runner's error listeners, as
+    /// senpi's `emit` does; only an inactive runner fails the pass. No bound runner is a no-op.
+    pub async fn emit_session_control_wake(&self, event: &Value) -> Result<(), String> {
+        let strings = |value: &Value| -> Vec<String> {
+            value
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let reason = event["reason"].as_str().unwrap_or("inbox").to_owned();
+        let reasons = strings(&event["reasons"]);
+        let delivery_ids = event
+            .get("delivery_ids")
+            .filter(|ids| ids.is_array())
+            .map(strings);
+        let mut guard = self.extension_runner.lock().await.clone();
+        let Some(runner) = guard.as_mut() else {
+            return Ok(());
+        };
+        runner
+            .emit_session_control_wake(reason, reasons, delivery_ids)
+            .await
+            .map_err(|failure| failure.message)
     }
 
     /// senpi `emitSessionShutdownEvent(runner, {reason: "quit"}, {processExit})`: with `process_exit` the
@@ -35102,11 +35104,10 @@ mod tests {
             .register_control_endpoint(
                 crate::extensions::session_control_types::RegisterControlEndpointOptions {
                     inbox_dir: "/tmp/inbox".into(),
-                    drain: Arc::new(
-                        |_: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
-                            Box::pin(async { None })
-                        },
-                    ),
+                    drain: Arc::new(|_: Value| {
+                        Box::pin(async { Ok(None) })
+                            as futures::future::BoxFuture<'static, Result<Option<Value>, String>>
+                    }),
                     is_session_referenced: None,
                 },
             )

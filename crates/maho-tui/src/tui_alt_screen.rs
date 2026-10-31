@@ -87,6 +87,7 @@ pub type CopySelectionHook = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<bool
 pub type CopySelectionHookWithError = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<Result<(), String>>>;
 
 const SELECTION_AUTO_SCROLL_INTERVAL_MS: u64 = 50;
+const COPY_ERROR_FLASH_DURATION_MS: u64 = 5000;
 
 fn default_search_match_style(text: &str) -> String {
     format!("\x1b[4m{text}\x1b[24m")
@@ -969,14 +970,18 @@ impl TuiAltScreen {
         if row < 0 || row as usize >= screen.len() || image_stub::is_image_line(&screen[row as usize]) {
             return screen;
         }
-        let scrollbar_column = get_scrollbar_geometry(boxed, true).map(|geometry| geometry.column);
-        let available_width = ((scrollbar_column.unwrap_or(clip.x + clip.width as i64)) - clip.x).max(0) as usize;
-        let text = truncate_to_width(&indicator(), available_width, "", false);
+        let scrollbar_column = get_scrollbar_geometry(boxed, false).map(|geometry| geometry.column);
+        // senpi#9136: center in the full clip so an auto scrollbar hiding or reappearing never
+        // moves the label; only truncate at the scrollbar edge.
+        let label = truncate_to_width(&indicator(), clip.width, "", false);
+        let column = clip.x + (clip.width.saturating_sub(visible_width(&label)) / 2) as i64;
+        let right_edge = scrollbar_column.unwrap_or(clip.x + clip.width as i64);
+        let available_width = (right_edge - column).max(0) as usize;
+        let text = truncate_to_width(&label, available_width, "", false);
         let text_width = visible_width(&text);
         if text_width == 0 {
             return screen;
         }
-        let column = clip.x + ((available_width.saturating_sub(text_width)) / 2) as i64;
         let mut result = screen;
         let base = result[row as usize].clone();
         result[row as usize] = composite_tui_line(&base, &text, column.max(0) as usize, text_width, width);
@@ -1885,24 +1890,25 @@ impl TuiAltScreen {
     pub fn tick(&mut self, now_ms: u64) -> bool {
         self.now_ms = now_ms;
         let mut render = false;
-        let mut finished = Vec::new();
-        let mut errors = Vec::new();
+        let mut finished: Vec<Result<(), String>> = Vec::new();
         self.pending_copy_results.retain(|receiver| match receiver.try_recv() {
             Ok(result) => {
-                finished.push(result.is_ok());
-                if let Err(error) = result { errors.push(error); }
+                finished.push(result);
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                finished.push(false);
+                finished.push(Err("Copy failed".to_string()));
                 false
             }
         });
-        for error in errors { self.flash(&error, None, now_ms); }
-        for ok in finished {
-            if ok { self.flash("Copied!", None, now_ms); }
-            else { self.flash("Copy failed", None, now_ms); }
+        // senpi's `copyTextToClipboard`: one flash per settled copy; failures (the hook's own
+        // message, else "Copy failed") stay up for COPY_ERROR_FLASH_DURATION_MS.
+        for result in finished {
+            match result {
+                Ok(()) => self.flash("Copied!", None, now_ms),
+                Err(error) => self.flash(&error, Some(COPY_ERROR_FLASH_DURATION_MS), now_ms),
+            }
             render = true;
         }
         if self.flashes.tick(now_ms) {
