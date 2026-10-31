@@ -88,6 +88,8 @@ pub mod kibitzer_child;
 #[cfg(feature = "omo")]
 #[path = "kibitzer_tools.rs"]
 pub mod kibitzer_tools;
+#[path = "list_models.rs"]
+pub mod list_models;
 #[path = "lane38_process_boundary_probe.rs"]
 pub mod lane38_process_boundary_probe;
 #[path = "management_http.rs"]
