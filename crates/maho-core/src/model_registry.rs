@@ -357,6 +357,28 @@ impl ModelRegistry {
         .await
         .map(|_| ())
     }
+    /// senpi `orderCredentialAccounts`: sets the provider's account order (`None` clears it) under the same
+    /// account mutation a pin or remove holds.
+    pub async fn order_credential_accounts(
+        &self,
+        provider: &str,
+        names: Option<&[String]>,
+        agent_dir: &str,
+    ) -> Result<(), String> {
+        let _mutation = self.auth_storage.account_mutation.lock().await;
+        let repository = crate::credential_pool::state_store::CredentialSlotRepository::new(
+            &crate::credential_pool::state_store::credential_pool_state_path(agent_dir),
+        );
+        crate::credential_account_order::order_credential_accounts(
+            &self.auth_storage,
+            provider,
+            names,
+            &|key| std::env::var(key).ok(),
+            &repository,
+            maho_ai::utils::diagnostics::now_ms().max(0) as u64,
+        )
+        .await
+    }
     pub async fn remove_credential_account(
         &self,
         provider: &str,

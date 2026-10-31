@@ -205,3 +205,24 @@ impl ReleasableSession for AgentSessionRelease {
             .await
     }
 }
+
+/// `unload_session` reads the same live session plus its wake sources and durable id. No `EffectSession` adapter over
+/// `AgentSession` exists yet (the effect ledger is driven through `EffectSession` fakes only), so an `effectId` unload
+/// is refused as `unsupported`, as senpi does for a session without an effect ledger.
+impl crate::session_unload::UnloadableSession for AgentSessionRelease {
+    fn active_wake_sources(&self) -> Vec<String> {
+        self.session.active_wake_sources()
+    }
+
+    fn durable_session_id(&self) -> String {
+        self.session.session_id()
+    }
+
+    fn session_file(&self) -> Option<String> {
+        self.session.session_file()
+    }
+
+    fn effect_session(&self) -> Option<Arc<dyn crate::effect_session::EffectSession>> {
+        None
+    }
+}

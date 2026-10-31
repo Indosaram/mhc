@@ -44,6 +44,23 @@ mod tests {
     async fn exhausted_candidates_do_not_repeat_within_turn(){
         let mut controller=controller();assert!(controller.can_try_fallback());assert!(controller.try_fallback(FallbackReason::Transient,Default::default()).await.expect("fallback"));assert!(!controller.can_try_fallback());assert_eq!(controller.exhausted_chain_key.as_deref(),Some("p/a"));
     }
+    /// senpi controller.ts `applyCandidate`/`maybeRestorePrimary`: a usage-limited switch names who the limit binds, and a
+    /// fallback that is itself unusable while the original is not returns early as `fallback-unusable` (senpi#2376).
+    #[tokio::test]
+    async fn a_limit_rides_the_applied_event_and_a_stranded_fallback_reverts_early(){
+        let mut controller=controller();
+        assert!(controller.try_fallback(FallbackReason::Transient,SelectorFailure{retry_after_ms:None,error_message:Some("You have hit your session limit")}).await.expect("fallback"));
+        assert!(matches!(controller.deps.events.last(),Some(FallbackEvent::Applied{limit:Some(maho_ai::types::UsageLimitScope::Account),..})));
+        // Not stranded and the policy holds the fallback.
+        assert!(!controller.maybe_restore_primary(FallbackRevertPolicy::Never).await.expect("restore"));
+        // The primary's transient cooldown lifts; only the fallback's own model limit stands.
+        controller.cooldowns.clear_all();
+        let fallback=controller.deps.current.0.clone();assert_eq!(fallback.id,"b");
+        controller.note_unusable(&fallback,SelectorFailure{retry_after_ms:None,error_message:Some("You've hit your weekly limit for premium models")});
+        assert!(controller.maybe_restore_primary(FallbackRevertPolicy::Never).await.expect("restore"));
+        assert!(matches!(controller.deps.events.last(),Some(FallbackEvent::Reverted{stranded:true,..})));
+        assert_eq!(controller.deps.current.0.id,"a");
+    }
     /// senpi test/suite/regressions/2491-request-refused.test.ts: a refused provider's candidates are skipped
     /// for the rest of the turn.
     #[test]
@@ -65,8 +82,10 @@ mod tests {
 }
 #[derive(Debug,Clone)]
 pub enum FallbackEvent {
-    Applied {from:String,to:String,chain_key:String,reason:FallbackReason},
-    Reverted {from:String,to:String},
+    Applied {from:String,to:String,chain_key:String,reason:FallbackReason,limit:Option<maho_ai::types::UsageLimitScope>},
+    /// `stranded`: the fallback itself could not serve (billing or an account limit) while the original could, so
+    /// the session returned early (senpi `cause: "fallback-unusable"`).
+    Reverted {from:String,to:String,stranded:bool},
 }
 pub trait RetryFallbackDeps {
     fn settings(&self)->ResolvedRetryFallbackSettings;
@@ -141,6 +160,8 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         let Some((current,current_thinking))=self.deps.current() else{return Ok(false);};
         let Some((key,selector,model))=self.next_candidate(true,None) else{return Ok(false);};
         let from=format_selector(&current,None);let to=format_selector(&model,None);
+        // senpi `usageLimitScope(failure.errorMessage)`: who the limit that caused the switch binds.
+        let limit=super::usage_limit::usage_limit_scope_text(failure.error_message);
         if matches!(reason,FallbackReason::Transient|FallbackReason::HardError|FallbackReason::Billing){
             self.cooldowns.note(&from,failure);
             self.deps.log(FallbackLogLevel::Info,"cooldown_noted",&[("selector",Some(from.as_str())),("errorMessage",failure.error_message)]);
@@ -151,7 +172,7 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         self.state=Some(ActiveFallbackState{chain_key:key.clone(),original_selector:prior.as_ref().map_or_else(||from.clone(),|s|s.original_selector.clone()),original_thinking_level:prior.as_ref().and_then(|s|s.original_thinking_level).or(current_thinking),last_applied_thinking_level:Some(thinking),pinned_by_refusal:refusal,pinned_by_billing:billing,pinned:refusal||billing});
         let reason_name=match reason{FallbackReason::Transient=>"transient",FallbackReason::Refusal=>"refusal",FallbackReason::HardError=>"hard-error",FallbackReason::Billing=>"billing"};
         self.deps.log(FallbackLogLevel::Info,"fallback_applied",&[("from",Some(from.as_str())),("to",Some(to.as_str())),("chainKey",Some(key.as_str())),("reason",Some(reason_name))]);
-        self.deps.emit(FallbackEvent::Applied{from,to,chain_key:key,reason});Ok(true)
+        self.deps.emit(FallbackEvent::Applied{from,to,chain_key:key,reason,limit});Ok(true)
     }
     fn unusable(&mut self)->super::unusable::UnusableEntries<'_> {super::unusable::UnusableEntries::new(&mut self.cooldowns,&mut self.account_errors)}
     /// senpi `noteHealthFailure` (unusable half): an account limit spends the whole provider, a model limit
@@ -178,14 +199,18 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
     }
     pub async fn maybe_restore_primary(&mut self,policy:FallbackRevertPolicy)->Result<bool,String> {
         let Some(state)=self.state.clone() else{return Ok(false);};
-        if state.pinned||policy!=FallbackRevertPolicy::CooldownExpiry||self.cooldowns.is_suppressed(&state.original_selector){return Ok(false);}
+        if state.pinned{return Ok(false);}
         let models=self.deps.models();let Some(selector)=parse_fallback_selector(&state.original_selector,&models) else{return Ok(false);};
         if !self.deps.is_auth_available(&selector.provider){return Ok(false);}
         let Some(model)=models.into_iter().find(|m|m.provider==selector.provider&&m.id==selector.id) else{return Ok(false);};
         let Some((current,level))=self.deps.current() else{return Ok(false);};
+        // senpi#2376: a fallback that is itself known unusable while the original is not is never where the session
+        // rests; that outranks both the cooldown and the policy.
+        let stranded=self.unusable().is_unusable(&current)&&!self.unusable().is_unusable(&model);
+        if !stranded&&(policy!=FallbackRevertPolicy::CooldownExpiry||self.cooldowns.is_suppressed(&state.original_selector)){return Ok(false);}
         let thinking=if level==state.last_applied_thinking_level{state.original_thinking_level.or(level)}else{level}.unwrap_or(ModelThinkingLevel::Off);
         self.deps.switch_model(model,thinking,true).await?;let from=format_selector(&current,None);self.state=None;
         self.deps.log(FallbackLogLevel::Info,"fallback_reverted",&[("from",Some(from.as_str())),("to",Some(state.original_selector.as_str()))]);
-        self.deps.emit(FallbackEvent::Reverted{from,to:state.original_selector});Ok(true)
+        self.deps.emit(FallbackEvent::Reverted{from,to:state.original_selector,stranded});Ok(true)
     }
 }

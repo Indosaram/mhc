@@ -3327,6 +3327,10 @@ pub enum ExtensionEvent {
     SessionControlWake {
         source: String,
         reason: String,
+        /// senpi `SessionControlWakeEvent.reasons`: every edge the pass covers.
+        reasons: Vec<String>,
+        /// Deliveries a `wake` command named; absent for every other edge.
+        delivery_ids: Option<Vec<String>>,
     },
     ToolActivated {
         tool_names: Vec<String>,
@@ -6968,6 +6972,8 @@ pub enum AgentSessionEvent {
         to: String,
         chain_key: String,
         reason: String,
+        /// Set when a usage limit caused the switch: `Model` binds one model, `Account` the whole provider.
+        limit: Option<maho_ai::types::UsageLimitScope>,
     },
     RetryFallbackSucceeded {
         model: String,
@@ -6976,6 +6982,9 @@ pub enum AgentSessionEvent {
     RetryFallbackReverted {
         from: String,
         to: String,
+        /// `fallback-unusable`: the fallback could not serve (billing or an account limit), so the session returned
+        /// early.
+        cause: Option<String>,
     },
     RetryFallbackExhausted {
         chain_key: String,

@@ -49,7 +49,7 @@ pub async fn launch_successor(socket:&str,agent_dir:&std::path::Path,options:Han
     // senpi `startSuccessor`: the successor inherits the predecessor's lifetime owner (and its pipe when that owner is this process).
     let owner_pipe=match crate::host_lifecycle_activity::inherit_host_owner(context.host.instance_id.as_deref().map(|id|crate::host_daemon_paths::generation_paths(&context.paths,id).dir).as_deref(),&crate::host_daemon_paths::generation_paths(&context.paths,&instance_id).dir){Ok(pipe)=>pipe,Err(error)=>{restore_settings(&context.paths,boot_settings.as_deref());return Err(error);}};
     let env=successor_launch_env(&std::env::vars().collect(),agent_dir,&options,&context.paths,&instance_id,generation,if cfg!(windows){"win32"}else{std::env::consts::OS});
-    crate::host_successor::start_successor_gated(context,socket,prepared.replaced,crate::host_successor::SuccessorLaunchOptions{launch,env,instance_id,generation,launch_profile_id:options.launch_profile_id,readiness_ms:options.readiness_ms,owner_pipe},Some(boot_settings),drain_gate).await
+    crate::host_successor::start_successor_gated(context,socket,prepared.replaced,crate::host_successor::SuccessorLaunchOptions{launch,env,instance_id,generation,launch_profile_id:crate::host_successor_profile::successor_launch_profile_id(&options),readiness_ms:options.readiness_ms,owner_pipe},Some(boot_settings),drain_gate).await
 }
 /// The successor's environment the senpi way (`successorHostEnvironment` -> `daemonEnvironment`): the allowlisted
 /// process env, the caller's allowlisted overrides, then the generation's identity and the expected runtime build

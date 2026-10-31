@@ -42,6 +42,8 @@ pub struct WorkerSessionEntry {
 #[derive(Default)]
 struct RegistryState {
     entries: std::collections::BTreeMap<String, WorkerSessionEntry>,
+    /// senpi `onSizeChange` (the in-process registry's hook, kept by the worker registry too).
+    on_size_change: Option<crate::session_registry::SizeChangeHook>,
     ownership: WorkerOwnership,
     serial: u64,
 }
@@ -165,6 +167,10 @@ impl WorkerSessionRegistry {
     }
     pub fn size(&self) -> usize {
         lock(&self.state).entries.len()
+    }
+    /// senpi `onSizeChange`: told the entry count after every open admits and every worker exit removes one.
+    pub fn set_on_size_change(&self, hook: crate::session_registry::SizeChangeHook) {
+        lock(&self.state).on_size_change = Some(hook);
     }
     /// Memory admission is the in-process registry's concern: a worker session runs in its own
     /// process and this registry already bounds occupancy with \`too_many_sessions\`.
@@ -371,6 +377,9 @@ impl WorkerSessionRegistry {
                 .ownership
                 .states
                 .insert(handle.clone(), RpcSessionState::Opening);
+            if let Some(hook) = &state.on_size_change {
+                hook(state.entries.len());
+            }
             (handle, worker)
         };
         match self
@@ -549,6 +558,11 @@ impl WorkerSessionRegistry {
                     let mut state = lock(&state);
                     let entry = state.entries.remove(&exit_handle);
                     state.ownership.exited(&exit_handle);
+                    if entry.is_some()
+                        && let Some(hook) = &state.on_size_change
+                    {
+                        hook(state.entries.len());
+                    }
                     entry.and_then(|entry| entry.failure)
                 });
                 if let Some(error) = failure {
