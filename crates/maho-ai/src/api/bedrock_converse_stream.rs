@@ -928,17 +928,32 @@ fn parse_event_stream_frame(bytes: &[u8]) -> Result<Option<(EventFrame, usize)>,
             8 => (String::new(), 8),
             9 => (String::new(), 16),
             6 => {
+                if cursor + 2 > headers_end {
+                    return Err("Invalid Bedrock event stream frame".into());
+                }
                 let length = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
+                if cursor + 2 + length > headers_end {
+                    return Err("Invalid Bedrock event stream frame".into());
+                }
                 (String::new(), 2 + length)
             }
             7 => {
+                if cursor + 2 > headers_end {
+                    return Err("Invalid Bedrock event stream frame".into());
+                }
                 let length = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
+                if cursor + 2 + length > headers_end {
+                    return Err("Invalid Bedrock event stream frame".into());
+                }
                 let value =
                     String::from_utf8_lossy(&bytes[cursor + 2..cursor + 2 + length]).into_owned();
                 (value, 2 + length)
             }
             _ => (String::new(), 0),
         };
+        if cursor + consumed > headers_end {
+            return Err("Invalid Bedrock event stream frame".into());
+        }
         cursor += consumed;
         match name.as_str() {
             ":event-type" => event_type = value,
@@ -2102,6 +2117,25 @@ mod tests {
                 .expect("partial")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn parse_event_stream_frame_oversized_string_header_returns_err() {
+        let mut header = Vec::new();
+        header.push(b":event-type".len() as u8);
+        header.extend_from_slice(b":event-type");
+        header.push(7);
+        header.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        let total = 12 + header.len() + 4;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(total as u32).to_be_bytes());
+        frame.extend_from_slice(&(header.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&0u32.to_be_bytes());
+        frame.extend_from_slice(&header);
+        frame.extend_from_slice(&0u32.to_be_bytes());
+
+        let result = parse_event_stream_frame(&frame);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -886,6 +886,7 @@ fn clip_to_inline_extension(src: &str) -> &str {
     let Some(captures) = R_INLINE_LATEX_START.exec(temp_src) else {
         return src;
     };
+    let dropped_units = utf16_len(src) - utf16_len(temp_src);
     let start_index = utf16_len(&temp_src[..captures.start()]);
-    slice_utf16(src, 0, start_index + 1)
+    slice_utf16(src, 0, start_index + dropped_units)
 }

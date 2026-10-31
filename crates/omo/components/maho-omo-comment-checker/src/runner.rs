@@ -48,16 +48,11 @@ impl SpawnProcess for Process {
         let Some(pid) = self.child.id() else {
             return Ok(());
         };
-        let signal = match signal {
-            SpawnSignal::Sigterm => "-TERM",
-            SpawnSignal::Sigkill => "-KILL",
-        };
         #[cfg(unix)]
         let sent = {
-            let sig = if signal == "-TERM" {
-                rustix::process::Signal::TERM
-            } else {
-                rustix::process::Signal::KILL
+            let sig = match signal {
+                SpawnSignal::Sigterm => rustix::process::Signal::TERM,
+                SpawnSignal::Sigkill => rustix::process::Signal::KILL,
             };
             i32::try_from(pid)
                 .ok()
@@ -65,10 +60,10 @@ impl SpawnProcess for Process {
                 .is_some_and(|pid| rustix::process::kill_process(pid, sig).is_ok())
         };
         #[cfg(not(unix))]
-        let sent = std::process::Command::new("kill")
-            .args([signal, &pid.to_string()])
-            .status()?
-            .success();
+        let sent = {
+            let _ = (signal, pid);
+            self.child.start_kill().is_ok()
+        };
         if sent {
             Ok(())
         } else {
@@ -107,4 +102,20 @@ pub async fn default_run_comment_checker(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn process_kill_succeeds() {
+        let args = if cfg!(windows) {
+            vec!["cmd".into(), "/c".into(), "pause".into()]
+        } else {
+            vec!["sleep".into(), "10".into()]
+        };
+        let mut proc = spawn(&args).expect("spawn");
+        assert!(proc.kill(SpawnSignal::Sigkill).is_ok());
+    }
 }

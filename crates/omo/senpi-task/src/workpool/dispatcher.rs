@@ -38,6 +38,7 @@ struct DispatcherState {
     pumping: BTreeSet<PoolId>,
     pending: BTreeMap<String, PendingRequest>,
     completions: BTreeMap<String, CompletionObserver>,
+    runtime_handle: Option<tokio::runtime::Handle>,
 }
 
 struct CompletionObserver { cancel: watch::Sender<bool> }
@@ -52,9 +53,11 @@ pub struct WorkpoolDispatcher {
 
 impl WorkpoolDispatcher {
     pub fn new(store: WorkpoolStore, admission: Arc<dyn WorkpoolAdmission + Send + Sync>, emit: Emit, authorize: Authorize) -> Self {
+        let runtime_handle = tokio::runtime::Handle::try_current().ok();
         Self { store, admission, emit, authorize, state: Arc::new(Mutex::new(DispatcherState {
             holds: BTreeMap::new(), credentials: BTreeMap::new(),
             disposed: false, scheduled: BTreeSet::new(), pumping: BTreeSet::new(), pending: BTreeMap::new(), completions: BTreeMap::new(),
+            runtime_handle,
         })) }
     }
 
@@ -215,7 +218,15 @@ fn pump(store: &WorkpoolStore, admission: &Arc<dyn WorkpoolAdmission + Send + Sy
 
 fn spawn_pump(store: WorkpoolStore, admission: Arc<dyn WorkpoolAdmission + Send + Sync>, emit: Emit, authorize: Authorize,
     state: Arc<Mutex<DispatcherState>>, pool_id: PoolId) {
-    tokio::spawn(async move {
+    let handle = tokio::runtime::Handle::try_current().ok().or_else(|| {
+        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime_handle.clone()
+    });
+    let Some(handle) = handle else {
+        let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.scheduled.remove(&pool_id);
+        return;
+    };
+    handle.spawn(async move {
         {
             let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.scheduled.remove(&pool_id);
@@ -367,7 +378,14 @@ fn observe_completion(pool: &WorkpoolRecord, (task_id, epoch): (String, u32), st
     }
     // Only the id and generation outlive this call; cloning the whole record would copy every item.
     let pool_id = pool.pool_id.clone(); let generation = pool.generation; let store = store.clone(); let state = Arc::clone(state);
-    tokio::spawn(async move {
+    let handle = tokio::runtime::Handle::try_current().ok().or_else(|| {
+        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime_handle.clone()
+    });
+    let Some(handle) = handle else {
+        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).completions.remove(&identity);
+        return;
+    };
+    handle.spawn(async move {
         let result = admission.wait_for(&task_id, &mut cancel_rx).await;
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).completions.remove(&identity);
         let record = match result { Ok(record) => record, Err(error) => {
@@ -518,5 +536,57 @@ mod tests {
         assert!(dispatcher.state.lock().expect("dispatcher state").completions.contains_key(&identity));
         dispatcher.stop_scheduling();
         assert!(*cancel_rx.borrow());
+    }
+
+    #[test]
+    fn schedule_without_tokio_reactor_does_not_panic() {
+        let dispatcher = std::thread::spawn(dispatcher)
+            .join()
+            .expect("created on background thread without reactor");
+        let dispatcher = Arc::new(dispatcher);
+        let pool_id: PoolId = "wp_spawn".into();
+        std::thread::spawn({
+            let dispatcher = Arc::clone(&dispatcher);
+            let pool_id = pool_id.clone();
+            move || {
+                dispatcher.schedule(pool_id);
+            }
+        })
+        .join()
+        .expect("thread joins without panic");
+        let state = dispatcher.state.lock().expect("state");
+        assert!(!state.scheduled.contains(&pool_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn schedule_from_background_thread_uses_dispatcher_runtime_handle() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+        let admission = Arc::new(FakeAdmission::new());
+        let dispatcher = WorkpoolDispatcher::new(
+            WorkpoolStore::new("/tmp"),
+            admission,
+            Arc::new(move |_event| {
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }),
+            Arc::new(|_| Ok(())),
+        );
+        let dispatcher = Arc::new(dispatcher);
+        let pool_id: PoolId = "wp_bg".into();
+        std::thread::spawn({
+            let dispatcher = Arc::clone(&dispatcher);
+            let pool_id = pool_id.clone();
+            move || {
+                dispatcher.schedule(pool_id);
+            }
+        })
+        .join()
+        .expect("thread joins without panic");
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+            .await
+            .expect("pump ran via captured runtime handle")
+            .expect("signal received");
     }
 }

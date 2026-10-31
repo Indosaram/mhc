@@ -141,9 +141,37 @@ impl Engine {
     pub fn format_dynamic(&self, rules: &[LoadedRule], target: &str) -> String { format_dynamic_block(rules, target, &self.format_options()) }
     fn format_options(&self) -> FormatOptions { FormatOptions { max_rule_chars: self.config.max_rule_chars, max_result_chars: self.config.max_result_chars } }
 }
+fn drive_prefix(path: &Path) -> Option<String> {
+    for c in path.components() {
+        if let std::path::Component::Prefix(p) = c {
+            return Some(p.as_os_str().to_string_lossy().to_ascii_uppercase());
+        }
+    }
+    let s = path.to_string_lossy();
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'/' || bytes[2] == b'\\')
+    {
+        return Some(s[..2].to_ascii_uppercase());
+    }
+    None
+}
+
 pub fn relative_path(base: &Path, target: &Path) -> String {
-    let base = super::finder::absolute(base);
-    let target = super::finder::absolute(target);
+    if let (Some(b), Some(t)) = (drive_prefix(base), drive_prefix(target))
+        && b != t
+    {
+        return target.to_string_lossy().replace('\\', "/");
+    }
+    let base = strip_verbatim_prefix(super::finder::absolute(base));
+    let target = strip_verbatim_prefix(super::finder::absolute(target));
+    if let (Some(b), Some(t)) = (drive_prefix(&base), drive_prefix(&target))
+        && b != t
+    {
+        return target.to_string_lossy().replace('\\', "/");
+    }
     let base: Vec<_> = base.components().collect();
     let target: Vec<_> = target.components().collect();
     let shared = base.iter().zip(&target).take_while(|(base, target)| base == target).count();

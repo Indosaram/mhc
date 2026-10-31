@@ -44,8 +44,16 @@ fn refresh_header(ctx: &ExtensionContext, model: Option<&Model>) {
     let text = format!("\u{1b}[1mOptimized system prompt applied: {}\u{1b}[22m", name.as_str());
     ctx.ui.set_header(Some(Arc::new(move |theme: &maho_ext_api::Theme| Box::new(PresetHeader(theme.fg("accent", &text))) as Box<dyn Component>)));
 }
+pub fn resolve_home_with(lookup: impl Fn(&str) -> Result<String, std::env::VarError>) -> String {
+    lookup("HOME").or_else(|_| lookup("USERPROFILE")).unwrap_or_default()
+}
+
+pub fn resolve_home() -> String {
+    resolve_home_with(|key| std::env::var(key))
+}
+
 fn settings(ctx: &ExtensionContext) -> PromptPresetName {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = resolve_home();
     let settings = SettingsManager::create(&ctx.cwd.to_string_lossy(), &ctx.agent_dir.to_string_lossy(), &home, (ctx.is_project_trusted_fn)());
     load_prompt_preset_settings(settings.get_project().get("promptPreset").and_then(|value| value.as_str()), settings.get_global().get("promptPreset").and_then(|value| value.as_str()))
 }

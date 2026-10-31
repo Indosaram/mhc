@@ -9399,12 +9399,7 @@ impl InteractiveMode {
                                     .expect("resolved thinking level")
                             }),
                             thinking_selection: entry.thinking_selection,
-                            service_tier: entry.service_tier.map(|tier| match tier.as_str() {
-                                "auto" => maho_ext_api::ServiceTier::Auto,
-                                "flex" => maho_ext_api::ServiceTier::Flex,
-                                "priority" => maho_ext_api::ServiceTier::Priority,
-                                _ => unreachable!("resolved service tier"),
-                            }),
+                            service_tier: entry.service_tier.as_deref().and_then(service_tier_from_wire),
                         })
                         .collect();
                     if favorites {
@@ -9743,12 +9738,7 @@ impl InteractiveMode {
                                     serde_json::from_value(serde_json::json!(level.as_str())).ok()
                                 }),
                                 thinking_selection: entry.thinking_selection,
-                                service_tier: entry.service_tier.map(|tier| match tier.as_str() {
-                                    "auto" => maho_ext_api::ServiceTier::Auto,
-                                    "flex" => maho_ext_api::ServiceTier::Flex,
-                                    "priority" => maho_ext_api::ServiceTier::Priority,
-                                    _ => unreachable!("resolved service tier"),
-                                }),
+                                service_tier: entry.service_tier.as_deref().and_then(service_tier_from_wire),
                             })
                             .collect(),
                     );
@@ -14107,6 +14097,7 @@ fn service_tier_from_wire(value: &str) -> Option<maho_ext_api::ServiceTier> {
         "auto" => maho_ext_api::ServiceTier::Auto,
         "flex" => maho_ext_api::ServiceTier::Flex,
         "priority" => maho_ext_api::ServiceTier::Priority,
+        "ultrafast" => maho_ext_api::ServiceTier::Ultrafast,
         _ => return None,
     })
 }
@@ -15041,6 +15032,13 @@ pub fn prepare_import_destination(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_tier_from_wire_maps_every_resolved_tier() {
+        assert!(matches!(service_tier_from_wire("ultrafast"), Some(maho_ext_api::ServiceTier::Ultrafast)));
+        assert!(matches!(service_tier_from_wire("priority"), Some(maho_ext_api::ServiceTier::Priority)));
+        assert!(service_tier_from_wire("bogus").is_none());
+    }
 
     #[test]
     fn expandable_text_follows_its_render_closures() {

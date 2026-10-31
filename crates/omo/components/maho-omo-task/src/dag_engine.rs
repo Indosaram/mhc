@@ -606,8 +606,7 @@ impl TaskDagEngine {
                     options: Arc::new(move |record| {
                         options
                             .upgrade()
-                            .expect("live DAG runtime")
-                            .scheduler_options(record.clone())
+                            .map(|dag| dag.scheduler_options(record.clone()))
                     }),
                     pauses: self.pause_store(),
                     retire: Arc::new(move |run| {

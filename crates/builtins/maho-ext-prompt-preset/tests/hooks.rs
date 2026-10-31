@@ -1,5 +1,5 @@
 use maho_ext_api::{BuildSystemPromptOptions, EventKind, Extension, ExtensionApi, ExtensionSessionProfile, LoadedExtension, SourceInfo, EventBus, ExtensionRuntime};
-use maho_ext_prompt_preset::index::{has_user_system_prompt, with_user_appends};
+use maho_ext_prompt_preset::index::{has_user_system_prompt, with_user_appends, resolve_home_with};
 
 #[test]
 fn registers_prompt_and_model_hooks() {
@@ -20,4 +20,23 @@ fn custom_prompt_truthiness_and_append_preservation() {
     assert_eq!(with_user_appends("base".into(), &options), "base\n\n\nfixture ");
     options.append_system_prompt = Some(String::new());
     assert_eq!(with_user_appends("base".into(), &options), "base");
+}
+#[test]
+fn settings_respects_userprofile_when_home_unset() {
+    let home_when_both_set = resolve_home_with(|key| match key {
+        "HOME" => Ok("/unix/home".into()),
+        "USERPROFILE" => Ok("C:\\Users\\profile".into()),
+        _ => Err(std::env::VarError::NotPresent),
+    });
+    assert_eq!(home_when_both_set, "/unix/home");
+
+    let home_when_home_unset = resolve_home_with(|key| match key {
+        "HOME" => Err(std::env::VarError::NotPresent),
+        "USERPROFILE" => Ok("C:\\Users\\profile".into()),
+        _ => Err(std::env::VarError::NotPresent),
+    });
+    assert_eq!(home_when_home_unset, "C:\\Users\\profile");
+
+    let home_when_both_unset = resolve_home_with(|_| Err(std::env::VarError::NotPresent));
+    assert_eq!(home_when_both_unset, "");
 }

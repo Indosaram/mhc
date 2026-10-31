@@ -44,6 +44,15 @@ fn inline_math_clip_counts_utf16_units_for_non_ascii_text() {
 }
 
 #[test]
+fn clip_to_inline_extension_astral_plane_prefix() {
+    let mut lexer = Lexer::new();
+    let tokens = lexer.lex("🦀 hello $x$\n");
+    let inline = inline_of(&tokens[0]);
+    let actual: Vec<(&str, &str)> = inline.iter().map(|t| (t.type_name(), t.raw())).collect();
+    assert_eq!(actual, vec![("text", "🦀 hello "), ("latex_inline", "$x$")]);
+}
+
+#[test]
 fn preserves_inline_raw_slices_around_code() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("A paragraph with *emphasis*, **strong**, `code`.");

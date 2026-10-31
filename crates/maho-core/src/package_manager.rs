@@ -1998,7 +1998,16 @@ fn extglob_regex(pattern: &str) -> Option<String> {
                 result.push_str(&regex::escape(&chars[index].to_string()));
             }
             '[' => {
-                let end = (index + 1..chars.len()).find(|offset| chars[*offset] == ']')?;
+                let start_search = if chars.get(index + 1) == Some(&']') {
+                    index + 2
+                } else if matches!(chars.get(index + 1), Some(&'!' | &'^'))
+                    && chars.get(index + 2) == Some(&']')
+                {
+                    index + 3
+                } else {
+                    index + 1
+                };
+                let end = (start_search..chars.len()).find(|offset| chars[*offset] == ']')?;
                 let mut body = chars[index + 1..end].iter().collect::<String>();
                 if body.starts_with('!') {
                     body.replace_range(..1, "^");
@@ -3383,5 +3392,15 @@ mod tests {
             )),
             3
         );
+    }
+
+    #[test]
+    fn extglob_regex_character_class_with_initial_closing_bracket() {
+        let regex_str = extglob_regex("[]a]").expect("valid regex string");
+        assert_eq!(regex_str, "[]a]");
+        let re = regex::Regex::new(&regex_str).expect("compiles");
+        assert!(re.is_match("]"));
+        assert!(re.is_match("a"));
+        assert!(!re.is_match("b"));
     }
 }
