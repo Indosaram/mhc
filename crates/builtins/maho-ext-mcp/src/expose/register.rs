@@ -55,13 +55,19 @@ pub fn build_mcp_tool_definitions(
     map_mcp_catalog_names(entries).into_iter().map(|named|{
         let entry=named.entry;let label=format!("{}/{}",entry.server,entry.tool);
         let description=entry.description.clone().unwrap_or_else(||format!("MCP tool {label}"));
-        let schema=convert_json_schema_to_type_box(&entry.schema).schema;
+        let schema=super::schema_compat::convert_json_schema_to_type_box_with(&entry.schema,entry.modern).schema;
         let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
         let mut tool=ToolDefinition::new(&named.name,&description,schema,Arc::new(move |call|{
             let entry=entry.clone();let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
             Box::pin(async move {
                 call.signal.check()?;
-                let params=if call.params.is_object(){call.params}else{json!({})};
+                // invocation.ts: a modern tool's arguments validate against its exact 2020-12 schema; an
+                // unusable schema refuses the call as schema_changed.
+                if entry.modern {
+                    let validator=crate::modern::tool_schema::compile_modern_schema(&entry.schema).map_err(|error|ToolError::Message(format!("schema_changed: {}: {}",error.code.as_str(),error.message)))?;
+                    if !validator.validate(&call.params) {return Err(ToolError::Message("schema_changed: Arguments do not match the current MCP tool schema.".into()));}
+                }
+                let params=if call.params.is_object() || entry.modern {call.params}else{json!({})};
                 let operation=||async {
                 if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
                     return Err(entry.runtime.as_ref().map(|runtime|&runtime.connection).or(entry.connection.as_ref()).and_then(|connection|crate::health::mark_mcp_connection_needs_auth(connection,&error)).unwrap_or(error));
@@ -79,7 +85,13 @@ pub fn build_mcp_tool_definitions(
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;
-                let request=client.request_with_signal("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout,&call.signal);tokio::pin!(request);
+                let call_params=json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}});
+                // call.ts: `mcpRequestOptions(current.requestOrigin?.(), {signal})` - a fresh binding-issued origin per attempt.
+                let options=crate::request_origin::mcp_request_options(entry.request_origin.as_ref().and_then(|origin|origin()),Some(call.signal.clone()));
+                // tool-client.ts: a modern call validates structured output against the declared output schema.
+                let request=async {if crate::modern::request::is_modern_mcp_client(&client) {
+                    crate::tool_client::call_mcp_tool_request(&client,call_params,entry.output_schema.as_ref(),entry.request_timeout,&options).await.map(Value::Object)
+                } else {client.request_with_options("tools/call",call_params,entry.request_timeout,&options).await}};tokio::pin!(request);
                 let result=loop {tokio::select! {
                     biased;
                     notification=notifications.recv(),if notifications_open=>{
@@ -87,7 +99,7 @@ pub fn build_mcp_tool_definitions(
                         let progress=value.get("params").unwrap_or(&Value::Null);
                         if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
                             let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));
-                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool})), structured_content: None, is_error: None }).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
+                            update(ToolResult {content:vec![ToolContent::text(maho_core::config_reference_redaction::redact_resolved_reference_values(&format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)),"<redacted>"))],details:Some(maho_core::config_reference_redaction::redact_resolved_reference_data(&json!({"progress":progress,"server":entry.server,"tool":entry.tool}))), structured_content: None, is_error: None }).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
                         }
                     }
                     result=&mut request=>{call.signal.check().map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;break result?;},
@@ -98,7 +110,7 @@ pub fn build_mcp_tool_definitions(
                 };
                 let result=if let Some(runtime)=&entry.runtime {
                     runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,operation)).await
-                }else{operation().await}.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;
+                }else{operation().await}.map_err(|error|ToolError::Message(if crate::modern::errors::as_mcp_mrtr_error(&error).is_some() {error.message.clone()} else {maho_core::config_reference_redaction::redact_resolved_reference_values(&format!("ToolExecError: {error}"),"<redacted>")}))?;
                 mapped_guarded_result(&entry,&result,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref()))
             })
         }));
@@ -123,10 +135,12 @@ pub fn mapped_guarded_result(
     let mapped = map_mcp_tool_result(&normalized);
     if mapped.get("ok") == Some(&Value::Bool(false)) {
         return Err(ToolError::Message(
-            mapped["error"]["message"]
-                .as_str()
-                .unwrap_or("MCP tool returned an error result.")
-                .into(),
+            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                mapped["error"]["message"]
+                    .as_str()
+                    .unwrap_or("MCP tool returned an error result."),
+                "<redacted>",
+            ),
         ));
     }
     let blocks = mapped

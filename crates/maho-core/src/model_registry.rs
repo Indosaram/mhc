@@ -131,6 +131,10 @@ impl ModelRegistry {
     pub fn unregister_provider(&mut self, id: &str) {
         self.model_runtime.unregister_provider(id)
     }
+    /// senpi `ModelRegistry.getProviderOrigin` (senpi#4328).
+    pub fn get_provider_origin(&self, provider: &str) -> Option<crate::provider_origin::ProviderOrigin> {
+        self.model_runtime.get_provider_origin(provider)
+    }
     pub fn get_upstream_model_id(&self, model: &Model) -> Option<String> {
         self.model_runtime
             .get_compatibility_request_config(model)

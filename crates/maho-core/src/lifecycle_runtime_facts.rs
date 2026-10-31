@@ -18,6 +18,11 @@ pub fn read_lifecycle_runtime_facts(
         holds: session
             .holds()
             .into_iter()
+            // The interruption gate is a human wait, not a user Stop. Preserve unattended and real Stop precedence.
+            .filter(|h| {
+                !(h.kind == crate::engine_turn_hold::HoldKind::SessionHold
+                    && h.key == crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
+            })
             .map(|h| serde_json::json!({"kind":h.kind.as_str(),"since":h.since}))
             .collect(),
         human,

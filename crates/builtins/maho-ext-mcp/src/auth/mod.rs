@@ -1,6 +1,8 @@
 pub mod oauth_errors;
 pub mod token_store;
 pub mod oauth_provider;
+pub mod oauth_issuer;
+pub mod catalog_identity;
 pub mod context;
 pub mod callback;
 pub mod oauth;
