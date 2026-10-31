@@ -3137,23 +3137,12 @@ impl HostCore {
                 .attach_session(session_id, now)
                 .map_err(|_| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION)?;
         } else {
-            let resumed = {
-                let mut registry = self.registry.lock().await;
-                let entry = registry
-                    .get_mut(session_id)
-                    .filter(|entry| {
-                        entry.close.state == crate::session_registry::RpcSessionState::Open
-                    })
-                    .ok_or(crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION)?;
-                let was_parked = entry.close.retain_on_disconnect && entry.close.attachments == 0;
-                entry.close.attachments += 1;
-                entry.last_command_at = now;
-                if was_parked {
-                    entry.runtime.clone()
-                } else {
-                    None
-                }
-            };
+            let resumed = self
+                .registry
+                .lock()
+                .await
+                .attach_session(session_id, now)
+                .map_err(|_| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION)?;
             if let Some(runtime) = resumed {
                 runtime
                     .emit_attachment_event(
