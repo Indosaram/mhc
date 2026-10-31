@@ -1836,6 +1836,17 @@ pub struct ExtensionUiDialogOptions {
     pub ephemeral: bool,
     pub signal: Option<AbortSignal>,
     pub timeout_ms: Option<u64>,
+    /// The key a host hands `maho_core::mcp_form_types::mark_mcp_form_presented` once this dialog is
+    /// actually on screen (senpi keys the callback by the dialog options object). Not an RPC field.
+    pub presented: Option<DialogPresentedKey>,
+}
+/// Identity of one dialog's options for the private MCP form presented mark.
+#[derive(Clone)]
+pub struct DialogPresentedKey(pub Arc<dyn std::any::Any + Send + Sync>);
+impl std::fmt::Debug for DialogPresentedKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DialogPresentedKey")
+    }
 }
 /// A clickable action shown beside a string-array widget.
 #[derive(Clone, Debug, PartialEq, Eq)]

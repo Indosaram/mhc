@@ -1879,6 +1879,7 @@ fn extension_select_counts_down_its_timeout_in_the_title_from_the_mode_tick() {
             options: vec!["a".into(), "b".into()],
             timeout_ms: Some(2_000),
             reply,
+            private: Default::default(),
         },
     );
     assert!(mode.render(80).join("\n").contains("Pick (2s)"));

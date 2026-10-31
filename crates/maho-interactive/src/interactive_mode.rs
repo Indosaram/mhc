@@ -1054,6 +1054,11 @@ pub struct InteractiveMode {
     /// senpi `mcpMrtrPresentationLifetime`: one per extension binding, aborted on rebind and at dispose.
     mcp_mrtr_presentation_lifetime:
         std::sync::Mutex<Option<maho_ai::utils::abort::AbortController>>,
+    /// senpi `options.mcpPresenterEnforcement`: private MCP forms go through the terminal's own
+    /// `local_tui` presenter (`crate::mcp_local_presenter`), and an ephemeral answer is no human admission.
+    mcp_presenter_enforcement: bool,
+    /// The private form whose selector is mounted but not yet painted; marked presented at the next render.
+    pending_mcp_form_presented: Option<maho_ext_api::DialogPresentedKey>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
     /// senpi `lifecycleStatus`: the footer's projection of the bound session's lifecycle.
     lifecycle_status: crate::lifecycle_status::LifecycleStatus,
@@ -2831,6 +2836,8 @@ impl InteractiveMode {
             side_column: None,
             detach_mcp_grant_presentation: None,
             mcp_mrtr_presentation_lifetime: std::sync::Mutex::new(None),
+            mcp_presenter_enforcement: options.mcp_presenter_enforcement,
+            pending_mcp_form_presented: None,
             unsubscribe_security_notices: None,
             lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
             lifecycle_subscription_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -5139,8 +5146,9 @@ impl InteractiveMode {
 
     /// senpi `bindCurrentSessionExtensions` + `createExtensionUIContext`: the previous binding's MRTR
     /// presentation lifetime ends, and the terminal UI is registered as this binding's local MCP MRTR
-    /// presentation (pre-aborted when the mode is already shutting down). The private-forms presenter
-    /// (`--mcp-presenter-enforcement`, `registerLocalMcpPresenter`) is not ported yet, so none is passed.
+    /// presentation (pre-aborted when the mode is already shutting down). With
+    /// `--mcp-presenter-enforcement` this binding's private forms go through a fresh local presenter
+    /// (`registerLocalMcpPresenter`) that lives as long as the presentation.
     fn register_mcp_mrtr_presentation(&self) {
         let lifetime = maho_ai::utils::abort::AbortController::new();
         if self.shutdown_requested {
@@ -5156,9 +5164,21 @@ impl InteractiveMode {
             previous.abort(None);
         }
         let ui: Arc<dyn maho_ext_api::ExtensionUi> = self.extension_ui.clone();
+        let private_forms = self.mcp_presenter_enforcement.then(|| {
+            let session = self.session.clone();
+            crate::mcp_local_presenter::register_local_mcp_presenter(
+                ui.clone(),
+                &self.session.session_id(),
+                signal.clone(),
+                Arc::new(move || session.admit_human_answer()),
+            )
+        });
         drop(
             maho_core::mcp_mrtr_presentations::register_mcp_mrtr_presentation(
-                ui, signal, None, None,
+                ui,
+                signal,
+                None,
+                private_forms,
             ),
         );
     }
@@ -13093,12 +13113,18 @@ impl InteractiveMode {
                 options,
                 timeout_ms,
                 reply,
+                private,
             } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone();
                 let cancelled = self.ui_reply.clone();
                 let keys = self.keybindings();
-                let session_select = self.session.clone();
+                // senpi: an ephemeral answer under enforcement is admitted once by the presenter, and
+                // the selector is rendered before the form is marked presented.
+                let private_form = private.ephemeral && self.mcp_presenter_enforcement;
+                self.pending_mcp_form_presented =
+                    private.presented.filter(|_| private_form);
+                let session_select = (!private_form).then(|| self.session.clone());
                 let component = Rc::new(RefCell::new(
                     crate::components::extension_selector::ExtensionSelectorComponent::new(
                         &self.theme,
@@ -13106,7 +13132,9 @@ impl InteractiveMode {
                         &title,
                         options,
                         Box::new(move |text| {
-                            session_select.admit_human_answer();
+                            if let Some(session) = &session_select {
+                                session.admit_human_answer();
+                            }
                             if let Some(reply) = selected.borrow_mut().take() {
                                 drop(reply.send(Some(text.into())));
                             }
@@ -13134,17 +13162,21 @@ impl InteractiveMode {
                 title,
                 timeout_ms,
                 reply,
+                private,
             } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone();
                 let cancelled = self.ui_reply.clone();
-                let session_input = self.session.clone();
+                let session_input = (!(private.ephemeral && self.mcp_presenter_enforcement))
+                    .then(|| self.session.clone());
                 let component = Rc::new(RefCell::new(
                     crate::components::extension_input::ExtensionInputComponent::new(
                         &self.theme,
                         &title,
                         Box::new(move |text| {
-                            session_input.admit_human_answer();
+                            if let Some(session) = &session_input {
+                                session.admit_human_answer();
+                            }
                             if let Some(reply) = selected.borrow_mut().take() {
                                 drop(reply.send(Some(text.into())));
                             }
@@ -14957,6 +14989,12 @@ impl InteractiveMode {
         self.drain_events();
         self.tick(self.clock.elapsed().as_secs_f64() * 1000.0);
         let rendered = (self.render_document(width), self.render_dock(width));
+        // senpi `renderNow(); markMcpFormPresented(opts)`: the private form's selector is on screen.
+        if let Some(presented) = self.pending_mcp_form_presented.take()
+            && self.ui_reply.borrow().is_some()
+        {
+            maho_core::mcp_form_types::mark_mcp_form_presented(Some(&presented.0));
+        }
         if self.pending_question_click_submit == Some(false) {
             self.pending_question_click_submit = Some(true);
             self.editor_host.request_render();
