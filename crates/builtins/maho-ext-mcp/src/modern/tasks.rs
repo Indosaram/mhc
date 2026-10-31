@@ -234,6 +234,11 @@ pub async fn follow_mcp_task(
             )
             .await
             .map_err(|_| aborted())?;
+            // Upstream's cap timer fires synchronously inside the same clock turn as a due poll: a due cap wins.
+            if options.clock.now() >= deadline {
+                cap.abort();
+                return Err(aborted());
+            }
             let next =
                 (options.send)("tasks/get", json!({"taskId": id}), Some(signal.clone())).await?;
             if next
