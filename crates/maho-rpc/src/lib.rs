@@ -96,6 +96,7 @@ pub mod host_lifecycle_internal_key;
 pub mod host_lifecycle_proxy;
 pub mod host_lifecycle_scratch;
 pub mod host_lifecycle_shutdown;
+pub mod host_lifecycle_stall_wait;
 pub mod host_lifecycle_ticker;
 pub mod host_lifetime_binding;
 pub mod host_lifetime_reader;
