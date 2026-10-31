@@ -105,6 +105,7 @@ fn modern_incoming(route: &ModernRoute, value: Value) -> Option<Value> {
 pub struct StderrDiagnostics {
     logger: Arc<Mutex<McpLogger>>,
     state: Mutex<StderrState>,
+    drained: tokio::sync::watch::Sender<bool>,
 }
 #[derive(Default)]
 struct StderrState {
@@ -118,7 +119,12 @@ impl StderrDiagnostics {
         Arc::new(Self {
             logger,
             state: Mutex::new(StderrState::default()),
+            drained: tokio::sync::watch::channel(false).0,
         })
+    }
+    /// Resolves once the child's stderr reached EOF and its exit decision was applied.
+    pub async fn drained(&self) {
+        let _ = self.drained.subscribe().wait_for(|drained| *drained).await;
     }
     fn log_line(&self, protocol: &crate::modern::request::ModernProtocolState, line: &str) {
         let private = protocol.private_forms.load(Ordering::Acquire);
@@ -481,6 +487,7 @@ impl McpClient {
                         if client.protocol.version().is_none() {
                             client.protocol.resolve_stdio_diagnostics(false);
                         }
+                        reader_diagnostics.drained.send_replace(true);
                         return;
                     }
                     carry.extend_from_slice(&buffer[..read]);

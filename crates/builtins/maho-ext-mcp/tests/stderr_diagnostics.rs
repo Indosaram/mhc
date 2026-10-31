@@ -92,3 +92,40 @@ fn a_legacy_child_flushes_its_unterminated_tail_at_eof() {
     );
     assert!(logged[1].contains("no newline"));
 }
+
+/// modern-mrtr-transport.test.ts: "preserves complete and trailing stderr when an unclassified child exits".
+#[tokio::test]
+async fn a_real_unclassified_child_that_exits_keeps_complete_and_trailing_stderr() {
+    use maho_ext_mcp::transport_sdk::{McpClient, McpTransportSpec};
+    let root = tempfile::tempdir().unwrap();
+    let logger = Arc::new(Mutex::new(
+        McpLogger::new("crash", root.path(), None).unwrap(),
+    ));
+    let spec = McpTransportSpec::Stdio {
+        command: crate::support::node(),
+        args: vec![
+            "-e".into(),
+            "process.stderr.write('startup failure\\ntrailing diagnostic'); process.exitCode = 1;"
+                .into(),
+        ],
+        cwd: None,
+        env: Default::default(),
+    };
+    let client = McpClient::materialize_stdio("crash", &spec, logger.clone())
+        .await
+        .unwrap();
+    let diagnostics = client
+        .protocol
+        .stdio_diagnostics
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("stdio diagnostics");
+    tokio::time::timeout(std::time::Duration::from_secs(10), diagnostics.drained())
+        .await
+        .unwrap();
+    let logged = lines(&logger).join("\n");
+    assert!(logged.contains("startup failure"), "{logged}");
+    assert!(logged.contains("trailing diagnostic"), "{logged}");
+    let _ = client.close().await;
+}
