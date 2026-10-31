@@ -515,4 +515,27 @@ mod tests {
         assert_eq!(128 + signal_number("SIGTERM"), 143);
         assert_eq!(signal_number("SIGNOPE"), 0);
     }
+
+    /// senpi user-bash-job.ts `redactSecretsInOutput`: each stream is redacted on its own, tagged with its name,
+    /// and the redactor's pending tail is flushed at the end of the stream; without the flag bytes pass through.
+    #[tokio::test]
+    async fn a_redacted_stream_hides_its_secret_and_keeps_its_tag() {
+        let (sender, mut received) = mpsc::unbounded_channel();
+        forward_stream(&b"token Bearer abc=def==\n"[..], "stderr", true, sender).await;
+        let mut text = Vec::new();
+        while let Some((chunk, stream)) = received.recv().await {
+            assert_eq!(stream, "stderr");
+            text.extend(chunk);
+        }
+        assert_eq!(
+            String::from_utf8(text).unwrap(),
+            "token Bearer <redacted>\n"
+        );
+        let (sender, mut received) = mpsc::unbounded_channel();
+        forward_stream(&b"Bearer abc=def==\n"[..], "stdout", false, sender).await;
+        assert_eq!(
+            received.recv().await,
+            Some((b"Bearer abc=def==\n".to_vec(), "stdout"))
+        );
+    }
 }
