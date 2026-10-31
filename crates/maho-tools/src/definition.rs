@@ -322,6 +322,9 @@ pub struct ToolDefinition {
     pub execute: ToolExecutor,
     pub kernel_prelude: Option<KernelPrelude>,
     pub permission_parser: Option<ToolPermissionParser>,
+    /// senpi `registerDispatchIdentity(parameters, identity)`: the operation this offered definition
+    /// dispatches for an input. Scoped to the definition, so a replaced offer drops it.
+    pub dispatch_identity: Option<ToolDispatchIdentityResolver>,
     /// `serverPinned`: set by built-in tool factories that capture injected operations or a policy override; such a
     /// definition always executes on the session's server process, even when `placement` is `Child`.
     pub server_pinned: Option<bool>,
@@ -353,6 +356,7 @@ impl ToolDefinition {
             workspace_effect: None,
             execution_mode: None,
             permission_parser: None,
+            dispatch_identity: None,
             kernel_prelude: None,
             output_schema: None,
             server_pinned: None,
