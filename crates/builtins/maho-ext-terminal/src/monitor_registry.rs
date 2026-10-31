@@ -156,6 +156,8 @@ pub struct MonitorRegistry {
     delivery: std::sync::Arc<std::sync::Mutex<MonitorRouting>>,
     ended: MonitorEndedSink,
     runaway_guard: std::sync::Arc<std::sync::Mutex<crate::settings::MonitorRunawayGuard>>,
+    /// File registrations still proving their target (upstream `FileMonitorSource.#guard`).
+    registrations: std::sync::Arc<crate::file_monitor_guard::RegistrationGuard>,
     disposed: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -240,6 +242,7 @@ impl MonitorRegistry {
             runaway_guard: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor_runaway,
             )),
+            registrations: Default::default(),
             disposed: false,
         }
     }
@@ -402,21 +405,123 @@ impl MonitorRegistry {
                 "Cannot create file monitor: monitor registry is disposed.",
             ));
         }
+        let record = crate::file_monitor::FileMonitor::register(
+            String::new(),
+            description.to_owned(),
+            path,
+            event,
+            approved_parent,
+        )?;
+        let watcher = crate::file_monitor_source::ParentWatcher::watch(
+            &record.parent,
+            record.path.file_name().unwrap_or_default(),
+        )
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "Cannot watch file {}: {error}",
+                record.path.display()
+            ))
+        })?;
+        self.adopt_file(
+            crate::file_monitor_source::ProvenFileWatch { record, watcher },
+            lifetime,
+            monitor_id,
+            None,
+        )
+    }
+    /// Opens a guarded file registration (upstream `registerFile` up to `proveWatchTarget`): the
+    /// guard and the pending entry the caller proves the target against, outside any registry lock,
+    /// with [`crate::file_monitor_source::prove_file_registration`]. `release` is the capacity slot
+    /// the watch will own; a dispose or [`Self::stop_all_files`] aborts the registration and frees it.
+    pub fn begin_file_registration(
+        &self,
+        release: Option<crate::manager::CapacityReservation>,
+        timeout_ms: u64,
+    ) -> std::io::Result<(
+        std::sync::Arc<crate::file_monitor_guard::RegistrationGuard>,
+        crate::file_monitor_guard::PendingFileRegistration,
+    )> {
+        if self.disposed {
+            return Err(std::io::Error::other(
+                "Cannot create file monitor: monitor registry is disposed.",
+            ));
+        }
+        Ok((
+            self.registrations.clone(),
+            self.registrations.open(release, timeout_ms),
+        ))
+    }
+    /// Completes a guarded registration: a proof that is still live becomes a watch that owns the
+    /// pending capacity slot; a proof that lost the race (deadline, dispose, `stopAllFiles`) or a
+    /// disposed registry fails, and the slot is released.
+    pub fn finish_file_registration(
+        &mut self,
+        pending: &crate::file_monitor_guard::PendingFileRegistration,
+        proven: std::io::Result<crate::file_monitor_source::ProvenFileWatch>,
+        lifetime: (u64, bool),
+        monitor_id: Option<&str>,
+    ) -> std::io::Result<(String, String)> {
+        let proven = match proven {
+            Ok(proven) if !pending.is_aborted() && !self.disposed => proven,
+            Ok(_) => {
+                self.registrations.finish(pending, false);
+                return Err(std::io::Error::other(if self.disposed {
+                    "Cannot create file monitor: monitor registry is disposed."
+                } else {
+                    crate::file_monitor_guard::REGISTRATION_ABORTED
+                }));
+            }
+            Err(error) => {
+                self.registrations.finish(pending, false);
+                return Err(error);
+            }
+        };
+        let reservation = self.registrations.finish(pending, true);
+        self.adopt_file(proven, lifetime, monitor_id, reservation)
+    }
+    /// `registerFile` end to end: reserve, prove under the registration deadline without holding
+    /// the registry lock across a filesystem step, then adopt the watch.
+    pub async fn register_file_guarded(
+        registry: &std::sync::Mutex<Self>,
+        request: crate::file_monitor_source::FileRegistrationRequest,
+        release: Option<crate::manager::CapacityReservation>,
+        timeout_ms: u64,
+        lifetime: (u64, bool),
+        monitor_id: Option<&str>,
+    ) -> std::io::Result<(String, String)> {
+        let (guard, pending) = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_file_registration(release, timeout_ms)?;
+        let proven =
+            crate::file_monitor_source::prove_file_registration(&guard, &pending, request).await;
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .finish_file_registration(&pending, proven, lifetime, monitor_id)
+    }
+    fn adopt_file(
+        &mut self,
+        proven: crate::file_monitor_source::ProvenFileWatch,
+        lifetime: (u64, bool),
+        monitor_id: Option<&str>,
+        reservation: Option<crate::manager::CapacityReservation>,
+    ) -> std::io::Result<(String, String)> {
+        let crate::file_monitor_source::ProvenFileWatch {
+            mut record,
+            watcher,
+        } = proven;
         let (timeout_ms, persistent) = lifetime;
         let id = format!("watch_{}", self.next_file_id + 1);
         let monitor_id = match monitor_id {
             Some(id) => id.to_owned(),
             None => allocate_monitor_id()?,
         };
-        let file = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::file_monitor::FileMonitor::register(
-                id.clone(),
-                description.to_owned(),
-                path,
-                event,
-                approved_parent,
-            )?,
-        ));
+        let description = record.description.clone();
+        let description = description.as_str();
+        record.id = id.clone();
+        record.reservation = reservation;
+        let file = std::sync::Arc::new(std::sync::Mutex::new(record));
         let checker = file.clone();
         let emit = self.emit.clone();
         let snapshots = self.file_snapshots.clone();
@@ -447,6 +552,7 @@ impl MonitorRegistry {
         let mut state = self.subscribe_state();
         let mut parked = self.parked.subscribe();
         let expires = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let wake = watcher.wake();
         let watch = tokio::spawn(async move {
             let period =
                 std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
@@ -458,16 +564,22 @@ impl MonitorRegistry {
                 let paused = checker.lock().expect("file monitor").paused || *parked.borrow();
                 let timed_out = tokio::select! {
                     _=timer.tick(),if !paused=>false,
+                    _=wake.notified(),if !paused=>false,
                     _=&mut deadline=>true,
                     changed=state.changed()=>{if changed.is_err() {return;}state.borrow_and_update();timer.reset();continue;}
                     changed=parked.changed()=>{if changed.is_err() {return;}let resumed=!*parked.borrow_and_update();if resumed {timer.reset_immediately();}else {timer.reset();}continue;}
                 };
                 // The poll does blocking lstat/open/digest work, so it runs off the async workers.
                 let blocking = checker.clone();
+                let watcher_error = watcher.take_error();
                 let Ok((events, settled, summary)) = tokio::task::spawn_blocking(move || {
                     let mut summary = None;
                     let mut file = blocking.lock().expect("file monitor");
-                    let events: Vec<MonitorEvent> = if timed_out {
+                    let events: Vec<MonitorEvent> = if let Some(error) = watcher_error {
+                        let events: Vec<MonitorEvent> = file.stop(&error).into_iter().collect();
+                        summary = Some(error);
+                        events
+                    } else if timed_out {
                         summary = Some(
                             (if persistent {
                                 "watcher expired"
@@ -524,6 +636,19 @@ impl MonitorRegistry {
         self.next_file_id += 1;
         self.files.insert(id.clone(), (file, watch));
         Ok((id, monitor_id))
+    }
+    /// `stopAllFiles`: kill every live file watch and abort every registration still proving its
+    /// target (its capacity is released). Returns how many live watches were stopped.
+    pub fn stop_all_files(&mut self) -> usize {
+        let ids = self
+            .file_snapshots
+            .lock()
+            .expect("file snapshots")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.registrations.finish_all();
+        ids.into_iter().filter(|id| self.stop_file(id)).count()
     }
     pub fn stop_file(&mut self, id: &str) -> bool {
         let Some((file, watch)) = self.files.shift_remove(id) else {
@@ -777,6 +902,7 @@ impl MonitorRegistry {
             return;
         }
         self.disposed = true;
+        self.registrations.finish_all();
         let now = now_ms();
         let mut events = vec![];
         for (_, (file, task)) in std::mem::take(&mut self.files) {
@@ -1246,6 +1372,184 @@ mod registry_tests {
         }
         assert_eq!(timeouts, 1);
         runtime.dispose().unwrap();
+    }
+    fn file_request(
+        dir: &std::path::Path,
+        event: crate::terminal_manifest_model::FileEvent,
+    ) -> crate::file_monitor_source::FileRegistrationRequest {
+        crate::file_monitor_source::FileRegistrationRequest {
+            description: "pending".to_owned(),
+            path: "artifact".into(),
+            cwd: dir.to_path_buf(),
+            event,
+            approved_parent: None,
+        }
+    }
+    /// terminal-monitor.test.ts "holds native-watch capacity until the watch settles".
+    #[tokio::test]
+    async fn a_guarded_registration_holds_capacity_until_the_watch_settles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let registry = std::sync::Mutex::new(MonitorRegistry::new(|_| {}));
+        let (id, monitor_id) = MonitorRegistry::register_file_guarded(
+            &registry,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+            manager.reserve().unwrap(),
+            5_000,
+            (5_000, false),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(id.starts_with("watch_") && monitor_id.starts_with("mon_"));
+        assert!(manager.reserve().unwrap().is_none());
+        assert_eq!(registry.lock().unwrap().stop_all_files(), 1);
+        assert_eq!(manager.active_size().unwrap(), 0);
+        registry.lock().unwrap().dispose();
+    }
+    /// terminal-monitor.test.ts "aborts a pending registration when disposed and releases
+    /// capacity": a proof that completes after the dispose is refused and frees its slot.
+    #[tokio::test]
+    async fn dispose_aborts_a_pending_registration_and_releases_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("artifact"), b"before").unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let mut registry = MonitorRegistry::new(|_| {});
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 5_000)
+            .unwrap();
+        registry.dispose();
+        assert_eq!(manager.active_size().unwrap(), 0);
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Modify,
+            ),
+        )
+        .await;
+        let error = registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("disposed"), "{error}");
+        assert!(registry.snapshot().is_empty());
+        assert!(manager.reserve().unwrap().is_some());
+    }
+    /// terminal-monitor.test.ts "aborts all pending registrations when stopAllFiles is called":
+    /// the registry stays usable, but the registration in flight is refused.
+    #[tokio::test]
+    async fn stop_all_files_aborts_pending_registrations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let mut registry = MonitorRegistry::new(|_| {});
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 5_000)
+            .unwrap();
+        assert_eq!(registry.stop_all_files(), 0);
+        assert_eq!(manager.active_size().unwrap(), 0);
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+        )
+        .await;
+        let error = registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::file_monitor_guard::REGISTRATION_ABORTED);
+        assert!(registry.snapshot().is_empty());
+        // A fresh registration after stopAllFiles still succeeds.
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 5_000)
+            .unwrap();
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+        )
+        .await;
+        registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap();
+        assert_eq!(registry.snapshot().len(), 1);
+        assert_eq!(manager.active_size().unwrap(), 1);
+        registry.dispose();
+        assert_eq!(manager.active_size().unwrap(), 0);
+    }
+    /// A registration whose deadline passes before its proof completes is refused (the paused
+    /// clock is the injected time; no sleep).
+    #[tokio::test(start_paused = true)]
+    async fn a_registration_past_its_deadline_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let mut registry = MonitorRegistry::new(|_| {});
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 100)
+            .unwrap();
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+        )
+        .await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        let error = registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::file_monitor_guard::REGISTRATION_ABORTED);
+        assert_eq!(manager.active_size().unwrap(), 0);
+        registry.dispose();
+    }
+    /// The native parent watcher settles a watch whose parent was retargeted (upstream "fails
+    /// closed when an approved symlink parent is retargeted after activation").
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_retargeted_parent_settles_the_watch_without_a_line() {
+        let root = tempfile::tempdir().unwrap();
+        let internal = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let link = root.path().join("parent");
+        std::os::unix::fs::symlink(internal.path(), &link).unwrap();
+        registry
+            .register_file(
+                "drift",
+                &link.join("artifact"),
+                crate::terminal_manifest_model::FileEvent::Create,
+                5_000,
+            )
+            .unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(external.path(), &link).unwrap();
+        std::fs::write(external.path().join("artifact"), b"external").unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&event, MonitorEvent::Summary { summary, .. } if summary.contains("monitored parent changed")),
+            "{event:?}"
+        );
+        assert!(registry.snapshot().is_empty());
     }
     #[tokio::test]
     async fn dispose_emits_disposed_ending_for_every_live_record() {
