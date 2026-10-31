@@ -460,7 +460,10 @@ mod tests {
 
     #[test]
     fn preserves_valid_surrogate_pairs_in_json() {
-        let schema = json!({"type": "object", "properties": {"obj": {"type": "object"}}});
+        let schema = json!({
+            "type": "object",
+            "properties": {"obj": {"type": "object", "properties": {"emoji": {"type": "string"}}}}
+        });
         let result = coerce_antml_parameters(
             &[param("obj", r#"{"emoji": "\uD83D\uDE00"}"#)],
             &tool(schema),
