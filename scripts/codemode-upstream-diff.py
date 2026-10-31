@@ -7,6 +7,11 @@ Reads crates/maho-codemode/assets/UPSTREAM.json and, for every verbatim/patched 
 the file at its pinned upstreamCommit with the same file at --ref. Also lists runtime files
 (non-.ts) that exist upstream but are missing from the manifest. Exits 1 when anything drifted,
 so a port can be scheduled; it never edits files.
+
+A verbatim/patched entry may carry "reviewedThrough" (a full upstream commit) and "divergence"
+(why mhc keeps its copy). Its drift is then reported as explained, not as a failure, while --ref is
+reviewedThrough or one of its ancestors, or holds the same blob; later upstream changes fail again.
+Entries with status "unported" (and a "reason") mark upstream files intentionally not shipped.
 """
 import argparse
 import json
@@ -41,7 +46,7 @@ def main():
     prefix = manifest["upstream"]["packagePath"]
     git(args.senpi, "rev-parse", "--verify", f"{args.ref}^{{commit}}")
 
-    drifted = []
+    drifted, explained = [], []
     for entry in manifest["assets"]:
         if entry["status"] not in ("verbatim", "patched"):
             continue
@@ -52,6 +57,14 @@ def main():
         if pinned == current:
             continue
         state = "removed upstream" if current is None else "changed upstream"
+        reviewed = entry.get("reviewedThrough")
+        if reviewed and entry.get("divergence") and (
+            current == blob(args.senpi, reviewed, path)
+            or git(args.senpi, "merge-base", "--is-ancestor", args.ref, reviewed, check=False).returncode == 0
+        ):
+            explained.append(entry["path"])
+            print(f"explained drift: {entry['path']} ({entry['status']}, reviewed through {reviewed[:12]}): {entry['divergence']}")
+            continue
         drifted.append(entry["path"])
         print(f"{state}: {entry['path']} ({entry['status']}, pinned {entry['upstreamCommit'][:12]})")
         if args.diff and current is not None:
@@ -69,7 +82,8 @@ def main():
     if drifted or new:
         print(f"\n{len(drifted)} drifted, {len(new)} new against {args.ref}")
         return 1
-    print(f"all {sum(entry['status'] in ('verbatim', 'patched') for entry in manifest['assets'])} pinned assets match {args.ref}")
+    pinned = sum(entry['status'] in ('verbatim', 'patched') for entry in manifest['assets'])
+    print(f"all {pinned} pinned assets match {args.ref} or carry a reviewed divergence ({len(explained)} explained)")
     return 0
 
 
