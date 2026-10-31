@@ -12,7 +12,7 @@ use crate::catalog::McpToolCatalogEntry;
 use crate::config_schema::{McpSettings,OutputGuardSettings};
 use crate::guard::output_guard::McpOutputArtifacts;
 use crate::tool_registrar::McpToolRegistrar;
-use super::proxy::create_mcp_proxy_tool;
+use super::proxy::{create_mcp_proxy_tool,mcp_proxy_renderers};
 use super::register::{build_mcp_tool_definitions,map_mcp_catalog_names,mcp_tool_renderers};
 
 fn poisoned<T>(lock:&Mutex<T>)->std::sync::MutexGuard<'_,T> {lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)}
@@ -89,7 +89,8 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
     let mut gateway_names:Vec<String>=Vec::new();
     for (server,entries) in &input.proxy_gateways {
         let tool=create_mcp_proxy_tool(server,entries,input.agent_dir.clone(),input.artifacts.clone(),input.output_guard.clone());
-        registrar.register_tool(tool.clone())?; gateway_names.push(tool.name);
+        let renderers=mcp_proxy_renderers(&tool.name);
+        registrar.register_tool_with_renderers(tool.clone(),renderers)?; gateway_names.push(tool.name);
     }
     for tool in &input.utility_tools {registrar.register_tool(tool.clone())?; gateway_names.push(tool.name.clone());}
     let active_mcp_names:Vec<String>=map_mcp_catalog_names(&input.active_entries).into_iter().map(|named|named.name).chain(gateway_names.iter().cloned()).collect();
