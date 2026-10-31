@@ -12,7 +12,7 @@ use crate::git::repo_types::GitCommitAuthor;
 use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
-use super::agreements_write_guard::refuse_agreements_violation;
+use super::agreements_write_guard::{refuse_agreements_violation, restore_paths};
 use super::claim_frontmatter::{ClaimReceipt, has_legacy_user_header, restamp_content};
 use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
@@ -92,7 +92,18 @@ pub fn run_memory_apply_patch(
                 "made no effective changes; nothing was committed. The patched content matched what was already on disk.",
             ));
         }
-        Err(err_val) => return Err(err(err_val.to_string())),
+        Err(err_val) => {
+            let refused = err(err_val.to_string());
+            // A refused commit (pre-commit hook, git failure) must not leave the applied files
+            // behind, or the next memory write fails clean_check on them.
+            return Err(match restore_paths(repo, &affected_paths) {
+                Ok(()) => refused,
+                Err(restore_error) => MemoryToolError::new(format!(
+                    "{}\nRolling back the written paths also failed: {restore_error}",
+                    refused.message
+                )),
+            });
+        }
     };
 
     let has_remote = has_configured_remote(repo);

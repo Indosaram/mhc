@@ -253,6 +253,81 @@ fn test_dirty_repo_refuses_create_without_writing_the_file() {
     assert!(!repo.dir.join("new.md").exists());
 }
 
+/// Makes every `git commit` in `repo` fail, standing in for a pre-commit refusal (secret scan,
+/// frontmatter check) after the memory tool already wrote its files.
+#[cfg(unix)]
+fn refuse_commits(repo: &GitMemoryRepo) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = repo.dir.join(".git/hooks/pre-commit");
+    fs::create_dir_all(hook.parent().expect("hooks dir")).expect("mkdir hooks");
+    fs::write(&hook, "#!/bin/sh\necho refused by test hook >&2\nexit 1\n").expect("hook");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod hook");
+}
+
+#[cfg(unix)]
+fn porcelain(repo: &GitMemoryRepo) -> String {
+    repo.status(&[] as &[&str]).expect("status")
+}
+
+#[cfg(unix)]
+#[test]
+fn test_refused_commit_rolls_back_every_command_and_leaves_repo_clean() {
+    let (_temp, repo) = fixture();
+    let author = test_author();
+    let block = "---\ndescription: Kept\n---\noriginal body\n";
+    fs::create_dir_all(repo.dir.join("notes/dir")).expect("mkdir");
+    fs::write(repo.dir.join("notes/kept.md"), block).expect("seed kept");
+    fs::write(repo.dir.join("notes/dir/inner.md"), block).expect("seed inner");
+    repo.commit_write(&["notes/kept.md", "notes/dir/inner.md"], "seed", &author)
+        .expect("seed commit");
+    let head = repo.head().expect("head");
+    refuse_commits(&repo);
+
+    let base = |command: &str| MemoryToolParams {
+        command: Some(command.to_string()),
+        reason: format!("{command} under a refusing hook"),
+        ..Default::default()
+    };
+    let attempts = [
+        MemoryToolParams {
+            file_path: Some("notes/new/created.md".to_string()),
+            description: Some("New".to_string()),
+            file_text: Some("body".to_string()),
+            ..base("create")
+        },
+        MemoryToolParams {
+            file_path: Some("notes/kept.md".to_string()),
+            old_string: Some("original".to_string()),
+            new_string: Some("changed".to_string()),
+            ..base("str_replace")
+        },
+        MemoryToolParams {
+            file_path: Some("notes/kept.md".to_string()),
+            ..base("delete")
+        },
+        MemoryToolParams {
+            file_path: Some("notes/dir".to_string()),
+            ..base("delete")
+        },
+        MemoryToolParams {
+            old_path: Some("notes/dir/inner.md".to_string()),
+            new_path: Some("notes/moved/inner.md".to_string()),
+            ..base("rename")
+        },
+    ];
+    for params in &attempts {
+        let err = run_memory_tool(&repo, &author, params, None).unwrap_err();
+        assert!(err.message.contains("refused by test hook"), "{}", err.message);
+        assert_eq!(porcelain(&repo), "", "{:?} left the repo dirty", params.command);
+    }
+
+    assert_eq!(repo.head().expect("head"), head);
+    assert_eq!(fs::read_to_string(repo.dir.join("notes/kept.md")).expect("kept"), block);
+    assert!(repo.dir.join("notes/dir/inner.md").exists());
+    assert!(!repo.dir.join("notes/new/created.md").exists());
+    assert!(!repo.dir.join("notes/moved/inner.md").exists());
+}
+
 #[test]
 fn test_rejects_path_traversal() {
     let (_temp, repo) = fixture();
