@@ -274,10 +274,17 @@ async fn session_start_acquires_the_lease_and_shutdown_records_then_releases_it(
 
 #[tokio::test]
 async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit() {
+    // Its own session id: the lease token map is process-wide and keyed by session.
+    let id = "terminal-lifecycle-reload";
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
     let dir = tempfile::tempdir().unwrap();
-    let ctx = context(dir.path());
-    let lease = state_dir(dir.path()).join(format!("{}.lease", encoded()));
-    let manifest = state_dir(dir.path()).join(format!("{}.json", encoded()));
+    let mut ctx = context(dir.path());
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.path().into(),
+        id,
+    });
+    let lease = state_dir(dir.path()).join(format!("{encoded}.lease"));
+    let manifest = state_dir(dir.path()).join(format!("{encoded}.json"));
     let owner = api(dir.path());
     start(&owner, &ctx, SessionReason::Startup).await;
     assert!(lease.is_file());
@@ -361,9 +368,12 @@ async fn a_persistent_monitor_created_through_the_registered_tool_is_recorded_in
 /// drained into the writer SessionStart binds, on the fresh-start (`own`) and the reload path,
 /// and is in the manifest the next shutdown writes. The binding map is process-wide, so each
 /// case uses its own session id.
-async fn queued_spec_is_recorded_after_session_start(id: &'static str, reason: SessionReason) {
+async fn queued_spec_is_recorded_after_session_start(
+    id: &'static str,
+    reason: SessionReason,
+    dir: tempfile::TempDir,
+) {
     use maho_ext_terminal::terminal_manifest_model::{MonitorRegistration, MonitorSpec};
-    let dir = tempfile::tempdir().unwrap();
     let mut ctx = context(dir.path());
     ctx.session_manager = Arc::new(Session {
         dir: dir.path().into(),
@@ -413,12 +423,35 @@ async fn queued_spec_is_recorded_after_session_start(id: &'static str, reason: S
 
 #[tokio::test]
 async fn a_spec_queued_while_unbound_is_recorded_after_a_fresh_session_start() {
-    queued_spec_is_recorded_after_session_start("terminal-queued-fresh", SessionReason::Startup)
-        .await;
+    queued_spec_is_recorded_after_session_start(
+        "terminal-queued-fresh",
+        SessionReason::Startup,
+        tempfile::tempdir().unwrap(),
+    )
+    .await;
 }
 
+/// The reload bind path: the pre-reload generation holds the lease and detaches on its reload
+/// shutdown (upstream `detachPersistence` unbinds), a spec is queued while unbound, and the reload
+/// generation that inherits the lease drains it.
 #[tokio::test]
 async fn a_spec_queued_while_unbound_is_recorded_after_a_reload_session_start() {
-    queued_spec_is_recorded_after_session_start("terminal-queued-reload", SessionReason::Reload)
-        .await;
+    let id = "terminal-queued-reload";
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = context(dir.path());
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.path().into(),
+        id,
+    });
+    let owner = api(dir.path());
+    start(&owner, &ctx, SessionReason::Startup).await;
+    assert!(
+        maho_ext_terminal::tools::monitor_manifest_binding::is_terminal_manifest_writer_bound(id)
+    );
+    shutdown(&owner, &ctx, SessionReason::Reload).await;
+    assert!(
+        !maho_ext_terminal::tools::monitor_manifest_binding::is_terminal_manifest_writer_bound(id),
+        "a reload shutdown detaches the recorder"
+    );
+    queued_spec_is_recorded_after_session_start(id, SessionReason::Reload, dir).await;
 }

@@ -599,12 +599,12 @@ fn wait_for_lease(
     let next = crate::lease_keeper::create_lease_keeper(crate::lease_keeper::LeaseKeeperOptions {
         dir: context.terminal_dir.clone(),
         encoded_session_id: context.encoded.clone(),
-        on_takeover: Box::new(move |path, pid| {
+        on_takeover: Box::new(move |lease| {
             ui.set_status(RESTORE_STATUS_KEY, None);
             let takeover = takeover.clone();
             let mut lifecycle =
                 crate::terminal_state::TerminalStateLifecycle::new(&session_dir, &session_id);
-            lifecycle.adopt_lease(path, pid);
+            lifecycle.adopt_lease(lease);
             tokio::spawn(async move {
                 takeover.own(lifecycle, terminal_now_ms()).await;
             });
@@ -656,10 +656,7 @@ async fn acquire_or_wait(
                 ctx,
                 context,
                 keeper,
-                Some(crate::manifest_lease::LeaseRecord {
-                    pid,
-                    started_at_ms: 0.0,
-                }),
+                Some(crate::manifest_lease::LeaseRecord::v1(pid, 0.0)),
                 session_dir,
                 session_id,
             );
@@ -1044,7 +1041,9 @@ impl Extension for TerminalExtension {
             // A reload generation inherits the lease (same pid) and only rebinds the recorder so
             // manifest coverage continues; a fresh generation acquires the lease and restores.
             let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
-            if reload {
+            // Upstream `holdsLease`: only a reload whose process still holds this session's lease
+            // token keeps it; any other reload acquires (or waits) like a fresh start.
+            if reload && crate::manifest_lease::current_lease_token(&encoded).is_some() {
                 // Bound at once: the specs queued before this generation's writer drain into it.
                 // The state lock is held across bind and install, so a monitor call cannot see the
                 // session bound while no lifecycle is installed (its spec would be dropped).
@@ -1065,7 +1064,15 @@ impl Extension for TerminalExtension {
         let shutdown_monitors = monitors.clone();
         let shutdown_keeper = lease_keeper.clone();
         api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();Box::pin(async move {
-            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
+            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
+                // Upstream `detachPersistence`: the recorder detaches without writing and the
+                // session unbinds, so specs created until the next generation binds are queued for
+                // it. The lease is deliberately kept: the same pid holds it across the reload.
+                stop_waiting(&keeper).await;
+                let mut slot=state.lock().await;
+                if let Some(lifecycle)=slot.take() {crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());}
+                return Ok(EventResult::None);
+            }
             // Upstream `stopPersistence`: stop waiting; a tick in flight either releases what it
             // acquired or finishes its takeover before the manifest is flushed.
             stop_waiting(&keeper).await;
@@ -1075,6 +1082,8 @@ impl Extension for TerminalExtension {
             let Some(mut lifecycle)=slot.take() else {return Ok(EventResult::None);};
             crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());
             drop(slot);
+            // Upstream `retireLeaseToken(lease.token)`: dead before the slow flush below.
+            lifecycle.retire_token();
             // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
             // carries each watch's burned fire window and mute state.
             let snapshot=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
@@ -2801,10 +2810,10 @@ mod persistence_tests {
             .terminal_dir
             .join(format!("{}.lease", fixture.encoded));
         // A live foreign holder: our parent process stands in for it.
-        let holder = crate::manifest_lease::LeaseRecord {
-            pid: f64::from(std::os::unix::process::parent_id()),
-            started_at_ms: 0.0,
-        };
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
         std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
         let ui = Arc::new(RecordingUi::default());
         let ctx = context(fixture.dir.path(), ui.clone(), None);
@@ -2893,10 +2902,10 @@ mod persistence_tests {
         let lease = fixture
             .terminal_dir
             .join(format!("{}.lease", fixture.encoded));
-        let holder = crate::manifest_lease::LeaseRecord {
-            pid: f64::from(std::os::unix::process::parent_id()),
-            started_at_ms: 0.0,
-        };
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
         std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
         let ctx = context(fixture.dir.path(), Arc::new(RecordingUi::default()), None);
         let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();

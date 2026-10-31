@@ -5,8 +5,15 @@ pub enum TerminalStateAdoption {
     Acquired,
     AttachedElsewhere { pid: f64 },
 }
+/// The lease this generation holds: its path, the pid it records and the v2 generation token.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldLease {
+    pub path: PathBuf,
+    pub pid: f64,
+    pub token: String,
+}
 pub struct TerminalStateLifecycle {
-    lease: Option<(PathBuf, f64)>,
+    lease: Option<HeldLease>,
     pub writer: TerminalManifestWriter,
 }
 impl TerminalStateLifecycle {
@@ -40,8 +47,8 @@ impl TerminalStateLifecycle {
                 read_process_start_ms: &mut read_process_start_ms,
             },
         )? {
-            crate::manifest_lease::AcquireTerminalLeaseResult::Acquired { path, pid } => {
-                self.lease = Some((path, pid));
+            crate::manifest_lease::AcquireTerminalLeaseResult::Acquired { path, pid, token } => {
+                self.lease = Some(HeldLease { path, pid, token });
                 Ok(TerminalStateAdoption::Acquired)
             }
             crate::manifest_lease::AcquireTerminalLeaseResult::Held { holder } => {
@@ -51,8 +58,15 @@ impl TerminalStateLifecycle {
     }
     /// Binds a lease the lease keeper acquired on this generation's behalf (upstream keeper
     /// `onTakeover` -> `own(lease)`).
-    pub fn adopt_lease(&mut self, path: PathBuf, pid: f64) {
-        self.lease = Some((path, pid));
+    pub fn adopt_lease(&mut self, lease: HeldLease) {
+        self.lease = Some(lease);
+    }
+    /// Upstream `stopPersistence` `retireLeaseToken(lease.token)`: the moment shutdown starts, this
+    /// generation's token stops counting as a live same-pid holder, before any slow flush.
+    pub fn retire_token(&self) {
+        if let Some(lease) = &self.lease {
+            crate::manifest_lease::retire_lease_token(&lease.token);
+        }
     }
     pub async fn restore(
         &mut self,
@@ -114,19 +128,28 @@ impl TerminalStateLifecycle {
         self.writer.record_shutdown(now).await;
     }
     pub fn release(&mut self) -> std::io::Result<()> {
-        if let Some((path, pid)) = self.lease.take() {
-            crate::manifest_lease::release_terminal_lease(&path, pid)?;
+        if let Some(lease) = self.lease.take() {
+            crate::manifest_lease::release_terminal_lease(
+                &lease.path,
+                lease.pid,
+                Some(&lease.token),
+            )?;
         }
         Ok(())
     }
 }
 /// Releases a lease this generation inherited instead of acquiring (a reload generation keeps the
-/// previous generation's lease). `release_terminal_lease` unlinks only when the file records `pid`,
-/// so this removes exactly that lease and no foreign holder's.
+/// previous generation's lease). Upstream retires this process's current token for the session
+/// first, then releases by (path, own pid, token): exactly that lease and no foreign holder's.
 pub fn release_lease_at(dir: &Path, encoded_session_id: &str, pid: f64) -> std::io::Result<()> {
+    let token = crate::manifest_lease::current_lease_token(encoded_session_id);
+    if let Some(token) = &token {
+        crate::manifest_lease::retire_lease_token(token);
+    }
     crate::manifest_lease::release_terminal_lease(
         &dir.join(format!("{encoded_session_id}.lease")),
         pid,
+        token.as_deref(),
     )
 }
 #[cfg(test)]
