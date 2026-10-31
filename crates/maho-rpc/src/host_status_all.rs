@@ -3,7 +3,9 @@
 //! Enumeration is the daemon directory (`list_host_endpoints`) and every row is the single-socket report read
 //! with `prune: false`, so this answer removes NOTHING. A directory that names no socket still gets a row
 //! (`socket: null`) built from the directory alone. Every row carries `endpoint_kind` and the liveness verdict as
-//! `alive` plus `reason` when it is not routable; a `tui` row also carries `owner`.
+//! `alive` plus `reason` when it is not routable; a `tui` row also carries `owner`. A host row also carries
+//! `stale_old_engine`: whether `host gc` would stop it as a stale older-engine leftover (`host_stale_engine`,
+//! senpi #3268), judged with observing reads only and only for a routable `rpc_host` endpoint.
 use crate::host_endpoints::{
     EndpointKind, HostEndpointEntry, endpoint_probe_timeout_ms, judge_endpoint_liveness,
     list_host_endpoints,
@@ -19,14 +21,34 @@ pub async fn read_all_host_status(
     include_workers: bool,
     timeout_ms: Option<u64>,
 ) -> std::io::Result<Vec<Value>> {
+    read_all_host_status_with(
+        agent_dir,
+        include_workers,
+        timeout_ms,
+        &crate::host_gc::StaleEngineRequest::default(),
+    )
+    .await
+}
+/// `read_all_host_status` with the stale-engine judge's options (senpi `StatusAllOptions.staleEngine`); the
+/// default judges against this build.
+pub async fn read_all_host_status_with(
+    agent_dir: &Path,
+    include_workers: bool,
+    timeout_ms: Option<u64>,
+    stale_engine: &crate::host_gc::StaleEngineRequest,
+) -> std::io::Result<Vec<Value>> {
     let endpoints = list_host_endpoints(agent_dir);
     let mut rows = Vec::with_capacity(endpoints.len());
     for batch in endpoints.chunks(STATUS_ALL_MAX_IN_FLIGHT) {
-        let reads = futures::future::join_all(
-            batch
-                .iter()
-                .map(|endpoint| endpoint_status(endpoint, agent_dir, include_workers, timeout_ms)),
-        )
+        let reads = futures::future::join_all(batch.iter().map(|endpoint| {
+            endpoint_status(
+                endpoint,
+                agent_dir,
+                include_workers,
+                timeout_ms,
+                stale_engine,
+            )
+        }))
         .await;
         for row in reads {
             rows.push(row?);
@@ -39,6 +61,7 @@ async fn endpoint_status(
     agent_dir: &Path,
     include_workers: bool,
     timeout_ms: Option<u64>,
+    stale_engine: &crate::host_gc::StaleEngineRequest,
 ) -> std::io::Result<Value> {
     let paths = crate::host_daemon_paths::host_daemon_directory_paths(&endpoint.dir);
     let (mut report, answered) = match &endpoint.socket {
@@ -82,8 +105,19 @@ async fn endpoint_status(
         verdict.as_str().into()
     };
     report["owner"] = owner;
-    // The engine-staleness judge is not ported, so no row can claim a stop candidate.
-    report["stale_old_engine"] = false.into();
+    let stale = match &endpoint.socket {
+        Some(socket)
+            if endpoint.endpoint_kind == EndpointKind::RpcHost
+                && verdict == crate::host_endpoints::EndpointLiveness::Routable =>
+        {
+            matches!(
+                stale_engine.judge(socket, agent_dir).await,
+                crate::host_stale_engine::StaleEngineVerdict::Stale { .. }
+            )
+        }
+        _ => false,
+    };
+    report["stale_old_engine"] = stale.into();
     Ok(report)
 }
 
