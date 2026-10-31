@@ -513,8 +513,11 @@ fn array(mut data: Value, key: &str) -> Vec<Value> {
     }
 }
 
+/// senpi `entries.slice(-tail)`: `-0` is `0`, so a zero tail keeps every item.
 fn tail_of(items: &[Value], tail: Option<usize>) -> Vec<Value> {
-    let start = tail.map_or(0, |tail| items.len().saturating_sub(tail));
+    let start = tail
+        .filter(|tail| *tail > 0)
+        .map_or(0, |tail| items.len().saturating_sub(tail));
     items[start..].to_vec()
 }
 
@@ -996,6 +999,11 @@ mod tests {
             read(Some(5), None, false).await.payload["entries"],
             json!(entries)
         );
+        // senpi `slice(-0)` is `slice(0)`: a zero tail returns everything.
+        let zero = read(Some(0), None, false).await;
+        assert_eq!(zero.payload["entries"], json!(entries));
+        assert_eq!(zero.payload["count"], 4);
+        assert_eq!(read(Some(0), None, true).await.payload["count"], 2);
         assert_eq!(
             read(None, Some("e2"), false).await.payload["entries"],
             json!(entries[2..])
