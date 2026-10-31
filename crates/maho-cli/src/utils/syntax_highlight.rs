@@ -10,7 +10,7 @@ pub const EAGER_HIGHLIGHT_LANGUAGES: &[&str] = &[
 /// case-insensitively).
 const EAGER_HIGHLIGHT_ALIASES: &[(&str, &[&str])] = &[
     ("python", &["py", "gyp", "ipython"]), ("java", &["jsp"]), ("go", &["golang"]),
-    ("javascript", &["js", "jsx", "mjs", "cjs"]), ("json", &[]),
+    ("javascript", &["js", "jsx", "mjs", "cjs"]), ("json", &["jsonc", "json5"]),
     ("cpp", &["cc", "c++", "h++", "hpp", "hh", "hxx", "cxx"]),
     ("typescript", &["ts", "tsx", "mts", "cts"]), ("php", &[]),
     ("ruby", &["rb", "gemspec", "podspec", "thor", "irb"]), ("c", &["h"]), ("csharp", &["cs", "c#"]),
