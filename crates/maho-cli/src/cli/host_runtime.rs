@@ -365,6 +365,9 @@ pub struct LaunchProjectTrust {
     /// senpi `trustFromFullAccess`: trusted only because the session runs Full access; leaving Full
     /// access withdraws it (senpi#3414, #3420). Hand it to `SettingsManager::set_trust_from_full_access`.
     pub trust_from_full_access: bool,
+    /// Something decided `trusted`; `false` only when the project needs trust, nothing answered, and no
+    /// prompt could run (senpi `resolveProjectTrusted` falling through to `!hasUI`).
+    pub decided: bool,
     pub warnings: Vec<String>,
 }
 
@@ -424,10 +427,10 @@ pub async fn resolve_launch_project_trust(
         && config.project_trust_override.is_none()
         && saved != Some(true);
     if let Some(trusted) = cached {
-        return LaunchProjectTrust { trusted, trust_from_full_access, warnings: Vec::new() };
+        return LaunchProjectTrust { trusted, trust_from_full_access, decided: true, warnings: Vec::new() };
     }
     if full_access_trust && config.project_trust_override.is_none() {
-        return LaunchProjectTrust { trusted: true, trust_from_full_access, warnings: Vec::new() };
+        return LaunchProjectTrust { trusted: true, trust_from_full_access, decided: true, warnings: Vec::new() };
     }
     let should_resolve = config.project_trust_override.is_none() && has_trust_requiring_resources;
     let default_project_trust = bootstrap
@@ -478,6 +481,7 @@ pub async fn resolve_launch_project_trust(
     } else {
         None
     };
+    let extension_decided = extension_trust.is_some();
     let emit = move |_: &str| -> Result<
         Option<maho_ext_api::ProjectTrustEventResult>,
         maho_ext_api::ExtensionFailure,
@@ -524,7 +528,67 @@ pub async fn resolve_launch_project_trust(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(cwd.to_owned(), trusted);
     }
-    LaunchProjectTrust { trusted, trust_from_full_access: false, warnings }
+    // Undecided: it needs trust, no override, extension answer, saved decision or always/never default, and the
+    // prompt could not run (no UI) or was dismissed. A host that can ask later (a mid-session switch) may.
+    let decided = config.project_trust_override.is_some()
+        || !has_trust_requiring_resources
+        || extension_decided
+        || store_failed
+        || saved.is_some()
+        || matches!(
+            default_project_trust,
+            Some(maho_core::project_trust::DefaultProjectTrust::Always | maho_core::project_trust::DefaultProjectTrust::Never)
+        )
+        || (has_ui && mode == AppMode::Interactive);
+    LaunchProjectTrust { trusted, trust_from_full_access: false, decided, warnings }
+}
+
+/// senpi `createServices` for a replacement's cwd, without a prompt: the extension `project_trust` event, the
+/// saved decision and `defaultProjectTrust` (hasUI false). `decided` is false when only a prompt could trust it.
+pub fn project_trust_resolver(
+    config: &CliRuntimeConfiguration,
+) -> maho_core::agent_session_runtime::ProjectTrustResolver {
+    let config = config.clone();
+    Arc::new(move |cwd: String, preset: Option<String>| {
+        let config = config.clone();
+        Box::pin(async move {
+            let profile = AgentSessionLaunchProfile {
+                cwd: cwd.clone(),
+                permission_preset: preset,
+                ..Default::default()
+            };
+            let resolved = resolve_launch_project_trust(
+                &config,
+                &cwd,
+                to_project_trust_mode(config.app_mode),
+                false,
+                Box::new(|_, _| None),
+                Some(&profile),
+            )
+            .await;
+            maho_core::agent_session_runtime::ResolvedProjectTrust {
+                trusted: resolved.trusted,
+                trust_from_full_access: resolved.trust_from_full_access,
+                decided: resolved.decided,
+                warnings: resolved.warnings,
+            }
+        }) as maho_core::agent_session_runtime::ProjectTrustResolution
+    })
+}
+
+/// The host's project-trust inputs for `AgentSession::switch_session_with_cwd`: the shared `projectTrustByCwd`
+/// cache, `--approve` / `--no-approve`, the resolver above, and whether an undecided project is asked through
+/// the session's UI (senpi interactive `projectTrustContextFactory`, `hasUI: true`).
+pub fn switch_project_trust(
+    config: &CliRuntimeConfiguration,
+    prompt: bool,
+) -> maho_core::agent_session::SwitchProjectTrust {
+    maho_core::agent_session::SwitchProjectTrust {
+        cache: Some(config.project_trust_by_cwd.clone()),
+        trust_override: config.project_trust_override,
+        resolver: Some(project_trust_resolver(config)),
+        prompt,
+    }
 }
 
 /// senpi `resolveCliPaths` entry: package sources and remote URLs (`isLocalPath` false) are kept
@@ -813,32 +877,12 @@ pub async fn mount_agent_session_runtime(
     // senpi's context has `hasUI: false` (not the initial runtime): the extension event, the saved decision and
     // `defaultProjectTrust` decide, and nothing is asked.
     runtime.set_project_trust_cache(Some(config.project_trust_by_cwd.clone()));
-    let resolver_config = config.clone();
-    let resolver: maho_core::agent_session_runtime::ProjectTrustResolver = Arc::new(move |cwd: String, preset: Option<String>| {
-        let config = resolver_config.clone();
-        Box::pin(async move {
-            let profile = AgentSessionLaunchProfile {
-                cwd: cwd.clone(),
-                permission_preset: preset,
-                ..Default::default()
-            };
-            let resolved = resolve_launch_project_trust(
-                &config,
-                &cwd,
-                to_project_trust_mode(config.app_mode),
-                false,
-                Box::new(|_, _| None),
-                Some(&profile),
-            )
-            .await;
-            maho_core::agent_session_runtime::ResolvedProjectTrust {
-                trusted: resolved.trusted,
-                trust_from_full_access: resolved.trust_from_full_access,
-                warnings: resolved.warnings,
-            }
-        }) as maho_core::agent_session_runtime::ProjectTrustResolution
-    });
-    runtime.set_project_trust_resolver(Some(resolver));
+    runtime.set_project_trust_resolver(Some(project_trust_resolver(config)));
+    // The session's own switch (RPC `switch_session`) re-derives trust with the same inputs; nothing is asked
+    // there, as senpi's RPC runtime passes no `projectTrustContext`.
+    runtime
+        .session()
+        .set_switch_project_trust(Some(switch_project_trust(config, false)));
     Ok(MountedRuntime {
         runtime,
         diagnostics,
