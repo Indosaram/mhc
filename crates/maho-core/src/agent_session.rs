@@ -11461,6 +11461,14 @@ impl AgentSession {
         reason: maho_ext_api::SessionReason,
         path: Option<String>,
     ) -> Result<bool, String> {
+        // senpi `emitBeforeSwitch` / `emitBeforeFork`: no handler, no emission. The runner of a session a failed
+        // replacement disposed has none left, so the next replacement still proceeds.
+        if !self
+            .has_extension_handlers(maho_ext_api::EventKind::SessionBeforeSwitch)
+            .await
+        {
+            return Ok(false);
+        }
         Ok(self
             .session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
                 reason,
@@ -11508,6 +11516,14 @@ impl AgentSession {
         entry_id: &str,
         include_entry: bool,
     ) -> Result<bool, String> {
+        // senpi `emitBeforeSwitch` / `emitBeforeFork`: no handler, no emission. The runner of a session a failed
+        // replacement disposed has none left, so the next replacement still proceeds.
+        if !self
+            .has_extension_handlers(maho_ext_api::EventKind::SessionBeforeFork)
+            .await
+        {
+            return Ok(false);
+        }
         Ok(self
             .session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork {
                 entry_id: entry_id.to_owned(),
