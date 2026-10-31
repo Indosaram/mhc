@@ -232,13 +232,8 @@ mod tests {
     #[test]
     fn a_zombie_generation_is_not_proven_live() {
         let (_temp, paths, socket) = setup();
-        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
-        // Wait for the exit without reaping it, so the child stays a zombie with a readable start time.
-        rustix::process::waitid(
-            rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child)),
-            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
-        )
-        .unwrap();
+        // The child exits unreaped, so it stays a zombie with a readable start time; the guard reaps it on drop.
+        let child = crate::host_reservations::ZombieChild::spawn();
         let pid = child.id();
         let start = crate::host_reservations::read_process_start_time(pid);
         assert!(start.is_some(), "a zombie keeps its start time");
@@ -250,8 +245,9 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        let state = elect_pointer(&paths, &socket, true);
-        child.wait().unwrap();
-        assert_eq!(state, HostPointerState::missing(Vec::new()));
+        assert_eq!(
+            elect_pointer(&paths, &socket, true),
+            HostPointerState::missing(Vec::new())
+        );
     }
 }

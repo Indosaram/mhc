@@ -453,6 +453,32 @@ fn endpoint_reservations_dir(
         }),
     }
 }
+/// A test child left as an exited-but-unreaped zombie. Dropping it reaps the child, so an early test
+/// failure (an unwrap or assert before the end) still leaves no zombie behind.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) struct ZombieChild(std::process::Child);
+#[cfg(all(test, target_os = "linux"))]
+impl ZombieChild {
+    /// Spawns `/usr/bin/true` and waits for its exit without reaping it.
+    pub(crate) fn spawn() -> Self {
+        let child = Self(std::process::Command::new("/usr/bin/true").spawn().unwrap());
+        rustix::process::waitid(
+            rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child.0)),
+            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .unwrap();
+        child
+    }
+    pub(crate) fn id(&self) -> u32 {
+        self.0.id()
+    }
+}
+#[cfg(all(test, target_os = "linux"))]
+impl Drop for ZombieChild {
+    fn drop(&mut self) {
+        let _ = self.0.wait();
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
