@@ -824,3 +824,46 @@ async fn keeps_the_file_after_a_delivery_was_applied_even_when_unreferenced() {
             .contains(r#""delivery_id":"d1""#)
     );
 }
+
+// senpi 4267-observing-reads-terminal-parity (the terminal half): the terminal's `abort` runs the host's
+// `runAbort` over the session's effect ledger, so an `effectId` gets a receipt that `get_effect_status`
+// reads back, and `awaitIdle`/`clearQueue` answer like a host.
+#[tokio::test]
+async fn abort_effects_and_effect_status_are_served_from_the_sessions_ledger() {
+    let fixture = start_endpoint(None).await;
+    let aborted = control_data(
+        &fixture.socket,
+        json!({"type": "abort", "effectId": "e-abort-1"}),
+    )
+    .await;
+    assert_eq!(aborted["effectId"], "e-abort-1");
+    assert_eq!(aborted["state"], "done");
+    assert_eq!(aborted["effect"]["disposition"], "no_active_turn");
+    let status = control_data(
+        &fixture.socket,
+        json!({"type": "get_effect_status", "effectId": "e-abort-1"}),
+    )
+    .await;
+    assert_eq!(status["found"], true, "{status}");
+    assert_eq!(status["effect"]["effectId"], "e-abort-1");
+    let replay = control_data(
+        &fixture.socket,
+        json!({"type": "abort", "effectId": "e-abort-1"}),
+    )
+    .await;
+    assert_eq!(replay["replayed"], true, "{replay}");
+    let quiesced = control_data(
+        &fixture.socket,
+        json!({"type": "abort", "awaitIdle": true, "clearQueue": true}),
+    )
+    .await;
+    assert_eq!(quiesced["idle"], true, "{quiesced}");
+    assert_eq!(quiesced["cleared"], 0);
+    let missing = control_data(
+        &fixture.socket,
+        json!({"type": "get_effect_status", "effectId": "never-sent"}),
+    )
+    .await;
+    assert_eq!(missing, json!({"found": false, "searched": "complete"}));
+    fixture.endpoint.dispose().await;
+}
