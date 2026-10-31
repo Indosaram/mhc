@@ -15,6 +15,7 @@ pub mod parsers;
 pub mod bash_command_segments;
 pub mod external_pattern;
 pub mod external_spellings;
+pub mod dispatch;
 
 use maho_ext_api::{Extension,ExtensionApi,EventKind,ExtensionEvent,EventResult,FlagType,FlagValue,ExtensionFailure,ToolCallEventResult};
 use std::sync::{Arc,Mutex};

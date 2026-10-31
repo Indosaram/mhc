@@ -10,7 +10,7 @@ autotests = false
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "macros"] }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-core = { path = "../../maho-core" }
 maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }

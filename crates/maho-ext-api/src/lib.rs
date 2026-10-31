@@ -1,5 +1,7 @@
 //! Native, statically registered extension contracts. No host or interactive dependency.
 pub mod goal_lifecycle;
+/// Per-call input identity the host scopes over a call's hooks and body (permission dispatch).
+pub use maho_agent::invocation_input;
 pub mod lifecycle_api;
 pub use lifecycle_api::*;
 pub mod mcp_wire;
