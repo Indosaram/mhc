@@ -34656,6 +34656,116 @@ mod tests {
         assert_eq!(*lock(&preparation_enabled), Some(false));
     }
 
+    fn lifecycle_record_count(session: &AgentSession) -> usize {
+        session.with_session_manager(|manager| {
+            manager
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry["type"] == "custom" && entry["customType"] == "session-lifecycle"
+                })
+                .count()
+        })
+    }
+
+    /// Bash operations that report their start and run until the test releases them.
+    struct HeldBash {
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+    impl maho_tools::bash::BashOperations for HeldBash {
+        fn exec<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a std::path::Path,
+            _: maho_tools::bash::BashExecOptions,
+        ) -> maho_tools::definition::ToolFuture<'a, maho_tools::bash::BashExit> {
+            Box::pin(async move {
+                if let Some(started) = lock(&self.started).take() {
+                    let _ = started.send(());
+                }
+                if let Some(release) = self.release.lock().await.take() {
+                    let _ = release.await;
+                }
+                Ok(maho_tools::bash::BashExit { exit_code: Some(0) })
+            })
+        }
+    }
+
+    /// senpi test/suite/regressions/3980-lifecycle-read-only.test.ts: reading the lifecycle while a user shell
+    /// command runs sees it running and writes nothing; the command's start and end are the lifecycle edges.
+    #[tokio::test]
+    async fn reading_the_lifecycle_during_a_user_shell_command_writes_nothing() {
+        let session = test_session();
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let operations = Arc::new(HeldBash {
+            started: Mutex::new(Some(started_tx)),
+            release: tokio::sync::Mutex::new(Some(release_rx)),
+        });
+        let bash = session.execute_bash("long command", None, true, None, Some(operations));
+        tokio::pin!(bash);
+        tokio::select! {
+            biased;
+            _ = &mut bash => panic!("the held command finished early"),
+            started = tokio::time::timeout(std::time::Duration::from_secs(5), started_rx) => {
+                started.expect("bounded start").expect("started");
+            }
+        }
+        let before = lifecycle_record_count(&session);
+        let reads = [
+            session.lifecycle_snapshot()["state"].clone(),
+            session.lifecycle_snapshot()["state"].clone(),
+            session.lifecycle_snapshot()["state"].clone(),
+        ];
+        assert_eq!(
+            reads,
+            [json!("running"), json!("running"), json!("running")]
+        );
+        assert_eq!(lifecycle_record_count(&session), before);
+        release_tx.send(()).expect("release");
+        tokio::time::timeout(std::time::Duration::from_secs(5), bash)
+            .await
+            .expect("bounded bash")
+            .expect("bash");
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        // A fact that changes without its edge stays unread: the getter never recomputes or writes.
+        let settled = lifecycle_record_count(&session);
+        session
+            .state()
+            .bash_abort_signals
+            .insert("unannounced".into(), Default::default());
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        assert_eq!(lifecycle_record_count(&session), settled);
+    }
+
+    /// senpi test/suite/regressions/3980-lifecycle-compaction-edges.test.ts: compaction start and end are lifecycle
+    /// edges, so the state a client reads follows them with nothing else happening, and a read never recomputes.
+    #[tokio::test]
+    async fn compaction_start_and_end_are_lifecycle_edges() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = retry_session(Vec::new(), 0);
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        let actions = session.extension_context_actions();
+        actions
+            .begin_compaction(maho_ext_api::BeginCompactionOptions {
+                reason: maho_ext_api::CompactionReason::Manual,
+            })
+            .expect("feedback signal");
+        assert_eq!(session.lifecycle_snapshot()["state"], "running");
+        actions.end_compaction(maho_ext_api::EndCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual,
+            signal: None,
+            aborted: Some(true),
+            error_message: None,
+        });
+        assert!(!session.is_compacting());
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+    }
+
     /// senpi test/suite/regressions/2848-sdk-side-cwd.test.ts: the 1-token fallback probe-back request carries the
     /// session cwd in its stream options, like every other model request.
     #[tokio::test]
