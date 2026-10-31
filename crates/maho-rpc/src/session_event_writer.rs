@@ -29,16 +29,18 @@ fn compact_delta(value:&Value)->Option<(&str,f64,&str)>{
     if !matches!(kind,"text_delta"|"thinking_delta"|"toolcall_delta"){return None;}
     Some((kind,event["contentIndex"].as_f64()?,event["delta"].as_str()?))
 }
-struct Record{value:Value,key:Option<String>,bytes:usize}
-/// Serialized JSONL size of one record, kept per record so the buffered total is O(1).
-fn line_len(value:&Value)->usize{value.to_string().len()+1}
-#[derive(Default)]pub struct RecordQueue{records:VecDeque<Record>,latest:BTreeSet<String>,bytes:usize}
+use crate::session_record_accounting::{QueueNode,SessionRecordAccounting};
+/// One session's (or target's) records. Each node carries its frozen JSONL line and byte length
+/// (senpi `session-record-accounting.ts`), so the buffered totals are O(1) and a record is serialized once.
+#[derive(Default)]pub struct RecordQueue{records:VecDeque<QueueNode>,latest:BTreeSet<String>,accounting:SessionRecordAccounting}
 impl RecordQueue{
-    fn resize(&mut self,index:usize){let bytes=line_len(&self.records[index].value);self.bytes=self.bytes-self.records[index].bytes+bytes;self.records[index].bytes=bytes;}
-    fn remove_at(&mut self,index:usize){if let Some(record)=self.records.remove(index){self.bytes-=record.bytes;}}
-    pub fn append(&mut self,value:Value){let bytes=line_len(&value);self.append_with_len(value,bytes);}
-    /// `append` with the record's already-measured JSONL size (`bytes == line_len(&value)`).
-    fn append_with_len(&mut self,value:Value,bytes:usize){
+    fn resize(&mut self,index:usize){let _=self.accounting.replace(&mut self.records[index]);}
+    fn remove_at(&mut self,index:usize){self.accounting.unlink(&mut self.records,index);}
+    pub fn append(&mut self,value:Value){let line=crate::jsonl::serialize_json_line(&value).unwrap_or_default();self.append_line(value,line);}
+    /// Retained records and their JSONL bytes.
+    pub fn buffered(&self)->(usize,usize){(self.accounting.count,self.accounting.bytes)}
+    /// `append` with the record's already-serialized JSONL line.
+    fn append_line(&mut self,value:Value,line:String){
         let key=if compact_delta(&value).is_some(){Some("message".to_owned())}else if value["type"]=="tool_execution_update"{value["toolCallId"].as_str().map(|id|format!("tool:{id}"))}else{None};
         if let Some(key)=&key{
             if self.latest.contains(key)&&let Some(index)=self.records.iter().position(|record|record.key.as_ref()==Some(key)){
@@ -57,13 +59,12 @@ impl RecordQueue{
             }
             self.latest.insert(key.clone());
         }else{self.latest.clear();for record in &mut self.records{record.key=None;}}
-        self.bytes+=bytes;
-        self.records.push_back(Record{value,key,bytes});
+        self.accounting.append_line(&mut self.records,value,line,key);
     }
-    pub fn pop(&mut self)->Option<Value>{self.pop_sized().map(|(value,_)|value)}
-    fn pop_sized(&mut self)->Option<(Value,usize)>{let record=self.records.pop_front()?;self.bytes-=record.bytes;if let Some(key)=record.key{self.latest.remove(&key);}Some((record.value,record.bytes))}
+    pub fn pop(&mut self)->Option<Value>{self.pop_node().map(|node|node.value)}
+    fn pop_node(&mut self)->Option<QueueNode>{let node=self.accounting.unlink(&mut self.records,0)?;if let Some(key)=&node.key{self.latest.remove(key);}Some(node)}
 }
-#[derive(Default)]pub struct SessionRecordScheduler{queues:BTreeMap<(Option<String>,String),RecordQueue>,ready:VecDeque<(Option<String>,String)>,in_flight:Option<(Option<String>,String)>,in_flight_bytes:usize,reservations:CloseResponseReservations,sealed:BTreeSet<String>}
+#[derive(Default)]pub struct SessionRecordScheduler{queues:BTreeMap<(Option<String>,String),RecordQueue>,ready:VecDeque<(Option<String>,String)>,in_flight:Option<(Option<String>,String)>,in_flight_bytes:usize,reservations:CloseResponseReservations,sealed:BTreeSet<String>,retained:SessionRecordAccounting}
 pub struct SessionWriterActor{
     /// Receivers of the internal structured lane (senpi `structuredLanes`); never a legacy destination.
     pub structured_lanes:crate::session_structured_lanes::SessionStructuredLanes,
@@ -84,14 +85,13 @@ impl SessionWriterActor{
                 let notified=wake.notified();
                 let record={
                     let mut queue=pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let record=queue.next_record();
+                    let record=queue.next_node();
                     if record.is_none(){let _=status.send_replace(Ok(true));}
                     record
                 };
                 let Some((_,record))=record else{notified.await;continue;};
                 let result=async{
-                    let line=crate::jsonl::serialize_json_line(&record)?;
-                    writer.write_all(line.as_bytes()).await?;
+                    writer.write_all(record.line.as_bytes()).await?;
                     writer.flush().await
                 }.await;
                 if let Err(error)=result{
@@ -108,14 +108,14 @@ impl SessionWriterActor{
         crate::lifecycle_delivery::observe_lifecycle_delivery(&mut value);
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.state.borrow().clone()?;
-        let incoming=crate::jsonl::serialize_json_line(&value).map_err(|error|error.to_string())?.len();
+        let line=crate::jsonl::serialize_json_line(&value).map_err(|error|error.to_string())?;
         let (records,bytes)=scheduler.buffered_size();
         let(reserved_records,reserved_bytes)=scheduler.reservations.pending_size();
         if scheduler.sealed.contains(session_id){return Ok(());}
-        if records+reserved_records>=MAX_SHARED_STDIO_QUEUE_RECORDS||bytes+reserved_bytes+incoming>MAX_SHARED_STDIO_QUEUE_BYTES{
+        if records+reserved_records>=MAX_SHARED_STDIO_QUEUE_RECORDS||bytes+reserved_bytes+line.len()>MAX_SHARED_STDIO_QUEUE_BYTES{
             return Err("session_output_overflow, resync required".into());
         }
-        scheduler.enqueue_sized(session_id,value,incoming);
+        scheduler.enqueue_line(session_id,value,line);
         let _=self.state.send_replace(Ok(false));self.changed.notify_one();Ok(())
     }
     pub fn reserve_close_response(&self,session_id:&str,response:&Value,terminal:bool)->Result<Option<u64>,String>{
@@ -147,6 +147,8 @@ impl SessionWriterActor{
         response["sessionId"]=session_id.into();scheduler.enqueue(session_id,None,response);
         let _=self.state.send_replace(Ok(false));self.changed.notify_one();Ok(())
     }
+    /// senpi `bufferedRecordCount` / `bufferedByteLength`: queued records plus the one being written, O(1).
+    pub fn buffered_size(&self)->(usize,usize){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).buffered_size()}
     pub async fn flush(&self)->Result<(),String>{
         let mut state=self.state.subscribe();
         loop{if state.borrow_and_update().clone()?{return Ok(());}state.changed().await.map_err(|error|error.to_string())?;}
@@ -154,35 +156,39 @@ impl SessionWriterActor{
 }
 impl Drop for SessionWriterActor{fn drop(&mut self){self.task.abort();}}
 impl SessionRecordScheduler{
+    /// Retained totals plus the in-flight record; O(1) (senpi `bufferedRecordCount` / `bufferedByteLength`).
     pub fn buffered_size(&self)->(usize,usize){
-        self.queues.values().fold((usize::from(self.in_flight.is_some()),self.in_flight_bytes),|(count,bytes),queue|(count+queue.records.len(),bytes+queue.bytes))
+        (self.retained.count+usize::from(self.in_flight.is_some()),self.retained.bytes+self.in_flight_bytes)
     }
     pub async fn drain(&mut self,writer:&mut(impl tokio::io::AsyncWrite+Unpin))->std::io::Result<()>{
         use tokio::io::AsyncWriteExt;
-        while let Some((_,value))=self.next_record(){
-            let line=crate::jsonl::serialize_json_line(&value)?;
-            writer.write_all(line.as_bytes()).await?;
+        while let Some((_,node))=self.next_node(){
+            writer.write_all(node.line.as_bytes()).await?;
             writer.flush().await?;
             self.acknowledge_write();
         }
         Ok(())
     }
     pub fn enqueue(&mut self,session_id:&str,target_id:Option<&str>,value:Value){
-        let key=(target_id.map(str::to_owned),session_id.to_owned());
-        self.queues.entry(key.clone()).or_default().append(value);
+        let line=crate::jsonl::serialize_json_line(&value).unwrap_or_default();
+        self.enqueue_keyed((target_id.map(str::to_owned),session_id.to_owned()),value,line);
+    }
+    /// Untargeted `enqueue` reusing the line the caller already serialized for its overflow check.
+    fn enqueue_line(&mut self,session_id:&str,value:Value,line:String){self.enqueue_keyed((None,session_id.to_owned()),value,line);}
+    fn enqueue_keyed(&mut self,key:(Option<String>,String),value:Value,line:String){
+        let queue=self.queues.entry(key.clone()).or_default();
+        let before=queue.buffered();queue.append_line(value,line);let after=queue.buffered();
+        // A tool replacement or delta merge can shrink the queue: the totals move by the queue's own delta.
+        self.retained.count=self.retained.count+after.0-before.0;self.retained.bytes=self.retained.bytes+after.1-before.1;
         if self.in_flight.as_ref()!=Some(&key)&&!self.ready.contains(&key){self.ready.push_back(key);}
     }
-    /// Untargeted `enqueue` reusing the size the caller already serialized for its overflow check.
-    fn enqueue_sized(&mut self,session_id:&str,value:Value,bytes:usize){
-        let key=(None,session_id.to_owned());
-        self.queues.entry(key.clone()).or_default().append_with_len(value,bytes);
-        if self.in_flight.as_ref()!=Some(&key)&&!self.ready.contains(&key){self.ready.push_back(key);}
-    }
-    pub fn next_record(&mut self)->Option<(Option<String>,Value)>{
+    pub fn next_record(&mut self)->Option<(Option<String>,Value)>{self.next_node().map(|(target,node)|(target,node.value))}
+    fn next_node(&mut self)->Option<(Option<String>,QueueNode)>{
         if self.in_flight.is_some(){return None;}
-        let key=self.ready.pop_front()?;let (value,bytes)=self.queues.get_mut(&key)?.pop_sized()?;
-        self.in_flight_bytes=bytes;
-        self.in_flight=Some(key.clone());Some((key.0,value))
+        let key=self.ready.pop_front()?;let node=self.queues.get_mut(&key)?.pop_node()?;
+        self.retained.count-=1;self.retained.bytes-=node.byte_length;
+        self.in_flight_bytes=node.byte_length;
+        self.in_flight=Some(key.clone());Some((key.0,node))
     }
     pub fn acknowledge_write(&mut self){
         let Some(key)=self.in_flight.take()else{return;};
@@ -362,6 +368,30 @@ impl McpFormsUnbind{
     }
     #[test]fn tool_updates_replace_only_same_key_until_barrier(){let mut queue=RecordQueue::default();queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":1}));queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":2}));assert_eq!(queue.pop().unwrap()["value"],2);assert!(queue.pop().is_none());}
     #[test]fn scheduler_round_robins_only_after_current_record_drains(){let mut scheduler=SessionRecordScheduler::default();scheduler.enqueue("a",None,json!({"n":1}));scheduler.enqueue("a",None,json!({"n":2}));scheduler.enqueue("b",None,json!({"n":3}));assert_eq!(scheduler.next_record().unwrap().1["n"],1);assert!(scheduler.next_record().is_none());scheduler.enqueue("a",None,json!({"n":4}));scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],3);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],2);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],4);scheduler.acknowledge_write();assert!(scheduler.next_record().is_none());}
+    /// 3913-writer-accounting "walks only a linear number of bytes during a 3000-record burst": the totals are kept
+    /// per node, never re-summed, and drain to zero.
+    #[tokio::test]async fn a_burst_keeps_running_totals_that_drain_to_zero(){
+        let mut scheduler=SessionRecordScheduler::default();
+        let mut expected=0;
+        for index in 0..3000{let record=json!({"type":"event","index":index});expected+=crate::jsonl::serialize_json_line(&record).unwrap().len();scheduler.enqueue("session",None,record);}
+        assert_eq!(scheduler.buffered_size(),(3000,expected));
+        let mut sink=Vec::new();scheduler.drain(&mut sink).await.unwrap();
+        assert_eq!(sink.len(),expected);
+        assert_eq!(scheduler.buffered_size(),(0,0));
+    }
+    /// 3913-writer-accounting "keeps byte totals exact through tool replacement and delta merging".
+    #[tokio::test]async fn byte_totals_stay_exact_through_tool_replacement_and_delta_merging(){
+        let mut scheduler=SessionRecordScheduler::default();
+        for index in 0..20{
+            scheduler.enqueue("session",None,json!({"type":"tool_execution_update","toolCallId":"tool","partialResult":"é".repeat(index)}));
+            scheduler.enqueue("session",None,json!({"type":"message_update","message":{"text":"é".repeat(index)},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"é","partial":{}}}));
+        }
+        let (count,bytes)=scheduler.buffered_size();
+        let mut sink=Vec::new();scheduler.drain(&mut sink).await.unwrap();
+        assert_eq!(bytes,sink.len());
+        assert_eq!(count,String::from_utf8(sink).unwrap().lines().count());
+        assert_eq!(scheduler.buffered_size(),(0,0));
+    }
     /// 3913-sealed-reattach / 3913-writer-accounting "delivers an admitted close response even when overflow already
     /// sealed the handle": a terminal close on a sealed session appends only its response, never a second seal.
     #[tokio::test]async fn an_admitted_close_on_a_sealed_session_appends_only_its_response(){
