@@ -2,11 +2,10 @@
 
 use serde_json::{Map, Value};
 
+use super::recovery_stream_terminal::{remove_tool_calls, rewrite_hint};
 use super::stream_wrapper_shared::StreamMessageProjection;
 use super::types::ToolCallFormat;
-use crate::types::{
-    AssistantMessage, AssistantMessageEvent, ContentBlock, ErrorReason, StopReason,
-};
+use crate::types::{AssistantMessage, AssistantMessageEvent, ErrorReason, StopReason};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,9 +55,7 @@ pub fn terminate_recovery_stream_for_failure(
     let details = failure_details(options.failure);
     projection.sync(options.source);
     let mut message = projection.finalize(options.source, false);
-    message
-        .content
-        .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+    let rewritten_from = remove_tool_calls(&mut message, |_| true);
     message.stop_reason = StopReason::Error;
     message.error_message = Some(details.error_message.to_string());
 
@@ -80,10 +77,13 @@ pub fn terminate_recovery_stream_for_failure(
     });
     message.diagnostics = Some(diagnostics);
 
-    stream.push(AssistantMessageEvent::Error {
-        reason: ErrorReason::Error,
-        error: message.clone(),
-    });
+    stream.push_with_hint(
+        AssistantMessageEvent::Error {
+            reason: ErrorReason::Error,
+            error: message.clone(),
+        },
+        rewrite_hint(rewritten_from),
+    );
     stream.end(Some(message));
 }
 
@@ -91,7 +91,7 @@ pub fn terminate_recovery_stream_for_failure(
 mod tests {
     use super::*;
     use crate::tool_call_middleware::stream_wrapper_shared::StreamMessageProjectionOptions;
-    use crate::types::{ToolCall, Usage};
+    use crate::types::{ContentBlock, ToolCall, Usage};
 
     fn message() -> AssistantMessage {
         AssistantMessage {
@@ -126,6 +126,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

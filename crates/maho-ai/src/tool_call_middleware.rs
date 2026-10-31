@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/index.ts.
 
+#[cfg(test)]
+mod capture_tests;
 pub mod context_transformer;
 pub mod protocols;
 pub mod recovery_code_mask;
