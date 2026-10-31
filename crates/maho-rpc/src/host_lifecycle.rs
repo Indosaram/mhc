@@ -6,37 +6,14 @@ pub const DEFAULT_HOST_IDLE_EXIT_MS: f64 = 900000.;
 pub const HANDOFF_GRACE_MS_ENV: &str = "SENPI_RPC_HANDOFF_GRACE_MS";
 pub const DEFAULT_HANDOFF_GRACE_MS: f64 = 600000.;
 pub use crate::host_launch_spec::HostLifecyclePolicyInput;
-pub const INTERNAL_SUPERVISOR_FLAG: &str = "--internal-rpc-host-supervisor";
-/// The stdio slot senpi gives the child's lifetime pipe (senpi `CHILD_WATCH_FD`). Rust's `Command`
-/// exposes only the three standard slots, so the pipe is inherited by descriptor instead - see
-/// `bind_child_watch_pipe`.
-pub const CHILD_WATCH_FD: u32 = 3;
-/// Gives `child_env` the child's lifetime binding and returns the pipe ends this process keeps
-/// alive for the whole supervisor run (senpi host-lifecycle.ts:513-544, stdio slot 3).
-///
-/// senpi duplicates the read end into stdio slot 3. Rust's `Command` exposes only the three
-/// standard slots and `pre_exec` is unavailable under this crate's `unsafe_code = "deny"`, so the
-/// read end's close-on-exec flag is cleared instead: the child inherits the pipe at the number this
-/// process holds it at, and `HOST_WATCH_FD_ENV` carries exactly that number. The write end stays
-/// here, close-on-exec, is never inherited and is never written - only its close matters.
+// The launch surface lives in its own module (senpi host-lifecycle-launch.ts); re-exported at its original home.
 #[cfg(unix)]
-fn bind_child_watch_pipe(
-    child_env: &mut HashMap<String, String>,
-) -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    use std::os::fd::AsRawFd;
-    let (read_end, write_end) = rustix::pipe::pipe()?;
-    rustix::io::fcntl_setfd(&write_end, rustix::io::FdFlags::CLOEXEC)
-        .map_err(std::io::Error::from)?;
-    rustix::io::fcntl_setfd(&read_end, rustix::io::FdFlags::empty())
-        .map_err(std::io::Error::from)?;
-    let descriptor = u64::try_from(read_end.as_raw_fd())
-        .map_err(|_| std::io::Error::other("child watch descriptor is not representable"))?;
-    child_env.insert(
-        crate::host_watchdog::HOST_WATCH_FD_ENV.into(),
-        descriptor.to_string(),
-    );
-    Ok((read_end, write_end))
-}
+use crate::host_lifecycle_launch::bind_child_watch_pipe;
+pub use crate::host_lifecycle_launch::{
+    CHILD_WATCH_FD, INTERNAL_SUPERVISOR_FLAG, SpawnableLaunch, SupervisorLaunch,
+    find_internal_supervisor_args, parse_supervisor_args, resolve_cli_main_path,
+    resolve_host_child_launch, spawnable_child_launch,
+};
 #[derive(Clone, Copy, Default)]
 pub struct HostActivity {
     pub connections: u64,
@@ -116,6 +93,39 @@ impl ObservedHostTurns {
                     observed_busy: self.busy.values().filter(|count| **count > 0).count() as u64,
                 },
             ),
+        }
+    }
+}
+/// The observer connection's event stream: every line feeds both the idle decision's turn count and the owner
+/// check's run activity (senpi `observeHostEvent`).
+#[cfg(any(unix, windows))]
+async fn observe_host_events(
+    mut input: impl tokio::io::AsyncRead + Unpin,
+    observed: &mut ObservedHostTurns,
+    busy: &std::sync::atomic::AtomicU64,
+    activity: &std::sync::Mutex<crate::host_lifecycle_activity::SupervisorActivity>,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut lines = crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS)
+        .map_err(std::io::Error::other)?;
+    let mut buffer = [0; 8192];
+    loop {
+        let size = input.read(&mut buffer).await?;
+        let records = if size == 0 {
+            lines.finish()
+        } else {
+            lines.push(&buffer[..size])
+        };
+        for record in records {
+            if let crate::jsonl::LineRecord::Line(line) = record {
+                crate::host_lifecycle_activity::lock_activity(activity).observe_host_event(&line);
+                if observed.observe(&line) {
+                    busy.store(observed.busy_turns(), std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+        if size == 0 {
+            return Ok(());
         }
     }
 }
@@ -253,113 +263,6 @@ pub async fn run_socket_proxy(
     }
     Ok(())
 }
-#[derive(Debug, PartialEq, Eq)]
-pub struct SupervisorLaunch {
-    pub socket: String,
-    pub host_args: Vec<String>,
-    pub child_command: Option<String>,
-    pub child_args: Option<Vec<String>>,
-    pub agent_dir: Option<String>,
-    pub bind_socket: Option<String>,
-    pub replace_identity: Option<crate::socket_ownership::SocketFileIdentity>,
-    /// `--mcp-presenter-fd 4`: the launching CLI's enrollment channel, relayed once to the child (senpi
-    /// `presenterBootstrapFd`). Only fd 4 is accepted. Rust's supervisor takes no `--owner-fd`, so the upstream
-    /// owner-fd/presenter-fd collision cannot arise here.
-    pub presenter_bootstrap_fd: Option<i32>,
-}
-pub fn find_internal_supervisor_args(argv: &[String]) -> Option<&[String]> {
-    let mut index = 0;
-    while index < argv.len() {
-        if argv[index] == INTERNAL_SUPERVISOR_FLAG {
-            return Some(&argv[index + 1..]);
-        }
-        if argv[index] != "--extension" || index + 1 >= argv.len() {
-            return None;
-        }
-        index += 2;
-    }
-    None
-}
-pub fn parse_supervisor_args(argv: &[String]) -> Option<SupervisorLaunch> {
-    let mut launch = SupervisorLaunch {
-        socket: String::new(),
-        host_args: vec![],
-        child_command: None,
-        child_args: None,
-        agent_dir: None,
-        bind_socket: None,
-        replace_identity: None,
-        presenter_bootstrap_fd: None,
-    };
-    let mut socket_seen = false;
-    let mut index = 0;
-    while index < argv.len() {
-        let arg = &argv[index];
-        if arg == crate::mcp_presenter_bootstrap::MCP_PRESENTER_FD_FLAG
-            && argv.get(index + 1).map(String::as_str) == Some("4")
-        {
-            launch.presenter_bootstrap_fd =
-                Some(crate::mcp_presenter_bootstrap::MCP_PRESENTER_BOOTSTRAP_FD);
-            index += 2;
-            continue;
-        }
-        if index + 1 < argv.len()
-            && matches!(
-                arg.as_str(),
-                "--socket"
-                    | "--child-command"
-                    | "--child-args"
-                    | "--agent-dir"
-                    | "--bind"
-                    | "--replace"
-            )
-        {
-            index += 1;
-            let value = &argv[index];
-            match arg.as_str() {
-                "--socket" => {
-                    launch.socket = value.clone();
-                    socket_seen = true;
-                }
-                "--child-command" => launch.child_command = Some(value.clone()),
-                "--child-args" => {
-                    let parsed: serde_json::Value = serde_json::from_str(value).ok()?;
-                    launch.child_args = parsed.as_array().and_then(|items| {
-                        items
-                            .iter()
-                            .map(|item| item.as_str().map(str::to_owned))
-                            .collect()
-                    });
-                }
-                "--agent-dir" => launch.agent_dir = Some(value.clone()),
-                "--bind" => launch.bind_socket = Some(value.clone()),
-                "--replace" => {
-                    launch.replace_identity = value
-                        .split_once(':')
-                        .filter(|(dev, ino)| {
-                            !dev.is_empty()
-                                && !ino.is_empty()
-                                && dev
-                                    .bytes()
-                                    .chain(ino.bytes())
-                                    .all(|byte| byte.is_ascii_digit())
-                        })
-                        .and_then(|(dev, ino)| {
-                            Some(crate::socket_ownership::SocketFileIdentity {
-                                dev: dev.parse().ok()?,
-                                ino: ino.parse().ok()?,
-                            })
-                        })
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            launch.host_args.push(arg.clone());
-        }
-        index += 1;
-    }
-    socket_seen.then_some(launch)
-}
 /**
  * The host supervisor: bind the public endpoint, run a private host behind it, proxy clients,
  * and leave when idle or when the endpoint is taken over (senpi `runHostSupervisor`).
@@ -431,90 +334,40 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         ))
     };
     let child_launch = resolve_host_child_launch(&launch, &internal.socket)?;
-    let mut child_env = crate::host_successor::successor_env(
-        env.clone(),
-        0,
-        &instance_id,
-        &paths.dir.to_string_lossy(),
-        Some(&agent_dir),
-        &std::collections::HashMap::new(),
-    );
-    // win32 names no public socket to the child: a named pipe has no filesystem entry to own.
-    if platform != "win32" {
-        child_env.insert(
-            crate::host_watchdog::HOST_PUBLIC_SOCKET_ENV.into(),
-            public_socket.clone(),
-        );
-    }
-    // The secret file is win32-only: the sealed hop replaces it on POSIX.
-    if platform == "win32"
-        && internal_secret.is_some()
-        && let Some(secret_path) = &internal.secret_path
-    {
-        child_env.insert(
-            crate::socket_transport::SOCKET_SECRET_FILE_ENV.into(),
-            secret_path.to_string_lossy().into_owned(),
-        );
-    }
-    if let Some(dir) = &internal.dir {
-        child_env.insert(
-            crate::host_watchdog::HOST_SCRATCH_DIR_ENV.into(),
-            dir.to_string_lossy().into_owned(),
-        );
-    }
-    // Lifetime binding: this supervisor owns the write end of a pipe the child reads, so its EOF
-    // means this process died for ANY reason, including a SIGKILL that runs no handler. The ppid
-    // fallback covers a descriptor that could not be inherited.
-    child_env.insert(
-        crate::host_watchdog::HOST_WATCH_PPID_ENV.into(),
-        std::process::id().to_string(),
-    );
-    let mut cleanup_paths: Vec<String> = Vec::new();
+    let mut cleanup_paths: Vec<std::path::PathBuf> = Vec::new();
     if launch.bind_socket.is_none() {
         let generation = crate::host_daemon_paths::generation_paths(&paths, &instance_id);
-        cleanup_paths.push(paths.pointer_file.to_string_lossy().into_owned());
-        cleanup_paths.push(generation.pid_file.to_string_lossy().into_owned());
-        cleanup_paths.push(paths.settings_file.to_string_lossy().into_owned());
+        cleanup_paths.push(paths.pointer_file.clone());
+        cleanup_paths.push(generation.pid_file.clone());
+        cleanup_paths.push(paths.settings_file.clone());
     }
     // Windows named pipes have no filesystem entry to own, so the public entry stays listed for the crash-path
     // cleanup (senpi `hostCrashCleanupPaths`).
     if platform == "win32" {
-        cleanup_paths.push(public_socket.clone());
-    }
-    child_env.insert(
-        crate::host_watchdog::HOST_CLEANUP_PATHS_ENV.into(),
-        cleanup_paths.join("\n"),
-    );
-    // The child's lifetime poll compares the supervisor's start on one clock per platform: `/proc` start ticks on
-    // Linux, the recorded start time elsewhere (senpi `prepareInternalHop` supervisorStart).
-    if let Some(start) = &hop.supervisor_start {
-        if let Some(time) = &start.time {
-            child_env.insert(
-                crate::host_watchdog::HOST_WATCH_PSTART_ENV.into(),
-                time.clone(),
-            );
-        }
-        if let Some(ticks) = &start.ticks {
-            child_env.insert(
-                crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(),
-                ticks.clone(),
-            );
-        }
+        cleanup_paths.push(public_socket.clone().into());
     }
     // Linux: supervisor death reaches the child as FIFO EOF; the held writer is never closed by this process.
     let _lifetime_binding = hop.lifetime_binding;
-    if internal_key.is_some() {
-        child_env.insert(
-            crate::internal_bootstrap::INTERNAL_KEY_STDIN_ENV.into(),
-            "1".into(),
-        );
-    }
-    if let Some(binding) = &_lifetime_binding {
-        child_env.insert(
-            crate::host_watchdog::HOST_WATCH_LIFETIME_FIFO_ENV.into(),
-            binding.lifetime_fifo.to_string_lossy().into_owned(),
-        );
-    }
+    let daemon_dir = paths.dir.to_string_lossy().into_owned();
+    // senpi `spawnHostChild`: the environment that binds the child to this supervisor and its generation.
+    let mut child_env = crate::host_lifecycle_launch::host_child_env(
+        env.clone(),
+        &crate::host_lifecycle_launch::HostChildEnv {
+            platform,
+            instance_id: &instance_id,
+            daemon_dir: &daemon_dir,
+            agent_dir: &agent_dir,
+            public_socket: &public_socket,
+            internal: &internal,
+            internal_secret: internal_secret.is_some(),
+            internal_key: internal_key.is_some(),
+            supervisor_start: hop.supervisor_start.as_ref(),
+            lifetime_fifo: _lifetime_binding
+                .as_ref()
+                .map(|binding| binding.lifetime_fifo.as_path()),
+            cleanup_paths: &cleanup_paths,
+        },
+    );
     #[cfg(unix)]
     let _watch_guard = bind_child_watch_pipe(&mut child_env)?;
     let stderr = {
@@ -648,7 +501,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             .await;
         }
     });
-    let drain_relay = DrainRelay {
+    let drain_relay = crate::host_lifecycle_drain::DrainRelay {
         file: generation_files.child_drain_request_file.clone(),
         sender: crate::host_stop_intent::HostStopSender {
             pid: std::process::id(),
@@ -819,11 +672,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             // binds its own generation name and adopts the public one by rename.
             #[cfg(unix)]
             let listener = {
-                let listener = tokio::net::UnixListener::bind(bind_socket)?;
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(bind_socket, std::fs::Permissions::from_mode(0o600))?;
-                }
+                // senpi `prepareSocketPath` + `listen`: a dead entry is cleared, a live listener's is never touched.
+                crate::host_lifecycle_proxy::prepare_socket_path(bind_socket).await?;
+                let listener = crate::host_lifecycle_proxy::listen(bind_socket)?;
                 // The key record names a listener that exists: published only after the bind succeeded.
                 if let Some(endpoint) = &public_endpoint {
                     endpoint.publish().map_err(std::io::Error::other)?;
@@ -876,7 +727,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             }
             // The signal-free drain request (senpi#3653): armed BEFORE it is advertised, so an asker that finds the
             // marker never writes into a generation that is not yet reading.
-            let drain_request_watch = accept_drain_requests(&generation_files, drain_tx);
+            let drain_request_watch =
+                crate::host_lifecycle_drain::accept_drain_requests(&generation_files, drain_tx);
             std::io::Result::Ok((listener, identity, drain_request_watch))
         }
     };
@@ -909,10 +761,35 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let turns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (activity_tx, activity_rx) = tokio::sync::watch::channel(HostActivity::default());
     let (connections_tx, connections_rx) = tokio::sync::watch::channel(0usize);
+    // senpi `SupervisorActivity`: the owner check reads quiescence from the same observer connection and clients the
+    // idle decision does. The public proxy does not classify clients, so every live client is attached here: owner
+    // quiescence still needs zero clients.
+    let activity = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::host_lifecycle_activity::SupervisorActivity::new(
+            if policy.cold_start == "persistent" {
+                f64::INFINITY
+            } else {
+                policy.idle_exit_ms
+            },
+        ),
+    ));
+    // senpi `SupervisorOwner`: an ensured generation (or a launch carrying `--owner-fd`) binds its lifetime owner;
+    // a direct launch without an owner record has none. The owner leaving a quiescent host ends this generation.
+    let mut owner =
+        (launch.owner_fd.is_some() || generation_files.settings_file.exists()).then(|| {
+            let mut owner =
+                crate::host_lifecycle_activity::SupervisorOwner::new(generation_files.dir.clone());
+            owner.start(launch.owner_fd, owner_clock_ms());
+            crate::host_lifecycle_activity::OwnerCheck::new(owner, activity.clone())
+        });
+    let on_activity: crate::host_lifecycle_activity::OnActivity = match &owner {
+        Some(owner) => owner.on_activity(),
+        None => std::sync::Arc::new(|| {}),
+    };
     // win32: a child whose identity changed or vanished has exited even when no exit event came.
     let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     #[cfg(windows)]
-    let identity_watch = watch_win32_child_identity(
+    let identity_watch = crate::host_lifecycle_drain::watch_win32_child_identity(
         child_pid,
         || false,
         move || {
@@ -922,20 +799,23 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     #[cfg(not(windows))]
     drop(gone_tx);
     // Losing the public entry IS a drain request (senpi `watchForSupersession`, #1893/#1961).
-    let supersession = crate::host_supersession::watch_for_supersession_with_pointer(
+    // A replaced entry's registration belongs to the replacer; `release_generation` already leaves a pointer that
+    // names another instance alone, so the replacement needs no further bookkeeping here.
+    let supersession = crate::host_lifecycle_drain::drain_on_public_socket_loss(
         public_socket.clone(),
         bound,
+        || false,
+        {
+            let drain_tx = drain_tx.clone();
+            move || {
+                let _ = drain_tx.send(true);
+            }
+        },
+        || {},
         Some(crate::host_supersession::SupersessionPointer {
             file: paths.pointer_file.clone(),
             instance_id: instance_id.clone(),
         }),
-        || false,
-        {
-            let drain_tx = drain_tx.clone();
-            move |_loss| {
-                let _ = drain_tx.send(true);
-            }
-        },
     );
     let observer_busy = turns.clone();
     let observer_socket = internal.socket.clone();
@@ -944,8 +824,11 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let observer_secret = internal_secret.clone();
     #[cfg(unix)]
     let observer_key = internal_key;
+    let observer_activity = activity.clone();
+    let observer_held = on_activity.clone();
     let observer = tokio::spawn(async move {
         let mut observed = ObservedHostTurns::default();
+        let mut socket = 0u64;
         loop {
             if *observer_draining.borrow() {
                 return;
@@ -972,13 +855,19 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                 Some(stream)
             }
             .await;
-            if let Some(mut stream) = connected {
-                let busy = observer_busy.clone();
-                let _ = observed
-                    .read_events(&mut stream, |observed| {
-                        busy.store(observed.busy_turns(), std::sync::atomic::Ordering::SeqCst);
-                    })
-                    .await;
+            if let Some(stream) = connected {
+                socket += 1;
+                crate::host_lifecycle_activity::lock_activity(&observer_activity)
+                    .observer_opened(socket);
+                let _ =
+                    observe_host_events(stream, &mut observed, &observer_busy, &observer_activity)
+                        .await;
+                crate::host_lifecycle_activity::lock_activity(&observer_activity).observer_lost(
+                    socket,
+                    *observer_draining.borrow(),
+                    owner_clock_ms(),
+                );
+                observer_held();
             }
             if *observer_draining.borrow() {
                 return;
@@ -988,6 +877,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     });
     let activity_turns = turns.clone();
     let activity_draining = draining_rx.clone();
+    let publisher_activity = activity.clone();
+    let publisher_held = on_activity.clone();
     let publisher = tokio::spawn(async move {
         let mut connections_rx = connections_rx;
         let mut draining_watch = activity_draining.clone();
@@ -997,12 +888,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             }
             let connections = *connections_rx.borrow_and_update() as u64;
             let active_turns = activity_turns.load(std::sync::atomic::Ordering::SeqCst);
+            crate::host_lifecycle_activity::lock_activity(&publisher_activity)
+                .set_clients(connections, 0);
             activity_tx.send_replace(HostActivity {
                 connections,
                 active_turns,
             });
             tokio::select! {
-                changed=connections_rx.changed()=>{if changed.is_err(){return;}},
+                // Every admission publishes a new count: senpi `onAdmit` resets the owner grace even for a client
+                // that is admitted and gone before the next tick.
+                changed=connections_rx.changed()=>{if changed.is_err(){return;}publisher_held();},
                 ()=tokio::time::sleep(std::time::Duration::from_millis(250))=>{},
                 changed=draining_watch.changed()=>{if changed.is_err()||*activity_draining.borrow(){return;}},
             }
@@ -1039,7 +934,27 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     tokio::pin!(idle);
     let mut draining = false;
     let mut signal_code: Option<i32> = None;
-    let mut handoff_grace: Option<tokio::task::JoinHandle<()>> = None;
+    let mut owner_gone = false;
+    let mut owner_ticker = tokio::time::interval(std::time::Duration::from_millis(
+        crate::host_lifecycle_ticker::tick_interval_ms(policy.idle_exit_ms),
+    ));
+    owner_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // senpi `SupervisorDrain`: `admission.stop()` refuses opens from the drain on (senpi `beginStopping`).
+    let supervisor_drain = crate::host_lifecycle_drain::SupervisorDrain::new(
+        child_pid,
+        child_running.clone(),
+        || false,
+        {
+            #[cfg(unix)]
+            let admission = admission.clone();
+            move || {
+                #[cfg(unix)]
+                admission.stop();
+            }
+        },
+        Some(drain_relay),
+        std::env::consts::OS == "windows",
+    );
     // Only proxy/idle completion, the child exiting, or a shutdown signal ends the supervisor. A
     // drain starts the grace and loops again, so busy sessions keep running until the child exits.
     loop {
@@ -1065,21 +980,15 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                 break;
             },
             _changed=shutdown_rx.changed()=>{if let Some(code)=*shutdown_rx.borrow(){signal_code=Some(code);break;}},
+            _=owner_ticker.tick(),if owner.is_some()&&!draining=>{
+                if let Some(owner)=owner.as_mut()
+                    && owner.tick(owner_clock_ms()).await{owner_gone=true;break;}
+            },
             changed=drain_rx.changed()=>{
                 if changed.is_ok()&&*drain_rx.borrow()&&!draining{
                     draining=true;
-                    // senpi `SupervisorDrain.drain` -> `admission.stop()`: opens are refused from this instant.
-                    #[cfg(unix)]
-                    admission.stop();
-                    eprintln!("senpi rpc host supervisor: draining into the next generation");
-                    request_child_drain(child_pid,&child_running,Some(&drain_relay),std::env::consts::OS=="windows");
-                    let grace_ms=resolve_handoff_grace_ms(&std::env::vars().collect::<HashMap<String,String>>());
-                    let grace_running=child_running.clone();let grace_relay=drain_relay.clone();
-                    handoff_grace=Some(tokio::spawn(async move{
-                        tokio::time::sleep(std::time::Duration::from_secs_f64(grace_ms/1000.)).await;
-                        eprintln!("senpi rpc host supervisor: {}",serde_json::json!({"event":"handoff_grace_expired","graceMs":grace_ms}));
-                        request_child_drain(child_pid,&grace_running,Some(&grace_relay),std::env::consts::OS=="windows");
-                    }));
+                    // senpi `SupervisorDrain.drain`: admission stops, the child is asked, the soft grace re-asks.
+                    supervisor_drain.drain();
                 }
             },
         }
@@ -1093,15 +1002,19 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         Box::new(move || observer.abort()),
     ];
     teardown.watchers.extend(watchers);
-    if let Some(task) = handoff_grace {
-        teardown.watchers.push(Box::new(move || task.abort()));
-    }
+    teardown
+        .watchers
+        .push(Box::new(move || supervisor_drain.stop()));
     #[cfg(windows)]
     teardown
         .watchers
         .push(Box::new(move || identity_watch.abort()));
+    if let Some(mut owner) = owner {
+        owner.owner.stop();
+    }
     let reason = match signal_code {
         Some(code) => crate::host_lifecycle_shutdown::signal_shutdown_reason(code),
+        None if owner_gone => "owner_gone".to_owned(),
         None => "rpc host child exited".to_owned(),
     };
     let exit_code = crate::host_lifecycle_shutdown::perform_shutdown(
@@ -1116,6 +1029,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         std::process::exit(exit_code);
     }
     Ok(())
+}
+/// The owner grace's monotonic clock, in milliseconds.
+#[cfg(any(unix, windows))]
+fn owner_clock_ms() -> f64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    ORIGIN
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.
 }
 /// One generation's resources as [`crate::host_lifecycle_shutdown::perform_shutdown`] tears them down.
 #[cfg(any(unix, windows))]
@@ -1139,7 +1062,7 @@ struct GenerationTeardown {
     #[cfg(unix)]
     admission: std::sync::Arc<crate::host_admission::HostAdmission>,
 }
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 impl GenerationTeardown {
     /// Waits up to `bound` for the child's exit; `true` once it is observed.
     async fn wait_for_exit(&mut self, bound: std::time::Duration) -> std::io::Result<bool> {
@@ -1158,32 +1081,46 @@ impl crate::host_lifecycle_shutdown::SupervisorTeardown for GenerationTeardown {
         self.admission.stop();
         self.draining_tx.send_replace(true);
     }
-    async fn stop_child(&mut self, _reason: &str) -> std::io::Result<()> {
-        if self.child.try_wait()?.is_some() {
-            return Ok(());
-        }
+    async fn stop_child(&mut self, reason: &str) -> std::io::Result<()> {
+        // senpi `stopChild`: the intent on record first, SIGTERM, the stall wait for a stalled child, then SIGKILL.
         #[cfg(unix)]
-        crate::host_stop::signal_generation(self.child_pid, rustix::process::Signal::TERM).ok();
+        {
+            let generation =
+                crate::host_daemon_paths::generation_paths(&self.paths, &self.instance_id);
+            crate::host_lifecycle_shutdown::stop_child(
+                &mut self.child,
+                &generation,
+                &self.instance_id,
+                reason,
+            )
+            .await
+        }
         // win32 has no SIGTERM: Node's `process.kill(pid, "SIGTERM")` there is TerminateProcess.
         #[cfg(windows)]
-        let _ = self.child.start_kill();
-        if self
-            .wait_for_exit(std::time::Duration::from_secs(5))
-            .await?
         {
-            return Ok(());
+            let _ = reason;
+            if self.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            let _ = self.child.start_kill();
+            if self
+                .wait_for_exit(std::time::Duration::from_secs(5))
+                .await?
+            {
+                return Ok(());
+            }
+            self.child.start_kill()?;
+            if self
+                .wait_for_exit(std::time::Duration::from_secs(5))
+                .await?
+            {
+                return Ok(());
+            }
+            Err(std::io::Error::other(format!(
+                "host child pid {} exit unobserved after SIGKILL",
+                self.child_pid
+            )))
         }
-        self.child.start_kill()?;
-        if self
-            .wait_for_exit(std::time::Duration::from_secs(5))
-            .await?
-        {
-            return Ok(());
-        }
-        Err(std::io::Error::other(format!(
-            "host child pid {} exit unobserved after SIGKILL",
-            self.child_pid
-        )))
     }
     async fn child_exit_recorded(&mut self) {
         // The exit is recorded in the supervisor loop when the child ends on its own (`note_child_exit`).
@@ -1225,12 +1162,18 @@ impl crate::host_lifecycle_shutdown::SupervisorTeardown for GenerationTeardown {
         )
     }
     async fn reap_child_after_failure(&mut self) -> std::io::Result<()> {
-        if self.child.try_wait()?.is_none() {
-            self.child.start_kill()?;
-            self.wait_for_exit(std::time::Duration::from_secs(5))
-                .await?;
+        #[cfg(unix)]
+        return crate::host_lifecycle_shutdown::reap_child_after_failure(&mut self.child, false)
+            .await;
+        #[cfg(windows)]
+        {
+            if self.child.try_wait()?.is_none() {
+                self.child.start_kill()?;
+                self.wait_for_exit(std::time::Duration::from_secs(5))
+                    .await?;
+            }
+            Ok(())
         }
-        Ok(())
     }
     fn dispose_public_endpoint(&mut self) -> std::io::Result<()> {
         #[cfg(unix)]
@@ -1352,70 +1295,6 @@ pub fn create_internal_socket_path(
         secret_path: Some(dir.join(".secret")),
     })
 }
-/// The child's drain-request relay: the one way to reach a child on every platform (senpi `SupervisorDrain` relay).
-#[derive(Debug, Clone)]
-pub struct DrainRelay {
-    pub file: std::path::PathBuf,
-    pub sender: crate::host_stop_intent::HostStopSender,
-}
-/// Asks the child to drain: the relay file everywhere, plus SIGUSR1 as the immediate wake on POSIX (senpi
-/// `requestChildDrain`). A child that already exited is never asked.
-#[cfg(any(unix, windows))]
-fn request_child_drain(
-    child_pid: u32,
-    running: &std::sync::atomic::AtomicBool,
-    relay: Option<&DrainRelay>,
-    windows: bool,
-) {
-    if !running.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    if let Some(relay) = relay
-        && let Err(error) = crate::host_stop_intent::write_drain_request(
-            &relay.file,
-            &relay.sender,
-            "supervisor_drain",
-        )
-    {
-        eprintln!("senpi rpc host supervisor: could not relay the drain to the host: {error}");
-    }
-    if windows {
-        return;
-    }
-    #[cfg(unix)]
-    if let Err(error) =
-        crate::host_stop::signal_generation(child_pid, rustix::process::Signal::USR1)
-    {
-        eprintln!("senpi rpc host supervisor: could not ask the host to drain: {error}");
-    }
-    #[cfg(not(unix))]
-    let _ = child_pid;
-}
-/// The signal-free drain request: the watcher is armed BEFORE the marker is advertised. A marker that cannot be
-/// written only leaves this generation reachable by the POSIX signal, as before.
-#[cfg(any(unix, windows))]
-fn accept_drain_requests(
-    generation: &crate::host_daemon_paths::HostGenerationPaths,
-    drain_tx: tokio::sync::watch::Sender<bool>,
-) -> crate::host_stop_intent::DrainRequestWatch {
-    let watch = crate::host_stop_intent::watch_drain_request(
-        generation.drain_request_file.clone(),
-        move |request| {
-            eprintln!(
-                "senpi rpc host supervisor: drain requested ({})",
-                request.reason
-            );
-            let _ = drain_tx.send(true);
-        },
-        None,
-    );
-    if let Err(error) =
-        crate::host_stop_intent::write_drain_watch(&generation.drain_watch_file, std::process::id())
-    {
-        eprintln!("senpi rpc host supervisor: cannot advertise the drain request: {error}");
-    }
-    watch
-}
 const CHILD_START_TIME_WAIT_MS: u64 = 10_000;
 fn write_child_pid_record(
     file: &std::path::Path,
@@ -1479,100 +1358,6 @@ pub async fn record_child_pid(file: &std::path::Path, pid: u32, running: impl Fn
         &serde_json::json!({"pid":pid,"processStartTime":start_time}),
     ) {
         eprintln!("senpi rpc host supervisor: could not record the host child pid: {error}");
-    }
-}
-/// The committed CLI entry this supervisor wraps; the native binary is its own entry.
-pub fn resolve_cli_main_path() -> std::io::Result<std::path::PathBuf> {
-    std::env::current_exe()
-}
-/// The host child spawn: an explicit child command is forwarded untouched, otherwise the
-/// supervisor re-enters the committed CLI entry with the RPC multi-session flags.
-pub fn resolve_host_child_launch(
-    launch: &SupervisorLaunch,
-    internal_socket: &str,
-) -> std::io::Result<crate::host_launch::HostLaunch> {
-    if let Some(command) = &launch.child_command {
-        return Ok(crate::host_launch::HostLaunch {
-            command: std::path::PathBuf::from(command),
-            args: launch
-                .child_args
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .chain(["--listen".to_owned(), format!("unix://{internal_socket}")])
-                .collect(),
-        });
-    }
-    Ok(crate::host_launch::HostLaunch {
-        command: resolve_cli_main_path()?,
-        args: ["--mode", "rpc", "--multi-session", "--listen"]
-            .into_iter()
-            .map(str::to_owned)
-            .chain([format!("unix://{internal_socket}")])
-            .chain(launch.host_args.iter().cloned())
-            .collect(),
-    })
-}
-/// A spawn shape that survives a Windows shell (senpi `spawnableChildLaunch`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpawnableLaunch {
-    pub command: String,
-    pub args: Vec<String>,
-    pub shell: bool,
-}
-fn quote_windows_shell_arg(value: &str) -> String {
-    let mut escaped = String::new();
-    let mut backslashes = 0usize;
-    for character in value.chars() {
-        match character {
-            '\\' => {
-                backslashes += 1;
-                escaped.push('\\');
-            }
-            '"' => {
-                for _ in 0..=backslashes {
-                    escaped.push('\\');
-                }
-                backslashes = 0;
-                escaped.push('"');
-            }
-            '(' | ')' | '%' | '!' | '^' | '<' | '>' | '&' | '|' | ';' | ',' => {
-                escaped.push('^');
-                escaped.push(character);
-            }
-            _ => {
-                backslashes = 0;
-                escaped.push(character);
-            }
-        }
-    }
-    format!("\"{escaped}\"")
-}
-pub fn spawnable_child_launch(
-    launch: &crate::host_launch::HostLaunch,
-    platform: &str,
-) -> SpawnableLaunch {
-    let command = launch.command.to_string_lossy().into_owned();
-    let extension = launch
-        .command
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if platform != "win32" || (extension != ".cmd" && extension != ".bat") {
-        return SpawnableLaunch {
-            command,
-            args: launch.args.clone(),
-            shell: false,
-        };
-    }
-    SpawnableLaunch {
-        command: quote_windows_shell_arg(&command),
-        args: launch
-            .args
-            .iter()
-            .map(|arg| quote_windows_shell_arg(arg))
-            .collect(),
-        shell: true,
     }
 }
 pub fn parse_cold_start(value: Option<&str>) -> Option<&str> {
@@ -1763,70 +1548,6 @@ impl Drop for ShutdownHardExit {
         }
     }
 }
-/// The decision core of senpi `watchWin32ChildIdentity`: a child whose identity changes or disappears has exited
-/// even when no exit event came. A failed baseline read is UNKNOWN, so the watch then relies on its own
-/// comparisons; an absent identity is only believed once the pid probe agrees the child is gone, and only after
-/// two consecutive confirmations (a loaded runner's timed-out probe means UNKNOWN, never death).
-#[derive(Debug, Default)]
-pub struct ChildIdentityWatch {
-    baseline: Option<String>,
-    missing_identity_checks: u32,
-}
-impl ChildIdentityWatch {
-    pub fn new(baseline: Option<String>) -> Self {
-        Self {
-            baseline,
-            missing_identity_checks: 0,
-        }
-    }
-    /// One observation; `true` when the child is gone.
-    pub fn observe(&mut self, current: Option<&str>, pid_live: bool) -> bool {
-        match current {
-            None if !pid_live => self.missing_identity_checks += 1,
-            Some(_) => self.missing_identity_checks = 0,
-            None => {}
-        }
-        let identity_changed = matches!((&self.baseline, current), (Some(baseline), Some(current)) if baseline != current);
-        identity_changed || self.missing_identity_checks >= 2
-    }
-}
-/// win32 only: polls the child's start identity every 500 ms until it is gone or `shutting_down` turns true, then
-/// calls `on_gone` once (senpi `watchWin32ChildIdentity`). The probe is a bounded 1 s read run off the runtime.
-pub fn watch_win32_child_identity(
-    pid: u32,
-    shutting_down: impl Fn() -> bool + Send + 'static,
-    on_gone: impl FnOnce() + Send + 'static,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let read = |pid: u32| async move {
-            tokio::time::timeout(
-                std::time::Duration::from_millis(1_000),
-                tokio::task::spawn_blocking(move || {
-                    crate::host_reservations::read_process_start_time(pid)
-                }),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-        };
-        let mut watch = ChildIdentityWatch::new(read(pid).await);
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(500));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if shutting_down() {
-                return;
-            }
-            let current = read(pid).await;
-            let live = crate::host_reservations::process_is_live(pid);
-            if watch.observe(current.as_deref(), live) {
-                on_gone();
-                return;
-            }
-        }
-    })
-}
 /// The Windows named-pipe listener of the supervisor's public endpoint and its authenticated internal hop (senpi
 /// `host-lifecycle-proxy.ts` `listen` on win32). The pipe name is derived from the logical socket path AND the
 /// secret (`socket_transport::resolve_socket_transport_address`), and the secret handshake is the only boundary:
@@ -1995,26 +1716,6 @@ pub mod win32_pipe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn identity_watch_needs_two_confirmed_absences_and_never_believes_a_live_pid() {
-        let mut watch = ChildIdentityWatch::new(Some("100".into()));
-        assert!(!watch.observe(Some("100"), true));
-        assert!(!watch.observe(None, true));
-        assert!(!watch.observe(None, false));
-        // A readable identity resets the count.
-        assert!(!watch.observe(Some("100"), true));
-        assert!(!watch.observe(None, false));
-        assert!(watch.observe(None, false));
-    }
-    #[test]
-    fn identity_watch_reports_a_changed_identity_and_works_without_a_baseline() {
-        let mut watch = ChildIdentityWatch::new(Some("100".into()));
-        assert!(watch.observe(Some("200"), true));
-        let mut unknown = ChildIdentityWatch::new(None);
-        assert!(!unknown.observe(Some("200"), true));
-        assert!(!unknown.observe(None, false));
-        assert!(unknown.observe(None, false));
-    }
     #[tokio::test(start_paused = true)]
     async fn the_hard_exit_bound_fires_only_on_win32_and_is_disarmed_by_dropping_it() {
         let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2033,79 +1734,6 @@ mod tests {
         tokio::time::sleep(bound + std::time::Duration::from_millis(1)).await;
         assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
         drop(armed);
-    }
-    #[test]
-    fn supervisor_route_skips_only_complete_injected_prefix() {
-        let args = [
-            "--extension",
-            "dir",
-            INTERNAL_SUPERVISOR_FLAG,
-            "--socket",
-            "sock",
-        ]
-        .map(str::to_owned);
-        assert_eq!(find_internal_supervisor_args(&args), Some(&args[3..]));
-        assert!(
-            find_internal_supervisor_args(&["--model".into(), INTERNAL_SUPERVISOR_FLAG.into()])
-                .is_none()
-        );
-        assert!(
-            find_internal_supervisor_args(&["--extension".into(), INTERNAL_SUPERVISOR_FLAG.into()])
-                .is_none()
-        );
-    }
-    #[test]
-    fn supervisor_parser_keeps_forwarded_args_and_replacement_identity() {
-        let args = [
-            "--socket",
-            "sock",
-            "--replace",
-            "1:2",
-            "--child-args",
-            "[\"one\"]",
-            "--mode",
-            "rpc",
-        ]
-        .map(str::to_owned);
-        let launch = parse_supervisor_args(&args).unwrap();
-        assert_eq!(launch.child_args, Some(vec!["one".into()]));
-        assert_eq!(launch.host_args, vec!["--mode", "rpc"]);
-        assert_eq!(
-            launch.replace_identity,
-            Some(crate::socket_ownership::SocketFileIdentity { dev: 1, ino: 2 })
-        );
-        assert!(
-            parse_supervisor_args(&[
-                "--socket".into(),
-                "sock".into(),
-                "--child-args".into(),
-                "{".into()
-            ])
-            .is_none()
-        );
-    }
-    #[test]
-    fn supervisor_parser_takes_only_the_reserved_presenter_descriptor() {
-        let launch = parse_supervisor_args(
-            &[
-                "--socket",
-                "sock",
-                "--mcp-presenter-fd",
-                "4",
-                "--mode",
-                "rpc",
-            ]
-            .map(str::to_owned),
-        )
-        .unwrap();
-        assert_eq!(launch.presenter_bootstrap_fd, Some(4));
-        assert_eq!(launch.host_args, vec!["--mode", "rpc"]);
-        let other = parse_supervisor_args(
-            &["--socket", "sock", "--mcp-presenter-fd", "5"].map(str::to_owned),
-        )
-        .unwrap();
-        assert_eq!(other.presenter_bootstrap_fd, None);
-        assert_eq!(other.host_args, vec!["--mcp-presenter-fd", "5"]);
     }
     #[test]
     fn continuous_idle_resets_on_activity() {
@@ -2160,64 +1788,6 @@ mod tests {
         let record: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&stopped).unwrap()).unwrap();
         assert!(record["processStartTime"].is_null());
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn drain_requests_reach_the_supervisor_without_a_signal_and_are_advertised_after_arming()
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = crate::host_daemon_paths::host_daemon_directory_paths(temp.path());
-        let generation = crate::host_daemon_paths::generation_paths(&paths, "g");
-        crate::host_daemon_paths::create_generation_directory(&generation).unwrap();
-        let (tx, mut rx) = tokio::sync::watch::channel(false);
-        let watch = accept_drain_requests(&generation, tx);
-        assert_eq!(
-            crate::host_stop_intent::read_drain_watch(&generation.drain_watch_file),
-            Some(std::process::id())
-        );
-        let sender = crate::host_stop_intent::HostStopSender {
-            pid: 1,
-            kind: "stop".into(),
-            generation: None,
-        };
-        crate::host_stop_intent::write_drain_request(
-            &generation.drain_request_file,
-            &sender,
-            "operator_drain",
-        )
-        .unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            rx.wait_for(|drain| *drain),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        watch.stop();
-    }
-    #[cfg(unix)]
-    #[test]
-    fn child_drain_is_relayed_by_file_and_skipped_once_the_child_exited() {
-        let temp = tempfile::tempdir().unwrap();
-        let relay = DrainRelay {
-            file: temp.path().join("host-drain-request.json"),
-            sender: crate::host_stop_intent::HostStopSender {
-                pid: 1,
-                kind: "supervisor".into(),
-                generation: None,
-            },
-        };
-        let gone = std::sync::atomic::AtomicBool::new(false);
-        request_child_drain(0, &gone, Some(&relay), true);
-        assert!(!relay.file.exists());
-        let running = std::sync::atomic::AtomicBool::new(true);
-        request_child_drain(0, &running, Some(&relay), true);
-        assert_eq!(
-            crate::host_stop_intent::read_drain_request(&relay.file)
-                .unwrap()
-                .reason,
-            "supervisor_drain"
-        );
     }
     #[test]
     fn persistent_never_idle_exits() {
