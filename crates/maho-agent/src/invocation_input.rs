@@ -9,6 +9,7 @@ use std::{
     future::Future,
     sync::{Arc, Weak},
 };
+use tokio::task::futures::TaskLocalFuture;
 
 tokio::task_local! {
     static CURRENT: InvocationInput;
@@ -62,10 +63,13 @@ pub fn scope_invocation_input<F: Future>(
 
 /// Call `start` and poll the future it returns as part of the call identified by `input`, so a
 /// hook or tool body sees the identity in its synchronous prologue as well as after it awaits.
+///
+/// Returns the concrete future (not `impl Future`) so it does not capture `start`'s borrows and
+/// stays `'static` whenever `F` is.
 pub fn invoke_with_input<F: Future>(
     input: InvocationInput,
     start: impl FnOnce() -> F,
-) -> impl Future<Output = F::Output> {
+) -> TaskLocalFuture<InvocationInput, F> {
     let future = CURRENT.sync_scope(input.clone(), start);
     CURRENT.scope(input, future)
 }
