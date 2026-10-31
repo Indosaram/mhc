@@ -1,5 +1,12 @@
-//! The signal-free drain request: the cross-writer record that asks one named generation to drain on every
-//! platform (senpi `host-stop-intent.ts`, senpi#3653).
+//! The stop intent and the signal-free drain request (senpi `host-stop-intent.ts`, senpi#2566, senpi#3653).
+//!
+//! The stop intent is written by whoever is about to signal a host generation, BEFORE the signal, into
+//! THAT generation's directory (`stop-intent.json`), so the record written when the generation ends can
+//! name who stopped it and why. It is scoped to the target generation because a successor shares the
+//! endpoint directory with its predecessor. Writing is best-effort and never blocks the signal.
+//!
+//! The drain request is the cross-writer record that asks one named generation to drain on every
+//! platform.
 //!
 //! `drain-request.json` is written by whoever asks into the target generation's directory and read by its
 //! supervisor; `host-drain-request.json` is the supervisor's relay to its host child. A generation advertises that
@@ -87,6 +94,150 @@ fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
 }
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// An intent older than this describes some earlier stop, not the death being recorded now.
+pub const STOP_INTENT_MAX_AGE_MS: i64 = 120_000;
+/// Shared with callers so they never kill a supervisor while it is reaping its child.
+pub const CHILD_STOP_TIMEOUT_MS: u64 = 5_000;
+pub const CHILD_KILL_EXIT_TIMEOUT_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostStopIntent {
+    pub sender: HostStopSender,
+    /// Present once a second sender acted on the same stop (the supervisor after an outer caller).
+    pub chain: Option<Vec<HostStopSender>>,
+    pub target_pid: u32,
+    pub reason: String,
+    pub signal: String,
+    pub at: String,
+}
+impl HostStopIntent {
+    fn to_value(&self) -> Value {
+        let mut object = Map::new();
+        object.insert("sender".into(), self.sender.to_value());
+        if let Some(chain) = &self.chain {
+            object.insert(
+                "chain".into(),
+                Value::Array(chain.iter().map(HostStopSender::to_value).collect()),
+            );
+        }
+        object.insert("targetPid".into(), self.target_pid.into());
+        object.insert("reason".into(), self.reason.clone().into());
+        object.insert("signal".into(), self.signal.clone().into());
+        object.insert("at".into(), self.at.clone().into());
+        Value::Object(object)
+    }
+}
+fn parse_stop_intent(raw: &Map<String, Value>) -> Option<HostStopIntent> {
+    let sender = HostStopSender::from_value(raw.get("sender")?)?;
+    let chain = match raw.get("chain") {
+        Some(Value::Array(entries)) => Some(
+            entries
+                .iter()
+                .map(HostStopSender::from_value)
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        _ => None,
+    };
+    Some(HostStopIntent {
+        sender,
+        chain,
+        target_pid: raw
+            .get("targetPid")
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+            .unwrap_or(0),
+        reason: raw.get("reason")?.as_str()?.to_owned(),
+        signal: raw
+            .get("signal")
+            .and_then(Value::as_str)
+            .unwrap_or("SIGTERM")
+            .to_owned(),
+        at: raw.get("at")?.as_str()?.to_owned(),
+    })
+}
+fn age_of(at: Option<&Value>, now_ms: i64) -> Option<i64> {
+    let at = chrono::DateTime::parse_from_rfc3339(at?.as_str()?).ok()?;
+    Some(now_ms - at.timestamp_millis())
+}
+
+/// Best-effort: a failed write is logged and never blocks the signal it precedes.
+pub fn write_stop_intent(
+    generation: &crate::host_daemon_paths::HostGenerationPaths,
+    intent: &HostStopIntent,
+    mut log: impl FnMut(String),
+) {
+    if let Err(cause) = write_json_atomic(&generation.stop_intent_file, &intent.to_value()) {
+        log(format!(
+            "could not record the stop intent for {}: {cause}",
+            generation.dir.display()
+        ));
+    }
+}
+/// This generation's own intent while it is fresh; a stale or unparsable one is removed and reads as none.
+pub fn read_stop_intent(
+    generation: &crate::host_daemon_paths::HostGenerationPaths,
+    now_ms: i64,
+    max_age_ms: Option<i64>,
+) -> Option<HostStopIntent> {
+    let raw = read_json_object(&generation.stop_intent_file)?;
+    let intent = parse_stop_intent(&raw);
+    let age = age_of(raw.get("at"), now_ms);
+    if let (Some(intent), Some(age)) = (intent, age)
+        && age <= max_age_ms.unwrap_or(STOP_INTENT_MAX_AGE_MS)
+    {
+        return Some(intent);
+    }
+    clear_stop_intent(generation);
+    None
+}
+/// Read-and-clear: the record that cites the intent is the intent's only consumer.
+pub fn consume_stop_intent(
+    generation: &crate::host_daemon_paths::HostGenerationPaths,
+    now_ms: i64,
+) -> Option<HostStopIntent> {
+    let intent = read_stop_intent(generation, now_ms, None);
+    if intent.is_some() {
+        clear_stop_intent(generation);
+    }
+    intent
+}
+pub fn clear_stop_intent(generation: &crate::host_daemon_paths::HostGenerationPaths) {
+    let _ = std::fs::remove_file(&generation.stop_intent_file);
+}
+/// The supervisor's own intent before it signals its child. An OUTER intent for this generation is never
+/// overwritten: the supervisor appends itself to its chain and its reason to the outer reason.
+pub fn layered_supervisor_intent(
+    outer: Option<&HostStopIntent>,
+    supervisor: HostStopSender,
+    target_pid: u32,
+    reason: &str,
+    at: &str,
+) -> HostStopIntent {
+    let Some(outer) = outer else {
+        return HostStopIntent {
+            sender: supervisor,
+            chain: None,
+            target_pid,
+            reason: reason.to_owned(),
+            signal: "SIGTERM".into(),
+            at: at.to_owned(),
+        };
+    };
+    let mut chain = outer
+        .chain
+        .clone()
+        .unwrap_or_else(|| vec![outer.sender.clone()]);
+    chain.push(supervisor);
+    HostStopIntent {
+        sender: outer.sender.clone(),
+        chain: Some(chain),
+        target_pid,
+        reason: format!("{} -> {reason}", outer.reason),
+        signal: "SIGTERM".into(),
+        at: at.to_owned(),
+    }
 }
 
 /// Records a drain request for whoever polls `file`. Atomic: a reader sees no request or a whole one.
@@ -219,6 +370,71 @@ mod tests {
             kind: "stop".into(),
             generation: Some("g".into()),
         }
+    }
+    fn generation(dir: &Path) -> crate::host_daemon_paths::HostGenerationPaths {
+        crate::host_daemon_paths::generation_paths(
+            &crate::host_daemon_paths::host_daemon_directory_paths(dir),
+            "g1",
+        )
+    }
+    #[test]
+    fn stop_intent_round_trips_while_fresh_and_is_consumed_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let generation = generation(temp.path());
+        std::fs::create_dir_all(&generation.dir).unwrap();
+        let at = "2026-10-30T00:00:00.000Z";
+        let now = chrono::DateTime::parse_from_rfc3339(at)
+            .unwrap()
+            .timestamp_millis();
+        let intent = layered_supervisor_intent(None, sender(), 42, "idle", at);
+        write_stop_intent(&generation, &intent, |_| panic!("write failed"));
+        assert_eq!(
+            read_stop_intent(&generation, now + 1_000, None),
+            Some(intent.clone())
+        );
+        assert_eq!(consume_stop_intent(&generation, now + 1_000), Some(intent));
+        assert_eq!(read_stop_intent(&generation, now + 1_000, None), None);
+    }
+    #[test]
+    fn a_stale_stop_intent_is_removed_and_reads_as_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let generation = generation(temp.path());
+        std::fs::create_dir_all(&generation.dir).unwrap();
+        let at = "2026-10-30T00:00:00.000Z";
+        let now = chrono::DateTime::parse_from_rfc3339(at)
+            .unwrap()
+            .timestamp_millis();
+        write_stop_intent(
+            &generation,
+            &layered_supervisor_intent(None, sender(), 1, "x", at),
+            |_| {},
+        );
+        assert_eq!(
+            read_stop_intent(&generation, now + STOP_INTENT_MAX_AGE_MS + 1, None),
+            None
+        );
+        assert!(!generation.stop_intent_file.exists());
+    }
+    #[test]
+    fn the_supervisor_layers_onto_an_outer_intent() {
+        let outer = layered_supervisor_intent(None, sender(), 1, "operator", "t0");
+        let supervisor = HostStopSender {
+            pid: 9,
+            kind: "supervisor".into(),
+            generation: None,
+        };
+        let layered =
+            layered_supervisor_intent(Some(&outer), supervisor.clone(), 2, "shutdown", "t1");
+        assert_eq!(layered.sender, sender());
+        assert_eq!(layered.chain, Some(vec![sender(), supervisor]));
+        assert_eq!(
+            (
+                layered.reason.as_str(),
+                layered.target_pid,
+                layered.at.as_str()
+            ),
+            ("operator -> shutdown", 2, "t1")
+        );
     }
     #[test]
     fn drain_request_round_trips_and_is_never_removed_by_reading() {
