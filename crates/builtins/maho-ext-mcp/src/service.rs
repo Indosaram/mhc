@@ -85,6 +85,8 @@ pub struct McpService {
     session_cwd: Option<PathBuf>,
     session_env: BTreeMap<String, String>,
     project_trusted: bool,
+    /// Skill server warnings already reported (upstream `#skillServerWarnings`): each is shown once.
+    skill_server_warnings: std::collections::BTreeSet<String>,
     deferred: Arc<crate::startup_race::McpDeferredAttach>,
     pending_auth: BTreeMap<String, crate::auth::oauth_provider::McpOAuthProvider>,
     policy_notices: Arc<crate::policy_notices::PolicyNotices>,
@@ -297,6 +299,7 @@ impl McpService {
             session_cwd: None,
             session_env: BTreeMap::new(),
             project_trusted: false,
+            skill_server_warnings: Default::default(),
             deferred: Default::default(),
             pending_auth: BTreeMap::new(),
             policy_notices: Default::default(),
@@ -804,26 +807,19 @@ impl McpService {
                 .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
                     provenance.kind != "user"
                 });
-            // skill-server.ts: a project (untrusted) or remote skill server refuses references before any I/O;
-            // a trusted user skill's references resolve against its own declaration file.
-            let remote = decl
-                .raw
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(if decl.raw.get("url").is_some() {
-                    "http"
-                } else {
-                    "stdio"
-                })
-                != "stdio";
-            if (project_skill || remote)
+            // The project environment policy materializes plain strings only, so a project skill server that
+            // declares a reference object is refused before any I/O; skill-server.ts refuses the remote and
+            // untrusted ones itself (senpi#3858).
+            if project_skill
                 && let Some(warning) = crate::config_references::reference_refusal(
                     name,
                     &decl.raw,
                     &format!("Skill '{}' MCP server '{name}'", decl.skill_name),
                 )
             {
-                warnings.push(warning);
+                if self.skill_server_warnings.insert(warning.clone()) {
+                    warnings.push(warning);
+                }
                 continue;
             }
             let resolved = if project_skill {
@@ -842,24 +838,31 @@ impl McpService {
                 )
                 .await?
             } else {
-                let mut raw_value = decl.raw.clone();
-                let references = crate::config_references::extract_mcp_references(&mut raw_value);
-                let mut raw: crate::config_schema::ServerConfigWire =
-                    serde_json::from_value(raw_value)
-                        .map_err(|error| McpConfigValidationError(error.to_string()))?;
-                raw.references = references;
-                let mut servers = BTreeMap::from([(name.clone(), raw)]);
-                crate::config_references::remember_mcp_reference_origins(
-                    Some(&mut servers),
-                    &decl.source_path.to_string_lossy(),
-                );
-                let raw = servers.remove(name).expect("inserted above");
-                crate::config::resolve_skill_mcp_server(
+                // skill-server.ts trust: a skill without a user scope carries the project's trust.
+                let trusted = match decl.scope.as_deref() {
+                    None | Some("project") => self.project_trusted,
+                    Some(_) => true,
+                };
+                let result = crate::skill_server::resolve_skill_mcp_server(
                     name,
-                    raw,
+                    &decl.raw,
                     &decl.source_path,
+                    &crate::skill_server::SkillServerSource {
+                        skill_name: &decl.skill_name,
+                        trusted,
+                        env: &self.session_env,
+                    },
                     Some(&agent_dir),
-                )?
+                )?;
+                if let Some(warning) = result.warning
+                    && self.skill_server_warnings.insert(warning.clone())
+                {
+                    warnings.push(warning);
+                }
+                let Some(server) = result.server else {
+                    continue;
+                };
+                server
             };
             if existing.is_some_and(|existing| existing.config_hash == resolved.config_hash) {
                 continue;

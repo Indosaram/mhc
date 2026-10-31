@@ -89,6 +89,8 @@ pub mod session_exposure;
 pub mod shared_connection;
 #[path = "sharing_policy.rs"]
 pub mod sharing_policy;
+#[path = "skill_server.rs"]
+pub mod skill_server;
 #[path = "skills.rs"]
 pub mod skills;
 #[path = "startup_race.rs"]

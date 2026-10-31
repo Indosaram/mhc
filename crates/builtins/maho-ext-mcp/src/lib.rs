@@ -50,6 +50,7 @@ pub mod service_types;
 pub mod shared_connection;
 pub mod shared_lease;
 pub mod sharing_policy;
+pub mod skill_server;
 pub mod skills;
 pub mod startup_race;
 pub mod status;
