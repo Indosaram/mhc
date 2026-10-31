@@ -234,6 +234,11 @@ async fn run_retrying_stream(
             }
         }
         if !retry {
+            if !forwarding {
+                for pending in buffered.drain(..) {
+                    outer_stream.push(pending);
+                }
+            }
             match stream.result().await {
                 Ok(mut result) => {
                     if retrying {
