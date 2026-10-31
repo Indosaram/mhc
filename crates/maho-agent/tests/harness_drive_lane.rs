@@ -2365,6 +2365,7 @@ async fn string_system_prompt_is_used_without_resolving_tool_context() {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions {
             now: Some(Arc::new(|| 10)),
