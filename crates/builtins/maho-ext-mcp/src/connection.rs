@@ -43,6 +43,8 @@ pub struct ServerConnection {
     resolve_config: Mutex<Option<crate::config_generation::McpGenerationRenewal>>,
     /// Upstream `#stopFormReadiness`: the private-form readiness subscription of an enforced binding.
     form_readiness: Mutex<Option<crate::form_types::McpFormUnsubscribe>>,
+    /// Upstream `elicitationUiProvider` readiness; a pooled connection installs its lease aggregate.
+    readiness: Mutex<Option<crate::elicitation::McpFormReadiness>>,
     /// Upstream `#renegotiatingForms` single flight.
     renegotiating_forms: std::sync::atomic::AtomicBool,
 }
@@ -95,6 +97,7 @@ impl ServerConnection {
             request_lifetime: Mutex::new(maho_ext_api::AbortSignal::default()),
             resolve_config: Mutex::new(None),
             form_readiness: Mutex::new(None),
+            readiness: Mutex::new(None),
             renegotiating_forms: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -124,6 +127,26 @@ impl ServerConnection {
             .elicitation_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ui;
+    }
+    /// Install the readiness provider every transport negotiates with (shared-connection.ts aggregate).
+    pub fn set_form_readiness(&self, readiness: crate::elicitation::McpFormReadiness) {
+        *self
+            .readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(readiness);
+    }
+    fn form_readiness_provider(&self) -> Option<crate::elicitation::McpFormReadiness> {
+        self.readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    /// Upstream `#elicitationUiProvider?.enforced?.()`.
+    fn forms_enforced(&self) -> bool {
+        match self.form_readiness_provider() {
+            Some(readiness) => (readiness.enforced)(),
+            None => self.private_forms().is_some(),
+        }
     }
     pub fn set_elicitation_enabled(&self, enabled: bool) {
         self.elicitation_enabled
@@ -162,7 +185,7 @@ impl ServerConnection {
     /// Upstream `#legacyFormsChanged`: an enforced legacy client whose advertised forms no longer match the
     /// presenter's readiness.
     fn legacy_forms_changed(&self, client: &McpClient) -> bool {
-        if self.private_forms().is_none() || crate::modern::request::is_modern_mcp_client(client) {
+        if !self.forms_enforced() || crate::modern::request::is_modern_mcp_client(client) {
             return false;
         }
         let ui = self
@@ -171,7 +194,8 @@ impl ServerConnection {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         crate::modern::request::legacy_mcp_forms_advertised(client)
-            != Some(crate::elicitation::legacy_mcp_form_eligible(
+            != Some(crate::elicitation::legacy_mcp_form_eligible_with(
+                self.form_readiness_provider().as_ref(),
                 ui.as_ref(),
                 self.elicitation_enabled(),
             ))
@@ -202,10 +226,13 @@ impl ServerConnection {
         });
     }
     fn observe_form_readiness(self: &Arc<Self>) {
-        let Some(subscribe) = self
-            .private_forms()
-            .and_then(|forms| forms.subscribe.clone())
-        else {
+        let subscribe = match self.form_readiness_provider() {
+            Some(readiness) => (readiness.enforced)().then(|| readiness.subscribe.clone()),
+            None => self
+                .private_forms()
+                .and_then(|forms| forms.subscribe.clone()),
+        };
+        let Some(subscribe) = subscribe else {
             return;
         };
         let mut readiness = self
@@ -458,6 +485,7 @@ impl ServerConnection {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
+                    transport.form_readiness = self.form_readiness_provider();
                     transport.elicitation_enabled = self.elicitation_enabled();
                     Arc::new(transport)
                 }
