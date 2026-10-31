@@ -65,7 +65,15 @@ pub fn upsert_account(credential:&OAuthCredential,slot:AccountSlot) -> anyhow::R
 pub fn remove_account(credential:&OAuthCredential,name:&str) -> anyhow::Result<OAuthCredential> {
     let accounts:Vec<_>=stored_slots(credential)?.into_iter().filter(|a| a.name!=name).collect();
     let mut next=credential.clone().with_extra("accounts",serde_json::to_value(accounts)?);
-    if credential.get_extra_str("pinned")==Some(name) { next.extra.remove("pinned"); } Ok(next)
+    if credential.get_extra_str("pinned")==Some(name) { next.extra.remove("pinned"); } Ok(without_ordered_account(next,name))
+}
+/// `withoutOrderedAccount`: drops a removed account from the user's stored order (senpi#3591), and the
+/// order itself once it is empty.
+pub fn without_ordered_account(mut credential:OAuthCredential,name:&str) -> OAuthCredential {
+    let Some(order)=credential.get_extra("order").and_then(|order|serde_json::from_value::<Vec<String>>(order.clone()).ok()).filter(|order|order.iter().any(|entry|entry==name)) else { return credential; };
+    let order:Vec<String>=order.into_iter().filter(|entry|entry!=name).collect();
+    if order.is_empty() { credential.extra.remove("order"); } else { credential.extra.insert("order".into(),serde_json::json!(order)); }
+    credential
 }
 pub fn pin_account(credential:&OAuthCredential,name:&str) -> OAuthCredential { credential.clone().with_extra("pinned",Value::String(name.into())) }
 pub fn assert_sentinel_invariant(credential:&OAuthCredential) -> anyhow::Result<()> {
@@ -107,6 +115,16 @@ mod tests {
         source:AccountSource::Login,blocked_until:None,block_reason:None } }
     #[test]
     fn empty_sentinel() { let credential=empty_credential();assert_sentinel_invariant(&credential).unwrap();assert!(list_accounts(&credential,None).unwrap().is_empty()); }
+    #[test]
+    fn removing_an_account_drops_it_from_the_stored_order() {
+        let credential=add_account(&add_account(&empty_credential(),slot("default")).unwrap(),slot("work")).unwrap();
+        let ordered=credential.clone().with_extra("order",serde_json::json!(["work","default"]));
+        assert_eq!(remove_account(&ordered,"default").unwrap().get_extra("order"),Some(&serde_json::json!(["work"])));
+        let only=credential.clone().with_extra("order",serde_json::json!(["work"]));
+        assert_eq!(remove_account(&only,"work").unwrap().get_extra("order"),None);
+        let unrelated=credential.with_extra("order",serde_json::json!(["work"]));
+        assert_eq!(remove_account(&unrelated,"default").unwrap().get_extra("order"),Some(&serde_json::json!(["work"])));
+    }
     #[test]
     fn add_list_pin_remove() {
         let credential=add_account(&add_account(&empty_credential(),slot("default")).unwrap(),slot("work")).unwrap();

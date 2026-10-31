@@ -7,7 +7,7 @@ fn valid_choice(key:&str,value:&Value)->bool {let choices:&[&str]=match key {"sy
 fn parse(value:&Value)->Map<String,Value> {
     let mut result=Map::new();let Some(object)=value.as_object() else {return result;};
     for (key,value) in object {let valid=match key.as_str() {
-        "enabled"|"appendSystemPrompt"|"strictMcpConfig"=>value.is_boolean(),
+        "enabled"|"appendSystemPrompt"|"strictMcpConfig"|"accountFallback"=>value.is_boolean(),
         "systemPromptFile"|"pinnedAccount"=>value.as_str().is_some_and(|s|!s.is_empty()),
         "settingSources"=>value.as_array().is_some_and(|items|items.iter().all(|v|v.as_str().is_some_and(|s|["user","project","local"].contains(&s)))),
         "compactionOwner"=>value.as_str().is_some_and(|s|["senpi","sdk"].contains(&s)),
@@ -18,7 +18,9 @@ pub fn load(global:&Value,project:&Value,environment:&BTreeMap<String,String>)->
     let block=|settings:&Value|settings.get("anthropicSubscriptionProvider").filter(|v|!v.is_null()).or_else(||settings.get("claudeSdkOauthProvider")).cloned().unwrap_or(Value::Null);
     let mut values=parse(&block(global));values.extend(parse(&block(project)));let mut env=Map::new();
     for (suffix,key) in [("SYSTEM_PROMPT_MODE","systemPromptMode"),("SYSTEM_PROMPT_FILE","systemPromptFile"),("RESUME","resumeMode"),("TOKEN_INJECTION","tokenInjection"),("PINNED_ACCOUNT","pinnedAccount"),("COMPACTION_OWNER","compactionOwner")] {if let Some(value)=environment.get(&format!("SENPI_CLAUDE_SDK_OAUTH_{suffix}")) {env.insert(key.into(),Value::String(value.clone()));}}
-    if let Some(value)=environment.get("SENPI_CLAUDE_SDK_OAUTH_ENABLED") {match value.to_lowercase().as_str() {"true"|"1"=>{env.insert("enabled".into(),Value::Bool(true));},"false"|"0"=>{env.insert("enabled".into(),Value::Bool(false));},_=>{}}}
+    for (name,key) in [("SENPI_CLAUDE_SDK_OAUTH_ENABLED","enabled"),("SENPI_CLAUDE_SDK_OAUTH_ACCOUNT_FALLBACK","accountFallback")] {
+        if let Some(value)=environment.get(name) {match value.to_lowercase().as_str() {"true"|"1"=>{env.insert(key.into(),Value::Bool(true));},"false"|"0"=>{env.insert(key.into(),Value::Bool(false));},_=>{}}}
+    }
     if let Some(value)=environment.get("SENPI_CLAUDE_SDK_OAUTH_SETTING_SOURCES") {env.insert("settingSources".into(),Value::Array(if value.is_empty() {Vec::new()}else {value.split(',').map(|s|Value::String(s.trim().into())).collect()}));}
     let env=parse(&Value::Object(env));let prompt_mode_from_env=env.contains_key("systemPromptMode");values.extend(env);ProviderSettings {values,prompt_mode_from_env}
 }
@@ -28,6 +30,18 @@ pub fn resolve_prompt_mode(settings:&ProviderSettings)->ResolvedPromptMode {
     if let Some(mode)=settings.values.get("systemPromptMode").and_then(Value::as_str) {return ResolvedPromptMode {mode:mode.into(),source:if settings.prompt_mode_from_env {"env"}else {"setting"},conflict:settings.values.contains_key("appendSystemPrompt")};}
     if let Some(append)=settings.values.get("appendSystemPrompt").and_then(Value::as_bool) {return ResolvedPromptMode {mode:if append {"full"}else {"preset-append"}.into(),source:"legacy",conflict:false};}
     ResolvedPromptMode {mode:"full".into(),source:"default",conflict:false}
+}
+/// `resumeModeSource`: which layer set `resumeMode` (environment, project, else global), so a
+/// `disabled`/`resume_mode_off` notice can name it.
+pub fn resume_mode_source(project:&Value,environment:&BTreeMap<String,String>)->&'static str {
+    let block=|settings:&Value|settings.get("anthropicSubscriptionProvider").filter(|v|!v.is_null()).or_else(||settings.get("claudeSdkOauthProvider")).cloned().unwrap_or(Value::Null);
+    if environment.get("SENPI_CLAUDE_SDK_OAUTH_RESUME").is_some_and(|value|valid_choice("resumeMode",&Value::String(value.clone()))) {return "env";}
+    if parse(&block(project)).contains_key("resumeMode") {return "project";}
+    "global"
+}
+/// `accountFallback` (senpi#3465): whether another managed account may serve after a failure. Defaults to true.
+pub fn account_fallback(settings:&ProviderSettings)->bool {
+    settings.values.get("accountFallback").and_then(Value::as_bool).unwrap_or(true)
 }
 pub fn resolve_compaction_owner(settings:&ProviderSettings)->&str {
     settings.values.get("compactionOwner").and_then(Value::as_str).unwrap_or("senpi")
@@ -74,6 +88,19 @@ mod tests {
         let env=BTreeMap::new();let first=load_from_disk(directory.path(),&agent,directory.path(),&env);assert_eq!(first.values["enabled"],true);
         std::fs::write(&settings_file,r#"{"anthropicSubscriptionProvider":{"enabled":false}}"#).expect("update settings");
         let second=load_from_disk(directory.path(),&agent,directory.path(),&env);assert_eq!(second.values["enabled"],false);
+    }
+    #[test]
+    fn account_fallback_and_resume_mode_source_follow_layer_precedence() {
+        assert!(account_fallback(&load(&json!({}),&json!({}),&BTreeMap::new())));
+        let global=json!({"anthropicSubscriptionProvider":{"accountFallback":false,"resumeMode":"off"}});
+        assert!(!account_fallback(&load(&global,&json!({}),&BTreeMap::new())));
+        assert!(!account_fallback(&load(&json!({}),&json!({"anthropicSubscriptionProvider":{"accountFallback":"no"}}),&[("SENPI_CLAUDE_SDK_OAUTH_ACCOUNT_FALLBACK".into(),"0".into())].into())));
+        assert!(account_fallback(&load(&global,&json!({}),&[("SENPI_CLAUDE_SDK_OAUTH_ACCOUNT_FALLBACK".into(),"TRUE".into())].into())));
+        let project=json!({"claudeSdkOauthProvider":{"resumeMode":"auto"}});
+        assert_eq!(resume_mode_source(&json!({}),&BTreeMap::new()),"global");
+        assert_eq!(resume_mode_source(&project,&BTreeMap::new()),"project");
+        assert_eq!(resume_mode_source(&project,&[("SENPI_CLAUDE_SDK_OAUTH_RESUME".into(),"off".into())].into()),"env");
+        assert_eq!(resume_mode_source(&project,&[("SENPI_CLAUDE_SDK_OAUTH_RESUME".into(),"sometimes".into())].into()),"project");
     }
     #[test]
     fn compaction_owner_resolves_with_environment_precedence() {
