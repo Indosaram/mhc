@@ -104,20 +104,33 @@ pub fn elide_head(text: &str, max_width: usize) -> String {
     }
     format!("…{}", kept.into_iter().rev().collect::<String>())
 }
-/// Shortens a `~/`- or `/`-rooted path to its last two components: `~/a/b/c/d` -> `~/…/c/d`.
+/// Shortens a `~`-, `/`- or drive-rooted path (either separator) to its last two components:
+/// `~/a/b/c/d` -> `~/…/c/d`, `C:\a\b\c` -> `C:\…\b\c`.
 pub fn compact_cwd(path: &str) -> String {
-    let (root, rest) = if let Some(rest) = path.strip_prefix("~/") {
-        ("~/", rest)
-    } else if let Some(rest) = path.strip_prefix('/') {
-        ("/", rest)
+    let sep = path_separator(path);
+    let drive_root = path.len() >= 3
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && path.as_bytes()[1] == b':'
+        && matches!(path.as_bytes()[2], b'/' | b'\\');
+    let root_len = if path.starts_with("~/") || path.starts_with("~\\") {
+        2
+    } else if drive_root {
+        3
+    } else if path.starts_with(['/', '\\']) {
+        1
     } else {
         return path.into();
     };
-    let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+    let (root, rest) = path.split_at(root_len);
+    let parts: Vec<&str> = rest.split(['/', '\\']).filter(|p| !p.is_empty()).collect();
     if parts.len() <= 2 {
         return path.into();
     }
-    format!("{root}…/{}", parts[parts.len() - 2..].join("/"))
+    format!("{root}…{sep}{}", parts[parts.len() - 2..].join(&sep.to_string()))
+}
+/// `\` for Windows-style paths (a backslash and no forward slash), otherwise `/`.
+fn path_separator(path: &str) -> char {
+    if path.contains('\\') && !path.contains('/') { '\\' } else { '/' }
 }
 /// Head-elides a path on component boundaries (`…/project/ferryx`, then `…/ferryx`), falling back to
 /// character elision when even the last component is too wide.
@@ -125,12 +138,13 @@ pub fn elide_path(path: &str, max_width: usize) -> String {
     if visible_width(path) <= max_width {
         return path.into();
     }
+    let sep = path_separator(path);
     let parts: Vec<&str> = path
-        .split('/')
+        .split(['/', '\\'])
         .filter(|p| !p.is_empty() && *p != "…")
         .collect();
     for keep in (1..parts.len()).rev() {
-        let candidate = format!("…/{}", parts[parts.len() - keep..].join("/"));
+        let candidate = format!("…{sep}{}", parts[parts.len() - keep..].join(&sep.to_string()));
         if visible_width(&candidate) <= max_width {
             return candidate;
         }
