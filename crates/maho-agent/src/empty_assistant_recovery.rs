@@ -3,9 +3,7 @@
 use std::sync::Arc;
 
 use maho_ai::model::Model;
-use maho_ai::tool_call_middleware::{
-    get_tool_call_format, has_kimi_text_tool_call_recovery, should_recover_text_tool_calls,
-};
+use maho_ai::tool_call_middleware::has_kimi_text_tool_call_recovery;
 use maho_ai::types::{
     AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, ErrorReason,
 };
@@ -264,10 +262,12 @@ async fn run_retrying_stream(
 
 // Wrapping replaces the provider stream with a buffering proxy, which does not carry the
 // underlying stream's liveness surface (trackLocalWork/hasPendingLocalWork) that the loop's
-// idle watchdog reads. Only wrap models that actually need stream-level recovery; the
-// empty-tool_use contradiction is normalized for every model by the agent loop instead.
+// idle watchdog reads. Only cursor-agent tracks local work, so it is the one api left unwrapped.
+// Divergence from senpi, which wraps only text-tool-call models: any model can end a turn with
+// an empty `stop` (GPT-6 Astra does so on a few percent of turns), and unwrapped that empty stop
+// settles the turn silently, leaving the session idle with nothing scheduled to wake it.
 pub fn with_empty_assistant_recovery(model: &Model, stream_function: StreamFn) -> StreamFn {
-    if !should_recover_text_tool_calls(model) && get_tool_call_format(model).is_none() {
+    if model.api == "cursor-agent" {
         return stream_function;
     }
     let policy = CommitPolicy {
@@ -395,5 +395,39 @@ mod cancellation_tests {
         tokio::time::timeout(Duration::from_secs(1), created_rx).await.expect("retry created").expect("created");
         tokio::time::timeout(Duration::from_secs(1), outer.cancel()).await.expect("acknowledged").expect("cancel");
         assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn empty_stop_is_retried_for_models_without_text_tool_call_recovery() {
+        let mut model = crate::agent::default_model();
+        model.api = "openai-completions".to_owned();
+        model.id = "gpt-6-astra".to_owned();
+        model.recover_text_tool_calls = Some(false);
+        let empty = |text: Option<&str>| {
+            let mut message = crate::assistant_terminal_state::create_terminal_failure_assistant_message(
+                &model, maho_ai::types::StopReason::Stop,
+                &crate::assistant_terminal_state::AgentStreamError::OAuthRefreshUnavailable { message: String::new() }, None,
+            );
+            message.stop_reason = maho_ai::types::StopReason::Stop;
+            message.error_message = None;
+            message.content = text.map(|text| vec![maho_ai::types::ContentBlock::text(text)]).unwrap_or_default();
+            let stream = AssistantMessageEventStream::assistant();
+            stream.push(AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message });
+            stream
+        };
+        let (first, second) = (empty(None), empty(Some("done")));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let source: StreamFn = Arc::new(move |_, _, _| {
+            if count.fetch_add(1, Ordering::SeqCst) == 0 { first.clone() } else { second.clone() }
+        });
+        let context = maho_ai::types::Context { system_prompt: None, messages: Vec::new(), tools: None, active_tool_names: None };
+        let outer = with_empty_assistant_recovery(&model, source)(&model, &context, None);
+        let events = tokio::time::timeout(Duration::from_secs(5), outer.collect()).await.expect("settled").expect("collected");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "the empty stop must trigger one retry");
+        let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+            panic!("the retried attempt must finish the turn, got {:?}", events.last())
+        };
+        assert!(has_visible_assistant_content(message));
     }
 }
