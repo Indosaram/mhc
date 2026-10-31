@@ -2703,10 +2703,16 @@ mod persistence_tests {
         persisted_command(fixture, monitor_id, "cat").await;
     }
     async fn persisted_command(fixture: &Fixture, monitor_id: &str, command: &str) {
-        let mut writer = crate::terminal_manifest::TerminalManifestWriter::new(
-            &fixture.session_dir,
-            "terminal-persistence",
-        );
+        persisted_command_for(fixture, "terminal-persistence", monitor_id, command).await;
+    }
+    async fn persisted_command_for(
+        fixture: &Fixture,
+        session_id: &str,
+        monitor_id: &str,
+        command: &str,
+    ) {
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(&fixture.session_dir, session_id);
         writer
             .record_register(
                 crate::terminal_manifest_model::MonitorRegistration {
@@ -2950,6 +2956,100 @@ mod persistence_tests {
         );
         assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(*fixture.decided.borrow_and_update(), 0);
+    }
+
+    /// terminal-restore-session.test.ts (g2): an unreadable manifest is left exactly as it was
+    /// (fail closed) and the decided digest says `corrupt`.
+    #[tokio::test]
+    async fn an_unreadable_manifest_is_left_exactly_as_it_was() {
+        let mut fixture = fixture(1, None);
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let manifest = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        std::fs::write(&manifest, "{not a manifest").unwrap();
+        own_once(&mut fixture).await;
+        let outcome = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.outcome);
+        assert_eq!(
+            outcome,
+            Some(crate::restore_digest::RestoreDigestOutcome::Corrupt)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            "{not a manifest"
+        );
+        teardown(&fixture);
+    }
+
+    /// terminal-restore-session.test.ts (i): a watch created while waiting on a foreign holder is
+    /// queued (upstream `handMonitorSpec`), drained into the takeover's writer and on disk with the
+    /// restored watch at shutdown.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_watch_created_while_waiting_is_on_disk_after_the_takeover() {
+        // Its own session id: the pending-spec binding map is process-wide, and the other tests'
+        // takeovers bind "terminal-persistence".
+        let session = "terminal-waiter";
+        let mut fixture = fixture(1, Some(10));
+        fixture.encoded = maho_core::session_sidecar_store::encoded_session_id(session);
+        fixture.context.encoded = fixture.encoded.clone();
+        persisted_command_for(&fixture, session, "mon_WAITERBASE0001", "cat").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let lease = fixture
+            .terminal_dir
+            .join(format!("{}.lease", fixture.encoded));
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
+        std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
+        let ctx = context(fixture.dir.path(), Arc::new(RecordingUi::default()), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        wait_for_lease(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            Some(holder),
+            fixture.session_dir.clone(),
+            session.into(),
+        );
+        // Created while held: no writer is bound, so the spec waits for the takeover's writer.
+        assert!(
+            crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                Some(session),
+                crate::terminal_manifest_model::MonitorRegistration {
+                    monitor_id: "mon_CREATEDWHILEHLD".into(),
+                    spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                        description: "created while held".into(),
+                        command: "cat".into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: None,
+                        persistent: true,
+                    },
+                },
+            )
+            .is_none()
+        );
+        std::fs::remove_file(&lease).unwrap();
+        decided(&mut fixture).await;
+        stop_waiting(&keeper).await;
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(session);
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        let mut ids = manifest_ids(&fixture);
+        ids.sort();
+        assert_eq!(ids, ["mon_CREATEDWHILEHLD", "mon_WAITERBASE0001"]);
+        teardown(&fixture);
     }
 
     /// The post-takeover sweep removes other sessions' stale leases and empty manifests and keeps
