@@ -238,6 +238,12 @@ fn given_duplicate_keys_when_parsed_safe_then_the_last_value_wins() {
 }
 
 #[test]
+fn given_surrogate_pair_in_escaped_string_when_parsed_safe_then_the_surrogate_is_decoded() {
+    let result = parse_jsonc_safe(r#"{"icon":"\uD83D\uDE00"}"#);
+    assert_eq!(result.data, Some(json!({ "icon": "😀" })));
+}
+
+#[test]
 fn given_escaped_strings_when_parsed_safe_then_the_value_is_decoded() {
     let result = parse_jsonc_safe("{\"a\":\"x\\ny\\u0041\"}");
     assert_eq!(result.data, Some(json!({ "a": "x\nyA" })));
