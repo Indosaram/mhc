@@ -204,6 +204,16 @@ fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
     );
 }
 
+#[test]
+fn lifecycle_ui_set_subagent_cost_on_invalidated_runtime_does_not_panic() {
+    let runtime = ExtensionRuntime::default();
+    let ui =
+        maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(|_| {}));
+    runtime.invalidate("stale");
+    assert!(!ui.supports_subagent_cost());
+    ui.set_subagent_cost(Some(0.5));
+}
+
 #[tokio::test]
 async fn completed_dialog_rejects_runtime_invalidated_after_prompt_start() {
     let runtime = ExtensionRuntime::default();
@@ -4139,6 +4149,26 @@ async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
                 .message,
             "replaced"
         );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn retained_kernel_tools_invoke_scope_returns_false_on_invalidated_context() {
+    use maho_ext_host::kernel_tools_context::with_kernel_tools;
+    let mut runner = runner(vec![]);
+    runner
+        .bind_context_actions(Arc::new(ContextActions {
+            revision: std::sync::atomic::AtomicU64::new(0),
+            aborted: Mutex::new(None),
+            monitor: Mutex::new(None),
+        }))
+        .unwrap();
+    with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        let context = runner.create_context().unwrap();
+        let tools = context.kernel_tools().unwrap().unwrap();
+        runner.invalidate("replaced");
+        assert!(!tools.invoke_scope());
     })
     .await;
 }

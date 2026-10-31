@@ -397,7 +397,9 @@ impl ContextSessionManager {
 }
 impl ExtensionKernelTools for ContextSessionManager {
     fn invoke_scope(&self) -> bool {
-        self.active();
+        if self.runtime.assert_active().is_err() {
+            return false;
+        }
         let current = crate::kernel_tools_context::current_kernel_tools();
         current
             .as_deref()
