@@ -57,6 +57,8 @@ fn token_counts_render_whole_and_fractional_units() {
     assert_eq!(format_token_count(1_500), "1.5K");
     assert_eq!(format_token_count(1_000_000), "1M");
     assert_eq!(format_token_count(1_250_000), "1.3M");
+    assert_eq!(format_token_count(1_150_000), "1.1M");
+    assert_eq!(format_token_count(2_750), "2.8K");
 }
 
 #[test]
