@@ -209,6 +209,51 @@ mod tests {
             0o755
         );
     }
+    /// Writes a one-entry zip whose central directory claims MS-DOS (`versionMadeBy >> 8 === 0`)
+    /// with the given `externalFileAttributes`.
+    fn dos_entry_archive(dir: &Path, name: &str, external_attributes: u32) -> PathBuf {
+        use std::io::Write;
+        let path = dir.join(format!("{name}.zip"));
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"data").unwrap();
+        writer.finish().unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let central = bytes
+            .windows(4)
+            .position(|window| window == [0x50, 0x4b, 0x01, 0x02])
+            .expect("central directory header");
+        bytes[central + 5] = 0;
+        bytes[central + 38..central + 42].copy_from_slice(&external_attributes.to_le_bytes());
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+    /// extract-zip: a DOS-made entry with `externalFileAttributes === 16` is a directory even
+    /// without a trailing `/`.
+    #[test]
+    fn dos_directory_attribute_extracts_as_directory() {
+        let fixture = tempfile::tempdir().unwrap();
+        let output = fixture.path().join("output");
+        extract_zip_archive(&dos_entry_archive(fixture.path(), "dosdir", 16), &output).unwrap();
+        assert!(output.join("dosdir").is_dir());
+    }
+    /// extract-zip only honours the exact value 16 and otherwise reads the mode from the high
+    /// 16 bits (0 for DOS entries): a read-only directory-bit entry (0x11) is a 0644 file, whereas
+    /// zip's own DOS mapping (`unix_mode()`) would make it a directory.
+    #[cfg(unix)]
+    #[test]
+    fn dos_attributes_other_than_16_extract_as_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let output = fixture.path().join("output");
+        let archive = dos_entry_archive(fixture.path(), "readonly_dir_bits", 0x11);
+        extract_zip_archive(&archive, &output).unwrap();
+        let metadata = std::fs::symlink_metadata(output.join("readonly_dir_bits")).unwrap();
+        assert!(metadata.is_file());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o644);
+    }
     #[test]
     fn extracts_binary_and_removes_archive() {
         use std::io::Write;
