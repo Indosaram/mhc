@@ -62,11 +62,51 @@ impl<'a> UnusableEntries<'a> {
         self.is_provider_spent(&model.provider) || self.cooldowns.is_suppressed(&entry_key(model))
     }
 
+    /// Every account noted spent, with the deadline its cooldown lifts at and the raw error that spent it.
+    /// An account-scoped note always carries a non-empty error, so `account_errors` names every spent account.
+    pub fn spent_accounts(&self) -> SpentAccounts {
+        SpentAccounts {
+            by_provider: self
+                .account_errors
+                .iter()
+                .filter_map(|(provider, error)| {
+                    self.cooldowns
+                        .expires_at(&account_key(provider))
+                        .map(|expires_at| (provider.clone(), (expires_at, error.clone())))
+                })
+                .collect(),
+        }
+    }
+
     /// A deliberate model selection allows the user to probe after reauth/reset.
     pub fn clear(&mut self, model: &Model) {
         self.cooldowns.clear(&entry_key(model));
         self.cooldowns.clear(&account_key(&model.provider));
         self.account_errors.remove(&model.provider);
+    }
+}
+
+/// A copy of the spent accounts taken where the controller records or clears them, so a reader that cannot
+/// await the controller lock still sees every spent account. Deadlines are on the session's cooldown clock.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpentAccounts {
+    by_provider: HashMap<String, (f64, String)>,
+}
+
+impl SpentAccounts {
+    /// senpi `isProviderSpent` at `now`.
+    pub fn is_spent(&self, provider: &str, now: f64) -> bool {
+        self.by_provider
+            .get(provider)
+            .is_some_and(|(expires_at, _)| now < *expires_at)
+    }
+
+    /// senpi `accountError` at `now`: the raw error that spent a still-spent provider.
+    pub fn account_error(&self, provider: &str, now: f64) -> Option<String> {
+        self.by_provider
+            .get(provider)
+            .filter(|(expires_at, _)| now < *expires_at)
+            .map(|(_, error)| error.clone())
     }
 }
 
@@ -128,5 +168,31 @@ mod tests {
         assert!(!unusable.is_provider_spent("q"));
         unusable.note(&a, failure("429 rate limit exceeded"));
         assert!(!unusable.is_unusable(&a));
+    }
+
+    #[test]
+    fn spent_accounts_snapshot_names_each_spent_account_until_its_cooldown_lifts() {
+        let Ok(mut cooldowns) = SelectorCooldowns::new(|| 0.0, || 0.0) else {
+            panic!("cooldowns")
+        };
+        let mut errors = HashMap::new();
+        let mut unusable = UnusableEntries::new(&mut cooldowns, &mut errors);
+        let (a, other) = (model("p", "a"), model("q", "c"));
+        unusable.note(&a, failure("You've hit your session limit"));
+        unusable.note(
+            &other,
+            failure("Premium models are not included: usage limit reached"),
+        );
+        let spent = unusable.spent_accounts();
+        assert!(spent.is_spent("p", 0.0));
+        assert_eq!(
+            spent.account_error("p", 0.0).as_deref(),
+            Some("You've hit your session limit")
+        );
+        assert!(!spent.is_spent("q", 0.0));
+        assert!(!spent.is_spent("p", 1_800_000.0));
+        assert_eq!(spent.account_error("p", 1_800_000.0), None);
+        unusable.clear(&a);
+        assert_eq!(unusable.spent_accounts(), SpentAccounts::default());
     }
 }
