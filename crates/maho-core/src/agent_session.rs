@@ -5283,11 +5283,7 @@ impl AgentSession {
         });
         let children = crate::lifecycle_children::LifecycleChildren::new(&entries);
         let pending = self.pending_message_count();
-        let holds = self
-            .holds()
-            .into_iter()
-            .map(|h| json!({"kind":h.kind.as_str(),"since":h.since}))
-            .collect::<Vec<_>>();
+        let holds = crate::lifecycle_runtime_facts::lifecycle_holds(&self.holds());
         let (active, custody_persisted) = {
             let registry = lock(&self.work_obligations);
             let Some(registry) = registry.as_ref() else {
