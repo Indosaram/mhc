@@ -281,6 +281,34 @@ pub fn rpc_session_event_record(
     event: &maho_ext_api::AgentSessionEvent,
     last_abort_source: &LastAbortSource,
 ) -> Result<serde_json::Value, serde_json::Error> {
+    rpc_session_event_record_routed(session, event, last_abort_source, None)
+}
+/// [`rpc_session_event_record`] for a session the host routes as `route`: the turn facts senpi reads off the
+/// session (`ClientAdmissions.forSession(session).abortedBy`) come from the client-admission ledger published
+/// under that route. Only a ledger that already exists is read; none is built here (that would restore queued
+/// input). `deadline` stays empty: maho-core arms no turn deadline on a live session, so no turn ends on one.
+pub fn rpc_session_event_record_routed(
+    session: &AgentSession,
+    event: &maho_ext_api::AgentSessionEvent,
+    last_abort_source: &LastAbortSource,
+    route: Option<&str>,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let record = rpc_session_event_projection(session, event, last_abort_source)?;
+    let facts = crate::session_record_stream::TurnFacts {
+        aborted_by: route
+            .and_then(crate::client_admissions::ClientAdmissions::existing)
+            .and_then(|admissions| admissions.aborted_by()),
+        deadline: None,
+    };
+    Ok(crate::session_record_stream::session_record_with(
+        record, &facts,
+    ))
+}
+fn rpc_session_event_projection(
+    session: &AgentSession,
+    event: &maho_ext_api::AgentSessionEvent,
+    last_abort_source: &LastAbortSource,
+) -> Result<serde_json::Value, serde_json::Error> {
     let mut record = crate::session_binding::session_event_record(event)?;
     match event {
         maho_ext_api::AgentSessionEvent::ThinkingLevelChanged { .. }
@@ -317,7 +345,7 @@ pub fn rpc_session_event_record(
         }
         _ => {}
     }
-    Ok(crate::session_record_stream::session_record(record))
+    Ok(record)
 }
 fn current_abort_source(
     session: &AgentSession,
@@ -457,10 +485,71 @@ async fn handle_input_line_with_login_state(
         }
     };
     // Boxed: this command future is very large and would otherwise sit on the caller's stack.
-    dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source)
-    .await
-    .map(|response| crate::jsonl::serialize_json_line(&response))
-    .transpose()
+    let dispatch =
+        dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source);
+    // senpi client-input-handler.ts `clientInputContext.run(clientMessageIdentity(command), ...)`: the records a
+    // client input produces (`skill_invocation`, `command_invocation`) name the input that caused them.
+    let response = match client_input_identity(&value) {
+        Some(identity) => {
+            crate::client_message_events::CLIENT_INPUT_CONTEXT
+                .scope(identity, dispatch)
+                .await
+        }
+        None => dispatch.await,
+    };
+    response
+        .map(|response| crate::jsonl::serialize_json_line(&response))
+        .transpose()
+}
+/// The identity of a client input command (senpi `clientMessageIdentity(command)`): `clientMessageId` and
+/// `clientTurnId` of a `prompt`, `steer` or `follow_up`, when it carries either.
+fn client_input_identity(value: &serde_json::Value) -> Option<serde_json::Value> {
+    if !matches!(
+        value["type"].as_str(),
+        Some("prompt" | "steer" | "follow_up")
+    ) {
+        return None;
+    }
+    let identity = maho_core::client_message_identity::read_client_message_identity(value);
+    let mut fields = serde_json::Map::new();
+    if let Some(id) = identity.client_message_id {
+        fields.insert("clientMessageId".into(), id.into());
+    }
+    if let Some(id) = identity.client_turn_id {
+        fields.insert("clientTurnId".into(), id.into());
+    }
+    (!fields.is_empty()).then_some(serde_json::Value::Object(fields))
+}
+/// senpi `CredentialAccountSummary` on the wire: optional fields only when present.
+fn credential_account_json(
+    account: maho_core::credential_accounts::CredentialAccountSummary,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "name": account.name,
+        "source": account.source.as_str(),
+        "blocked": account.blocked,
+        "pinned": account.pinned,
+    });
+    if let Some(name) = account.display_name {
+        value["displayName"] = name.into();
+    }
+    if let Some(reason) = account.blocked_reason {
+        value["blockedReason"] = reason.as_str().into();
+    }
+    if let Some(until) = account.blocked_until {
+        value["blockedUntil"] = until.into();
+    }
+    if !account.blocked_models.is_empty() {
+        value["blockedModels"] = account
+            .blocked_models
+            .iter()
+            .map(|block| serde_json::json!({"model": block.model, "until": block.until}))
+            .collect();
+    }
+    if account.unused {
+        value["unused"] = true.into();
+    }
+    value
 }
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
@@ -623,8 +712,29 @@ pub fn build_rpc_session_state_with_dialogs(
     }
     state
 }
+/// The classic `get_protocol_info` capabilities that precede the tool-runtime and negotiated ones (senpi
+/// connection-handler.ts), `entries_tail` last.
+const CLASSIC_CAPABILITIES: [&str; 17] = [
+    "multi_session",
+    crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY,
+    crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY,
+    "session_lifecycle",
+    crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY,
+    crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY,
+    crate::client_admission_record::DURABLE_CLIENT_MESSAGE_ID_CAPABILITY,
+    crate::effect_record::EFFECT_LEDGER_CAPABILITY,
+    crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
+    "continue_from_leaf",
+    "eval_cells",
+    "auth_key_verify",
+    crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
+    "tool_barrier",
+    crate::rpc_types::USER_ACTIVITY_CAPABILITY,
+    crate::custom_capability::RESUME_SESSION_CAPABILITY,
+    crate::custom_capability::ENTRIES_TAIL_CAPABILITY,
+];
 /// The leading capabilities of the classic `get_protocol_info` list that precede the negotiated ones.
-const CLASSIC_BASE_CAPABILITIES: usize = 6;
+const CLASSIC_BASE_CAPABILITIES: usize = CLASSIC_CAPABILITIES.len();
 pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
@@ -678,6 +788,73 @@ fn session_switch_failure(
                 .then(|| crate::rpc_types::RPC_ERROR_MISSING_SESSION_CWD.to_owned()),
             error_data,
         },
+    }
+}
+fn coded_error(command: &RpcCommand, kind: &str, error: String, code: &str) -> RpcResponse {
+    RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind.into(),
+        session_id: command.session_id.clone(),
+        result: RpcResponseResult::Error {
+            error,
+            error_code: Some(code.to_owned()),
+            error_data: None,
+        },
+    }
+}
+/// senpi `ResolvedMessagePath` on the wire.
+fn resolved_message_path_json(
+    resolved: maho_core::message_path_resolution::ResolvedMessagePath,
+) -> serde_json::Value {
+    use maho_core::message_path_resolution::{
+        MessagePathBase, MessagePathKind, ResolvedMessagePath,
+    };
+    match resolved {
+        ResolvedMessagePath::Found {
+            realpath,
+            kind,
+            base,
+        } => serde_json::json!({
+            "status": "found",
+            "realpath": realpath,
+            "kind": match kind {
+                MessagePathKind::File => "file",
+                MessagePathKind::Directory => "directory",
+            },
+            "base": match base {
+                MessagePathBase::Absolute => "absolute",
+                MessagePathBase::Cwd => "cwd",
+                MessagePathBase::ProjectRoot => "project-root",
+            },
+        }),
+        ResolvedMessagePath::NotFound { tried } => {
+            serde_json::json!({"status": "not_found", "tried": tried})
+        }
+    }
+}
+/// senpi `ApiKeyVerification` on the wire.
+fn api_key_verification_json(
+    verification: maho_core::verify_api_key::ApiKeyVerification,
+) -> serde_json::Value {
+    use maho_core::verify_api_key::{ApiKeyFailure, ApiKeyVerification};
+    match verification {
+        ApiKeyVerification::Ok => serde_json::json!({"ok": true}),
+        ApiKeyVerification::Failed { reason, status } => {
+            let mut value = serde_json::json!({
+                "ok": false,
+                "reason": match reason {
+                    ApiKeyFailure::Rejected => "rejected",
+                    ApiKeyFailure::Unreachable => "unreachable",
+                    ApiKeyFailure::Unsupported => "unsupported",
+                    ApiKeyFailure::UnknownProvider => "unknown-provider",
+                },
+            });
+            if let Some(status) = status {
+                value["status"] = status.into();
+            }
+            value
+        }
     }
 }
 fn edit_response(
@@ -926,6 +1103,41 @@ async fn handle_session_command_with_sink(
             value
         })))),
         RpcCommandBody::GetForkMessages=>{let messages=session.get_user_messages_for_forking().into_iter().map(|(entry_id,text)|serde_json::json!({"entryId":entry_id,"text":text})).collect::<Vec<_>>();("get_fork_messages",Ok(Some(serde_json::json!({"messages":messages}))))},
+        RpcCommandBody::Wake{..}=>("wake",Ok(Some(serde_json::json!({"admitted":[]})))),
+        RpcCommandBody::ContinueFromLeaf=>{
+            // senpi: a refusal answers with the `ContinueFromLeafError` code; any other failure is a plain error.
+            if let Some(refusal)=session.continue_from_leaf_refusal(){return Some(coded_error(command,"continue_from_leaf",refusal.to_string(),refusal.code.as_str()));}
+            ("continue_from_leaf",session.continue_from_leaf().await.map(|()|None))
+        },
+        RpcCommandBody::Interrupt{turn_id,..}=>{
+            let outcome=crate::session_control_actions_data::interrupt_running_turn(session,turn_id.as_ref(),||session.abort()).await;
+            ("interrupt",serde_json::to_value(outcome).map(Some).map_err(|error|error.to_string()))
+        },
+        // senpi: without `options.retryFallbackCommand` (this binding has no such launch option, and it does not
+        // advertise `retry_fallback_command`) the command is refused with upstream's text.
+        RpcCommandBody::SetRetryFallback{..}=>("set_retry_fallback",Err("set_retry_fallback is for a single-session rpc process; a host session takes open_session.retryFallback.".into())),
+        RpcCommandBody::RequestSelfSettle=>("request_self_settle",Ok(Some(session.request_self_settle()))),
+        RpcCommandBody::GetModelThinkingLevel{provider,model_id}=>{
+            let (Some(provider),Some(model_id))=(provider.as_ref().and_then(serde_json::Value::as_str),model_id.as_ref().and_then(serde_json::Value::as_str)) else{return Some(coded_error(command,"get_model_thinking_level","get_model_thinking_level requires 'provider' and 'modelId'.".into(),crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT));};
+            let Some(model)=session.model_registry().get_available().into_iter().find(|model|model.provider==provider&&model.id==model_id) else{return Some(coded_error(command,"get_model_thinking_level",format!("Model not found: {provider}/{model_id}"),crate::rpc_types::RPC_ERROR_MODEL_NOT_FOUND));};
+            let (level,source,available)=session.thinking_level_for_model(&model);
+            ("get_model_thinking_level",Ok(Some(serde_json::json!({"level":level,"source":source,"availableLevels":available}))))
+        },
+        RpcCommandBody::ResolvePath{path}=>{
+            let cwd=session.cwd();
+            let root=maho_core::message_path_resolution::message_path_project_root(&cwd);
+            ("resolve_path",Ok(Some(resolved_message_path_json(maho_core::message_path_resolution::resolve_message_path(path,&cwd,root.as_deref())))))
+        },
+        RpcCommandBody::GetSubscriptionLimits=>("get_subscription_limits",serde_json::to_value(maho_core::subscription_limits::limit_store::subscription_limits().snapshot()).map(|accounts|Some(serde_json::json!({"accounts":accounts}))).map_err(|error|error.to_string())),
+        RpcCommandBody::VerifyApiKey{provider,key}=>{
+            let verification=maho_core::verify_api_key::verify_api_key(&session.model_registry().get_all(),provider,key,maho_core::verify_api_key::fetch_probe_status).await;
+            ("verify_api_key",Ok(Some(api_key_verification_json(verification))))
+        },
+        RpcCommandBody::AccountOrder{provider,names}=>{
+            let result=session.model_registry().order_credential_accounts(provider,names.as_deref(),&session.agent_dir()).await;
+            ("account_order",result.map(|()|None))
+        },
+        RpcCommandBody::MemoryReport=>("memory_report",crate::memory_report_command::answer_memory_report(session.memory_report_owner()).await.map(Some)),
         RpcCommandBody::GetSessionStats=>{let stats=session.get_session_stats();let mut value=serde_json::json!({"sessionId":stats.session_id,"userMessages":stats.user_messages,"assistantMessages":stats.assistant_messages,"toolCalls":stats.tool_calls,"toolResults":stats.tool_results,"totalMessages":stats.total_messages,"tokens":{"input":stats.tokens.input,"output":stats.tokens.output,"cacheRead":stats.tokens.cache_read,"cacheWrite":stats.tokens.cache_write,"total":stats.tokens.total},"cost":stats.cost});
             if let Some(file)=stats.session_file{value["sessionFile"]=file.into();}
             if let Some(usage)=stats.context_usage{value["contextUsage"]=serde_json::json!({"tokens":usage.tokens,"contextWindow":usage.context_window,"percent":usage.percent});}
@@ -989,7 +1201,12 @@ async fn handle_session_command_with_sink(
                 let api_keys=maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::ApiKey))?;
                 Ok(oauth.into_iter().chain(api_keys).map(|info|{
                 let status=registry.get_provider_auth_status(&info.id);
-                serde_json::json!({"id":info.id,"name":info.name,"authType":match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"},"status":{"configured":status.configured,"source":status.source,"label":status.label}})
+                let auth_type=match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"};
+                let mut provider=serde_json::json!({"id":info.id,"name":info.name,"authType":auth_type,"status":{"configured":status.configured,"source":status.source,"label":status.label}});
+                // senpi connection-handler.ts `get_auth_providers`: `...storedKeyHint(...)` and `...(origin ? { origin } : {})`.
+                if let Some(hint)=maho_core::verify_api_key::stored_key_hint(auth_type,registry.auth_storage.get(&info.id).as_ref()){provider["keyHint"]=hint.into();}
+                if let Some(origin)=registry.get_provider_origin(&info.id).and_then(|origin|serde_json::to_value(origin).ok()){provider["origin"]=origin;}
+                provider
                 }).collect::<Vec<_>>())
             }).map_err(|error|error.to_string());
             ("get_auth_providers",providers.map(|providers|Some(serde_json::json!({"providers":providers}))))
@@ -1036,10 +1253,10 @@ async fn handle_session_command_with_sink(
             ("logout",result)
         },
         RpcCommandBody::GetProviderAccounts{provider}=>{
-            let result=session.model_registry().get_credential_accounts(provider,&session.agent_dir()).await
-                .map(|accounts|Some(serde_json::json!({"accounts":accounts.into_iter().map(|account|serde_json::json!({
-                    "name":account.name,"displayName":account.display_name,"source":account.source.as_str(),"blocked":account.blocked,"pinned":account.pinned,
-                })).collect::<Vec<_>>() })));
+            // senpi `listCredentialAccounts`: every summary field the account carries, plus whether a user order applies.
+            let repository=maho_core::credential_pool::state_store::CredentialSlotRepository::new(&maho_core::credential_pool::state_store::credential_pool_state_path(&session.agent_dir()));
+            let result=maho_core::credential_account_order::list_credential_accounts(&session.model_registry().auth_storage,provider,&|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64).await
+                .map(|listing|Some(serde_json::json!({"accounts":listing.accounts.into_iter().map(credential_account_json).collect::<Vec<_>>(),"ordered":listing.ordered})));
             ("get_provider_accounts",result)
         },
         RpcCommandBody::AccountPin{provider,name}=>{
@@ -1109,7 +1326,10 @@ async fn handle_session_command_with_sink(
             let snapshot = if claimed { serde_json::from_value::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>(receive.await.map_err(|error|format!("MCP inventory request failed: {error}"))?).map_err(|error|format!("MCP inventory response invalid: {error}"))? } else { session.mcp_wire_status_snapshot::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>().unwrap_or_default() };
             let mcp_servers = snapshot.servers.iter().map(|server| {
                 let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
-                serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status})
+                let mut row=serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status});
+                // senpi `loadedMcpServers`: `...(server.lastError === undefined ? {} : { lastError })`.
+                if let Some(error)=&server.last_error{row["lastError"]=error.clone().into();}
+                row
             }).collect::<Vec<_>>();
             let extensions=session.loaded_extension_surfaces().await;
             Ok(Some(serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers})))
@@ -1129,8 +1349,11 @@ async fn handle_session_command_with_sink(
             let cwd=std::env::current_dir().map(|cwd|cwd.to_string_lossy().into_owned()).unwrap_or_default();
             let mut data=crate::protocol_identity::host_launch_profile(&argv,&cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&env));
             // senpi v2026.10.27-2: the classic binding answers get_snapshot, the UI-answer ledger and backward `tail` pages too.
-            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY.to_owned(),crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY.to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned(),crate::custom_capability::ENTRIES_TAIL_CAPABILITY.to_owned()];
-            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if !capabilities.contains(&capability){capabilities.push(capability);}}
+            // senpi connection-handler.ts classic list; `retry_fallback_command` is conditional upstream and this binding
+            // carries no `retry_fallback` command, so it is not advertised.
+            let mut capabilities=CLASSIC_CAPABILITIES.map(str::to_owned).to_vec();
+            // Client flags cannot advertise a host guard this classic binding does not run.
+            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if capability!=crate::custom_capability::SESSION_HELD_CAPABILITY&&!capabilities.contains(&capability){capabilities.push(capability);}}
             data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
             data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
             data["capabilities"]=serde_json::json!(capabilities);
@@ -1139,11 +1362,15 @@ async fn handle_session_command_with_sink(
         },
         RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}}),
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::UnloadSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"unload_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: unload_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ReleaseSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"release_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: release_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::SetSessionContext{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_session_context".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: set_session_context".into(),error_code:None,error_data:None}}),
         RpcCommandBody::AttachSession{..}|RpcCommandBody::ReleaseAttachment|RpcCommandBody::ReclaimSession{..}=>{let kind=match &command.body{RpcCommandBody::AttachSession{..}=>"attach_session",RpcCommandBody::ReleaseAttachment=>"release_attachment",_=>"reclaim_session"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
         RpcCommandBody::SubscribeSessions|RpcCommandBody::UnsubscribeSessions=>{let kind=if matches!(command.body,RpcCommandBody::SubscribeSessions){"subscribe_sessions"}else{"unsubscribe_sessions"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
+        // senpi: only a multi-session host tracks attachments per connection; the classic handler has no such command.
+        RpcCommandBody::Warm{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"warm".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: warm".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::DetachConnection=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"detach_connection".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: detach_connection".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse {
         id: command.id.clone(),
@@ -1463,59 +1690,70 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
         {
             let ui = self as &dyn maho_ext_api::ExtensionUi;
             return Box::pin(crate::connection_question_bridge::degrade_question(
-                ui,
-                request,
-                options.dialog,
+                ui, request, options,
             ));
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_millis() as u64);
-        let (frame, receiver) = self
+        let now_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64)
+        };
+        // senpi `opts?.timeout ?? request.timeoutMs`.
+        let timeout = options.dialog.timeout_ms;
+        let signal = options.dialog.signal.clone();
+        let (frame, mut receiver) = self
             .questions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ask(request.clone(), None, now);
+            .ask_with(
+                request,
+                timeout,
+                options.on_progress.clone(),
+                options.deliver,
+                now_ms(),
+            );
+        let id = frame["id"].as_str().unwrap_or_default().to_owned();
         (self.out)(frame);
         let questions = self.questions.clone();
         let out = self.out.clone();
         Box::pin(async move {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(request.timeout_ms),
-                receiver,
-            )
-            .await
-            {
-                Ok(Ok(response)) => Ok(response),
-                _ => {
-                    let deadline = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or_else(
-                            |_| now.saturating_add(request.timeout_ms),
-                            |elapsed| elapsed.as_millis() as u64,
-                        );
-                    let resolved = questions
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .expire(deadline);
-                    for record in resolved {
-                        (out)(record);
+            let mut abort = signal.as_ref().map(|signal| Box::pin(signal.cancelled()));
+            loop {
+                // A draft re-arms the idle deadline, so each wait reads the current one.
+                let Some(deadline) = questions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .deadline(&id)
+                else {
+                    break;
+                };
+                let idle = std::time::Duration::from_millis(deadline.saturating_sub(now_ms()));
+                let aborted = async {
+                    match abort.as_mut() {
+                        Some(abort) => abort.as_mut().await,
+                        None => std::future::pending().await,
                     }
-                    Ok(maho_ext_api::QuestionResponse {
-                        status: maho_ext_api::QuestionStatus::TimedOut,
-                        answers: Default::default(),
-                        comment: None,
-                        unanswered: request
-                            .questions
-                            .iter()
-                            .map(|question| question.id.clone())
-                            .collect(),
-                        auto_resolved_after_ms: Some(request.timeout_ms),
-                        cancel_origin: None,
-                        resolved_by: None,
-                    })
+                };
+                let resolved = tokio::select! {
+                    biased;
+                    response = &mut receiver => {
+                        return response.map_err(|_| maho_ext_api::ExtensionFailure::new("question bridge closed"));
+                    }
+                    () = aborted => {
+                        let timed_out = signal.as_ref().is_some_and(crate::connection_question_bridge::signal_timed_out);
+                        questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).abort(&id, timed_out, now_ms())
+                    }
+                    () = tokio::time::sleep(idle) => {
+                        questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).time_out(&id, deadline, now_ms())
+                    }
+                };
+                if let Some(record) = resolved {
+                    (out)(record);
                 }
             }
+            receiver
+                .await
+                .map_err(|_| maho_ext_api::ExtensionFailure::new("question bridge closed"))
         })
     }
     fn select<'a>(
@@ -1702,6 +1940,8 @@ pub struct RpcConnectionHandler {
     /// senpi `options.toolRuntime`: a single-session `--mode rpc` process advertises its `--tool-runtime` as
     /// `tool_runtime:<value>`.
     tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+    /// senpi `sessionControl`: the session's `registerControlEndpoint` host and the `wake` command's target.
+    session_control: std::sync::Arc<crate::host_session_control::HostSessionControl>,
 }
 /// senpi connection-handler.ts `get_protocol_info` capability tail: the classic binding's own tool-runtime answer
 /// (when it has one) goes ahead of the negotiated client capabilities, and a client flag can never advertise a tool
@@ -1773,7 +2013,7 @@ impl RpcConnectionHandler {
         out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
         capabilities: Vec<String>,
     ) -> Self {
-        Self::create_with_shutdown_handler(session, out, capabilities, None).await
+        Self::create_with_shutdown_handler(session, out, capabilities, None, None).await
     }
     /// senpi `options.shutdownHandler`: an extension's `ctx.shutdown()` calls `shutdown_handler` when
     /// given, otherwise it only marks this connection for the host's shutdown check.
@@ -1782,7 +2022,26 @@ impl RpcConnectionHandler {
         out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
         capabilities: Vec<String>,
         shutdown_handler: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        control_socket: Option<String>,
     ) -> Self {
+        // senpi: installed before the bind below, because extensions register their control endpoint on
+        // session_start. A host with no public socket (stdio, classic) answers a registration `unsupported_mode`.
+        let report_label = control_socket
+            .as_ref()
+            .map_or_else(|| "classic".to_owned(), |_| session.session_id());
+        let session_control =
+            std::sync::Arc::new(crate::host_session_control::HostSessionControl::new(
+                std::sync::Arc::new(crate::host_session_control::AgentControlSession(
+                    session.clone(),
+                )),
+                control_socket,
+                std::sync::Arc::new(move |line| {
+                    eprintln!("senpi rpc session {report_label}: {line}");
+                }),
+            ));
+        session.set_control_endpoint_host(Some(std::sync::Arc::new(std::sync::Arc::clone(
+            &session_control,
+        ))));
         let pending: std::sync::Arc<
             std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
         > = Default::default();
@@ -1901,7 +2160,10 @@ impl RpcConnectionHandler {
                 let extensions = session.loaded_extension_surfaces().await;
                 let mcp_servers = snapshot.servers.iter().map(|server| {
                     let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
-                    serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status})
+                    let mut row=serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status});
+                // senpi `loadedMcpServers`: `...(server.lastError === undefined ? {} : { lastError })`.
+                if let Some(error)=&server.last_error{row["lastError"]=error.clone().into();}
+                row
                 }).collect::<Vec<_>>();
                 let value = serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers});
                 let skills = session.loaded_skills().unwrap_or_default().skills.into_iter().map(|skill| serde_json::json!({"name":skill.name,"path":skill.file_path,"sourceInfo":skill.source_info,"enabled":!skill.disable_model_invocation})).collect::<Vec<_>>();
@@ -1945,6 +2207,7 @@ impl RpcConnectionHandler {
             relocation: Default::default(),
             connection_roles: Default::default(),
             tool_runtime: None,
+            session_control,
         }
     }
     /// senpi `options.toolRuntime`: advertise this process's `--tool-runtime` in `get_protocol_info`.
@@ -2087,7 +2350,7 @@ impl RpcConnectionHandler {
                 .questions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .respond(value, now);
+                .respond_with(value, now, || self.session.admit_human_answer());
             let error = match kind {
                 crate::connection_question_bridge::QuestionReply::Incomplete => {
                     Some("question_incomplete")
@@ -2262,6 +2525,26 @@ impl RpcConnectionHandler {
                 Some(Err(error.to_owned()))
             } else {
                 match command_kind {
+                    // senpi `case "wake"`: one drain pass covering the named deliveries, answered with what it
+                    // admitted; with no endpoint registered the wake is still emitted into the extensions.
+                    "wake" => {
+                        let delivery_ids = value["delivery_ids"]
+                            .as_array()
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let result = self.session_control.wake(&delivery_ids).await;
+                        Some(Ok(serde_json::json!({
+                            "admitted": result
+                                .get("admitted")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!([]))
+                        })))
+                    }
                     "resume_session" => Some(self.session.begin_resume(value).await),
                     "hold_input" => Some(crate::held_input_commands::run_hold_input(
                         &self.session,
@@ -2478,6 +2761,8 @@ impl RpcConnectionHandler {
         }
     }
     pub async fn release(&self) {
+        // senpi `sessionControl?.dispose()`: every control edge source stops here.
+        self.session_control.dispose();
         self.grant_presentation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2530,12 +2815,19 @@ impl RpcConnectionHandler {
     }
 }
 
+/// A bare in-memory session for tests outside this module.
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub(crate) fn session() -> super::AgentSession {
+        super::new_session_tests::session()
+    }
+}
 #[cfg(test)]
 mod new_session_tests {
     use super::*;
     use std::sync::Arc;
 
-    fn session() -> AgentSession {
+    pub(super) fn session() -> AgentSession {
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
             maho_core::model_runtime::CreateModelRuntimeOptions {
                 providers: Some(vec![]),
@@ -2599,6 +2891,101 @@ mod new_session_tests {
         assert_eq!(response["errorData"]["sessionCwd"], gone);
         assert_eq!(response["errorData"]["fallbackCwd"], "/tmp");
         assert_eq!(session.cwd(), "/tmp");
+    }
+
+    /// senpi `case "memory_report"`: a host started without SENPI_MEMORY_REPORT=1 registered no source, so the
+    /// command is refused by name rather than answered as unknown.
+    #[tokio::test]
+    async fn memory_report_without_the_flag_is_refused_as_disabled() {
+        let session = session();
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"id":"m","type":"memory_report"}))
+                .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "memory_report");
+        assert_eq!(response["success"], false);
+        assert_eq!(
+            response["error"],
+            "memory_report_disabled: start the host with SENPI_MEMORY_REPORT=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_plain_session_commands_answer_with_senpis_wire_shapes() {
+        let session = &session();
+        let answer = move |line: serde_json::Value| async move {
+            let command: RpcCommand = serde_json::from_value(line).expect("command");
+            serde_json::to_value(
+                handle_session_command(session, &command)
+                    .await
+                    .expect("response"),
+            )
+            .expect("wire")
+        };
+        let leaf = answer(serde_json::json!({"type":"continue_from_leaf"})).await;
+        assert_eq!(leaf["success"], false);
+        assert_eq!(leaf["errorCode"], "nothing_to_continue");
+        let interrupt = answer(serde_json::json!({"type":"interrupt","turnId":"t"})).await;
+        assert_eq!(interrupt["data"], serde_json::json!({"interrupted":false}));
+        let settle = answer(serde_json::json!({"type":"request_self_settle"})).await;
+        assert_eq!(settle["success"], true);
+        assert!(settle["data"]["recorded"].is_boolean());
+        let missing = answer(serde_json::json!({"type":"get_model_thinking_level"})).await;
+        assert_eq!(missing["errorCode"], "invalid_argument");
+        let unknown = answer(
+            serde_json::json!({"type":"get_model_thinking_level","provider":"nope","modelId":"x"}),
+        )
+        .await;
+        assert_eq!(unknown["errorCode"], "model_not_found");
+        assert_eq!(unknown["error"], "Model not found: nope/x");
+        let path =
+            answer(serde_json::json!({"type":"resolve_path","path":"/definitely/not/here"})).await;
+        assert_eq!(path["data"]["status"], "not_found");
+        let fallback =
+            answer(serde_json::json!({"type":"set_retry_fallback","retryFallback":{}})).await;
+        assert_eq!(fallback["success"], false);
+        assert_eq!(fallback["command"], "set_retry_fallback");
+        let limits = answer(serde_json::json!({"type":"get_subscription_limits"})).await;
+        assert!(limits["data"]["accounts"].is_array());
+        // An unknown provider is answered before any probe goes out.
+        let verify =
+            answer(serde_json::json!({"type":"verify_api_key","provider":"nope","key":"k"})).await;
+        assert_eq!(
+            verify["data"],
+            serde_json::json!({"ok":false,"reason":"unknown-provider"})
+        );
+    }
+
+    #[test]
+    fn a_found_path_and_a_failed_verification_keep_their_wire_fields() {
+        use maho_core::message_path_resolution::{
+            MessagePathBase, MessagePathKind, ResolvedMessagePath,
+        };
+        use maho_core::verify_api_key::{ApiKeyFailure, ApiKeyVerification};
+        assert_eq!(
+            resolved_message_path_json(ResolvedMessagePath::Found {
+                realpath: "/r".into(),
+                kind: MessagePathKind::Directory,
+                base: MessagePathBase::ProjectRoot,
+            }),
+            serde_json::json!({"status":"found","realpath":"/r","kind":"directory","base":"project-root"})
+        );
+        assert_eq!(
+            api_key_verification_json(ApiKeyVerification::Failed {
+                reason: ApiKeyFailure::Rejected,
+                status: Some(401),
+            }),
+            serde_json::json!({"ok":false,"reason":"rejected","status":401})
+        );
+        assert_eq!(
+            api_key_verification_json(ApiKeyVerification::Ok),
+            serde_json::json!({"ok":true})
+        );
     }
 
     #[tokio::test]
@@ -2709,8 +3096,19 @@ mod new_session_tests {
                 "multi_session",
                 "snapshot_cursor",
                 "ui_answer_ledger",
+                "session_lifecycle",
                 "auto_title_sessions",
                 "media_placeholders",
+                "durable_client_message_id",
+                "effect_ledger",
+                "steer_when_idle",
+                "continue_from_leaf",
+                "eval_cells",
+                "auth_key_verify",
+                "queued_message_revision",
+                "tool_barrier",
+                "user_activity",
+                "resume_session",
                 "entries_tail"
             ]
         );
@@ -2899,6 +3297,72 @@ mod new_session_tests {
             .filter(|kind| kind.starts_with("bash_") && kind != "bash_execution_update")
             .collect::<Vec<_>>();
         assert_eq!(kinds, ["bash_start", "bash_end"]);
+    }
+    // senpi client-input-handler.ts `clientInputContext.run(clientMessageIdentity(command), ...)`.
+    #[test]
+    fn only_client_input_commands_with_an_identity_open_an_input_context() {
+        assert_eq!(
+            client_input_identity(
+                &serde_json::json!({"type":"prompt","message":"hi","clientMessageId":"m1","clientTurnId":"t1"})
+            ),
+            Some(serde_json::json!({"clientMessageId":"m1","clientTurnId":"t1"}))
+        );
+        assert_eq!(
+            client_input_identity(&serde_json::json!({"type":"steer","message":"hi"})),
+            None
+        );
+        assert_eq!(
+            client_input_identity(&serde_json::json!({"type":"get_state","clientMessageId":"m1"})),
+            None
+        );
+    }
+    // senpi session-record-stream.ts: an aborted `agent_end` and `session_abort` name the client that aborted, read
+    // from the admission ledger of the session's route.
+    #[tokio::test]
+    async fn routed_records_name_the_client_that_aborted() {
+        use crate::client_admissions::ClientAdmissions;
+        use crate::client_admissions::test_session::FakeSession;
+        use crate::effect_session::EffectSession;
+        let session = session();
+        let last: LastAbortSource = Default::default();
+        let route = "routed-abort-record";
+        let ledger_session: std::sync::Arc<dyn EffectSession> =
+            std::sync::Arc::new(FakeSession::new(route));
+        let admissions = ClientAdmissions::for_session(&ledger_session).await;
+        admissions.note_abort(
+            crate::effect_record::EffectActor {
+                connection_id: "socket-1".into(),
+            },
+            Some("abort-1".into()),
+        );
+        let aborted_end = maho_ext_api::AgentSessionEvent::AgentEnd {
+            messages: vec![],
+            aborted: true,
+            will_retry: false,
+            abort_source: Some(maho_ext_api::AbortSource::User),
+        };
+        let routed =
+            rpc_session_event_record_routed(&session, &aborted_end, &last, Some(route)).unwrap();
+        assert_eq!(
+            routed["abortedBy"],
+            serde_json::json!({"connectionId":"socket-1","effectId":"abort-1"})
+        );
+        let abort = rpc_session_event_record_routed(
+            &session,
+            &maho_ext_api::AgentSessionEvent::SessionAbort,
+            &last,
+            Some(route),
+        )
+        .unwrap();
+        assert_eq!(abort["abortedBy"]["connectionId"], "socket-1");
+        // No route, or a route with no ledger, names no aborter.
+        let unrouted = rpc_session_event_record(&session, &aborted_end, &last).unwrap();
+        assert!(unrouted.get("abortedBy").is_none());
+        let other =
+            rpc_session_event_record_routed(&session, &aborted_end, &last, Some("no-ledger"))
+                .unwrap();
+        assert!(other.get("abortedBy").is_none());
+        ClientAdmissions::forget(route);
     }
     #[tokio::test]
     async fn agent_end_records_abort_source_for_get_state_and_omits_aborted_when_false() {
@@ -3159,7 +3623,40 @@ mod new_session_tests {
         .unwrap();
         assert_eq!(response["command"], "get_provider_accounts");
         assert_eq!(response["success"], true);
-        assert_eq!(response["data"], serde_json::json!({"accounts":[]}));
+        assert_eq!(
+            response["data"],
+            serde_json::json!({"accounts":[],"ordered":false})
+        );
+    }
+    // senpi credential-accounts.ts `CredentialAccountSummary`: a blocked account names why and until when; absent
+    // optional fields stay off the wire.
+    #[test]
+    fn a_blocked_account_carries_its_reason_and_until() {
+        use maho_core::credential_accounts::{
+            CredentialAccountBlockedReason, CredentialAccountSource, CredentialAccountSummary,
+        };
+        let account = |blocked_reason, blocked_until| CredentialAccountSummary {
+            name: "work".into(),
+            display_name: None,
+            source: CredentialAccountSource::Login,
+            blocked: blocked_reason.is_some(),
+            blocked_reason,
+            blocked_until,
+            pinned: false,
+            blocked_models: Vec::new(),
+            unused: false,
+        };
+        assert_eq!(
+            credential_account_json(account(
+                Some(CredentialAccountBlockedReason::AuthError),
+                Some(42)
+            )),
+            serde_json::json!({"name":"work","source":"login","blocked":true,"pinned":false,"blockedReason":"auth_error","blockedUntil":42})
+        );
+        assert_eq!(
+            credential_account_json(account(None, None)),
+            serde_json::json!({"name":"work","source":"login","blocked":false,"pinned":false})
+        );
     }
     #[tokio::test]
     async fn account_pin_preserves_provider_error() {
@@ -3344,6 +3841,41 @@ mod connection_events_tests {
         );
         assert_eq!(of_type(&capable_records, "extension_event").len(), 1);
         plain.release().await;
+    }
+
+    /// senpi `case "wake"`: with no control endpoint registered the wake still answers, with nothing admitted; and a
+    /// classic (socketless) handler refuses a registration as `unsupported_mode`.
+    #[tokio::test]
+    async fn wake_answers_admitted_and_a_socketless_registration_is_unsupported() {
+        let session = session();
+        let (handler, _records) = handler(&session, &[]).await;
+        let response: serde_json::Value = serde_json::from_str(
+            &handler
+                .handle_input_line(r#"{"id":"w","type":"wake","delivery_ids":["d1"]}"#)
+                .await
+                .expect("line")
+                .expect("response"),
+        )
+        .expect("json");
+        assert_eq!(response["command"], "wake");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"], serde_json::json!({"admitted":[]}));
+        let registration = maho_core::session_control_actions::ControlEndpointHost::register(
+            &std::sync::Arc::clone(&handler.session_control),
+            maho_core::extensions::session_control_types::RegisterControlEndpointOptions {
+                inbox_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+                drain: Arc::new(|_| Box::pin(async { None })),
+                is_session_referenced: None,
+            },
+        )
+        .await;
+        assert!(matches!(
+            registration,
+            maho_core::extensions::session_control_types::SessionControlRegistration::Unsupported {
+                reason: maho_core::extensions::session_control_types::ControlEndpointUnsupported::UnsupportedMode
+            }
+        ));
+        handler.release().await;
     }
 
     #[tokio::test]

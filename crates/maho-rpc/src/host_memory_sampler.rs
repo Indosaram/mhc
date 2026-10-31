@@ -30,7 +30,9 @@ impl HostMemorySampler{
     pub fn new(env:&HashMap<String,String>)->Self{let warn_mb=positive_integer(env.get(HOST_RSS_WARN_MB_ENV)).unwrap_or(DEFAULT_HOST_RSS_WARN_MB);Self{warn_mb,pressure:false,idle_reported:false,last_logged_at:None}}
     pub fn sample(&mut self,rss_bytes:u64,sessions:u64,now:u64)->MemorySample{
         let rss_mb=(rss_bytes+524288)/1048576;
-        self.sample_reading(HostMemoryReading{footprint_mb:rss_mb,measure:"rss".into(),rss_mb,main_heap_bytes:0,kernels:Vec::new()},sessions,now)
+        // senpi `readKernels`: the codemode kernel registry's live rows; a host without the extension lists none.
+        let kernels=maho_core::memory_report::kernel_registry_read::read_codemode_kernel_rows().into_iter().map(|kernel|serde_json::json!({"sessionId":kernel.session_id,"language":kernel.language,"liveBytes":kernel.live_bytes,"measure":kernel.measure})).collect();
+        self.sample_reading(HostMemoryReading{footprint_mb:rss_mb,measure:"rss".into(),rss_mb,main_heap_bytes:0,kernels},sessions,now)
     }
     pub fn sample_reading(&mut self,reading:HostMemoryReading,sessions:u64,now:u64)->MemorySample{
         let rss_mb=reading.footprint_mb;let mut result=MemorySample::default();

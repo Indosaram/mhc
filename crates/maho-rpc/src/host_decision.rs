@@ -14,6 +14,7 @@ pub const REQUIRED_HOST_CAPABILITIES: [&str; 4] = [
     "session_kind",
 ];
 
+#[derive(Clone)]
 pub struct HostDecisionClient {
     pub protocol_version: u32,
     pub required_capabilities: Vec<String>,

@@ -996,6 +996,8 @@ pub struct AgentSessionInner {
     recovery_identity: Mutex<Option<crate::session_recovery_identity::SessionRecoveryIdentity>>,
     /// senpi `_structuredLane` (senpi#4272).
     structured_lane: crate::structured_session_lane::StructuredSessionLane,
+    /// senpi `_unregisterMemoryReport`: a no-op unless `SENPI_MEMORY_REPORT=1`; released on dispose.
+    memory_report_unregister: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -1060,6 +1062,10 @@ pub struct AgentSessionInner {
     /// senpi `runtimeHost.setBeforeSessionInvalidate`: runs once a replacement or reload proceeds,
     /// right before the extension runtime is invalidated and the next `session_start` re-registers UI.
     before_session_invalidate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// senpi `onBeforeSessionReplace` for a session replaced in place (new, switch/import, fork): runs after the
+    /// outgoing `session_shutdown` handlers and before its extension runtime is invalidated.
+    before_session_replace: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    next_before_session_replace: AtomicU64,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
     monitor_generation: AtomicU64,
@@ -3787,10 +3793,12 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
                     to,
                     chain_key,
                     reason,
+                    limit,
                 } => AgentSessionEvent::RetryFallbackApplied {
                     from,
                     to,
                     chain_key,
+                    limit,
                     reason: match reason {
                         FallbackReason::Transient => "transient",
                         FallbackReason::Refusal => "refusal",
@@ -3799,8 +3807,12 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
                     }
                     .to_owned(),
                 },
-                FallbackEvent::Reverted { from, to } => {
-                    AgentSessionEvent::RetryFallbackReverted { from, to }
+                FallbackEvent::Reverted { from, to, stranded } => {
+                    AgentSessionEvent::RetryFallbackReverted {
+                        from,
+                        to,
+                        cause: stranded.then(|| "fallback-unusable".to_owned()),
+                    }
                 }
             });
         }
@@ -3994,6 +4006,45 @@ fn without_deleted_headers(headers: Option<ProviderHeaders>) -> Option<BTreeMap<
             .filter_map(|(key, value)| value.map(|value| (key, value)))
             .collect()
     })
+}
+
+/// senpi `registerMemoryReportSession(this, {...})`: read only when a report is requested; a dropped session
+/// reports empty figures until its dispose unregisters it.
+struct SessionMemoryReportSource(std::sync::Weak<AgentSessionInner>);
+
+impl crate::memory_report::memory_report_registry::MemoryReportSessionSource
+    for SessionMemoryReportSource
+{
+    fn session_id(&self) -> String {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner }.session_id())
+            .unwrap_or_default()
+    }
+    fn session_file(&self) -> Option<String> {
+        self.0
+            .upgrade()
+            .and_then(|inner| AgentSession { inner }.session_file())
+    }
+    fn resident_store(&self) -> crate::session_resident_store_size::ResidentStoreSize {
+        self.0
+            .upgrade()
+            .map(|inner| {
+                let stats = AgentSession { inner }
+                    .with_session_manager(|manager| manager.resident_store_stats());
+                crate::session_resident_store_size::ResidentStoreSize {
+                    entries: stats.blob_count,
+                    approx_bytes: stats.blob_bytes,
+                }
+            })
+            .unwrap_or_default()
+    }
+    fn reporters(&self) -> Vec<maho_ext_api::NamedMemoryReporter> {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner }.extension_memory_reporters())
+            .unwrap_or_default()
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -4408,6 +4459,7 @@ impl AgentSession {
                 structured_lane: crate::structured_session_lane::StructuredSessionLane::new(
                     internal_channel,
                 ),
+                memory_report_unregister: Mutex::new(None),
                 recovery_identity: Mutex::new(
                     crate::engine_socket_flag::compact_updates_enabled()
                         .then(crate::session_recovery_identity::SessionRecoveryIdentity::default),
@@ -4495,6 +4547,8 @@ impl AgentSession {
                 extension_rpc_event_forward: Mutex::new(None),
                 settings_source_subscription: Mutex::new(None),
                 before_session_invalidate: Mutex::new(None),
+                before_session_replace: Mutex::new(Vec::new()),
+                next_before_session_replace: AtomicU64::new(0),
                 settled_delivery: Mutex::new(
                     crate::agent_settled_delivery::AgentSettledDelivery::new(),
                 ),
@@ -4670,7 +4724,20 @@ impl AgentSession {
             }));
         lock(&session.lifecycle).release_restore_barrier();
         session.install_agent_next_turn_refresh();
+        // A no-op unless SENPI_MEMORY_REPORT=1: the report reads these only when it is requested.
+        *lock(&session.inner.memory_report_unregister) = Some(
+            crate::memory_report::memory_report_registry::register_memory_report_session(
+                session.memory_report_owner(),
+                Arc::new(SessionMemoryReportSource(Arc::downgrade(&session.inner))),
+                &crate::config::current_env(),
+            ),
+        );
         Ok(session)
+    }
+
+    /// The key this session's memory report source is registered under (senpi keys by object identity).
+    pub fn memory_report_owner(&self) -> u64 {
+        Arc::as_ptr(&self.inner) as usize as u64
     }
 
     fn state(&self) -> MutexGuard<'_, AgentSessionState> {
@@ -6605,6 +6672,35 @@ impl AgentSession {
         }
     }
 
+    /// senpi `session.extensionRunner.emit(event)` for one `session_control_wake` pass (`{reason, reasons,
+    /// delivery_ids?}`); a session with no runner bound emits nothing.
+    pub async fn emit_session_control_wake(&self, event: &Value) -> Result<(), String> {
+        let mut runner = self.extension_runner.lock().await.clone();
+        let Some(runner) = runner.as_mut() else {
+            return Ok(());
+        };
+        let strings = |value: &Value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let reason = event["reason"].as_str().unwrap_or("command").to_owned();
+        runner
+            .emit(maho_ext_api::ExtensionEvent::SessionControlWake {
+                source: "session_control".to_owned(),
+                reasons: strings(&event["reasons"]).unwrap_or_else(|| vec![reason.clone()]),
+                reason,
+                delivery_ids: strings(&event["delivery_ids"]),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|failure| failure.message)
+    }
+
     async fn emit_held_wakes_released(
         &self,
         sources: BTreeMap<String, usize>,
@@ -6659,6 +6755,15 @@ impl AgentSession {
 
     pub fn wake_source_counts(&self) -> crate::session_activity::ActiveCounts {
         self.state().wake_sources.active_counts()
+    }
+    /// senpi `activeWakeSources`: the sources that currently publish live work.
+    pub fn active_wake_sources(&self) -> Vec<String> {
+        self.state()
+            .wake_sources
+            .active_sources()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
     pub fn paused_notice_count(&self) -> usize {
         lock(&self.engine_turn_hold).notice_count()
@@ -11669,6 +11774,7 @@ impl AgentSession {
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::New)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| manager.new_session(options));
         self.finish_session_replacement(maho_ext_api::SessionReason::New, previous)
@@ -11734,6 +11840,7 @@ impl AgentSession {
         let previous_cwd = self.cwd();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Resume)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         // Nothing writes to the replaced manager any more, so it releases its writer claim.
         self.with_session_manager_mut(|manager| std::mem::replace(manager, target).dispose());
@@ -12100,6 +12207,7 @@ impl AgentSession {
         });
         self.emit_session_shutdown(maho_ext_api::SessionReason::Fork)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| {
             manager.new_session(Some(crate::session_manager::NewSessionOptions {
@@ -16473,6 +16581,31 @@ impl AgentSession {
         Ok(())
     }
 
+    /// senpi `onBeforeSessionReplace` for this session's in-place replacements (new, switch, import, fork; never
+    /// reload or dispose). Returns the id [`Self::remove_before_session_replace`] takes.
+    pub fn on_before_session_replace(&self, listener: Arc<dyn Fn() + Send + Sync>) -> u64 {
+        let id = self
+            .next_before_session_replace
+            .fetch_add(1, Ordering::Relaxed);
+        lock(&self.before_session_replace).push((id, listener));
+        id
+    }
+
+    /// Removes a listener [`Self::on_before_session_replace`] added.
+    pub fn remove_before_session_replace(&self, id: u64) {
+        lock(&self.before_session_replace).retain(|(listener, _)| *listener != id);
+    }
+
+    fn run_before_session_replace(&self) {
+        let listeners: Vec<_> = lock(&self.before_session_replace)
+            .iter()
+            .map(|(_, listener)| listener.clone())
+            .collect();
+        for listener in listeners {
+            listener();
+        }
+    }
+
     /// senpi `setBeforeSessionInvalidate`.
     pub fn set_before_session_invalidate(&self, callback: Option<Arc<dyn Fn() + Send + Sync>>) {
         *lock(&self.before_session_invalidate) = callback;
@@ -19662,6 +19795,9 @@ impl AgentSession {
             return;
         }
         self.structured_lane.dispose();
+        if let Some(unregister) = lock(&self.inner.memory_report_unregister).take() {
+            unregister();
+        }
         lock(&self.inner.nested_host_calls).clear();
         let disposers = std::mem::take(&mut *lock(&self.inner.tool_context_disposers));
         for dispose in disposers {
@@ -20895,6 +21031,113 @@ impl AgentSession {
             level,
             selection.map(|selection| ThinkingSelection { level, ..selection }),
         )
+    }
+
+    /// senpi `getThinkingLevelForModel(model)`: the level a switch to `model` would run at, where it comes from, and
+    /// the levels the model supports. The candidates are senpi `_getThinkingForModelSwitch`'s: this session's memory,
+    /// the global per-model level, the model's own default, then the configured default.
+    ///
+    /// ADAPTATION: senpi answers the current model with its tracked `_thinkingLevelSource`; this session does not
+    /// track the source of the level in force, so the current model reports its live level with the source the same
+    /// candidate chain names.
+    pub fn thinking_level_for_model(
+        &self,
+        model: &Model,
+    ) -> (
+        ModelThinkingLevel,
+        crate::session_thinking_memory::ThinkingLevelSource,
+        Vec<ModelThinkingLevel>,
+    ) {
+        use crate::session_thinking_memory::ThinkingLevelSource as Source;
+        let available = crate::thinking_levels::get_supported_thinking_levels(model);
+        let parse = |level: &str| {
+            ModelThinkingLevel::ALL
+                .into_iter()
+                .find(|candidate| candidate.as_str() == level)
+        };
+        let candidates = [
+            (
+                self.get_session_model_thinking_level(&model.provider, &model.id)
+                    .and_then(|level| parse(&level)),
+                Source::Session,
+            ),
+            (
+                self.with_settings_manager(|manager| {
+                    manager
+                        .get_value("modelThinkingLevels")
+                        .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
+                        .and_then(Value::as_str)
+                        .and_then(parse)
+                }),
+                Source::Global,
+            ),
+            (model.default_thinking_level, Source::ModelDefault),
+            (
+                self.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel"))
+                    .and_then(|level| parse(&level)),
+                Source::Default,
+            ),
+        ];
+        let (requested, source) = candidates
+            .into_iter()
+            .find_map(|(level, source)| level.map(|level| (level, source)))
+            .unwrap_or((ModelThinkingLevel::Medium, Source::Default));
+        let current = self.model();
+        if models_are_equal(Some(&current), Some(model)) {
+            return (self.thinking_level(), source, available);
+        }
+        let level = clamp_thinking_level(requested, &available);
+        let source = if level != requested && source != Source::Default {
+            Source::Clamped
+        } else {
+            source
+        };
+        (level, source, available)
+    }
+
+    /// Why `continue_from_leaf` would refuse now (senpi's `ContinueFromLeafError` checks), so a caller can answer
+    /// with the error's code.
+    pub fn continue_from_leaf_refusal(
+        &self,
+    ) -> Option<crate::continue_from_leaf::ContinueFromLeafError> {
+        use crate::continue_from_leaf::{ContinueFromLeafCode, ContinueFromLeafError};
+        if self.is_streaming() {
+            return Some(ContinueFromLeafError::new(ContinueFromLeafCode::Streaming));
+        }
+        let messages = self.messages();
+        let Some(leaf) = messages.last() else {
+            return Some(ContinueFromLeafError::new(
+                ContinueFromLeafCode::NothingToContinue,
+            ));
+        };
+        // Only an answer can be continued; a prompt left as the leaf (an edited one) is retried, not continued.
+        (leaf.role() != "assistant")
+            .then(|| ContinueFromLeafError::new(ContinueFromLeafCode::LeafNotAssistant))
+    }
+
+    /// senpi `continueFromLeaf()`: continues the conversation from its last answer with no new prompt, as a hidden
+    /// `continue-from-leaf` custom message that triggers a turn.
+    ///
+    /// ADAPTATION: senpi answers once the turn was admitted (its `agent_start`, or a delegation). The native custom
+    /// message starts its turn on a spawned task and reports a start-time failure from the send itself, so this
+    /// answers once the send accepted the turn; a later failure is a normal turn error event, as upstream.
+    pub async fn continue_from_leaf(&self) -> Result<(), String> {
+        if let Some(refusal) = self.continue_from_leaf_refusal() {
+            return Err(refusal.to_string());
+        }
+        self.send_custom_message_content(
+            crate::continue_from_leaf::CONTINUE_FROM_LEAF_CUSTOM_TYPE.to_owned(),
+            maho_agent::harness::messages::CustomMessageContent::Text(
+                crate::continue_from_leaf::CONTINUE_FROM_LEAF_DIRECTIVE.to_owned(),
+            ),
+            false,
+            None,
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: None,
+            },
+        )
+        .await
     }
 
     // Relocation API (senpi session-relocation.ts, session-control-actions.ts)
@@ -26419,6 +26662,66 @@ mod tests {
                 ModelThinkingLevel::Off,
                 Some(explicit_thinking_selection(ModelThinkingLevel::Off))
             )
+        );
+    }
+
+    #[test]
+    fn a_models_thinking_level_names_the_candidate_it_came_from() {
+        use crate::session_thinking_memory::ThinkingLevelSource;
+        let session = test_session();
+        let mut reasoning = test_model();
+        reasoning.id = "faux-other".into();
+        reasoning.reasoning = true;
+        let mut plain = test_model();
+        plain.id = "faux-plain".into();
+        let (level, source, _) = session.thinking_level_for_model(&reasoning);
+        assert_eq!(
+            (level, source),
+            (ModelThinkingLevel::Medium, ThinkingLevelSource::Default)
+        );
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "modelThinkingLevels".into(),
+                serde_json::json!({"faux/faux-other": "low", "faux/faux-plain": "high"}),
+            )]));
+        });
+        let (level, source, _) = session.thinking_level_for_model(&reasoning);
+        assert_eq!(
+            (level, source),
+            (ModelThinkingLevel::Low, ThinkingLevelSource::Global)
+        );
+        // A remembered level the model cannot run is clamped, and says so.
+        let (level, source, available) = session.thinking_level_for_model(&plain);
+        assert_eq!(
+            (level, source, available),
+            (
+                ModelThinkingLevel::Off,
+                ThinkingLevelSource::Clamped,
+                vec![ModelThinkingLevel::Off]
+            )
+        );
+    }
+
+    #[test]
+    fn continue_from_leaf_refuses_an_empty_session_and_a_prompt_leaf() {
+        use crate::continue_from_leaf::ContinueFromLeafCode;
+        let session = test_session();
+        assert_eq!(
+            session
+                .continue_from_leaf_refusal()
+                .map(|refusal| refusal.code),
+            Some(ContinueFromLeafCode::NothingToContinue)
+        );
+        let prompt: AgentMessage = serde_json::from_value(
+            serde_json::json!({"role": "user", "content": "hi", "timestamp": 0}),
+        )
+        .expect("message");
+        session.agent.set_messages(vec![prompt]);
+        assert_eq!(
+            session
+                .continue_from_leaf_refusal()
+                .map(|refusal| refusal.code),
+            Some(ContinueFromLeafCode::LeafNotAssistant)
         );
     }
 
@@ -36670,6 +36973,27 @@ mod tests {
             session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
             Some(reply_id.to_owned())
         );
+    }
+
+    /// senpi `onBeforeSessionReplace`: an in-place replacement runs the listener once, while the outgoing identity is
+    /// still current; a removed listener does not run.
+    #[tokio::test]
+    async fn before_session_replace_runs_once_per_replacement_on_the_outgoing_session() {
+        let session = test_session();
+        let id = session.session_id();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let weak = session.weak_accessor();
+        let record = seen.clone();
+        let listener = session.on_before_session_replace(Arc::new(move || {
+            if let Some(session) = weak() {
+                lock(&record).push(session.session_id());
+            }
+        }));
+        assert!(session.new_session(None).await.expect("new"));
+        assert_eq!(*lock(&seen), [id]);
+        session.remove_before_session_replace(listener);
+        assert!(session.new_session(None).await.expect("new"));
+        assert_eq!(lock(&seen).len(), 1);
     }
 
     #[tokio::test]

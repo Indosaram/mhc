@@ -312,6 +312,56 @@ pub enum RpcCommandBody {
         label: Option<String>,
     },
     GetSessionStats,
+    MemoryReport,
+    /// senpi `{ type: "continue_from_leaf" }`: continue from the last answer with no new prompt.
+    ContinueFromLeaf,
+    /// senpi `{ type: "interrupt"; turnId?; intent? }`: stop the running turn, scoped to `turnId` when given.
+    Interrupt {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+    },
+    RequestSelfSettle,
+    GetModelThinkingLevel {
+        provider: Option<Value>,
+        model_id: Option<Value>,
+    },
+    ResolvePath {
+        path: String,
+    },
+    GetSubscriptionLimits,
+    /// senpi `{ type: "set_retry_fallback"; retryFallback }`: only a single-session rpc process launched with the
+    /// retry-fallback command option takes it.
+    SetRetryFallback {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_fallback: Option<Value>,
+    },
+    /// senpi `{ type: "detach_connection" }`: a multi-session host drops every attachment the asking connection holds.
+    DetachConnection,
+    /// senpi `{ type: "warm"; cwd?; kind?; context? }`: load a launch profile's extensions without a session. The
+    /// fields stay raw: `answer_warm` validates them and answers each refusal by code.
+    Warm {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context: Option<Value>,
+    },
+    VerifyApiKey {
+        provider: String,
+        key: String,
+    },
+    AccountOrder {
+        provider: String,
+        names: Option<Vec<String>>,
+    },
+    /// senpi `{ type: "wake"; delivery_ids?: string[] }`: one control-endpoint drain pass (answered by the handler).
+    Wake {
+        #[serde(rename = "delivery_ids", skip_serializing_if = "Option::is_none")]
+        delivery_ids: Option<Vec<String>>,
+    },
     ExportHtml {
         #[serde(skip_serializing_if = "Option::is_none")]
         output_path: Option<String>,
@@ -482,6 +532,20 @@ pub enum RpcCommandBody {
         target: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         interrupt: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
+    /// Frees a session this host keeps loaded, keeping its transcript for a later reopen (senpi `unload_session`,
+    /// senpi#3225). The session id travels in the routing envelope; the flags are validated before parsing.
+    UnloadSession {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effect_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupt: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        clear_queue: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        children: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
     },
@@ -873,6 +937,9 @@ pub enum RpcSessionLifecycleEvent {
     SessionParked {
         session_id: String,
         session_path: String,
+        /// `idle`: the idle sweep parked it; `unloaded`: `unload_session` did.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     SessionClosed {
         session_id: String,

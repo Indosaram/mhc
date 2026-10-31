@@ -11,10 +11,29 @@ struct InputState {
     holds: IndexMap<u64, bool>,
     listeners: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
+/// senpi `onEmitted` listener: told the delivery id whose transcript entry was just written.
+pub type EmittedListener = Arc<dyn Fn(&str) + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct ExternalAdmission {
     input: Arc<Mutex<InputState>>,
     ledger: Arc<Mutex<AdmissionLedger>>,
+    emitted_listeners: Arc<Mutex<Vec<(u64, EmittedListener)>>>,
+    next_emitted_listener: Arc<std::sync::atomic::AtomicU64>,
+}
+/// Removes an `on_emitted` listener when dropped.
+pub struct EmittedSubscription {
+    listeners: std::sync::Weak<Mutex<Vec<(u64, EmittedListener)>>>,
+    id: u64,
+}
+impl Drop for EmittedSubscription {
+    fn drop(&mut self) {
+        if let Some(listeners) = self.listeners.upgrade() {
+            listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(id, _)| *id != self.id);
+        }
+    }
 }
 /// A durable-custody reservation (senpi `PendingLane` function): held while the restored delivery is still owned.
 pub type RestoredOwnership = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -262,16 +281,49 @@ impl ExternalAdmission {
         }
         r
     }
-    pub fn observe_persisted(&self, message: &Value) {
-        let mut l = self
-            .ledger
+    /// senpi `onEmitted`: an admitted delivery's own transcript entry was written (once per delivery).
+    pub fn on_emitted(&self, listener: EmittedListener) -> EmittedSubscription {
+        let id = self
+            .next_emitted_listener
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.emitted_listeners
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        l.file_takes_writes = Some(true);
-        if let Some(id) = delivery_id_of(message) {
-            l.pending.shift_remove(id);
-            l.restored.shift_remove(id);
-            l.emitted.insert(id.into());
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((id, listener));
+        EmittedSubscription {
+            listeners: Arc::downgrade(&self.emitted_listeners),
+            id,
+        }
+    }
+    pub fn observe_persisted(&self, message: &Value) {
+        let emitted = {
+            let mut l = self
+                .ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            l.file_takes_writes = Some(true);
+            match delivery_id_of(message) {
+                Some(id) if !l.emitted.contains(id) => {
+                    l.pending.shift_remove(id);
+                    l.restored.shift_remove(id);
+                    l.emitted.insert(id.into());
+                    Some(id.to_owned())
+                }
+                _ => None,
+            }
+        };
+        // Listeners run with no ledger lock held, so one may read the ledger (senpi emits after the add).
+        if let Some(id) = emitted {
+            let listeners: Vec<EmittedListener> = self
+                .emitted_listeners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|(_, listener)| Arc::clone(listener))
+                .collect();
+            for listener in listeners {
+                listener(&id);
+            }
         }
     }
     pub fn observe_refused(&self, message: &Value, error: String) {
@@ -381,8 +433,20 @@ mod delivery_tests {
                 .expect("dedupe")["kind"],
             "already_admitted"
         );
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = Arc::clone(&seen);
+        let subscription = admission.on_emitted(Arc::new(move |id| {
+            recorded.lock().unwrap().push(id.to_owned())
+        }));
         admission.observe_persisted(&delivery_message(&input));
         assert_eq!(admission.list()["emitted"], json!(["d"]));
+        // senpi `observePersisted`: a delivery is emitted once; its listeners hear it once.
+        admission.observe_persisted(&delivery_message(&input));
+        drop(subscription);
+        let other = json!({"delivery_id":"e","deliverAs":"steer"});
+        admission.observe_persisted(&delivery_message(&other));
+        assert_eq!(admission.list()["emitted"], json!(["d", "e"]));
+        assert_eq!(*seen.lock().unwrap(), vec!["d".to_owned()]);
     }
 }
 

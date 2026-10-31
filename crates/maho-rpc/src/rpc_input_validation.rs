@@ -108,8 +108,26 @@ pub fn rpc_command_payload_error(command: &Value) -> Option<&'static str> {
         Some("append_session_entry") if !command.get("entry").is_some_and(valid_entry) => {
             Some("append_session_entry entry is malformed.")
         }
+        Some("unload_session") => unload_session_error(command),
         _ => None,
     }
+}
+/// senpi rpc-input-validation.ts `unload_session`: `children` is `refuse`/`detach`, the flags are booleans.
+fn unload_session_error(command: &Value) -> Option<&'static str> {
+    if command
+        .get("children")
+        .is_some_and(|children| children != "refuse" && children != "detach")
+    {
+        return Some("children must be \"refuse\" or \"detach\".");
+    }
+    [
+        ("interrupt", "interrupt must be a boolean."),
+        ("clearQueue", "clearQueue must be a boolean."),
+        ("force", "force must be a boolean."),
+    ]
+    .into_iter()
+    .find(|(flag, _)| command.get(*flag).is_some_and(|value| !value.is_boolean()))
+    .map(|(_, error)| error)
 }
 pub fn rpc_message_length_error(command: &Value) -> Option<String> {
     let kind = command.get("type")?.as_str()?;
@@ -250,6 +268,23 @@ mod tests {
             }
         );
         assert_eq!(SESSION_CONTEXT_LIMITS.keys, SESSION_CONTEXT_KEYS);
+    }
+    // senpi rpc-input-validation.ts `unload_session`.
+    #[test]
+    fn unload_session_flags_are_validated() {
+        let check = |command: Value| rpc_command_payload_error(&command);
+        assert_eq!(
+            check(json!({"type":"unload_session","children":"detach","force":true})),
+            None
+        );
+        assert_eq!(
+            check(json!({"type":"unload_session","children":"later"})),
+            Some("children must be \"refuse\" or \"detach\".")
+        );
+        assert_eq!(
+            check(json!({"type":"unload_session","clearQueue":"yes"})),
+            Some("clearQueue must be a boolean.")
+        );
     }
     #[test]
     fn rejects_nonobject_input() {

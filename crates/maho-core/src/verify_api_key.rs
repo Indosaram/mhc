@@ -155,6 +155,25 @@ pub fn stored_key_hint(auth_type: &str, stored: Option<&Value>) -> Option<String
     Some(key.chars().skip(key.chars().count() - 4).collect())
 }
 
+/// senpi `verifyApiKey`'s default `fetch`: one GET that never follows a redirect and gives up after 15 s; `None`
+/// when no answer came.
+pub async fn fetch_probe_status(probe: Probe) -> Option<u16> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let mut request = client.get(&probe.url);
+    for (name, value) in &probe.headers {
+        request = request.header(name, value);
+    }
+    request
+        .send()
+        .await
+        .ok()
+        .map(|response| response.status().as_u16())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

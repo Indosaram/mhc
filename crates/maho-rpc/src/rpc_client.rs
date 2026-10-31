@@ -36,7 +36,7 @@ impl RpcSocketClient {
     pub fn from_stream(stream: tokio::net::UnixStream) -> Self {
         Self {
             stream,
-            frames: RpcClientFrames::default(),
+            frames: RpcClientFrames::for_socket(),
             reader: crate::jsonl::JsonlLineReader::default(),
             lines: VecDeque::new(),
         }
@@ -596,7 +596,7 @@ impl RpcMux {
             write: tokio::sync::Mutex::new(None),
             reader: std::sync::Mutex::new(None),
             pending: std::sync::Mutex::new(std::collections::HashMap::new()),
-            frames: std::sync::Mutex::new(RpcClientFrames::default()),
+            frames: std::sync::Mutex::new(RpcClientFrames::for_socket()),
             listeners: std::sync::Arc::default(),
             next_listener: std::sync::Mutex::new(0),
             dispatch_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -1241,6 +1241,100 @@ impl RpcClient {
     ) -> RpcClientResult<()> {
         self.fire_and_forget(
             serde_json::json!({"type": "account_pin", "provider": provider, "name": name}),
+            true,
+        )
+        .await
+    }
+    /// senpi `orderProviderAccounts`: sets the provider's account order; `None` clears it.
+    pub async fn order_provider_accounts(
+        &self,
+        provider: &str,
+        names: Option<&[String]>,
+    ) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "account_order", "provider": provider, "names": names}),
+            true,
+        )
+        .await
+    }
+    /// senpi `continueFromLeaf`: answered once the turn was admitted; a refusal carries its code.
+    pub async fn continue_from_leaf(&self) -> RpcClientResult<()> {
+        self.request_value(serde_json::json!({"type": "continue_from_leaf"}), true)
+            .await
+            .map(|_| ())
+    }
+    /// senpi `getModelThinkingLevel`: `{ level, source, availableLevels }`.
+    pub async fn get_model_thinking_level(
+        &self,
+        provider: &str,
+        model_id: &str,
+    ) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "get_model_thinking_level", "provider": provider, "modelId": model_id}),
+            true,
+        )
+        .await
+    }
+    /// senpi `resolvePath`: a `ResolvedMessagePath`.
+    pub async fn resolve_path(&self, path: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "resolve_path", "path": path}),
+            true,
+        )
+        .await
+    }
+    /// senpi `getEffectStatus`: one effect's status, read from `session_path`'s transcript when it names another file.
+    pub async fn get_effect_status(
+        &self,
+        effect_id: &str,
+        session_path: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type": "get_effect_status", "effectId": effect_id});
+        if let Some(session_path) = session_path {
+            command["sessionPath"] = session_path.into();
+        }
+        self.request_value(command, true).await
+    }
+    /// senpi `getPendingInputs`: every input still awaiting an outcome, plus an answer for each known id.
+    pub async fn get_pending_inputs(
+        &self,
+        known_client_message_ids: Option<&[String]>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type": "get_pending_inputs"});
+        if let Some(ids) = known_client_message_ids {
+            command["knownClientMessageIds"] = ids.into();
+        }
+        self.request_value(command, true).await
+    }
+    /// senpi `setRetryFallback`: replaces a single-session rpc process's retry fallback profile.
+    pub async fn set_retry_fallback(&self, retry_fallback: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_retry_fallback", "retryFallback": retry_fallback}),
+            true,
+        )
+        .await
+    }
+    /// senpi `listEvalCells`: the session's eval cells.
+    pub async fn list_eval_cells(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "eval_cells.list"}), true)
+            .await
+    }
+    /// senpi `peekEvalCell`: a bounded UTF-8 output tail; the host caps `tail_bytes` at 64 KiB.
+    pub async fn peek_eval_cell(
+        &self,
+        cell_id: &str,
+        tail_bytes: Option<u64>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type": "eval_cells.peek", "cellId": cell_id});
+        if let Some(tail_bytes) = tail_bytes {
+            command["tailBytes"] = tail_bytes.into();
+        }
+        self.request_value(command, true).await
+    }
+    /// senpi `stopEvalCell`: stops a session-owned cell and answers its confirmed terminal snapshot.
+    pub async fn stop_eval_cell(&self, cell_id: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "eval_cells.stop", "cellId": cell_id}),
             true,
         )
         .await
@@ -1924,8 +2018,17 @@ pub struct RpcClientFrames {
     pub pending_open_session: bool,
     events: VecDeque<(String, Value, usize)>,
     event_bytes: usize,
+    /// senpi rpc-client.ts `originHost`: the host generation this client runs in, stamped on every socket request.
+    pub origin_host: Option<String>,
 }
 impl RpcClientFrames {
+    /// Frames for a socket client of this process: requests carry its origin host generation.
+    pub fn for_socket() -> Self {
+        Self {
+            origin_host: crate::host_observe_request::process_origin_host_instance(),
+            ..Self::default()
+        }
+    }
     pub fn command(&mut self, mut command: Value, route: bool, expect_response: bool) -> Value {
         let own_id = matches!(
             command["type"].as_str(),
@@ -1945,6 +2048,10 @@ impl RpcClientFrames {
         }
         if own_id.is_none() {
             command["id"] = id.clone().into();
+        }
+        if let Some(origin) = &self.origin_host {
+            command[crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD] =
+                origin.clone().into();
         }
         if expect_response {
             self.pending.insert(id);
@@ -2012,10 +2119,28 @@ mod tests {
         let command = client.command(json!({"type":"abort","sessionId":"other"}), true, true);
         assert_eq!(command["id"], "req_1");
         assert_eq!(command["sessionId"], "other");
+        assert!(
+            command
+                .get(crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD)
+                .is_none()
+        );
         assert!(matches!(
             client.handle_line(r#"{"type":"response","id":"req_1","success":true}"#),
             ClientFrame::Response(_)
         ));
+    }
+    // senpi rpc-client.ts: a socket client stamps its origin host generation on every request it frames.
+    #[test]
+    fn a_socket_request_carries_the_origin_host_generation() {
+        let mut client = RpcClientFrames {
+            origin_host: Some("g1".into()),
+            ..Default::default()
+        };
+        let command = client.command(json!({"type":"get_state"}), false, true);
+        assert_eq!(
+            command[crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD],
+            "g1"
+        );
     }
     #[test]
     fn startup_events_replay_only_for_selected_lease() {
@@ -2164,6 +2289,59 @@ mod tests {
             classify_rpc_client_event(&seen.lock().unwrap()[0]),
             Some(RpcClientEventKind::AgentStart)
         );
+    }
+    /// senpi `getModelThinkingLevel`/`resolvePath`/`continueFromLeaf`: each sends its command and answers its data.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_session_reads_send_their_commands_and_answer_their_data() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let serve = async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let mut seen = Vec::new();
+            for _ in 0..7 {
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                let data = match request["type"].as_str() {
+                    Some("get_model_thinking_level") => serde_json::json!({"level":"low"}),
+                    Some("resolve_path") => serde_json::json!({"status":"not_found","tried":[]}),
+                    _ => Value::Null,
+                };
+                let response = serde_json::json!({"type":"response","id":request["id"],"success":true,"data":data});
+                write
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+                seen.push(request);
+            }
+            seen
+        };
+        let requests = async {
+            let level = client.get_model_thinking_level("p", "m").await.unwrap();
+            let path = client.resolve_path("/x").await.unwrap();
+            client.continue_from_leaf().await.unwrap();
+            client.peek_eval_cell("cell", Some(10)).await.unwrap();
+            client.peek_eval_cell("cell", None).await.unwrap();
+            client
+                .get_effect_status("e", Some("/s.jsonl"))
+                .await
+                .unwrap();
+            client.get_pending_inputs(None).await.unwrap();
+            (level, path)
+        };
+        let ((level, path), seen) = tokio::join!(requests, serve);
+        assert_eq!(level["level"], "low");
+        assert_eq!(path["status"], "not_found");
+        assert_eq!(seen[0]["modelId"], "m");
+        assert_eq!(seen[1]["path"], "/x");
+        assert_eq!(seen[2]["type"], "continue_from_leaf");
+        assert_eq!(seen[3]["type"], "eval_cells.peek");
+        assert_eq!(seen[3]["tailBytes"], 10);
+        assert!(seen[4].get("tailBytes").is_none());
+        assert_eq!(seen[5]["sessionPath"], "/s.jsonl");
+        assert!(seen[6].get("knownClientMessageIds").is_none());
     }
     #[cfg(unix)]
     #[tokio::test]

@@ -16,7 +16,9 @@
 //!   sessions here name it as their parent or root. `children: "detach"` leaves them running.
 //! - `attached`: other clients hold the session. `force` unloads anyway; they receive the park.
 //!
-//! The last check and the close claim run in one synchronous step, as in `release_session`.
+//! The last check runs right before the close claim; the host's teardown re-checks the entry is still open under the
+//! registry lock, so a close that won in between answers `session_closing`. ADAPTATION: the router's registry sits
+//! behind an async lock, so the lookup awaits.
 use crate::client_admissions::ClientAdmissions;
 use crate::effect_commands::{EffectCommandContext, begin_effect, effect_answer};
 use crate::effect_ledger::{EffectBegin, EffectLedger, EffectPatch};
@@ -57,13 +59,13 @@ pub trait SessionUnloadPort: ReleaseSettlePort {
     fn draining(&self) -> bool;
     fn by(&self) -> EffectActor;
     /// The live entry, or the wire code of the lookup failure.
-    fn lookup(&self, session_id: &str) -> Result<UnloadEntry, String>;
+    async fn lookup(&self, session_id: &str) -> Result<UnloadEntry, String>;
     /// Requests for the session in flight on any connection, the unload itself not counted.
     fn other_requests(&self, session_id: &str) -> usize;
     /// Attachments held by connections other than the caller's.
     fn other_attachments(&self, session_id: &str) -> u64;
     /// Open worker sessions on this host whose context names `durable_session_id` as parent or root.
-    fn open_child_sessions(&self, durable_session_id: &str) -> usize;
+    async fn open_child_sessions(&self, durable_session_id: &str) -> usize;
     /// The park teardown, sealed `session_parked { reason: "unloaded" }`. `false` when another close owns it.
     async fn tear_down(&self, session_id: &str, session_path: &str) -> bool;
 }
@@ -110,7 +112,7 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
             }),
         );
     }
-    let first = match loaded(port, session_id) {
+    let first = match loaded(port, session_id).await {
         Ok(first) => first,
         Err(refusal) => return answer(command, refused(&refusal)),
     };
@@ -159,7 +161,7 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
             Ok(Ok(EffectBegin::Record(_))) => {}
         }
     }
-    let blocked = blockers(port, command, &first);
+    let blocked = blockers(port, command, &first).await;
     // Never stop work for an unload that would still be refused: only interruptible blockers are interrupted.
     if let Some(standing) = blocked
         .iter()
@@ -177,11 +179,11 @@ pub async fn unload_session(port: &dyn SessionUnloadPort, command: &Value) -> Va
 /// The final check and the unload, without an await between them and the close claim.
 async fn claim_and_unload(port: &dyn SessionUnloadPort, command: &Value) -> Value {
     let session_id = command["sessionId"].as_str().unwrap_or_default();
-    let ready = match loaded(port, session_id) {
+    let ready = match loaded(port, session_id).await {
         Ok(ready) => ready,
         Err(refusal) => return answer(command, refused(&refusal)),
     };
-    let still_blocked = blockers(port, command, &ready);
+    let still_blocked = blockers(port, command, &ready).await;
     if let Some(first) = still_blocked.first() {
         return fail(command, &ready, first).await;
     }
@@ -228,7 +230,7 @@ fn interruptible(refusal: &Refusal) -> bool {
     matches!(refusal.reason, "turn_active" | "work_pending")
 }
 
-fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded) -> Vec<Refusal> {
+async fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded) -> Vec<Refusal> {
     let session_id = command["sessionId"].as_str().unwrap_or_default();
     let session = &loaded.session;
     let mut found = Vec::new();
@@ -285,7 +287,7 @@ fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded) -> V
             action: Some(ACTION_EXTENSION_WORK),
         });
     }
-    let child_sessions = port.open_child_sessions(&loaded.durable_session_id);
+    let child_sessions = port.open_child_sessions(&loaded.durable_session_id).await;
     if command["children"] != "detach" && (!child_sources.is_empty() || child_sessions > 0) {
         let what = if child_sessions > 0 {
             format!("{child_sessions} child session(s) open on this host")
@@ -309,8 +311,8 @@ fn blockers(port: &dyn SessionUnloadPort, command: &Value, loaded: &Loaded) -> V
     found
 }
 
-fn loaded(port: &dyn SessionUnloadPort, session_id: &str) -> Result<Loaded, Refusal> {
-    let entry = port.lookup(session_id).map_err(|code| Refusal {
+async fn loaded(port: &dyn SessionUnloadPort, session_id: &str) -> Result<Loaded, Refusal> {
+    let entry = port.lookup(session_id).await.map_err(|code| Refusal {
         reason: "unsupported",
         detail: code,
         action: None,
@@ -544,7 +546,7 @@ mod tests {
                 connection_id: "c1".into(),
             }
         }
-        fn lookup(&self, session_id: &str) -> Result<UnloadEntry, String> {
+        async fn lookup(&self, session_id: &str) -> Result<UnloadEntry, String> {
             if session_id != "rpc-1" {
                 return Err("unknown_session".into());
             }
@@ -562,7 +564,7 @@ mod tests {
         fn other_attachments(&self, _: &str) -> u64 {
             self.other_attachments
         }
-        fn open_child_sessions(&self, durable: &str) -> usize {
+        async fn open_child_sessions(&self, durable: &str) -> usize {
             assert_eq!(durable, "durable");
             self.children
         }
