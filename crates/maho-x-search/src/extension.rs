@@ -63,9 +63,10 @@ impl XSearchExtension {
     fn resolve_skill(&self) -> Option<PathBuf> {
         let path = match &self.skill_file {
             Some(path) => path.clone(),
-            None => match skill::embedded_skill_path() {
+            None => match skill::embedded_skill_path(&self.agent_dir) {
                 Some(path) => path,
-                None => std::env::temp_dir().join("maho-x-search").join("SKILL.md"),
+                // Not materialized: the warning names where it was expected.
+                None => skill::embedded_skill_dir(&self.agent_dir).join("SKILL.md"),
             },
         };
         skill::resolve_skill_file(&path, &self.warned_missing_skill, &self.warn)
