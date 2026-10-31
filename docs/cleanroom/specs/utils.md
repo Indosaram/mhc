@@ -230,19 +230,23 @@ opening that same string would behave. The verdict is therefore about the file t
 really reaches. Previously `..` was removed textually first, so `link/../x` was judged as `x`
 next to `link`, even when opening it reaches `x` next to the link's target.
 
+A path that does not exist yet keeps the §2.5 fallback, applied to the same un-normalised
+absolute path: walk up to the deepest prefix that canonicalises (so a symlink followed by `..`
+inside that prefix is resolved by the operating system as above), then append the remaining,
+non-existent components to that canonical prefix with `.` dropped and each `..` removing the last
+component built so far. A `..` in the remainder can therefore never leave the result pointing
+below the root while the string itself escapes.
+
 Unchanged:
 
-- A path that does not exist yet still uses the fallback of §2.5: canonicalise the deepest
-  existing ancestor and re-append the remainder. The ancestor walk itself is as before.
-- The comparison is still component-wise (`/a/bc` is not inside `/a/b`) and a path equals-root
-  is inside.
-- Windows compares the canonical long names case-insensitively, as before. POSIX compares the
-  canonical spelling exactly; on a case-insensitive volume the canonical spelling of a case alias
-  is the same, so the alias counts as inside.
+- The comparison is still component-wise (`/a/bc` is not inside `/a/b`) and a path equal to the
+  root is inside.
+- Both sides are compared in the canonical spelling the operating system returns; this delta
+  adds no case folding of its own.
 
-Consequence for callers (contract): a caller that checks a path and then opens it must check the
-same string it opens. A caller that opens a lexically normalised path must normalise first and
-pass the normalised path; a caller that opens the raw string must pass the raw string.
+Caller contract: the verdict holds for the exact string passed in. Code that validates a path and
+later opens it must hand `contains_path` the very string it will open (raw or already
+normalised, whichever it uses for the open), not a variant of it.
 
 Errors: none new. Canonicalisation errors on an existing path fall back as in §2.5.
 
@@ -256,6 +260,10 @@ Tests (POSIX; use a temporary directory `T`):
 4. `contains_path(T/root, T/root/new/file)` where `T/root/new` does not exist returns `true`
    (fallback unchanged).
 5. `contains_path(T/root, T/root/../root2/f)` with `T/root2/f` existing returns `false`.
+6. With the tree of test 1 and `T/other/new` absent, `contains_path(T/root, T/root/link/../new)`
+   returns `false` (the existing prefix `T/root/link/..` resolves to `T/other`).
+7. `contains_path(T/root, T/root/new/../../x)` with `T/root/new` and `T/x` absent returns `false`
+   (the remainder's `..` steps are applied, they are not kept as literal components).
 
 ### D2. Mapping
 

@@ -580,11 +580,11 @@ Where it may appear: at top level, inside the typed harness blocks (`[native]`, 
 merge and view rules of config.md §5-§6 (a later layer's value for a label wins; the harness
 block and profile overlay it like any other key of those blocks).
 
-Meaning: presentation only. A client that shows the four built-in model profiles as a two-by-two
-grid (columns `daily`/`geeky`, rows `normal`/`heavy`, the `family`/`tier` values of
-`model_profiles`) may use these strings as the axis captions. A label that is not set keeps the
-client's own caption. mhc's model selection never reads the key: it changes no profile, no model
-and no default. The name and models of each square stay in `model_profiles.<id>`.
+Meaning: display text only. Each label key is one of the `family` values (`daily`, `geeky`) or
+`tier` values (`normal`, `heavy`) of `model_profiles`, and its string is the caption a client may
+show for that value wherever it groups the built-in profiles by family and tier. When a label is
+absent the client chooses its own caption. Nothing in mhc's model selection or profile resolution
+depends on these strings: setting them changes no profile's name, chain, default or result.
 
 Validation: both objects are strict. An unknown key under `model_pad` or `model_pad.labels` is
 removed with the unknown-keys diagnostic (config.md §4.4). A label that is not a string is an

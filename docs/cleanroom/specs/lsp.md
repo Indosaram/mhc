@@ -24,9 +24,10 @@ object. In this release exactly one does: the `typescript` server (command
 - `tsserver.useSyntaxServer` = `"never"`, and
 - `disableAutomaticTypingAcquisition` = `true`.
 
-Purpose (user-visible): every TypeScript session starts one tsserver process instead of a
-semantic plus a syntax-only tsserver, and no typings installer process is started. The LSP tools
-only use semantic requests, so no answer changes.
+Effect (user-visible): per the public server's documented options, the server then runs a single
+tsserver and does not fetch type packages in the background, so a TypeScript session costs fewer
+processes. The requests mhc's LSP tools send (diagnostics, definition, references, symbols,
+rename) are answered by that single tsserver, so their results do not change.
 
 When the built-in entry is used as is (no config entry for its id), the merged server carries
 these options and the client sends them as `initializationOptions` in `initialize`. Every other
@@ -92,7 +93,7 @@ it replaces them as a whole, because there are no keys to merge.
 Leak self-check:
 
 - [x] no fenced code block; the JSON in the tests is user config and LSP wire content;
-- [x] no sentence translates or paraphrases a SUL comment, doc comment or prompt; the purpose
+- [x] no sentence translates or paraphrases a SUL comment, doc comment or prompt; the effect
       line is written from the public options' documented effect;
 - [x] the only constants are the two public `typescript-language-server` option names and
       values (interface facts of that server) and existing `lsp-client.json` keys;

@@ -684,24 +684,28 @@ Tests:
 
 ### D7. Launch-gated ids in the delegated-task choice (§5.3)
 
-Behaviour: the launch gate of D1 also applies to §5.3, on the one path where the choice is made
-without availability proof: a cold cache (`available` empty) with a known list of connected
-providers. While the release flag of D1 is off, a model reference whose id normalises to the
-gated id (D1's comparison) is treated as not usable on that path:
+Behaviour: the launch gate of D1 also applies to §5.3 on the one path where a model would be
+chosen from built-in data without any availability evidence: a cold cache (`available` empty)
+together with a known list of connected providers. While the release flag of D1 is off, a model
+reference whose id normalises to the gated id (D1's comparison) is treated as not usable there:
 
-- step 3b: a non-user-configured category default that names the gated id is skipped, even when
-  its provider is connected; the choice continues with step 4 (user fallbacks) and step 5;
+- step 3b: a non-user-configured category default that names the gated id is skipped (logged
+  like the existing step 3b skip), even when its provider is connected; the choice continues with
+  step 4 (user fallbacks) and step 5;
 - step 5, cold cache with connected providers: a chain rung whose model is the gated id is
   skipped; the first later rung with a connected provider is chosen.
 
 Unchanged: a user-configured category default (step 3a) and the user's own model or fallbacks
 (steps 1 and 4) are never filtered, the same as D1 test 4. A warm cache (`available` non-empty) is
-unchanged: there the id must match an available entry, which is proof enough. The first-run
-case (cold cache and no connected-provider list, step 2 / step 3b first branch) is unchanged.
-With the flag on, nothing in §5.3 changes.
+unchanged: there the id must match an entry of `available`. The first-run case (cold cache and no
+connected-provider list: step 2, the first branch of step 3b, and the first bullet of step 5) is
+unchanged. With the flag on, nothing in §5.3 changes.
 
-Inputs: the §5.1 inputs and the D1 flag. Output: as §5.2. Errors: none; a skip is logged like
-the existing step 3b skip.
+Reachability: mhc ships no built-in category defaults or chains (task.md §5, Q4), so with
+today's data these paths only see gated ids if a caller passes them in. The rule still holds for
+any built-in data added later, and the tests drive the §5.1 inputs directly.
+
+Inputs: the §5.1 inputs and the D1 flag. Output: as §5.2. Errors: none.
 
 Tests (flag off; providers invented except the gated id):
 1. Cold cache, connected `[acme]`, category default `acme/claude-fable-5-5` (not user-configured),
@@ -726,12 +730,12 @@ Tests (flag off; providers invented except the gated id):
 | omo-components-21 | D4 | APPLIES | changes which providers a session may start on |
 | omo-cores-02 | D6 | APPLIES | Kimi model id and provider set of a built-in chain are observable; data prerequisite is senpi-builtins-b-05 |
 | omo-cores-01 | D1 | APPLIES | the launch gate itself: provisional id, release flag, accepted levels, recorded and warned rejections |
-| omo-cores-06 | D7 | APPLIES | delegated choice must not pick the gated id without availability proof |
-| omo-cores-03 | - | N-A | N-A reason: capability rows (context, output, modalities) are catalog data; MIT model selection keeps no capability table, and the MIT model catalog in `maho-ai` (senpi port, MIT-direct) already lists the new Kimi ids |
+| omo-cores-06 | D7 | APPLIES | with a cold cache and known connected providers the delegated choice never picks the gated id from built-in data |
+| omo-cores-03 | - | N-A | N-A reason: capability rows (context, output, modalities) are catalog data; MIT model selection keeps no capability table. Capabilities of new ids reach mhc through the `maho-ai` model catalog, which is a MIT-direct port updated by its own lane, not by this spec |
 | omo-cores-04 | - | N-A | N-A reason: merging a placeholder capability row with a generated catalog row; MIT has no capability snapshot to merge (see omo-cores-03) |
 | omo-cores-05 | - | N-A | N-A reason: context-limit lookup for the gated id; MIT model selection resolves no context limits, the session engine takes them from the `maho-ai` catalog |
-| omo-cores-09 | - | N-A | N-A reason: built-in category chains; MIT ships no built-in category chains (§5.4, Q4), categories are user-configured |
-| omo-cores-10 | - | N-A | N-A reason: built-in category chain (same as omo-cores-09) |
+| omo-cores-09 | - | N-A | N-A reason: built-in category/agent chain data; mhc ships no built-in category or agent chains (task.md §5, Q4); categories and agents are user-configured |
+| omo-cores-10 | - | N-A | N-A reason: built-in chain data, same as omo-cores-09 |
 
 Leak self-check:
 - No fenced code from SUL: none used (no code blocks in this delta).
