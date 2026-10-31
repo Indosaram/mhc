@@ -97,6 +97,8 @@ pub struct ActivationParts {
     pub scheduler: WakeScheduler,
     pub feed: Arc<Mutex<ControlFeed>>,
     pub stop_inbox: Arc<dyn Fn() + Send + Sync>,
+    /// Stops the effect ledgers' event forwarding and forgets the ledgers of this endpoint's session.
+    pub release_effects: Arc<dyn Fn() + Send + Sync>,
     pub wake: WakeFn,
 }
 
@@ -130,6 +132,7 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
         scheduler,
         feed,
         stop_inbox,
+        release_effects,
         wake,
     } = parts;
     let session = context.session.clone();
@@ -214,6 +217,7 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
         inputs_live.store(false, std::sync::atomic::Ordering::SeqCst);
         stop_continue();
         stop_inbox();
+        release_effects();
         scheduler.dispose();
         lock(&teardown_feed).clear();
         server.close().await;

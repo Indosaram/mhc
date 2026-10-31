@@ -223,6 +223,32 @@ async fn open_endpoint(
     cleanups.push(Box::pin(async move { disposed_attachments.dispose() }));
     let command_scheduler = scheduler.clone();
     let hold_context = context.clone();
+    // The effect ledger's view of this session, and the session events its ledgers react to; both go
+    // with the endpoint (senpi keys the ledgers by the session object).
+    let effect_route = format!("tui:{instance_id}");
+    let effect_session: Arc<dyn maho_rpc::effect_session::EffectSession> =
+        Arc::new(maho_rpc::agent_effect_session::AgentEffectSession::new(
+            (**session).clone(),
+            effect_route.clone(),
+        ));
+    let effect_events = Arc::new(Mutex::new(Some(
+        maho_rpc::agent_effect_session::AgentEffectSession::observe(
+            session,
+            effect_session.clone(),
+        ),
+    )));
+    let release_effects: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        drop(
+            effect_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+        maho_rpc::client_admissions::ClientAdmissions::forget(&effect_route);
+        maho_rpc::effect_ledger::EffectLedger::forget(&effect_route);
+    });
+    let released_effects = release_effects.clone();
+    cleanups.push(Box::pin(async move { released_effects() }));
     let commands = Arc::new(ControlCommandContext {
         instance_id: instance_id.clone(),
         session: session.clone(),
@@ -235,7 +261,7 @@ async fn open_endpoint(
             session: session.clone(),
             attachments: attachments.clone(),
             editor_hold: Arc::new(move || editor_hold(&hold_context)),
-            effect_session: None,
+            effect_session: Some(effect_session),
         },
     });
     let server: Arc<ControlServer> = Arc::new(
@@ -281,6 +307,7 @@ async fn open_endpoint(
         scheduler,
         feed,
         stop_inbox,
+        release_effects,
         wake,
     });
     // Anything that reached the inbox before this point is picked up by this first pass, and

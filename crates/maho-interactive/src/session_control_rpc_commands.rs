@@ -52,9 +52,9 @@ pub struct RpcCommandContext {
     /// The composer's admission hold (senpi `externalAdmission.setEditorSource`): mhc's admission
     /// takes it per call instead of reading an installed source.
     pub editor_hold: Arc<dyn Fn() -> Value + Send + Sync>,
-    /// The effect ledger's view of this session (`maho_rpc::effect_session::EffectSession`). OPEN: no
-    /// branch has an adapter over `AgentSession` yet (L-rpc-server report, rpc-54/58/60), so the
-    /// endpoint passes `None` and the effect-bearing fields are refused by name.
+    /// The effect ledger's view of this session (`maho_rpc::agent_effect_session::AgentEffectSession`
+    /// on a live endpoint). `None` serves only the plain abort and refuses the effect-bearing fields
+    /// by name.
     pub effect_session: Option<Arc<dyn maho_rpc::effect_session::EffectSession>>,
 }
 
