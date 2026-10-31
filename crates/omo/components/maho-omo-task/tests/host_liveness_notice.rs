@@ -1,8 +1,11 @@
+use crate::support;
 use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use maho_ext_api::*;
 use maho_omo_task::host_liveness_notice::{
-    HostLivenessStatus, host_liveness_text, notify_host_liveness,
+    HostLivenessStatus, child_liveness_notice, host_liveness_text, notify_host_liveness,
 };
+use maho_omo_task::runtime_context::TaskRuntimeContext;
+use senpi_task::state::{TaskRecordInput, create_task_record};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -128,4 +131,52 @@ fn a_coordinator_queues_under_the_task_status_source_and_flush_follows_the_turn_
         );
         assert_eq!(*queue.calls.lock().expect("calls"), vec![expected]);
     }
+}
+
+#[test]
+fn the_manager_hook_notifies_only_this_sessions_children_and_follows_the_turn_state() {
+    let actions = Arc::new(Actions::default());
+    let queue = Arc::new(Queue::default());
+    let coordinator: Arc<dyn IdleInjectionCoordinator> = queue.clone();
+    let mut context = support::context();
+    context.is_idle_fn = Arc::new(|| false);
+    let mut runtime = TaskRuntimeContext::new("/tmp".into());
+    runtime.capture_from(&context);
+    let hook = child_liveness_notice(
+        actions.clone(),
+        Some(coordinator),
+        Arc::new(Mutex::new(runtime)),
+    );
+    let foreign = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "another-session".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("foreign record");
+    hook(&foreign, HostLivenessStatus::Unresponsive { since: SINCE });
+    assert!(queue.queued.lock().expect("queued").is_empty());
+    let own = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "session".into(),
+            ..Default::default()
+        },
+        Some(2),
+    )
+    .expect("own record");
+    hook(&own, HostLivenessStatus::TerminalPending { since: SINCE });
+    let queued = queue.queued.lock().expect("queued");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].key, format!("task-status:{}", own.task_id));
+    assert_eq!(
+        queued[0].details.as_ref().expect("details")["state"],
+        "terminal-pending"
+    );
+    assert_eq!(
+        queued[0].details.as_ref().expect("details")["run_epoch"],
+        own.notification.run_epoch
+    );
+    assert_eq!(*queue.calls.lock().expect("calls"), vec!["schedule_flush"]);
+    assert!(actions.0.lock().expect("messages").is_empty());
 }

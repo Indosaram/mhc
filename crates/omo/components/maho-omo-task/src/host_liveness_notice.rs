@@ -1,64 +1,21 @@
 //! Port of `components/task/host-liveness-notice.ts` (omo v5.1.52): session availability is a status
 //! notice, not a task completion and not permission to re-dispatch.
-//!
-//! OPEN (wiring): upstream's engine registers this through `createTaskManager({ onChildLiveness })`.
-//! The native `TaskManagerOptions` (senpi-task lane) has no such hook yet, and `HostLivenessStatus` /
-//! `hostLivenessText` live in senpi-task's `state/host-liveness.ts` port. Until that lane lands them,
-//! this module owns a byte-identical copy of the two so the notice is complete and tested; swap the
-//! local items for the senpi-task ones and call [`notify_host_liveness`] from the manager hook.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use idle_injection::{IdleInjection, IdleInjectionCoordinator, IdleInjectionSource};
 use maho_ext_api::{
     CustomMessage, DeliverAs, ExtensionActions, ExtensionFailure, SendMessageOptions, ToolContent,
 };
-use serde_json::{Value, json};
+pub use senpi_task::state::host_liveness::{HostLivenessStatus, host_liveness_text};
+use senpi_task::{
+    completion::ParentState, manager::types::ChildLivenessCallback, state::TaskRecord,
+};
+use serde_json::json;
+
+use crate::runtime_context::TaskRuntimeContext;
 
 pub const TASK_STATUS_MESSAGE_TYPE: &str = "senpi-task.status";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostLivenessStatus {
-    Running,
-    Unresponsive { since: i64 },
-    TerminalPending { since: i64 },
-}
-
-fn iso(millis: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(millis).map_or_else(String::new, |time| {
-        time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
-    })
-}
-
-pub fn host_liveness_text(status: HostLivenessStatus) -> String {
-    match status {
-        HostLivenessStatus::Running => {
-            "running: the original session is responding again".to_owned()
-        }
-        HostLivenessStatus::Unresponsive { since } => {
-            format!(
-                "unresponsive since {}, retrying; the session may still be running",
-                iso(since)
-            )
-        }
-        HostLivenessStatus::TerminalPending { since } => format!(
-            "unresponsive since {}, close pending; retrying until the host confirms the session ended",
-            iso(since)
-        ),
-    }
-}
-
-fn status_details(status: HostLivenessStatus) -> Value {
-    match status {
-        HostLivenessStatus::Running => json!({ "state": "running" }),
-        HostLivenessStatus::Unresponsive { since } => {
-            json!({ "state": "unresponsive", "since": since })
-        }
-        HostLivenessStatus::TerminalPending { since } => {
-            json!({ "state": "terminal-pending", "since": since })
-        }
-    }
-}
 
 /// Queues (or, without a coordinator, steers) the status notice for one task.
 pub fn notify_host_liveness(
@@ -73,7 +30,7 @@ pub fn notify_host_liveness(
         "Task {task_id}: {}. Keep the original task; do not re-dispatch it.",
         host_liveness_text(status)
     );
-    let mut details = status_details(status);
+    let mut details = serde_json::to_value(status).unwrap_or_else(|_| json!({}));
     if let Some(object) = details.as_object_mut() {
         object.insert("task_id".into(), json!(task_id));
         object.insert("run_epoch".into(), json!(run_epoch));
@@ -109,4 +66,34 @@ pub fn notify_host_liveness(
         coordinator.flush_soon();
     }
     Ok(())
+}
+
+/// `engine.ts` `onChildLiveness`: only this session's own children notify it, and the flush follows
+/// the parent's turn state.
+pub fn child_liveness_notice(
+    actions: Arc<dyn ExtensionActions>,
+    coordinator: Option<Arc<dyn IdleInjectionCoordinator>>,
+    runtime: Arc<Mutex<TaskRuntimeContext>>,
+) -> ChildLivenessCallback {
+    Arc::new(move |record: &TaskRecord, status| {
+        let parent = runtime.lock().unwrap_or_else(PoisonError::into_inner);
+        if parent.session_id() != Some(record.parent_session_id.as_str()) {
+            return;
+        }
+        let streaming = parent.parent_state() == ParentState::Streaming;
+        drop(parent);
+        if let Err(error) = notify_host_liveness(
+            actions.as_ref(),
+            coordinator.as_ref(),
+            &record.task_id,
+            record.notification.run_epoch,
+            status,
+            || streaming,
+        ) {
+            maho_ext_api::diagnostic(&format!(
+                "task host liveness notice failed: taskId={} error={error}",
+                record.task_id
+            ));
+        }
+    })
 }
