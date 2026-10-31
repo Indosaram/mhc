@@ -275,3 +275,14 @@ fn given_array_document_when_appending_with_index_minus_one_then_the_item_is_app
     assert!(edited.contains("1"));
     assert!(edited.contains("2"));
 }
+
+#[test]
+fn given_array_document_when_deleting_with_index_minus_one_then_no_panic() {
+    let result = modify(
+        r#"{"items": [1]}"#,
+        &[key("items"), PathSegment::Index(-1)],
+        None,
+        &ModificationOptions::default(),
+    );
+    assert_eq!(result.expect("modify"), Vec::new());
+}
