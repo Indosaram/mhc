@@ -45,20 +45,6 @@ pub fn embedded_skill_dir(agent_dir: &Path) -> PathBuf {
         .join("skill")
 }
 
-/// Create `dir` (owner-only on unix) unless it already exists as a real directory; a symlink or any
-/// other non-directory in its place refuses materialization.
-fn create_private_dir(dir: &Path) -> Option<()> {
-    match std::fs::symlink_metadata(dir) {
-        Ok(metadata) => metadata.file_type().is_dir().then_some(()),
-        Err(_) => {
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-            builder.create(dir).ok()
-        }
-    }
-}
-
 /// The binary carries the skill text, so a run away from the build tree materializes it once in the
 /// per-user [`embedded_skill_dir`] (the shipped-asset path upstream's compiled bundle resolves to).
 pub fn embedded_skill_path(agent_dir: &Path) -> Option<PathBuf> {
@@ -67,8 +53,8 @@ pub fn embedded_skill_path(agent_dir: &Path) -> Option<PathBuf> {
     let path = skill_dir.join("SKILL.md");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(EMBEDDED_SKILL) {
         std::fs::create_dir_all(version_dir.parent()?).ok()?;
-        create_private_dir(version_dir)?;
-        create_private_dir(&skill_dir)?;
+        maho_ext_api::private_dir::create_private_dir(version_dir)?;
+        maho_ext_api::private_dir::create_private_dir(&skill_dir)?;
         std::fs::write(&path, EMBEDDED_SKILL).ok()?;
     }
     Some(path)
