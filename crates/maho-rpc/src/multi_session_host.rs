@@ -2566,13 +2566,14 @@ impl HostCore {
     /// with its capabilities and late-joiner replay, the session's visibility class, and the shared
     /// binding the first opener creates. A stdio open owns no connection and keeps no binding.
     async fn attach_connection(&self, connection: Option<&str>, session_id: &str) {
-        let (runtime, kind, lane) = {
+        let (runtime, kind, lane, scope) = {
             let registry = self.registry.lock().await;
             match registry.get(session_id) {
                 Some(entry) => (
                     entry.runtime.as_ref().map(std::sync::Arc::clone),
                     entry.identity.kind,
                     entry.acceptance.clone(),
+                    entry.scope.clone(),
                 ),
                 None => return,
             }
@@ -2647,6 +2648,8 @@ impl HostCore {
                 let owner = CURRENT_CONNECTION.try_with(Clone::clone).ok().flatten();
                 route_session_record(&fanout, &writer, &tag, owner.as_deref(), value);
             });
+        let sink =
+            crate::session_binding::closed_scope_record_sink(session_id.to_owned(), scope, sink);
         let binding = std::sync::Arc::new(
             crate::session_binding::create_rpc_session_binding(
                 session_id.to_owned(),
