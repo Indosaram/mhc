@@ -227,13 +227,29 @@ impl HostCore {
         options: HostCoreOptions,
         default_writer: std::sync::Arc<crate::session_event_writer::SessionWriterActor>,
     ) -> Self {
+        let presenters =
+            std::sync::Arc::<crate::session_event_writer::SessionMcpPresenters>::default();
+        let fanout = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::session_event_fanout::SessionEventFanout::default(),
+        ));
+        // senpi `fanout.onConnectionClosed`: a connection reaped on a failed queue loses its presenter state. The
+        // detach never re-enters the fanout: a revoked grant is no longer current, so no private frame is sent.
+        let reaped = std::sync::Arc::downgrade(&presenters);
+        fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_on_connection_closed(std::sync::Arc::new(move |id| {
+                if let Some(presenters) = reaped.upgrade() {
+                    presenters.unregister_connection(id);
+                }
+            }));
         Self {
             registry: tokio::sync::Mutex::new(
                 crate::session_registry::RpcSessionRegistry::default(),
             ),
             default_writer,
             attachments: Default::default(),
-            fanout: Default::default(),
+            fanout,
             blocked: Default::default(),
             widths: Default::default(),
             activity: Default::default(),
@@ -251,7 +267,7 @@ impl HostCore {
             handover_parked_dir: std::sync::OnceLock::new(),
             active_requests: Default::default(),
             request_settled: tokio::sync::Notify::new(),
-            presenters: Default::default(),
+            presenters,
             presenter_bootstrap: std::sync::Mutex::new(None),
             presenter_control: std::sync::Mutex::new(None),
         }
@@ -2129,6 +2145,7 @@ impl HostCore {
                     .cloned()
             })
             .unwrap_or_else(|| self.options.capabilities.clone());
+        let mut declared = false;
         {
             let mut fanout = self
                 .fanout
@@ -2136,10 +2153,11 @@ impl HostCore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fanout.set_session_kind(&handle, kind);
             if let Some(connection) = connection {
-                if fanout.targets.capabilities(connection).is_none()
-                    && let Err(error) = fanout.set_capabilities(connection, &capabilities)
-                {
-                    eprintln!("senpi rpc connection {connection} failed: {error}");
+                if fanout.targets.capabilities(connection).is_none() {
+                    if let Err(error) = fanout.set_capabilities(connection, &capabilities) {
+                        eprintln!("senpi rpc connection {connection} failed: {error}");
+                    }
+                    declared = true;
                 }
                 if let Err(error) =
                     fanout.attach(connection, &handle, crate::connection_handler::now_ms())
@@ -2149,6 +2167,11 @@ impl HostCore {
             }
         }
         if let Some(connection) = connection {
+            // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
+            if declared {
+                self.presenters
+                    .capabilities_changed(connection, &capabilities);
+            }
             self.attachments
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2280,6 +2303,7 @@ impl HostCore {
                     .cloned()
             })
             .unwrap_or_else(|| self.options.capabilities.clone());
+        let mut declared = false;
         {
             let mut fanout = self
                 .fanout
@@ -2287,10 +2311,11 @@ impl HostCore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fanout.set_session_kind(session_id, kind);
             if let Some(connection) = connection {
-                if fanout.targets.capabilities(connection).is_none()
-                    && let Err(error) = fanout.set_capabilities(connection, &capabilities)
-                {
-                    eprintln!("senpi rpc connection {connection} failed: {error}");
+                if fanout.targets.capabilities(connection).is_none() {
+                    if let Err(error) = fanout.set_capabilities(connection, &capabilities) {
+                        eprintln!("senpi rpc connection {connection} failed: {error}");
+                    }
+                    declared = true;
                 }
                 if let Err(error) =
                     fanout.attach(connection, session_id, crate::connection_handler::now_ms())
@@ -2302,6 +2327,11 @@ impl HostCore {
         let Some(connection) = connection else {
             return;
         };
+        // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
+        if declared {
+            self.presenters
+                .capabilities_changed(connection, &capabilities);
+        }
         self.attachments
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2829,6 +2859,7 @@ impl HostCore {
                 .fanout
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut declared = None;
             if fanout.targets.capabilities(owner).is_none() {
                 let capabilities = self
                     .pending_capabilities
@@ -2840,11 +2871,16 @@ impl HostCore {
                 if let Err(error) = fanout.set_capabilities(owner, &capabilities) {
                     eprintln!("senpi rpc connection {owner} failed: {error}");
                 }
+                declared = Some(capabilities);
             }
             if let Err(error) = fanout.attach(owner, session_id, now) {
                 eprintln!("senpi rpc connection {owner} failed: {error}");
             }
             drop(fanout);
+            // senpi `setConnectionCapabilities` always withdraws a non-presenting connection's grants.
+            if let Some(capabilities) = declared {
+                self.presenters.capabilities_changed(owner, &capabilities);
+            }
             self.attachments
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3726,6 +3762,107 @@ mod handoff_tests {
         );
         unbind.unbind(&core.presenters);
         core.unregister_connection("human");
+    }
+    /// A presenting connection enrolled on `session`, its grant live (`binding.capture()` is `Some`).
+    fn presenting(
+        core: &HostCore,
+        id: &str,
+        session: &str,
+    ) -> crate::session_event_writer::McpFormsUnbind {
+        let unbind = core
+            .presenters
+            .bind(
+                session,
+                &format!("durable-{id}-{session}"),
+                std::sync::Arc::new(|| {}),
+                &[id.to_owned()],
+            )
+            .unwrap();
+        let authority = core.presenters.authority().unwrap().clone();
+        let owner = authority.enroll(None);
+        let registration = owner
+            .register(
+                unbind.binding(),
+                &core.presenters.connection(id).unwrap(),
+                crate::mcp_form_types::McpPresenterKind::Desktop,
+            )
+            .unwrap();
+        owner.acquire(&registration).unwrap();
+        assert!(unbind.binding().capture().is_some());
+        unbind
+    }
+    fn enforcing_core() -> HostCore {
+        let Some(core) = std::sync::Arc::try_unwrap(idle_core()).ok() else {
+            panic!("the idle core is uniquely owned");
+        };
+        core.with_mcp_presenter_enforcement(true)
+    }
+    /// senpi `setConnectionCapabilities` withdraws on every capability write: the first attach records the
+    /// connection's capabilities, and one without `interactive_user` + `mcp_form_presenter_v1` loses its grants.
+    #[tokio::test]
+    async fn attaching_without_presenter_capabilities_withdraws_the_connections_grants() {
+        let core = enforcing_core();
+        let _client = peer(&core, "c");
+        let unbind = presenting(&core, "c", "rpc-1");
+        {
+            let mut registry = core.registry.lock().await;
+            let mut profile = crate::session_registry::RpcSessionLaunchProfile::default();
+            profile.runtime.cwd = "/tmp".to_owned();
+            assert!(matches!(
+                registry.admit_open(profile, false, 0.),
+                Ok(crate::session_registry::OpenAdmission::Create(handle)) if handle == "rpc-1"
+            ));
+        }
+        core.attach_connection(Some("c"), "rpc-1").await;
+        assert!(
+            core.fanout
+                .lock()
+                .unwrap()
+                .targets
+                .capabilities("c")
+                .is_some()
+        );
+        assert!(unbind.binding().capture().is_none());
+        unbind.unbind(&core.presenters);
+    }
+    /// senpi `onConnectionClosed`: a connection the fanout reaps after its queue failed is detached from the
+    /// presenter authority, so its grant no longer presents.
+    #[tokio::test]
+    async fn a_connection_reaped_on_a_failed_queue_loses_its_presenter() {
+        let core = enforcing_core();
+        let (write, read) = tokio::io::duplex(64);
+        drop(read);
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel();
+        let failed_tx = std::sync::Mutex::new(Some(failed_tx));
+        core.register_connection(
+            "gone",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                4096,
+                30_000,
+                std::sync::Arc::clone(&core.blocked),
+                move |_| {
+                    if let Some(failed) = failed_tx.lock().unwrap().take() {
+                        let _ = failed.send(());
+                    }
+                },
+            ),
+        );
+        let unbind = presenting(&core, "gone", "s");
+        core.fanout
+            .lock()
+            .unwrap()
+            .enqueue_control("gone", &serde_json::json!({"type":"notice"}))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), failed_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        core.broadcast_record(&serde_json::json!({"type":"host_notice"}));
+        assert!(!core.fanout.lock().unwrap().is_registered("gone"));
+        assert!(core.presenters.connection("gone").is_none());
+        assert!(unbind.binding().capture().is_none());
+        unbind.unbind(&core.presenters);
     }
     #[tokio::test]
     async fn protocol_info_names_the_hosts_tool_runtime_and_drops_a_negotiated_one() {

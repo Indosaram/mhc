@@ -23,7 +23,12 @@ pub struct SessionEventFanout {
     worker_sessions: BTreeSet<String>,
     /// What a shed `event_resync` peer's snapshot reads; shared because the actor reads it off the fanout lock.
     resync: std::sync::Arc<std::sync::Mutex<ResyncView>>,
+    /// senpi `onConnectionClosed`: told about every connection the fanout reaps after its queue failed. It runs
+    /// under the fanout lock, so it must not re-enter the fanout.
+    on_connection_closed: Option<ConnectionClosed>,
 }
+/// See [`SessionEventFanout::set_on_connection_closed`].
+pub type ConnectionClosed = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 /// Per-connection attachments and each session's latest in-flight message line, kept only while some connection
 /// negotiated `event_resync` (senpi `resyncSnapshot` reads `connectionSessions` and `sessionSnapshots`).
 #[derive(Default)]
@@ -161,6 +166,17 @@ impl SessionEventFanout {
         self.targets.register(id);
         self.actors.insert(id.into(), actor);
     }
+    /// senpi `onConnectionClosed`: the host's hook for connections this fanout reaps on a failed queue.
+    pub fn set_on_connection_closed(&mut self, hook: ConnectionClosed) {
+        self.on_connection_closed = Some(hook);
+    }
+    /// Unregisters a connection whose queue failed and tells the host (senpi `onConnectionClosed`).
+    fn reap(&mut self, id: &str) {
+        self.unregister(id);
+        if let Some(hook) = &self.on_connection_closed {
+            hook(id);
+        }
+    }
     pub fn unregister(&mut self, id: &str) {
         let sessions = self.attached_connections_for(id);
         for session in sessions {
@@ -220,7 +236,7 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         Ok(None)
     }
@@ -414,7 +430,7 @@ impl SessionEventFanout {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         if matches!(
             wire["type"].as_str(),
