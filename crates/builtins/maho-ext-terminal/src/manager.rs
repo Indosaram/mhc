@@ -76,6 +76,7 @@ pub struct TerminalManager {
     monitor_ids: BTreeMap<String, String>,
     max_sessions: usize,
     scrollback: usize,
+    redact_secrets_in_output: bool,
     id_counters: BTreeMap<String, u64>,
     id_scope: Option<String>,
     sequence: u64,
@@ -99,6 +100,7 @@ impl TerminalManager {
             monitor_ids: BTreeMap::new(),
             max_sessions,
             scrollback: crate::shared::DEFAULT_SCROLLBACK,
+            redact_secrets_in_output: false,
             id_counters: BTreeMap::new(),
             id_scope: None,
             sequence: 0,
@@ -121,6 +123,7 @@ impl TerminalManager {
     pub fn configure(&mut self, settings: &crate::settings::ResolvedTerminalSettings) {
         self.max_sessions = settings.max_sessions as usize;
         self.scrollback = settings.scrollback as usize;
+        self.redact_secrets_in_output = settings.redact_secrets_in_output;
     }
     pub fn size(&self) -> usize {
         self.entries.len()
@@ -155,6 +158,18 @@ impl TerminalManager {
         id_command: &str,
         options: PtySessionOptions,
     ) -> Result<String, ManagerError> {
+        let redact = self.redact_secrets_in_output;
+        self.create_with_runtime_options(command, id_command, options, redact)
+    }
+    /// `create(command, options: TerminalRuntimeOptions)`: `redact_secrets_in_output` is the call's
+    /// `redactSecretsInOutput` (spawn.ts passes `ctx.redactSecretsInOutput`).
+    pub fn create_with_runtime_options(
+        &mut self,
+        command: &str,
+        id_command: &str,
+        options: PtySessionOptions,
+        redact_secrets_in_output: bool,
+    ) -> Result<String, ManagerError> {
         if self.active_size()? >= self.max_sessions {
             return Err(ManagerError::Capacity(self.max_sessions));
         }
@@ -177,8 +192,12 @@ impl TerminalManager {
             self.monitor_ids.retain(|_, runtime_id| runtime_id != &id);
         }
         let prefix = session_id_prefix(id_command);
-        let runtime =
-            TerminalRuntimeSession::start_with_scrollback(command, options, self.scrollback)?;
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            command,
+            options,
+            self.scrollback,
+            redact_secrets_in_output,
+        )?;
         let id = self.allocate_id(&prefix);
         self.sequence += 1;
         self.entries.insert(

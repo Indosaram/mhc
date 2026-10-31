@@ -22,7 +22,9 @@ pub fn monitor_schema() -> Value {
     "timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS,"description":"Watcher deadline in milliseconds (default 300000; ignored when persistent)."},
     "persistent":{"type":"boolean","description":"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; no per-session cap unless the terminal.maxDurableMonitors setting sets one; stop one with kill_bash."},
     "bash_id":{"type":"string","description":"Rearm: paused monitor id (mon_ or bash_id) to resume; omit for all paused."},
-    "wakes_per_hour":{"type":"integer","minimum":1,"maximum":3600,"description":"Persistent command branch only: average wakes an hour for this watch (default: terminal.monitorWakesPerHour, 12). Lines matched between wakes are batched into the next one, never dropped; raise it for a chat bridge that needs quicker replies."}}})
+    "wakes_per_hour":{"type":"integer","minimum":1,"maximum":3600,"description":"Persistent command branch only: average wakes an hour for this watch (default: terminal.monitorWakesPerHour, 12). Lines matched between wakes are batched into the next one, never dropped; raise it for a chat bridge that needs quicker replies."},
+    "exclude":{"type":"array","items":{"type":"string","minLength":1},"description":"Rpc branch with events \"all\": record kinds to drop."},
+    "human_input":{"type":"boolean","description":"Command branch only: set true when each output line is a message a person wrote (a chat or inbox bridge). Its deliveries then count as new user input, so a running goal keeps going; leave unset for machine status."}}})
 }
 pub fn execute_monitor(
     manager: &mut TerminalManager,
@@ -180,6 +182,11 @@ pub fn execute_configured_monitor_in(
     if let (Some(description), Some(path)) = (description, path) {
         if input.get("filter").is_some() {
             return error_result("Native file monitors do not support filter.");
+        }
+        if input.get("human_input").and_then(Value::as_bool) == Some(true) {
+            return error_result(
+                "human_input applies to command monitors; a file watch carries no message text.",
+            );
         }
         let persistent = input.get("persistent").and_then(Value::as_bool) == Some(true);
         let timeout = if persistent {
@@ -968,6 +975,36 @@ pub(crate) mod tests {
         }
         registry.dispose();
         manager.teardown().unwrap();
+    }
+    /// monitor-schema.ts `monitorSchema`: the exclude and human_input fields (senpi v2026.10.27-2).
+    #[test]
+    fn schema_carries_exclude_and_human_input() {
+        let schema = monitor_schema();
+        let properties = &schema["properties"];
+        assert_eq!(properties["exclude"]["type"], "array");
+        assert_eq!(properties["exclude"]["items"]["minLength"], 1);
+        assert_eq!(properties["human_input"]["type"], "boolean");
+        assert!(schema.get("anyOf").is_none() && schema.get("oneOf").is_none());
+    }
+    #[test]
+    fn human_input_on_a_file_watch_is_refused_before_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = TerminalManager::default();
+        let mut registry = MonitorRegistry::new(|_| {});
+        let result = execute_monitor(
+            &mut manager,
+            &mut registry,
+            &json!({"description":"inbox","path":"inbox.txt","human_input":true}),
+            dir.path(),
+            None,
+        );
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].text,
+            "human_input applies to command monitors; a file watch carries no message text."
+        );
+        assert!(registry.snapshot().is_empty());
+        assert_eq!(manager.size(), 0);
     }
     #[test]
     fn schema_is_flat_and_invalid_branch_does_not_spawn() {
