@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::git::GitMemoryRepo;
+use crate::journal::store::{JournalError, sync_journal_directory};
 use crate::locks::acquire::{AcquireLockError, AcquireLockOptions, WithLockError, with_lock};
 use crate::locks::domains::notice_lock_path;
 use crate::locks::lock_record::{CreateLockRecordOptions, create_lock_record};
@@ -55,11 +56,43 @@ impl From<std::io::Error> for AgreementsNoticeError {
     }
 }
 
+/// Receives non-fatal warnings (message, detail); the default sink drops them so a host TUI is
+/// never written to.
+pub type AgreementsWarnSink<'a> = &'a dyn Fn(&str, Option<&str>);
+
 /// Returns the needs-human items at HEAD that were not announced yet, then records them as announced.
 pub fn consume_agreements_notice_delta(
     repo: &GitMemoryRepo,
     options: &ConsumeAgreementsNoticeOptions,
 ) -> Result<Vec<AgreementItem>, AgreementsNoticeError> {
+    consume_agreements_notice_delta_with_warn(repo, options, &|_, _| {})
+}
+
+/// [`consume_agreements_notice_delta`] with the upstream `onWarn` sink.
+pub fn consume_agreements_notice_delta_with_warn(
+    repo: &GitMemoryRepo,
+    options: &ConsumeAgreementsNoticeOptions,
+    on_warn: AgreementsWarnSink<'_>,
+) -> Result<Vec<AgreementItem>, AgreementsNoticeError> {
+    let head = repo
+        .head()
+        .map_err(|error| AgreementsNoticeError::Git(error.to_string()))?;
+    if let Some(head) = head {
+        let content = read_agreements_at(repo, &head)
+            .map_err(|error| AgreementsNoticeError::Git(error.to_string()))?;
+        let flagged: BTreeSet<String> = agreement_items_of(content.as_deref())
+            .into_iter()
+            .filter(|item| item.status == AgreementStatus::NeedsHuman)
+            .map(|item| item.id)
+            .collect();
+        // An anomalous optimistic read is retried under the lock, which preserves its errors.
+        // A differing set, including an acknowledgement, must be re-read under the lock first.
+        if let Ok(Some(announced)) = read_watermark(&options.notices_dir)
+            && announced == flagged
+        {
+            return Ok(Vec::new());
+        }
+    }
     let record = create_lock_record(
         "agreements notice watermark",
         CreateLockRecordOptions::default(),
@@ -73,7 +106,7 @@ pub fn consume_agreements_notice_delta(
         &notice_lock_path(&options.locks_dir),
         &record,
         &acquire,
-        || consume_under_lock(repo, &options.notices_dir),
+        || consume_under_lock(repo, &options.notices_dir, on_warn),
     );
     match result {
         Ok(items) => Ok(items),
@@ -86,6 +119,7 @@ pub fn consume_agreements_notice_delta(
 fn consume_under_lock(
     repo: &GitMemoryRepo,
     notices_dir: &Path,
+    on_warn: AgreementsWarnSink<'_>,
 ) -> Result<Vec<AgreementItem>, AgreementsNoticeError> {
     let head = repo
         .head()
@@ -102,51 +136,72 @@ fn consume_under_lock(
     let announced = read_watermark(notices_dir)?;
     let fresh: Vec<AgreementItem> = flagged
         .iter()
-        .filter(|item| !announced.contains(&item.id))
+        .filter(|item| !announced.as_ref().is_some_and(|set| set.contains(&item.id)))
         .cloned()
         .collect();
-    let mut next: Vec<String> = flagged.iter().map(|item| item.id.clone()).collect();
-    next.sort();
-    if !fresh.is_empty() || next.len() != announced.len() {
-        write_watermark(notices_dir, &next)?;
+    let next: Vec<String> = flagged
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !fresh.is_empty() || Some(next.len()) != announced.as_ref().map(BTreeSet::len) {
+        write_watermark(notices_dir, &next, on_warn)?;
     }
     Ok(fresh)
 }
 
-/// A missing or corrupt watermark reads as "nothing announced yet".
-fn read_watermark(notices_dir: &Path) -> Result<BTreeSet<String>, AgreementsNoticeError> {
+/// A missing or corrupt watermark reads as `None` (nothing announced yet).
+fn read_watermark(notices_dir: &Path) -> Result<Option<BTreeSet<String>>, AgreementsNoticeError> {
     let path = notices_dir.join(AGREEMENTS_NOTICE_WATERMARK_FILENAME);
     let raw = match crate::fs::resilient::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(AgreementsNoticeError::Io(error)),
     };
     let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(&raw) else {
-        return Ok(BTreeSet::new());
+        return Ok(None);
     };
     if parsed.get("version").and_then(Value::as_u64) != Some(1) {
-        return Ok(BTreeSet::new());
+        return Ok(None);
     }
     let Some(Value::Array(ids)) = parsed.get("announced") else {
-        return Ok(BTreeSet::new());
+        return Ok(None);
     };
     let announced: Option<BTreeSet<String>> = ids
         .iter()
         .map(|id| id.as_str().map(str::to_string))
         .collect();
-    Ok(announced.unwrap_or_default())
+    Ok(announced)
 }
 
-fn write_watermark(notices_dir: &Path, announced: &[String]) -> Result<(), AgreementsNoticeError> {
+fn write_watermark(
+    notices_dir: &Path,
+    announced: &[String],
+    on_warn: AgreementsWarnSink<'_>,
+) -> Result<(), AgreementsNoticeError> {
     create_private_dir(notices_dir)?;
     let target = notices_dir.join(AGREEMENTS_NOTICE_WATERMARK_FILENAME);
     let temporary = notices_dir.join(format!(
-        "{AGREEMENTS_NOTICE_WATERMARK_FILENAME}.tmp-{}",
+        "{AGREEMENTS_NOTICE_WATERMARK_FILENAME}.tmp-{}-{}",
+        std::process::id(),
         crate::support::random::random_id()
     ));
     let json = serde_json::json!({ "version": 1, "announced": announced });
-    write_private_file(&temporary, format!("{json}\n").as_bytes())?;
-    crate::fs::resilient::rename(&temporary, &target)?;
+    let published = write_private_file(&temporary, format!("{json}\n").as_bytes())
+        .and_then(|()| crate::fs::resilient::rename(&temporary, &target));
+    if let Err(error) = published {
+        // Cleanup is best-effort: a failing remove must not replace the original error.
+        let _ = crate::fs::resilient::remove_file(&temporary);
+        return Err(error.into());
+    }
+    if let Err(JournalError::Io(error)) = sync_journal_directory(notices_dir) {
+        // The rename already consumed this notice; a durability failure must not discard it.
+        on_warn(
+            "[memory] Published agreements watermark directory sync failed:",
+            Some(&crate::support::errno::io_error_code(&error)),
+        );
+    }
     Ok(())
 }
 
@@ -170,16 +225,22 @@ fn write_private_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)?;
-    file.write_all(data)
+    file.write_all(data)?;
+    file.sync_all()
 }
 
 #[cfg(not(unix))]
 fn write_private_file(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    crate::fs::resilient::write(path, data)
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(data)?;
+    file.sync_all()
 }
 
 #[cfg(test)]

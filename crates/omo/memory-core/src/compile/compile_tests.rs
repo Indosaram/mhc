@@ -346,8 +346,50 @@ fn failed_git_read_is_degraded_but_invalid_frontmatter_is_not() {
         agent_id: "test".into(),
         projection: None,
     };
-    let result =
-        super::compile_memory_block_with_reads(&failing, revision.as_deref(), &options).unwrap();
+    let result = super::compile_memory_block_with_reads(
+        &failing,
+        revision.as_deref(),
+        &options,
+        super::now_ms(),
+    )
+    .unwrap();
     assert_eq!(result.degraded.len(), 1);
     assert!(result.degraded[0].starts_with("system/persona.md unread:"));
+}
+
+#[test]
+fn expired_system_files_drop_out_and_every_declared_expiry_is_returned() {
+    let outage = memory("Outage", "outage body\n").replacen(
+        "description: Outage",
+        "description: Outage\nexpires: 2026-10-27T06:33Z",
+        1,
+    );
+    let (_temp, repo) = repo_with(vec![
+        ("system/persona.md", &memory("Persona", "persona body\n")),
+        ("system/outage.md", &outage),
+    ])
+    .expect("repo init");
+    let head = repo.head().unwrap();
+    let options = CompileMemoryBlockOptions {
+        agent_id: "test".into(),
+        projection: None,
+    };
+    let expires = 20_753 * 86_400_000 + (6 * 60 + 33) * 60_000;
+    let before =
+        super::compile_memory_block_with_reads(&repo, head.as_deref(), &options, expires - 1)
+            .unwrap();
+    let after =
+        super::compile_memory_block_with_reads(&repo, head.as_deref(), &options, expires).unwrap();
+    assert!(before.block.contains("outage body"));
+    assert!(!after.block.contains("outage body"));
+    assert!(after.block.contains("persona body"));
+    for compiled in [&before, &after] {
+        assert_eq!(
+            compiled.expiries,
+            vec![super::MemoryExpiry {
+                path: "system/outage.md".into(),
+                expires_at_ms: expires
+            }]
+        );
+    }
 }

@@ -4,6 +4,7 @@ use std::fmt;
 
 use crate::agreements::{AGREEMENTS_PATH, render_agreements_section};
 use crate::git::GitMemoryRepo;
+use crate::memfs::expiry::{is_memory_expired, memory_expires_at_ms};
 use crate::memfs::frontmatter::parse_memory_file;
 
 use super::render::{CompiledSystemFile, render_system_tree};
@@ -41,34 +42,62 @@ impl fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
+/// The wall clock in epoch milliseconds, the default instant `expires` is evaluated at.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
 /// Compile memory block from the HEAD revision of the repository.
 pub fn compile_memory_block(
     repo: &GitMemoryRepo,
     options: &CompileMemoryBlockOptions,
 ) -> Result<String, CompileError> {
     let head = repo.head().map_err(|e| CompileError::Git(e.to_string()))?;
-    compile_memory_block_at_revision(repo, head.as_deref(), options)
+    compile_memory_block_at_revision(repo, head.as_deref(), options, now_ms())
 }
 
-/// Compile memory block at an explicit revision or without revision.
+/// Compile memory block at an explicit revision or without revision. `as_of_ms` is the instant
+/// `expires` is evaluated at: a session pinned to a revision passes its pin instant so the bytes
+/// it injects never change when a file expires mid-session.
 pub fn compile_memory_block_at_revision(
     repo: &GitMemoryRepo,
     revision: Option<&str>,
     options: &CompileMemoryBlockOptions,
+    as_of_ms: i64,
 ) -> Result<String, CompileError> {
-    Ok(compile_memory_block_with_reads(repo, revision, options)?.block)
+    Ok(compile_memory_block_with_reads(repo, revision, options, as_of_ms)?.block)
+}
+
+/// A projected-or-skipped system file that declares an `expires` instant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryExpiry {
+    pub path: String,
+    pub expires_at_ms: i64,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompiledMemoryBlock {
     pub block: String,
     pub degraded: Vec<String>,
+    /// Every `expires` instant the revision declares, passed or not.
+    pub expiries: Vec<MemoryExpiry>,
+}
+
+/// A system file read at a revision, with the `expires` instant its frontmatter declares.
+struct SystemFileRead {
+    file: CompiledSystemFile,
+    expires_at_ms: Option<i64>,
 }
 
 pub fn compile_memory_block_with_reads(
     repo: &GitMemoryRepo,
     revision: Option<&str>,
     options: &CompileMemoryBlockOptions,
+    as_of_ms: i64,
 ) -> Result<CompiledMemoryBlock, CompileError> {
     let mut degraded = Vec::new();
     let paths = match revision {
@@ -118,6 +147,26 @@ pub fn compile_memory_block_with_reads(
         None => Vec::new(),
     };
 
+    let expiries: Vec<MemoryExpiry> = [&persona, &identity, &agreements]
+        .into_iter()
+        .flatten()
+        .chain(system_files.iter())
+        .filter_map(|read| {
+            Some(MemoryExpiry {
+                path: read.file.relative_path.clone(),
+                expires_at_ms: read.expires_at_ms?,
+            })
+        })
+        .collect();
+    let live = |read: Option<&SystemFileRead>| {
+        read.filter(|read| !is_memory_expired(read.expires_at_ms, as_of_ms))
+            .map(|read| &read.file)
+    };
+    let live_system_files: Vec<CompiledSystemFile> = system_files
+        .iter()
+        .filter_map(|read| live(Some(read)).cloned())
+        .collect();
+
     let external_paths: Vec<String> = paths.into_iter().filter(|p| is_external_path(p)).collect();
 
     let mut external = ExternalProjectionInput {
@@ -126,22 +175,22 @@ pub fn compile_memory_block_with_reads(
     };
     if let Some(revision) = revision
         && !external_paths.is_empty()
-            && (external.limits.max_entries_per_directory > 0 || external.limits.max_bytes > 0)
-        {
-            match projection_times(repo, revision) {
-                Ok(times) => external.times = times,
-                Err(error) => {
-                    external.recency_unavailable = true;
-                    external.recency_error = Some(error.clone());
-                    degraded.push(format!("commit times unavailable: {error}"));
-                }
+        && (external.limits.max_entries_per_directory > 0 || external.limits.max_bytes > 0)
+    {
+        match projection_times(repo, revision) {
+            Ok(times) => external.times = times,
+            Err(error) => {
+                external.recency_unavailable = true;
+                external.recency_error = Some(error.clone());
+                degraded.push(format!("commit times unavailable: {error}"));
             }
         }
+    }
     let projection = render_projection(
-        persona.as_ref(),
-        identity.as_ref(),
-        agreements.as_ref(),
-        &system_files,
+        live(persona.as_ref()),
+        live(identity.as_ref()),
+        live(agreements.as_ref()),
+        &live_system_files,
         &external_paths,
         &external,
     );
@@ -154,6 +203,7 @@ pub fn compile_memory_block_with_reads(
     Ok(CompiledMemoryBlock {
         block: parts.join("\n\n"),
         degraded,
+        expiries,
     })
 }
 
@@ -162,7 +212,7 @@ fn read_system_file(
     revision: &str,
     relative_path: &str,
     degraded: &mut Vec<String>,
-) -> Option<CompiledSystemFile> {
+) -> Option<SystemFileRead> {
     let content = match repo.show(revision, relative_path) {
         Ok(content) => content,
         Err(error) => {
@@ -171,12 +221,15 @@ fn read_system_file(
         }
     };
     let parsed = parse_memory_file(&content).ok()?;
-    Some(CompiledSystemFile {
-        relative_path: relative_path.to_string(),
-        body: crate::sync::redact::redact_secret_like_material(&parsed.body),
-        description: crate::sync::redact::redact_secret_like_material(
-            &parsed.frontmatter.description,
-        ),
+    Some(SystemFileRead {
+        file: CompiledSystemFile {
+            relative_path: relative_path.to_string(),
+            body: crate::sync::redact::redact_secret_like_material(&parsed.body),
+            description: crate::sync::redact::redact_secret_like_material(
+                &parsed.frontmatter.description,
+            ),
+        },
+        expires_at_ms: memory_expires_at_ms(&parsed.frontmatter),
     })
 }
 
@@ -286,9 +339,10 @@ fn projection_times(
         if let Some(time) = line.strip_prefix('\0') {
             stamp = time.trim().parse::<i64>().ok();
         } else if !line.is_empty()
-            && let Some(time) = stamp {
-                times.entry(line.to_owned()).or_insert(time);
-            }
+            && let Some(time) = stamp
+        {
+            times.entry(line.to_owned()).or_insert(time);
+        }
     }
     Ok(times)
 }
