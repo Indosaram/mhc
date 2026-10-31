@@ -2369,4 +2369,77 @@ mod tests {
         assert!(!prompt.contains("secret summary"));
         assert!(prompt.contains("NEW conversation messages"));
     }
+
+    // senpi compaction.test.ts "buildSessionContext" cases, chained the way createMessageEntry chains ids.
+    fn chained(entries: Vec<Value>) -> Vec<Value> {
+        let mut parent: Option<String> = None;
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut entry)| {
+                let id = format!("test-id-{index}");
+                entry["id"] = json!(id);
+                entry["parentId"] = json!(parent);
+                entry["timestamp"] = json!("2026-01-01T00:00:00.000Z");
+                parent = Some(id);
+                entry
+            })
+            .collect()
+    }
+
+    fn sonnet(text: &str) -> Value {
+        json!({ "type": "message", "message": { "role": "assistant", "content": [{ "type": "text", "text": text }], "usage": usage(100, 50, 150), "stopReason": "stop", "timestamp": 0, "api": "anthropic-messages", "provider": "anthropic", "model": "claude-sonnet-4-5" } })
+    }
+
+    fn said(text: &str) -> Value {
+        json!({ "type": "message", "message": user(text) })
+    }
+
+    fn compacted(summary: &str, first_kept: usize) -> Value {
+        json!({ "type": "compaction", "summary": summary, "firstKeptEntryId": format!("test-id-{first_kept}"), "tokensBefore": 1000 })
+    }
+
+    #[test]
+    fn session_context_loads_all_messages_without_compaction() {
+        let loaded = build_session_context(&chained(vec![said("1"), sonnet("a"), said("2"), sonnet("b")]), None);
+        assert_eq!(loaded.messages.len(), 4);
+        assert_eq!(loaded.thinking_level, "off");
+        assert_eq!(loaded.model, Some(("anthropic".to_owned(), "claude-sonnet-4-5".to_owned())));
+    }
+
+    #[test]
+    fn session_context_handles_a_single_compaction() {
+        let entries = chained(vec![said("1"), sonnet("a"), said("2"), sonnet("b"), compacted("Summary of 1,a,2,b", 2), said("3"), sonnet("c")]);
+        let loaded = build_session_context(&entries, None);
+        assert_eq!(loaded.messages.len(), 5);
+        assert_eq!(loaded.messages[0]["role"], "compactionSummary");
+        assert!(loaded.messages[0]["summary"].as_str().is_some_and(|summary| summary.contains("Summary of 1,a,2,b")));
+    }
+
+    #[test]
+    fn session_context_uses_only_the_latest_of_multiple_compactions() {
+        let entries = chained(vec![said("1"), sonnet("a"), compacted("First summary", 0), said("2"), sonnet("b"), said("3"), sonnet("c"), compacted("Second summary", 5), said("4"), sonnet("d")]);
+        let loaded = build_session_context(&entries, None);
+        assert_eq!(loaded.messages.len(), 5);
+        assert!(loaded.messages[0]["summary"].as_str().is_some_and(|summary| summary.contains("Second summary")));
+    }
+
+    #[test]
+    fn session_context_keeps_every_message_when_the_first_kept_entry_is_the_first() {
+        let entries = chained(vec![said("1"), sonnet("a"), compacted("First summary", 0), said("2"), sonnet("b")]);
+        assert_eq!(build_session_context(&entries, None).messages.len(), 5);
+    }
+
+    #[test]
+    fn session_context_tracks_model_and_thinking_level_changes() {
+        let entries = chained(vec![
+            said("1"),
+            json!({ "type": "model_change", "provider": "openai", "modelId": "gpt-4" }),
+            sonnet("a"),
+            json!({ "type": "thinking_level_change", "thinkingLevel": "high" }),
+        ]);
+        let loaded = build_session_context(&entries, None);
+        assert_eq!(loaded.model, Some(("anthropic".to_owned(), "claude-sonnet-4-5".to_owned())));
+        assert_eq!(loaded.thinking_level, "high");
+    }
 }
