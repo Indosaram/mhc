@@ -4911,7 +4911,6 @@ impl InteractiveMode {
         // senpi `bindCurrentSessionExtensions`: the previous binding's endpoint goes first, then this
         // session can register one through the host.
         self.session_control_host.dispose_active().await;
-        self.session_control_host.set_offered(true);
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
         loop {
@@ -5180,6 +5179,12 @@ impl InteractiveMode {
     /// `await rebindCurrentSession()`); UI requests it raises arrive through `drain_events`.
     pub fn start_extension_binding(&self) -> impl std::future::Future<Output = ()> + 'static {
         self.register_mcp_mrtr_presentation();
+        // senpi `bindCurrentSessionExtensions`: `session.setControlEndpointHost(sessionControlHost)`
+        // before the extensions bind, so this generation's `pi.session.registerControlEndpoint`
+        // serves through the terminal.
+        self.session_control_host.set_offered(true);
+        self.session
+            .set_control_endpoint_host((self.control_endpoint_host_provider())());
         let session = self.session.clone();
         let bindings = maho_core::agent_session::ExtensionBindings {
             ui_context: Some(self.extension_ui.clone()),
@@ -14929,6 +14934,7 @@ impl Component for InteractiveMode {
         // The endpoint itself is released by `dispose_session_control` (it needs an await); the
         // session no longer offers this host to a new registration.
         self.session_control_host.set_offered(false);
+        self.session.set_control_endpoint_host(None);
         self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets {
             widget.dispose();

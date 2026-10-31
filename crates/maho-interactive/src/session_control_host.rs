@@ -210,9 +210,8 @@ impl TuiSessionControlHost {
     }
 
     /// The `host` dependency of core's `create_session_control_actions`: this host while the bound
-    /// session offers it, `None` otherwise (then a registration answers `unsupported_mode`).
-    /// OPEN: no branch builds `pi.session` through `create_session_control_actions` yet
-    /// (senpi-core-session-01 / senpi-core-rest-47), so nothing reads this provider until that lands.
+    /// session offers it, `None` otherwise (then a registration answers `unsupported_mode`). The mode
+    /// installs what it yields with `AgentSession::set_control_endpoint_host` when it binds extensions.
     pub fn provider(&self) -> ControlEndpointHostProvider {
         let host = self.clone();
         Arc::new(move || {
