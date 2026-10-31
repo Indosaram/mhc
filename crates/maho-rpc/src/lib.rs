@@ -93,6 +93,7 @@ pub mod host_legacy;
 pub mod host_lifecycle;
 pub mod host_lifecycle_activity;
 pub mod host_lifecycle_internal_key;
+pub mod host_lifecycle_launch;
 pub mod host_lifecycle_proxy;
 pub mod host_lifecycle_scratch;
 pub mod host_lifecycle_shutdown;

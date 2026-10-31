@@ -6,37 +6,14 @@ pub const DEFAULT_HOST_IDLE_EXIT_MS: f64 = 900000.;
 pub const HANDOFF_GRACE_MS_ENV: &str = "SENPI_RPC_HANDOFF_GRACE_MS";
 pub const DEFAULT_HANDOFF_GRACE_MS: f64 = 600000.;
 pub use crate::host_launch_spec::HostLifecyclePolicyInput;
-pub const INTERNAL_SUPERVISOR_FLAG: &str = "--internal-rpc-host-supervisor";
-/// The stdio slot senpi gives the child's lifetime pipe (senpi `CHILD_WATCH_FD`). Rust's `Command`
-/// exposes only the three standard slots, so the pipe is inherited by descriptor instead - see
-/// `bind_child_watch_pipe`.
-pub const CHILD_WATCH_FD: u32 = 3;
-/// Gives `child_env` the child's lifetime binding and returns the pipe ends this process keeps
-/// alive for the whole supervisor run (senpi host-lifecycle.ts:513-544, stdio slot 3).
-///
-/// senpi duplicates the read end into stdio slot 3. Rust's `Command` exposes only the three
-/// standard slots and `pre_exec` is unavailable under this crate's `unsafe_code = "deny"`, so the
-/// read end's close-on-exec flag is cleared instead: the child inherits the pipe at the number this
-/// process holds it at, and `HOST_WATCH_FD_ENV` carries exactly that number. The write end stays
-/// here, close-on-exec, is never inherited and is never written - only its close matters.
+// The launch surface lives in its own module (senpi host-lifecycle-launch.ts); re-exported at its original home.
 #[cfg(unix)]
-fn bind_child_watch_pipe(
-    child_env: &mut HashMap<String, String>,
-) -> std::io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    use std::os::fd::AsRawFd;
-    let (read_end, write_end) = rustix::pipe::pipe()?;
-    rustix::io::fcntl_setfd(&write_end, rustix::io::FdFlags::CLOEXEC)
-        .map_err(std::io::Error::from)?;
-    rustix::io::fcntl_setfd(&read_end, rustix::io::FdFlags::empty())
-        .map_err(std::io::Error::from)?;
-    let descriptor = u64::try_from(read_end.as_raw_fd())
-        .map_err(|_| std::io::Error::other("child watch descriptor is not representable"))?;
-    child_env.insert(
-        crate::host_watchdog::HOST_WATCH_FD_ENV.into(),
-        descriptor.to_string(),
-    );
-    Ok((read_end, write_end))
-}
+use crate::host_lifecycle_launch::bind_child_watch_pipe;
+pub use crate::host_lifecycle_launch::{
+    CHILD_WATCH_FD, INTERNAL_SUPERVISOR_FLAG, SpawnableLaunch, SupervisorLaunch,
+    find_internal_supervisor_args, parse_supervisor_args, resolve_cli_main_path,
+    resolve_host_child_launch, spawnable_child_launch,
+};
 #[derive(Clone, Copy, Default)]
 pub struct HostActivity {
     pub connections: u64,
@@ -253,113 +230,6 @@ pub async fn run_socket_proxy(
     }
     Ok(())
 }
-#[derive(Debug, PartialEq, Eq)]
-pub struct SupervisorLaunch {
-    pub socket: String,
-    pub host_args: Vec<String>,
-    pub child_command: Option<String>,
-    pub child_args: Option<Vec<String>>,
-    pub agent_dir: Option<String>,
-    pub bind_socket: Option<String>,
-    pub replace_identity: Option<crate::socket_ownership::SocketFileIdentity>,
-    /// `--mcp-presenter-fd 4`: the launching CLI's enrollment channel, relayed once to the child (senpi
-    /// `presenterBootstrapFd`). Only fd 4 is accepted. Rust's supervisor takes no `--owner-fd`, so the upstream
-    /// owner-fd/presenter-fd collision cannot arise here.
-    pub presenter_bootstrap_fd: Option<i32>,
-}
-pub fn find_internal_supervisor_args(argv: &[String]) -> Option<&[String]> {
-    let mut index = 0;
-    while index < argv.len() {
-        if argv[index] == INTERNAL_SUPERVISOR_FLAG {
-            return Some(&argv[index + 1..]);
-        }
-        if argv[index] != "--extension" || index + 1 >= argv.len() {
-            return None;
-        }
-        index += 2;
-    }
-    None
-}
-pub fn parse_supervisor_args(argv: &[String]) -> Option<SupervisorLaunch> {
-    let mut launch = SupervisorLaunch {
-        socket: String::new(),
-        host_args: vec![],
-        child_command: None,
-        child_args: None,
-        agent_dir: None,
-        bind_socket: None,
-        replace_identity: None,
-        presenter_bootstrap_fd: None,
-    };
-    let mut socket_seen = false;
-    let mut index = 0;
-    while index < argv.len() {
-        let arg = &argv[index];
-        if arg == crate::mcp_presenter_bootstrap::MCP_PRESENTER_FD_FLAG
-            && argv.get(index + 1).map(String::as_str) == Some("4")
-        {
-            launch.presenter_bootstrap_fd =
-                Some(crate::mcp_presenter_bootstrap::MCP_PRESENTER_BOOTSTRAP_FD);
-            index += 2;
-            continue;
-        }
-        if index + 1 < argv.len()
-            && matches!(
-                arg.as_str(),
-                "--socket"
-                    | "--child-command"
-                    | "--child-args"
-                    | "--agent-dir"
-                    | "--bind"
-                    | "--replace"
-            )
-        {
-            index += 1;
-            let value = &argv[index];
-            match arg.as_str() {
-                "--socket" => {
-                    launch.socket = value.clone();
-                    socket_seen = true;
-                }
-                "--child-command" => launch.child_command = Some(value.clone()),
-                "--child-args" => {
-                    let parsed: serde_json::Value = serde_json::from_str(value).ok()?;
-                    launch.child_args = parsed.as_array().and_then(|items| {
-                        items
-                            .iter()
-                            .map(|item| item.as_str().map(str::to_owned))
-                            .collect()
-                    });
-                }
-                "--agent-dir" => launch.agent_dir = Some(value.clone()),
-                "--bind" => launch.bind_socket = Some(value.clone()),
-                "--replace" => {
-                    launch.replace_identity = value
-                        .split_once(':')
-                        .filter(|(dev, ino)| {
-                            !dev.is_empty()
-                                && !ino.is_empty()
-                                && dev
-                                    .bytes()
-                                    .chain(ino.bytes())
-                                    .all(|byte| byte.is_ascii_digit())
-                        })
-                        .and_then(|(dev, ino)| {
-                            Some(crate::socket_ownership::SocketFileIdentity {
-                                dev: dev.parse().ok()?,
-                                ino: ino.parse().ok()?,
-                            })
-                        })
-                }
-                _ => unreachable!(),
-            }
-        } else {
-            launch.host_args.push(arg.clone());
-        }
-        index += 1;
-    }
-    socket_seen.then_some(launch)
-}
 /**
  * The host supervisor: bind the public endpoint, run a private host behind it, proxy clients,
  * and leave when idle or when the endpoint is taken over (senpi `runHostSupervisor`).
@@ -431,90 +301,40 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         ))
     };
     let child_launch = resolve_host_child_launch(&launch, &internal.socket)?;
-    let mut child_env = crate::host_successor::successor_env(
-        env.clone(),
-        0,
-        &instance_id,
-        &paths.dir.to_string_lossy(),
-        Some(&agent_dir),
-        &std::collections::HashMap::new(),
-    );
-    // win32 names no public socket to the child: a named pipe has no filesystem entry to own.
-    if platform != "win32" {
-        child_env.insert(
-            crate::host_watchdog::HOST_PUBLIC_SOCKET_ENV.into(),
-            public_socket.clone(),
-        );
-    }
-    // The secret file is win32-only: the sealed hop replaces it on POSIX.
-    if platform == "win32"
-        && internal_secret.is_some()
-        && let Some(secret_path) = &internal.secret_path
-    {
-        child_env.insert(
-            crate::socket_transport::SOCKET_SECRET_FILE_ENV.into(),
-            secret_path.to_string_lossy().into_owned(),
-        );
-    }
-    if let Some(dir) = &internal.dir {
-        child_env.insert(
-            crate::host_watchdog::HOST_SCRATCH_DIR_ENV.into(),
-            dir.to_string_lossy().into_owned(),
-        );
-    }
-    // Lifetime binding: this supervisor owns the write end of a pipe the child reads, so its EOF
-    // means this process died for ANY reason, including a SIGKILL that runs no handler. The ppid
-    // fallback covers a descriptor that could not be inherited.
-    child_env.insert(
-        crate::host_watchdog::HOST_WATCH_PPID_ENV.into(),
-        std::process::id().to_string(),
-    );
-    let mut cleanup_paths: Vec<String> = Vec::new();
+    let mut cleanup_paths: Vec<std::path::PathBuf> = Vec::new();
     if launch.bind_socket.is_none() {
         let generation = crate::host_daemon_paths::generation_paths(&paths, &instance_id);
-        cleanup_paths.push(paths.pointer_file.to_string_lossy().into_owned());
-        cleanup_paths.push(generation.pid_file.to_string_lossy().into_owned());
-        cleanup_paths.push(paths.settings_file.to_string_lossy().into_owned());
+        cleanup_paths.push(paths.pointer_file.clone());
+        cleanup_paths.push(generation.pid_file.clone());
+        cleanup_paths.push(paths.settings_file.clone());
     }
     // Windows named pipes have no filesystem entry to own, so the public entry stays listed for the crash-path
     // cleanup (senpi `hostCrashCleanupPaths`).
     if platform == "win32" {
-        cleanup_paths.push(public_socket.clone());
-    }
-    child_env.insert(
-        crate::host_watchdog::HOST_CLEANUP_PATHS_ENV.into(),
-        cleanup_paths.join("\n"),
-    );
-    // The child's lifetime poll compares the supervisor's start on one clock per platform: `/proc` start ticks on
-    // Linux, the recorded start time elsewhere (senpi `prepareInternalHop` supervisorStart).
-    if let Some(start) = &hop.supervisor_start {
-        if let Some(time) = &start.time {
-            child_env.insert(
-                crate::host_watchdog::HOST_WATCH_PSTART_ENV.into(),
-                time.clone(),
-            );
-        }
-        if let Some(ticks) = &start.ticks {
-            child_env.insert(
-                crate::host_watchdog::HOST_WATCH_PSTART_TICKS_ENV.into(),
-                ticks.clone(),
-            );
-        }
+        cleanup_paths.push(public_socket.clone().into());
     }
     // Linux: supervisor death reaches the child as FIFO EOF; the held writer is never closed by this process.
     let _lifetime_binding = hop.lifetime_binding;
-    if internal_key.is_some() {
-        child_env.insert(
-            crate::internal_bootstrap::INTERNAL_KEY_STDIN_ENV.into(),
-            "1".into(),
-        );
-    }
-    if let Some(binding) = &_lifetime_binding {
-        child_env.insert(
-            crate::host_watchdog::HOST_WATCH_LIFETIME_FIFO_ENV.into(),
-            binding.lifetime_fifo.to_string_lossy().into_owned(),
-        );
-    }
+    let daemon_dir = paths.dir.to_string_lossy().into_owned();
+    // senpi `spawnHostChild`: the environment that binds the child to this supervisor and its generation.
+    let mut child_env = crate::host_lifecycle_launch::host_child_env(
+        env.clone(),
+        &crate::host_lifecycle_launch::HostChildEnv {
+            platform,
+            instance_id: &instance_id,
+            daemon_dir: &daemon_dir,
+            agent_dir: &agent_dir,
+            public_socket: &public_socket,
+            internal: &internal,
+            internal_secret: internal_secret.is_some(),
+            internal_key: internal_key.is_some(),
+            supervisor_start: hop.supervisor_start.as_ref(),
+            lifetime_fifo: _lifetime_binding
+                .as_ref()
+                .map(|binding| binding.lifetime_fifo.as_path()),
+            cleanup_paths: &cleanup_paths,
+        },
+    );
     #[cfg(unix)]
     let _watch_guard = bind_child_watch_pipe(&mut child_env)?;
     let stderr = {
@@ -1499,100 +1319,6 @@ pub async fn record_child_pid(file: &std::path::Path, pid: u32, running: impl Fn
         eprintln!("senpi rpc host supervisor: could not record the host child pid: {error}");
     }
 }
-/// The committed CLI entry this supervisor wraps; the native binary is its own entry.
-pub fn resolve_cli_main_path() -> std::io::Result<std::path::PathBuf> {
-    std::env::current_exe()
-}
-/// The host child spawn: an explicit child command is forwarded untouched, otherwise the
-/// supervisor re-enters the committed CLI entry with the RPC multi-session flags.
-pub fn resolve_host_child_launch(
-    launch: &SupervisorLaunch,
-    internal_socket: &str,
-) -> std::io::Result<crate::host_launch::HostLaunch> {
-    if let Some(command) = &launch.child_command {
-        return Ok(crate::host_launch::HostLaunch {
-            command: std::path::PathBuf::from(command),
-            args: launch
-                .child_args
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .chain(["--listen".to_owned(), format!("unix://{internal_socket}")])
-                .collect(),
-        });
-    }
-    Ok(crate::host_launch::HostLaunch {
-        command: resolve_cli_main_path()?,
-        args: ["--mode", "rpc", "--multi-session", "--listen"]
-            .into_iter()
-            .map(str::to_owned)
-            .chain([format!("unix://{internal_socket}")])
-            .chain(launch.host_args.iter().cloned())
-            .collect(),
-    })
-}
-/// A spawn shape that survives a Windows shell (senpi `spawnableChildLaunch`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpawnableLaunch {
-    pub command: String,
-    pub args: Vec<String>,
-    pub shell: bool,
-}
-fn quote_windows_shell_arg(value: &str) -> String {
-    let mut escaped = String::new();
-    let mut backslashes = 0usize;
-    for character in value.chars() {
-        match character {
-            '\\' => {
-                backslashes += 1;
-                escaped.push('\\');
-            }
-            '"' => {
-                for _ in 0..=backslashes {
-                    escaped.push('\\');
-                }
-                backslashes = 0;
-                escaped.push('"');
-            }
-            '(' | ')' | '%' | '!' | '^' | '<' | '>' | '&' | '|' | ';' | ',' => {
-                escaped.push('^');
-                escaped.push(character);
-            }
-            _ => {
-                backslashes = 0;
-                escaped.push(character);
-            }
-        }
-    }
-    format!("\"{escaped}\"")
-}
-pub fn spawnable_child_launch(
-    launch: &crate::host_launch::HostLaunch,
-    platform: &str,
-) -> SpawnableLaunch {
-    let command = launch.command.to_string_lossy().into_owned();
-    let extension = launch
-        .command
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if platform != "win32" || (extension != ".cmd" && extension != ".bat") {
-        return SpawnableLaunch {
-            command,
-            args: launch.args.clone(),
-            shell: false,
-        };
-    }
-    SpawnableLaunch {
-        command: quote_windows_shell_arg(&command),
-        args: launch
-            .args
-            .iter()
-            .map(|arg| quote_windows_shell_arg(arg))
-            .collect(),
-        shell: true,
-    }
-}
 pub fn parse_cold_start(value: Option<&str>) -> Option<&str> {
     value.filter(|value| matches!(*value, "transient" | "persistent"))
 }
@@ -2051,79 +1777,6 @@ mod tests {
         tokio::time::sleep(bound + std::time::Duration::from_millis(1)).await;
         assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
         drop(armed);
-    }
-    #[test]
-    fn supervisor_route_skips_only_complete_injected_prefix() {
-        let args = [
-            "--extension",
-            "dir",
-            INTERNAL_SUPERVISOR_FLAG,
-            "--socket",
-            "sock",
-        ]
-        .map(str::to_owned);
-        assert_eq!(find_internal_supervisor_args(&args), Some(&args[3..]));
-        assert!(
-            find_internal_supervisor_args(&["--model".into(), INTERNAL_SUPERVISOR_FLAG.into()])
-                .is_none()
-        );
-        assert!(
-            find_internal_supervisor_args(&["--extension".into(), INTERNAL_SUPERVISOR_FLAG.into()])
-                .is_none()
-        );
-    }
-    #[test]
-    fn supervisor_parser_keeps_forwarded_args_and_replacement_identity() {
-        let args = [
-            "--socket",
-            "sock",
-            "--replace",
-            "1:2",
-            "--child-args",
-            "[\"one\"]",
-            "--mode",
-            "rpc",
-        ]
-        .map(str::to_owned);
-        let launch = parse_supervisor_args(&args).unwrap();
-        assert_eq!(launch.child_args, Some(vec!["one".into()]));
-        assert_eq!(launch.host_args, vec!["--mode", "rpc"]);
-        assert_eq!(
-            launch.replace_identity,
-            Some(crate::socket_ownership::SocketFileIdentity { dev: 1, ino: 2 })
-        );
-        assert!(
-            parse_supervisor_args(&[
-                "--socket".into(),
-                "sock".into(),
-                "--child-args".into(),
-                "{".into()
-            ])
-            .is_none()
-        );
-    }
-    #[test]
-    fn supervisor_parser_takes_only_the_reserved_presenter_descriptor() {
-        let launch = parse_supervisor_args(
-            &[
-                "--socket",
-                "sock",
-                "--mcp-presenter-fd",
-                "4",
-                "--mode",
-                "rpc",
-            ]
-            .map(str::to_owned),
-        )
-        .unwrap();
-        assert_eq!(launch.presenter_bootstrap_fd, Some(4));
-        assert_eq!(launch.host_args, vec!["--mode", "rpc"]);
-        let other = parse_supervisor_args(
-            &["--socket", "sock", "--mcp-presenter-fd", "5"].map(str::to_owned),
-        )
-        .unwrap();
-        assert_eq!(other.presenter_bootstrap_fd, None);
-        assert_eq!(other.host_args, vec!["--mcp-presenter-fd", "5"]);
     }
     #[test]
     fn continuous_idle_resets_on_activity() {
