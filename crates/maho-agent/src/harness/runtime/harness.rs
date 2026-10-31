@@ -260,6 +260,33 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
             .collect())
     }
 
+    /// Pinned `AgentHarness.lanes(context)`: every loaded lane's execution info, read through
+    /// each lane's serialized `inspectExecution`.
+    pub async fn lane_infos(
+        &self,
+        context: &Context,
+    ) -> Result<Vec<crate::harness::agent_harness::LaneInfo>, SessionError> {
+        self.assert_open()?;
+        let lanes: Vec<Arc<Lane>> = self
+            .lanes_by_name
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        let executions =
+            futures::future::try_join_all(lanes.iter().map(|lane| lane.inspect_execution(context)))
+                .await?;
+        Ok(executions
+            .into_iter()
+            .map(|execution| crate::harness::agent_harness::LaneInfo {
+                name: execution.lane,
+                tip_id: execution.tip_id,
+                operation: execution.current,
+            })
+            .collect())
+    }
+
     /// Every loaded lane's active operation, matching pinned `createAgentHarness`'s `open` list so a
     /// worker can re-drive recoveries after its services are reachable.
     pub fn open_operations(&self) -> Result<Vec<OpenOperation>, SessionError> {
