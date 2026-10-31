@@ -367,6 +367,41 @@ mod tests {
         assert_eq!(result.skipped, 1);
     }
     #[test]
+    fn a_contended_journal_lock_degrades_to_a_noop_and_warns_instead_of_failing() {
+        // Given: the session's journal lock is held by a live foreign owner past the wait budget.
+        let root = tempfile::tempdir().unwrap();
+        let mut wiring = MemoryJournalWiring::new(root.path().into());
+        let mut options = TranscriptJournalOptions::new(root.path().join("session-contended"));
+        options.lock = Some(std::sync::Arc::new(
+            |path: &std::path::Path,
+             _: &mut dyn FnMut() -> Result<(), JournalError>,
+             _: Option<&dyn Fn() -> bool>| {
+                Err(JournalError::LockTimeout(
+                    memory_core::journal::lock::JournalLockTimeoutError::new(path),
+                ))
+            },
+        ));
+        wiring
+            .journals
+            .insert("session-contended".into(), TranscriptJournal::new(options));
+        let mut warnings = Vec::new();
+        // When
+        let result = wiring
+            .reconcile_session(Some("session-contended"), &entries(), |id, error| {
+                warnings.push((id.to_owned(), matches!(error, JournalError::LockTimeout(_))))
+            })
+            .unwrap();
+        // Then
+        assert_eq!(
+            result,
+            AppendResult {
+                appended: 0,
+                skipped: 0
+            }
+        );
+        assert_eq!(warnings, [("session-contended".to_owned(), true)]);
+    }
+    #[test]
     fn empty_session_never_creates_journal() {
         let root = tempfile::tempdir().unwrap();
         let mut wiring = MemoryJournalWiring::new(root.path().join("absent"));
