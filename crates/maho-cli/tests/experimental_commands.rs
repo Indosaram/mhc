@@ -131,3 +131,15 @@ fn upstream_rejects_invalid_experimental_input() {
 fn upstream_rejects_unsupported_options_without_parsing_them_through_the_stable_cli() {
     assert_eq!(parse_client(&args(&["--tui-mode", "wrong", "--model", "claude-sonnet"])).err().unwrap(), vec![UNSUPPORTED_CLIENT_OPTIONS.to_owned()]);
 }
+/// senpi `cli/experimental/cli.ts`: the `experimental` group dispatches `server`/`client` to their parsers and answers
+/// anything else with the group's own error.
+#[test]
+fn experimental_group_dispatches_server_and_client_and_rejects_others() {
+    use maho_cli::cli::experimental::cli::{parse, ExperimentalInvocation};
+    assert!(matches!(parse(&args(&["client", "-e", "hi"])), Ok(ExperimentalInvocation::Client(_))));
+    assert!(matches!(parse(&args(&["server"])), Ok(ExperimentalInvocation::Server(_))));
+    for argv in [&[][..], &["bogus"][..]] {
+        assert_eq!(parse(&args(argv)).err(), Some(vec!["Expected experimental command: server or client".to_owned()]));
+    }
+    assert_eq!(parse(&args(&["client", "one", "two"])).is_err(), parse_client(&args(&["one", "two"])).is_err());
+}
