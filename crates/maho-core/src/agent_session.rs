@@ -34766,6 +34766,66 @@ mod tests {
         assert_eq!(session.lifecycle_snapshot()["state"], "done");
     }
 
+    /// senpi test/suite/regressions/4154-prompt-waits-for-branch-summary.test.ts and
+    /// 3980-lifecycle-compaction-edges.test.ts: a tree navigation holds the session-work barrier for its whole
+    /// duration, writes no lifecycle record while it runs, and reads settled once it ends.
+    #[tokio::test]
+    async fn tree_navigation_holds_the_work_barrier_and_writes_no_lifecycle_record() {
+        let session = test_session();
+        let root = session.with_session_manager_mut(|manager| {
+            manager.append_message(json!({"role":"user","content":"root","timestamp":0}))
+        });
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(json!({"role":"user","content":"branch","timestamp":1}))
+        });
+        session.rebuild_session_context().expect("context");
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let weak = Arc::downgrade(&session.inner);
+        let seen = observed.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new(
+            "<inline:tree-barrier>",
+            session.cwd().into(),
+            Default::default(),
+        );
+        extension.handlers.insert(
+            maho_ext_api::EventKind::SessionBeforeTree,
+            vec![Arc::new(move |_, _| {
+                let session = AgentSession {
+                    inner: weak.upgrade().expect("session"),
+                };
+                lock(&seen).push((
+                    session.work_barrier.has_active_work(),
+                    session.is_compacting(),
+                    lifecycle_record_count(&session),
+                ));
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })],
+        );
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+        let before = lifecycle_record_count(&session);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.navigate_tree(root["id"].as_str().expect("root"), Default::default()),
+        )
+        .await
+        .expect("bounded navigation")
+        .expect("navigation");
+        assert!(!result.cancelled);
+        assert_eq!(*lock(&observed), vec![(true, true, before)]);
+        assert!(!session.work_barrier.has_active_work());
+        assert!(!session.is_compacting());
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+    }
+
     /// senpi test/suite/regressions/2848-sdk-side-cwd.test.ts: the 1-token fallback probe-back request carries the
     /// session cwd in its stream options, like every other model request.
     #[tokio::test]
