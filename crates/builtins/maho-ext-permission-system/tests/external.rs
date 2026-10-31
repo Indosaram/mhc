@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use maho_ext_permission_system::external_dir::{is_external_path,extract_external_paths};
+use maho_ext_permission_system::external_dir::{is_external_path,extract_external_paths,resolve_without_open};
 use std::{path::Path,os::unix::fs::{symlink,PermissionsExt}};
 #[test]
 fn symlinked_cwd(){let root=tempfile::tempdir().expect("dir");let real=root.path().join("real");std::fs::create_dir(&real).expect("mkdir");let link=root.path().join("link");symlink(&real,&link).expect("link");assert!(!is_external_path("src/new.ts",&link,root.path()));}
@@ -12,3 +12,11 @@ fn escaping_link(){let root=tempfile::tempdir().expect("dir");let cwd=root.path(
 fn loop_stops(){let root=tempfile::tempdir().expect("dir");symlink("b",root.path().join("a")).expect("link");symlink("a",root.path().join("b")).expect("link");assert!(!is_external_path("a/file.txt",root.path(),root.path()));}
 #[test]
 fn shell_paths(){assert_eq!(extract_external_paths("cat '/etc/file name' ./inside ../outside --flag=/etc/no ENV=/etc/no",Path::new("/workspace/project"),Path::new("/home/user")),vec!["/etc/file name","../outside"]);}
+#[test]
+fn resolve_without_open_handles_windows_drive_symlink_target(){
+    let root=tempfile::tempdir().expect("dir");
+    let link=root.path().join("link");
+    symlink("C:/target/file.txt",&link).expect("link");
+    let resolved=resolve_without_open(&link);
+    assert_eq!(resolved.to_string_lossy().replace('\\', "/"),"C:/target/file.txt");
+}
