@@ -365,6 +365,38 @@ mod tests {
         assert!(tokio::net::UnixStream::connect(&path).await.is_ok());
     }
 
+    // `libc::listen` re-arms the bound listener with a backlog of one; nothing else in the test is unsafe.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    async fn keeps_a_live_listener_whose_backlog_is_full() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        // A live listener with a backlog of one that never accepts (re-listening lowers the backlog in place).
+        let stuck = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        // SAFETY: `stuck` owns this listening descriptor for the whole call.
+        assert_eq!(unsafe { libc::listen(stuck.as_raw_fd(), 1) }, 0);
+        // Connect until the backlog is full: Linux answers EAGAIN, macOS and the BSDs refuse.
+        let mut clients = Vec::new();
+        let full = loop {
+            assert!(clients.len() < 64, "the backlog never filled");
+            match tokio::net::UnixStream::connect(&path).await {
+                Ok(client) => clients.push(client),
+                Err(error) => break error,
+            }
+        };
+        assert_ne!(full.kind(), std::io::ErrorKind::NotFound);
+        let error = prepare(&path).await.expect_err("live");
+        assert!(
+            error
+                .to_string()
+                .contains("address already in use by a live server")
+        );
+        assert!(path.symlink_metadata().is_ok());
+        drop(clients);
+        drop(stuck);
+    }
+
     #[tokio::test]
     async fn keeps_an_entry_it_may_not_connect_to() {
         use std::os::unix::fs::PermissionsExt;
