@@ -94,7 +94,7 @@ impl AxBackend for MacAx {
     }
 
     fn perform(&mut self, h: &AxHandle, action: &str) -> CoreResult<()> {
-        actions::perform(element(h)?, action)
+        actions::perform_requested(element(h)?, action)
     }
 
     fn set_value(&mut self, h: &AxHandle, value: &str) -> CoreResult<()> {
