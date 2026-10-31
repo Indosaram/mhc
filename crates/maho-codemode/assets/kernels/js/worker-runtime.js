@@ -161,6 +161,7 @@ export class JsWorkerRuntime {
 		globalThis.tool = createToolNamespace(
 			(fn, metadata) => this.#tools.define(fn, metadata),
 			async (name, args) => await this.#callTool(name, args),
+			{ defined: () => this.#tools.defined(), undefine: (name) => this.#tools.undefine(name) },
 		);
 		globalThis.tools = globalThis.tool;
 		const originalLog = console.log.bind(console);

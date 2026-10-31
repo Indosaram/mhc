@@ -8,8 +8,8 @@
     {
       "path": "kernels/js/display-image.js",
       "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "81485d6ff5d0b2ed8dc5935870a431ff0ea6eb9b06d4ab68374e5beb1f93df33"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "94781932baeda78d73709f4f01f72a0869aa95afe87e3c19cdf2ba17e8f669b4"
     },
     {
       "path": "kernels/js/handles.js",
@@ -33,14 +33,14 @@
     {
       "path": "kernels/js/kernel-tools-define.js",
       "status": "verbatim",
-      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
-      "sha256": "2dbdd82e132d1795ac6d1109b95e2d7b5d3778522f168da77b6a6f1d41cf3134"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "4a77334aba7401ac69a08710a5c3bfe7fd9ffd9cc6d8eaa51dee11aab4d3532a"
     },
     {
       "path": "kernels/js/kernel-tools-errors.js",
       "status": "verbatim",
-      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "sha256": "fbaa43535ed188b78ae4a2511f59ea52965a14847aeed2d13dee95ed066969ad"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "17a6d9d2c5c949156691f1bf51912b3c6abcf72b52b07a5f3e13330496b49384"
     },
     {
       "path": "kernels/js/kernel-tools-naming.js",
@@ -63,14 +63,14 @@
     {
       "path": "kernels/js/kernel-tools-registry.js",
       "status": "verbatim",
-      "upstreamCommit": "0330381c09f7713e670a68ac1348e38d459e2641",
-      "sha256": "9ba10399520bf6c8b05569e35b0511d7bcaa775eaeb724c7fa7fa499f98551d0"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "53089272d38b6f9088126e858d2a7e2cf4405fd0a4881460e06790ee7e40b1ab"
     },
     {
       "path": "kernels/js/kernel-tools-schema.js",
       "status": "verbatim",
-      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
-      "sha256": "6c4dbc3f06307ac0e50dfc66e7e7b44ea80659ab1af16a86c9f1d203bbd0ae34"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "289ec73dbb764c2e493923d847adf03ed7d8e32bba1a4f73c62abfbb92c7d330"
     },
     {
       "path": "kernels/js/kernel-tools-scope.js",
@@ -80,10 +80,9 @@
     },
     {
       "path": "kernels/js/process-tree.js",
-      "status": "patched",
-      "upstreamCommit": "f821f6988a50af4a61093c1675eb2fda0c63682b",
-      "sha256": "c81c5ba9f6b675440cede30f6b1a4937e56aff369a5434f4bd88f4e38a749c63",
-      "change": "process-group cleanup and guarded Windows tree termination"
+      "status": "verbatim",
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "d8528ffba3a0210c852c6c8fb91737076c653160b6bd4844285f0934de8a91a5"
     },
     {
       "path": "kernels/js/worker-core.js",
@@ -109,8 +108,8 @@
       "path": "kernels/js/worker-runtime.js",
       "status": "patched",
       "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun",
-      "sha256": "0fb1d35875763f8317a158023c0416cbd4cce3203b0c201385f8854511db6154"
+      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun; tool.defined()/tool.undefine() wired as upstream 4998e97f58",
+      "sha256": "909b35274cf7272db1855e5c528d82ff2823d6d37b5530afe88f51aa84aa0152"
     },
     {
       "path": "kernels/js/worker-shadow-guard.js",
@@ -129,8 +128,8 @@
     {
       "path": "kernels/js/workpool.js",
       "status": "verbatim",
-      "upstreamCommit": "d0392b0814f3c033f58d09dc181321858be27a75",
-      "sha256": "21075bd31fe1eca2565fbe8b279987f8f6df0821517f191d3ddaf82848912b23"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "776b3a59befbb84ce5574c909f971f2542341d7ec613018596f9dd8928d514a4"
     },
     {
       "path": "skill/bun-1-4/references/breaking-changes.md",
@@ -176,10 +175,9 @@
     },
     {
       "path": "skill/bun-1-4/references/runtime-apis.md",
-      "status": "patched",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "3cd3dc2d9acb3457835d7b00c39e04d77dfe233e15cbf1453b04bb55779857f9",
-      "change": "document kernel-owned WebView lifecycle"
+      "status": "verbatim",
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "f1ef3670989673f40bde8f9f3da8525166b323069d023a40b8aa3b97ec267e46"
     },
     {
       "path": "skill/bun-1-4/references/security.md",
