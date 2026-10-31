@@ -1283,6 +1283,37 @@ impl RpcClient {
         )
         .await
     }
+    /// senpi `getEffectStatus`: one effect's status, read from `session_path`'s transcript when it names another file.
+    pub async fn get_effect_status(
+        &self,
+        effect_id: &str,
+        session_path: Option<&str>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type": "get_effect_status", "effectId": effect_id});
+        if let Some(session_path) = session_path {
+            command["sessionPath"] = session_path.into();
+        }
+        self.request_value(command, true).await
+    }
+    /// senpi `getPendingInputs`: every input still awaiting an outcome, plus an answer for each known id.
+    pub async fn get_pending_inputs(
+        &self,
+        known_client_message_ids: Option<&[String]>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type": "get_pending_inputs"});
+        if let Some(ids) = known_client_message_ids {
+            command["knownClientMessageIds"] = ids.into();
+        }
+        self.request_value(command, true).await
+    }
+    /// senpi `setRetryFallback`: replaces a single-session rpc process's retry fallback profile.
+    pub async fn set_retry_fallback(&self, retry_fallback: Value) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "set_retry_fallback", "retryFallback": retry_fallback}),
+            true,
+        )
+        .await
+    }
     /// senpi `listEvalCells`: the session's eval cells.
     pub async fn list_eval_cells(&self) -> RpcClientResult<Value> {
         self.request_value(serde_json::json!({"type": "eval_cells.list"}), true)
@@ -2270,7 +2301,7 @@ mod tests {
             let (read, mut write) = host.into_split();
             let mut lines = BufReader::new(read).lines();
             let mut seen = Vec::new();
-            for _ in 0..5 {
+            for _ in 0..7 {
                 let request: Value =
                     serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
                 let data = match request["type"].as_str() {
@@ -2293,6 +2324,11 @@ mod tests {
             client.continue_from_leaf().await.unwrap();
             client.peek_eval_cell("cell", Some(10)).await.unwrap();
             client.peek_eval_cell("cell", None).await.unwrap();
+            client
+                .get_effect_status("e", Some("/s.jsonl"))
+                .await
+                .unwrap();
+            client.get_pending_inputs(None).await.unwrap();
             (level, path)
         };
         let ((level, path), seen) = tokio::join!(requests, serve);
@@ -2304,6 +2340,8 @@ mod tests {
         assert_eq!(seen[3]["type"], "eval_cells.peek");
         assert_eq!(seen[3]["tailBytes"], 10);
         assert!(seen[4].get("tailBytes").is_none());
+        assert_eq!(seen[5]["sessionPath"], "/s.jsonl");
+        assert!(seen[6].get("knownClientMessageIds").is_none());
     }
     #[cfg(unix)]
     #[tokio::test]
