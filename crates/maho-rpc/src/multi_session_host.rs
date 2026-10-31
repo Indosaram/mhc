@@ -835,6 +835,7 @@ impl HostCore {
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
             crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
+            DETACH_CONNECTION_CAPABILITY,
         ])
         .chain(std::iter::once(
             crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY,
@@ -1833,6 +1834,37 @@ impl HostCore {
                         Some(session_id),
                     );
                 }
+            }
+            // senpi router `detachConnection`: answered only once the asking connection's attachments are released.
+            crate::rpc_types::RpcCommandBody::DetachConnection => {
+                let id = command.id.clone().map(serde_json::Value::from);
+                let answer =
+                    crate::connection_detach::detach_connection(id.as_ref(), connection, |owner| {
+                        let core = std::sync::Arc::clone(self);
+                        async move {
+                            // senpi `releaseConnection`: a detached connection keeps no session role and no
+                            // session's records reach it any more; the socket itself stays open.
+                            core.connection_roles
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .release(&owner);
+                            let owned = core
+                                .attachments
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .owned_by(&owner);
+                            for (session_id, _) in &owned {
+                                core.presenters.detach(&owner, session_id);
+                                core.fanout
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .detach(&owner, session_id);
+                            }
+                            core.release_connection(&owner).await
+                        }
+                    })
+                    .await;
+                self.respond_record(connection, "", answer);
             }
             // senpi router: every subscription account's latest limit windows, answered without a session.
             crate::rpc_types::RpcCommandBody::GetSubscriptionLimits => {
@@ -3056,12 +3088,25 @@ impl HostCore {
     /// attachment goes through the refcounted detach a close uses, so a session another connection
     /// still holds keeps running, a retained one stays open at zero attachments, and only the last
     /// owner tears it down. A turn in flight runs to settlement first; a drain owns teardown itself.
-    pub async fn release_connection(self: &std::sync::Arc<Self>, connection: &str) {
-        self.release_connection_attachments(connection).await;
+    ///
+    /// Answers senpi `releaseConnection`'s `deferred`: the sessions still counting the connection, one whose
+    /// running turn this release would end, or every owned session while the host drains.
+    pub async fn release_connection(self: &std::sync::Arc<Self>, connection: &str) -> Vec<String> {
+        let deferred = self.release_connection_attachments(connection).await;
         // senpi `releaseConnection`: the release settles only after the connection's opens did.
         self.opens_settled(connection).await;
+        deferred
     }
-    async fn release_connection_attachments(self: &std::sync::Arc<Self>, connection: &str) {
+    async fn release_connection_attachments(
+        self: &std::sync::Arc<Self>,
+        connection: &str,
+    ) -> Vec<String> {
+        let mut deferred = Vec::<String>::new();
+        let mut defer = |session_id: &str| {
+            if !deferred.iter().any(|held| held == session_id) {
+                deferred.push(session_id.to_owned());
+            }
+        };
         let owned = self
             .attachments
             .lock()
@@ -3076,7 +3121,7 @@ impl HostCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_draining()
         {
-            return;
+            return owned.into_keys().collect();
         }
         if let Some(workers) = self.workers.clone() {
             for (session_id, count) in owned {
@@ -3089,13 +3134,14 @@ impl HostCore {
                         && let Some(worker) =
                             workers.worker(&session_id).filter(|worker| worker.busy())
                     {
+                        defer(&session_id);
                         self.release_worker_after_settle(worker, session_id.clone());
                         continue;
                     }
                     self.release_owned_session(&session_id).await;
                 }
             }
-            return;
+            return deferred;
         }
         for (session_id, count) in owned {
             for _ in 0..count {
@@ -3120,12 +3166,14 @@ impl HostCore {
                     && let Some(session) =
                         session.filter(maho_core::agent_session::AgentSession::is_streaming)
                 {
+                    defer(&session_id);
                     self.release_after_settle(session, session_id.clone());
                     continue;
                 }
                 self.release_owned_session(&session_id).await;
             }
         }
+        deferred
     }
     /// senpi `openWithBarrier`: registers the open under its connection and, for an open with an id, tells the
     /// connection where it was queued before the open runs - every open accepted anywhere on this host counts,
@@ -4586,6 +4634,47 @@ mod handoff_tests {
         assert_eq!(answer["command"], "get_protocol_info");
         assert_eq!(answer["data"]["runtimeBuildId"], "sha256:loaded");
         assert!(answer["data"].get("handover").is_none());
+    }
+    /// senpi `detachConnection`: the asking connection's attachments are gone before the answer, which names
+    /// no session when nothing waits on a turn; a stdio caller is refused.
+    #[tokio::test]
+    async fn detach_connection_releases_the_callers_attachments_before_answering() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "detach_connection")
+        );
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        core.attachments.lock().unwrap().attach("c", "gone-session");
+        core.handle(Some("c"), r#"{"id":"d","type":"detach_connection"}"#)
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!({"id":"d","type":"response","command":"detach_connection","success":true,"data":{"deferred":[]}})
+        );
+        assert!(
+            !core
+                .attachments
+                .lock()
+                .unwrap()
+                .owns(Some("c"), "gone-session")
+        );
     }
     #[tokio::test]
     async fn protocol_info_advertises_host_capabilities_the_decision_requires() {

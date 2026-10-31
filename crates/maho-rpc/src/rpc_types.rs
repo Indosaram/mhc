@@ -331,6 +331,8 @@ pub enum RpcCommandBody {
         path: String,
     },
     GetSubscriptionLimits,
+    /// senpi `{ type: "detach_connection" }`: a multi-session host drops every attachment the asking connection holds.
+    DetachConnection,
     VerifyApiKey {
         provider: String,
         key: String,
