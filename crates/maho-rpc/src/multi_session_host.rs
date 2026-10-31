@@ -59,6 +59,11 @@ pub async fn run_host_monitors(
     tokio::join!(stall, pressure);
     unsubscribe();
 }
+/// The Windows presenter control pipe (senpi `presenterPipePath`). Its name comes from its own random value, never
+/// the host's public protocol instanceId, so nothing can learn it before the host listens and squat it.
+pub fn presenter_pipe_path() -> String {
+    format!(r"\\.\pipe\senpi-presenter-{}", uuid::Uuid::new_v4())
+}
 pub fn resolve_host_idle_policy(
     env: &HashMap<String, String>,
     idle_eviction_ms: Option<f64>,
@@ -3755,6 +3760,14 @@ fn route_session_record(
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
+    #[test]
+    fn presenter_pipe_paths_are_private_random_pipe_names() {
+        let first = presenter_pipe_path();
+        assert!(first.starts_with(r"\\.\pipe\senpi-presenter-"));
+        assert_eq!(first.len(), r"\\.\pipe\senpi-presenter-".len() + 36);
+        assert_ne!(first, presenter_pipe_path());
+        assert!(!first.contains(crate::protocol_identity::host_instance_id()));
+    }
     fn idle_core() -> std::sync::Arc<HostCore> {
         let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
             |_profile: crate::session_registry::RpcSessionLaunchProfile| -> std::pin::Pin<
