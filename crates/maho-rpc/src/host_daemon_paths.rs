@@ -13,6 +13,9 @@ pub const ENDPOINT_REGISTRY_VERSION: u32 = 1;
 pub type HostDaemonDirectory = HostDaemonPaths;
 #[derive(Debug, Clone)]
 pub struct HostDaemonPaths {
+    /// The endpoint these paths belong to, exactly as its directory name was derived from; `None` for a reader
+    /// that was told the directory but not its socket (senpi `HostDaemonDirectory`).
+    pub socket: Option<String>,
     pub flat_dir: PathBuf,
     pub layout_marker: PathBuf,
     pub legacy_pid_file: PathBuf,
@@ -60,15 +63,19 @@ pub fn daemon_directory_name(socket: &str) -> String {
     format!("{:x}", Sha256::digest(socket.as_bytes()))[..16].into()
 }
 pub fn create_host_daemon_paths(socket: &str, agent_dir: &Path) -> HostDaemonPaths {
-    host_daemon_directory_paths(
-        &agent_dir
-            .join("rpc-host-daemon")
-            .join(daemon_directory_name(socket)),
-    )
+    HostDaemonPaths {
+        socket: Some(socket.to_owned()),
+        ..host_daemon_directory_paths(
+            &agent_dir
+                .join("rpc-host-daemon")
+                .join(daemon_directory_name(socket)),
+        )
+    }
 }
 pub fn host_daemon_directory_paths(dir: &Path) -> HostDaemonPaths {
     let flat_dir = dir.parent().unwrap_or(Path::new("")).to_path_buf();
     HostDaemonPaths {
+        socket: None,
         layout_marker: flat_dir.join("layout.json"),
         legacy_pid_file: flat_dir.join("host.pid"),
         flat_dir,
@@ -115,7 +122,17 @@ pub fn create_private_directory(path: &Path) -> io::Result<()> {
         fs::create_dir_all(path)
     }
 }
+/// Creates this endpoint's directories, publishes the flat marker and writes `endpoint.json` for an `rpc_host`
+/// (senpi `createDaemonDirectories`). A path set that was not derived from a socket has no identity to write.
 pub fn create_daemon_directories(paths: &HostDaemonPaths) -> Result<(), HostDaemonStateError> {
+    create_daemon_directories_as(paths, None)
+}
+/// [`create_daemon_directories`] for a registrant that names its kind: a `tui` control endpoint passes
+/// [`EndpointKind::Tui`](crate::host_endpoints::EndpointKind::Tui); everything else is an `rpc_host`.
+pub fn create_daemon_directories_as(
+    paths: &HostDaemonPaths,
+    kind: Option<crate::host_endpoints::EndpointKind>,
+) -> Result<(), HostDaemonStateError> {
     use std::io::Write;
     let result = (|| -> io::Result<()> {
         #[cfg(unix)]
@@ -145,7 +162,11 @@ pub fn create_daemon_directories(paths: &HostDaemonPaths) -> Result<(), HostDaem
     result.map_err(|source| HostDaemonStateError {
         path: paths.dir.clone(),
         source,
-    })
+    })?;
+    match &paths.socket {
+        Some(socket) => ensure_endpoint_identity(paths, socket, false, kind),
+        None => Ok(()),
+    }
 }
 /// Writes `endpoint.json` when it is absent and never rewrites a valid one: the first writer's `created_at` is
 /// the endpoint's birth (senpi `ensureEndpointIdentity`). The record is written whole to a temporary name and
@@ -293,6 +314,84 @@ mod tests {
             1,
             "no temporary is left behind"
         );
+    }
+    /// rpc-daemon-directory-modes.test.ts "creates every endpoint directory 0700": the marker and `endpoint.json`
+    /// are written by the same call.
+    #[cfg(unix)]
+    #[test]
+    fn creates_every_endpoint_directory_private_with_marker_and_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let agent_dir = temp.path().join("agent");
+        let socket = agent_dir
+            .join("rpc/shards/p-0000000000000000.sock")
+            .to_string_lossy()
+            .into_owned();
+        let paths = create_host_daemon_paths(&socket, &agent_dir);
+        create_daemon_directories(&paths).unwrap();
+        for directory in [&paths.dir, &paths.generations_dir, &paths.reservations_dir] {
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        assert!(paths.layout_marker.exists());
+        let record: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&paths.endpoint_file).unwrap()).unwrap();
+        assert_eq!(
+            (
+                &record["socket"],
+                &record["endpoint_kind"],
+                &record["layout"]
+            ),
+            (
+                &serde_json::json!(socket),
+                &serde_json::json!("rpc_host"),
+                &serde_json::json!(HOST_DAEMON_LAYOUT)
+            )
+        );
+    }
+    /// rpc-daemon-directory-modes.test.ts "re-modes only the directories that already existed".
+    #[cfg(unix)]
+    #[test]
+    fn re_modes_directories_that_already_existed() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = create_host_daemon_paths("sock", temp.path());
+        fs::create_dir_all(&paths.generations_dir).unwrap();
+        for directory in [&paths.dir, &paths.generations_dir] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        create_daemon_directories(&paths).unwrap();
+        for directory in [&paths.dir, &paths.generations_dir, &paths.reservations_dir] {
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+    /// rpc-host-endpoint-identity.test.ts "keeps the first writer's kind": a tui registrant's record survives a later
+    /// ensure, repairing or not; a directory-only path set writes no identity.
+    #[test]
+    fn a_tui_registrant_keeps_its_kind_and_a_directory_only_set_writes_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp
+            .path()
+            .join("rpc/tui/t-kind.sock")
+            .to_string_lossy()
+            .into_owned();
+        let paths = create_host_daemon_paths(&socket, temp.path());
+        create_daemon_directories_as(&paths, Some(crate::host_endpoints::EndpointKind::Tui))
+            .unwrap();
+        let first = fs::read_to_string(&paths.endpoint_file).unwrap();
+        create_daemon_directories(&paths).unwrap();
+        ensure_endpoint_identity(&paths, &socket, true, None).unwrap();
+        assert_eq!(fs::read_to_string(&paths.endpoint_file).unwrap(), first);
+        assert!(first.contains("\"endpoint_kind\":\"tui\""));
+        let told =
+            host_daemon_directory_paths(&temp.path().join("rpc-host-daemon/0123456789abcdef"));
+        create_daemon_directories(&told).unwrap();
+        assert!(told.dir.exists() && !told.endpoint_file.exists());
     }
     #[test]
     fn hash_matches_sha256_prefix() {
