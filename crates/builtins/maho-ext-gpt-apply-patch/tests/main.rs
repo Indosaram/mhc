@@ -3,6 +3,8 @@
 
 #[path = "diff_source_cases.rs"]
 mod diff_source_cases;
+#[path = "line_endings.rs"]
+mod line_endings;
 #[path = "native_patch.rs"]
 mod native_patch;
 #[path = "render_patch.rs"]

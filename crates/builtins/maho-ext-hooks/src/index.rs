@@ -407,40 +407,41 @@ impl Extension for HooksExtension {
         }
         let stop_pending = Arc::clone(&pending);
         let stop_sender = Arc::clone(&sender);
-        api.on(
-            EventKind::AgentEnd,
-            Arc::new(move |event, ctx| {
+        crate::stop_lifecycle::register_stop_lifecycle(
+            api,
+            Arc::new(|event, ctx| {
+                let ExtensionEvent::AgentEnd { messages, .. } = event else {
+                    return None;
+                };
+                let stop_reason = messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| message.as_assistant())
+                    .map(|assistant| assistant.stop_reason.as_str());
+                let transcript = ctx
+                    .session_manager
+                    .session_file()
+                    .map(|path| path.to_string_lossy().into_owned());
+                Some(crate::stop_adapter::build_stop_hook_input(
+                    stop_reason,
+                    &ctx.cwd.to_string_lossy(),
+                    ctx.session_manager.session_id(),
+                    transcript.as_deref(),
+                ))
+            }),
+            Arc::new(move |ctx, input| {
                 let pending = Arc::clone(&stop_pending);
                 let sender = Arc::clone(&stop_sender);
                 Box::pin(async move {
-                    let ExtensionEvent::AgentEnd { messages, .. } = event else {
-                        return Ok(EventResult::None);
-                    };
-                    let stop_reason = messages
-                        .iter()
-                        .rev()
-                        .find_map(|message| message.as_assistant())
-                        .map(|assistant| assistant.stop_reason.as_str());
-                    let transcript = ctx
-                        .session_manager
-                        .session_file()
-                        .map(|path| path.to_string_lossy().into_owned());
-                    let input = crate::stop_adapter::build_stop_hook_input(
-                        stop_reason,
-                        &ctx.cwd.to_string_lossy(),
-                        ctx.session_manager.session_id(),
-                        transcript.as_deref(),
-                    );
-                    let result = dispatch(ctx, input).await?;
+                    let result = dispatch(&ctx, input).await?;
                     let leaf = ctx.session_manager.get_leaf_id();
                     let turn_key = pending
                         .lock()
                         .map_err(|_| ExtensionFailure::new("hooks pending state poisoned"))?
                         .stop_tracker
                         .turn_key(leaf.as_deref(), ctx.session_manager.session_id());
-                    crate::stop_adapter::apply_stop_hook_result(&sender, ctx, &result, &turn_key)
-                        .await?;
-                    Ok(EventResult::None)
+                    crate::stop_adapter::apply_stop_hook_result(&sender, &ctx, &result, &turn_key)
+                        .await
                 })
             }),
         );
@@ -586,6 +587,9 @@ mod tests {
             EventKind::ToolCall,
             EventKind::ToolResult,
         ] {
+            assert_eq!(api.registered.handlers[&event].len(), 1);
+        }
+        for event in [EventKind::AgentEnd, EventKind::AgentStart] {
             assert_eq!(api.registered.handlers[&event].len(), 1);
         }
         assert_eq!(api.registered.commands[0].name, "hooks");
