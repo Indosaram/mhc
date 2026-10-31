@@ -96,18 +96,14 @@ pub fn prepare(
             source.display()
         ));
     }
-    let (kind, fallback) = backend::resolve(&settings.backend, &source, is_git)?;
+    let (requested, resolve_fallback) = backend::resolve(&settings.backend, &source, is_git)?;
     let base = wt.join(segment(&source, id));
     let merged = base.join(MERGED_DIR);
     // A leftover of an earlier run of the same id goes first.
     if base.exists() {
         if let Some(previous) = owner::read_owner(&base) {
             backend::stop(
-                if previous.backend == "worktree" {
-                    BackendKind::Worktree
-                } else {
-                    BackendKind::Copy
-                },
+                BackendKind::from_label(&previous.backend).unwrap_or(BackendKind::Copy),
                 &previous.source,
                 &merged,
             );
@@ -115,10 +111,19 @@ pub fn prepare(
         tree::remove_existing(&base).map_err(|e| format!("clear {}: {e}", base.display()))?;
     }
     std::fs::create_dir_all(&base).map_err(|e| format!("create {}: {e}", base.display()))?;
+    let mut kind = requested;
+    let mut fallback = resolve_fallback;
     let result = (|| {
-        owner::write_owner(&base, id, &source, kind.as_str())
+        owner::write_owner(&base, id, &source, requested.as_str())
             .map_err(|e| format!("write owner marker: {e}"))?;
-        backend::start(kind, &source, &merged)?;
+        let (used, start_fallback) =
+            backend::start_with_fallback(requested, &source, &merged, is_git)?;
+        if used != requested {
+            kind = used;
+            fallback = start_fallback;
+            owner::write_owner(&base, id, &source, used.as_str())
+                .map_err(|e| format!("write owner marker: {e}"))?;
+        }
         let baseline = if is_git {
             let git = Git::new(&merged);
             let tree = git
@@ -201,6 +206,12 @@ fn retain(prepared: &Prepared) -> PathBuf {
                 .is_ok()
         }
         BackendKind::Copy => std::fs::rename(&prepared.merged, &new_merged).is_ok(),
+        // A cloned tree (and a btrfs snapshot subvolume) is a plain directory a rename moves; a
+        // mounted overlay, a ZFS clone mountpoint or a ProjFS root stays where it is.
+        BackendKind::Cow(cow) if cow.clones_tree() || cow == crate::iso::BackendKind::Btrfs => {
+            std::fs::rename(&prepared.merged, &new_merged).is_ok()
+        }
+        BackendKind::Cow(_) => false,
     };
     if !moved {
         let _ = std::fs::remove_dir(&target);

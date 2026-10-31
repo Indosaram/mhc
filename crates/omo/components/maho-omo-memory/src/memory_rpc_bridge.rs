@@ -76,6 +76,7 @@ pub struct MemoryRpcBridge {
     binding_generation: u64,
     repos: BTreeMap<std::path::PathBuf, GitMemoryRepo>,
     token_estimates: BTreeMap<String, usize>,
+    tree_stats: BTreeMap<String, crate::memory_rpc_snapshot_state::MemoryTreeStats>,
 }
 impl MemoryRpcBridge {
     pub fn attach(&mut self, session: &str) {
@@ -122,9 +123,10 @@ impl MemoryRpcBridge {
                 GitMemoryRepoOptions::new(&context.identity_paths.repo, "omo-memory-rpc"),
             )?),
         };
-        let repo_state = crate::memory_rpc_snapshot_state::read_memory_rpc_repo_state(
+        let repo_state = crate::memory_rpc_snapshot_state::read_memory_rpc_repo_state_with(
             repo,
             &mut self.token_estimates,
+            &mut self.tree_stats,
         )?;
         let journal =
             crate::memory_rpc_snapshot_state::read_memory_rpc_journal_state(context, session);
@@ -142,6 +144,11 @@ impl MemoryRpcBridge {
         }
         if let Some(fingerprint) = health.get("fingerprint") {
             reflection["lastFailureFingerprint"] = fingerprint.clone();
+        }
+        if let Some(consolidation) =
+            crate::memory_rpc_snapshot_state::read_last_consolidation_at(context)
+        {
+            reflection["lastConsolidationAtISO"] = consolidation.into();
         }
         let mut snapshot = serde_json::json!({"schemaVersion":1,"identity":context.identity,"repo":repo_state,"reflection":reflection,"journal":{"sessionId":session,"totalSteps":journal.total_steps,"reflectedSteps":journal.reflected_steps}});
         if let Some(status) = self

@@ -7,6 +7,9 @@ pub type MemoryContextResolver = Arc<dyn Fn() -> Option<MemoryIdentityContext> +
 pub type MemoryCommitNotice = Arc<dyn Fn(memory_core::tools::memory::MemoryToolCommit) + Send + Sync>;
 /// `memory.write_notice.enabled` for the bound identity (pin `wiring-static.ts:142`).
 pub type WriteNoticeGate = Arc<dyn Fn() -> bool + Send + Sync>;
+/// `writeNotice.resolveSessionId`: the bound session, whose journal and snapshot feed the notice's
+/// size and timeline numbers; without one only the affected files are gathered.
+pub type WriteNoticeSessionResolver = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct MemoryToolsOptions {
     pub lock_wait_timeout_ms: Option<u64>,
@@ -15,6 +18,7 @@ pub struct MemoryToolsOptions {
     /// Read per call rather than latched at registration: the gate is presentation-only, so a
     /// config edit takes effect on the next write instead of at the next restart.
     pub write_notice: Option<WriteNoticeGate>,
+    pub write_notice_session: Option<WriteNoticeSessionResolver>,
     /// `memory.tool_exposure`; `Search` registers both tools behind tool discovery
     /// (pin `tools.ts` registerMemoryToolSurface exposure option).
     pub exposure: Option<ToolExposure>,
@@ -59,11 +63,13 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
             engine.lock.run("memory-write", || run_memory_tool(&engine.repo, &engine.author, &params, None)).map(|value| {
                 let write_notice = if options.write_notice.as_ref().is_some_and(|gate| gate()) {
                     value.commit.as_ref().map(|commit| {
-                        let notice = crate::memory_notice_spec::gather_write_notice(
+                        let session = options.write_notice_session.as_ref().and_then(|resolve| resolve());
+                        let notice = crate::memory_notice_spec::gather_write_notice_for_session(
+                            &context,
                             &engine.repo,
                             &commit.sha,
                             params.reason.as_str(),
-                            engine.author.agent_id.as_str(),
+                            session.as_deref(),
                         );
                         serde_json::to_value(notice).unwrap_or(serde_json::Value::Null)
                     })

@@ -5782,3 +5782,130 @@ async fn move_emission_returns_each_failure_and_runs_later_handlers() {
     assert_eq!(failures[0].extension_path, "bad");
     assert!(called.load(std::sync::atomic::Ordering::SeqCst));
 }
+fn never() -> ExtensionHandler {
+    Arc::new(|_, _| Box::pin(std::future::pending()))
+}
+// senpi#3650: a lifecycle handler that never settles is stopped at the host budget, reported once, and the
+// emission moves on to the next handler.
+#[tokio::test(start_paused = true)]
+async fn lifecycle_handler_past_its_budget_is_reported_and_skipped() {
+    use maho_ext_host::handler_budget::*;
+    let stalls = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&stalls);
+    let ran = Arc::new(Mutex::new(false));
+    let after = Arc::clone(&ran);
+    let next: ExtensionHandler = Arc::new(move |_, _| {
+        *after.lock().unwrap() = true;
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let mut runner = runner(vec![
+        extension("held", EventKind::AgentStart, never()),
+        extension("next", EventKind::AgentStart, next),
+    ]);
+    runner.set_event_handler_budget(
+        Arc::new(|| {
+            Ok(ExtensionHandlerBudget {
+                warn_ms: 0,
+                timeout_ms: 100,
+            })
+        }),
+        Arc::new(move |stall: &ExtensionHandlerStall| {
+            seen.lock()
+                .unwrap()
+                .push((stall.event.clone(), stall.stage))
+        }),
+        None,
+    );
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+    assert_eq!(
+        runner
+            .errors
+            .iter()
+            .map(|error| (error.event.as_str(), error.error.as_str()))
+            .collect::<Vec<_>>(),
+        [("agent_start", "handler timed out after 100ms")]
+    );
+    assert_eq!(
+        *stalls.lock().unwrap(),
+        [(
+            "agent_start".to_string(),
+            ExtensionHandlerStallStage::Timeout
+        )]
+    );
+    assert!(*ran.lock().unwrap());
+}
+// senpi#3650: with the budget disabled the turn deadline still releases a held turn_start handler.
+#[tokio::test(start_paused = true)]
+async fn turn_deadline_releases_a_held_lifecycle_handler() {
+    use maho_ext_host::handler_budget::*;
+    let mut runner = runner(vec![extension("held", EventKind::TurnStart, never())]);
+    runner.set_event_handler_budget(
+        Arc::new(|| Ok(ExtensionHandlerBudget::UNBOUNDED)),
+        Arc::new(|_: &ExtensionHandlerStall| {}),
+        Some(Arc::new(|| 3)),
+    );
+    let releaser = runner.clone();
+    let release = async {
+        // The emission registers its held wait on its first poll; release turn 3 once it is held.
+        let mut released = 0;
+        while released == 0 {
+            tokio::task::yield_now().await;
+            released = releaser.release_held_handlers(3);
+        }
+        released
+    };
+    let (emitted, released) = tokio::join!(
+        runner.emit(ExtensionEvent::TurnStart {
+            turn_index: 0,
+            timestamp: 0
+        }),
+        release
+    );
+    emitted.unwrap();
+    assert_eq!(released, 1);
+    assert_eq!(runner.errors.len(), 1);
+    assert_eq!(
+        runner.errors[0].error,
+        "handler released by the turn deadline"
+    );
+}
+// senpi#3650: an invalid budget setting falls back to the defaults, so timely handlers still run in order.
+#[tokio::test(start_paused = true)]
+async fn invalid_handler_budget_keeps_awaiting_handlers_in_order() {
+    use maho_ext_host::handler_budget::*;
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let first_order = Arc::clone(&order);
+    let second_order = Arc::clone(&order);
+    let first: ExtensionHandler = Arc::new(move |_, _| {
+        let order = Arc::clone(&first_order);
+        Box::pin(async move {
+            tokio::task::yield_now().await;
+            order.lock().unwrap().push("slow");
+            Ok(EventResult::None)
+        })
+    });
+    let second: ExtensionHandler = Arc::new(move |_, _| {
+        second_order.lock().unwrap().push("next");
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let mut runner = runner(vec![
+        extension("a", EventKind::AgentEnd, first),
+        extension("b", EventKind::AgentEnd, second),
+    ]);
+    runner.set_event_handler_budget(
+        Arc::new(|| Err("extensionEventHandlerTimeoutMs must be a non-negative integer".into())),
+        Arc::new(|_: &ExtensionHandlerStall| {}),
+        None,
+    );
+    runner
+        .emit(ExtensionEvent::AgentEnd {
+            messages: Vec::new(),
+            aborted: None,
+            will_retry: None,
+            abort_source: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(*order.lock().unwrap(), ["slow", "next"]);
+    assert!(runner.errors.is_empty());
+}

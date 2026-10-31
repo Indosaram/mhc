@@ -19226,10 +19226,9 @@ impl AgentSession {
     }
 
     /// Surface a provider-level server-fallback abort before retry handling runs so the UI can
-    /// explain the switch.
-    ///
-    /// Adaptation: `chainConfigured` is derived from the settings' fallback chains, because the
-    /// session's retry-fallback controller is not ported (another todo's module).
+    /// explain the switch. `chainConfigured` is the retry-fallback controller's
+    /// `hasConfiguredChain()`: the current selector against the canonical chains, so a chain keyed
+    /// by a bare model family counts.
     pub fn emit_server_fallback_aborted(&self, message: &maho_ai::types::AssistantMessage) {
         let Some(details) = message
             .diagnostics
@@ -19254,7 +19253,15 @@ impl AgentSession {
         });
     }
 
+    /// senpi `this._retryFallback.hasConfiguredChain()`. The event is emitted synchronously, so a
+    /// controller that is busy at this instant (or not yet installed) is answered from the settings'
+    /// chains as written.
     fn has_configured_fallback_chain(&self) -> bool {
+        if let Ok(mut controller) = self.retry_fallback.try_lock()
+            && let Some(controller) = controller.as_mut()
+        {
+            return controller.has_configured_chain();
+        }
         let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
         let chains =
             crate::retry_fallback::settings::resolve_retry_fallback_settings(settings.as_ref())
@@ -25481,6 +25488,39 @@ mod tests {
             service_tier: None,
         }]);
         assert!(session.get_current_favorite_models().is_empty());
+    }
+
+    /// senpi `_emitServerFallbackAborted`: `chainConfigured` comes from the controller's canonical
+    /// chains, so a chain keyed by the bare model family counts for the session model.
+    #[tokio::test]
+    async fn server_fallback_abort_reports_a_family_keyed_chain_as_configured() {
+        let session = retry_session(Vec::new(), 1);
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "retry".to_owned(),
+                serde_json::json!({"enabled":true,"modelFallback":true,"fallbackChains":{"faux":["faux/faux-1"]}}),
+            )]))
+        });
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::ServerFallbackAborted {
+                chain_configured, ..
+            } = event
+            {
+                lock(&sink).push(*chain_configured);
+            }
+        }));
+        let mut message = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        maho_ai::utils::server_fallback_receipt::apply_server_fallback_abort(
+            &mut message,
+            &maho_ai::utils::server_fallback_receipt::ServerFallbackReceipt {
+                from: "faux-1".to_owned(),
+                to: "faux-2".to_owned(),
+            },
+        );
+        session.emit_server_fallback_aborted(&message);
+        assert_eq!(*lock(&events), vec![true]);
     }
 
     #[test]
