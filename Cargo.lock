@@ -4737,6 +4737,7 @@ dependencies = [
  "maho-tools",
  "maho-tui",
  "nix 0.28.0",
+ "notify",
  "regex",
  "serde",
  "serde_json",

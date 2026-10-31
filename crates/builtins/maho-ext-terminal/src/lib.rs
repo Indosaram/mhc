@@ -6,6 +6,7 @@ pub mod file_monitor;
 pub mod file_monitor_check;
 pub mod file_monitor_guard;
 pub mod file_monitor_record;
+pub mod file_monitor_source;
 pub mod index;
 pub mod lease_keeper;
 pub mod manager;
