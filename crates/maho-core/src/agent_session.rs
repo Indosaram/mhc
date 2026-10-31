@@ -34656,6 +34656,71 @@ mod tests {
         assert_eq!(*lock(&preparation_enabled), Some(false));
     }
 
+    /// senpi test/suite/regressions/2848-sdk-side-cwd.test.ts: the 1-token fallback probe-back request carries the
+    /// session cwd in its stream options, like every other model request.
+    #[tokio::test]
+    async fn the_probe_back_request_carries_the_session_cwd() {
+        use maho_ai::providers::faux::{
+            FauxModelDefinition, RegisterFauxProviderOptions, faux_assistant_message, faux_provider,
+        };
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            models: Some(vec![
+                FauxModelDefinition {
+                    id: "faux-1".into(),
+                    ..Default::default()
+                },
+                FauxModelDefinition {
+                    id: "faux-2".into(),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(vec![
+            faux_assistant_message("OK", Default::default()).into(),
+        ]);
+        let session = test_session_with_stream_function(false);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime
+            .credentials
+            .set("faux", Some(json!({"type":"api_key","key":"faux-test"})))
+            .expect("stored auth");
+        session
+            .agent
+            .set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::RetryProbeResult { ok, .. } = event
+                && let Some(tx) = lock(&tx).take()
+            {
+                let _ = tx.send(*ok);
+            }
+        }));
+        session.arm_probe_back("faux/faux-2", 0.0);
+        let ok = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+            .await
+            .expect("bounded probe")
+            .expect("probe result");
+        assert!(ok);
+        let log = provider.get_call_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].model_id, "faux-2");
+        assert_eq!(
+            log[0]
+                .options
+                .as_ref()
+                .expect("options")
+                .request
+                .cwd
+                .as_deref(),
+            Some(session.cwd().as_str())
+        );
+    }
+
     #[tokio::test]
     async fn local_bash_records_native_custom_context_and_history() {
         let session = test_session();
