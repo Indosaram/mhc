@@ -385,6 +385,17 @@ pub(crate) mod tests {
             use tokio::io::AsyncWriteExt;
             let _ = self.write.write_all(format!("{value}\n").as_bytes()).await;
         }
+        /// Asserts the host closed the channel: the next read is EOF, not a frame and not the bound expiring.
+        pub async fn eof(&mut self, case: impl std::fmt::Display) {
+            let read =
+                tokio::time::timeout(std::time::Duration::from_secs(5), self.lines.next_line())
+                    .await
+                    .unwrap_or_else(|_| panic!("{case}: the host left the channel open"));
+            assert!(
+                matches!(read, Ok(None) | Err(_)),
+                "{case}: expected EOF, got {read:?}"
+            );
+        }
         pub async fn next(&mut self) -> Option<Value> {
             let line =
                 tokio::time::timeout(std::time::Duration::from_secs(5), self.lines.next_line())
@@ -427,7 +438,7 @@ pub(crate) mod tests {
         ] {
             let (_enrollment, mut peer, _) = fixture();
             peer.send(&enrollment_request(override_.clone())).await;
-            assert_eq!(peer.next().await, None, "{override_}");
+            peer.eof(&override_).await;
         }
     }
 
@@ -476,13 +487,13 @@ pub(crate) mod tests {
         let mut tuple: Value = serde_json::from_str(transcript).unwrap();
         tuple[10] = random_hex32().into();
         peer.send(&enrollment_proof(&tuple.to_string())).await;
-        assert_eq!(peer.next().await, None);
+        peer.eof("substituted nonce").await;
         assert!(crate::mcp_form_dialog::lock(&principals).is_empty());
         let (second, host) = tokio::io::duplex(1024);
         enrollment.bootstrap(Box::new(host), |_| {});
         let mut second = Peer::new(second);
         second.send(&enrollment_request(json!({}))).await;
-        assert_eq!(second.next().await, None);
+        second.eof("second bootstrap").await;
     }
 
     #[tokio::test]
@@ -503,7 +514,7 @@ pub(crate) mod tests {
         tokio::time::advance(ENROLLMENT_DEADLINE).await;
         peer.send(&enrollment_proof(challenge["transcript"].as_str().unwrap()))
             .await;
-        assert_eq!(peer.next().await, None);
+        peer.eof("expired challenge").await;
         assert!(crate::mcp_form_dialog::lock(&principals).is_empty());
     }
 }

@@ -161,6 +161,23 @@ impl McpPresenterControl {
     }
 }
 
+/// senpi `send(stream, { type, id, ...reply })` through `JSON.stringify`: `id` follows `type`, and a command
+/// without a string id gets no `id` key at all.
+fn with_reply_id(answer: Value, id: Option<&str>) -> Value {
+    let Value::Object(fields) = answer else {
+        return answer;
+    };
+    let mut reply = Map::new();
+    let mut fields = fields.into_iter();
+    if let Some((key, value)) = fields.next() {
+        reply.insert(key, value);
+    }
+    if let Some(id) = id {
+        reply.insert("id".to_owned(), id.into());
+    }
+    reply.extend(fields);
+    Value::Object(reply)
+}
 fn not_authorized() -> &'static str {
     crate::mcp_presenter_authority::PRESENTER_NOT_AUTHORIZED
 }
@@ -383,15 +400,12 @@ impl Shared {
             ));
             state.launch_owner = Some((channel.clone(), Arc::clone(&principal), backend));
         }
-        let id = command.get("id").and_then(Value::as_str).map(str::to_owned);
+        let id = command.get("id").and_then(Value::as_str);
         let answer = match self.dispatch(&command, &principal, &owner, session) {
-            Ok(mut answer) => {
-                answer["id"] = id.into();
-                answer
-            }
-            Err(_) => json!({"type":"mcp_presenter_error","id":id,"error":not_authorized()}),
+            Ok(answer) => answer,
+            Err(_) => json!({"type":"mcp_presenter_error","error":not_authorized()}),
         };
-        channel.send(&answer);
+        channel.send(&with_reply_id(answer, id));
     }
 
     fn dispatch(
@@ -555,7 +569,7 @@ mod tests {
         stranger
             .send(&json!({"type":"challenge","principalId":"other","backendGeneration":"b","command":{}}))
             .await;
-        assert_eq!(stranger.next().await, None);
+        stranger.eof("unknown principal").await;
         let (peer, host) = tokio::io::duplex(1 << 16);
         control.manage(Box::new(host));
         let mut peer = Peer::new(peer);
@@ -569,7 +583,18 @@ mod tests {
         });
         // Unassigned: refused.
         let refused = signed_command(&mut peer, &principal, acquire.clone()).await;
-        assert_eq!(refused["type"], "mcp_presenter_error");
+        assert_eq!(
+            refused.to_string(),
+            r#"{"type":"mcp_presenter_error","id":"1","error":"presenter_not_authorized"}"#
+        );
+        // A command without an id is answered without an `id` key (senpi `JSON.stringify` drops `undefined`).
+        let mut anonymous = acquire.clone();
+        anonymous.as_object_mut().unwrap().remove("id");
+        let refused = signed_command(&mut peer, &principal, anonymous).await;
+        assert_eq!(
+            refused.to_string(),
+            r#"{"type":"mcp_presenter_error","error":"presenter_not_authorized"}"#
+        );
         let assigned = signed_command(
             &mut peer,
             &principal,
@@ -586,12 +611,9 @@ mod tests {
             .await;
         peer.next().await.unwrap();
         peer.send(&enrollment_proof("stale transcript")).await;
-        assert_eq!(peer.next().await, None);
-        // Closing the control stream revokes what it acquired.
-        tokio::task::yield_now().await;
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
+        // Closing the control stream revokes what it acquired: `destroy` runs its close callbacks before the
+        // aborted tasks drop the stream, so the revocation precedes the EOF observed here.
+        peer.eof("stale proof").await;
         assert!(binding.capture().is_none());
         control.dispose();
     }
