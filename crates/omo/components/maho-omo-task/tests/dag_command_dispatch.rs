@@ -15,7 +15,7 @@ fn fixture()->(tempfile::TempDir,Arc<Runs>) {
 }
 fn start(runs:&Runs,session:&str,name:&str)->String {
     let nodes=[("a",vec![]),("b",vec!["a"]),("c",vec!["a"]),("d",vec!["b","c"])].into_iter().map(|(id,deps)| senpi_task::dag::graph::DagNodeInput { id:id.into(),prompt:"work".into(),target:senpi_task::dag::types::DagNodeTarget::Category("quick".into()),label:None,depends_on:Some(deps.into_iter().map(str::to_owned).collect()),task_summary:None,description:None,load_skills:None }).collect();
-    runs.0.start(DagStartParams { definition:senpi_task::dag::graph::DagDefinition { key:name.into(),name:name.into(),nodes },parent_session_id:session.into(),root_session_id:session.into() }).expect("start").snapshot.run_id
+    runs.0.start(DagStartParams { definition:senpi_task::dag::graph::DagDefinition { key:name.into(),name:name.into(),nodes },parent_session_id:session.into(),root_session_id:session.into(),parent_model:None }).expect("start").snapshot.run_id
 }
 #[tokio::test] async fn registered_dag_list_is_scoped_to_command_session() {
     let (_root,runs)=fixture(); let owned=start(&runs,"session","owned"); let foreign=start(&runs,"foreign","foreign"); let mut api=support::api(); register_dag_commands(&mut api,runs); let ui=Arc::new(support::Ui::default()); let mut context=support::context(); context.ui=ui.clone(); let command=api.registered.commands.iter().find(|command| command.name=="dag").expect("dag"); (command.handler)("",&context).await.expect("list"); let notifications=ui.notifications.lock().expect("notifications"); assert_eq!(notifications.len(),1); assert!(notifications[0].contains(&owned)); assert!(!notifications[0].contains(&foreign));

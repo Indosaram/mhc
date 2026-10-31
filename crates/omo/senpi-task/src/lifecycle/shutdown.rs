@@ -125,12 +125,25 @@ pub(crate) fn suspend_handle(
     handle: &Arc<dyn ResidentHandle>,
     reason: &str,
 ) -> Result<(), LifecycleError> {
+    suspend_handle_owned(context, handle, reason, &|| true)
+}
+
+/// `suspendHandle(context, handle, reason, owns)`: the registry forget, the terminal-status
+/// publish read, and the detach/persist transition run only while `owns()`; a non-owner only
+/// aborts and disposes its handle (a revival that lost its pass or claim).
+pub(crate) fn suspend_handle_owned(
+    context: &LifecycleContext,
+    handle: &Arc<dyn ResidentHandle>,
+    reason: &str,
+    owns: &dyn Fn() -> bool,
+) -> Result<(), LifecycleError> {
     let hosted = handle.is_host_session()
         || context
             .store
             .load(handle.task_id())?
             .is_some_and(|r| super::host_session::is_host_session_record(&r));
     if hosted
+        && owns()
         && let Some(record) = context.store.load(handle.task_id())?
             && record.status.is_terminal() {
                 let publisher = handle.clone();
@@ -151,7 +164,9 @@ pub(crate) fn suspend_handle(
                 best_effort(handle.task_id(), "publish_task_status", result, "suspend");
             }
     // Ownership drops BEFORE abort settles the turn so the outcome guard sees a forgotten child.
-    context.registry.forget(handle.task_id());
+    if owns() {
+        context.registry.forget(handle.task_id());
+    }
     if !hosted {
         best_effort(handle.task_id(), "abort", handle.abort(), "suspend");
     }
@@ -159,6 +174,9 @@ pub(crate) fn suspend_handle(
         best_effort(handle.task_id(), "terminate", handle.terminate(), "suspend");
     }
     handle.dispose()?;
+    if !owns() {
+        return Ok(());
+    }
     let timestamp = context.now_iso();
     let transition = if hosted {
         TaskTransition::DetachRpc { timestamp }

@@ -111,4 +111,17 @@ pub struct RpcRunnerSpec {
     pub member_env: Option<BTreeMap<String, String>>,
     /// Parent's explicit non-default permission preset; `None` keeps the child on its default.
     pub permission_preset: Option<String>,
+    /// The child's own place in the task tree (`--spawned-by` ancestry, #10782).
+    pub parent_session_id: Option<String>,
+    pub root_session_id: Option<String>,
+    /// `taskStoreDir`: the task record store the child's identified inputs are persisted in.
+    pub task_store_dir: Option<String>,
+}
+
+/// `dirname(dirname(stateDir))`: a child's `children/<taskId>` state dir names its task store.
+pub fn task_store_dir_of(child_state_dir: &str) -> Option<String> {
+    std::path::Path::new(child_state_dir)
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|dir| dir.to_string_lossy().into_owned())
 }

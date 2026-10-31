@@ -10,7 +10,49 @@ use serde_json::{Map, Value};
 
 use super::adapter::BoxFuture;
 
-const MUTATIONS: [&str; 8] = ["prompt", "interrupt", "set_session_name", "set_model", "set_thinking_level", "wake", "release_session", "extension_ui_response"];
+/// The commands the host lets an unattached connection send (senpi `session-attachment-gate.ts`:
+/// `ATTACH_GATE_EXEMPT`, plus `close_session`, `set_session_context` and `release_attachment`, which
+/// its gate skips). Every other session command is fenced: deny by default, so a command the client
+/// learns later is never sent unattached.
+const UNFENCED: [&str; 37] = [
+    "get_protocol_info",
+    "list_sessions",
+    "subscribe_sessions",
+    "unsubscribe_sessions",
+    "get_subscription_limits",
+    "warm",
+    "detach_connection",
+    "open_session",
+    "attach_session",
+    "reclaim_session",
+    "get_effect_status",
+    "get_state",
+    "get_messages",
+    "get_entries",
+    "get_tree",
+    "get_fork_messages",
+    "get_last_assistant_text",
+    "get_media",
+    "get_commands",
+    "get_loaded_surfaces",
+    "get_available_models",
+    "get_available_thinking_levels",
+    "get_fast_mode",
+    "get_session_stats",
+    "get_pending_inputs",
+    "get_steering_messages",
+    "get_follow_up_messages",
+    "get_auth_providers",
+    "get_provider_accounts",
+    "resolve_path",
+    "memory_report",
+    "eval_cells.list",
+    "eval_cells.peek",
+    "check_reload_veto",
+    "close_session",
+    "set_session_context",
+    "release_attachment",
+];
 
 /// Commands whose reply union carries the host's refusal: their callers branch on the refusal code,
 /// so an attach refusal is answered as that command's own refusal frame instead of a throw.
@@ -18,7 +60,12 @@ const TYPED_REFUSAL: [&str; 2] = ["release_session", "extension_ui_response"];
 
 /// One request on an authenticated connection.
 pub trait RpcTransport: Send + Sync {
-    fn request(&self, socket: &str, command: Value, durable_session_id: Option<String>) -> BoxFuture<Result<Value, String>>;
+    fn request(
+        &self,
+        socket: &str,
+        command: Value,
+        durable_session_id: Option<String>,
+    ) -> BoxFuture<Result<Value, String>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +87,10 @@ pub enum FenceOutcome {
 }
 
 fn error_code(frame: &Value) -> Option<&str> {
-    frame.get("errorCode").and_then(Value::as_str).or_else(|| frame.get("error").and_then(Value::as_str))
+    frame
+        .get("errorCode")
+        .and_then(Value::as_str)
+        .or_else(|| frame.get("error").and_then(Value::as_str))
 }
 
 fn error_reason(frame: &Value) -> Option<&str> {
@@ -48,7 +98,12 @@ fn error_reason(frame: &Value) -> Option<&str> {
 }
 
 /// Attaches the selected session on this connection; none once attached, else the refusal.
-async fn attach_selected_session(transport: &dyn RpcTransport, socket: &str, session_id: &Value, durable_session_id: &str) -> Result<Option<AttachRefusal>, String> {
+async fn attach_selected_session(
+    transport: &dyn RpcTransport,
+    socket: &str,
+    session_id: &Value,
+    durable_session_id: &str,
+) -> Result<Option<AttachRefusal>, String> {
     let frame = transport
         .request(socket, serde_json::json!({ "type": "attach_session", "sessionId": session_id, "durableSessionId": durable_session_id }), Some(durable_session_id.to_owned()))
         .await?;
@@ -60,23 +115,50 @@ async fn attach_selected_session(transport: &dyn RpcTransport, socket: &str, ses
         return Err(format!("auth_required:{socket}"));
     }
     if code == "session_busy_lifecycle" && error_reason(&frame) == Some("host_draining") {
-        return Ok(Some(AttachRefusal { code: "host_draining".to_owned(), error_data: frame.get("errorData").cloned(), frame }));
+        return Ok(Some(AttachRefusal {
+            code: "host_draining".to_owned(),
+            error_data: frame.get("errorData").cloned(),
+            frame,
+        }));
     }
-    Ok(Some(AttachRefusal { code, error_data: frame.get("errorData").cloned(), frame }))
+    Ok(Some(AttachRefusal {
+        code,
+        error_data: frame.get("errorData").cloned(),
+        frame,
+    }))
 }
 
 /// Releases the hold after the mutation already took effect: no outcome here may turn that success
 /// into an error, so a failure is only logged.
-async fn release_attachment(transport: &dyn RpcTransport, socket: &str, command: &Map<String, Value>) -> Option<String> {
+async fn release_attachment(
+    transport: &dyn RpcTransport,
+    socket: &str,
+    command: &Map<String, Value>,
+) -> Option<String> {
     let session_id = command.get("sessionId").cloned().unwrap_or(Value::Null);
-    match transport.request(socket, serde_json::json!({ "type": "release_attachment", "sessionId": session_id }), None).await {
+    match transport
+        .request(
+            socket,
+            serde_json::json!({ "type": "release_attachment", "sessionId": session_id }),
+            None,
+        )
+        .await
+    {
         Ok(frame) => {
             let code = error_code(&frame);
             let released = frame.get("success").and_then(Value::as_bool) == Some(true);
-            if released || code == Some("session_not_attached") || (command.get("type").and_then(Value::as_str) == Some("release_session") && code == Some("unknown_session")) {
+            if released
+                || code == Some("session_not_attached")
+                || (command.get("type").and_then(Value::as_str) == Some("release_session")
+                    && code == Some("unknown_session"))
+            {
                 return None;
             }
-            Some(frame.get("error").map_or_else(|| frame.to_string(), Value::to_string))
+            Some(
+                frame
+                    .get("error")
+                    .map_or_else(|| frame.to_string(), Value::to_string),
+            )
         }
         Err(error) => Some(error),
     }
@@ -85,8 +167,21 @@ async fn release_attachment(transport: &dyn RpcTransport, socket: &str, command:
 fn attach_refusal_error(refusal: &AttachRefusal, socket: &str, session_id: &Value) -> String {
     match refusal.code.as_str() {
         "host_draining" => format!("host_draining:{socket}"),
-        "session_not_attached" => format!("session_not_attached:{}", session_id.as_str().unwrap_or_default()),
-        _ => format!("thread RPC request failed: {}", refusal.frame.get("error").map_or_else(|| refusal.frame.to_string(), Value::to_string)),
+        "session_not_attached" => format!(
+            "session_not_attached:{}",
+            session_id.as_str().unwrap_or_default()
+        ),
+        // Upstream `SessionAttachmentError`: these two keep their typed code in the error text.
+        code @ ("unknown_session" | "session_identity_mismatch") => {
+            format!("{code}:{}", session_id.as_str().unwrap_or_default())
+        }
+        _ => format!(
+            "thread RPC request failed: {}",
+            refusal
+                .frame
+                .get("error")
+                .map_or_else(|| refusal.frame.to_string(), Value::to_string)
+        ),
     }
 }
 
@@ -102,8 +197,12 @@ pub async fn fenced_command(
     let Some(object) = command.as_object() else {
         return Ok(FenceOutcome::Ran(send().await?));
     };
-    let command_type = object.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
-    let attach = MUTATIONS.contains(&command_type.as_str())
+    let command_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let attach = !UNFENCED.contains(&command_type.as_str())
         && object.get("sessionId").is_some()
         && capabilities.contains("attach_session")
         && (command_type != "release_session" || capabilities.contains("release_caller_aware"));
@@ -114,12 +213,17 @@ pub async fn fenced_command(
         return Err("session_identity_mismatch:missing selected durable session id".to_owned());
     };
     let session_id = object.get("sessionId").cloned().unwrap_or(Value::Null);
-    if let Some(refusal) = attach_selected_session(transport, socket, &session_id, durable_session_id).await? {
+    if let Some(refusal) =
+        attach_selected_session(transport, socket, &session_id, durable_session_id).await?
+    {
         if !TYPED_REFUSAL.contains(&command_type.as_str()) {
             return Err(attach_refusal_error(&refusal, socket, &session_id));
         }
         let mut frame = Map::new();
-        frame.insert("id".into(), object.get("id").cloned().unwrap_or(Value::Null));
+        frame.insert(
+            "id".into(),
+            object.get("id").cloned().unwrap_or(Value::Null),
+        );
         frame.insert("type".into(), Value::String("response".into()));
         frame.insert("command".into(), Value::String(command_type.clone()));
         frame.insert("success".into(), Value::Bool(false));
@@ -148,12 +252,27 @@ mod tests {
     }
 
     impl RpcTransport for Recorder {
-        fn request(&self, _socket: &str, command: Value, _durable: Option<String>) -> BoxFuture<Result<Value, String>> {
+        fn request(
+            &self,
+            _socket: &str,
+            command: Value,
+            _durable: Option<String>,
+        ) -> BoxFuture<Result<Value, String>> {
             let commands = self.commands.clone();
             let attach = self.attach.clone();
-            let kind = command.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let kind = command
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             commands.lock().expect("commands").push(command);
-            Box::pin(async move { Ok(if kind == "attach_session" { attach } else { serde_json::json!({ "success": true }) }) })
+            Box::pin(async move {
+                Ok(if kind == "attach_session" {
+                    attach
+                } else {
+                    serde_json::json!({ "success": true })
+                })
+            })
         }
     }
 
@@ -168,7 +287,10 @@ mod tests {
     #[test]
     fn a_session_scoped_mutation_attaches_first_and_releases_after() {
         let commands = Arc::new(Mutex::new(Vec::new()));
-        let transport = Recorder { commands: commands.clone(), attach: serde_json::json!({ "success": true }) };
+        let transport = Recorder {
+            commands: commands.clone(),
+            attach: serde_json::json!({ "success": true }),
+        };
         let outcome = futures::executor::block_on(fenced_command(
             &transport,
             "/run/host.sock",
@@ -179,14 +301,84 @@ mod tests {
         ))
         .expect("fenced");
         assert!(matches!(outcome, FenceOutcome::Ran(_)));
-        let seen: Vec<String> = commands.lock().expect("commands").iter().filter_map(|command| command.get("type").and_then(Value::as_str).map(str::to_owned)).collect();
+        let seen: Vec<String> = commands
+            .lock()
+            .expect("commands")
+            .iter()
+            .filter_map(|command| {
+                command
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
         assert_eq!(seen, vec!["attach_session", "release_attachment"]);
+    }
+
+    #[test]
+    fn an_unknown_session_command_is_fenced_and_every_host_exempt_read_is_not() {
+        for (command_type, fenced) in [
+            ("future_mutation", true),
+            ("get_state", false),
+            ("close_session", false),
+            ("set_session_context", false),
+            ("release_attachment", false),
+            ("eval_cells.peek", false),
+        ] {
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let transport = Recorder {
+                commands: commands.clone(),
+                attach: serde_json::json!({ "success": true }),
+            };
+            futures::executor::block_on(fenced_command(
+                &transport,
+                "/run/host.sock",
+                serde_json::json!({ "id": 1, "type": command_type, "sessionId": "r-1" }),
+                &capabilities(&["attach_session", "release_attachment"]),
+                Some("d-1"),
+                &send_ok,
+            ))
+            .expect("fenced");
+            assert_eq!(
+                !commands.lock().expect("commands").is_empty(),
+                fenced,
+                "{command_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_session_and_identity_mismatch_refusals_keep_their_code() {
+        for (field, code) in [
+            ("errorCode", "unknown_session"),
+            ("error", "session_identity_mismatch"),
+        ] {
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let transport = Recorder {
+                commands: commands.clone(),
+                attach: serde_json::json!({ "success": false, field: code }),
+            };
+            let error = futures::executor::block_on(fenced_command(
+                &transport,
+                "/run/host.sock",
+                serde_json::json!({ "id": 1, "type": "set_session_name", "sessionId": "rpc-1" }),
+                &capabilities(&["attach_session"]),
+                Some("d-1"),
+                &send_ok,
+            ))
+            .expect_err("refused");
+            assert_eq!(error, format!("{code}:rpc-1"));
+            assert_eq!(commands.lock().expect("commands").len(), 1);
+        }
     }
 
     #[test]
     fn a_read_only_listing_is_not_fenced() {
         let commands = Arc::new(Mutex::new(Vec::new()));
-        let transport = Recorder { commands: commands.clone(), attach: serde_json::json!({ "success": true }) };
+        let transport = Recorder {
+            commands: commands.clone(),
+            attach: serde_json::json!({ "success": true }),
+        };
         let outcome = futures::executor::block_on(fenced_command(
             &transport,
             "/run/host.sock",
@@ -228,7 +420,10 @@ mod tests {
     #[test]
     fn a_prompt_attach_refusal_is_an_error() {
         let commands = Arc::new(Mutex::new(Vec::new()));
-        let transport = Recorder { commands, attach: serde_json::json!({ "success": false, "errorCode": "session_not_attached" }) };
+        let transport = Recorder {
+            commands,
+            attach: serde_json::json!({ "success": false, "errorCode": "session_not_attached" }),
+        };
         let error = futures::executor::block_on(fenced_command(
             &transport,
             "/run/host.sock",
@@ -244,7 +439,10 @@ mod tests {
     #[test]
     fn a_mutation_without_a_durable_id_is_refused() {
         let commands = Arc::new(Mutex::new(Vec::new()));
-        let transport = Recorder { commands, attach: serde_json::json!({ "success": true }) };
+        let transport = Recorder {
+            commands,
+            attach: serde_json::json!({ "success": true }),
+        };
         let error = futures::executor::block_on(fenced_command(
             &transport,
             "/run/host.sock",
@@ -254,6 +452,9 @@ mod tests {
             &send_ok,
         ))
         .expect_err("refused");
-        assert_eq!(error, "session_identity_mismatch:missing selected durable session id");
+        assert_eq!(
+            error,
+            "session_identity_mismatch:missing selected durable session id"
+        );
     }
 }

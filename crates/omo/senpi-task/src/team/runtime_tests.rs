@@ -51,6 +51,7 @@ fn deps(
         state_dir,
         team_bounds: team_bounds(TeamBoundsOverrides::default()),
         lead_session_id: "lead-session".to_string(),
+        root_session_id: None,
         spawn_depth: 1,
         now: None,
         member_extension,

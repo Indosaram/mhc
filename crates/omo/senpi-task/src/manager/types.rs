@@ -376,7 +376,17 @@ pub type TraceparentFor = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 pub type PausedChildCallback =
     Arc<dyn Fn(&TaskRecord, &crate::pause::ports::RunPauseOwner, u64) + Send + Sync>;
 
+/// `onChildLiveness`: a debounced notice of a resident host-session child's liveness change.
+pub type ChildLivenessCallback =
+    Arc<dyn Fn(&TaskRecord, crate::state::host_liveness::HostLivenessStatus) + Send + Sync>;
+
+/// Schedules a debounced liveness notice; the closure notifies only if no newer status arrived.
+pub type LivenessNoticeTimer = Arc<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
+
 pub struct TaskManagerOptions {
+    pub on_child_liveness: Option<ChildLivenessCallback>,
+    /// Replaces the 30 s liveness-notice debounce thread (tests drive it by hand); `None` keeps it.
+    pub liveness_notice_timer: Option<LivenessNoticeTimer>,
     pub host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
     pub on_paused_child: Option<PausedChildCallback>,
     pub child_creation_port: Option<Arc<dyn crate::pause::ports::ChildCreationPort>>,
@@ -413,6 +423,8 @@ impl TaskManagerOptions {
         cwd: impl Into<String>,
     ) -> Self {
         Self {
+            on_child_liveness: None,
+            liveness_notice_timer: None,
             host_transport: None,
             on_paused_child: None,
             child_creation_port: None,

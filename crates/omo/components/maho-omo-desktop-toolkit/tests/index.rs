@@ -237,3 +237,26 @@ async fn timeout_and_unoffered_toolkit() {
         assert_eq!(result.details, json!({"ok":false,"reason":reason}));
     }
 }
+
+#[tokio::test]
+async fn without_a_thread_offer_the_stub_answers_unavailable_and_asks_nothing() {
+    let (api, runtime, context) = setup("", 20);
+    let execute = runtime
+        .extension_tool_executor("desktop-toolkit", DESKTOP_TOOLKIT_TOOL_NAME)
+        .unwrap();
+    let asked = Arc::new(Mutex::new(0_usize));
+    let counter = Arc::clone(&asked);
+    let _subscription = api.events.on(
+        "senpi:extension-rpc-event",
+        Arc::new(move |_| *counter.lock().unwrap() += 1),
+    );
+    let unavailable = execute("c", json!({"op":"acquire","toolkit":"browser"}), None, None, &context)
+        .await
+        .unwrap();
+    assert_eq!(unavailable.details, json!({"ok":false,"reason":"unavailable"}));
+    let invalid = execute("c", json!({"op":"nope","toolkit":"browser"}), None, None, &context)
+        .await
+        .unwrap();
+    assert_eq!(invalid.details, json!({"ok":false,"reason":"invalid_request"}));
+    assert_eq!(*asked.lock().unwrap(), 0);
+}

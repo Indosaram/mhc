@@ -1,13 +1,11 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use maho_omo_computer_use::telemetry::{
-    create_computer_use_telemetry,
-    ComputerUseTelemetryObservation,
-    ComputerUseTelemetryObservers,
-    SharedComputerUseTelemetryObservers,
+    ComputerUseTelemetryObservation, ComputerUseTelemetryObservers,
+    SharedComputerUseTelemetryObservers, create_computer_use_telemetry,
 };
 use senpi_desktop_protocol::DesktopCapabilities;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn test_given_raw_runtime_values_when_activation_recorded_then_closed_platform_and_backend() {
@@ -126,7 +124,10 @@ fn test_given_denied_exec_result_when_host_reports_then_only_tier_emitted() {
 
     let list = observed.lock().unwrap();
     assert_eq!(list.len(), 1);
-    if let ComputerUseTelemetryObservation::PermissionDenied { scope, permission, .. } = &list[0] {
+    if let ComputerUseTelemetryObservation::PermissionDenied {
+        scope, permission, ..
+    } = &list[0]
+    {
         assert_eq!(scope, "tier");
         assert_eq!(permission, "exec");
     } else {
@@ -206,6 +207,33 @@ fn test_given_mixed_preflights_when_earlier_read_denied_then_call_id_preserves_t
     } else {
         panic!("expected read tier denial");
     }
+}
+
+#[test]
+fn test_given_senpi_guidance_appended_after_rule_refusal_when_denied_then_still_a_policy_failure() {
+    let observers = Arc::new(SharedComputerUseTelemetryObservers::new());
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let obs_clone = Arc::clone(&observed);
+    let _sub = observers.subscribe(Arc::new(move |obs| {
+        obs_clone.lock().unwrap().push(obs);
+    }));
+    let telem = create_computer_use_telemetry("darwin", Some(observers));
+    telem.tool_execution_started(&json!({
+        "type": "tool_execution_start",
+        "toolCallId": "call-rule",
+        "toolName": "computer",
+        "args": { "action": "capabilities" }
+    }));
+    telem.permission_tier_denied(&json!({
+        "type": "tool_execution_end",
+        "toolCallId": "call-rule",
+        "toolName": "computer",
+        "isError": true,
+        "result": {
+            "content": [{ "type": "text", "text": "The user has specified a rule which prevents you from using this specific tool call. Ask them to change it." }]
+        }
+    }), "sess-rule", &json!("macos"));
+    assert_eq!(observed.lock().unwrap().len(), 1);
 }
 
 #[test]

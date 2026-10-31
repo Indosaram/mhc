@@ -250,6 +250,7 @@ fn rpc_spec(
     trusted: Option<TrustedRespawnLaunch>,
 ) -> RpcRunnerSpec {
     let trusted = trusted.unwrap_or_default();
+    let task_store_dir = crate::runners::types::task_store_dir_of(&state_dir);
     RpcRunnerSpec {
         fallback_models: record.fallback_models.as_ref().map(|models| {
             models
@@ -276,6 +277,9 @@ fn rpc_spec(
             .and_then(|model| model.variant.clone()),
         extensions: trusted.extensions,
         member_env: trusted.member_env,
+        parent_session_id: Some(record.parent_session_id.clone()),
+        root_session_id: Some(record.root_session_id.clone()),
+        task_store_dir,
         ..RpcRunnerSpec::default()
     }
 }

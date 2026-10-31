@@ -3,6 +3,8 @@
 
 #[path = "contributed_skill.rs"]
 pub mod contributed_skill;
+#[path = "override_dir.rs"]
+pub mod override_dir;
 #[path = "resources_discover.rs"]
 pub mod resources_discover;
 

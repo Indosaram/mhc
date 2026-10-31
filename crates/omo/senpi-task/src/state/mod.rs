@@ -4,6 +4,7 @@ mod id;
 mod isolation;
 mod record;
 mod run_fence;
+pub mod host_liveness;
 pub mod recovery_presentation;
 mod transitions;
 mod types;

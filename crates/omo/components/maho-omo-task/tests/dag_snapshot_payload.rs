@@ -4,7 +4,7 @@ use senpi_task::dag::{manager::{create_dag_manager,DagManagerOptions,DagStartPar
 use serde_json::json;
 fn snapshot()->(tempfile::TempDir,DagRunSnapshot) {
     let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store"); let manager=create_dag_manager(DagManagerOptions { store:Arc::new(store),new_run_id:Some(Arc::new(|| "run".into())),now:Some(Arc::new(|| 1000)),materialize_skills:None,settings:None });
-    let definition=senpi_task::dag::graph::DagDefinition { key:"key".into(),name:"release".into(),nodes:vec![senpi_task::dag::graph::DagNodeInput { id:"a".into(),prompt:"work".into(),target:senpi_task::dag::types::DagNodeTarget::Category("quick".into()),label:None,depends_on:None,task_summary:None,description:None,load_skills:None }] }; let run=manager.start(DagStartParams { definition,parent_session_id:"parent".into(),root_session_id:"root".into() }).expect("run").snapshot; (root,run)
+    let definition=senpi_task::dag::graph::DagDefinition { key:"key".into(),name:"release".into(),nodes:vec![senpi_task::dag::graph::DagNodeInput { id:"a".into(),prompt:"work".into(),target:senpi_task::dag::types::DagNodeTarget::Category("quick".into()),label:None,depends_on:None,task_summary:None,description:None,load_skills:None }] }; let run=manager.start(DagStartParams { definition,parent_session_id:"parent".into(),root_session_id:"root".into(),parent_model:None }).expect("run").snapshot; (root,run)
 }
 #[test] fn snapshot_cap_reports_only_actual_overflow() {
     let (_root,run)=snapshot(); let mut runs=(0..256).map(|index| { let mut run=run.clone(); run.run_id=format!("run-{index}"); (run,"updated".into()) }).collect::<Vec<_>>();
