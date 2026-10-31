@@ -33,6 +33,7 @@ use crate::tui::{Component, Focusable, TuiMouseEvent, TuiMouseEventResult, CURSO
 use crate::undo_stack::UndoStack;
 use crate::utils::{
     graphemes, is_cjk_break, is_whitespace_char, slice_by_column, visible_width, word_segments, WordSegment,
+    AUTOCOMPLETE_NON_SEPARATOR_CLASS, AUTOCOMPLETE_SEPARATOR_CLASS,
 };
 use crate::word_navigation::{find_word_backward, find_word_forward, WordNavigationOptions};
 
@@ -351,6 +352,9 @@ pub trait EditorTuiHost {
     fn request_render(&self);
     fn terminal_rows(&self) -> usize;
     fn full_redraws(&self) -> u64 { 0 }
+    /// senpi `tui.getShowHardwareCursor()`: when the terminal cursor is shown the editor skips its
+    /// reverse-video fake cursor.
+    fn show_hardware_cursor(&self) -> bool { false }
 }
 
 #[derive(Default)]
@@ -367,11 +371,13 @@ const SLASH_COMMAND_MAX_PRIMARY_COLUMN_WIDTH: usize = 32;
 const DEFAULT_AUTOCOMPLETE_TRIGGER_CHARACTERS: [&str; 3] = ["@", "#", "$"];
 const ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS: u64 = 20;
 
-/// senpi's `{ force, explicitTab }` request options.
+/// senpi's `{ force, explicitTab, acceptSelection }` request options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AutocompleteRequestOptions {
     force: bool,
     explicit_tab: bool,
+    /// Apply the best match of the fresh suggestions instead of showing them.
+    accept_selection: bool,
 }
 
 /// One started request: senpi's `requestId`, `AbortController` and the snapshot
@@ -414,12 +420,21 @@ fn escape_character_class(value: &str) -> String {
     TRIGGER_CHARACTER_CLASS_ESCAPE.replace_all(value, "\\$0").into_owned()
 }
 
+/// senpi `autocompleteTokenStartSource`: start of text or a separator, then optional prose wrappers.
+fn autocomplete_token_start() -> String {
+    format!("(?:^|{AUTOCOMPLETE_SEPARATOR_CLASS})[(\\[{{<`]*")
+}
+
 fn build_trigger_pattern(trigger_characters: &[String]) -> Regex {
     let class: String = trigger_characters
         .iter()
         .map(|character| escape_character_class(character))
         .collect();
-    Regex::new(&format!("(?:^|[\\s])[{class}][^\\s]*$")).expect("valid trigger pattern")
+    Regex::new(&format!(
+        "{}(?:@\"[^\"]*|[{class}]{AUTOCOMPLETE_NON_SEPARATOR_CLASS}*)$",
+        autocomplete_token_start()
+    ))
+    .expect("valid trigger pattern")
 }
 
 fn build_debounce_pattern(trigger_characters: &[String]) -> Regex {
@@ -429,7 +444,8 @@ fn build_debounce_pattern(trigger_characters: &[String]) -> Regex {
         .map(|character| escape_character_class(character))
         .collect();
     Regex::new(&format!(
-        "(?:^|[ \\t])(?:@(?:\"[^\"]*|[^\\s]*)|[{escaped_without_at}][^\\s]*)$"
+        "{}(?:@(?:\"[^\"]*|{AUTOCOMPLETE_NON_SEPARATOR_CLASS}*)|[{escaped_without_at}]{AUTOCOMPLETE_NON_SEPARATOR_CLASS}*)$",
+        autocomplete_token_start()
     ))
     .expect("valid debounce pattern")
 }
@@ -498,6 +514,8 @@ pub struct Editor {
     autocomplete_list: Option<SelectList>,
     autocomplete_state: Option<AutocompleteState>,
     autocomplete_prefix: String,
+    /// senpi `autocompleteListSnapshot`: text and cursor the shown list was computed for.
+    autocomplete_list_snapshot: Option<(String, usize, usize)>,
     autocomplete_max_visible: usize,
     pending_autocomplete_select: Rc<RefCell<Option<SelectItem>>>,
     /// senpi `autocompleteDebounceTimer`: the deadline a debounced request starts at, polled by
@@ -561,6 +579,7 @@ impl Editor {
             autocomplete_list: None,
             autocomplete_state: None,
             autocomplete_prefix: String::new(),
+            autocomplete_list_snapshot: None,
             autocomplete_max_visible,
             pending_autocomplete_select: Rc::new(RefCell::new(None)),
             autocomplete_debounce: None,
@@ -958,7 +977,7 @@ impl Editor {
         result.push(self.render_top_border(width, self.scroll_offset));
 
         let emit_cursor_marker = self.focused;
-        let draw_fake_cursor = true;
+        let draw_fake_cursor = !self.tui.show_hardware_cursor();
 
         let mut mention_ranges_by_line: BTreeMap<usize, Vec<MentionRange>> = BTreeMap::new();
         let mention_style = self.theme.mention.clone();
@@ -1478,26 +1497,14 @@ impl Editor {
                     .get(..self.state.cursor_col.min(current_line.len()))
                     .unwrap_or("")
                     .to_string();
-                let char_before_symbol = if text_before_cursor.chars().count() >= 2 {
-                    text_before_cursor
-                        .chars()
-                        .rev()
-                        .nth(1)
-                        .map(|ch| ch.to_string())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                if text_before_cursor.chars().count() == 1
-                    || char_before_symbol == " "
-                    || char_before_symbol == "\t"
-                {
+                if self.autocomplete_trigger_pattern.is_match(&text_before_cursor) {
                     self.try_trigger_autocomplete(false);
                 }
             } else if character
                 .chars()
                 .next()
                 .is_some_and(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+                || is_cjk_break(character)
             {
                 let current_line = self
                     .state
@@ -2745,6 +2752,15 @@ impl Editor {
     }
 
     fn request_autocomplete(&mut self, force: bool, explicit_tab: bool) {
+        self.request_autocomplete_with(AutocompleteRequestOptions {
+            force,
+            explicit_tab,
+            accept_selection: false,
+        });
+    }
+
+    fn request_autocomplete_with(&mut self, options: AutocompleteRequestOptions) {
+        let force = options.force;
         let Some(provider) = self.autocomplete_provider.clone() else {
             return;
         };
@@ -2762,7 +2778,6 @@ impl Editor {
 
         self.cancel_autocomplete_request();
 
-        let options = AutocompleteRequestOptions { force, explicit_tab };
         let debounce_ms = self.get_autocomplete_debounce_ms(options);
         if debounce_ms > 0 {
             self.autocomplete_debounce = Some((
@@ -2888,7 +2903,11 @@ impl Editor {
         let Some(provider) = self.autocomplete_provider.clone() else {
             return;
         };
-        let AutocompleteRequestOptions { force, explicit_tab } = request.options;
+        let AutocompleteRequestOptions {
+            force,
+            explicit_tab,
+            accept_selection,
+        } = request.options;
 
         if !self.is_autocomplete_request_current(request) {
             return;
@@ -2901,6 +2920,28 @@ impl Editor {
         };
         if suggestions.items.is_empty() {
             self.cancel_autocomplete();
+            self.tui.request_render();
+            return;
+        }
+
+        if accept_selection {
+            let best_match_index =
+                Self::get_best_autocomplete_match_index(&suggestions.items, &suggestions.prefix).unwrap_or(0);
+            let item = suggestions.items[best_match_index].clone();
+            self.push_undo_snapshot();
+            self.last_action = None;
+            let result = provider.borrow().apply_completion(
+                &self.state.lines,
+                self.state.cursor_line,
+                self.state.cursor_col,
+                &item,
+                &suggestions.prefix,
+            );
+            self.state.lines = result.lines;
+            self.state.cursor_line = result.cursor_line;
+            self.set_cursor_col(result.cursor_col);
+            self.clear_autocomplete_ui();
+            self.notify_change();
             self.tui.request_render();
             return;
         }
@@ -2947,6 +2988,7 @@ impl Editor {
         state: AutocompleteState,
     ) {
         self.autocomplete_prefix = suggestions.prefix.clone();
+        self.autocomplete_list_snapshot = Some((self.get_text(), self.state.cursor_line, self.state.cursor_col));
         self.autocomplete_list = Some(self.create_autocomplete_list(&suggestions.prefix, &suggestions.items));
 
         if let Some(best_match_index) =
@@ -2971,6 +3013,25 @@ impl Editor {
         self.autocomplete_state = None;
         self.autocomplete_list = None;
         self.autocomplete_prefix = String::new();
+        self.autocomplete_list_snapshot = None;
+    }
+
+    /// senpi `isAutocompleteListStale`: the shown list was computed for different text or cursor.
+    fn is_autocomplete_list_stale(&self) -> bool {
+        self.autocomplete_list_snapshot
+            .as_ref()
+            .is_some_and(|(text, line, col)| {
+                *text != self.get_text() || *line != self.state.cursor_line || *col != self.state.cursor_col
+            })
+    }
+
+    /// senpi `acceptRefreshedAutocomplete`: re-query for the current token, then accept its best match.
+    fn accept_refreshed_autocomplete(&mut self) {
+        self.request_autocomplete_with(AutocompleteRequestOptions {
+            force: self.autocomplete_state == Some(AutocompleteState::Force),
+            explicit_tab: true,
+            accept_selection: true,
+        });
     }
 
     pub fn cancel_autocomplete(&mut self) {
@@ -3073,6 +3134,10 @@ impl Editor {
             }
 
             if kb.matches(&data, "tui.input.tab") {
+                if self.is_autocomplete_list_stale() {
+                    self.accept_refreshed_autocomplete();
+                    return;
+                }
                 let selected = self
                     .autocomplete_list
                     .as_ref()
@@ -3102,6 +3167,10 @@ impl Editor {
             }
 
             if kb.matches(&data, "tui.select.confirm") {
+                if !self.autocomplete_prefix.starts_with('/') && self.is_autocomplete_list_stale() {
+                    self.accept_refreshed_autocomplete();
+                    return;
+                }
                 let selected = self
                     .autocomplete_list
                     .as_ref()

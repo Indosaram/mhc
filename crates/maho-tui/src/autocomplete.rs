@@ -16,12 +16,10 @@ use crate::dollar_invocation_autocomplete::{
     known_skill_names,
 };
 use crate::slash_command_autocomplete::get_slash_command_suggestions;
+use crate::utils::is_autocomplete_separator;
 
 const PATH_DELIMITERS: [char; 5] = [' ', '\t', '"', '\'', '='];
 
-fn is_autocomplete_separator(ch: char) -> bool {
-    matches!(ch, '，' | '．' | '。' | '、' | '；' | '：' | '！' | '？' | '）' | '】' | '》' | '」' | '』' | '〉' | '〕' | '｝' | '］' | '｠' | '“' | '”' | '‘' | '’' | '…' | '—' | '»')
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AutocompleteItem {
