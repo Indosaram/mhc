@@ -12,7 +12,7 @@ use maho_core::{
 pub const RPC_ERROR_SESSION_HELD: &str = "session_held";
 /// Admission is conservative: a new command must pass the guard unless it is explicitly a read or a control needed
 /// to finish or cancel an already-admitted turn (senpi `READ_ONLY_OR_CONTROL`).
-pub const READ_ONLY_OR_CONTROL: [&str; 42] = [
+pub const READ_ONLY_OR_CONTROL: [&str; 41] = [
     "get_state",
     "get_snapshot",
     "get_effect_status",
