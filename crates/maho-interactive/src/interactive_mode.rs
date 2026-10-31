@@ -4702,6 +4702,7 @@ impl InteractiveMode {
             AgentMessage::Llm(maho_ai::types::Message::User(_)) => {
                 self.handle_event(&AgentEvent::MessageStart {
                     message: message.clone(),
+                    streaming: None,
                 });
                 let value = serde_json::to_value(message).expect("user message");
                 let text = value["content"]
@@ -13742,7 +13743,7 @@ impl InteractiveMode {
                 self.tool_reveal.stop();
                 self.working_started_ms = None;
             }
-            AgentEvent::MessageStart { message } => {
+            AgentEvent::MessageStart { message, .. } => {
                 if message.role() == "user" {
                     self.take_provisional_user_echo();
                     let value = serde_json::to_value(message).expect("serializable agent message");
