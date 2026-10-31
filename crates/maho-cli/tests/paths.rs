@@ -21,7 +21,7 @@ mod upstream {
     use std::path::{Path, PathBuf};
 
     fn real(path: &Path) -> String {
-        std::fs::canonicalize(path).unwrap().to_string_lossy().into_owned()
+        std::fs::canonicalize(path).expect("real path").to_string_lossy().into_owned()
     }
     fn text(path: &Path) -> String {
         path.to_string_lossy().into_owned()
