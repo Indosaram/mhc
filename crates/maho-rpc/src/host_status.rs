@@ -64,8 +64,30 @@ pub async fn read_host_status_with(
     prune: bool,
     timeout_ms: u64,
 ) -> std::io::Result<Value> {
+    // The host's key record lives under its own agent dir; a looker that names it proves the key from there.
+    crate::host_probe::with_rpc_key_root(
+        crate::host_probe::rpc_key_root(None, Some(agent_dir)),
+        read_host_status_in_key_root(socket, agent_dir, include_workers, prune, timeout_ms),
+    )
+    .await
+}
+async fn read_host_status_in_key_root(
+    socket: &str,
+    agent_dir: &std::path::Path,
+    include_workers: bool,
+    prune: bool,
+    timeout_ms: u64,
+) -> std::io::Result<Value> {
     let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);
-    let host = crate::host_probe::probe_protocol_info(socket, timeout_ms).await;
+    let answered = crate::host_probe::request_on_socket(
+        socket,
+        &serde_json::json!({"type": "get_protocol_info"}),
+        timeout_ms,
+    )
+    .await;
+    let host = answered
+        .as_ref()
+        .and_then(crate::host_protocol_info::parse_host_protocol_info);
     if prune {
         crate::host_generations::prune_dead_generations(&paths)?;
     }
@@ -89,9 +111,27 @@ pub async fn read_host_status_with(
     let process_start_time = process_start_time_for(registered.as_ref(), current);
     let sessions = read_session_counts(socket, include_workers).await;
     let env_keys = crate::host_daemon_env::read_daemon_env_keys(&paths)?;
-    Ok(
-        serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer}),
-    )
+    let identity = answered.as_ref().zip(host.as_ref());
+    let mut report = serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer});
+    report["lifecycle"] = host_lifecycle(host.as_ref()).into();
+    report["runtimeBuildId"] = identity
+        .and_then(|(data, _)| {
+            crate::runtime_build_id::parse_runtime_build_id(&data["runtimeBuildId"])
+        })
+        .into();
+    report["handover"] = host
+        .as_ref()
+        .and_then(|host| host.handover.clone())
+        .unwrap_or(Value::Null);
+    report["memory_pressure"] = host.as_ref().and_then(|host| host.memory_pressure).into();
+    Ok(report)
+}
+/// The answering host's lifecycle (`ready` / `stopping`); `None` when nothing answers or it predates the field.
+fn host_lifecycle(host: Option<&HostProtocolInfo>) -> Option<&'static str> {
+    host?.lifecycle.map(|lifecycle| match lifecycle {
+        crate::host_protocol_info::HostLifecycle::Ready => "ready",
+        crate::host_protocol_info::HostLifecycle::Stopping => "stopping",
+    })
 }
 /// The registered host's start time, only when it is the very generation `current` names (same instance and pid).
 pub fn process_start_time_for(
@@ -133,6 +173,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report["reachable"], false);
+        assert!(report["lifecycle"].is_null());
+        assert!(report["runtimeBuildId"].is_null());
+        assert!(report["handover"].is_null());
+        assert!(report["memory_pressure"].is_null());
         assert!(report["pid"].is_null());
         assert!(report["processStartTime"].is_null());
         assert!(report["host_footprint_mb"].is_null());
