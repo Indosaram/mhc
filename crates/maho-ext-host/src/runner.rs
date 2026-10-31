@@ -2918,14 +2918,14 @@ impl ExtensionRunner {
     }
     pub async fn emit_session_control_wake(
         &mut self,
-        source: String,
         reason: String,
+        reasons: Vec<String>,
+        delivery_ids: Option<Vec<String>>,
     ) -> Result<(), ExtensionFailure> {
         self.emit(ExtensionEvent::SessionControlWake {
-            source,
-            reasons: vec![reason.clone()],
             reason,
-            delivery_ids: None,
+            reasons,
+            delivery_ids,
         })
         .await?;
         Ok(())

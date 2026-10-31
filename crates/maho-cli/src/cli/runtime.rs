@@ -88,11 +88,6 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let cwd_text = cwd.to_string_lossy();
     let agent_dir = maho_core::config::get_agent_dir();
-    if mode == AppMode::Interactive
-        && let Some(refusal) = super::args::tui_presenter_enforcement_refusal(&parsed)
-    {
-        return Err(refusal.to_owned());
-    }
     if mode != AppMode::Interactive {
         super::stdout_guard::take_over_stdout();
         // senpi main.ts:1008-1012: route process-wide stdout writes (`maho_write_stdout`) to stderr

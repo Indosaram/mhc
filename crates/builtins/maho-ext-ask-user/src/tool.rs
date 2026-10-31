@@ -436,6 +436,7 @@ pub(crate) async fn start_question(
                                     dialog: ExtensionUiDialogOptions {
                                         signal: Some(ui_signal),
                                         timeout_ms: Some(remaining_ms),
+                                        ..Default::default()
                                     },
                                     on_progress: Some(Arc::new(move |draft| {
                                         if progress_signal.is_aborted() {
