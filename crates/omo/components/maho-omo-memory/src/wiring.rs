@@ -211,17 +211,25 @@ fn register_settled_handler(
                     .collect::<Vec<_>>();
                 let provenance = context.session_manager.fork_provenance();
                 let mut ui = NativeFooter(context.ui.clone());
+                let observer = maho_ext_api::current_settle_observer();
+                let signal = observer
+                    .as_ref()
+                    .map(maho_ext_api::SettleObserver::tool_signal);
                 let mut locked = wiring.lock().await;
                 if let Some(prov) = provenance {
                     locked.record_provenance(context.session_manager.session_id(), prov);
                 }
+                if let Some(observer) = observer.as_ref().filter(|_| !entries.is_empty()) {
+                    observer.phase("onSettled.journal.reconcileSession")?;
+                }
                 locked
-                    .on_settled_with_provenance(
+                    .on_settled_observed(
                         context.session_manager.session_id(),
                         &entries,
                         &api,
                         now() as i64,
                         Some(&mut ui),
+                        signal.as_ref(),
                         |session, error| {
                             warn(&format!("journal reconcile failed: {session}: {error}"))
                         },
@@ -1317,6 +1325,108 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    struct BranchSession(Vec<maho_ext_api::SessionEntry>);
+    impl maho_ext_api::ToolSessionManager for BranchSession {
+        fn session_id(&self) -> &str {
+            "session"
+        }
+        fn session_file(&self) -> Option<&std::path::Path> {
+            None
+        }
+    }
+    impl maho_ext_api::SessionManager for BranchSession {
+        fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> {
+            self.0.clone()
+        }
+        fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
+            self.0.clone()
+        }
+        fn get_leaf_id(&self) -> Option<String> {
+            None
+        }
+        fn get_session_name(&self) -> Option<String> {
+            None
+        }
+    }
+    /// Runs the registered `agent_settled` handler once under `observer`; returns the transcript dir.
+    async fn settle_under_observer(
+        observer: maho_ext_api::SettleObserver,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let identity = crate::context::MemoryIdentityContext::new(
+            "agent".into(),
+            paths.clone(),
+            crate::binding::create_memory_binding("agent", "repo", 0.0),
+        );
+        let mut wiring = create_memory_wiring(MemoryWiringOptions {
+            runtime: Default::default(),
+            skills_usage: Default::default(),
+        });
+        wiring.runtime.contexts.insert("session".into(), identity);
+        let new_api = || {
+            maho_ext_api::ExtensionApi::new(
+                maho_ext_api::LoadedExtension::new(
+                    "memory",
+                    Default::default(),
+                    Default::default(),
+                ),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            )
+        };
+        let mut api = new_api();
+        register_settled_handler(
+            &mut api,
+            std::sync::Arc::new(tokio::sync::Mutex::new(wiring)),
+            std::sync::Arc::new(new_api()),
+            std::sync::Arc::new(|| 0.0),
+            std::sync::Arc::new(|message: &str| panic!("{message}")),
+        );
+        let entry = |id: &str, role: &str| maho_ext_api::SessionEntry {
+            id: id.into(),
+            parent_id: None,
+            timestamp: "2026-01-01T00:00:00.000Z".into(),
+            kind: "message".into(),
+            data: serde_json::json!({"type":"message","id":id,"message":{"role":role,"content":id}}),
+        };
+        let mut context = crate::commands::test_support::extension_context(Default::default());
+        context.session_manager = std::sync::Arc::new(BranchSession(vec![
+            entry("user", "user"),
+            entry("assistant", "assistant"),
+        ]));
+        let handler = api.registered.handlers[&maho_ext_api::EventKind::AgentSettled][0].clone();
+        let result = maho_ext_api::with_settle_observer(observer, async {
+            handler(&mut maho_ext_api::ExtensionEvent::AgentSettled, &context).await
+        })
+        .await;
+        (root, paths.transcripts.join("session"), result)
+    }
+    #[tokio::test]
+    async fn settled_handler_names_the_journal_phase_and_reconciles_under_a_live_observer() {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let observer = maho_ext_api::SettleObserver::new(controller.signal(), "onSettled");
+        let (_root, transcripts, result) = settle_under_observer(observer.clone()).await;
+        assert!(result.is_ok());
+        assert!(transcripts.exists());
+        assert_eq!(observer.hook_label(), "onSettled.journal.reconcileSession");
+    }
+    #[tokio::test]
+    async fn settled_handler_under_an_aborted_observer_journals_nothing() {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let observer = maho_ext_api::SettleObserver::new(controller.signal(), "onSettled");
+        let (_root, transcripts, result) = settle_under_observer(observer.clone()).await;
+        assert!(result.is_err());
+        assert!(!transcripts.exists());
+        assert_eq!(observer.hook_label(), "onSettled");
     }
 
     #[test]
