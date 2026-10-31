@@ -241,6 +241,13 @@ mod tests {
             "{elapsed:?}"
         );
     }
+    /// Bounds a wait on the change channel so a missing expiry timer fails the test instead of hanging it.
+    async fn next_change(changed: &mut tokio::sync::mpsc::UnboundedReceiver<bool>) -> Option<bool> {
+        let bound = std::time::Duration::from_millis(LONG_CONTEXT_REFUSAL_TTL_MS * 2);
+        tokio::time::timeout(bound, changed.recv())
+            .await
+            .expect("long-context change was not delivered")
+    }
     #[tokio::test(start_paused = true)]
     async fn an_expired_refusal_offers_the_long_context_window_again() {
         let dir = tempfile::tempdir().expect("dir");
@@ -255,10 +262,10 @@ mod tests {
         });
         let started = tokio::time::Instant::now();
         long_context.mark_refused();
-        assert_eq!(changed.recv().await, Some(false));
+        assert_eq!(next_change(&mut changed).await, Some(false));
         assert!(!long_context.available());
         // Paused time auto-advances to the expiry timer and no further.
-        assert_eq!(changed.recv().await, Some(true));
+        assert_eq!(next_change(&mut changed).await, Some(true));
         assert_expired_at_ttl(started);
         clock.fetch_add(
             LONG_CONTEXT_REFUSAL_TTL_MS,
@@ -273,7 +280,7 @@ mod tests {
         });
         let started = tokio::time::Instant::now();
         assert!(!reloaded.available());
-        assert_eq!(changed.recv().await, Some(true));
+        assert_eq!(next_change(&mut changed).await, Some(true));
         assert_expired_at_ttl(started);
     }
 }
