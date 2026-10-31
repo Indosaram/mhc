@@ -84,8 +84,8 @@ pub trait SupervisorTeardown: Send {
     /// Stops the idle ticker, the supersession watch, the drain-request watch and the win32 identity watchdog.
     fn stop_watchers(&mut self);
     /// Closes the listener, removes the internal hop directory, unlinks the owned public entry and releases the
-    /// generation's registration.
-    async fn release(&mut self) -> std::io::Result<()>;
+    /// generation's registration. `exit_code` is the code a bounded (win32) cleanup exits with.
+    async fn release(&mut self, exit_code: i32) -> std::io::Result<()>;
     /// Kills a child the failed shutdown left behind.
     async fn reap_child_after_failure(&mut self) -> std::io::Result<()>;
     /// Removes this launch's endpoint key record.
@@ -112,7 +112,7 @@ pub async fn perform_shutdown(
         // The startup caller reports its failure; this join only waits until its writes have stopped.
         state.join_startup().await;
         teardown.stop_watchers();
-        teardown.release().await
+        teardown.release(exit_code).await
     }
     .await;
     if let Err(cause) = result {
@@ -135,6 +135,122 @@ pub async fn perform_shutdown(
         supervisor_log(&format!("endpoint key cleanup failed: {cause}"));
     }
     exit_code
+}
+
+/// The supervisor's signal watch: `Some(exit code)` once a shutdown signal arrived.
+pub type StopRequests = tokio::sync::watch::Receiver<Option<i32>>;
+
+/// The shutdown reason a signal exit code stands for (`signal:SIGTERM` is 143, `signal:SIGHUP` 129).
+pub fn signal_shutdown_reason(code: i32) -> String {
+    match code {
+        143 => "signal:SIGTERM".to_owned(),
+        129 => "signal:SIGHUP".to_owned(),
+        code => format!("signal:{code}"),
+    }
+}
+
+/// Settles with the exit code of the first stop request; never settles once the signal watch is gone.
+async fn stop_requested(stop: &mut StopRequests) -> i32 {
+    let code = stop
+        .wait_for(Option::is_some)
+        .await
+        .ok()
+        .map(|code| (*code).unwrap_or(0));
+    match code {
+        Some(code) => code,
+        None => std::future::pending().await,
+    }
+}
+
+enum StartupInterrupted {
+    Stop(i32),
+    Failed(std::io::Error),
+}
+
+async fn shutdown_startup(
+    teardown: &mut dyn SupervisorTeardown,
+    state: &SupervisorState,
+    interrupted: StartupInterrupted,
+) -> i32 {
+    match interrupted {
+        StartupInterrupted::Stop(code) => {
+            perform_shutdown(teardown, state, &signal_shutdown_reason(code), code).await
+        }
+        StartupInterrupted::Failed(cause) => {
+            perform_shutdown(teardown, state, &format!("startup failed: {cause}"), 1).await
+        }
+    }
+}
+
+/// senpi `runHostSupervisor` startup: the signals are already registered, so a stop arriving during readiness or
+/// startup publication runs the same shutdown instead of the default kill, and the shutdown joins publication
+/// before it removes what publication writes into. Every startup failure is routed through [`perform_shutdown`]
+/// (`startup failed: ...`, exit 1), so the child is stopped and the endpoint key disposed. Answers what
+/// publication produced, or the exit code of the shutdown that ended startup.
+pub async fn drive_startup<T, P>(
+    state: &std::sync::Arc<SupervisorState>,
+    teardown: &mut T,
+    stop: &mut StopRequests,
+    readiness: impl AsyncFnOnce(&mut T) -> std::io::Result<()>,
+    publication: impl std::future::Future<Output = std::io::Result<P>>,
+) -> Result<P, i32>
+where
+    T: SupervisorTeardown,
+{
+    let ready = {
+        let readiness = readiness(&mut *teardown);
+        tokio::select! {
+            biased;
+            code = stop_requested(stop) => Err(StartupInterrupted::Stop(code)),
+            result = readiness => result.map_err(StartupInterrupted::Failed),
+        }
+    };
+    if let Err(interrupted) = ready {
+        return Err(shutdown_startup(&mut *teardown, state, interrupted).await);
+    }
+    // senpi `if (state.shuttingDown) return`: a stop that is already pending publishes nothing.
+    let pending = *stop.borrow();
+    if let Some(code) = pending {
+        return Err(shutdown_startup(&mut *teardown, state, StartupInterrupted::Stop(code)).await);
+    }
+    // Only this startup begins shutdown before the supervisor loop, so publication can always begin here.
+    let Some(publishing) = state.begin_startup() else {
+        return Err(0);
+    };
+    let publication = async move {
+        let _publishing = publishing;
+        publication.await
+    };
+    tokio::pin!(publication);
+    let outcome = tokio::select! {
+        biased;
+        code = stop_requested(stop) => Err(code),
+        result = &mut publication => Ok(result),
+    };
+    let published = match outcome {
+        Err(code) => {
+            // Stop the child at once; the shutdown joins the publication writes still in flight.
+            let reason = signal_shutdown_reason(code);
+            let (_, exit_code) = tokio::join!(
+                &mut publication,
+                perform_shutdown(&mut *teardown, state, &reason, code)
+            );
+            return Err(exit_code);
+        }
+        Ok(Err(cause)) => {
+            return Err(
+                shutdown_startup(&mut *teardown, state, StartupInterrupted::Failed(cause)).await,
+            );
+        }
+        Ok(Ok(published)) => published,
+    };
+    // A stop that arrived while publication ran without yielding is honoured before the host is announced.
+    let stopped = *stop.borrow();
+    if let Some(code) = stopped {
+        drop(published);
+        return Err(shutdown_startup(&mut *teardown, state, StartupInterrupted::Stop(code)).await);
+    }
+    Ok(published)
 }
 
 #[cfg(test)]
@@ -174,7 +290,7 @@ mod tests {
         fn stop_watchers(&mut self) {
             self.note("stop_watchers");
         }
-        async fn release(&mut self) -> std::io::Result<()> {
+        async fn release(&mut self, _exit_code: i32) -> std::io::Result<()> {
             self.note("release");
             if self.release_fails {
                 return Err(std::io::Error::other("release refused"));
@@ -254,5 +370,158 @@ mod tests {
         assert_eq!(steps.last(), Some(&"dispose_public_endpoint"));
         // The child stop had started, so recovery only re-awaits its exit record.
         assert!(!steps.contains(&"reap"));
+    }
+
+    fn fake(recorded: &std::sync::Arc<Recorded>) -> FakeTeardown {
+        FakeTeardown {
+            recorded: recorded.clone(),
+            release_fails: false,
+        }
+    }
+
+    const FULL_SHUTDOWN: [&str; 6] = [
+        "stop_admission",
+        "stop_child",
+        "child_exit_recorded",
+        "stop_watchers",
+        "release",
+        "dispose_public_endpoint",
+    ];
+
+    /// senpi#4216: the signals are registered before startup, so a SIGTERM arriving while startup publication writes
+    /// runs the shutdown; it stops the child at once and releases the generation only after publication stopped.
+    #[tokio::test]
+    async fn a_stop_during_startup_publication_runs_the_shutdown_and_joins_publication() {
+        let state = std::sync::Arc::new(SupervisorState::default());
+        let recorded = std::sync::Arc::new(Recorded::default());
+        let mut teardown = fake(&recorded);
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(None);
+        let (began_tx, began) = tokio::sync::oneshot::channel::<()>();
+        let (finish_tx, finish) = tokio::sync::oneshot::channel::<()>();
+        let child_stopped = recorded.child_stopped.notified();
+        let startup = drive_startup(
+            &state,
+            &mut teardown,
+            &mut stop_rx,
+            async |_: &mut FakeTeardown| -> std::io::Result<()> { Ok(()) },
+            async move {
+                let _ = began_tx.send(());
+                let _ = finish.await;
+                std::io::Result::Ok("published")
+            },
+        );
+        let driver = async {
+            began.await.unwrap();
+            stop_tx.send_replace(Some(143));
+            child_stopped.await;
+            assert!(state.shutting_down());
+            assert!(!recorded.steps.lock().unwrap().contains(&"release"));
+            finish_tx.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(startup, driver);
+        assert_eq!(result, Err(143));
+        assert_eq!(*recorded.steps.lock().unwrap(), FULL_SHUTDOWN);
+        assert_eq!(state.shutdown_reason().as_deref(), Some("signal:SIGTERM"));
+    }
+
+    /// A stop while the child is still becoming ready shuts down and never begins publication.
+    #[tokio::test]
+    async fn a_stop_before_readiness_shuts_down_without_publishing() {
+        let state = std::sync::Arc::new(SupervisorState::default());
+        let recorded = std::sync::Arc::new(Recorded::default());
+        let mut teardown = fake(&recorded);
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(None);
+        let (probing_tx, probing) = tokio::sync::oneshot::channel::<()>();
+        let published = std::sync::atomic::AtomicBool::new(false);
+        let startup = drive_startup(
+            &state,
+            &mut teardown,
+            &mut stop_rx,
+            async move |_: &mut FakeTeardown| -> std::io::Result<()> {
+                let _ = probing_tx.send(());
+                std::future::pending().await
+            },
+            async {
+                published.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::io::Result::Ok(())
+            },
+        );
+        let driver = async {
+            probing.await.unwrap();
+            stop_tx.send_replace(Some(129));
+        };
+        let (result, ()) = tokio::join!(startup, driver);
+        assert_eq!(result, Err(129));
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(*recorded.steps.lock().unwrap(), FULL_SHUTDOWN);
+        assert_eq!(state.shutdown_reason().as_deref(), Some("signal:SIGHUP"));
+    }
+
+    /// A failed bind/chmod/publish/adopt is `startup failed`: the child is stopped and the key record disposed.
+    #[tokio::test]
+    async fn a_startup_publication_failure_stops_the_child_and_disposes_the_key() {
+        let state = std::sync::Arc::new(SupervisorState::default());
+        let recorded = std::sync::Arc::new(Recorded::default());
+        let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(None);
+        let result: Result<(), i32> = drive_startup(
+            &state,
+            &mut fake(&recorded),
+            &mut stop_rx,
+            async |_: &mut FakeTeardown| -> std::io::Result<()> { Ok(()) },
+            async { Err(std::io::Error::other("bind refused")) },
+        )
+        .await;
+        assert_eq!(result, Err(1));
+        assert_eq!(*recorded.steps.lock().unwrap(), FULL_SHUTDOWN);
+        assert_eq!(
+            state.shutdown_reason().as_deref(),
+            Some("startup failed: bind refused")
+        );
+    }
+
+    /// A readiness failure (child exited, timed out, registration unwritable) is routed the same way.
+    #[tokio::test]
+    async fn a_readiness_failure_stops_the_child_through_the_shutdown() {
+        let published = std::sync::atomic::AtomicBool::new(false);
+        let state = std::sync::Arc::new(SupervisorState::default());
+        let recorded = std::sync::Arc::new(Recorded::default());
+        let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(None);
+        let result: Result<(), i32> = drive_startup(
+            &state,
+            &mut fake(&recorded),
+            &mut stop_rx,
+            async |_: &mut FakeTeardown| -> std::io::Result<()> {
+                Err(std::io::Error::other(
+                    "supervised host did not become ready",
+                ))
+            },
+            async {
+                published.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::io::Result::Ok(())
+            },
+        )
+        .await;
+        assert_eq!(result, Err(1));
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(*recorded.steps.lock().unwrap(), FULL_SHUTDOWN);
+    }
+
+    /// Without a stop, startup answers what publication produced and nothing is torn down.
+    #[tokio::test]
+    async fn an_undisturbed_startup_answers_the_publication() {
+        let state = std::sync::Arc::new(SupervisorState::default());
+        let recorded = std::sync::Arc::new(Recorded::default());
+        let (_stop_tx, mut stop_rx) = tokio::sync::watch::channel(None);
+        let result = drive_startup(
+            &state,
+            &mut fake(&recorded),
+            &mut stop_rx,
+            async |_: &mut FakeTeardown| -> std::io::Result<()> { Ok(()) },
+            async { std::io::Result::Ok(7) },
+        )
+        .await;
+        assert_eq!(result, Ok(7));
+        assert!(recorded.steps.lock().unwrap().is_empty());
+        assert!(!state.shutting_down());
     }
 }
