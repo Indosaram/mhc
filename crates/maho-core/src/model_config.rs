@@ -24,9 +24,10 @@ impl ModelConfig {
             Err(error) => return Self { error: Some(format!("Invalid models.json schema:\n  - {error}\n\nFile: {path}")), ..Self::default() },
         };
         let mut providers = IndexMap::new();
-        for (id, provider) in config.providers {
+        for (id, mut provider) in config.providers {
             let canonical = normalize_provider_id(&id);
             if canonical != id && providers.contains_key(&canonical) { continue; }
+            crate::model_reference_origins::remember_model_reference_origins(&mut provider, path, &id);
             providers.insert(canonical, provider);
         }
         Self { providers, disabled_providers: config.disabled_providers.unwrap_or_default().iter().map(|id| normalize_provider_id(id)).collect(), ..Self::default() }
