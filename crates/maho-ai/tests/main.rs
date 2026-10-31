@@ -53,6 +53,8 @@ pub mod replay_misc;
 pub mod replay_support;
 #[path = "task_13_qa.rs"]
 pub mod task_13_qa;
+#[path = "tool_call_middleware_truncation_e2e.rs"]
+pub mod tool_call_middleware_truncation_e2e;
 
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "anthropic_common/mod.rs"]
