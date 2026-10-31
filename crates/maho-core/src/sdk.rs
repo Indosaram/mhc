@@ -508,7 +508,11 @@ pub async fn create_agent_session(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     let provider_retry_settings = settings.get_provider_retry_settings();
+    // senpi sdk.ts: one internal channel per session, handed to both the Agent and the AgentSession at construction
+    // and never exported.
+    let internal_channel = maho_agent::create_internal_agent_channel();
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
+        internal_channel: Some(internal_channel.clone()),
         initial_state: Some(maho_agent::agent::PartialAgentState {
             model,
             thinking_level: Some(thinking_level),
@@ -610,7 +614,7 @@ pub async fn create_agent_session(
         .as_ref()
         .map(|loaded| loaded.runtime.flag_values())
         .unwrap_or_default();
-    let session = crate::agent_session::AgentSession::new_with_tool_runtime(
+    let session = crate::agent_session::AgentSession::new_with_internal_channel(
         crate::agent_session::AgentSessionConfig {
             agent,
             session_manager: manager,
@@ -638,6 +642,7 @@ pub async fn create_agent_session(
             auto_title_sessions: options.auto_title_sessions,
         },
         options.tool_runtime,
+        Some(internal_channel),
     )
     .map_err(|error| error.to_string())?;
     // senpi `new AgentSession({ promptSurface, browserEngine })`: set before the first prompt is built.

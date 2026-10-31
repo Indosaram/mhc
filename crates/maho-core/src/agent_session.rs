@@ -987,6 +987,8 @@ pub struct AgentSessionInner {
     lifecycle_activity: Mutex<crate::session_lifecycle::LifecycleActivity>,
     /// senpi `_recoveryIdentity`: present only under compact updates; mints each message's recovery carrier.
     recovery_identity: Mutex<Option<crate::session_recovery_identity::SessionRecoveryIdentity>>,
+    /// senpi `_structuredLane` (senpi#4272).
+    structured_lane: crate::structured_session_lane::StructuredSessionLane,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -3867,8 +3869,18 @@ impl AgentSession {
     /// senpi `new AgentSession({ ..., toolRuntime })`: `None` is the `in-process` runtime. Kept beside `new`
     /// so the many `AgentSessionConfig` literals that never choose a runtime stay valid.
     pub fn new_with_tool_runtime(
+        config: AgentSessionConfig,
+        tool_runtime: Option<crate::tool_dispatch::tool_dispatcher::ToolRuntimeKind>,
+    ) -> Result<Self, MissingModelAccessError> {
+        Self::new_with_internal_channel(config, tool_runtime, None)
+    }
+
+    /// senpi `new AgentSession({ ..., internalChannel })`: the channel sdk.ts created and handed to this session's
+    /// Agent at construction; the structured lane reads it, nothing else does.
+    pub fn new_with_internal_channel(
         mut config: AgentSessionConfig,
         tool_runtime: Option<crate::tool_dispatch::tool_dispatcher::ToolRuntimeKind>,
+        internal_channel: Option<maho_agent::InternalAgentChannel>,
     ) -> Result<Self, MissingModelAccessError> {
         if config
             .flag_values
@@ -4212,6 +4224,9 @@ impl AgentSession {
                 lifecycle_turn_facts: Mutex::new(None),
                 lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
                 lifecycle_activity: Mutex::new(Default::default()),
+                structured_lane: crate::structured_session_lane::StructuredSessionLane::new(
+                    internal_channel,
+                ),
                 recovery_identity: Mutex::new(
                     crate::engine_socket_flag::compact_updates_enabled()
                         .then(crate::session_recovery_identity::SessionRecoveryIdentity::default),
@@ -18526,6 +18541,22 @@ impl AgentSession {
         for (_, listener) in listeners.iter() {
             listener(&event);
         }
+        if self.structured_lane.active() {
+            self.structured_lane.emit_event(&event);
+        }
+    }
+
+    /// The internal structured lane (senpi#4272): every session event in `emit` order with its provider capture, plus
+    /// block controls at their position. Attach before a turn's first provider push; a stream already pushing keeps
+    /// its decision and yields no capture.
+    pub fn subscribe_structured(
+        &self,
+        listener: crate::structured_session_lane::StructuredListener,
+    ) -> Result<
+        crate::structured_session_lane::StructuredSubscription,
+        crate::structured_session_lane::StructuredLaneUnavailableError,
+    > {
+        self.structured_lane.subscribe(listener)
     }
 
     fn estimate_compaction_log_tokens(&self, source: &str) -> Option<u64> {
@@ -18876,6 +18907,7 @@ impl AgentSession {
         if self.state().disposed {
             return;
         }
+        self.structured_lane.dispose();
         lock(&self.inner.nested_host_calls).clear();
         let disposers = std::mem::take(&mut *lock(&self.inner.tool_context_disposers));
         for dispose in disposers {
@@ -32459,6 +32491,146 @@ mod tests {
             session
                 .observe_recovery(&maho_agent::types::AgentEvent::MessageEnd { message })
                 .is_none()
+        );
+    }
+
+    /// senpi test/suite/regressions/4272-structured-lane-bridge.test.ts: the structured lane delivers the session's
+    /// events with their provider capture and each block control between the events around it (`subscribe` has no
+    /// control variant to see), and a session built without an internal channel refuses a structured listener.
+    #[tokio::test]
+    async fn the_structured_lane_orders_block_controls_among_session_events() {
+        use crate::structured_session_lane::AgentSessionStructuredRecord as Record;
+        use maho_ai::utils::assistant_capture::{
+            AssistantProgress, BlockPhase, get_assistant_capture, push_assistant_progress,
+        };
+        assert!(
+            test_session()
+                .subscribe_structured(Arc::new(|_: &Record| {}))
+                .is_err()
+        );
+        let channel = maho_agent::create_internal_agent_channel();
+        let stream_fn: maho_agent::types::StreamFn = Arc::new(|_, _, _| {
+            let stream =
+                maho_ai::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(
+                    true,
+                );
+            let mut partial =
+                maho_ai::providers::faux::faux_assistant_message("", Default::default());
+            partial.content.clear();
+            stream.push(maho_ai::types::AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            });
+            let native = maho_ai::types::ContentBlock::ProviderNative(
+                maho_ai::types::ProviderNativeContent {
+                    subtype: "fixture".into(),
+                    raw: json!({"value": 1}),
+                },
+            );
+            partial.content.push(native.clone());
+            push_assistant_progress(
+                &stream,
+                AssistantProgress::block_state(0, BlockPhase::Insert, &native),
+            );
+            stream.push(maho_ai::types::AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: partial.clone(),
+            });
+            stream.end(Some(partial));
+            stream
+        });
+        let agent = Agent::new(maho_agent::AgentOptions {
+            internal_channel: Some(channel.clone()),
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        });
+        let session = AgentSession::new_with_internal_channel(
+            AgentSessionConfig {
+                agent,
+                session_manager: SessionManager::in_memory("/tmp", None, None),
+                settings_manager: SettingsManager::from_storage(
+                    Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                    false,
+                ),
+                cwd: "/tmp".to_owned(),
+                agent_dir: Some("/tmp/maho-agent".to_owned()),
+                fallback_now: None,
+                retry_random: None,
+                scoped_models: Vec::new(),
+                favorite_models: Vec::new(),
+                flag_values: BTreeMap::new(),
+                custom_tools: Vec::new(),
+                model_runtime: Some(
+                    ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+                        providers: Some(Vec::new()),
+                        ..Default::default()
+                    })
+                    .expect("valid model runtime"),
+                ),
+                model_registry: None,
+                uses_default_stream_function: Some(false),
+                initial_active_tool_names: None,
+                default_tool_names: None,
+                eval_only_tool_names: None,
+                allowed_tool_names: None,
+                excluded_tool_names: None,
+                base_tools_override: None,
+                session_start_event: None,
+                auto_title_sessions: None,
+            },
+            None,
+            Some(channel),
+        )
+        .expect("session");
+        let structured = Arc::new(Mutex::new(Vec::new()));
+        let seen = structured.clone();
+        let subscription = session
+            .subscribe_structured(Arc::new(move |record: &Record| {
+                let label = match record {
+                    Record::Progress(_) => ("progress".to_owned(), false),
+                    Record::Event(event) => match &event.value {
+                        AgentSessionEvent::Agent(agent) => (
+                            serde_json::to_value(agent).expect("event json")["type"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                            get_assistant_capture(event).is_some(),
+                        ),
+                        _ => ("session".to_owned(), false),
+                    },
+                };
+                lock(&seen).push(label);
+            }))
+            .expect("the session layer owns the channel");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session
+                .agent
+                .prompt(maho_agent::AgentPromptInput::text("go")),
+        )
+        .await
+        .expect("bounded turn");
+        drop(subscription);
+        let structured = lock(&structured).clone();
+        let labels: Vec<_> = structured.iter().map(|(label, _)| label.as_str()).collect();
+        let progress = labels
+            .iter()
+            .position(|label| *label == "progress")
+            .expect("the block control reached the structured lane");
+        let assistant_start = labels
+            .iter()
+            .rposition(|label| *label == "message_start")
+            .expect("assistant message_start");
+        let assistant_end = labels
+            .iter()
+            .rposition(|label| *label == "message_end")
+            .expect("assistant message_end");
+        assert!(
+            assistant_start < progress && progress < assistant_end,
+            "{labels:?}"
+        );
+        assert!(
+            structured[assistant_start].1,
+            "the assistant start carries its provider capture"
         );
     }
 
