@@ -151,14 +151,11 @@ async fn open_endpoint(
     // write and the bind instead of running inside the registry lock.
     drop(maho_rpc::host_daemon_registration::this_process_start_time());
     // Bound while the header is written, awaited before the endpoint is registered.
-    // mhc's `AgentSession` has no `persistHeaderNow`; maho-rpc's release adapter writes the header from
-    // the manager's own header and entries, as a host release does.
+    // senpi `sessionManager.persistHeaderNow()`: the manager writes its header and records the file as
+    // the one this process created, which the header-only rule may later remove.
     let header_session = session.clone();
-    let header_durable = tokio::spawn(async move {
-        use maho_rpc::session_release_interrupt::ReleasableSession;
-        maho_rpc::session_release_adapter::AgentSessionRelease::new((*header_session).clone())
-            .persist_header_now()
-            .await
+    let header_durable = tokio::task::spawn_blocking(move || {
+        header_session.with_session_manager_mut(|manager| manager.persist_header_now())
     });
     let instance_id = uuid::Uuid::new_v4().to_string();
     let socket = resolve_tui_socket(agent_dir, &instance_id)?;

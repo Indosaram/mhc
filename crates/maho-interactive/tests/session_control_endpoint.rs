@@ -92,10 +92,28 @@ struct Fixture {
 async fn start_endpoint(
     drain: Option<maho_core::extensions::session_control_types::SessionControlDrain>,
 ) -> Fixture {
+    start_endpoint_with(drain, false, None).await
+}
+
+/// `persisted`: a session file under the fixture directory (senpi `persistSession: true`).
+async fn start_endpoint_with(
+    drain: Option<maho_core::extensions::session_control_types::SessionControlDrain>,
+    persisted: bool,
+    is_session_referenced: Option<
+        maho_core::extensions::session_control_types::IsSessionReferenced,
+    >,
+) -> Fixture {
     let (mode, directory, session) =
         crate::runtime35_native::native_mode_with_session_and_provider_retaining_session(
             None,
-            |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+            |cwd| {
+                if persisted {
+                    let sessions = format!("{cwd}/sessions");
+                    maho_core::session_manager::SessionManager::create(cwd, Some(&sessions), None)
+                } else {
+                    maho_core::session_manager::SessionManager::in_memory(cwd, None, None)
+                }
+            },
             "faux",
             "faux-1",
             false,
@@ -121,7 +139,7 @@ async fn start_endpoint(
                 drain(event)
             },
         ),
-        is_session_referenced: None,
+        is_session_referenced,
     };
     let context = TuiControlContext {
         session: session.clone(),
@@ -756,4 +774,53 @@ async fn a_wake_is_emitted_into_the_sessions_extensions_before_the_drain() {
         lock(&fixture.surface.notices)
     );
     fixture.endpoint.dispose().await;
+}
+
+// senpi interactive-session-control-lifecycle.test.ts: the header-only rule at clean exit.
+#[tokio::test]
+async fn keeps_a_referenced_header_only_session_file_and_removes_an_unreferenced_one() {
+    for referenced in [true, false] {
+        let fixture = start_endpoint_with(
+            None,
+            true,
+            Some(Arc::new(
+                move || -> futures::future::BoxFuture<'static, bool> {
+                    Box::pin(async move { referenced })
+                },
+            )),
+        )
+        .await;
+        let file = fixture.session.session_file().expect("session file");
+        let header = std::fs::read_to_string(&file).expect("header written");
+        assert_eq!(header.trim().lines().count(), 1, "{header}");
+        fixture.endpoint.dispose().await;
+        assert_eq!(std::path::Path::new(&file).exists(), referenced);
+    }
+}
+
+#[tokio::test]
+async fn keeps_the_file_after_a_delivery_was_applied_even_when_unreferenced() {
+    let fixture = start_endpoint_with(
+        None,
+        true,
+        Some(Arc::new(|| -> futures::future::BoxFuture<'static, bool> {
+            Box::pin(async { false })
+        })),
+    )
+    .await;
+    fixture.session.with_session_manager_mut(|manager| {
+        manager.append_custom_message(
+            "session_control_delivery",
+            json!("m1"),
+            true,
+            Some(json!({"delivery_id": "d1"})),
+        )
+    });
+    let file = fixture.session.session_file().expect("session file");
+    fixture.endpoint.dispose().await;
+    assert!(
+        std::fs::read_to_string(&file)
+            .expect("kept")
+            .contains(r#""delivery_id":"d1""#)
+    );
 }
