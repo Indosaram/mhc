@@ -63,7 +63,7 @@ impl ProcessProbes for NativeProbes {
             .map_err(|error| ScheduleError::Invalid(error.to_string()))?
     }
 }
-fn read_process_start_ms(pid: u32, boot: u64) -> Result<Option<u64>> {
+pub(crate) fn read_process_start_ms(pid: u32, boot: u64) -> Result<Option<u64>> {
     #[cfg(target_os = "linux")]
     {
         let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {

@@ -292,6 +292,7 @@ pub enum AttachmentEvent {
 
 pub type RebindSession = Box<dyn Fn(&AgentSession) + Send + Sync>;
 pub type SessionInvalidateHook = Box<dyn Fn() + Send + Sync>;
+pub type SessionReplaceListener = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// Owns the current AgentSession plus its cwd-bound services.
 pub struct AgentSessionRuntime {
@@ -311,6 +312,11 @@ pub struct AgentSessionRuntime {
     browser_engine: Option<String>,
     /// The hold on the active session's file; released when the session is replaced or disposed.
     session_hold: std::sync::Mutex<Option<crate::schedule::runner_lease::SessionHold>>,
+    /// senpi `launchProfile.retryFallback`: re-applied to every replacement's settings.
+    retry_fallback: Option<serde_json::Value>,
+    /// senpi `sessionReplaceListeners`.
+    session_replace_listeners: std::sync::Mutex<Vec<(u64, SessionReplaceListener)>>,
+    next_replace_listener: std::sync::atomic::AtomicU64,
 }
 
 impl AgentSessionRuntime {
@@ -335,7 +341,50 @@ impl AgentSessionRuntime {
             prompt_surface: None,
             browser_engine: None,
             session_hold: std::sync::Mutex::new(None),
+            retry_fallback: None,
+            session_replace_listeners: std::sync::Mutex::new(Vec::new()),
+            next_replace_listener: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// senpi `setPermissionPreset`: the permission extension enforces it from the next tool call, and
+    /// later replacements (switch, new, fork) keep it. The Full-access project-trust sync
+    /// (senpi#3414/#3420) needs SettingsManager `trustFromFullAccess`, which maho-core does not carry yet.
+    pub async fn set_permission_preset(&mut self, preset: String) {
+        self.launch_profile
+            .get_or_insert_with(|| AgentSessionLaunchProfile {
+                cwd: self.services.cwd.clone(),
+                ..Default::default()
+            })
+            .permission_preset = Some(preset.clone());
+        self.session
+            .set_extension_flag_value("permission-preset", maho_ext_api::FlagValue::String(preset))
+            .await;
+    }
+
+    /// senpi `onBeforeSessionReplace`: runs while the current session is REPLACED (new, switch, fork,
+    /// import), after `session_shutdown` handlers and before the outgoing session is disposed. It never
+    /// runs from `dispose()`. Returns the id [`Self::remove_before_session_replace`] takes.
+    pub fn on_before_session_replace(&self, listener: SessionReplaceListener) -> u64 {
+        let id = self
+            .next_replace_listener
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.lock_replace_listeners().push((id, listener));
+        id
+    }
+
+    /// Removes a listener [`Self::on_before_session_replace`] added.
+    pub fn remove_before_session_replace(&self, id: u64) {
+        self.lock_replace_listeners()
+            .retain(|(listener, _)| *listener != id);
+    }
+
+    fn lock_replace_listeners(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<(u64, SessionReplaceListener)>> {
+        self.session_replace_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Names the host endpoint on this runtime's holder record and takes the hold for the active session
@@ -373,8 +422,10 @@ impl AgentSessionRuntime {
         self.browser_engine.as_deref()
     }
 
-    /// senpi `setRetryFallback`: overlays the fallback policy on this session's settings in memory.
-    pub fn set_retry_fallback(&self, profile: &serde_json::Value) {
+    /// senpi `setRetryFallback`: overlays the fallback policy on this session's settings in memory;
+    /// later replacements (switch, new, fork) keep it.
+    pub fn set_retry_fallback(&mut self, profile: &serde_json::Value) {
+        self.retry_fallback = Some(profile.clone());
         self.session.with_settings_manager_mut(|settings| {
             apply_retry_fallback_profile(settings, profile);
         });
@@ -728,7 +779,7 @@ impl AgentSessionRuntime {
         cwd: String,
         reason: maho_ext_api::SessionReason,
     ) -> Result<(), String> {
-        let settings = crate::settings_manager::SettingsManager::create(
+        let mut settings = crate::settings_manager::SettingsManager::create(
             &cwd,
             &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(),
@@ -738,6 +789,9 @@ impl AgentSessionRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_project_trusted(),
         );
+        if let Some(profile) = &self.retry_fallback {
+            apply_retry_fallback_profile(&mut settings, profile);
+        }
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let target_session_file = manager.session_file().map(str::to_owned);
         // The new session's file is held before anything is torn down (senpi switch path): a file that was
@@ -830,6 +884,14 @@ impl AgentSessionRuntime {
         self.session
             .runtime_shutdown_to(reason, target_session_file)
             .await;
+        let listeners: Vec<SessionReplaceListener> = self
+            .lock_replace_listeners()
+            .iter()
+            .map(|(_, listener)| listener.clone())
+            .collect();
+        for listener in listeners {
+            listener();
+        }
         if let Some(before) = &self.before_session_invalidate {
             before();
         }
@@ -842,6 +904,10 @@ impl AgentSessionRuntime {
         if let Some(engine) = &self.browser_engine {
             created.session.set_browser_engine(engine.clone());
         }
+        let preset = self
+            .launch_profile
+            .as_ref()
+            .and_then(|profile| profile.permission_preset.clone());
         let replacement = match self
             .session
             .replacement_extension_runner(&created.session)
@@ -868,6 +934,12 @@ impl AgentSessionRuntime {
                     prompt_size_inventory: inventory,
                     ..Default::default()
                 })
+                .await;
+        }
+        if let Some(preset) = preset {
+            created
+                .session
+                .set_extension_flag_value("permission-preset", maho_ext_api::FlagValue::String(preset))
                 .await;
         }
         self.session = created.session;
@@ -1705,6 +1777,55 @@ mod tests {
         assert_eq!(
             *seen.lock().expect("seen"),
             [maho_ext_api::EventKind::SessionExtensionsRemoved]
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_keeps_retry_fallback_and_permission_preset_and_runs_replace_listeners() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        let profile = serde_json::json!({"modelFallback": true, "fallbackChains": {"faux/faux-1": ["faux/faux-2"]}});
+        runtime.set_retry_fallback(&profile);
+        runtime.set_permission_preset("read-only".to_owned()).await;
+        let replaced = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = replaced.clone();
+        let listener = runtime.on_before_session_replace(std::sync::Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let retry = |runtime: &AgentSessionRuntime| {
+            runtime
+                .session()
+                .with_settings_manager(|settings| {
+                    settings.get().get("retry").map(|retry| {
+                        serde_json::json!({
+                            "modelFallback": retry.get("modelFallback"),
+                            "fallbackChains": retry.get("fallbackChains"),
+                        })
+                    })
+                })
+        };
+        assert_eq!(retry(&runtime), Some(profile.clone()));
+
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+        assert_eq!(replaced.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(retry(&runtime), Some(profile));
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("read-only".to_owned()))
+        );
+        assert_eq!(
+            runtime
+                .launch_profile()
+                .and_then(|profile| profile.permission_preset.as_deref()),
+            Some("read-only")
+        );
+
+        runtime.remove_before_session_replace(listener);
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+        runtime.dispose().await;
+        assert_eq!(
+            replaced.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a removed listener and dispose() never run it"
         );
     }
 

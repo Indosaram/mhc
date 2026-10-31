@@ -996,6 +996,9 @@ pub struct AgentSessionInner {
     /// Bumped each time a runner is installed, so a renderer snapshot keyed on it (with the
     /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
     extension_runner_epoch: AtomicU64,
+    /// senpi `_handlerTurnScope`: bumped per admitted run, so the turn deadline releases only the held
+    /// extension handler waits its own turn started (senpi#3650).
+    handler_turn_scope: Arc<AtomicU64>,
     event_bus: EventBus,
     event_listeners: SharedEventListeners,
     next_listener_id: Arc<AtomicU64>,
@@ -4240,6 +4243,7 @@ impl AgentSession {
                 state: Mutex::new(state),
                 extension_runner: tokio::sync::Mutex::new(None),
                 extension_runner_epoch: AtomicU64::new(0),
+                handler_turn_scope: Arc::new(AtomicU64::new(0)),
                 event_bus: EventBus::new(),
                 event_listeners: Arc::new(Mutex::new(Arc::new(Vec::new()))),
                 next_listener_id: Arc::new(AtomicU64::new(0)),
@@ -4510,6 +4514,7 @@ impl AgentSession {
                     state.abort_provenance.close_agent_end_boundary();
                     *lock(&self.custody_run_id) = uuid::Uuid::new_v4().to_string();
                     state.queued_input_ages.note_run_started();
+                    self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
                     *lock(&self.stop_interrupt) = None;
                     *lock(&self.lifecycle_turn_facts) = None;
                     self.external_admission.begin_turn();
@@ -7471,6 +7476,18 @@ impl AgentSession {
                 });
             }
         }
+    }
+
+    /// senpi `releaseHeldExtensionHandlers`: stop waiting on the current run's extension handlers that
+    /// still hold the turn (the turn deadline and an unhonoured abort call this, senpi#3650). Returns how
+    /// many waits were released.
+    pub async fn release_held_extension_handlers(&self) -> usize {
+        let scope = self.handler_turn_scope.load(Ordering::SeqCst);
+        self.extension_runner
+            .lock()
+            .await
+            .as_ref()
+            .map_or(0, |runner| runner.release_held_handlers(scope))
     }
 
     pub async fn abort(&self) {
@@ -14139,6 +14156,15 @@ impl AgentSession {
         self.state().flag_values.get(name).cloned()
     }
 
+    /// senpi `extensionRunner.setFlagValue(name, value)`: the bound runner's extensions read it from
+    /// their next call, and the session keeps it for a runner that binds later.
+    pub async fn set_extension_flag_value(&self, name: &str, value: FlagValue) {
+        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+            runner.runtime.set_flag(name, value.clone());
+        }
+        self.state().flag_values.insert(name.to_owned(), value);
+    }
+
     pub(crate) fn replacement_custom_tools(&self) -> Vec<ToolDefinition> {
         self.state().custom_tools.clone()
     }
@@ -16026,6 +16052,43 @@ impl AgentSession {
                 }
             })
         }));
+        // senpi `_applyExtensionBindings` `setEventHandlerBudget` (senpi#3650): the lifecycle handler
+        // budget comes from settings, every stall stage is logged and a warn-stage stall is shown, and
+        // a wait belongs to the run that started it.
+        let weak = Arc::downgrade(&self.inner);
+        let budget: maho_ext_host::runner::handler_budget::HandlerBudgetResolver =
+            Arc::new(move || {
+                let Some(inner) = weak.upgrade() else {
+                    return Ok(maho_ext_host::runner::handler_budget::ExtensionHandlerBudget::DEFAULT);
+                };
+                AgentSession { inner }.with_settings_manager(|manager| {
+                    Ok(maho_ext_host::runner::handler_budget::ExtensionHandlerBudget {
+                        warn_ms: manager.get_extension_event_handler_warn_ms()?,
+                        timeout_ms: manager.get_extension_event_handler_timeout_ms()?,
+                    })
+                })
+            });
+        let weak = Arc::downgrade(&self.inner);
+        let on_stall: maho_ext_host::runner::handler_budget::HandlerStallListener =
+            Arc::new(move |stall| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let session = AgentSession { inner };
+                crate::extension_handler_stall_report::report_extension_handler_stall(
+                    &crate::extension_handler_stall_report::ExtensionHandlerStall::from(stall),
+                    &session.session_logger,
+                    |message, _| {
+                        session.notify_ui(message, maho_ext_api::NotificationType::Warning);
+                    },
+                );
+            });
+        let scope = Arc::clone(&self.handler_turn_scope);
+        runner.set_event_handler_budget(
+            budget,
+            on_stall,
+            Some(Arc::new(move || scope.load(Ordering::SeqCst))),
+        );
         // senpi runner.ts: a slow `session_shutdown` handler warns through `console.warn`.
         runner.set_warning_listener(Some(Arc::new(|message: &str| {
             crate::output_guard::maho_write_stderr(&format!("{message}\n"));
@@ -26315,6 +26378,58 @@ mod tests {
         .expect("bounded reloads");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         session.dispose().await;
+    }
+
+    // senpi#3650: the session binds the runner's lifecycle handler budget, and its turn deadline / abort
+    // path releases the current run's held handler waits.
+    #[tokio::test]
+    async fn a_held_lifecycle_handler_is_released_through_the_session() {
+        let session = test_session();
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "extensionEventHandlerWarnMs".to_owned(),
+                json!(0),
+            )]))
+        });
+        let mut extension = maho_ext_api::LoadedExtension::new(
+            "<inline:held>",
+            session.cwd().into(),
+            Default::default(),
+        );
+        extension.handlers.insert(
+            maho_ext_api::EventKind::TurnStart,
+            vec![Arc::new(|_, _| {
+                Box::pin(std::future::pending::<
+                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                >())
+            })],
+        );
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+        assert_eq!(session.release_held_extension_handlers().await, 0);
+        let release = async {
+            // The emission registers its held wait on its first poll; release once it is held.
+            let mut released = 0;
+            while released == 0 {
+                tokio::task::yield_now().await;
+                released = session.release_held_extension_handlers().await;
+            }
+            released
+        };
+        let ((), released) = tokio::join!(
+            session.dispatch_extension_event(maho_ext_api::ExtensionEvent::TurnStart {
+                turn_index: 0,
+                timestamp: 0,
+            }),
+            release
+        );
+        assert_eq!(released, 1);
     }
 
     #[tokio::test]

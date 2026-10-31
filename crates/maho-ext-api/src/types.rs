@@ -7107,3 +7107,172 @@ mod memory_reporter_tests {
         assert!(runtime.memory_reporters("<memory-test>").is_empty());
     }
 }
+
+// senpi extensions/types.ts data shapes the index.ts barrel names that had no Rust counterpart
+// (census ledger-crates-maho-ext-api rows 01-03). Handler aliases and per-tool event narrowings stay
+// TS-only; see parity.d/9720.md.
+
+/// senpi `AgentActivityOutcome`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentActivityOutcome {
+    Completed,
+    Aborted,
+    Error,
+}
+
+/// senpi `CustomEntryDraft`, `CustomMessageEntryDraft`, `ContextEditEntryDraft` and
+/// `CompactionEntryDraft`, joined as senpi `SessionBoundaryDraft` on their `type` tag.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionBoundaryDraft {
+    Custom {
+        #[serde(rename = "customType")]
+        custom_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<JsonValue>,
+    },
+    CustomMessage {
+        #[serde(rename = "customType")]
+        custom_type: String,
+        /// `string | (TextContent | ImageContent)[]`.
+        content: JsonValue,
+        display: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<JsonValue>,
+    },
+    ContextEdit {
+        #[serde(rename = "targetId")]
+        target_id: String,
+        /// `{ content } | null`.
+        replacement: Option<JsonValue>,
+    },
+    Compaction {
+        summary: String,
+        /// None creates a self-retaining compaction that keeps no preceding entries.
+        #[serde(rename = "firstKeptEntryId")]
+        first_kept_entry_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<JsonValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+    },
+}
+
+/// senpi `BoundaryContextPreview`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryContextPreview {
+    pub context_entries: Vec<JsonValue>,
+    pub context_messages: Vec<JsonValue>,
+    pub llm_messages: Vec<JsonValue>,
+    pub pending_messages: Vec<JsonValue>,
+    pub can_continue: bool,
+}
+
+/// senpi `BoundaryState`, the payload of `agent_before_settle`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryState {
+    pub entries: Vec<SessionBoundaryDraft>,
+    #[serde(rename = "continue")]
+    pub should_continue: bool,
+    pub context: BoundaryContextPreview,
+    pub outcome: AgentActivityOutcome,
+}
+
+/// senpi `BoundaryResult`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<SessionBoundaryDraft>>,
+    #[serde(rename = "continue", default, skip_serializing_if = "Option::is_none")]
+    pub should_continue: Option<bool>,
+}
+
+/// senpi `ToolAnnotations`: MCP-style behavior hints a tool declares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+/// senpi `KernelPreludeContribution`: the required subset of [`KernelPrelude`].
+pub type KernelPreludeContribution = KernelPrelude;
+/// senpi `ProjectTrustEventDecision`.
+pub type ProjectTrustEventDecision = TrustDecision;
+/// senpi `ExecuteToolResult<TDetails>`.
+pub type ExecuteToolResult = AgentToolResult;
+/// senpi `ExecuteToolUpdateCallback`.
+pub type ExecuteToolUpdateCallback = AgentToolUpdateCallback;
+/// senpi runner.ts `ExtensionToolHookName`, `ExtensionToolHookLifecycleStatus`,
+/// `ExtensionToolHookLifecycleEvent` and `ExtensionToolHookLifecycleObserver`.
+pub type ExtensionToolHookName = ToolHookName;
+pub type ExtensionToolHookLifecycleStatus = ToolHookStatus;
+pub type ExtensionToolHookLifecycleEvent = ToolHookLifecycleEvent;
+pub type ExtensionToolHookLifecycleObserver = Arc<dyn Fn(&ToolHookLifecycleEvent) + Send + Sync>;
+
+#[cfg(test)]
+mod boundary_draft_tests {
+    use super::*;
+
+    #[test]
+    fn boundary_drafts_and_state_keep_the_senpi_wire_shape() {
+        let drafts: Vec<SessionBoundaryDraft> = serde_json::from_value(serde_json::json!([
+            { "type": "custom", "customType": "note", "data": { "a": 1 } },
+            { "type": "custom_message", "customType": "m", "content": "hi", "display": true },
+            { "type": "context_edit", "targetId": "e1", "replacement": null },
+            { "type": "compaction", "summary": "s", "firstKeptEntryId": null }
+        ]))
+        .expect("drafts");
+        assert!(matches!(
+            &drafts[2],
+            SessionBoundaryDraft::ContextEdit {
+                replacement: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &drafts[3],
+            SessionBoundaryDraft::Compaction {
+                first_kept_entry_id: None,
+                ..
+            }
+        ));
+        let state = BoundaryState {
+            entries: drafts,
+            should_continue: false,
+            context: BoundaryContextPreview::default(),
+            outcome: AgentActivityOutcome::Aborted,
+        };
+        let wire = serde_json::to_value(&state).expect("state");
+        assert_eq!(wire["continue"], false);
+        assert_eq!(wire["outcome"], "aborted");
+        assert_eq!(wire["context"]["canContinue"], false);
+        assert_eq!(wire["entries"][0]["customType"], "note");
+        assert_eq!(
+            serde_json::to_value(BoundaryResult::default()).expect("result"),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn tool_annotations_use_camel_case_hints() {
+        let annotations: ToolAnnotations = serde_json::from_value(
+            serde_json::json!({ "readOnlyHint": true, "openWorldHint": false }),
+        )
+        .expect("annotations");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.destructive_hint, None);
+        assert_eq!(
+            serde_json::to_value(annotations).expect("wire"),
+            serde_json::json!({ "readOnlyHint": true, "openWorldHint": false })
+        );
+    }
+}
