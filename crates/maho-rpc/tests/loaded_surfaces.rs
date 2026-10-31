@@ -20,6 +20,7 @@ fn snapshot(name: &str) -> McpWireStatusSnapshot {
         servers: vec![McpWireStatusServer {
             name: name.into(),
             server_info: None,
+            last_error: None,
             tools: Vec::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
