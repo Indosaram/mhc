@@ -27246,13 +27246,20 @@ mod tests {
             crate::turn_deadline::TurnDeadlineKind::MaxRuntime
         );
         assert_eq!(deadline.limit_ms, 1_000);
-        let pending = session.with_session_manager(|manager| {
-            crate::turn_deadline::deadline_stop_pending_since_last_turn(&manager.branch(None))
+        // The held handler is turn_start, which runs before the prompt's own message is appended, so the
+        // durable entry is found on the branch rather than as a stop pending after the last user message.
+        let recorded: Vec<Value> = session.with_session_manager(|manager| {
+            manager
+                .branch(None)
+                .into_iter()
+                .filter(|entry| {
+                    entry["customType"] == crate::turn_deadline::TURN_DEADLINE_ENTRY_TYPE
+                })
+                .collect()
         });
-        assert_eq!(
-            pending.map(|stop| stop.kind),
-            Some(crate::turn_deadline::TurnDeadlineKind::MaxRuntime)
-        );
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0]["data"]["kind"], "max_runtime");
+        assert_eq!(recorded[0]["data"]["limitMs"], 1_000);
         let captured = lock(&session.lifecycle_deadline_stop)
             .clone()
             .expect("the lifecycle captured the stop");
