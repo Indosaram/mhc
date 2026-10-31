@@ -28,6 +28,9 @@ pub struct SessionEventFanout {
     /// Host-level `session_status` subscriptions (senpi `SessionEventWriter.status`); shared so a caller holding the
     /// fanout lock can use the fanout itself as the stream's delivery.
     pub status: std::sync::Arc<std::sync::Mutex<crate::session_status_source::SessionStatusHub>>,
+    /// senpi `onConnectionClosed`: told about every connection the fanout reaps after its queue failed. It runs
+    /// under the fanout lock, so it must not re-enter the fanout.
+    on_connection_closed: Option<ConnectionClosed>,
 }
 impl crate::session_status_stream::SessionStatusDelivery for SessionEventFanout {
     fn enqueue(&self, connection_id: &str, line: &str) -> bool {
@@ -46,6 +49,8 @@ pub type SharedAcceptanceLanes = std::sync::Arc<
         >,
     >,
 >;
+/// See [`SessionEventFanout::set_on_connection_closed`].
+pub type ConnectionClosed = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 /// Per-connection attachments and each session's latest in-flight message line, kept only while some connection
 /// negotiated `event_resync` (senpi `resyncSnapshot` reads `connectionSessions` and `sessionSnapshots`).
 #[derive(Default)]
@@ -213,6 +218,17 @@ impl SessionEventFanout {
         self.targets.register(id);
         self.actors.insert(id.into(), actor);
     }
+    /// senpi `onConnectionClosed`: the host's hook for connections this fanout reaps on a failed queue.
+    pub fn set_on_connection_closed(&mut self, hook: ConnectionClosed) {
+        self.on_connection_closed = Some(hook);
+    }
+    /// Unregisters a connection whose queue failed and tells the host (senpi `onConnectionClosed`).
+    fn reap(&mut self, id: &str) {
+        self.unregister(id);
+        if let Some(hook) = &self.on_connection_closed {
+            hook(id);
+        }
+    }
     pub fn unregister(&mut self, id: &str) {
         self.status
             .lock()
@@ -266,7 +282,7 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         Ok(None)
     }
@@ -305,6 +321,14 @@ impl SessionEventFanout {
     pub fn pending_question_count(&self, session: &str) -> usize {
         self.snapshots.question_count(session)
     }
+    /// Writes one private record raw on a registered connection (senpi `connection.writeRaw`), outside the event
+    /// queue, its overflow preview and recovery shedding; `false` when the connection has no live actor.
+    pub fn enqueue_raw(&self, id: &str, value: &Value) -> bool {
+        let Some(actor) = self.actors.get(id) else {
+            return false;
+        };
+        crate::jsonl::serialize_json_line(value).is_ok_and(|line| actor.enqueue_raw(line))
+    }
     pub fn broadcast_host_record(&mut self, record: &Value) -> Result<Option<Value>, String> {
         if self.actors.is_empty() {
             return Ok(Some(record.clone()));
@@ -326,7 +350,7 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         Ok(None)
     }
@@ -530,7 +554,7 @@ impl SessionEventFanout {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         if matches!(
             wire["type"].as_str(),
@@ -738,7 +762,7 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         // After the causing record is on every destination's FIFO, never before (ordering contract).
         let by = if target.is_some() { "client" } else { "" };
@@ -1650,5 +1674,48 @@ mod tests {
         rig.fanout.unregister("peer");
         assert_eq!(rig.live(), 0);
         rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn failed_enqueue_on_deliver_reaps_connection_and_revokes_grant() {
+        let mut fanout = SessionEventFanout::default();
+        let closed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = std::sync::Arc::clone(&closed);
+        fanout.set_on_connection_closed(std::sync::Arc::new(move |id: &str| {
+            seen.lock().unwrap().push(id.to_owned());
+        }));
+        let (w, _r) = tokio::io::duplex(1024);
+        // An 8-byte budget makes the first record overflow synchronously inside `enqueue`.
+        fanout.register(
+            "presenter",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                w,
+                8,
+                30000,
+                std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::loop_blocked_time::LoopBlockedTime::default(),
+                )),
+                |_| {},
+            ),
+        );
+        fanout
+            .set_capabilities("presenter", &["grant_select".into()])
+            .unwrap();
+        fanout.attach("presenter", "s1", 0.0).unwrap();
+        let grant_dialog = json!({
+            "type": "extension_ui_request",
+            "id": "grant-req-4",
+            "method": "select",
+            "grantSelect": true,
+            "title": "Select grant"
+        });
+
+        let stdio = fanout.deliver("s1", None, false, &grant_dialog).unwrap();
+
+        assert!(stdio.is_empty());
+        assert_eq!(*closed.lock().unwrap(), vec!["presenter".to_owned()]);
+        assert!(!fanout.is_registered("presenter"));
+        assert!(fanout.grants_for_connection("presenter").is_empty());
+        assert!(fanout.attached_connections("s1").is_empty());
     }
 }

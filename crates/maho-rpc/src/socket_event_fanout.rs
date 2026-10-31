@@ -254,6 +254,24 @@ impl SocketEventSinkActor {
         self.changed.notify_one();
         Ok(())
     }
+    /// Writes one already-serialized line on the raw lane (senpi `connection.writeRaw`): ahead of queued records,
+    /// outside the byte budget, its overflow preview and any recovery shed. Private presenter frames ride it, so
+    /// their contents never reach an error message and a resync never drops them. `false` once the connection is
+    /// closed or failed.
+    pub fn enqueue_raw(&self, line: String) -> bool {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if queue.closed || self.failure().is_some() {
+            return false;
+        }
+        queue.push_raw(line);
+        drop(queue);
+        let _ = self.completion_tx.send_replace(Ok(false));
+        self.changed.notify_one();
+        true
+    }
     pub async fn flush(&mut self) -> Result<(), String> {
         loop {
             let empty = self
@@ -349,6 +367,16 @@ impl SocketEventQueue {
         self.recovery
             .as_ref()
             .is_some_and(SocketPeerRecovery::pending)
+    }
+    /// Queues a raw line (see [`SocketEventSinkActor::enqueue_raw`]); inert once closed.
+    pub fn push_raw(&mut self, line: String) {
+        if self.closed {
+            return;
+        }
+        self.raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(line);
     }
     pub fn take_raw(&mut self) -> Option<String> {
         self.raw
@@ -527,6 +555,27 @@ mod tests {
         assert_eq!(queue.queued_bytes(), 0);
         queue.enqueue(entry("a", None)).unwrap();
         assert!(queue.next_write().is_none());
+    }
+    #[test]
+    fn raw_lines_bypass_the_byte_budget_its_preview_and_a_recovery_shed() {
+        let private = "{\"type\":\"mcp_form_request\",\"dialogToken\":\"token-canary\"}\n";
+        let mut queue = SocketEventQueue::new(16);
+        queue.push_raw(private.repeat(4));
+        assert_eq!(queue.queued_bytes(), 0);
+        let error = queue.enqueue(entry(&"x".repeat(32), None)).unwrap_err();
+        assert!(!error.to_string().contains("token-canary"));
+        assert!(!error.incoming_preview.contains("token-canary"));
+        let mut queue = SocketEventQueue::new(16);
+        queue.enable_recovery(Box::new(|_| Box::new(Vec::<serde_json::Value>::new)));
+        assert_eq!(
+            queue.take_raw().as_deref(),
+            Some("{\"type\":\"rpc_ping\"}\n")
+        );
+        queue.enqueue(entry(&"x".repeat(12), None)).unwrap();
+        queue.enqueue(entry(&"y".repeat(12), None)).unwrap();
+        assert!(queue.recovery_pending());
+        queue.push_raw(private.to_owned());
+        assert_eq!(queue.take_raw().as_deref(), Some(private));
     }
     #[test]
     fn undemotable_snapshots_stay_fifo() {

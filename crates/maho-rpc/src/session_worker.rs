@@ -151,6 +151,10 @@ struct WorkerState {
     closing: std::sync::atomic::AtomicBool,
     /// One session per isolate: the roles of the connections it serves, adopted from the host before each command.
     roles: crate::session_binding::SharedConnectionRoles,
+    /// The worker's private MCP forms (senpi `privateForms`); consulted before every other host message.
+    private_forms: crate::mcp_form_worker::McpFormWorker,
+    /// The bound private forms, held for the session's lifetime (senpi `privateForms.bind` result).
+    private_binding: std::sync::Mutex<Option<crate::mcp_form_worker::WorkerFormsBinding>>,
 }
 type SessionWorkerConfigurationHandle = std::sync::Arc<SessionWorkerConfiguration>;
 tokio::task_local! {static WORKER_CONNECTION:Option<String>;}
@@ -416,6 +420,7 @@ impl WorkerState {
                 display,
                 connection,
                 roles,
+                mcp_forms_enforced,
             } => {
                 self.adopt_roles(connection.as_deref(), roles.as_deref());
                 let session = self.current().ok_or("Invalid session binding")?;
@@ -445,6 +450,22 @@ impl WorkerState {
                         .await,
                 );
                 *lock(&self.binding) = Some(binding);
+                // senpi `WorkerEventWriter.bindMcpForms`: enforced forms bind through the host, admitted by this session.
+                if mcp_forms_enforced {
+                    let admitted = session.runtime.session().weak_accessor();
+                    let bound = self
+                        .private_forms
+                        .bind(
+                            &session.runtime.session().session_id(),
+                            std::sync::Arc::new(move || {
+                                if let Some(session) = admitted() {
+                                    session.admit_human_answer();
+                                }
+                            }),
+                        )
+                        .await?;
+                    *lock(&self.private_binding) = Some(bound);
+                }
                 let port = std::sync::Arc::clone(&self.port);
                 let events = session.runtime.session().weak_accessor();
                 let subscription = session.runtime.session().subscribe(std::sync::Arc::new(
@@ -540,9 +561,15 @@ impl WorkerState {
                 }
                 Ok(None)
             }
+            // Consumed by `private_forms.receive` before dispatch; never reaches here.
+            H::McpFormBound { .. }
+            | H::McpFormAvailability { .. }
+            | H::McpFormSettlement { .. } => Ok(None),
             H::Close => {
                 self.closing
                     .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.private_forms.abort_all();
+                drop(lock(&self.private_binding).take());
                 drop(lock(&self.subscription).take());
                 let binding = lock(&self.binding).take();
                 if let Some(binding) = binding {
@@ -600,6 +627,13 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         subscription: Default::default(),
         closing: std::sync::atomic::AtomicBool::new(false),
         roles: Default::default(),
+        private_forms: {
+            let port = std::sync::Arc::clone(&port);
+            crate::mcp_form_worker::McpFormWorker::new(std::sync::Arc::new(move |message| {
+                port.send(&message)
+            }))
+        },
+        private_binding: Default::default(),
     });
     // A turn in this worker reports into its own store; the host mirrors it so its clients see it (senpi#3695).
     let mirror_port = std::sync::Arc::clone(&port);
@@ -634,6 +668,10 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         }
     });
     while let Some(message) = inbox.recv().await {
+        // senpi `if (privateForms.receive(message)) return`: private messages are consumed first, in order.
+        if state.private_forms.receive(&message) {
+            continue;
+        }
         let state = std::sync::Arc::clone(&state);
         tokio::spawn(async move {
             let request = match &message {

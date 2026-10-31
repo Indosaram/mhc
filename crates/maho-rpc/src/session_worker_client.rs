@@ -390,6 +390,25 @@ pub struct SessionWorkerCallbacks {
     /// The bound writer's security bridge (senpi `SessionEventWriter`'s grant methods); `None` forwards a worker's
     /// grant traffic to the clients unchanged.
     pub security: Option<Arc<dyn WorkerSecurityWriter>>,
+    /// The host writer's presenter state when the deployment enforces private MCP forms (senpi
+    /// `writer.mcpPresenters`); `None` refuses every `mcp_form_bind` the worker sends.
+    pub presenters: Option<Arc<crate::session_event_writer::SessionMcpPresenters>>,
+}
+/// The host-side private form state of one worker (senpi `privateBinding` / `privateOperations`).
+#[derive(Default)]
+struct PrivateForms {
+    unbind: Option<(
+        crate::session_event_writer::McpFormsUnbind,
+        Option<crate::mcp_form_types::Unsubscribe>,
+    )>,
+    operations: std::collections::BTreeMap<
+        String,
+        (
+            maho_ai::utils::abort::AbortController,
+            maho_ai::utils::abort::AbortController,
+            String,
+        ),
+    >,
 }
 struct ClientState {
     snapshot: Option<WorkerSnapshot>,
@@ -421,6 +440,7 @@ struct ClientInner {
     acceptance: Option<crate::session_registry::SharedAcceptanceLane>,
     /// The next output frame ordinal this incarnation must send.
     expected_ordinal: std::sync::Mutex<u64>,
+    private_forms: std::sync::Mutex<PrivateForms>,
 }
 /// Host-side handle of one session worker process (senpi \`SessionWorkerClient\`).
 pub struct SessionWorkerClient {
@@ -512,6 +532,7 @@ impl ClientInner {
         }
         lock(&self.requests).close_with_error("session_worker_exited");
         drop(lock(&self.limit_mirror).take());
+        self.release_private_forms();
         self.settled.send_modify(|count| *count += 1);
         (self.callbacks.exit)();
     }
@@ -577,7 +598,7 @@ impl ClientInner {
             .as_ref()
             .and_then(|grants| grants.accept_response(id, connection))
     }
-    fn receive(&self, message: crate::session_worker_protocol::SessionWorkerWire) {
+    fn receive(self: &Arc<Self>, message: crate::session_worker_protocol::SessionWorkerWire) {
         use crate::session_worker_protocol::SessionWorkerWire as W;
         if lock(&self.state).stopped {
             if let Some(signal) = wire_signal(&message) {
@@ -766,12 +787,177 @@ impl ClientInner {
                     Some(display),
                 );
             }
+            W::McpFormBind { id, durable_id } => self.bind_private_forms(&id, &durable_id),
+            W::McpFormReady { id, epoch } => {
+                let version = lock(&self.private_forms)
+                    .unbind
+                    .as_ref()
+                    .filter(|(unbind, _)| unbind.binding().epoch == epoch)
+                    .and_then(|(unbind, _)| unbind.binding().version());
+                self.send(
+                    &crate::session_worker_protocol::HostToSessionWorker::McpFormAvailability {
+                        epoch,
+                        version,
+                        id: Some(id),
+                    },
+                );
+            }
+            W::McpFormRelease { epoch } => {
+                let current = lock(&self.private_forms)
+                    .unbind
+                    .as_ref()
+                    .is_some_and(|(unbind, _)| unbind.binding().epoch == epoch);
+                if current {
+                    self.stop_private_binding();
+                }
+            }
+            W::McpFormCancel {
+                id,
+                epoch,
+                lifetime,
+            } => {
+                let operation = lock(&self.private_forms).operations.get(&id).cloned();
+                if let Some((operation, presentation, owner)) = operation
+                    && owner == epoch
+                {
+                    match lifetime {
+                        crate::session_worker_protocol::McpFormCancelLifetime::Operation => {
+                            operation.abort(None)
+                        }
+                        crate::session_worker_protocol::McpFormCancelLifetime::Presentation => {
+                            presentation.abort(None)
+                        }
+                    }
+                }
+            }
+            W::McpFormCreate {
+                id,
+                epoch,
+                version,
+                input,
+            } => self.create_private_form(id, epoch, version, input),
             W::RequestClose => (self.callbacks.request_close)(),
             W::SubscriptionLimits { limits } => {
                 crate::session_worker_limit_mirror::adopt_wire(std::slice::from_ref(&limits));
             }
             W::Failure { error } => self.fail(&error),
         }
+    }
+}
+impl ClientInner {
+    fn stop_private_binding(&self) {
+        let unbind = lock(&self.private_forms).unbind.take();
+        if let Some((unbind, unsubscribe)) = unbind {
+            if let Some(unsubscribe) = unsubscribe {
+                unsubscribe();
+            }
+            match &self.callbacks.presenters {
+                Some(presenters) => unbind.unbind(presenters),
+                None => unbind.binding().dispose(),
+            }
+        }
+    }
+    /// The worker exited: its binding is disposed and every in-flight form aborts (senpi `exit` handler).
+    fn release_private_forms(&self) {
+        self.stop_private_binding();
+        let operations = std::mem::take(&mut lock(&self.private_forms).operations);
+        for (operation, _, _) in operations.into_values() {
+            operation.abort(None);
+        }
+    }
+    /// senpi `mcp_form_bind`: the host binds the worker's session and answers with the epoch and grant version.
+    fn bind_private_forms(self: &Arc<Self>, id: &str, durable_id: &str) {
+        self.stop_private_binding();
+        let session_id = lock(&self.state).bound_session.clone();
+        let (Some(presenters), Some(session_id)) = (self.callbacks.presenters.clone(), session_id)
+        else {
+            self.fail("private_form_unavailable");
+            return;
+        };
+        let attached = self
+            .grants
+            .as_ref()
+            .map(|grants| grants.writer().attached(&session_id))
+            .unwrap_or_default();
+        let Some(unbind) = presenters.bind(&session_id, durable_id, Arc::new(|| {}), &attached)
+        else {
+            self.fail("private_form_unavailable");
+            return;
+        };
+        let binding = Arc::clone(unbind.binding());
+        let weak = Arc::downgrade(self);
+        let (epoch, version_binding) = (binding.epoch.clone(), Arc::clone(&binding));
+        let unsubscribe = binding.subscribe.as_ref().map(|subscribe| {
+            subscribe(Arc::new(move || {
+                if let Some(inner) = weak.upgrade() {
+                    inner.send(
+                        &crate::session_worker_protocol::HostToSessionWorker::McpFormAvailability {
+                            epoch: epoch.clone(),
+                            version: version_binding.version(),
+                            id: None,
+                        },
+                    );
+                }
+            }))
+        });
+        lock(&self.private_forms).unbind = Some((unbind, unsubscribe));
+        self.send(
+            &crate::session_worker_protocol::HostToSessionWorker::McpFormBound {
+                id: id.to_owned(),
+                epoch: binding.epoch.clone(),
+                version: binding.version(),
+            },
+        );
+    }
+    /// senpi `mcp_form_create`: present through the host binding when the worker's grant version is still current.
+    fn create_private_form(
+        self: &Arc<Self>,
+        id: String,
+        epoch: String,
+        version: String,
+        input: crate::mcp_form_types::McpFormInputWire,
+    ) {
+        let presenter = lock(&self.private_forms)
+            .unbind
+            .as_ref()
+            .map(|(unbind, _)| Arc::clone(unbind.binding()))
+            .filter(|binding| {
+                binding.epoch == epoch && binding.version().as_deref() == Some(version.as_str())
+            })
+            .and_then(|binding| binding.capture());
+        let operation = maho_ai::utils::abort::AbortController::new();
+        let presentation = maho_ai::utils::abort::AbortController::new();
+        lock(&self.private_forms).operations.insert(
+            id.clone(),
+            (operation.clone(), presentation.clone(), epoch.clone()),
+        );
+        // NATIVE-DIVERGENCE(senpi Atomics fence): the fence is the operation abort a worker cancel frame sets.
+        let fence = operation.signal();
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let outcome = match presenter {
+                Some(presenter) => {
+                    (presenter.present)(crate::mcp_form_types::McpFormInput {
+                        wire: input,
+                        operation_signal: operation.signal(),
+                        operation_current: Some(Arc::new(move || !fence.aborted())),
+                        presentation_signal: presentation.signal(),
+                    })
+                    .await
+                }
+                None => crate::mcp_form_types::McpFormOutcome::processing_failure(),
+            };
+            let Some(inner) = weak.upgrade() else { return };
+            lock(&inner.private_forms).operations.remove(&id);
+            inner.send(
+                &crate::session_worker_protocol::HostToSessionWorker::McpFormSettlement {
+                    id,
+                    epoch,
+                    settlement_id: uuid::Uuid::new_v4().to_string(),
+                    outcome: outcome.to_wire(),
+                },
+            );
+        });
     }
 }
 impl SessionWorkerClient {
@@ -822,6 +1008,7 @@ impl SessionWorkerClient {
                 ))
             }),
             expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
         });
         tokio::spawn(async move {
             while let Some(line) = lines.recv().await {
@@ -947,6 +1134,9 @@ impl SessionWorkerClient {
             state.binding_ready = true;
         }
         let mut message = serde_json::json!({"type":"bind","sessionId":session_id,"display":self.inner.display()});
+        if self.inner.callbacks.presenters.is_some() {
+            message["mcpFormsEnforced"] = true.into();
+        }
         if let Some(connection) = connection {
             message["connection"] = connection.into();
         }
