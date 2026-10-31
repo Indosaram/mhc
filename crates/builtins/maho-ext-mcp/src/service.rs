@@ -1135,7 +1135,8 @@ impl McpService {
         &self,
         name: &str,
     ) -> crate::expose::status::McpServerExposureStatus {
-        let entry = match self.get_connection(name) {
+        // Upstream `#entryForName`: unfiltered, unlike `getConnection`.
+        let entry = match self.connections.get(name) {
             Some(connection) => Some(connection.entry.lock().await),
             None => None,
         };
@@ -1153,7 +1154,8 @@ impl McpService {
         let Some(server) = self.config.as_ref().and_then(|config| config.servers.get(name)) else {
             return McpWireAuthStatus::Unsupported;
         };
-        let state = match self.get_connection(name) {
+        // Upstream `#entryForName`: unfiltered, unlike `getConnection`.
+        let state = match self.connections.get(name) {
             Some(connection) => Some(connection.entry.lock().await.connection.state()),
             None => None,
         };
