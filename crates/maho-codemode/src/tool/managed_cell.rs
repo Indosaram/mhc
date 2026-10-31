@@ -25,8 +25,9 @@ impl ManagedCell {
 }
 
 pub fn create_managed_cell(cell_id: String, input: EvalToolInput, artifacts_dir: Option<&Path>, now_ms: f64, default_hard_limit_seconds: f64, default_run_budget_seconds: f64) -> ManagedCell {
-    let hard_limit_seconds = default_hard_limit_seconds.max(input.timeout.unwrap_or(0.0));
-    let run_budget_seconds = input.timeout.unwrap_or(default_run_budget_seconds);
+    let timeout = input.timeout.filter(|t| t.is_finite() && *t > 0.0).map(|t| t.min(86400.0 * 365.0));
+    let hard_limit_seconds = default_hard_limit_seconds.max(timeout.unwrap_or(0.0));
+    let run_budget_seconds = timeout.unwrap_or(default_run_budget_seconds);
     let deadlines = CellDeadlines::new(cell_id.clone(), hard_limit_seconds, run_budget_seconds);
     deadlines.pause();
     let spill_path = detached_notification_spill_path(artifacts_dir, &cell_id);
