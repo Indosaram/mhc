@@ -139,3 +139,5 @@ pub mod reference_disclosure;
 pub mod config_reference_admission;
 #[path = "command_notify_redaction.rs"]
 pub mod command_notify_redaction;
+#[path = "register_redaction.rs"]
+pub mod register_redaction;
