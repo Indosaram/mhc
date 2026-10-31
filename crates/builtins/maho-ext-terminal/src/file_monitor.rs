@@ -130,7 +130,7 @@ impl FileMonitor {
         self.checkpoint=current;
         if !changed {return Ok(vec![]);}
         self.settled=true;self.reservation.take();
-        Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line:format!("{} {}",match self.event {FileEvent::Create=>"create",FileEvent::Modify=>"modify"},self.path.display())},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
+        Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line:format!("{} {}",match self.event {FileEvent::Create=>"create",FileEvent::Modify=>"modify"},self.path.display()),human_input:false},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
     }
     pub fn stop(&mut self,summary:&str)->Option<MonitorEvent> {
         if self.settled {return None;}

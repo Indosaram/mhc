@@ -49,6 +49,9 @@ pub fn restore_configured_command(
 pub struct RestoreEnvironment {
     pub downtime_ms: f64,
     pub terminal_dir: Option<std::path::PathBuf>,
+    /// Upstream `RestoreContext.remainingMs`: time left for an ephemeral watch whose deadline has
+    /// not passed; `None` for a durable one.
+    pub remaining_ms: Option<f64>,
 }
 /// Upstream `restoreEnvironment`: stable id, restored flag and downtime bound on every re-spawn, plus
 /// the per-monitor state dir (created here) for a persistent watch of a session with a state dir.
@@ -93,7 +96,15 @@ pub fn restore_configured_command_in(
         CommandMonitor,
     ) -> Result<(), crate::runtime_session::RuntimeError>,
 ) -> RestoreOutcome {
-    if monitor.runtime_kind != MonitorRuntimeKind::Command || !monitor.persistent {
+    // A persistent watch has no deadline; an ephemeral one gets exactly the time it had left.
+    let ephemeral_time_left = if monitor.persistent {
+        None
+    } else {
+        context.remaining_ms
+    };
+    if monitor.runtime_kind != MonitorRuntimeKind::Command
+        || (!monitor.persistent && ephemeral_time_left.is_none())
+    {
         return RestoreOutcome::Lost;
     }
     let Some(command) = monitor
@@ -122,6 +133,14 @@ pub fn restore_configured_command_in(
     for (key, value) in env {
         options = options.env(key, value);
     }
+    if let Some(time_left) = ephemeral_time_left {
+        options = options.timeout(std::time::Duration::from_millis(
+            time_left.max(1.0).trunc() as u64
+        ));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
     let Ok(id) = manager.create(command, options) else {
         return RestoreOutcome::Lost;
     };
@@ -139,10 +158,11 @@ pub fn restore_configured_command_in(
             description: monitor.description.clone(),
             command: monitor.command.clone(),
             filter: monitor.filter.clone(),
-            persistent: Some(true),
-            deadline_ms: None,
+            persistent: Some(monitor.persistent),
+            deadline_ms: ephemeral_time_left.map(|time_left| now + time_left),
             expires_at: monitor.expires_at,
-            fire_window: Some(MonitorFireWindow {
+            // Only durable (restartable-command) watches carry the fire window and runaway guard.
+            fire_window: monitor.persistent.then(|| MonitorFireWindow {
                 start_ms: monitor.fire_window.start_ms,
                 count: monitor.fire_window.count as usize,
             }),
@@ -153,7 +173,8 @@ pub fn restore_configured_command_in(
             .as_deref()
             .and_then(crate::shared::safe_reg_exp),
     )
-    .with_wakes_per_hour(monitor.wakes_per_hour.map(f64::from));
+    .with_wakes_per_hour(monitor.wakes_per_hour.map(f64::from))
+    .with_human_input(monitor.human_input == Some(true));
     if monitor.delivery_paused {
         record.pause();
     }
@@ -265,6 +286,7 @@ mod tests {
         let context = RestoreEnvironment {
             downtime_ms: 1234.7,
             terminal_dir: Some(terminal_dir.path().to_path_buf()),
+            remaining_ms: None,
         };
         assert_eq!(
             restore_configured_command_in(
@@ -302,6 +324,7 @@ mod tests {
         let context = RestoreEnvironment {
             downtime_ms: 0.0,
             terminal_dir: Some(terminal_dir.path().to_path_buf()),
+            remaining_ms: None,
         };
         assert!(
             !keys(restore_environment(&saved, &context).unwrap())
@@ -310,6 +333,59 @@ mod tests {
         assert!(
             !crate::monitor_state_dir::monitor_state_dir(terminal_dir.path(), "mon_saved").exists()
         );
+    }
+    /// restore.ts / durable-command.ts: an ephemeral watch with time left on its deadline is
+    /// re-spawned with exactly that time and no fire window; one without stays lost.
+    #[tokio::test]
+    async fn ephemeral_watch_with_time_left_restores_with_its_remaining_deadline() {
+        let mut saved = monitor();
+        saved.persistent = false;
+        saved.durability_class = crate::terminal_manifest_model::MonitorDurabilityClass::Ephemeral;
+        saved.delivery_paused = false;
+        let mut manager = TerminalManager::default();
+        let context = RestoreEnvironment {
+            remaining_ms: Some(60_000.0),
+            ..Default::default()
+        };
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0;
+        let mut seen = None;
+        assert_eq!(
+            restore_configured_command_in(
+                &saved,
+                &mut manager,
+                None,
+                &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+                &context,
+                |_, _, record| {
+                    seen = Some(record.snapshot.clone());
+                    Ok(())
+                }
+            ),
+            RestoreOutcome::Restored
+        );
+        let snapshot = seen.unwrap();
+        assert_eq!(snapshot.persistent, Some(false));
+        assert!(snapshot.fire_window.is_none());
+        let deadline = snapshot.deadline_ms.unwrap();
+        assert!(deadline >= before + 60_000.0 && deadline <= before + 70_000.0);
+        manager.teardown().unwrap();
+        let mut manager = TerminalManager::default();
+        assert_eq!(
+            restore_configured_command_in(
+                &saved,
+                &mut manager,
+                None,
+                &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+                &RestoreEnvironment::default(),
+                |_, _, _| panic!("an ephemeral watch without time left registered")
+            ),
+            RestoreOutcome::Lost
+        );
+        assert_eq!(manager.size(), 0);
     }
     #[test]
     fn invalid_targets_do_not_spawn() {

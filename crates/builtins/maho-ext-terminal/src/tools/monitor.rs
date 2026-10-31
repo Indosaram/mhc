@@ -161,6 +161,7 @@ pub fn execute_configured_monitor_in(
         .get("wakes_per_hour")
         .and_then(Value::as_u64)
         .map(|value| value as u32);
+    let human_input = input.get("human_input").and_then(Value::as_bool) == Some(true);
     let description = input
         .get("description")
         .and_then(Value::as_str)
@@ -313,7 +314,8 @@ pub fn execute_configured_monitor_in(
         },
         filter_regex,
     )
-    .with_wakes_per_hour(wakes_per_hour.map(f64::from));
+    .with_wakes_per_hour(wakes_per_hour.map(f64::from))
+    .with_human_input(human_input);
     if let Err(error) = registry.register(manager.get(&id).expect("created runtime"), record) {
         return error_result(error.to_string());
     }
@@ -369,6 +371,8 @@ pub fn monitor_registration(
                 .get("filter")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            human_input: (input.get("human_input").and_then(Value::as_bool) == Some(true))
+                .then_some(true),
             wakes_per_hour: input
                 .get("wakes_per_hour")
                 .and_then(Value::as_u64)
@@ -401,6 +405,16 @@ pub fn monitor_registration(
         },
         bash_id.to_owned(),
     ))
+}
+
+/// Upstream `MonitorRegistration.deadlineMs`: the live record's absolute runtime deadline, recorded
+/// for an ephemeral watch so a restore can hand back exactly the time it had left.
+pub fn registration_deadline_ms(registry: &MonitorRegistry, runtime_id: &str) -> Option<f64> {
+    registry
+        .snapshot()
+        .into_iter()
+        .find(|entry| entry.id == runtime_id)
+        .and_then(|entry| entry.deadline_ms)
 }
 
 pub async fn execute_monitor_recorded(
@@ -441,7 +455,10 @@ pub async fn execute_monitor_recorded(
         * 1000.0;
     if let Some((registration, id)) = monitor_registration(input, &result, cwd, approved_parent) {
         let monitor_id = registration.monitor_id.clone();
-        writer.record_register(registration, now).await;
+        let deadline_ms = registration_deadline_ms(registry, &id);
+        writer
+            .record_register_with(registration.with_deadline_ms(deadline_ms), now)
+            .await;
         if let Some(checkpoint) = registry.file_checkpoint(&id) {
             writer.schedule_checkpoint(&monitor_id, checkpoint);
         }

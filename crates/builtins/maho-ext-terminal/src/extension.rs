@@ -1357,17 +1357,19 @@ impl Extension for TerminalExtension {
                                     == Some(true))
                                 .then(|| monitors.file_checkpoint(&id))
                                 .flatten();
-                            (registration, checkpoint)
+                            let deadline_ms =
+                                crate::tools::monitor::registration_deadline_ms(&monitors, &id);
+                            (registration.with_deadline_ms(deadline_ms), checkpoint)
                         });
                         (result, recorded)
                     };
                     if let Some(lifecycle) = lifecycle.as_mut()
                         && let Some((registration, checkpoint)) = recorded
                     {
-                        let monitor_id = registration.monitor_id.clone();
+                        let monitor_id = registration.registration.monitor_id.clone();
                         lifecycle
                             .writer
-                            .record_register(registration, manifest_now_ms())
+                            .record_register_with(registration, manifest_now_ms())
                             .await;
                         if let Some(checkpoint) = checkpoint {
                             lifecycle
