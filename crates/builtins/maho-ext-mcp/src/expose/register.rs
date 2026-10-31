@@ -57,8 +57,14 @@ pub fn build_mcp_tool_definitions(
                 // invocation.ts: a modern tool's arguments validate against its exact 2020-12 schema; an
                 // unusable schema refuses the call as schema_changed.
                 if entry.modern {
-                    let validator=crate::modern::tool_schema::compile_modern_schema(&entry.schema).map_err(|error|ToolError::Message(format!("schema_changed: {}: {}",error.code.as_str(),error.message)))?;
-                    if !validator.validate(&call.params) {return Err(ToolError::Message("schema_changed: Arguments do not match the current MCP tool schema.".into()));}
+                    let refusal=match crate::modern::tool_schema::compile_modern_schema(&entry.schema) {
+                        Err(error)=>Some(format!("{}: {}",error.code.as_str(),error.message)),
+                        Ok(validator) if !validator.validate(&call.params)=>Some("Arguments do not match the current MCP tool schema.".to_owned()),
+                        Ok(_)=>None,
+                    };
+                    if let Some(message)=refusal {
+                        return Ok(refused_result(&entry,"schema_changed",&message,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref())));
+                    }
                 }
                 let params=if call.params.is_object() || entry.modern {call.params}else{json!({})};
                 let result=super::call::call_mcp_tool(&entry,params,call.id,&call.signal,call.on_update.as_deref()).await?;
@@ -67,6 +73,38 @@ pub fn build_mcp_tool_definitions(
         }));
         tool.label=label;tool.execution_mode=Some(ToolExecutionMode::Parallel);tool
     }).collect()
+}
+/// register.ts `executeMcpCatalogEntry` refused branch: a refusal is a result the model can read, not a thrown
+/// error; it carries `{ error: { kind, message, server, tool, currentDefinition } }`.
+fn refused_result(
+    entry: &McpToolCatalogEntry,
+    kind: &str,
+    message: &str,
+    agent_dir: &std::path::Path,
+    artifacts: &McpOutputArtifacts,
+    output_guard: Option<&OutputGuardSettings>,
+) -> ToolResult {
+    let error = json!({"kind":kind,"message":message,"server":entry.server,"tool":entry.tool,"currentDefinition":entry.schema});
+    let guarded = apply_mcp_output_guard(
+        &[json!({"type":"text","text":json!({"error":error}).to_string()})],
+        McpOutputGuardOptions {
+            agent_dir,
+            artifacts: Some(artifacts),
+            server: &entry.server,
+            output_guard,
+        },
+    );
+    ToolResult {
+        content: guarded
+            .iter()
+            .map(|block| ToolContent::text(block.get("text").and_then(Value::as_str).unwrap_or("")))
+            .collect(),
+        details: Some(maho_core::config_reference_redaction::redact_resolved_reference_data(
+            &json!({"error":error,"preview":kind,"server":entry.server,"tool":entry.tool}),
+        )),
+        structured_content: None,
+        is_error: None,
+    }
 }
 pub fn mapped_guarded_result(
     entry: &McpToolCatalogEntry,

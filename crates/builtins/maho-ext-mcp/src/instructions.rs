@@ -9,7 +9,8 @@ pub fn build_mcp_instructions_block<'a>(servers:impl IntoIterator<Item=(&'a str,
 }
 pub async fn refresh_mcp_instructions_for_session(service:&crate::service::McpService)->String {
     let mut instructions=Vec::new();
-    for (name,connection) in &service.connections {
+    // Upstream `getConnection`/`getCachedInstructions`: a stale-credential connection contributes nothing.
+    for (name,connection) in service.connections.iter().filter(|(_,connection)|(connection.credentials_current)()) {
         let entry=connection.entry.lock().await;
         let text=if entry.connection.state()==crate::connection::ServerConnectionState::Connected {
             match entry.connection.client(){Ok(client)=>client.instructions.read().await.clone(),Err(_)=>None}
