@@ -86,6 +86,8 @@ pub struct ResolveProjectTrustedOptions<'a> {
     pub emit_project_trust: Option<&'a EmitProjectTrust>,
     pub project_trust_context: &'a dyn ProjectTrustContext,
     pub on_extension_error: Option<&'a (dyn Fn(&str) + Send + Sync)>,
+    /// Receives the error of a trust store that cannot be read; the project is then untrusted.
+    pub on_trust_store_error: Option<&'a (dyn Fn(&str) + Send + Sync)>,
 }
 
 fn select_project_trust_option(cwd: &str, ctx: &dyn ProjectTrustContext) -> Option<ProjectTrustOption> {
@@ -127,8 +129,19 @@ pub async fn resolve_project_trusted(options: ResolveProjectTrustedOptions<'_>) 
         }
     }
 
-    if let Ok(Some(decision)) = options.trust_store.get(options.cwd) {
-        return decision;
+    // senpi `trustStore.get` throws on an unreadable or invalid trust.json: the project is not trusted, and
+    // neither `defaultProjectTrust` nor the prompt may decide past it.
+    match options.trust_store.get(options.cwd) {
+        Ok(Some(decision)) => return decision,
+        Ok(None) => {}
+        Err(error) => {
+            let message = format!("Project trust store unreadable; not trusting {}: {error}", options.cwd);
+            match options.on_trust_store_error {
+                Some(report) => report(&message),
+                None => crate::output_guard::maho_write_stderr(&format!("Warning: {message}\n")),
+            }
+            return false;
+        }
     }
 
     match options.default_project_trust.unwrap_or_default() {
@@ -219,6 +232,7 @@ mod tests {
             emit_project_trust: None,
             project_trust_context: &NoUi,
             on_extension_error: None,
+            on_trust_store_error: None,
         })
         .await);
     }
@@ -234,6 +248,7 @@ mod tests {
             emit_project_trust: None,
             project_trust_context: &NoUi,
             on_extension_error: None,
+            on_trust_store_error: None,
         })
         .await);
     }
@@ -254,9 +269,45 @@ mod tests {
             emit_project_trust: Some(&emit),
             project_trust_context: &NoUi,
             on_extension_error: None,
+            on_trust_store_error: None,
         })
         .await);
         assert_eq!(trust_store.get(&cwd).expect("get"), Some(true));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_trust_store_fails_closed_before_the_default_and_the_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join(".omo")).expect("mkdir");
+        std::fs::write(tmp.path().join(".omo/settings.json"), "{}").expect("write");
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let agent = tempfile::tempdir().expect("agent dir");
+        std::fs::write(agent.path().join("trust.json"), "not json").expect("corrupt trust.json");
+        let trust_store = ProjectTrustStore::new(&agent.path().to_string_lossy());
+        let reported = std::sync::Mutex::new(Vec::new());
+        let report = |message: &str| {
+            reported
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(message.to_owned())
+        };
+        // "always" would trust, and the UI would answer "Trust": neither is reached.
+        assert!(!resolve_project_trusted(ResolveProjectTrustedOptions {
+            cwd: &cwd,
+            trust_store: &trust_store,
+            trust_override: None,
+            default_project_trust: Some(DefaultProjectTrust::Always),
+            emit_project_trust: None,
+            project_trust_context: &YesUi,
+            on_extension_error: None,
+            on_trust_store_error: Some(&report),
+        })
+        .await);
+        let reported = reported
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(reported.len(), 1);
+        assert!(reported[0].contains("trust store"));
     }
 
     #[tokio::test]
@@ -274,6 +325,7 @@ mod tests {
             emit_project_trust: None,
             project_trust_context: &YesUi,
             on_extension_error: None,
+            on_trust_store_error: None,
         })
         .await);
     }

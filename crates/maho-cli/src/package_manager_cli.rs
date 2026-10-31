@@ -378,6 +378,7 @@ async fn command_settings(
                 emit_project_trust: Some(&emit),
                 project_trust_context: &context,
                 on_extension_error: None,
+                on_trust_store_error: None,
             },
         )
         .await;

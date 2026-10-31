@@ -314,3 +314,18 @@ async fn the_global_full_access_preset_counts_when_the_session_names_none() {
     assert!(trust.trusted);
     assert!(trust.trust_from_full_access);
 }
+
+/// senpi `trustStore.get` throws on a corrupt trust.json: the launch does not trust the project, even when
+/// `defaultProjectTrust` is "always", and says why.
+#[tokio::test]
+async fn a_corrupt_trust_store_fails_closed_at_launch() {
+    let (_dir, project, agent) = trust_fixture();
+    std::fs::write(std::path::Path::new(&agent).join("settings.json"), r#"{"defaultProjectTrust":"always"}"#).expect("global settings");
+    std::fs::write(std::path::Path::new(&agent).join("trust.json"), "not json").expect("corrupt trust.json");
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, app_mode: AppMode::Interactive, ..Default::default() };
+    let trust = resolve_launch_project_trust(&config, &project, AppMode::Interactive, true, Box::new(|_, options| options.first().cloned()), None).await;
+    assert!(!trust.trusted);
+    assert!(!trust.trust_from_full_access);
+    assert!(trust.warnings.iter().any(|warning| warning.contains("trust store unreadable")));
+    assert!(config.project_trust_by_cwd.lock().expect("cache").is_empty());
+}

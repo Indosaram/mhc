@@ -489,6 +489,13 @@ pub async fn resolve_launch_project_trust(
         ui_available: has_ui,
         selector: Box::new(move |title, options| context_selector(title, options)),
     };
+    let store_errors = std::sync::Mutex::new(Vec::new());
+    let report_store_error = |message: &str| {
+        store_errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(message.to_owned());
+    };
     let trusted = maho_core::project_trust::resolve_project_trusted(
         maho_core::project_trust::ResolveProjectTrustedOptions {
             cwd,
@@ -498,10 +505,19 @@ pub async fn resolve_launch_project_trust(
             emit_project_trust: Some(&emit),
             project_trust_context: &context,
             on_extension_error: None,
+            on_trust_store_error: Some(&report_store_error),
         },
     )
     .await;
-    if should_resolve {
+    // Fails closed (senpi `trustStore.get` throws after the extension event): an unreadable trust.json left
+    // the project untrusted before `defaultProjectTrust` or the prompt. Not cached, as senpi never reaches
+    // `projectTrustByCwd.set`: the next runtime for this cwd reads the store again.
+    let store_errors = store_errors
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let store_failed = !store_errors.is_empty();
+    warnings.extend(store_errors);
+    if should_resolve && !store_failed {
         config
             .project_trust_by_cwd
             .lock()
