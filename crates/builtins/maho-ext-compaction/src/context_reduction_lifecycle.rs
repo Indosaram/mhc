@@ -8,7 +8,9 @@ use crate::{
         record_reduction_usage, snapshot_reduction_state,
     },
     emergency_prune::EmergencyPruneLatch,
-    extension_wiring, openai_remote_model, orchestration,
+    extension_wiring,
+    openai_remote::OpenAiRemoteReplayBoundary,
+    openai_remote_model, orchestration,
     overflow_retry::estimate_total_tokens,
     policy, speculative,
 };
@@ -39,6 +41,10 @@ pub struct ContextReductionLifecycleOptions {
         dyn Fn(&ExtensionContext) -> Result<ContextReductionPolicy, ExtensionFailure> + Send + Sync,
     >,
     pub log: ContextReductionLog,
+    /// The OpenAI remote replay boundary the latest live context event sealed, read by the
+    /// `before_provider_request` payload rewrite. senpi carries it on the converted input items as
+    /// non-enumerable metadata; a typed `AgentMessage` cannot, so it travels beside the request.
+    pub replay_boundary: Arc<Mutex<Option<OpenAiRemoteReplayBoundary>>>,
 }
 
 #[derive(Default)]
@@ -230,6 +236,12 @@ fn context_handler(
             "emergency_prune",
             json!({"route":"context-event","tokensBefore":tokens_before,"tokens":tokens}),
         );
+    }
+    if live {
+        *options
+            .replay_boundary
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = output.replay_boundary;
     }
     let result = EventResult::Context {
         messages: Some(

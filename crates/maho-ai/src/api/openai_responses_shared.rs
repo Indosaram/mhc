@@ -4,11 +4,14 @@
 //! conversion into the Responses input shape, and the state machine that turns `ResponseStreamEvent`s
 //! into `AssistantMessageEvent`s.
 //!
-//! Two deviations from the TS source, neither of them wire-visible: `sealContextProvenance` attaches
-//! a non-enumerable provenance object in senpi, which a `serde_json` value cannot carry (and which is
-//! never serialized to the provider payload), so the option is accepted and has no effect; and the
-//! streaming scratch buffers (`partialJson`, `customInput`) live in this module's slot table rather
-//! than on the content block, so a persisted block is identical without senpi's delete pass.
+//! Two deviations from the TS source, neither of them wire-visible: senpi's request-local context
+//! provenance rides as a non-enumerable property on the message and on each converted input item,
+//! which neither a typed `Message` nor a `serde_json` value can carry, so
+//! [`convert_responses_messages_with_provenance`] takes it index-aligned with `context.messages` and
+//! returns it index-aligned with the input items (`sealContextProvenance` seals or verifies exactly as
+//! senpi does, and nothing reaches the provider payload); and the streaming scratch buffers
+//! (`partialJson`, `customInput`) live in this module's slot table rather than on the content block,
+//! so a persisted block is identical without senpi's delete pass.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::pin::Pin;
@@ -25,7 +28,8 @@ use crate::api::constrained_sampling::{
     resolve_json_schema_strict_sampling,
 };
 use crate::api::responses_completion_grace::format_responses_completion_stall;
-use crate::api::transform_messages::{TransformMessagesOptions, transform_messages};
+use crate::api::transform_messages::{TransformMessagesOptions, transform_messages_with_sources};
+use crate::context_provenance::ContextProvenance;
 use crate::models::{calculate_cost, supports_configuration_update};
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Context, DoneReason, GrammarFormat,
@@ -276,12 +280,76 @@ pub fn convert_responses_messages(
     allowed_tool_call_providers: &BTreeSet<String>,
     options: &ConvertResponsesMessagesOptions,
 ) -> Vec<Value> {
+    convert_responses_messages_with_provenance(
+        model,
+        context,
+        allowed_tool_call_providers,
+        options,
+        &[],
+    )
+    .0
+}
+
+/// senpi `contextProvenanceForInput`: seal an unsealed provenance with the message fingerprint, or
+/// keep a sealed one only while the message still matches it.
+fn context_provenance_for_input(
+    provenance: &ContextProvenance,
+    message: &Message,
+    seal: bool,
+) -> Option<ContextProvenance> {
+    let fingerprint = serde_json::to_string(message).ok()?;
+    match provenance.get("integrity") {
+        None if seal => {
+            let mut sealed = provenance.clone();
+            sealed.insert("integrity".into(), Value::String(fingerprint));
+            Some(sealed)
+        }
+        Some(Value::String(stored)) if *stored == fingerprint => Some(provenance.clone()),
+        _ => None,
+    }
+}
+
+/// Carry the source provenance onto the resolved messages: resolution only drops or merges system
+/// messages and clones the rest, so the others pair with their source in order.
+fn align_context_provenance(
+    source: &[Message],
+    resolved: &[Message],
+    provenance: &[Option<ContextProvenance>],
+) -> Vec<Option<ContextProvenance>> {
+    let mut cursor = 0;
+    resolved
+        .iter()
+        .map(|message| {
+            let found = source[cursor..].iter().position(|candidate| candidate == message)?;
+            cursor += found + 1;
+            provenance.get(cursor - 1).cloned().flatten()
+        })
+        .collect()
+}
+
+/// `convertResponsesMessages` with senpi's request-local provenance as a typed side channel:
+/// `provenance` is index-aligned with `context.messages`, the second vector with the returned input
+/// items. User, assistant and tool-result items take their message's provenance when
+/// `seal_context_provenance` seals it or its stored integrity still matches (`withContextProvenance`).
+pub fn convert_responses_messages_with_provenance(
+    model: &Model,
+    context: &Context,
+    allowed_tool_call_providers: &BTreeSet<String>,
+    options: &ConvertResponsesMessagesOptions,
+    provenance: &[Option<ContextProvenance>],
+) -> (Vec<Value>, Vec<Option<ContextProvenance>>) {
     let resolved_context = crate::types::transcript::resolve_provider_context(
         context,
         model.compat.as_ref().is_some_and(|compat| {
             compat.openai_responses().supports_mid_convo_system_messages == Some(true)
         }),
     );
+    let resolved_provenance = if provenance.iter().any(Option::is_some) {
+        align_context_provenance(&context.messages, &resolved_context.messages, provenance)
+    } else {
+        Vec::new()
+    };
+    let seal = options.seal_context_provenance == Some(true);
     let context = &resolved_context;
     let transcript = crate::types::transcript::normalize_context(context);
     let declared_tools = Some(crate::types::transcript::get_declared_tools(
@@ -322,7 +390,7 @@ pub fn convert_responses_messages(
         format!("{normalized_call_id}|{normalized_item_id}")
     };
 
-    let transformed_messages = transform_messages(
+    let transformed_messages = transform_messages_with_sources(
         &context.messages,
         model,
         Some(&normalize_tool_call_id),
@@ -363,7 +431,18 @@ pub fn convert_responses_messages(
     }
 
     let mut msg_index: usize = 0;
-    for msg in &transformed_messages {
+    let mut item_provenance: Vec<Option<ContextProvenance>> = Vec::new();
+    let mut current_provenance: Option<ContextProvenance> = None;
+    for (msg, source) in &transformed_messages {
+        // Every item the previous message pushed carries its provenance.
+        item_provenance.resize(messages.len(), current_provenance.take());
+        current_provenance = match msg {
+            Message::User(_) | Message::Assistant(_) | Message::ToolResult(_) => source
+                .and_then(|index| resolved_provenance.get(index))
+                .and_then(Option::as_ref)
+                .and_then(|provenance| context_provenance_for_input(provenance, msg, seal)),
+            _ => None,
+        };
         match msg {
             Message::System(system) => {
                 let text = crate::utils::text::render_system_message_update(
@@ -423,6 +502,10 @@ pub fn convert_responses_messages(
                             == Some("configuration_update") =>
                     {
                         *messages.last_mut().expect("just checked") = next;
+                        // senpi replaces the item with a fresh object, which carries no provenance.
+                        if let Some(last) = item_provenance.last_mut() {
+                            *last = None;
+                        }
                     }
                     _ => messages.push(next),
                 }
@@ -728,8 +811,9 @@ pub fn convert_responses_messages(
         }
         msg_index += 1;
     }
+    item_provenance.resize(messages.len(), current_provenance.take());
 
-    messages
+    (messages, item_provenance)
 }
 
 /// `convertResponsesTools`.
@@ -2194,6 +2278,60 @@ mod tests {
             "compat": capability.map(|value| json!({"supportsConfigurationUpdate": value})),
         }))
         .expect("model fixture")
+    }
+
+    #[test]
+    fn seal_context_provenance_seals_then_verifies_message_integrity() {
+        let model = test_model("openai-responses", "m", None);
+        let user = |text: &str| {
+            Message::User(crate::types::UserMessage {
+                content: UserContent::Text(text.into()),
+                timestamp: 0,
+            })
+        };
+        let marker: ContextProvenance =
+            serde_json::from_value(json!({"scope": "s", "ordinal": 0})).expect("marker");
+        let convert = |messages: Vec<Message>, provenance: &[Option<ContextProvenance>], seal| {
+            convert_responses_messages_with_provenance(
+                &model,
+                &Context {
+                    system_prompt: Some("prompt".into()),
+                    messages,
+                    tools: None,
+                    active_tool_names: None,
+                },
+                &BTreeSet::new(),
+                &ConvertResponsesMessagesOptions {
+                    seal_context_provenance: Some(seal),
+                    ..ConvertResponsesMessagesOptions::default()
+                },
+                provenance,
+            )
+        };
+        // Sealing stamps the source message fingerprint onto its own input item only.
+        let (items, sealed) = convert(
+            vec![user("kept"), user("tail")],
+            &[Some(marker.clone()), None],
+            true,
+        );
+        assert_eq!(items.len(), 3);
+        assert_eq!(sealed.len(), 3);
+        assert_eq!(sealed[0], None, "the system prompt item carries no provenance");
+        let stamp = sealed[1].clone().expect("sealed provenance");
+        assert_eq!(stamp["ordinal"], json!(0));
+        assert_eq!(
+            stamp["integrity"],
+            json!(serde_json::to_string(&user("kept")).expect("fingerprint"))
+        );
+        assert_eq!(sealed[2], None);
+        // Without sealing an unsealed marker never reaches an item.
+        let (_, unsealed) = convert(vec![user("kept")], &[Some(marker)], false);
+        assert_eq!(unsealed, vec![None, None]);
+        // A sealed marker survives an unchanged message and is dropped once the message changes.
+        let (_, verified) = convert(vec![user("kept")], &[Some(stamp.clone())], false);
+        assert_eq!(verified[1], Some(stamp.clone()));
+        let (_, changed) = convert(vec![user("edited")], &[Some(stamp)], true);
+        assert_eq!(changed[1], None);
     }
 
     #[test]

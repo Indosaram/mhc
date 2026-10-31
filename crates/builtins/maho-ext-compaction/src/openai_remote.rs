@@ -11,10 +11,14 @@ use crate::{
     },
 };
 use maho_ai::{
-    context_provenance::{
-        CONTEXT_PROVENANCE_FIELD, context_provenance_fingerprint, get_context_provenance,
+    api::{
+        openai_responses::OPENAI_TOOL_CALL_PROVIDERS,
+        openai_responses_shared::{
+            ConvertResponsesMessagesOptions, convert_responses_messages_with_provenance,
+        },
     },
-    types::{InputModality, Model},
+    context_provenance::{CONTEXT_PROVENANCE_FIELD, ContextProvenance, get_context_provenance},
+    types::{Context, InputModality, Message, Model},
 };
 use maho_core::{
     messages::convert_to_llm,
@@ -673,19 +677,25 @@ fn checkpoint_context_entries(
 }
 
 /// The replay boundary [`mark_openai_remote_replay_boundary`] stamped onto the checkpoint-owned
-/// messages: the remote compaction entry and the ordinals of the stamped messages that survive
-/// the LLM projection.
+/// messages: the remote compaction entry, then one entry per sealed Responses input item, in
+/// order: the ordinal of the message it came from and the item itself.
+///
+/// senpi's sealed items carry their boundary as non-enumerable request-local metadata into the
+/// final payload, and a mismatched integrity fingerprint drops it. A typed `AgentMessage` and the
+/// provider payload JSON cannot carry that metadata, so the boundary travels beside the request and
+/// [`rewrite_openai_payload_with_remote_compaction`] proves it by item equality: an item a later
+/// hook changed no longer equals its sealed form, exactly where senpi's fingerprint would mismatch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenAiRemoteReplayBoundary {
     pub compaction_entry_id: String,
     pub expected_ordinals: Vec<usize>,
+    pub expected_items: Vec<Value>,
 }
 
 /// senpi `markOpenAiRemoteReplayBoundary`: mark the exact checkpoint-owned messages before later
 /// context hooks run. `entry_ids` is the typed session-entry stamp aligned with `messages` (senpi's
-/// `SESSION_CONTEXT_ENTRY_ID`). The markers carry entry identity, not payload values. senpi seals
-/// them by converting to Responses input items; the native Responses converter cannot carry
-/// provenance per item, so the sealed baseline is the `convert_to_llm` projection, which does.
+/// `SESSION_CONTEXT_ENTRY_ID`). The markers carry entry identity, not payload values; they are
+/// sealed by the Responses converter (`seal_context_provenance`), as upstream.
 pub fn mark_openai_remote_replay_boundary(
     messages: Vec<Value>,
     entry_ids: &[Option<String>],
@@ -734,10 +744,40 @@ pub fn mark_openai_remote_replay_boundary(
             marked
         }).collect()
     };
+    // senpi converts the marked messages with `sealContextProvenance: true`: each boundary that
+    // reaches a Responses input item is sealed with that message's fingerprint, and the ordinals
+    // of the sealed items become the expected replay set.
+    let (typed, provenance): (Vec<Message>, Vec<Option<ContextProvenance>>) =
+        convert_to_llm(&mark(&[], &std::collections::BTreeMap::new()))
+            .into_iter()
+            .filter_map(|message| {
+                let provenance = get_context_provenance(&message).cloned();
+                Some((serde_json::from_value(message).ok()?, provenance))
+            })
+            .unzip();
+    let (items, item_provenance) = convert_responses_messages_with_provenance(
+        model,
+        &Context {
+            system_prompt: None,
+            messages: typed,
+            tools: None,
+            active_tool_names: None,
+        },
+        &OPENAI_TOOL_CALL_PROVIDERS
+            .iter()
+            .map(|provider| (*provider).to_owned())
+            .collect(),
+        &ConvertResponsesMessagesOptions {
+            seal_context_provenance: Some(true),
+            ..replay_boundary_conversion_options(model)
+        },
+        &provenance,
+    );
     let mut expected_ordinals = Vec::new();
+    let mut expected_items = Vec::new();
     let mut integrity = std::collections::BTreeMap::new();
-    for item in convert_to_llm(&mark(&[], &integrity)) {
-        let Some(boundary) = get_context_provenance(&item) else {
+    for (item, boundary) in items.into_iter().zip(item_provenance) {
+        let Some(boundary) = boundary else {
             continue;
         };
         if boundary.get("scope").and_then(Value::as_str)
@@ -747,17 +787,18 @@ pub fn mark_openai_remote_replay_boundary(
         {
             continue;
         }
-        let Some(ordinal) = boundary
-            .get("ordinal")
-            .and_then(Value::as_u64)
-            .and_then(|ordinal| usize::try_from(ordinal).ok())
-        else {
+        let (Some(ordinal), Some(Value::String(sealed))) = (
+            boundary
+                .get("ordinal")
+                .and_then(Value::as_u64)
+                .and_then(|ordinal| usize::try_from(ordinal).ok()),
+            boundary.get("integrity"),
+        ) else {
             continue;
         };
-        if let Some(fingerprint) = context_provenance_fingerprint(&item) {
-            integrity.insert(ordinal, fingerprint);
-        }
+        integrity.insert(ordinal, sealed.clone());
         expected_ordinals.push(ordinal);
+        expected_items.push(item);
     }
     if expected_ordinals.is_empty() {
         return (messages, None);
@@ -768,8 +809,23 @@ pub fn mark_openai_remote_replay_boundary(
         Some(OpenAiRemoteReplayBoundary {
             compaction_entry_id: remote.entry_id,
             expected_ordinals,
+            expected_items,
         }),
     )
+}
+
+/// senpi `replayBoundaryConversionOptions`: the codex converter omits the system prompt and keeps
+/// text signatures, so the sealed baseline matches what that provider converts.
+fn replay_boundary_conversion_options(model: &Model) -> ConvertResponsesMessagesOptions {
+    if model.api == "openai-codex-responses" {
+        ConvertResponsesMessagesOptions {
+            include_system_prompt: Some(false),
+            preserve_text_signatures: Some(true),
+            ..ConvertResponsesMessagesOptions::default()
+        }
+    } else {
+        ConvertResponsesMessagesOptions::default()
+    }
 }
 
 #[cfg(test)]
@@ -811,7 +867,11 @@ mod replay_boundary_tests {
             boundary,
             Some(OpenAiRemoteReplayBoundary {
                 compaction_entry_id: "c".into(),
-                expected_ordinals: vec![0, 1]
+                expected_ordinals: vec![0, 1],
+                expected_items: vec![
+                    json!({"role":"user","content":[{"type":"input_text","text":format!("{}s{}", maho_core::messages::COMPACTION_SUMMARY_PREFIX, maho_core::messages::COMPACTION_SUMMARY_SUFFIX)}]}),
+                    json!({"role":"user","content":[{"type":"input_text","text":"kept"}]}),
+                ],
             })
         );
         assert_eq!(marked[0][CONTEXT_PROVENANCE_FIELD]["ordinal"], 0);
