@@ -177,7 +177,7 @@ fn restore_digest_input(
                 command: result.command.clone(),
                 path: result.path.clone(),
                 reason: result.reason.clone(),
-                orphan: None,
+                orphan: result.orphan.clone(),
             })
             .collect(),
         // A background session never survives its generation: it is reported, never respawned.
@@ -420,6 +420,11 @@ impl TakeoverContext {
             _ => 0.0,
         };
         let readable_manifest = matches!(restore_state, Ok(Some(_)));
+        // Upstream restartable-command `reapOrphan`: a watcher a crashed generation left running is
+        // confirmed and stopped before its respawn; this awaits with no manager/registry lock held.
+        if let Ok(Some(manifest)) = &restore_state {
+            lifecycle.writer.reap_orphans(manifest, now).await;
+        }
         let digest = {
             let mut manager = self
                 .manager
@@ -1842,7 +1847,15 @@ impl Extension for TerminalExtension {
                                 .flatten();
                             let deadline_ms =
                                 crate::tools::monitor::registration_deadline_ms(&monitors, &id);
-                            (registration.with_deadline_ms(deadline_ms), checkpoint)
+                            let runtime = manager
+                                .get(&id)
+                                .and_then(|runtime| runtime.identity());
+                            (
+                                registration
+                                    .with_deadline_ms(deadline_ms)
+                                    .with_runtime(runtime),
+                                checkpoint,
+                            )
                         });
                         (result, recorded)
                     };

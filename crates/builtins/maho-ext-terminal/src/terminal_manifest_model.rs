@@ -182,6 +182,7 @@ impl MonitorRegistration {
         RecordedRegistration {
             registration: self,
             deadline_ms,
+            runtime: None,
         }
     }
 }
@@ -189,6 +190,18 @@ impl MonitorRegistration {
 pub struct RecordedRegistration {
     pub registration: MonitorRegistration,
     pub deadline_ms: Option<f64>,
+    /// Upstream `MonitorRegistration.runtime`: the spawned child's identity, so a restore after a
+    /// crash can recognise (and stop) it before re-spawning.
+    pub runtime: Option<crate::process_identity::ChildProcessIdentity>,
+}
+impl RecordedRegistration {
+    pub fn with_runtime(
+        mut self,
+        runtime: Option<crate::process_identity::ChildProcessIdentity>,
+    ) -> Self {
+        self.runtime = runtime;
+        self
+    }
 }
 impl From<MonitorRegistration> for RecordedRegistration {
     fn from(registration: MonitorRegistration) -> Self {

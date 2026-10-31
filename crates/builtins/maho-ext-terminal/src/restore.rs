@@ -317,6 +317,8 @@ pub struct RestoredMonitor {
     pub path: Option<String>,
     /// Why a watch was lost (upstream `MonitorRestoreResult.reason`), e.g. `exited 127 in 12ms: ...`.
     pub reason: Option<String>,
+    /// Upstream `RestoreHandlerResult.orphan`: the crash-orphaned watcher found before the respawn.
+    pub orphan: Option<crate::restore_digest::Orphan>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoredBackground {
