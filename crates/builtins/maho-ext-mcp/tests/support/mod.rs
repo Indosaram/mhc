@@ -1,3 +1,5 @@
+pub mod clock;
+
 use std::{env, path::PathBuf};
 
 #[allow(dead_code)]
