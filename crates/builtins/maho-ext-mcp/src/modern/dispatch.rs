@@ -22,6 +22,8 @@ pub struct NegotiationInputs<'a> {
     pub logger: Arc<Mutex<McpLogger>>,
     pub auth: Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
     pub ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// The connection's readiness provider (a pooled connection's lease aggregate).
+    pub readiness: Option<crate::elicitation::McpFormReadiness>,
     pub elicitation_enabled: bool,
 }
 
@@ -89,6 +91,7 @@ where
                 super::client::create_mcp_request_client(
                     &client,
                     inputs.ui.as_ref(),
+                    inputs.readiness.as_ref(),
                     inputs.elicitation_enabled,
                 );
                 let warn_logger = inputs.logger.clone();
@@ -133,6 +136,7 @@ where
         super::client::create_mcp_request_client(
             &client,
             inputs.ui.as_ref(),
+            inputs.readiness.as_ref(),
             inputs.elicitation_enabled,
         );
         client
@@ -145,6 +149,7 @@ where
     super::client::create_mcp_request_client(
         &client,
         inputs.ui.as_ref(),
+        inputs.readiness.as_ref(),
         inputs.elicitation_enabled,
     );
     // A modern stdio child is detected when it starts, before its local initialize answer sets the version.
@@ -190,6 +195,7 @@ where
             super::client::create_mcp_request_client(
                 &fresh,
                 inputs.ui.as_ref(),
+                inputs.readiness.as_ref(),
                 inputs.elicitation_enabled,
             );
             fresh

@@ -145,9 +145,24 @@ fn create_session_connection(
             false,
         ),
     };
+    // The pool key carries elicitationEnabled, so every lease of a pooled connection agrees on it.
     connection.set_elicitation_enabled(elicitation_enabled);
-    if let Some(policy) = crate::transport::project_policy(config_hash) {
-        connection.set_project_policy(policy);
+    let policy = crate::transport::project_policy(config_hash);
+    match &shared {
+        // shared-connection.ts: readiness and projectPolicy.resolve aggregate over the pool's live leases.
+        Some(lease) => lease.shared.set_owner_options(
+            owner,
+            crate::shared_connection::SharedLeaseOptions {
+                elicitation_ui: elicitation_ui.clone(),
+                elicitation_enabled,
+                project_policy: policy,
+            },
+        ),
+        None => {
+            if let Some(policy) = policy {
+                connection.set_project_policy(policy);
+            }
+        }
     }
     if plan.provider.is_some()
         && config.oauth.as_ref().and_then(|oauth| oauth.flow.as_ref())
