@@ -208,6 +208,7 @@ pub mod session_record_stream;
 pub mod session_registry;
 pub mod session_registry_claims;
 pub mod session_registry_moved_path;
+pub mod session_registry_opening;
 pub mod session_release;
 pub mod session_release_adapter;
 pub mod session_release_interrupt;
