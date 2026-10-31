@@ -961,6 +961,48 @@ impl ClientInner {
     }
 }
 impl SessionWorkerClient {
+    /// A client with no worker process behind it, its outbox observable (tests of the registries that own one).
+    #[cfg(test)]
+    pub(crate) fn detached_for_test() -> (Self, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            output: Box::new(|_: Value, _: Option<String>| {}),
+            request_close: Box::new(|| {}),
+            failure: Box::new(|_: &str| {}),
+            exit: Box::new(|| {}),
+            security: None,
+            presenters: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: false,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: None,
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(None),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: None,
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: None,
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
+        });
+        (Self { inner }, outbox)
+    }
     /// Starts the worker process and its pipe pumps; only the process's actual exit releases ownership.
     pub fn spawn(
         spawn: &SpawnSessionWorker,
@@ -1228,6 +1270,10 @@ impl SessionWorkerClient {
             lock(&self.inner.requests).active_count(),
             lock(&self.inner.state).snapshot.as_ref(),
         )
+    }
+    /// senpi `bindingReady`: the worker's routing binding is installed, so an attach may join it.
+    pub fn binding_ready(&self) -> bool {
+        lock(&self.inner.state).binding_ready
     }
     pub fn is_stopped(&self) -> bool {
         lock(&self.inner.state).stopped
