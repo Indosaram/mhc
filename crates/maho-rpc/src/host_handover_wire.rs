@@ -267,11 +267,8 @@ pub async fn perform_idle_handover(
                 .unwrap_or(crate::host_lifecycle::DEFAULT_HOST_IDLE_EXIT_MS),
         });
     let options = crate::host_handoff::HandoffOptions {
-        host_args: crate::host_ensure::ensure_supervisor_args(
-            socket,
-            &agent_dir.to_string_lossy(),
-            &request.host_args,
-        ),
+        // Already the supervisor argv of the CLI that asked (`ensure_supervisor_args`), passed through as upstream.
+        host_args: request.host_args.clone(),
         policy,
         env,
         launch_profile_id: String::new(),
