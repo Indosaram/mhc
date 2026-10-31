@@ -119,7 +119,7 @@ fn opt_out_env_matrix() {
 
 #[test]
 fn global_disable_telemetry_opts_every_product_out() {
-    let cases: [OptOutCase; 5] = [
+    let cases: [OptOutCase; 6] = [
         (
             "global telemetry disable 1",
             &[("OMO_DISABLE_TELEMETRY", "1")],
@@ -143,6 +143,11 @@ fn global_disable_telemetry_opts_every_product_out() {
         (
             "global telemetry disable 0 keeps telemetry on",
             &[("OMO_DISABLE_TELEMETRY", "0")],
+            false,
+        ),
+        (
+            "empty OMO_DISABLE_TELEMETRY keeps telemetry on",
+            &[("OMO_DISABLE_TELEMETRY", "")],
             false,
         ),
     ];
