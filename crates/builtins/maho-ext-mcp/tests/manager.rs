@@ -164,11 +164,13 @@ async fn untrusted_project_servers_offer_inspection_only_and_keep_their_bytes() 
     let menus = surface.menus();
     assert_eq!(menus.len(), 7);
     assert_eq!(surface.values(0), vec!["fx"]);
-    assert!(menus[0].items[0]
-        .description
-        .as_deref()
-        .unwrap()
-        .contains("project"));
+    assert!(
+        menus[0].items[0]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("project")
+    );
     assert_eq!(surface.values(1), vec!["status", "logs"]);
     assert_eq!(menus[2].title, "Details of fx");
     assert!(!menus[2].items.is_empty());
@@ -191,7 +193,10 @@ async fn global_servers_retain_their_write_actions() {
         .await;
         let surface = ScriptedSurface::new(&[Some("fx"), None, None]);
         let (run, _) = recording_run("unused");
-        assert_eq!(manage(&surface, &service, no_reattach(), run).await, Ok(None));
+        assert_eq!(
+            manage(&surface, &service, no_reattach(), run).await,
+            Ok(None)
+        );
         assert_eq!(surface.menus().len(), 3);
         let actions = surface.values(1);
         assert!(actions.contains(&toggle.to_owned()), "{actions:?}");
@@ -219,13 +224,7 @@ async fn exposure_edits_only_the_selected_project_config_and_keeps_placeholders(
         serde_json::json!({"fx": {"command": "/missing/fx", "enabled": false, "exposure": "direct"}}),
     )
     .await;
-    let surface = ScriptedSurface::new(&[
-        Some("fx"),
-        Some("exposure"),
-        Some("proxy"),
-        None,
-        None,
-    ]);
+    let surface = ScriptedSurface::new(&[Some("fx"), Some("exposure"), Some("proxy"), None, None]);
     let (run, _) = recording_run("unused");
     let outcome = manage(
         &surface,
@@ -246,7 +245,10 @@ async fn exposure_edits_only_the_selected_project_config_and_keeps_placeholders(
         serde_json::from_str(&std::fs::read_to_string(agent.path().join("mcp.json")).unwrap())
             .unwrap();
     assert_eq!(project["mcpServers"]["fx"]["exposure"], "proxy");
-    assert_eq!(project["mcpServers"]["fx"]["env"]["PLACEHOLDER"], placeholder);
+    assert_eq!(
+        project["mcpServers"]["fx"]["env"]["PLACEHOLDER"],
+        placeholder
+    );
     assert_eq!(global["mcpServers"]["fx"]["exposure"], "direct");
     service.lock().await.dispose().await.unwrap();
 }
@@ -270,7 +272,10 @@ async fn test_and_reconnect_dispatch_the_raw_server_identity() {
             .await;
             let surface = ScriptedSurface::new(&[Some(name), Some(action), None, None]);
             let (run, calls) = recording_run("handler notice");
-            assert_eq!(manage(&surface, &service, no_reattach(), run).await, Ok(None));
+            assert_eq!(
+                manage(&surface, &service, no_reattach(), run).await,
+                Ok(None)
+            );
             assert_eq!(*calls.lock().unwrap(), vec![(command, name.to_owned())]);
             let menus = surface.menus();
             assert!(
@@ -289,8 +294,10 @@ async fn test_and_reconnect_dispatch_the_raw_server_identity() {
 #[tokio::test]
 async fn oauth_actions_follow_stored_credentials_and_leave_the_view() {
     let url = "http://127.0.0.1:1/mcp";
+    // An empty stored accessToken is not a sign-in (upstream `mcpCredentialIdentity` is undefined).
     for (token, expected) in [
         (None, McpManagerCommand::Auth),
+        (Some(""), McpManagerCommand::Auth),
         (Some("fake-access"), McpManagerCommand::Logout),
     ] {
         let root = tempfile::tempdir().unwrap();

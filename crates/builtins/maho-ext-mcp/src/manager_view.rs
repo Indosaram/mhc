@@ -173,17 +173,19 @@ impl McpManagerHandle {
         }
         loop {
             tokio::select! {
+                // Poll order: settle first, then re-arm the subscription before any build reads state.
+                biased;
                 choice = &mut reply => return Ok(choice.unwrap_or(None)),
+                () = next_change(&mut change) => {
+                    change = subscribe.as_ref().map(|subscribe| subscribe());
+                    pending = Some(build());
+                }
                 built = next_build(&mut pending) => {
                     pending = None;
                     let menu = built?;
                     if !self.send(ViewRequest::Menu { id, menu }) {
                         return Ok(None);
                     }
-                }
-                () = next_change(&mut change) => {
-                    change = subscribe.as_ref().map(|subscribe| subscribe());
-                    pending = Some(build());
                 }
                 () = self.resize.notified() => pending = Some(build()),
             }
@@ -559,7 +561,7 @@ impl Drop for McpManagerView {
 mod tests {
     use super::*;
     use maho_tui::keybindings::{
-        Keys, KeybindingsConfig, get_keybindings, set_keybindings, tui_keybindings,
+        KeybindingsConfig, Keys, get_keybindings, set_keybindings, tui_keybindings,
     };
     use maho_tui::utils::{strip_terminal_sequences, visible_width};
     use std::cell::Cell;
@@ -567,6 +569,15 @@ mod tests {
 
     /// Serializes tests that read or replace the process-wide keybindings.
     static KEYS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Restores the process-wide keybindings on drop, even when an assertion fails. Create it while
+    /// `KEYS` is held and declare it after that guard so it drops first.
+    struct RestoreKeybindings(Arc<KeybindingsManager>);
+    impl Drop for RestoreKeybindings {
+        fn drop(&mut self) {
+            set_keybindings((*self.0).clone());
+        }
+    }
     const CONTROLS: &str = "\x1b]2;MCP_INJECTION\x07\x1b[2J";
 
     fn theme() -> Theme {
@@ -847,7 +858,9 @@ mod tests {
             }
             s.view.dispose();
             assert_eq!(closing.await.expect("join"), Ok(None));
-            let reopened = s.handle.menu(fixed(menu(vec![item("reopened", "reopened")])), None);
+            let reopened = s
+                .handle
+                .menu(fixed(menu(vec![item("reopened", "reopened")])), None);
             assert_eq!(reopened.await, Ok(None));
         }
     }
@@ -855,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn scrolls_long_catalogs_fits_narrow_terminals_and_honors_configured_bindings() {
         let _keys = KEYS.lock().await;
-        let previous = get_keybindings();
+        let _restore = RestoreKeybindings(get_keybindings());
         let mut keys = default_keys();
         let mut config = KeybindingsConfig::default();
         config.insert(
@@ -902,12 +915,12 @@ mod tests {
             })
         });
         let empty = s.open(fixed(menu(Vec::new())), Some(subscribe));
-        s.wait_for(28, |text| text.contains("Nothing to show.")).await;
+        s.wait_for(28, |text| text.contains("Nothing to show."))
+            .await;
         s.view.handle_input("\x1b");
         assert_eq!(live.load(Ordering::SeqCst), 1);
         s.view.handle_input("\x18");
         assert_eq!(empty.await.expect("join"), Ok(None));
         assert_eq!(live.load(Ordering::SeqCst), 0);
-        set_keybindings((*previous).clone());
     }
 }

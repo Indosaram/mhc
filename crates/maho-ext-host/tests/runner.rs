@@ -273,6 +273,66 @@ async fn completed_dialog_rejects_runtime_invalidated_after_prompt_start() {
         "replaced during dialog"
     );
 }
+struct RenderCountingUi(std::sync::atomic::AtomicUsize);
+impl ExtensionUi for RenderCountingUi {
+    fn select<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn input<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err("UI not available".into()) })
+    }
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
+    fn request_render(&self) -> Result<(), ExtensionFailure> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+// A repaint requested through the lifecycle wrapper reaches the bound UI; a stale runtime rejects it.
+#[test]
+fn lifecycle_ui_forwards_request_render_while_active() {
+    let inner = Arc::new(RenderCountingUi(Default::default()));
+    let runtime = ExtensionRuntime::default();
+    let ui = maho_ext_host::ui::LifecycleUi::new(inner.clone(), runtime.clone(), Arc::new(|_| {}));
+    ui.request_render().unwrap();
+    assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    runtime.invalidate("replaced");
+    assert_eq!(ui.request_render().unwrap_err().message, "replaced");
+    assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
 fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
     let mut ext = LoadedExtension::new(
         path,

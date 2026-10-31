@@ -1112,8 +1112,10 @@ impl McpService {
         tokio::sync::broadcast::Receiver<crate::connection::ServerConnectionStateChangedEvent>,
     > {
         let mut receivers = Vec::new();
-        for connection in self.connections.values() {
-            receivers.push(connection.entry.lock().await.connection.on_state_change());
+        for name in self.connections.keys() {
+            if let Some(connection) = self.get_connection(name) {
+                receivers.push(connection.entry.lock().await.connection.on_state_change());
+            }
         }
         receivers
     }
@@ -1122,7 +1124,7 @@ impl McpService {
         &self,
         name: &str,
     ) -> Option<Arc<crate::transport_sdk::McpClient>> {
-        let entry = self.connections.get(name)?.entry.lock().await;
+        let entry = self.get_connection(name)?.entry.lock().await;
         if entry.connection.state() != crate::connection::ServerConnectionState::Connected {
             return None;
         }
@@ -1133,7 +1135,7 @@ impl McpService {
         &self,
         name: &str,
     ) -> crate::expose::status::McpServerExposureStatus {
-        let entry = match self.connections.get(name) {
+        let entry = match self.get_connection(name) {
             Some(connection) => Some(connection.entry.lock().await),
             None => None,
         };
@@ -1145,13 +1147,13 @@ impl McpService {
         .await
     }
     /// Upstream `getServerAuthStatus` (`wireAuthStatus`): bearer servers in `needs_auth` are not logged in;
-    /// OAuth servers are logged in when a stored access token exists.
+    /// OAuth servers are logged in when their credential identity resolves (a non-empty access token).
     pub async fn server_auth_status(&self, name: &str) -> crate::service_types::McpWireAuthStatus {
         use crate::service_types::McpWireAuthStatus;
         let Some(server) = self.config.as_ref().and_then(|config| config.servers.get(name)) else {
             return McpWireAuthStatus::Unsupported;
         };
-        let state = match self.connections.get(name) {
+        let state = match self.get_connection(name) {
             Some(connection) => Some(connection.entry.lock().await.connection.state()),
             None => None,
         };
@@ -1163,18 +1165,18 @@ impl McpService {
                     McpWireAuthStatus::BearerToken
                 }
             }
+            // Upstream `mcpCredentialIdentity(...) === undefined`: a read-only probe (never migrates or
+            // writes the store) where an empty accessToken is not signed in.
             Some(crate::auth::context::ServerAuthMode::OAuth) => {
-                let logged_in = self
-                    .agent_dir
-                    .as_ref()
-                    .zip(server.config.as_ref())
-                    .and_then(|(dir, config)| {
-                        config.url.as_ref().map(|url| {
-                            crate::auth::token_store::McpTokenStore::new(dir, name, url)
-                        })
-                    })
-                    .and_then(|store| store.read().ok().flatten())
-                    .is_some_and(|record| record.access_token.is_some());
+                let logged_in = server.config.as_ref().is_some_and(|config| {
+                    crate::auth::catalog_identity::mcp_credential_identity(
+                        config,
+                        name,
+                        self.agent_dir.as_deref(),
+                        Some(&self.session_env),
+                    )
+                    .is_some()
+                });
                 if logged_in {
                     McpWireAuthStatus::OAuth
                 } else {
