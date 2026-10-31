@@ -64,6 +64,8 @@ pub struct LifecycleDeps {
     pub host_retry: Option<HostSessionRetryPolicy>,
     pub host_endpoint: Option<Arc<dyn HostEndpointPort>>,
     pub host_close_timeout_ms: Option<u64>,
+    /// When the live-parent recovery worker scans; `None` keeps the 5 s production cadence.
+    pub live_parent_recovery: Option<super::live_parent_recovery::RecoverySchedule>,
 }
 
 impl LifecycleDeps {
@@ -94,6 +96,7 @@ impl LifecycleDeps {
             host_retry: None,
             host_endpoint: None,
             host_close_timeout_ms: None,
+            live_parent_recovery: None,
         }
     }
 }
