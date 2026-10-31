@@ -221,7 +221,7 @@ impl InteractiveExtensionUi {
     }
     /// An ephemeral dialog whose signal is already aborted is never shown (senpi returns undefined).
     fn settled_ephemeral(opts: &ExtensionUiDialogOptions) -> bool {
-        opts.ephemeral && opts.signal.as_ref().is_some_and(AbortSignal::aborted)
+        opts.ephemeral && opts.signal.as_ref().is_some_and(AbortSignal::is_aborted)
     }
     async fn wait<T: Default>(
         reply: tokio::sync::oneshot::Receiver<T>,
@@ -842,11 +842,11 @@ mod tests {
                 .expect("an ephemeral select is still shown"),
         );
         assert_eq!(shown.await, None);
-        let controller = maho_ai::utils::abort::AbortController::new();
-        controller.abort(None);
+        let signal = AbortSignal::default();
+        signal.abort();
         let aborted = || ExtensionUiDialogOptions {
             ephemeral: true,
-            signal: Some(controller.signal()),
+            signal: Some(signal.clone()),
             ..Default::default()
         };
         assert_eq!(ui.select("Gone", &options, aborted()).await, None);
