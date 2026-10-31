@@ -4552,27 +4552,19 @@ mod handoff_tests {
             .cloned()
             .unwrap();
         let relocation = binding.relocation().clone();
-        let (asked_tx, asked_rx) = tokio::sync::oneshot::channel();
-        let asking = tokio::spawn(async move {
-            relocation
-                .targets(Some("c"), move |record| {
-                    let _ = asked_tx.send(record);
-                })
-                .await
-        });
-        let asked = tokio::time::timeout(std::time::Duration::from_secs(10), asked_rx)
-            .await
-            .expect("the request is sent to the connection")
-            .unwrap();
+        let (asked_tx, mut asked_rx) = tokio::sync::oneshot::channel();
+        let mut asking = Box::pin(relocation.targets(Some("c"), move |record| {
+            let _ = asked_tx.send(record);
+        }));
+        assert!(futures::poll!(&mut asking).is_pending());
+        let asked = asked_rx
+            .try_recv()
+            .expect("the request is sent to the connection");
         assert_eq!(asked["method"], "list_relocation_targets");
         core.release_connection("c").await;
-        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asking)
-            .await
-            .expect("the request ends when its connection leaves")
-            .unwrap();
+        let answer = asking.await;
         assert_eq!(answer["reason"], "app_disconnected");
     }
-    // senpi rpc-queued-open-record.test.ts: "tells the opener its queue position before the open completes".
     #[tokio::test]
     async fn tells_the_opener_its_queue_position_before_the_open_completes() {
         let temp = tempfile::tempdir().unwrap();
