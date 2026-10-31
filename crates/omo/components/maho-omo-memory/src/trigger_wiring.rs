@@ -97,6 +97,21 @@ impl ReflectionTriggerWiring {
         session_id: &str,
         signal: Option<&maho_ext_api::AbortSignal>,
     ) {
+        self.handle_event_observed(event, session_id, signal, None);
+    }
+    /// `handle_event_with_signal` that also names each settled phase on the observer.
+    fn handle_event_observed(
+        &self,
+        event: &ExtensionEvent,
+        session_id: &str,
+        signal: Option<&maho_ext_api::AbortSignal>,
+        observer: Option<&maho_ext_api::SettleObserver>,
+    ) {
+        let phase = |label: &str| {
+            observer.map_or(Ok(()), |observer| {
+                observer.phase(label).map_err(|error| error.message)
+            })
+        };
         let Some(session) = (self.options.resolve_session)(Some(session_id)) else {
             return;
         };
@@ -140,6 +155,7 @@ impl ReflectionTriggerWiring {
                 }
                 let evaluate = || {
                     if ledger.pending_compaction {
+                        phase("reflection.compaction.evaluate")?;
                         session.engine.evaluate_with_signal(
                             &session.conversation_id,
                             ReflectionEvent::CompactionAccepted,
@@ -148,6 +164,7 @@ impl ReflectionTriggerWiring {
                         crate::worker::run_liveness::throw_if_aborted(signal)?;
                         ledger.pending_compaction = false;
                     }
+                    phase("reflection.settled.evaluate")?;
                     self.evaluate_and_launch(
                         &session,
                         ReflectionEvent::Settled { success: true },
@@ -177,7 +194,19 @@ impl ReflectionTriggerWiring {
             api.on(
                 event,
                 Arc::new(move |event, context| {
-                    wiring.handle_event(event, context.session_manager.session_id());
+                    // `SettleObservers::wrap` invokes the handler inside the observer scope.
+                    let observer = matches!(event, ExtensionEvent::AgentSettled)
+                        .then(maho_ext_api::current_settle_observer)
+                        .flatten();
+                    let signal = observer
+                        .as_ref()
+                        .map(maho_ext_api::SettleObserver::tool_signal);
+                    wiring.handle_event_observed(
+                        event,
+                        context.session_manager.session_id(),
+                        signal.as_ref(),
+                        observer.as_ref(),
+                    );
                     Box::pin(async { Ok(EventResult::None) })
                 }),
             );
@@ -401,6 +430,58 @@ mod tests {
         }
         assert!(api.registered.tools.is_empty());
         assert!(api.registered.commands.is_empty());
+    }
+    async fn settle_registered(
+        wiring: &Arc<ReflectionTriggerWiring>,
+        observer: maho_ext_api::SettleObserver,
+    ) {
+        let mut api = ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        wiring.register(&mut api);
+        let context = crate::commands::test_support::extension_context(Default::default());
+        let end_handler = api.registered.handlers[&EventKind::AgentEnd][0].clone();
+        let settled = api.registered.handlers[&EventKind::AgentSettled][0].clone();
+        end_handler(&mut end(false, false), &context).await.unwrap();
+        maho_ext_api::with_settle_observer(observer, async {
+            settled(&mut ExtensionEvent::AgentSettled, &context)
+                .await
+                .unwrap();
+        })
+        .await;
+    }
+    #[tokio::test]
+    async fn registered_settle_names_each_phase_on_the_observer() {
+        let (wiring, events, ledger) = fixture(true);
+        ledger.lock().unwrap().pending_compaction = true;
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let observer =
+            maho_ext_api::SettleObserver::new(controller.signal(), "reflection.evaluate");
+        settle_registered(&wiring, observer.clone()).await;
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                ReflectionEvent::CompactionAccepted,
+                ReflectionEvent::Settled { success: true }
+            ]
+        );
+        assert_eq!(observer.hook_label(), "reflection.settled.evaluate");
+    }
+    #[tokio::test]
+    async fn registered_settle_under_an_aborted_observer_evaluates_nothing() {
+        let (wiring, events, ledger) = fixture(true);
+        ledger.lock().unwrap().pending_compaction = true;
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let observer =
+            maho_ext_api::SettleObserver::new(controller.signal(), "reflection.evaluate");
+        settle_registered(&wiring, observer.clone()).await;
+        assert!(events.lock().unwrap().is_empty());
+        assert!(ledger.lock().unwrap().pending_compaction);
+        assert_eq!(observer.hook_label(), "reflection.evaluate");
     }
     #[test]
     fn successful_settle_consumes_compaction_before_evaluation() {
