@@ -215,3 +215,60 @@ Everything else in §2 is needed by Phase 2/3 consumers and can be written when 
 - Constants that are behavioural defaults (50 MiB, 2 backups, 500 ms, 50 lines; Windows
   extension list) are stated as facts, not as copied declarations.
 - No identifier is reused from the SUL crate's public API layout; names are proposals.
+
+---
+
+## Delta (omo v5.1.52, 2026-11-01)
+
+### D1. Path containment follows symlinks before `..` (§2.5)
+
+Behaviour change to `contains_path` / `is_within` (and `canonicalize_lenient`, which they use)
+for a path that **exists**: it is canonicalised as given (made absolute against the cwd when it is
+relative, but **not** lexically normalised first), so the operating system resolves each
+component in order. On POSIX a symlink is followed before a later `..` is applied, which is how
+opening that same string would behave. The verdict is therefore about the file the raw path
+really reaches. Previously `..` was removed textually first, so `link/../x` was judged as `x`
+next to `link`, even when opening it reaches `x` next to the link's target.
+
+Unchanged:
+
+- A path that does not exist yet still uses the fallback of §2.5: canonicalise the deepest
+  existing ancestor and re-append the remainder. The ancestor walk itself is as before.
+- The comparison is still component-wise (`/a/bc` is not inside `/a/b`) and a path equals-root
+  is inside.
+- Windows compares the canonical long names case-insensitively, as before. POSIX compares the
+  canonical spelling exactly; on a case-insensitive volume the canonical spelling of a case alias
+  is the same, so the alias counts as inside.
+
+Consequence for callers (contract): a caller that checks a path and then opens it must check the
+same string it opens. A caller that opens a lexically normalised path must normalise first and
+pass the normalised path; a caller that opens the raw string must pass the raw string.
+
+Errors: none new. Canonicalisation errors on an existing path fall back as in §2.5.
+
+Tests (POSIX; use a temporary directory `T`):
+1. Given `T/root/`, `T/other/x` and a symlink `T/root/link -> T/other/sub` with `T/other/sub`
+   existing, when `contains_path(T/root, T/root/link/../x)` is called, then it returns `false`:
+   the path reaches `T/other/x`. The same call returned `true` under the old rule.
+2. Given the same tree, `contains_path(T/other, T/root/link/../x)` returns `true`.
+3. `contains_path(T/root, T/root/a/../b)` with `T/root/a` a real directory and `T/root/b`
+   existing returns `true` (no symlink, same result as before).
+4. `contains_path(T/root, T/root/new/file)` where `T/root/new` does not exist returns `true`
+   (fallback unchanged).
+5. `contains_path(T/root, T/root/../root2/f)` with `T/root2/f` existing returns `false`.
+
+### D2. Mapping
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-cores-35 | D1 | APPLIES | which paths count as inside a root changes when a symlink precedes `..` |
+
+Leak self-check:
+
+- [x] no fenced code block;
+- [x] no sentence translates or paraphrases a SUL comment; the rule is stated from its observable
+      effect on a symlink tree, written for this crate's existing functions;
+- [x] no constant table;
+- [x] no new identifier (the existing `contains_path`, `is_within`, `canonicalize_lenient` keep
+      their names);
+- [x] no OmO-original feature.

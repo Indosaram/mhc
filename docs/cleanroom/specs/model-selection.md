@@ -682,6 +682,40 @@ Tests:
 5. `("kimi-for-coding","kimi-k3.1-pro")` → `k3.1-pro`; `("moonshotai","kimi-k3.1-pro")` →
    unchanged.
 
+### D7. Launch-gated ids in the delegated-task choice (§5.3)
+
+Behaviour: the launch gate of D1 also applies to §5.3, on the one path where the choice is made
+without availability proof: a cold cache (`available` empty) with a known list of connected
+providers. While the release flag of D1 is off, a model reference whose id normalises to the
+gated id (D1's comparison) is treated as not usable on that path:
+
+- step 3b: a non-user-configured category default that names the gated id is skipped, even when
+  its provider is connected; the choice continues with step 4 (user fallbacks) and step 5;
+- step 5, cold cache with connected providers: a chain rung whose model is the gated id is
+  skipped; the first later rung with a connected provider is chosen.
+
+Unchanged: a user-configured category default (step 3a) and the user's own model or fallbacks
+(steps 1 and 4) are never filtered, the same as D1 test 4. A warm cache (`available` non-empty) is
+unchanged: there the id must match an available entry, which is proof enough. The first-run
+case (cold cache and no connected-provider list, step 2 / step 3b first branch) is unchanged.
+With the flag on, nothing in §5.3 changes.
+
+Inputs: the §5.1 inputs and the D1 flag. Output: as §5.2. Errors: none; a skip is logged like
+the existing step 3b skip.
+
+Tests (flag off; providers invented except the gated id):
+1. Cold cache, connected `[acme]`, category default `acme/claude-fable-5-5` (not user-configured),
+   chain `[{providers:[acme], model:"claude-fable-5-1"}]` → `acme/claude-fable-5-1` from the
+   chain, `from_fallback=true`.
+2. Same, but the category default is user-configured → `acme/claude-fable-5-5` returned as
+   written.
+3. Cold cache, connected `[acme]`, no category default, chain
+   `[{providers:[acme], model:"claude-fable-5.5"}, {providers:[acme], model:"m2"}]` → `acme/m2`
+   with the second rung.
+4. Warm cache with `available` = `["acme/claude-fable-5-5"]`, chain
+   `[{providers:[acme], model:"claude-fable-5-5"}]` → `acme/claude-fable-5-5` (unchanged).
+5. Cold cache, no connected-provider list and neither cache flag → `Deferred` (unchanged).
+
 ### D5. Mapping table
 
 | census row | delta § | APPLIES/N-A | reason |
@@ -691,6 +725,13 @@ Tests:
 | omo-components-20 | D3 | APPLIES | notice facts the user reads |
 | omo-components-21 | D4 | APPLIES | changes which providers a session may start on |
 | omo-cores-02 | D6 | APPLIES | Kimi model id and provider set of a built-in chain are observable; data prerequisite is senpi-builtins-b-05 |
+| omo-cores-01 | D1 | APPLIES | the launch gate itself: provisional id, release flag, accepted levels, recorded and warned rejections |
+| omo-cores-06 | D7 | APPLIES | delegated choice must not pick the gated id without availability proof |
+| omo-cores-03 | - | N-A | N-A reason: capability rows (context, output, modalities) are catalog data; MIT model selection keeps no capability table, and the MIT model catalog in `maho-ai` (senpi port, MIT-direct) already lists the new Kimi ids |
+| omo-cores-04 | - | N-A | N-A reason: merging a placeholder capability row with a generated catalog row; MIT has no capability snapshot to merge (see omo-cores-03) |
+| omo-cores-05 | - | N-A | N-A reason: context-limit lookup for the gated id; MIT model selection resolves no context limits, the session engine takes them from the `maho-ai` catalog |
+| omo-cores-09 | - | N-A | N-A reason: built-in category chains; MIT ships no built-in category chains (§5.4, Q4), categories are user-configured |
+| omo-cores-10 | - | N-A | N-A reason: built-in category chain (same as omo-cores-09) |
 
 Leak self-check:
 - No fenced code from SUL: none used (no code blocks in this delta).
@@ -702,4 +743,5 @@ Leak self-check:
   and one level name appear (interface facts).
 - No OmO-original identifier: type ids stay `model-profile:*`; product name `mhc`.
 - No OmO-original feature: the persona/launch tooling of the upstream is not specified beyond the
-  one gate that shapes a built-in chain.
+  one gate that shapes a built-in chain and (D7, added 2026-11-01) the same gate in the delegated
+  choice. D7 states the rule from behaviour; it names no upstream function or comment.

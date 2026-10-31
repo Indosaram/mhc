@@ -532,7 +532,8 @@ description text, comments or code from the SUL sources or the generated schema 
 ## Delta (omo v5.1.52)
 
 Written 2026-10-30 from the sync-5152 census rows (no SUL source opened). It supersedes the
-listed defaults above; the key names, types and bounds are unchanged.
+listed defaults above; in D1 the key names, types and bounds are unchanged. D2 (added 2026-11-01)
+adds one optional key; it supersedes the earlier review note that left `model_pad` unspecified.
 
 ### D1. `memory.projection` defaults
 
@@ -563,6 +564,51 @@ Tests:
   kept and `max_bytes` is `40960`.
 - Given the regenerated JSON Schema, then the `default` of the two keys is `0` and `40960`.
 
+### D2. `model_pad` (new optional key)
+
+Interface facts (key names and types; no defaults):
+
+- `model_pad` : object
+- `model_pad.labels` : object
+- `model_pad.labels.daily` : string
+- `model_pad.labels.geeky` : string
+- `model_pad.labels.normal` : string
+- `model_pad.labels.heavy` : string
+
+Where it may appear: at top level, inside the typed harness blocks (`[native]`, `[senpi]`,
+`[codex]`) and inside `profiles.<name>`, with the same shape everywhere. It follows the ordinary
+merge and view rules of config.md §5-§6 (a later layer's value for a label wins; the harness
+block and profile overlay it like any other key of those blocks).
+
+Meaning: presentation only. A client that shows the four built-in model profiles as a two-by-two
+grid (columns `daily`/`geeky`, rows `normal`/`heavy`, the `family`/`tier` values of
+`model_profiles`) may use these strings as the axis captions. A label that is not set keeps the
+client's own caption. mhc's model selection never reads the key: it changes no profile, no model
+and no default. The name and models of each square stay in `model_profiles.<id>`.
+
+Validation: both objects are strict. An unknown key under `model_pad` or `model_pad.labels` is
+removed with the unknown-keys diagnostic (config.md §4.4). A label that is not a string is an
+invalid value: it is pruned from its layer and the merged view has no value for it. No default is
+ever filled in, so a file without `model_pad` produces a view without it.
+
+Composition rules (top of this file): `model_pad` joins the key list of a typed harness block,
+which also makes it valid inside `profiles.<name>`.
+
+Tests:
+- Given `{"model_pad": {"labels": {"daily": "Everyday", "heavy": "Big"}}}`, when the file is
+  loaded, then there is no diagnostic and the view has those two labels and no `geeky`/`normal`.
+- Given `{"model_pad": {"labels": {"daily": "A", "wide": "B"}}}`, then one unknown-keys
+  diagnostic names `model_pad.labels.wide`, and `daily` is kept.
+- Given `{"model_pad": {"size": 2}}`, then one unknown-keys diagnostic names `model_pad.size`.
+- Given `{"model_pad": {"labels": {"normal": 3}}}`, then one invalid-value diagnostic is reported
+  and the view has no `normal` label.
+- Given `{"[native]": {"model_pad": {"labels": {"geeky": "Nerd"}}}}` and, in another test,
+  `{"profiles": {"p": {"model_pad": {"labels": {"geeky": "Nerd"}}}}}` with that profile active,
+  then the view's `model_pad.labels.geeky` is `"Nerd"`.
+- Given a file without `model_pad`, then the view has no `model_pad` key.
+- Given the regenerated JSON Schema, then `model_pad` and `model_pad.labels` have
+  `additionalProperties: false` and the four labels are strings without a default.
+
 ### Mapping
 
 Every census row routed to an MIT crate that changes a user-writable key or its default:
@@ -570,18 +616,13 @@ Every census row routed to an MIT crate that changes a user-writable key or its 
 | census row | delta § | APPLIES/N-A | reason |
 | --- | --- | --- | --- |
 | omo-memory-18 | D1 | APPLIES | projection defaults change to 0 / 40960 (was 40 / 24576) |
+| omo-cores-12 | D1 | APPLIES | the same projection defaults, as the config-schema side of the change |
+| omo-cores-11 | D2 | APPLIES | new optional `model_pad` key accepted at top level, in harness blocks and in profiles |
 
-Rows checked and found not to change any key in this inventory: omo-senpi-task-b-39 and
-omo-senpi-task-b-40 change built-in fallback-chain models (Fable 5.5 staging, Kimi K3.1 rungs).
-Those are built-in data owned by model-selection.md and maho-task, not defaults of a user key.
-omo-components-08 (comment-checker cache dir name), omo-components-28 (gateway attachment
-fence) and the telemetry rows (no user key; see telemetry.md delta) also add or change no key.
-
-Outside the census (found at review): v5.1.52 also adds an optional top-level key `model_pad`
-(object; `model_pad.labels.daily|geeky|normal|heavy` : string, no defaults), accepted at top
-level, in typed harness blocks and in profiles. Its only census row sits in a discarded shard, so
-this delta does not specify it. Until a spec covers it, mhc treats it as an unknown key
-(config.md §4.4).
+Rows that were checked and change no key in this inventory are mapped in their own specs: the
+built-in fallback-chain rows in `task.md` D6, the comment-checker cache row in
+`sensitive-output.md` D4, the gateway attachment row in `gateway.md`, and the telemetry rows in
+`telemetry.md`. They are not cited here, so each row has exactly one mapping (2026-11-01).
 
 Leak self-check:
 
@@ -589,5 +630,6 @@ Leak self-check:
 - [x] no sentence translates or paraphrases a SUL comment, doc comment or prompt (facts taken from
       the census row summary only);
 - [x] the only constants reproduced are key names, bounds and defaults, which are interface facts;
-- [x] no new identifier is introduced;
+- [x] no new identifier is introduced (D2 adds only user-file key names, which are interface
+      facts; its caption meaning is described in the writer's own words);
 - [x] no OmO-original feature is specified.
