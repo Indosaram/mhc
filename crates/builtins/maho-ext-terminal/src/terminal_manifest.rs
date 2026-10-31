@@ -136,6 +136,16 @@ impl TerminalManifestWriter {
         entry.suspended = false;
         self.entries.insert(entry.monitor_id.clone(), entry);
     }
+    /// Drops a re-adopted entry whose restored command ended inside the grace window (upstream
+    /// adopts only a watch still live after the grace), so the next persist leaves it out.
+    pub fn forget_restored(&mut self, monitor_id: &str) {
+        self.entries.shift_remove(monitor_id);
+    }
+    /// Upstream `persistRestored`: rewrite a readable manifest to the restore's truth at once, so a
+    /// watch that did not come back is never re-run by a later start.
+    pub async fn persist_restored(&mut self, now: f64) {
+        self.persist(now).await;
+    }
     pub fn durable_count(&self) -> usize {
         self.entries
             .values()
@@ -213,6 +223,7 @@ impl TerminalManifestWriter {
                 outcome,
                 command: monitor.command.clone(),
                 path: monitor.path.clone(),
+                reason: None,
             };
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry| expiry <= now) {

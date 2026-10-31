@@ -185,6 +185,8 @@ pub struct RestoreDigest {
     pub lost: usize,
     pub expired: usize,
     pub muted: usize,
+    /// Command watches that exited 0 inside the restore grace window (one-shot gates).
+    pub completed: usize,
     pub attached_elsewhere: usize,
     pub store_error: bool,
     /// Per-monitor results in manifest order (upstream `RestoreDigest.results`), for the
@@ -199,10 +201,12 @@ pub struct RestoredMonitor {
     pub monitor_id: String,
     pub description: String,
     pub file: bool,
-    /// `restored`, `muted`, `lost`, `attachedElsewhere` or `expired`.
+    /// `restored`, `muted`, `lost`, `completed`, `attachedElsewhere` or `expired`.
     pub outcome: &'static str,
     pub command: Option<String>,
     pub path: Option<String>,
+    /// Why a watch was lost (upstream `MonitorRestoreResult.reason`), e.g. `exited 127 in 12ms: ...`.
+    pub reason: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoredBackground {
