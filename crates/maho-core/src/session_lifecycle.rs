@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 /// The `session_hold` key a reopened session installs, before session_start producers run, when its last run
 /// was interrupted: opening a session is not explicit Resume, so automatic work waits for human input or Resume.
-pub const INTERRUPTED_RUN_HOLD_KEY: &str = "interrupted-run";
+pub use crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY;
 
 /// Children reports a parent's waits name; the rest are counted in `childReportsOmitted`.
 const MAX_CHILD_REPORTS: usize = 32;
