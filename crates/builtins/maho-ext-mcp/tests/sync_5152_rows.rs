@@ -938,12 +938,14 @@ async fn a_stale_credential_connection_is_hidden_then_recreated_by_the_next_sync
         .clone();
     assert!(service.get_connection("oa").is_some());
     assert_eq!(
-        service.server_snapshots().await[0].lifecycle_state,
+        oa_snapshot(&service).await.lifecycle_state,
         McpLifecycleState::Other(McpUnspawnedState::Cached)
     );
-    assert_eq!(
-        service.wire_status_snapshot().await.servers[0].tools.len(),
-        1
+    assert_eq!(oa_wire(&service).await.tools.len(), 1);
+    assert!(
+        maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service)
+            .await
+            .contains("cached instructions")
     );
 
     write_grant(&tokens, "synthetic-5152-09-second");
@@ -951,27 +953,24 @@ async fn a_stale_credential_connection_is_hidden_then_recreated_by_the_next_sync
         service.get_connection("oa").is_none(),
         "a stale-credential connection is hidden"
     );
-    let snapshot = &service.server_snapshots().await[0];
+    let snapshot = oa_snapshot(&service).await;
     assert_eq!(
         snapshot.lifecycle_state,
         McpLifecycleState::Other(McpUnspawnedState::NotSpawned)
     );
     assert_eq!(snapshot.generation, None);
-    let wire = service.wire_status_snapshot().await;
-    assert!(
-        wire.servers[0].tools.is_empty(),
-        "the stale catalog is hidden"
-    );
+    let wire = oa_wire(&service).await;
+    assert!(wire.tools.is_empty(), "the stale catalog is hidden");
     assert_eq!(
-        wire.servers[0].status,
+        wire.status,
         Some(maho_ext_mcp::service_types::McpWireServerStatus::Config(
             maho_ext_mcp::config_schema::McpServerState::Enabled
         ))
     );
     assert!(
-        maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service)
+        !maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service)
             .await
-            .is_empty(),
+            .contains("cached instructions"),
         "stale cached instructions are hidden"
     );
 
@@ -1030,21 +1029,45 @@ async fn needs_auth_without_a_credential_identity_reports_needs_auth() {
         "the credential went stale"
     );
 
-    let snapshot = &service.server_snapshots().await[0];
+    let snapshot = oa_snapshot(&service).await;
     assert_eq!(
         snapshot.lifecycle_state,
         McpLifecycleState::Connection(ServerConnectionState::NeedsAuth)
     );
     assert_eq!(snapshot.last_error.as_deref(), Some("sign in to oa"));
-    let wire = service.wire_status_snapshot().await;
+    let wire = oa_wire(&service).await;
     assert_eq!(
-        wire.servers[0].status,
+        wire.status,
         Some(McpWireServerStatus::Connection(
             ServerConnectionState::NeedsAuth
         ))
     );
-    assert_eq!(wire.servers[0].last_error.as_deref(), Some("sign in to oa"));
-    assert!(wire.servers[0].tools.is_empty());
+    assert_eq!(wire.last_error.as_deref(), Some("sign in to oa"));
+    assert!(wire.tools.is_empty());
     service.dispose().await.expect("dispose");
     registry.dispose().await.expect("registry dispose");
+}
+
+/// `oa`'s rows by name: the loaded config may also hold servers from the user's home configs.
+async fn oa_snapshot(
+    service: &maho_ext_mcp::service::McpService,
+) -> maho_ext_mcp::service_types::McpServerSnapshot {
+    service
+        .server_snapshots()
+        .await
+        .into_iter()
+        .find(|snapshot| snapshot.name == "oa")
+        .expect("oa snapshot")
+}
+
+async fn oa_wire(
+    service: &maho_ext_mcp::service::McpService,
+) -> maho_ext_mcp::service_types::McpWireStatusServer {
+    service
+        .wire_status_snapshot()
+        .await
+        .servers
+        .into_iter()
+        .find(|server| server.name == "oa")
+        .expect("oa wire status")
 }
