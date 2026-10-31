@@ -131,3 +131,25 @@ async fn config_session(label:&str, records:Vec<Value>)->Box<dyn Session>{let r=
 #[tokio::test] async fn compaction_projects_supported_tail_nodes(){let s=config_session("compaction-projection",vec![msg("m",None,"ordinary",NOW+1000),json!({"type":"custom_message","id":"cm","parentId":"m","timestamp":iso(NOW+2000),"customType":"notice","content":[{"type":"text","text":"custom"}],"details":{"status":"complete"},"display":false}),json!({"type":"custom","id":"c","parentId":"cm","timestamp":iso(NOW+3000),"customType":"checkpoint","data":{"ignored":true}}),json!({"type":"branch_summary","id":"b","parentId":"c","timestamp":iso(NOW+4000),"fromId":"m","summary":"Earlier"}),json!({"type":"compaction","id":"oldc","parentId":"b","timestamp":iso(NOW+5000),"summary":"Older","firstKeptEntryId":"m","tokensBefore":4}),json!({"type":"compaction","id":"final","parentId":"oldc","timestamp":iso(NOW+6000),"summary":"Final","firstKeptEntryId":"m","tokensBefore":8})]).await;let e=s.find_entries(Some(EntryQuery{order:Some(ScanOrder::Asc),..Default::default()}),&BACKGROUND_CONTEXT).await.expect("entries");assert_eq!(e.len(),6);s.close(&BACKGROUND_CONTEXT).await}
 #[tokio::test] async fn compaction_invalid_boundary_rejected(){for (label,boundary) in [("missing","missing"),("off-branch","other")] {let r=root(label);let f=fs(&r);fixture(&f,&[msg("root",None,"root",NOW+1000),msg("main",Some("root"),"main",NOW+2000),msg("other",Some("root"),"other",NOW+3000),json!({"type":"compaction","id":"c","parentId":"main","timestamp":iso(NOW+4000),"summary":"bad","firstKeptEntryId":boundary,"tokensBefore":8})],None).await;let rp=repo(f);let m=metadata(&rp).await;let err=match rp.open(m,&BACKGROUND_CONTEXT).await {Ok(_) => panic!("boundary"),Err(e)=>e};assert!(err.message.contains("firstKeptEntryId"));std::fs::remove_dir_all(r).expect("cleanup");}}
 #[tokio::test] async fn compaction_preserves_from_hook(){let s=config_session("compaction-hook",vec![msg("m",None,"m",NOW+1000),json!({"type":"compaction","id":"c","parentId":"m","timestamp":iso(NOW+2000),"summary":"c","firstKeptEntryId":"m","tokensBefore":1,"fromHook":true})]).await;let e=s.find_entries(None,&BACKGROUND_CONTEXT).await.expect("entries");assert!(matches!(&e[1].kind,maho_agent::harness::session::types::EntryKind::Compaction{from_hook:true,..}));s.close(&BACKGROUND_CONTEXT).await}
+
+#[test]
+fn legacy_v3_parse_iso_millis_with_timezone_offset() {
+    assert_eq!(
+        maho_agent::harness::session::jsonl::legacy_v3::parse_iso_millis(
+            "2024-01-01T00:00:00+00:00"
+        ),
+        1_704_067_200_000
+    );
+    assert_eq!(
+        maho_agent::harness::session::jsonl::legacy_v3::parse_iso_millis(
+            "2024-01-01T02:00:00+02:00"
+        ),
+        1_704_067_200_000
+    );
+    assert_eq!(
+        maho_agent::harness::session::jsonl::legacy_v3::parse_iso_millis(
+            "2023-12-31T17:00:00-07:00"
+        ),
+        1_704_067_200_000
+    );
+}
