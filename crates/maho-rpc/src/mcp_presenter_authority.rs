@@ -824,6 +824,8 @@ mod tests {
         a: McpPresenterConnection,
         b: McpPresenterConnection,
         frames: Arc<Mutex<Vec<Value>>>,
+        /// Every `mcp_form_request` the presenter connection receives, as it is sent.
+        requests: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>,
         other: Arc<Mutex<Vec<Value>>>,
         admitted: Arc<std::sync::atomic::AtomicUsize>,
         operation: AbortController,
@@ -834,11 +836,13 @@ mod tests {
         let frames = Arc::new(Mutex::new(Vec::new()));
         let other = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&frames);
+        let (requested, requests) = tokio::sync::mpsc::unbounded_channel();
         let a = authority.connect(
             "a",
             Arc::new(move |frame| {
                 if frame["type"] == "mcp_form_request" {
                     lock(&sink).push(frame.clone());
+                    let _ = requested.send(frame.clone());
                 }
                 true
             }),
@@ -877,16 +881,29 @@ mod tests {
             a,
             b,
             frames,
+            requests: tokio::sync::Mutex::new(requests),
             other,
             admitted,
             operation: AbortController::new(),
         }
     }
     impl Fixture {
-        fn pending(&self) -> tokio::task::JoinHandle<McpFormOutcome> {
+        fn present(&self) -> futures::future::BoxFuture<'static, McpFormOutcome> {
             let presentation = self.binding.capture().unwrap();
-            let input = input(&self.operation);
-            tokio::spawn(async move { (presentation.present)(input).await })
+            (presentation.present)(input(&self.operation))
+        }
+        fn pending(&self) -> tokio::task::JoinHandle<McpFormOutcome> {
+            tokio::spawn(self.present())
+        }
+        /// Awaits the next `mcp_form_request` the presenter receives.
+        async fn requested(&self) -> Value {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.requests.lock().await.recv(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
         }
         fn frame(&self) -> Value {
             lock(&self.frames).last().cloned().unwrap()
@@ -923,20 +940,15 @@ mod tests {
             self.admitted.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
-    async fn settle() {
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
-    }
-
     #[tokio::test]
     async fn settles_queued_forms_on_each_cause_without_displaying_them() {
         for cause in ["operation", "presenter", "binding", "timeout"] {
             let f = fixture();
             let first = f.pending();
-            settle().await;
-            let second = f.pending();
-            settle().await;
+            f.requested().await;
+            // The second form parks on the grant's queue behind the displayed one.
+            let mut second = f.present();
+            assert!(futures::poll!(&mut second).is_pending());
             assert_eq!(lock(&f.frames).len(), 1);
             match cause {
                 "operation" => f.operation.abort(None),
@@ -949,8 +961,7 @@ mod tests {
             } else {
                 McpFormOutcomeKind::ProcessingFailure
             };
-            for pending in [first, second] {
-                let outcome = pending.await.unwrap();
+            for outcome in [first.await.unwrap(), second.await] {
                 assert_eq!(outcome.kind, expected, "{cause}");
                 assert!(!outcome.human_admission());
             }
@@ -982,7 +993,7 @@ mod tests {
     async fn private_sync_expires_the_entry_even_when_its_timer_is_delayed() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         let mut sync = f.envelope();
         sync["type"] = "mcp_form_sync".into();
         *lock(&f.clock.now) = 100.;
@@ -999,7 +1010,7 @@ mod tests {
     async fn a_same_session_peer_cannot_read_or_answer_even_with_a_copied_token() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         assert!(lock(&f.other).is_empty());
         let answer = f.action(json!({"value":"answer-canary"}));
         assert_eq!(
@@ -1038,7 +1049,7 @@ mod tests {
     async fn a_presented_revoked_holder_cancels_its_retained_entry() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         f.presented();
         let answer = f.action(json!({"value":"x"}));
         f.owner.revoke(&f.registration);
@@ -1061,7 +1072,7 @@ mod tests {
     async fn binding_replacement_fences_a_response_queued_before_dispatch() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         f.presented();
         let queued = f.action(json!({"value":"x"}));
         f.binding.dispose();
@@ -1082,7 +1093,7 @@ mod tests {
     async fn invalid_submissions_never_claim_the_terminal_latch() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         assert_eq!(
             f.authority.receive(&f.a, &f.action(json!({"value":"x"}))),
             McpPresenterReply::Error("invalid_form_response")
@@ -1113,7 +1124,7 @@ mod tests {
     async fn operation_abort_wins_over_later_presentation_loss() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         f.presented();
         f.operation.abort(None);
         f.owner.revoke(&f.registration);
@@ -1129,7 +1140,7 @@ mod tests {
     async fn private_sync_is_same_grant_only_and_empty_after_settlement() {
         let f = fixture();
         let result = f.pending();
-        settle().await;
+        f.requested().await;
         let mut sync = f.envelope();
         sync["type"] = "mcp_form_sync".into();
         assert_eq!(

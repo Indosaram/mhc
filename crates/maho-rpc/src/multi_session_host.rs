@@ -373,7 +373,6 @@ impl HostCore {
         self.tool_runtime = tool_runtime;
         self
     }
-    /// The tool runtime this host advertises.
     /// Host deployment policy; never derived from client capabilities or project settings (senpi
     /// `MultiSessionHostOptions.mcpPresenterEnforcement`): private MCP forms are enforced and
     /// `mcp_form_presenter_v1` is advertised.
@@ -454,6 +453,7 @@ impl HostCore {
             control.dispose();
         }
     }
+    /// The tool runtime this host advertises.
     pub fn tool_runtime(&self) -> crate::host_capabilities::ToolRuntimeKind {
         self.tool_runtime
     }
@@ -3422,10 +3422,6 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
     }
 }
 tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
-/// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
-/// blocking UI requests go to their requester only; content goes to the connections attached to
-/// the session and is remembered for late joiners; lifecycle records follow their visibility
-/// rule. With no registered connection the record takes the shared stdio lane.
 /// The presenter control endpoint's view of this host's writer (senpi `SessionEventWriter` presenter getters).
 struct PresenterWriter {
     presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
@@ -3496,6 +3492,10 @@ fn write_presenter_reply(
         presenters.reply_failed(connection);
     }
 }
+/// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
+/// blocking UI requests go to their requester only; content goes to the connections attached to
+/// the session and is remembered for late joiners; lifecycle records follow their visibility
+/// rule. With no registered connection the record takes the shared stdio lane.
 fn route_session_record(
     fanout: &std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>,
     writer: &crate::session_event_writer::SessionWriterActor,
