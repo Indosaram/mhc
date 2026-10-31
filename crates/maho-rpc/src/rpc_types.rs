@@ -216,6 +216,25 @@ pub enum RpcCommandBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         abort_will_follow: Option<bool>,
     },
+    /// senpi `{ type: "dequeue_message"; queuedId; expectedRevision?; effectId? }`: remove one queued input by its
+    /// `queuedId` (from `get_state` / `queue_update`) before it reaches a turn.
+    DequeueMessage {
+        queued_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effect_id: Option<String>,
+    },
+    /// senpi `{ type: "edit_queued_message"; queuedId; text; expectedRevision?; effectId? }`: replace the text of one
+    /// queued input in place, keeping its order and identity.
+    EditQueuedMessage {
+        queued_id: String,
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_revision: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effect_id: Option<String>,
+    },
     GetSteeringMessages,
     GetFollowUpMessages,
     AbortBranchSummary,
@@ -224,6 +243,19 @@ pub enum RpcCommandBody {
         parent_session: Option<String>,
     },
     GetState,
+    /// senpi `{ type: "get_effect_status"; effectId; sessionPath? }`: the newest receipt of one effect (capability
+    /// `effect_ledger`), from the loaded session, or from the transcript at `sessionPath`.
+    GetEffectStatus {
+        effect_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_path: Option<String>,
+    },
+    /// senpi `{ type: "get_pending_inputs"; knownClientMessageIds? }`: the pending inputs in durable custody and an
+    /// explicit outcome for each listed id, consistent through `throughCursor` (senpi#3549). At most 64 ids.
+    GetPendingInputs {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        known_client_message_ids: Option<Vec<String>>,
+    },
     SetModel {
         provider: String,
         model_id: String,
@@ -1062,6 +1094,36 @@ mod tests {
         let value = json!({"id":"r1","type":"open_session","retain_on_disconnect":true,"auto_title":false,"durableSessionId":"durable","kind":"worker","context":{"label":"test"}});
         let command: RpcCommand = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(command).unwrap(), value);
+    }
+    /// senpi rpc-session-command-types.ts: the queued-input, effect-status and pending-input commands keep their
+    /// camelCase wire fields through a parse and back.
+    #[test]
+    fn queued_input_and_effect_reads_roundtrip_their_wire_shapes() {
+        for value in [
+            json!({"id":"d","sessionId":"s","type":"dequeue_message","queuedId":"q_1","expectedRevision":2,"effectId":"e1"}),
+            json!({"type":"dequeue_message","queuedId":"q_1"}),
+            json!({"id":"e","type":"edit_queued_message","queuedId":"q_2","text":"fixed","expectedRevision":1,"effectId":"e2"}),
+            json!({"type":"get_effect_status","effectId":"e1","sessionPath":"/s.jsonl"}),
+            json!({"type":"get_effect_status","effectId":"e1"}),
+            json!({"type":"get_pending_inputs","knownClientMessageIds":["c-1","c-2"]}),
+            json!({"type":"get_pending_inputs"}),
+        ] {
+            let command: RpcCommand = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(command).unwrap(), value);
+        }
+        let command: RpcCommand = serde_json::from_value(
+            json!({"type":"edit_queued_message","queuedId":"q_2","text":"t","expectedRevision":3}),
+        )
+        .unwrap();
+        assert_eq!(
+            command.body,
+            RpcCommandBody::EditQueuedMessage {
+                queued_id: "q_2".into(),
+                text: "t".into(),
+                expected_revision: Some(3),
+                effect_id: None,
+            }
+        );
     }
     #[test]
     fn queue_mode_uses_hyphenated_wire_value() {

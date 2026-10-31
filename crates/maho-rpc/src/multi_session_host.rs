@@ -2157,6 +2157,24 @@ impl HostCore {
                     }
                 }
             }
+            // senpi session-router-routing.ts: a receipt of a session this host has not loaded is read from its
+            // transcript, never by loading it.
+            crate::rpc_types::RpcCommandBody::GetEffectStatus {
+                effect_id,
+                session_path: Some(session_path),
+            } if command.session_id.is_none() => {
+                let id = command
+                    .id
+                    .clone()
+                    .map_or(serde_json::Value::Null, Into::into);
+                let answer = crate::effect_commands::answer_effect_from_transcript(
+                    &id,
+                    session_path,
+                    effect_id,
+                )
+                .await;
+                self.respond_record(connection, "", answer);
+            }
             _ => {
                 let Some(session_id) = command.session_id.clone() else {
                     self.error(

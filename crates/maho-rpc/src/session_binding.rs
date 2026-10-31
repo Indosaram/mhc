@@ -1,5 +1,30 @@
 pub type SendCallback = std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 use crate::session_attribution::{SessionActivityRegistry, ToolAttributionSpans};
+/// senpi `QueuedInput` on the wire (`get_state.ordered`, `clear_queue.ordered`, `queue_update.ordered`). The
+/// state and event projections pass it through `client_facing_identity`; `clear_queue` answers it as is.
+pub fn queued_input_json(
+    text: &str,
+    mode: maho_ext_api::StreamingBehavior,
+    enqueue_order: u64,
+    queued_id: &str,
+    revision: u64,
+    client_message_id: Option<&str>,
+) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    if let Some(id) = client_message_id {
+        value.insert("clientMessageId".into(), id.into());
+    }
+    value.insert("text".into(), text.into());
+    let mode = match mode {
+        maho_ext_api::StreamingBehavior::Steer => "steer",
+        maho_ext_api::StreamingBehavior::FollowUp => "followUp",
+    };
+    value.insert("mode".into(), mode.into());
+    value.insert("enqueueOrder".into(), enqueue_order.into());
+    value.insert("queuedId".into(), queued_id.into());
+    value.insert("revision".into(), revision.into());
+    serde_json::Value::Object(value)
+}
 pub fn session_event_record(
     event: &maho_ext_api::AgentSessionEvent,
 ) -> Result<serde_json::Value, serde_json::Error> {
@@ -290,7 +315,8 @@ pub fn session_event_record(
             follow_up,
             ordered,
         } => {
-            json!({"type":"queue_update","steering":steering,"followUp":follow_up,"ordered":ordered.iter().map(|input|json!({"text":input.text,"mode":match input.mode{maho_ext_api::StreamingBehavior::Steer=>"steer",maho_ext_api::StreamingBehavior::FollowUp=>"followUp"},"enqueueOrder":input.enqueue_order})).collect::<Vec<_>>()})
+            // senpi session-record-stream: the minted ids are taken out of the projection (`clientFacingIdentity`).
+            json!({"type":"queue_update","steering":steering,"followUp":follow_up,"ordered":ordered.iter().map(|input|crate::client_admission_record::client_facing_identity(queued_input_json(&input.text,input.mode,input.enqueue_order,&input.queued_id,input.revision,input.client_message_id.as_deref()))).collect::<Vec<_>>()})
         }
         E::ToolHookStatus(event) => {
             let mut record = json!({"type":"tool_hook_status","hookRunId":event.hook_run_id,"hookName":match event.hook_name{maho_ext_api::ToolHookName::PreToolUse=>"PreToolUse",maho_ext_api::ToolHookName::PostToolUse=>"PostToolUse"},"toolName":event.tool_name,"toolCallId":event.tool_call_id,"extensionPath":event.extension_path,"statusMessage":event.status_message,"startedAt":event.started_at});
