@@ -10,7 +10,7 @@ impl TeamMemberReadPort for Members { fn get(&self,_:&str)->Option<TeamMemberTas
 impl TeamMemberCancelPort for Members { fn cancel_task(&self,_:&str,_:Option<&str>)->TeamCancelOutcome { panic!("unexpected cancellation") } }
 impl TeamRuntimeManagerPort for Members { fn start(&self,_:&TeamMemberStartSpec)->Result<TeamStartResult,String> { panic!("unexpected member launch") } fn get_resident_handle(&self,_:&str)->Option<ResidentSessionRef> { None } }
 impl TeamMemberDestructionPort for Members { fn destroy_resident_task(&self,_:&str,_:DestroyCause)->Result<(),String> { panic!("unexpected destruction") } }
-struct Fixture { service:TeamService,run:String,session:Arc<Mutex<Option<String>>>,state_dir:StateDirConfig,events:Arc<Mutex<Vec<(String,senpi_task::store::PersistedTaskEvent)>>>,_root:tempfile::TempDir }
+struct Fixture { service:TeamService,manager:Arc<senpi_task::manager::TaskManager>,run:String,session:Arc<Mutex<Option<String>>>,state_dir:StateDirConfig,events:Arc<Mutex<Vec<(String,senpi_task::store::PersistedTaskEvent)>>>,_root:tempfile::TempDir }
 fn fixture()->Fixture {
     fixture_with_members(Arc::new(Members))
 }
@@ -23,8 +23,8 @@ fn fixture_with_config(members:Arc<dyn TeamRuntimeManagerPort+Send+Sync>,omo_con
     let config=to_team_core_config(&bounds,&team_storage_base_dir(&state_dir).to_string_lossy()).expect("config"); let spec=normalize_senpi_team_spec(&json!({"members":[{"name":"beta","kind":"category","category":"quick","prompt":"work"}]}),"squad",None).expect("spec");
     let state=create_runtime_state(&spec,Some("lead"),SpecSource::Project,&config).expect("runtime"); let run=state.team_run_id;
     transition_runtime_state(&run,|mut state| { state.status=RuntimeStatus::Active; state },&config).expect("active");
-    let events=Arc::new(Mutex::new(Vec::new())); let sink=events.clone(); let session=Arc::new(Mutex::new(Some("lead".into()))); let id=session.clone(); let service=create_team_service(TeamServiceDeps { manager:Arc::new(manager),member_manager:members,destruction:Arc::new(Members),session_id:Arc::new(move || id.lock().expect("session").clone()),state_dir:state_dir.clone(),bounds,omo_config,agent_names:BTreeSet::new(),member_extension:TeamMemberExtensionConfig::default(),append_task_event:Some(Arc::new(move |id,event| sink.lock().expect("events").push((id.into(),event)))),now:Some(Arc::new(|| 1000)),new_message_id:Some(Arc::new(|| "77777777-7777-4777-8777-777777777777".into())) }).expect("service");
-    Fixture { service,run,session,state_dir,events,_root:root }
+    let events=Arc::new(Mutex::new(Vec::new())); let sink=events.clone(); let session=Arc::new(Mutex::new(Some("lead".into()))); let id=session.clone(); let manager=Arc::new(manager); let service=create_team_service(TeamServiceDeps { manager:manager.clone(),member_manager:members,destruction:Arc::new(Members),session_id:Arc::new(move || id.lock().expect("session").clone()),state_dir:state_dir.clone(),bounds,omo_config,agent_names:BTreeSet::new(),member_extension:TeamMemberExtensionConfig::default(),append_task_event:Some(Arc::new(move |id,event| sink.lock().expect("events").push((id.into(),event)))),now:Some(Arc::new(|| 1000)),new_message_id:Some(Arc::new(|| "77777777-7777-4777-8777-777777777777".into())) }).expect("service");
+    Fixture { service,manager,run,session,state_dir,events,_root:root }
 }
 fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"work".into(),description:"do work".into(),status:TaskStatus::Pending,owner:None,blocked_by:None } }
 #[test] fn unknown_named_team_preserves_spec_error_without_starting_members() {
@@ -104,4 +104,33 @@ fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"w
     let f=fixture(); let unknown=f.service.request_shutdown(&f.run,"missing").expect_err("unknown member"); assert_eq!(unknown.code.as_deref(),Some("unknown_member"));
     let no_request=f.service.approve_shutdown(&f.run,"beta").expect_err("no request"); assert_eq!(no_request.code.as_deref(),Some("no_pending_request"));
     assert!(f.service.status(&f.run).expect("status").shutdown_requests.is_empty());
+}
+
+#[derive(Default)] struct RecordingMembers(Mutex<Vec<TeamMemberStartSpec>>);
+impl TeamMemberReadPort for RecordingMembers { fn get(&self,_:&str)->Option<TeamMemberTaskRecord> { None } }
+impl TeamMemberCancelPort for RecordingMembers { fn cancel_task(&self,_:&str,_:Option<&str>)->TeamCancelOutcome { panic!("successful launch has no rollback") } }
+impl TeamRuntimeManagerPort for RecordingMembers {
+    fn start(&self,spec:&TeamMemberStartSpec)->Result<TeamStartResult,String> { self.0.lock().expect("specs").push(spec.clone()); Ok(TeamStartResult::Started(TeamStartedMember { task_id:"st_00000002".into(),status:senpi_task::state::TaskStatus::Running,name:spec.name.clone().expect("member name"),resolved_model:None })) }
+    fn get_resident_handle(&self,_:&str)->Option<ResidentSessionRef> { None }
+}
+#[test] fn in_process_child_lead_spawns_members_below_its_own_depth() {
+    let members=Arc::new(RecordingMembers::default()); let f=fixture_with_members(members.clone());
+    let mut lead=senpi_task::state::create_task_record(senpi_task::state::TaskRecordInput { parent_session_id:"tree-root".into(),root_session_id:"tree-root".into(),depth:2,execution_mode:"in-process".into(),model:"faux/faux".into(),..Default::default() },Some(1)).expect("lead record");
+    lead.child_session_id=Some("lead".into()); TaskRecordStore::new(&f.state_dir).save(&lead).expect("save lead");
+    let service=f.service.with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(f.manager.clone(),None));
+    service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"nested","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create");
+    let specs=members.0.lock().expect("specs"); assert_eq!(specs.len(),1); assert_eq!(specs[0].depth,3); assert_eq!(specs[0].root_session_id.as_deref(),Some("tree-root"));
+}
+#[test] fn hosted_lead_falls_back_to_session_ancestry() {
+    let members=Arc::new(RecordingMembers::default()); let f=fixture_with_members(members.clone());
+    let service=f.service.with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(f.manager.clone(),Some(maho_omo_task::team_service::TeamLeadAncestry { depth:4,root_session_id:Some("tree-root".into()) })));
+    service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"hosted","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create");
+    let specs=members.0.lock().expect("specs"); assert_eq!(specs[0].depth,5); assert_eq!(specs[0].root_session_id.as_deref(),Some("tree-root"));
+}
+#[test] fn root_lead_members_record_the_lead_as_tree_root() {
+    let members=Arc::new(RecordingMembers::default()); let f=fixture_with_members(members.clone());
+    let service=f.service.with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(f.manager.clone(),None));
+    service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"rooted","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"},{"name":"beta","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create");
+    let specs=members.0.lock().expect("specs"); assert_eq!(specs.len(),2);
+    for spec in specs.iter() { assert_eq!(spec.parent_session_id,"lead"); assert_eq!(spec.root_session_id.as_deref(),Some("lead")); assert_eq!(spec.depth,1); }
 }

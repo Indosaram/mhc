@@ -31,6 +31,7 @@ pub const RETIRED_ERROR_MESSAGE: &str = "idle-injection coordinator retired on s
 
 fn source_rank(source: IdleInjectionSource) -> u8 {
     match source {
+        IdleInjectionSource::TaskStatus => 0,
         IdleInjectionSource::TaskCompletion => 0,
         IdleInjectionSource::WorkpoolAggregate => 0,
         IdleInjectionSource::TeamMessage => 1,

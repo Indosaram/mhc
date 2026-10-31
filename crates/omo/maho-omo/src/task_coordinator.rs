@@ -50,6 +50,7 @@ impl CompletionCoordinator for TaskCoordinator {
     }
     fn schedule_flush(&self) { self.0.schedule_flush(); }
     fn flush_soon(&self) { self.0.flush_soon(); }
+    fn idle_coordinator(&self) -> Option<Arc<dyn IdleInjectionCoordinator>> { Some(self.0.clone()) }
 }
 
 impl LeadInjectionCoordinator for TaskCoordinator {

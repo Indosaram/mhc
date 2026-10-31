@@ -341,30 +341,7 @@ impl maho_ext_api::EvalHandleHost for NativeEvalHandleHost {
                     ..SendInput::default()
                 })
                 .map_err(|error| failure("SendRefused", &error.to_string()))?;
-            let mut delivered = reference;
-            match outcome {
-                senpi_task::steering::SendOutcome::Revived { run_epoch, .. } => {
-                    delivered.run_epoch = run_epoch
-                }
-                senpi_task::steering::SendOutcome::Steered { .. }
-                | senpi_task::steering::SendOutcome::Held { .. }
-                | senpi_task::steering::SendOutcome::Queued { .. } => {}
-                senpi_task::steering::SendOutcome::Stale { reason, .. } => {
-                    return Err(failure("Stale", &reason));
-                }
-                senpi_task::steering::SendOutcome::NotFound { reason, .. } => {
-                    return Err(failure("NotFound", &reason));
-                }
-                senpi_task::steering::SendOutcome::ScopeDenied { reason, .. } => {
-                    return Err(failure("Forbidden", &reason));
-                }
-                senpi_task::steering::SendOutcome::NotContinuable {
-                    reason, suggestion, ..
-                } => return Err(failure("SendRefused", &format!("{reason} {suggestion}"))),
-                senpi_task::steering::SendOutcome::OneShotAgent { message, .. } => {
-                    return Err(failure("SendRefused", &message));
-                }
-            }
+            let delivered = delivered_reference(reference, outcome)?;
             self.task_snapshot(delivered, &caller.session_id)
         })
     }
@@ -653,6 +630,28 @@ fn pool_phase(pool: &WorkpoolRecord) -> EvalHandlePhase {
         EvalHandlePhase::Succeeded
     }
 }
+/// `steer-refs.ts` `deliveredRef`: maps a send outcome to the delivered handle or a typed refusal.
+fn delivered_reference(
+    mut delivered: EvalHandleRef,
+    outcome: senpi_task::steering::SendOutcome,
+) -> Result<EvalHandleRef, ExtensionFailure> {
+    use senpi_task::steering::SendOutcome;
+    match outcome {
+        SendOutcome::Revived { run_epoch, .. } => delivered.run_epoch = run_epoch,
+        SendOutcome::Steered { .. } | SendOutcome::Held { .. } | SendOutcome::Queued { .. } => {}
+        SendOutcome::Stale { reason, .. } => return Err(failure("Stale", &reason)),
+        SendOutcome::NotFound { reason, .. } => return Err(failure("NotFound", &reason)),
+        SendOutcome::ScopeDenied { reason, .. } => return Err(failure("Forbidden", &reason)),
+        SendOutcome::NotContinuable {
+            reason, suggestion, ..
+        } => return Err(failure("SendRefused", &format!("{reason} {suggestion}"))),
+        SendOutcome::OneShotAgent { message, .. } => return Err(failure("SendRefused", &message)),
+        // Nothing was sent: the child's host session is not running.
+        SendOutcome::Unresponsive { reason, .. } => return Err(failure("SendRefused", &reason)),
+    }
+    Ok(delivered)
+}
+
 fn failure(code: &str, message: &str) -> ExtensionFailure {
     let code = match code {
         "Forbidden" => "eval_handle_forbidden",
@@ -738,5 +737,34 @@ mod tests {
         );
         assert_eq!(result.text, "e\nf");
         assert_eq!(result.offset, 4);
+    }
+
+    #[test]
+    fn unresponsive_send_is_a_send_refusal_with_the_reason() {
+        let reference = EvalHandleRef {
+            kind: EvalHandleKind::Agent,
+            id: "st_1".into(),
+            run_epoch: 3,
+        };
+        let refused = delivered_reference(
+            reference.clone(),
+            senpi_task::steering::SendOutcome::Unresponsive {
+                task_id: "st_1".into(),
+                retryable: true,
+                reason: "Task st_1's session is unresponsive; nothing was sent.".into(),
+            },
+        )
+        .expect_err("unresponsive child refuses the send");
+        assert_eq!(refused.code.as_deref(), Some("eval_handle_send_refused"));
+        assert!(refused.message.contains("nothing was sent"), "{refused:?}");
+        let revived = delivered_reference(
+            reference,
+            senpi_task::steering::SendOutcome::Revived {
+                task_id: "st_1".into(),
+                run_epoch: 4,
+            },
+        )
+        .expect("revived");
+        assert_eq!(revived.run_epoch, 4);
     }
 }

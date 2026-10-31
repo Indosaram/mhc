@@ -48,7 +48,7 @@ pub async fn download_senpi_comment_checker_binary(
     let cache_dir = options
         .cache_dir
         .clone()
-        .unwrap_or_else(|| default_comment_checker_cache_dir(platform, None));
+        .unwrap_or_else(|| default_comment_checker_cache_dir(platform, None, None));
     let binary_path = cache_dir.join(comment_checker_binary_name(platform));
 
     if binary_path.exists() && is_cached_comment_checker_current(&cache_dir, None) {

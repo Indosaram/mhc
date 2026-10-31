@@ -314,14 +314,23 @@ pub fn omo_components(
             .register(api);
         },
     ));
-    components.push(component(
+    let feedback_env = options.env.clone();
+    let feedback_state_dir = options.state_dir.clone();
+    components.push(OmoSenpiComponent::from_context_register(
         "feedback",
-        maho_omo_feedback::FeedbackComponent::new(maho_omo_feedback::FeedbackComponentOptions {
-            env: Some(options.env.clone()),
-            state_dir: Some(options.state_dir.clone()),
-            omo_version: Some(env!("CARGO_PKG_VERSION").into()),
-            ..Default::default()
-        }),
+        move |api, runtime| {
+            use maho_ext_api::Extension;
+            maho_omo_feedback::FeedbackComponent::new(
+                maho_omo_feedback::FeedbackComponentOptions {
+                    env: Some(feedback_env.clone()),
+                    state_dir: Some(feedback_state_dir.clone()),
+                    omo_version: Some(env!("CARGO_PKG_VERSION").into()),
+                    logger: Some(runtime.logger()),
+                    ..Default::default()
+                },
+            )
+            .register(api);
+        },
     ));
     components.push(component(
         "browser-bridge",

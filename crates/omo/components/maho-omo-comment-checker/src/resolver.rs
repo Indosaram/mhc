@@ -55,6 +55,7 @@ pub fn resolve_senpi_comment_checker_binary(
 pub fn default_comment_checker_cache_dir(
     platform: &str,
     env: Option<&BTreeMap<String, String>>,
+    cache_dir_name: Option<&str>,
 ) -> PathBuf {
     let empty_env = BTreeMap::new();
     let env = env.unwrap_or(&empty_env);
@@ -66,7 +67,7 @@ pub fn default_comment_checker_cache_dir(
         platform,
         env,
         homedir: &home,
-        cache_dir_name: COMMENT_CHECKER_CACHE_DIR_NAME,
+        cache_dir_name: cache_dir_name.unwrap_or(COMMENT_CHECKER_CACHE_DIR_NAME),
     })
 }
 
@@ -103,7 +104,7 @@ pub fn resolve_with_options_cache(
         return Some(path);
     }
 
-    let default_cache = default_comment_checker_cache_dir(platform, Some(env));
+    let default_cache = default_comment_checker_cache_dir(platform, Some(env), None);
     let cache_dir = cache_dir.unwrap_or(&default_cache);
     let cached = cache_dir.join(binary_name);
     if exists(&cached) && is_cached_comment_checker_current(cache_dir, None) {
