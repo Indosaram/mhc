@@ -159,6 +159,7 @@ pub mod queued_input_age;
 pub mod run_resume_turn;
 pub mod session_control_actions;
 pub mod moved_session_cwd;
+pub mod moved_sessions;
 pub mod session_cwd;
 pub mod session_discovery;
 pub mod session_entry_file;
