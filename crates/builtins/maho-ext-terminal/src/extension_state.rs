@@ -175,9 +175,28 @@ pub fn emit_monitor_state(
     sender.events.emit(crate::shared::WAKE_SOURCE_STATE_EVENT,&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.monitor_id.as_ref().unwrap_or(&entry.id),"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
 }
 
+/// Whether a fire-window change is fire bookkeeping: a fire only grows the window count, or rolls
+/// the window over (a new `start_ms`) while the fire count grows. A count that drops within the
+/// same window (resume's reset, possibly coalesced with a pause), a window moved without a fire,
+/// or a window that appeared or vanished is a transition the manifest must persist.
+fn is_fire_window_bookkeeping(
+    previous: &MonitorSnapshotEntry,
+    next: &MonitorSnapshotEntry,
+) -> bool {
+    let fired = next.fire_count.unwrap_or(0) > previous.fire_count.unwrap_or(0);
+    match (&previous.fire_window, &next.fire_window) {
+        (None, None) => true,
+        (Some(before), Some(after)) if before.start_ms == after.start_ms => {
+            after.count >= before.count
+        }
+        (Some(_), Some(_)) => fired,
+        _ => false,
+    }
+}
+
 /// Whether `next` differs from `previous` only by fire bookkeeping (fire count, last fire, fire
-/// window): the registry's `onFire`, as opposed to its `onChange` transition. A coalesced change
-/// still reads as a transition.
+/// window growth or rollover): the registry's `onFire`, as opposed to its `onChange` transition. A
+/// coalesced change still reads as a transition.
 fn is_fire_only(previous: &[MonitorSnapshotEntry], next: &[MonitorSnapshotEntry]) -> bool {
     let unfired = |entry: &MonitorSnapshotEntry| MonitorSnapshotEntry {
         fire_count: None,
@@ -186,10 +205,9 @@ fn is_fire_only(previous: &[MonitorSnapshotEntry], next: &[MonitorSnapshotEntry]
         ..entry.clone()
     };
     previous.len() == next.len()
-        && previous
-            .iter()
-            .zip(next)
-            .all(|(previous, next)| unfired(previous) == unfired(next))
+        && previous.iter().zip(next).all(|(previous, next)| {
+            unfired(previous) == unfired(next) && is_fire_window_bookkeeping(previous, next)
+        })
 }
 
 /// Drives `onMonitorState` from the registry's state channel. The first snapshot (upstream
@@ -744,6 +762,91 @@ mod tests {
         publish.send_replace(vec![fired]);
         assert_eq!(next(&mut received).await, state_event);
         publish.send_replace(vec![paused]);
+        assert_eq!(next(&mut received).await, state_event);
+        assert_eq!(next(&mut received).await, wake_event);
+        drop(publish);
+        task.await.unwrap();
+        assert!(received.try_recv().is_err());
+    }
+
+    /// A pause and a resume coalesced into one snapshot leave `paused` unchanged but reset the
+    /// fire window: that is a transition (the manifest must persist the reset), while a fire that
+    /// rolls the window over is not.
+    #[test]
+    fn a_coalesced_pause_and_resume_is_a_transition() {
+        use crate::monitor_registry::MonitorFireWindow;
+        let entry = |fire_count: usize, start_ms: f64, count: usize| MonitorSnapshotEntry {
+            id: "bash_1".to_owned(),
+            monitor_id: Some("mon_PACED".to_owned()),
+            fire_count: Some(fire_count),
+            fire_window: Some(MonitorFireWindow { start_ms, count }),
+            ..Default::default()
+        };
+        let burned = [entry(5, 100.0, 5)];
+        assert!(is_fire_only(&burned, &[entry(6, 100.0, 6)]));
+        assert!(is_fire_only(&burned, &[entry(6, 60_200.0, 1)]));
+        assert!(!is_fire_only(&burned, &[entry(5, 100.0, 0)]));
+        assert!(!is_fire_only(&burned, &[entry(7, 100.0, 2)]));
+        assert!(!is_fire_only(&burned, &[entry(5, 60_200.0, 0)]));
+        let unwindowed = MonitorSnapshotEntry {
+            fire_window: None,
+            ..entry(5, 0.0, 0)
+        };
+        assert!(!is_fire_only(&burned, &[unwindowed]));
+    }
+
+    /// The same coalesced pause+resume through `bind_monitor_events` emits the wake-source state.
+    #[tokio::test]
+    async fn a_coalesced_pause_and_resume_reaches_the_wake_source() {
+        use crate::monitor_registry::MonitorFireWindow;
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        let (seen, mut received) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
+        let _subscriptions = [
+            crate::shared::TERMINAL_MONITOR_STATE_EVENT,
+            crate::shared::WAKE_SOURCE_STATE_EVENT,
+        ]
+        .map(|channel: &'static str| {
+            let seen = seen.clone();
+            state.sender.events.on(
+                channel,
+                Arc::new(move |_: &Value| {
+                    let _ = seen.send(channel);
+                }),
+            )
+        });
+        let burned = MonitorSnapshotEntry {
+            id: "bash_1".to_owned(),
+            monitor_id: Some("mon_PACED".to_owned()),
+            fire_count: Some(5),
+            fire_window: Some(MonitorFireWindow {
+                start_ms: 100.0,
+                count: 5,
+            }),
+            ..Default::default()
+        };
+        let reset = MonitorSnapshotEntry {
+            fire_window: Some(MonitorFireWindow {
+                start_ms: 100.0,
+                count: 0,
+            }),
+            ..burned.clone()
+        };
+        let (publish, subscribe) = tokio::sync::watch::channel(vec![burned]);
+        let task = bind_monitor_events(subscribe, state.sender.clone(), state.lifecycle.clone());
+        async fn next(
+            received: &mut tokio::sync::mpsc::UnboundedReceiver<&'static str>,
+        ) -> &'static str {
+            tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+        let state_event = crate::shared::TERMINAL_MONITOR_STATE_EVENT;
+        let wake_event = crate::shared::WAKE_SOURCE_STATE_EVENT;
+        assert_eq!(next(&mut received).await, state_event);
+        assert_eq!(next(&mut received).await, wake_event);
+        publish.send_replace(vec![reset]);
         assert_eq!(next(&mut received).await, state_event);
         assert_eq!(next(&mut received).await, wake_event);
         drop(publish);
