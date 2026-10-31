@@ -86,7 +86,8 @@ impl ExtensionUi for DecisionUi {
         Box::pin(async move {
             assert_eq!(
                 options.deliver,
-                if request.wait_for_answer {
+                // A resumed question (the recovery fixture's call) delivers as a user message.
+                if request.wait_for_answer && request.request_id != "recovered-question" {
                     QuestionDelivery::ToolResult
                 } else {
                     QuestionDelivery::UserMessage

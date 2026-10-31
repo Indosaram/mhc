@@ -206,6 +206,12 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         "ask-user:asked",
         Arc::new(move |value| captured.lock().expect("ferryx asked").push(value.clone())),
     );
+    let closed = Arc::new(Mutex::new(Vec::new()));
+    let captured = closed.clone();
+    let _closed = bus.on(
+        "ask-user:closed",
+        Arc::new(move |value| captured.lock().expect("closed").push(value.clone())),
+    );
     let legacy = Arc::new(Mutex::new(0));
     let captured = legacy.clone();
     let _legacy = bus.on(
@@ -379,6 +385,17 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     if status != Some(if orphaned {QuestionStatus::OrphanedAfterRestart} else if silent {QuestionStatus::Cancelled} else if timeout {QuestionStatus::TimedOut} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!silent) || request.request_id != pending[0].request.request_id {
         return Err(format!("Settlement receipt: status={status:?}, notifications={notification_count}").into());
     }
+    // senpi v2026.10.27-2: every terminal outcome closes once, and a cancel names its origin.
+    if !reload {
+        let closed=closed.lock().expect("closed").clone();
+        let status_name=status.map(maho_ext_ask_user::format::status_name).ok_or("No status")?;
+        if closed!=[json!({"requestId":request.request_id,"status":status_name})] {
+            return Err(format!("Closed receipt: {closed:?}").into());
+        }
+    }
+    let origin=completion.borrow().as_ref().and_then(|response|response.cancel_origin);
+    let expected_origin=if status!=Some(QuestionStatus::Cancelled) {None} else if cancel {Some(QuestionCancelOrigin::SessionClosed)} else if abort {Some(QuestionCancelOrigin::TurnAbort)} else if fail_ui {Some(QuestionCancelOrigin::UiFailure)} else {None};
+    if origin!=expected_origin { return Err(format!("Cancel origin: {origin:?}, expected {expected_origin:?}").into()); }
     if silent {
         let entries=session.with_session_manager(|manager|manager.entries());
         let injected=entries.iter().filter(|entry|entry["type"]=="message"&&entry["message"]["role"]=="user").any(|entry|{
@@ -407,7 +424,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     }.await;
     let mut cleanup_error = None;
     for entry in get_pending_questions(&session.session_id()) {
-        (entry.cancel)(QuestionStatus::Cancelled);
+        (entry.cancel)(QuestionCancelOrigin::SessionClosed, None, false);
         let mut completion = entry.completion.clone();
         let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while completion.borrow().is_none() {

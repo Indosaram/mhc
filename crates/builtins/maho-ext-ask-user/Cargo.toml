@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ai = { path = "../../maho-ai" }
+maho-tools = { path = "../../maho-tools" }
 maho-tui = { path = "../../maho-tui" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
