@@ -520,6 +520,37 @@ fn client_input_identity(value: &serde_json::Value) -> Option<serde_json::Value>
     }
     (!fields.is_empty()).then_some(serde_json::Value::Object(fields))
 }
+/// senpi `CredentialAccountSummary` on the wire: optional fields only when present.
+fn credential_account_json(
+    account: maho_core::credential_accounts::CredentialAccountSummary,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "name": account.name,
+        "source": account.source.as_str(),
+        "blocked": account.blocked,
+        "pinned": account.pinned,
+    });
+    if let Some(name) = account.display_name {
+        value["displayName"] = name.into();
+    }
+    if let Some(reason) = account.blocked_reason {
+        value["blockedReason"] = reason.as_str().into();
+    }
+    if let Some(until) = account.blocked_until {
+        value["blockedUntil"] = until.into();
+    }
+    if !account.blocked_models.is_empty() {
+        value["blockedModels"] = account
+            .blocked_models
+            .iter()
+            .map(|block| serde_json::json!({"model": block.model, "until": block.until}))
+            .collect();
+    }
+    if account.unused {
+        value["unused"] = true.into();
+    }
+    value
+}
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
 pub fn session_model_entry_json(
@@ -1068,7 +1099,12 @@ async fn handle_session_command_with_sink(
                 let api_keys=maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::ApiKey))?;
                 Ok(oauth.into_iter().chain(api_keys).map(|info|{
                 let status=registry.get_provider_auth_status(&info.id);
-                serde_json::json!({"id":info.id,"name":info.name,"authType":match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"},"status":{"configured":status.configured,"source":status.source,"label":status.label}})
+                let auth_type=match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"};
+                let mut provider=serde_json::json!({"id":info.id,"name":info.name,"authType":auth_type,"status":{"configured":status.configured,"source":status.source,"label":status.label}});
+                // senpi connection-handler.ts `get_auth_providers`: `...storedKeyHint(...)` and `...(origin ? { origin } : {})`.
+                if let Some(hint)=maho_core::verify_api_key::stored_key_hint(auth_type,registry.auth_storage.get(&info.id).as_ref()){provider["keyHint"]=hint.into();}
+                if let Some(origin)=registry.get_provider_origin(&info.id).and_then(|origin|serde_json::to_value(origin).ok()){provider["origin"]=origin;}
+                provider
                 }).collect::<Vec<_>>())
             }).map_err(|error|error.to_string());
             ("get_auth_providers",providers.map(|providers|Some(serde_json::json!({"providers":providers}))))
@@ -1115,10 +1151,10 @@ async fn handle_session_command_with_sink(
             ("logout",result)
         },
         RpcCommandBody::GetProviderAccounts{provider}=>{
-            let result=session.model_registry().get_credential_accounts(provider,&session.agent_dir()).await
-                .map(|accounts|Some(serde_json::json!({"accounts":accounts.into_iter().map(|account|serde_json::json!({
-                    "name":account.name,"displayName":account.display_name,"source":account.source.as_str(),"blocked":account.blocked,"pinned":account.pinned,
-                })).collect::<Vec<_>>() })));
+            // senpi `listCredentialAccounts`: every summary field the account carries, plus whether a user order applies.
+            let repository=maho_core::credential_pool::state_store::CredentialSlotRepository::new(&maho_core::credential_pool::state_store::credential_pool_state_path(&session.agent_dir()));
+            let result=maho_core::credential_account_order::list_credential_accounts(&session.model_registry().auth_storage,provider,&|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64).await
+                .map(|listing|Some(serde_json::json!({"accounts":listing.accounts.into_iter().map(credential_account_json).collect::<Vec<_>>(),"ordered":listing.ordered})));
             ("get_provider_accounts",result)
         },
         RpcCommandBody::AccountPin{provider,name}=>{
@@ -1188,7 +1224,10 @@ async fn handle_session_command_with_sink(
             let snapshot = if claimed { serde_json::from_value::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>(receive.await.map_err(|error|format!("MCP inventory request failed: {error}"))?).map_err(|error|format!("MCP inventory response invalid: {error}"))? } else { session.mcp_wire_status_snapshot::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>().unwrap_or_default() };
             let mcp_servers = snapshot.servers.iter().map(|server| {
                 let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
-                serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status})
+                let mut row=serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status});
+                // senpi `loadedMcpServers`: `...(server.lastError === undefined ? {} : { lastError })`.
+                if let Some(error)=&server.last_error{row["lastError"]=error.clone().into();}
+                row
             }).collect::<Vec<_>>();
             let extensions=session.loaded_extension_surfaces().await;
             Ok(Some(serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers})))
@@ -1984,7 +2023,10 @@ impl RpcConnectionHandler {
                 let extensions = session.loaded_extension_surfaces().await;
                 let mcp_servers = snapshot.servers.iter().map(|server| {
                     let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
-                    serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status})
+                    let mut row=serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status});
+                // senpi `loadedMcpServers`: `...(server.lastError === undefined ? {} : { lastError })`.
+                if let Some(error)=&server.last_error{row["lastError"]=error.clone().into();}
+                row
                 }).collect::<Vec<_>>();
                 let value = serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers});
                 let skills = session.loaded_skills().unwrap_or_default().skills.into_iter().map(|skill| serde_json::json!({"name":skill.name,"path":skill.file_path,"sourceInfo":skill.source_info,"enabled":!skill.disable_model_invocation})).collect::<Vec<_>>();
@@ -3326,7 +3368,40 @@ mod new_session_tests {
         .unwrap();
         assert_eq!(response["command"], "get_provider_accounts");
         assert_eq!(response["success"], true);
-        assert_eq!(response["data"], serde_json::json!({"accounts":[]}));
+        assert_eq!(
+            response["data"],
+            serde_json::json!({"accounts":[],"ordered":false})
+        );
+    }
+    // senpi credential-accounts.ts `CredentialAccountSummary`: a blocked account names why and until when; absent
+    // optional fields stay off the wire.
+    #[test]
+    fn a_blocked_account_carries_its_reason_and_until() {
+        use maho_core::credential_accounts::{
+            CredentialAccountBlockedReason, CredentialAccountSource, CredentialAccountSummary,
+        };
+        let account = |blocked_reason, blocked_until| CredentialAccountSummary {
+            name: "work".into(),
+            display_name: None,
+            source: CredentialAccountSource::Login,
+            blocked: blocked_reason.is_some(),
+            blocked_reason,
+            blocked_until,
+            pinned: false,
+            blocked_models: Vec::new(),
+            unused: false,
+        };
+        assert_eq!(
+            credential_account_json(account(
+                Some(CredentialAccountBlockedReason::AuthError),
+                Some(42)
+            )),
+            serde_json::json!({"name":"work","source":"login","blocked":true,"pinned":false,"blockedReason":"auth_error","blockedUntil":42})
+        );
+        assert_eq!(
+            credential_account_json(account(None, None)),
+            serde_json::json!({"name":"work","source":"login","blocked":false,"pinned":false})
+        );
     }
     #[tokio::test]
     async fn account_pin_preserves_provider_error() {
