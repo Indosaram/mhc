@@ -52,12 +52,18 @@ impl AnthropicSubscriptionExtension {
                     };
                     let settings = (oauth.settings)();
                     let settings = if settings.values.is_empty() {
-                        crate::settings::load_from_disk(
+                        // senpi#2848: settings come from the session cwd, never the host working directory.
+                        match crate::settings::load_from_disk(
                             &cwd,
                             &agent_dir,
                             &dirs::home_dir().unwrap_or_else(|| cwd.clone()),
                             &environment,
-                        )
+                        ) {
+                            Ok(settings) => settings,
+                            Err(error) => {
+                                return crate::stream::failed_stream(model, &error.to_string());
+                            }
+                        }
                     } else {
                         settings
                     };

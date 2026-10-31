@@ -21,20 +21,19 @@ fn later_presets_restore_ask_boundaries_after_full_access() {
 }
 
 #[test]
-fn no_ui_preset_admission_emits_only_source_events() {
-    for (preset, allowed) in [(PermissionPresetName::FullAccess, true), (PermissionPresetName::ReadOnly, false)] {
-        let emitter = PermissionEventEmitter::default();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let captured = events.clone();
-        let _asked = emitter.on_asked(move |_| captured.lock().expect("events").push("asked"));
-        let captured = events.clone();
-        let _replied = emitter.on_replied(move |event| { assert_eq!(event.reply, PermissionDecision::Allow); captured.lock().expect("events").push("replied"); });
-        let request = Request { id:"request-1".into(), session_id:"session-1".into(), permission:"bash".into(), patterns:vec!["git status".into()], always:vec!["*".into()], metadata:Default::default(), tool:None };
-        let result = handle_no_ui(&request, (&rules_for_preset(preset), &[]), &emitter).expect("admission");
-        assert_eq!(result.is_none(), allowed);
-        if let Some(reply) = result { assert_eq!(reply.request_id, "request-1"); assert_eq!(reply.reply, Reply::Reject); }
-        assert_eq!(*events.lock().expect("events"), if allowed {vec!["asked", "replied"]} else {vec!["asked"]});
-    }
+fn no_ui_requests_are_rejected_when_a_preset_still_requires_confirmation() {
+    let emitter = PermissionEventEmitter::default();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let _asked = emitter.on_asked(move |_| captured.lock().expect("events").push("asked"));
+    let captured = events.clone();
+    let _replied = emitter.on_replied(move |_| captured.lock().expect("events").push("replied"));
+    let request = Request { id:"request-1".into(), session_id:"session-1".into(), permission:"bash".into(), patterns:vec!["git status".into()], always:vec!["*".into()], original_paths:None, metadata:Default::default(), tool:None };
+    let reply = handle_no_ui(&request, false, &emitter).expect("admission");
+    assert_eq!(reply.request_id, "request-1");
+    assert_eq!(reply.reply, Reply::Reject);
+    assert_eq!(reply.message.as_deref(), Some(format!("Permission required for bash (git status), and there is no UI to ask, so the call did not run. {DENIAL_IS_FINAL} The user can allow it with --permission bash=allow.").as_str()));
+    assert_eq!(*events.lock().expect("events"), vec!["asked"]);
 }
 
 #[test]
