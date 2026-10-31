@@ -149,6 +149,8 @@ impl Extension for CacheKeepalive{
         for kind in [EventKind::SessionStart,EventKind::AgentEnd,EventKind::AgentSettled,EventKind::ModelSelect,EventKind::SessionParked,EventKind::SessionResumed,EventKind::AgentStart,EventKind::Input,EventKind::SessionShutdown]{
             let state=state.clone();let sender=sender.clone();let warm=self.warm.clone();let prewarm=prewarm.clone();let startup=startup.clone();
             api.on(kind,Arc::new(move|event,ctx|{let state=state.clone();let sender=sender.clone();let warm=warm.clone();let prewarm=prewarm.clone();let startup=startup.clone();Box::pin(async move{
+                // index.ts: `if (event.sizesOnly) return;` -- a sizes-only startup neither prewarms, restores nor arms.
+                if matches!(event,ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent{sizes_only:true,..})){return Ok(EventResult::None);}
                 let prewarm_ctx=||->Arc<dyn crate::session_prewarm::PrewarmContext>{Arc::new(crate::session_prewarm::ExtensionPrewarmContext(ctx.clone()))};
                 match kind{
                     EventKind::SessionStart=>prewarm.start(prewarm_ctx()),
