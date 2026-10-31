@@ -5,6 +5,7 @@ import { hostDeniedError, hostToolRefusal } from "./kernel-tools-scope.js";
 import { JsWorkerRuntime } from "./worker-runtime.js";
 import { createHeapProbe } from "./worker-heap.js";
 import { readProcessFootprint } from "./process-footprint.js";
+import { installKernelWebView } from "./worker-webview.js";
 
 // Mirrors INTERRUPT_ACK_OP and CHILD_LIFECYCLE_OP in src/bridge/reserved.ts (this worker file cannot import TypeScript).
 const INTERRUPT_ACK_OP = "interrupt-ack";
@@ -29,6 +30,7 @@ export function createWorkerCore(transport, options) {
 	let activeCell = null;
 	const pendingTools = new Map();
 	const nestedInvokes = new Map();
+	const pendingWebViewPorts = new Map();
 	const kernelTools = createKernelToolPump({
 		getRuntime: () => runtime,
 		emit: (message) => transport.send(message),
@@ -81,6 +83,13 @@ export function createWorkerCore(transport, options) {
 		return await promise;
 	}
 
+	function requestWebViewPort() {
+		const requestId = crypto.randomUUID();
+		const promise = new Promise((resolve, reject) => pendingWebViewPorts.set(requestId, { resolve, reject }));
+		emit({ type: "webview-connect", requestId });
+		return promise;
+	}
+
 	function interruptCell(reason) {
 		if (!activeCell || !runtime) return;
 		const interruption = cellInterruptedError(reason);
@@ -101,8 +110,16 @@ export function createWorkerCore(transport, options) {
 			runtime?.kernelTools.setCollisionNames(message.hostToolNames ?? [], message.foreignLanguageNames ?? []);
 			return;
 		}
+		if (message.type === "webview-port") {
+			const pending = pendingWebViewPorts.get(message.requestId);
+			pendingWebViewPorts.delete(message.requestId);
+			if (message.ok) pending?.resolve(message.port);
+			else pending?.reject(errorFromBridge(message.error));
+			return;
+		}
 		if (message.type === "init") {
 			applySessionEnvironment(message.sessionEnv);
+			installKernelWebView(requestWebViewPort);
 			runtime = new JsWorkerRuntime({
 				cwd: options.cwd,
 				parallelPoolWidth: options.parallelPoolWidth,
