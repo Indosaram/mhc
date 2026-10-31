@@ -26,6 +26,10 @@ ulid = "=3.0.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 senpi-desktop-backend-macos = { package = "maho-senpi-desktop-backend-macos", path = "../senpi-desktop-backend-macos" }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 senpi-desktop-backend-wayland = { package = "maho-senpi-desktop-backend-wayland", path = "../senpi-desktop-backend-wayland" }
 senpi-desktop-backend-x11 = { package = "maho-senpi-desktop-backend-x11", path = "../senpi-desktop-backend-x11" }
