@@ -197,6 +197,15 @@ impl McpSessionBinding {
                 |server| server.credentials_current.clone(),
             )
     }
+    /// invocation.ts `scope.isCurrent`: the binding is live, still declares `name` on exactly this
+    /// connection, and the credentials it was admitted under are current.
+    pub(crate) fn offers(
+        &self,
+        name: &str,
+        connection: &Arc<crate::connection::ServerConnection>,
+    ) -> bool {
+        !self.lifetime().is_aborted() && self.declares(name, connection)
+    }
     /// The binding's config still declares `name` on exactly this connection, and its credentials are the ones
     /// the connection was keyed by (upstream request-origin `isCurrent`).
     fn declares(&self, name: &str, connection: &Arc<crate::connection::ServerConnection>) -> bool {

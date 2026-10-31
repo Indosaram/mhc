@@ -26,6 +26,7 @@ pub mod host_registry;
 pub mod idle;
 pub mod index;
 pub mod instructions;
+pub mod invocation;
 pub mod log;
 pub mod logging;
 pub mod modern;

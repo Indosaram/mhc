@@ -55,7 +55,7 @@ impl ExtensionActions for NoToolsActions {
 }
 
 fn entry(server: &str, tool: &str) -> McpToolCatalogEntry {
-    McpToolCatalogEntry {server: server.into(), tool: tool.into(), schema: json!({"type":"object"}), output_schema: None, modern: false, description: Some(format!("{tool} tool")), annotations: None, request_timeout: Duration::from_secs(1), client: None, runtime: None, connection: None, ensure_connected: None, ensure_fresh: None, agent_dir: None, artifacts: None, output_guard: None, request_origin: None}
+    McpToolCatalogEntry {server: server.into(), tool: tool.into(), schema: json!({"type":"object"}), output_schema: None, modern: false, description: Some(format!("{tool} tool")), annotations: None, request_timeout: Duration::from_secs(1), client: None, runtime: None, connection: None, ensure_connected: None, ensure_fresh: None, agent_dir: None, artifacts: None, output_guard: None, request_origin: None, invocation: None}
 }
 
 fn input(registered: Vec<McpToolCatalogEntry>, active: Vec<McpToolCatalogEntry>, search_mode: bool, proxy_gateways: Vec<(String, Vec<McpToolCatalogEntry>)>) -> McpTierBRegistrationInput {

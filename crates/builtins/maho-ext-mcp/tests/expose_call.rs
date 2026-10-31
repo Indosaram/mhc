@@ -41,6 +41,7 @@ async fn a_call_without_any_connection_fails_as_a_tool_exec_error() {
         artifacts: None,
         output_guard: None,
         request_origin: None,
+        invocation: None,
     };
     let error = call_mcp_tool(&entry, json!({}), "tc-1", &Default::default(), None)
         .await

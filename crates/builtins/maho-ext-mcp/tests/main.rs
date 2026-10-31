@@ -19,6 +19,8 @@ pub mod connection;
 pub mod control_inventory;
 #[path = "diagnose.rs"]
 pub mod diagnose;
+#[path = "dispatch_identity.rs"]
+pub mod dispatch_identity;
 #[path = "elicitation.rs"]
 pub mod elicitation;
 #[path = "expose_call.rs"]
