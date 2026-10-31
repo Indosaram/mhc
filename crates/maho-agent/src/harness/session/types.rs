@@ -1120,6 +1120,9 @@ pub struct SessionMetadata {
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_parent_session_path: Option<String>,
+    /// The canonical storage file a path-backed repo (SQLite) opened this session from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 pub type IdGenerator = std::sync::Arc<dyn Fn(Option<i64>) -> String + Send + Sync>;

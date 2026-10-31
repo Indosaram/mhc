@@ -8,7 +8,7 @@ use maho_agent::harness::session::types::*;
 use maho_agent::harness::session::values::*;
 use serde_json::{Value,json};
 
-fn session() -> StorageBackedSession { StorageBackedSession::new(SessionMetadata { id:"terminal".into(),created_at:1,storage_version:1,cwd:None,parent_session_id:None,legacy_parent_session_path:None },Arc::new(MemoryStorage::new(Default::default())),StorageBackedSessionOptions::default()) }
+fn session() -> StorageBackedSession { StorageBackedSession::new(SessionMetadata { id:"terminal".into(),created_at:1,storage_version:1,cwd:None,parent_session_id:None,legacy_parent_session_path:None,path:None },Arc::new(MemoryStorage::new(Default::default())),StorageBackedSessionOptions::default()) }
 fn scope(at: &str) -> Value { json!({"at":at,"control":{"status":"running"},"settings":{"compaction":{"enabled":true,"reserveTokens":1000,"keepRecentTokens":2000},"steeringMode":"all","followUpMode":"all","toolExecution":"parallel"},"latestAssistantEntryId":null}) }
 async fn seed(s: &dyn Session) { for address in [operation_meta("op"),operation_state("op"),operation_tool_args("op","step",0),operation_tool_memo("op","invocation","memo"),operation_preparation("op","task"),pending_tool_output("op","invocation")] { s.set_value(&address,json!({"value":true}),&BACKGROUND_CONTEXT).await.expect("seed operation leftover"); } }
 fn address(write: &Write) -> String { match write { Write::Value(v) => format!("value:{}:{}",v.namespace(),v.key()),Write::List(v) => format!("list:{}:{}",v.namespace(),v.key()),_=>panic!("unexpected write") } }
