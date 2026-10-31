@@ -7,12 +7,12 @@
 //! `downloadProgress`, one `downloadFinished` per guid, in-flight downloads failed with
 //! `browserDisconnected` when the transport drops) and `waitForEvent`.
 //!
-//! PORT-DIVERGENCE: the JS bridge pushes events to listeners. The Rust [`CdpClient`] keeps an
-//! event log, so [`BrowserEvents::poll`] folds new CDP events in and returns the bridge events in
-//! order; listeners become the caller's loop. The Rust client has no reconnect, so the
+//! PORT-DIVERGENCE: the JS bridge pushes events to listeners. Here a [`Subscription`] queues the
+//! target, download and frame CDP events without loss, [`BrowserEvents::poll`] folds them in and
+//! returns the bridge events in order; listeners become the caller's loop. The Rust client has no reconnect, so the
 //! `reconnected` re-configuration has no trigger here; a disconnect is detected from
 //! [`CdpClient::closed_reason`].
-use crate::cdp::{CdpClient, Event};
+use crate::cdp::{CdpClient, Event, Subscription};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -129,7 +129,7 @@ struct Download {
 pub struct BrowserEvents {
     client: CdpClient,
     behavior: DownloadBehavior,
-    cursor: u64,
+    events: Option<Subscription>,
     targets: BTreeMap<String, Value>,
     target_order: Vec<String>,
     crashes: HashMap<String, Value>,
@@ -148,11 +148,18 @@ impl BrowserEvents {
     /// downloads.
     pub fn new(client: CdpClient, behavior: DownloadBehavior) -> Result<Self, String> {
         behavior.validate()?;
-        let cursor = client.event_cursor();
+        let subscription = client.subscribe(|event| {
+            event.method.starts_with("Target.")
+                || event.method.starts_with("Browser.download")
+                || matches!(
+                    event.method.as_str(),
+                    "Page.frameAttached" | "Page.frameNavigated"
+                )
+        });
         let mut events = Self {
             client,
             behavior,
-            cursor,
+            events: Some(subscription),
             targets: BTreeMap::new(),
             target_order: Vec::new(),
             crashes: HashMap::new(),
@@ -435,8 +442,8 @@ impl BrowserEvents {
         if self.disposed {
             return;
         }
-        for event in self.client.events_since(self.cursor) {
-            self.cursor = self.cursor.max(event.seq + 1);
+        let queued = self.events.as_ref().map(Subscription::drain);
+        for event in queued.unwrap_or_default() {
             self.handle(&event);
         }
         if !self.disconnected && !self.client.is_connected() {
@@ -500,15 +507,16 @@ impl BrowserEvents {
             if now >= deadline {
                 return Err(format!("Timed out waiting for browser event \"{name}\""));
             }
-            let _ = self
-                .client
-                .wait_event(self.cursor, deadline - now, |_| true);
+            if let Some(events) = &self.events {
+                events.wait(deadline - now);
+            }
         }
     }
 
     /// Stops processing events.
     pub fn dispose(&mut self) {
         self.disposed = true;
+        self.events = None;
         self.pending.clear();
     }
 
