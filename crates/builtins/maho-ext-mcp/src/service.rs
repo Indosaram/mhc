@@ -119,6 +119,8 @@ pub struct McpService {
     pub reference_errors: BTreeMap<String, maho_ai::utils::config_reference::ConfigReferenceError>,
     /// Upstream `McpSessionBinding`: shared with registrations so an origin is issued without the service lock.
     binding: Arc<McpSessionBinding>,
+    /// Upstream `#registrationListeners`: bumped after every completed catalog registration.
+    registration_events: tokio::sync::watch::Sender<u64>,
 }
 /// Upstream `McpSessionBinding`: lifetime, presentation and declared sources of one session's binding.
 #[derive(Default)]
@@ -356,6 +358,7 @@ impl McpService {
             registration_inputs: None,
             reference_errors: BTreeMap::new(),
             binding: Arc::default(),
+            registration_events: tokio::sync::watch::Sender::new(0),
         }
     }
     /// Upstream `bindMcpMrtrPresentation`: keeps the binding's presentation current (a missing one keeps
@@ -530,7 +533,10 @@ impl McpService {
                                 &cwd.to_string_lossy(),
                             )
                     })
-            }) && self.agent_dir.as_deref() == Some(agent_dir);
+            }) && self.agent_dir.as_deref() == Some(agent_dir)
+                // service.ts:782: a connection whose credentials went stale is re-created, never kept under an
+                // unchanged key; kept, it would refuse every request until the service is disposed.
+                && (self.connections[&name].credentials_current)();
             drop(entry);
             if !retain && let Some(connection) = self.connections.remove(&name) {
                 dispose_entry_connection(&connection, &self.registry, self.owner).await?;
@@ -556,7 +562,7 @@ impl McpService {
                 &agent_dir.to_string_lossy(),
                 &cwd.to_string_lossy(),
             );
-            let connection = create_shared_mcp_session_connection(
+            let mut connection = create_shared_mcp_session_connection(
                 SessionConnectionOptions {
                     registry: &self.registry,
                     owner: self.owner,
@@ -572,6 +578,19 @@ impl McpService {
                 },
                 &cwd.to_string_lossy(),
             )?;
+            // service.ts `credentialsCurrent`: the identity this connection is admitted under is still live.
+            if let Some(declared) = server.config.clone() {
+                let admitted = credential_identity(name);
+                let (name, agent_dir, env) = (name.clone(), agent_dir.to_path_buf(), env.clone());
+                connection.credentials_current = Arc::new(move || {
+                    crate::auth::catalog_identity::mcp_credential_identity(
+                        &declared,
+                        &name,
+                        Some(&agent_dir),
+                        Some(&env),
+                    ) == admitted
+                });
+            }
             {
                 let mut leases = self
                     .binding
@@ -772,37 +791,11 @@ impl McpService {
         let mut declared = BTreeMap::new();
         for (name, connection) in &self.connections {
             let entry = connection.entry.lock().await;
-            let server = config
-                .servers
-                .get(name)
-                .and_then(|server| server.config.clone());
-            let credentials_current: Arc<dyn Fn() -> bool + Send + Sync> = match server {
-                Some(server) => {
-                    // Upstream `credentialsCurrent`: the identity the connection was admitted under is still live.
-                    let admitted = crate::auth::catalog_identity::mcp_credential_identity(
-                        &server,
-                        name,
-                        Some(agent_dir),
-                        Some(env),
-                    );
-                    let (name, agent_dir, env) =
-                        (name.clone(), agent_dir.to_path_buf(), env.clone());
-                    Arc::new(move || {
-                        crate::auth::catalog_identity::mcp_credential_identity(
-                            &server,
-                            &name,
-                            Some(&agent_dir),
-                            Some(&env),
-                        ) == admitted
-                    })
-                }
-                None => Arc::new(|| true),
-            };
             declared.insert(
                 name.clone(),
                 McpDeclaredServer {
                     connection: Arc::downgrade(&entry.connection),
-                    credentials_current,
+                    credentials_current: connection.credentials_current.clone(),
                 },
             );
         }
@@ -1103,7 +1096,97 @@ impl McpService {
                 self.report_registration_error(error);
             }
         }
+        // Upstream `for (const listener of this.#registrationListeners) listener()`.
+        self.registration_events.send_modify(|generation| *generation += 1);
         Ok(())
+    }
+    /// Upstream `onMcpRegistrationChanged`: a receiver whose `changed()` fires after each completed
+    /// catalog registration. Dropping it is the unsubscribe.
+    pub fn on_registration_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.registration_events.subscribe()
+    }
+    /// The state-change stream of every live connection (upstream `getConnection(name).onStateChange`).
+    pub async fn connection_state_changes(
+        &self,
+    ) -> Vec<
+        tokio::sync::broadcast::Receiver<crate::connection::ServerConnectionStateChangedEvent>,
+    > {
+        let mut receivers = Vec::new();
+        for name in self.connections.keys() {
+            if let Some(connection) = self.get_connection(name) {
+                receivers.push(connection.entry.lock().await.connection.on_state_change());
+            }
+        }
+        receivers
+    }
+    /// The client of a connection whose state is `connected` (upstream `connection?.state === "connected"`).
+    pub async fn connected_client(
+        &self,
+        name: &str,
+    ) -> Option<Arc<crate::transport_sdk::McpClient>> {
+        let entry = self.get_connection(name)?.entry.lock().await;
+        if entry.connection.state() != crate::connection::ServerConnectionState::Connected {
+            return None;
+        }
+        entry.connection.client().ok()
+    }
+    /// Upstream `getServerExposureStatus`.
+    pub async fn exposure_status(
+        &self,
+        name: &str,
+    ) -> crate::expose::status::McpServerExposureStatus {
+        // Upstream `#entryForName`: unfiltered, unlike `getConnection`.
+        let entry = match self.connections.get(name) {
+            Some(connection) => Some(connection.entry.lock().await),
+            None => None,
+        };
+        crate::service_exposure::get_mcp_service_exposure_status(
+            name,
+            self.config.as_ref(),
+            entry.as_deref(),
+        )
+        .await
+    }
+    /// Upstream `getServerAuthStatus` (`wireAuthStatus`): bearer servers in `needs_auth` are not logged in;
+    /// OAuth servers are logged in when their credential identity resolves (a non-empty access token).
+    pub async fn server_auth_status(&self, name: &str) -> crate::service_types::McpWireAuthStatus {
+        use crate::service_types::McpWireAuthStatus;
+        let Some(server) = self.config.as_ref().and_then(|config| config.servers.get(name)) else {
+            return McpWireAuthStatus::Unsupported;
+        };
+        // Upstream `#entryForName`: unfiltered, unlike `getConnection`.
+        let state = match self.connections.get(name) {
+            Some(connection) => Some(connection.entry.lock().await.connection.state()),
+            None => None,
+        };
+        match server.config.as_ref().map(crate::auth::context::resolve_auth_mode) {
+            Some(crate::auth::context::ServerAuthMode::Bearer) => {
+                if state == Some(crate::connection::ServerConnectionState::NeedsAuth) {
+                    McpWireAuthStatus::NotLoggedIn
+                } else {
+                    McpWireAuthStatus::BearerToken
+                }
+            }
+            // Upstream `mcpCredentialIdentity(...) === undefined`: a read-only probe (never migrates or
+            // writes the store) where an empty accessToken is not signed in.
+            Some(crate::auth::context::ServerAuthMode::OAuth) => {
+                let logged_in = server.config.as_ref().is_some_and(|config| {
+                    crate::auth::catalog_identity::mcp_credential_identity(
+                        config,
+                        name,
+                        self.agent_dir.as_deref(),
+                        Some(&self.session_env),
+                    )
+                    .is_some()
+                });
+                if logged_in {
+                    McpWireAuthStatus::OAuth
+                } else {
+                    McpWireAuthStatus::NotLoggedIn
+                }
+            }
+            _ => McpWireAuthStatus::Unsupported,
+        }
     }
     fn report_registration_error(&self, message: &str) {
         if let Some(agent_dir) = &self.agent_dir
@@ -1223,21 +1306,85 @@ impl McpService {
             ))
             .await;
     }
+    /// Upstream `getConnection`: a connection whose credentials went stale is hidden until the next sync
+    /// re-creates it (service.ts:669).
+    pub fn get_connection(&self, name: &str) -> Option<&McpSessionConnection> {
+        self.connections
+            .get(name)
+            .filter(|connection| (connection.credentials_current)())
+    }
+    /// Upstream `#serverSnapshot`: a stale-credential connection is hidden; a server whose references failed is
+    /// degraded with the reference error; a `needs_auth` connection whose credential identity is gone reports
+    /// `needs_auth` with its own last error.
+    fn server_snapshot(
+        &self,
+        name: &str,
+        server: Option<&crate::config_schema::ResolvedMcpServer>,
+        connection: Option<&McpSessionConnection>,
+        entry: Option<&crate::service_types::McpConnectionEntry>,
+        now: f64,
+    ) -> McpServerSnapshot {
+        let current = connection.is_none_or(|connection| (connection.credentials_current)());
+        let mut snapshot = crate::service_snapshot::build_mcp_server_snapshot(
+            name,
+            server,
+            entry
+                .filter(|_| current)
+                .map(|entry| entry.connection.as_ref()),
+            entry,
+            now,
+        );
+        let redact = |message: &str| {
+            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                message,
+                "<redacted>",
+            )
+        };
+        if entry.is_none()
+            && let Some(error) = self.reference_errors.get(name)
+        {
+            snapshot.lifecycle_state = crate::service_types::McpLifecycleState::Connection(
+                crate::connection::ServerConnectionState::Degraded,
+            );
+            snapshot.last_error = Some(redact(&error.to_string()));
+            return snapshot;
+        }
+        if let (Some(config), Some(entry)) =
+            (server.and_then(|server| server.config.as_ref()), entry)
+            && entry.connection.state() == crate::connection::ServerConnectionState::NeedsAuth
+            && crate::auth::catalog_identity::mcp_credential_identity(
+                config,
+                name,
+                entry.agent_dir.as_deref(),
+                Some(&self.session_env),
+            )
+            .is_none()
+        {
+            snapshot.lifecycle_state = crate::service_types::McpLifecycleState::Connection(
+                crate::connection::ServerConnectionState::NeedsAuth,
+            );
+            snapshot.last_error = entry
+                .connection
+                .last_error()
+                .map(|error| redact(&error.message));
+        }
+        snapshot
+    }
     pub async fn server_snapshots(&self) -> Vec<McpServerSnapshot> {
         let Some(config) = &self.config else {
             return Vec::new();
         };
         let mut snapshots = Vec::new();
         for (name, server) in &config.servers {
-            let entry = if let Some(connection) = self.connections.get(name) {
-                Some(connection.entry.lock().await)
-            } else {
-                None
+            let connection = self.connections.get(name);
+            let entry = match connection {
+                Some(connection) => Some(connection.entry.lock().await),
+                None => None,
             };
-            snapshots.push(crate::service_snapshot::build_mcp_server_snapshot(
+            snapshots.push(self.server_snapshot(
                 name,
                 Some(server),
-                entry.as_ref().map(|entry| entry.connection.as_ref()),
+                connection,
                 entry.as_deref(),
                 chrono::Utc::now().timestamp_millis() as f64,
             ));
@@ -1269,11 +1416,14 @@ impl McpService {
             return snapshot;
         };
         for (name, server) in &config.servers {
-            let entry = if let Some(connection) = self.connections.get(name) {
-                Some(connection.entry.lock().await)
-            } else {
-                None
+            let session_connection = self.connections.get(name);
+            let entry = match session_connection {
+                Some(connection) => Some(connection.entry.lock().await),
+                None => None,
             };
+            // service.ts #captureWireStatusServer: a stale-credential connection and its cached catalog are hidden.
+            let current =
+                session_connection.is_none_or(|connection| (connection.credentials_current)());
             let mode = server
                 .config
                 .as_ref()
@@ -1302,44 +1452,51 @@ impl McpService {
                 }
                 _ => McpWireAuthStatus::Unsupported,
             };
-            // service.ts `#captureWireStatusServer`: the diagnostic snapshot's lastError, or the server's
-            // reference failure when it never got a connection.
-            let last_error = match entry.as_ref() {
-                Some(entry) => {
-                    crate::service_snapshot::build_mcp_server_snapshot(
-                        name,
-                        Some(server),
-                        Some(entry.connection.as_ref()),
-                        Some(entry),
-                        0.0,
-                    )
-                    .last_error
-                }
-                None => self.reference_errors.get(name).map(|error| {
-                    maho_core::config_reference_redaction::redact_resolved_reference_values(
-                        &error.to_string(),
-                        "<redacted>",
-                    )
-                }),
+            // service.ts `#captureWireStatusServer`: the diagnostic snapshot's lastError and lifecycle decide the
+            // reported status: needs_auth while not connected, degraded for a reference failure without a
+            // connection, otherwise the visible connection's state or the configured state.
+            let diagnostic = self.server_snapshot(
+                name,
+                Some(server),
+                session_connection,
+                entry.as_deref(),
+                0.0,
+            );
+            let connection_state = entry
+                .as_ref()
+                .filter(|_| current)
+                .map(|entry| entry.connection.state());
+            let connected =
+                connection_state == Some(crate::connection::ServerConnectionState::Connected);
+            let lifecycle =
+                |state| diagnostic.lifecycle_state == McpLifecycleState::Connection(state);
+            let status = if !connected
+                && lifecycle(crate::connection::ServerConnectionState::NeedsAuth)
+            {
+                McpWireServerStatus::Connection(crate::connection::ServerConnectionState::NeedsAuth)
+            } else if entry.is_none()
+                && lifecycle(crate::connection::ServerConnectionState::Degraded)
+            {
+                McpWireServerStatus::Connection(crate::connection::ServerConnectionState::Degraded)
+            } else {
+                connection_state.map_or(
+                    McpWireServerStatus::Config(server.state),
+                    McpWireServerStatus::Connection,
+                )
             };
             let mut wire = McpWireStatusServer {
                 name: name.clone(),
                 server_info: None,
-                last_error,
+                last_error: diagnostic.last_error,
                 tools: Vec::new(),
                 resources: Vec::new(),
                 resource_templates: Vec::new(),
                 auth_status,
-                status: Some(
-                    entry
-                        .as_ref()
-                        .map_or(McpWireServerStatus::Config(server.state), |entry| {
-                            McpWireServerStatus::Connection(entry.connection.state())
-                        }),
-                ),
+                status: Some(status),
             };
             if let Some(cached) = entry
                 .as_ref()
+                .filter(|_| current)
                 .and_then(|entry| entry.cached_catalog.as_ref())
             {
                 wire.tools = cached
@@ -1355,9 +1512,7 @@ impl McpService {
             }
             if let Some(client) = entry
                 .as_ref()
-                .filter(|entry| {
-                    entry.connection.state() == crate::connection::ServerConnectionState::Connected
-                })
+                .filter(|_| connected)
                 .and_then(|entry| entry.connection.client().ok())
             {
                 wire.server_info =

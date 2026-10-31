@@ -28,10 +28,10 @@ pub fn sanitize_modern_message(message: &Value) -> Result<Option<Value>, McpMrtr
             return Ok(None);
         }
         let mut safe = Map::new();
-        safe.insert(
-            "progressToken".into(),
-            params.get("progressToken").cloned().unwrap_or(Value::Null),
-        );
+        // An absent token stays absent, as JSON.stringify drops upstream's undefined `progressToken`.
+        if let Some(token) = params.get("progressToken") {
+            safe.insert("progressToken".into(), token.clone());
+        }
         safe.insert("progress".into(), params["progress"].clone());
         if let Some(total) = params.get("total") {
             safe.insert("total".into(), total.clone());

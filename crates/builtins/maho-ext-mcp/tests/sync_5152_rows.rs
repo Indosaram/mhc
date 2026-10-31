@@ -313,10 +313,12 @@ async fn mrtr_errors_are_never_retried() {
         }
     })
     .await;
-    assert!(attempts.load(Ordering::SeqCst) >= 1);
-    assert_ne!(
+    // The renewal bumps the generation once, then its connect to the refused loopback port fails, so the
+    // operation is not replayed: exactly one attempt and one renewal.
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(
         connection.generation(),
-        0,
+        1,
         "a plain expiry renews the connection"
     );
     connection.dispose().await.expect("dispose");
@@ -675,6 +677,9 @@ async fn request_origins_end_when_credentials_change_or_the_server_is_undeclared
         .to_string(),
     )
     .expect("global mcp.json");
+    // A cached lazy server runs no startup connect, so nothing in the background can touch `oa` while the
+    // test rotates its credential.
+    seed_cached_catalog(agent.path(), "oa");
     let registry = Arc::new(HostMcpRegistry::default());
     let mut service = McpService::new(registry.clone(), 5152_09);
     service
@@ -811,8 +816,10 @@ async fn project_skill_server_rekeys_when_only_its_env_changes() {
         .expect("first connect");
     assert_eq!(read_receipt(), json!({"ref": "lit1"}));
 
+    // A different length keeps the skills.rs sidecar stamp (mtime, ctime, len, ino) from matching the first
+    // write within one coarse timestamp tick.
     let warnings = service
-        .attach_skill_mcp_servers(&declare("lit2"))
+        .attach_skill_mcp_servers(&declare("lit22"))
         .await
         .expect("edited declaration");
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -831,7 +838,236 @@ async fn project_skill_server_rekeys_when_only_its_env_changes() {
         .connect_server("probe")
         .await
         .expect("second connect");
-    assert_eq!(read_receipt(), json!({"ref": "lit2"}));
+    assert_eq!(read_receipt(), json!({"ref": "lit22"}));
     service.dispose().await.expect("dispose");
     registry.dispose().await.expect("registry dispose");
+}
+
+/// Seeds a valid catalog for `name` under its current config hash and credential identity, so a lazy server is
+/// cached and runs no startup connect (service.ts: `shouldRaceMcpStartup(lifecycle) || cachedCatalog === undefined`).
+fn seed_cached_catalog(agent_dir: &Path, name: &str) {
+    use std::collections::BTreeMap;
+    let config =
+        maho_ext_mcp::config::load_mcp_config(maho_ext_mcp::config_schema::LoadMcpConfigOptions {
+            cwd: agent_dir,
+            agent_dir,
+            env: &BTreeMap::new(),
+            project_trusted: true,
+            home_dir: Some(agent_dir),
+            claude_config_dir: Some(agent_dir),
+        })
+        .expect("config");
+    let server = &config.servers[name];
+    let declared = server.config.as_ref().expect("declared config");
+    let credential_identity = maho_ext_mcp::auth::catalog_identity::mcp_credential_identity(
+        declared,
+        name,
+        Some(agent_dir),
+        Some(&BTreeMap::new()),
+    );
+    write_mcp_cached_server(
+        agent_dir,
+        name,
+        McpCachedServerCatalog {
+            modern: false,
+            config_hash: server.config_hash.clone().expect("config hash"),
+            credential_identity,
+            fetched_at: chrono::Utc::now().timestamp_millis() as f64,
+            tools: vec![json!({"name": "tool_1", "inputSchema": {"type": "object"}})],
+            resources: vec![],
+            prompts: vec![],
+            instructions: Some("cached instructions".into()),
+        },
+    )
+    .expect("seed catalog");
+}
+
+/// Writes one OAuth server `oa` to `agent_dir`'s mcp.json with its stored grant, and seeds its catalog.
+fn oauth_server_fixture(
+    agent_dir: &Path,
+    access: &str,
+) -> maho_ext_mcp::auth::token_store::McpTokenStore {
+    let url = "http://127.0.0.1:9/mcp";
+    let tokens = maho_ext_mcp::auth::token_store::McpTokenStore::new(agent_dir, "oa", url);
+    write_grant(&tokens, access);
+    std::fs::write(
+        agent_dir.join("mcp.json"),
+        json!({"mcpServers": {"oa": {"type": "http", "url": url, "auth": "oauth", "exposure": "direct",
+            "lifecycle": "lazy", "connectTimeoutMs": 5000}}})
+        .to_string(),
+    )
+    .expect("global mcp.json");
+    seed_cached_catalog(agent_dir, "oa");
+    tokens
+}
+
+fn write_grant(tokens: &maho_ext_mcp::auth::token_store::McpTokenStore, access: &str) {
+    tokens
+        .write(maho_ext_mcp::auth::token_store::McpStoredAuth {
+            access_token: Some(access.into()),
+            ..Default::default()
+        })
+        .expect("tokens");
+}
+
+/// Row 09 (service.ts:782 `#syncFromConfig`, :669 `getConnection`, `#serverSnapshot`): a connection whose
+/// credentials went stale is hidden from `get_connection`, the snapshots and the wire status, and the next sync
+/// re-creates it instead of keeping it under its unchanged config key.
+#[tokio::test]
+async fn a_stale_credential_connection_is_hidden_then_recreated_by_the_next_sync() {
+    use maho_ext_mcp::{
+        host_registry::HostMcpRegistry,
+        service::McpService,
+        service_types::{McpLifecycleState, McpUnspawnedState},
+    };
+    use std::collections::BTreeMap;
+
+    let agent = tempfile::tempdir().expect("agent dir");
+    let tokens = oauth_server_fixture(agent.path(), "synthetic-5152-09-first");
+    let registry = Arc::new(HostMcpRegistry::default());
+    let mut service = McpService::new(registry.clone(), 5152_09_2);
+    service
+        .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
+        .await
+        .expect("attach");
+    let admitted = service.connections["oa"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    assert!(service.get_connection("oa").is_some());
+    assert_eq!(
+        oa_snapshot(&service).await.lifecycle_state,
+        McpLifecycleState::Other(McpUnspawnedState::Cached)
+    );
+    assert_eq!(oa_wire(&service).await.tools.len(), 1);
+    assert!(
+        maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service)
+            .await
+            .contains("cached instructions")
+    );
+
+    write_grant(&tokens, "synthetic-5152-09-second");
+    assert!(
+        service.get_connection("oa").is_none(),
+        "a stale-credential connection is hidden"
+    );
+    let snapshot = oa_snapshot(&service).await;
+    assert_eq!(
+        snapshot.lifecycle_state,
+        McpLifecycleState::Other(McpUnspawnedState::NotSpawned)
+    );
+    assert_eq!(snapshot.generation, None);
+    let wire = oa_wire(&service).await;
+    assert!(wire.tools.is_empty(), "the stale catalog is hidden");
+    assert_eq!(
+        wire.status,
+        Some(maho_ext_mcp::service_types::McpWireServerStatus::Config(
+            maho_ext_mcp::config_schema::McpServerState::Enabled
+        ))
+    );
+    assert!(
+        !maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service)
+            .await
+            .contains("cached instructions"),
+        "stale cached instructions are hidden"
+    );
+
+    // The next sync re-creates the connection under the new credential instead of keeping the stale one.
+    seed_cached_catalog(agent.path(), "oa");
+    service.resync_current_config().await.expect("resync");
+    let recreated = service
+        .get_connection("oa")
+        .expect("re-created connection")
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    assert!(
+        !Arc::ptr_eq(&admitted, &recreated),
+        "the stale connection was not kept"
+    );
+    service.dispose().await.expect("dispose");
+    registry.dispose().await.expect("registry dispose");
+}
+
+/// Row 07 (service.ts `#serverSnapshot`): a `needs_auth` connection whose credential identity is gone reports
+/// `needs_auth` with its own redacted error in the snapshots and the wire status, though the stale connection
+/// itself is hidden.
+#[tokio::test]
+async fn needs_auth_without_a_credential_identity_reports_needs_auth() {
+    use maho_ext_mcp::{
+        host_registry::HostMcpRegistry,
+        service::McpService,
+        service_types::{McpLifecycleState, McpWireServerStatus},
+    };
+    use std::collections::BTreeMap;
+
+    let agent = tempfile::tempdir().expect("agent dir");
+    let tokens = oauth_server_fixture(agent.path(), "synthetic-5152-07-first");
+    let registry = Arc::new(HostMcpRegistry::default());
+    let mut service = McpService::new(registry.clone(), 5152_07);
+    service
+        .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
+        .await
+        .expect("attach");
+    let connection = service.connections["oa"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    connection.mark_failure(
+        ServerConnectionState::NeedsAuth,
+        Some(McpError::new(McpErrorKind::Auth, "sign in to oa")),
+    );
+    tokens.clear().expect("logout");
+    assert!(
+        service.get_connection("oa").is_none(),
+        "the credential went stale"
+    );
+
+    let snapshot = oa_snapshot(&service).await;
+    assert_eq!(
+        snapshot.lifecycle_state,
+        McpLifecycleState::Connection(ServerConnectionState::NeedsAuth)
+    );
+    assert_eq!(snapshot.last_error.as_deref(), Some("sign in to oa"));
+    let wire = oa_wire(&service).await;
+    assert_eq!(
+        wire.status,
+        Some(McpWireServerStatus::Connection(
+            ServerConnectionState::NeedsAuth
+        ))
+    );
+    assert_eq!(wire.last_error.as_deref(), Some("sign in to oa"));
+    assert!(wire.tools.is_empty());
+    service.dispose().await.expect("dispose");
+    registry.dispose().await.expect("registry dispose");
+}
+
+/// `oa`'s rows by name: the loaded config may also hold servers from the user's home configs.
+async fn oa_snapshot(
+    service: &maho_ext_mcp::service::McpService,
+) -> maho_ext_mcp::service_types::McpServerSnapshot {
+    service
+        .server_snapshots()
+        .await
+        .into_iter()
+        .find(|snapshot| snapshot.name == "oa")
+        .expect("oa snapshot")
+}
+
+async fn oa_wire(
+    service: &maho_ext_mcp::service::McpService,
+) -> maho_ext_mcp::service_types::McpWireStatusServer {
+    service
+        .wire_status_snapshot()
+        .await
+        .servers
+        .into_iter()
+        .find(|server| server.name == "oa")
+        .expect("oa wire status")
 }

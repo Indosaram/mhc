@@ -31,3 +31,27 @@ pub fn set_global_mcp_server_enabled(agent_dir: &Path, name: &str, enabled: bool
     let Some(server) = config.mcp_servers.as_mut().and_then(|m| m.get_mut(name)) else { return Ok(false); };
     server.enabled = Some(enabled); write_validated(&path, &config)?; Ok(true)
 }
+/// Upstream `updateMcpServerConfig`: patch `enabled`/`exposure` of one server in a resolved global or
+/// project source, retaining placeholders, reference objects and unrelated fields. `Ok(false)` when the
+/// server is no longer in that file.
+pub fn update_mcp_server_config(path: &Path, name: &str, enabled: Option<bool>, exposure: Option<crate::config_schema::Exposure>) -> Result<bool, McpConfigValidationError> {
+    let error = |e: &dyn std::fmt::Display| McpConfigValidationError(e.to_string());
+    let mut raw = if path.exists() {
+        let data = fs::read_to_string(path).map_err(|e| error(&e))?;
+        serde_json::from_str::<serde_json::Value>(&data).map_err(|e| error(&e))?
+    } else {
+        serde_json::json!({})
+    };
+    validate_raw(raw.clone())?;
+    let Some(server) = raw.get_mut("mcpServers").and_then(|servers| servers.get_mut(name)).and_then(serde_json::Value::as_object_mut) else { return Ok(false); };
+    if let Some(enabled) = enabled { server.insert("enabled".into(), serde_json::Value::Bool(enabled)); }
+    if let Some(exposure) = exposure { server.insert("exposure".into(), serde_json::to_value(exposure).map_err(|e| error(&e))?); }
+    validate_raw(raw.clone())?;
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| error(&e))?; }
+    let mut opts = fs::OpenOptions::new(); opts.write(true).create(true).truncate(true);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; opts.mode(0o600); }
+    let mut file = opts.open(path).map_err(|e| error(&e))?;
+    use std::io::Write;
+    writeln!(file, "{}", serde_json::to_string_pretty(&raw).map_err(|e| error(&e))?).map_err(|e| error(&e))?;
+    Ok(true)
+}
