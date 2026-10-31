@@ -8,6 +8,7 @@
 //!
 //! A profile is warmed once per host: a repeat answers `already_warm` without running factories again,
 //! and concurrent warms of one profile share a single load.
+use crate::rpc_types::RPC_ERROR_WARM_FAILED;
 use futures::future::{BoxFuture, FutureExt, Shared};
 use maho_ai::node::provider_scope::{ProviderScope, run_with_provider_scope_async};
 use maho_core::agent_session_runtime::AgentSessionLaunchProfile;
@@ -15,9 +16,6 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-/// senpi `RPC_ERROR_WARM_FAILED` (`rpc-types.ts`).
-pub const RPC_ERROR_WARM_FAILED: &str = "warm_failed";
 
 /// What a runtime factory needs to build a session's services without the session.
 #[derive(Clone, Debug)]
@@ -136,9 +134,10 @@ impl HostWarmer {
         profile: HostWarmProfile,
     ) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
         let state = self.state.clone();
-        let load = (self.load)(profile);
+        let load = self.load.clone();
+        // The loader runs on the first poll, after `run` has released the state guard.
         async move {
-            let result = load.await;
+            let result = load(profile).await;
             let mut state = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
