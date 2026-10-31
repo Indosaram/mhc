@@ -1,6 +1,6 @@
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub enum SearchProvider { #[default] Exa,Tavily,Brave,DuckduckgoHtml,Deepseek,Serper,GoogleCse,Google,Zai,Openai,Codex,Anthropic,Perplexity,Xai,Kimi }
-impl SearchProvider { pub const fn as_str(self)->&'static str { match self { Self::Exa=>"exa",Self::Tavily=>"tavily",Self::Brave=>"brave",Self::DuckduckgoHtml=>"duckduckgo-html",Self::Deepseek=>"deepseek",Self::Serper=>"serper",Self::GoogleCse=>"google-cse",Self::Google=>"google",Self::Zai=>"z-ai",Self::Openai=>"openai",Self::Codex=>"codex",Self::Anthropic=>"anthropic",Self::Perplexity=>"perplexity",Self::Xai=>"xai",Self::Kimi=>"kimi" } } }
+pub enum SearchProvider { #[default] Exa,Tavily,Brave,DuckduckgoHtml,Deepseek,Serper,GoogleCse,Google,Zai,Openai,Codex,ChatgptSubscription,Anthropic,Perplexity,Xai,Kimi }
+impl SearchProvider { pub const fn as_str(self)->&'static str { match self { Self::Exa=>"exa",Self::Tavily=>"tavily",Self::Brave=>"brave",Self::DuckduckgoHtml=>"duckduckgo-html",Self::Deepseek=>"deepseek",Self::Serper=>"serper",Self::GoogleCse=>"google-cse",Self::Google=>"google",Self::Zai=>"z-ai",Self::Openai=>"openai",Self::Codex=>"codex",Self::ChatgptSubscription=>"chatgpt-subscription",Self::Anthropic=>"anthropic",Self::Perplexity=>"perplexity",Self::Xai=>"xai",Self::Kimi=>"kimi" } } }
 pub const fn default_provider_url(provider:SearchProvider)->&'static str {
     match provider {
         SearchProvider::Exa=>"https://api.exa.ai/search",
@@ -13,6 +13,7 @@ pub const fn default_provider_url(provider:SearchProvider)->&'static str {
         SearchProvider::Google=>"https://generativelanguage.googleapis.com/v1beta",
         SearchProvider::Zai=>"https://api.z.ai/api/paas/v4/web_search",
         SearchProvider::Openai|SearchProvider::Codex=>"https://api.openai.com/v1/responses",
+        SearchProvider::ChatgptSubscription=>"https://chatgpt.com/backend-api/codex/responses",
         SearchProvider::Anthropic=>"https://api.anthropic.com/v1/messages",
         SearchProvider::Perplexity=>"https://api.perplexity.ai/search",
         SearchProvider::Xai=>"https://api.x.ai/v1/responses",

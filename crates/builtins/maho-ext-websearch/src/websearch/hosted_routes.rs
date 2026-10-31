@@ -1,8 +1,8 @@
 //! Port of senpi `websearch/websearch/hosted-routes.ts` (pin 903b8336).
 use std::collections::BTreeMap;
 
-/// The search provider a hosted route maps to. `chatgpt-subscription` has no `SearchProvider`
-/// variant in this crate yet, so the mapping names it by its wire id.
+/// The search provider a hosted route maps to, by wire id (`native_mapping` resolves it to
+/// `SearchProvider::ChatgptSubscription`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedRouteMapping {
     pub provider: &'static str,
