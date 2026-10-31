@@ -1733,6 +1733,7 @@ impl Drop for DefaultKeybindingsOnDrop {
 fn browses_history_directly_without_first_moving_the_cursor() {
     use maho_tui::keybindings::{KeybindingsManager, Keys, set_keybindings, tui_keybindings};
 
+    let _lock = common::global_keybindings_lock();
     let _restore = DefaultKeybindingsOnDrop;
     let mut user_bindings = maho_tui::keybindings::KeybindingsConfig::new();
     user_bindings.insert(
