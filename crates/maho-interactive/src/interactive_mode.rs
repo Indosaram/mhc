@@ -940,6 +940,9 @@ pub struct InteractiveMode {
     >,
     pending_dialog_external_edit: Rc<RefCell<Option<String>>>,
     markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
+    /// senpi `getMarkdownTransformers` head: the Mermaid and message-path-link transformers, which
+    /// precede every extension's.
+    built_in_markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
     /// The theme the Mermaid transformer styles diagrams with; senpi reads its live `theme` proxy.
     mermaid_theme: Rc<RefCell<Theme>>,
     reveal: crate::streaming_reveal::StreamingRevealController,
@@ -2733,6 +2736,15 @@ impl InteractiveMode {
                 }),
                 Rc::new(move || Some(live_mermaid_theme.borrow().clone())),
             );
+        let path_link_session = session.clone();
+        let message_path_link_transformer =
+            crate::components::message_path_links::create_message_path_link_transformer(
+                Rc::new(move || {
+                    path_link_session.with_session_manager(|manager| manager.cwd().to_owned())
+                }),
+                crate::components::message_path_links::MessagePathLinkOptions::default(),
+            );
+        let built_in_markdown_transformers = vec![mermaid_transformer, message_path_link_transformer];
         let (extension_ui, ui_requests) =
             crate::interactive_extension_ui::InteractiveExtensionUi::channel(
                 crate::interactive_extension_ui::extension_theme(&theme),
@@ -2899,7 +2911,8 @@ impl InteractiveMode {
             widgets: Vec::new(),
             terminal_title: None,
             pending_bell: false,
-            markdown_transformers: vec![mermaid_transformer],
+            markdown_transformers: built_in_markdown_transformers.clone(),
+            built_in_markdown_transformers,
             reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide),
             clock: std::time::Instant::now(),
             tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps),
@@ -4116,7 +4129,7 @@ impl InteractiveMode {
                 }
             })
             .collect();
-        self.markdown_transformers = extensions
+        let extension_transformers = extensions
             .iter()
             .filter_map(|extension| extension.markdown_transformer.clone())
             .map(
@@ -4140,7 +4153,13 @@ impl InteractiveMode {
                         )))
                     })
                 },
-            )
+            );
+        // senpi `getMarkdownTransformers`: Mermaid, message-path links, then the extensions'.
+        self.markdown_transformers = self
+            .built_in_markdown_transformers
+            .iter()
+            .cloned()
+            .chain(extension_transformers)
             .collect();
     }
 

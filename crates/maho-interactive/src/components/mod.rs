@@ -41,6 +41,7 @@ pub mod loaded_resource_section;
 pub mod login_dialog;
 pub mod markdown_transform;
 pub mod mermaid;
+pub mod message_path_links;
 pub mod model_favorites;
 pub mod model_selector;
 pub mod neon_border;
