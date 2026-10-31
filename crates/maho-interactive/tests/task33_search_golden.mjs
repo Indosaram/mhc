@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-const root = '/home/indo/code/senpi';
-if (execFileSync('git', ['--no-pager', '-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== '903b83367545bea516f35fc7f7c7cb692847988d') throw new Error('senpi pin mismatch');
+const root = process.env.SENPI_SRC ?? '/home/indo/code/senpi';
+if (execFileSync('git', ['--no-pager', '-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== '59d58cee59d76bbecc83be828b59ff5420eb74df') throw new Error('senpi pin mismatch');
 const { rankModelSearchItems } = await import(root + '/packages/coding-agent/src/modes/interactive/model-search-rank.ts');
 const { getModelSearchText } = await import(root + '/packages/coding-agent/src/modes/interactive/model-search.ts');
 const models = [
