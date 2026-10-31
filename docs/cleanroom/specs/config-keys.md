@@ -528,3 +528,66 @@ Owner: Phase 3 (desktop/TUI side panel)
 
 Only key names, types, enumerations, bounds and defaults (interface facts) are listed. No
 description text, comments or code from the SUL sources or the generated schema is included.
+
+## Delta (omo v5.1.52)
+
+Written 2026-10-30 from the sync-5152 census rows (no SUL source opened). It supersedes the
+listed defaults above; the key names, types and bounds are unchanged.
+
+### D1. `memory.projection` defaults
+
+Interface facts (new defaults of the merged view):
+
+- `memory.projection` : object default={"max_entries_per_directory": 0, "max_bytes": 40960}
+- `memory.projection.max_entries_per_directory` : integer (minimum=0) default=0 (was 40)
+- `memory.projection.max_bytes` : integer (minimum=0) default=40960 (was 24576)
+
+Unchanged: both keys still accept any integer >= 0. A value the user writes always wins over the
+default, at top level, inside a harness block or a profile. `memory.agents.<name>.projection.*`
+still has no default of its own. When it is absent, the agent falls back to `memory.projection`,
+so the agent inherits the new defaults. This delta changes only the default values; it does not
+change what a given value means.
+
+Error cases: as before, a negative or non-integer value is an invalid-value for that key. It is
+pruned from its layer (config.md §4.4 step 5), and the default then applies in the merged view
+(config.md §6.4).
+
+Tests:
+- Given `{"memory": {"enabled": true}}` (a `memory` section without `projection`), when the
+  merged view is built, then
+  `memory.projection.max_entries_per_directory` is `0` and `memory.projection.max_bytes` is
+  `40960`.
+- Given `{"memory": {"projection": {"max_bytes": 24576}}}`, then `max_bytes` is `24576` and
+  `max_entries_per_directory` is `0`.
+- Given `{"memory": {"projection": {"max_entries_per_directory": 40}}}`, then the value `40` is
+  kept and `max_bytes` is `40960`.
+- Given the regenerated JSON Schema, then the `default` of the two keys is `0` and `40960`.
+
+### Mapping
+
+Every census row routed to an MIT crate that changes a user-writable key or its default:
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-memory-18 | D1 | APPLIES | projection defaults change to 0 / 40960 (was 40 / 24576) |
+
+Rows checked and found not to change any key in this inventory: omo-senpi-task-b-39 and
+omo-senpi-task-b-40 change built-in fallback-chain models (Fable 5.5 staging, Kimi K3.1 rungs).
+Those are built-in data owned by model-selection.md and maho-task, not defaults of a user key.
+omo-components-08 (comment-checker cache dir name), omo-components-28 (gateway attachment
+fence) and the telemetry rows (no user key; see telemetry.md delta) also add or change no key.
+
+Outside the census (found at review): v5.1.52 also adds an optional top-level key `model_pad`
+(object; `model_pad.labels.daily|geeky|normal|heavy` : string, no defaults), accepted at top
+level, in typed harness blocks and in profiles. Its only census row sits in a discarded shard, so
+this delta does not specify it. Until a spec covers it, mhc treats it as an unknown key
+(config.md §4.4).
+
+Leak self-check:
+
+- [x] no fenced code block (only inline user-config JSON examples);
+- [x] no sentence translates or paraphrases a SUL comment, doc comment or prompt (facts taken from
+      the census row summary only);
+- [x] the only constants reproduced are key names, bounds and defaults, which are interface facts;
+- [x] no new identifier is introduced;
+- [x] no OmO-original feature is specified.
