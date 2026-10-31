@@ -299,9 +299,13 @@ impl ServerConnection {
         self.transition(&mut inner, state, error);
     }
     pub fn mark_tools_changed(&self) {
+        self.emit_tools_changed(ServerConnectionToolsChangedCause::Notification);
+    }
+    fn emit_tools_changed(&self, cause: ServerConnectionToolsChangedCause) {
         let _ = self.tools.send(ServerConnectionToolsChangedEvent {
             server_name: self.server_name.clone(),
             generation: self.generation(),
+            cause,
         });
     }
     pub fn client(&self) -> Result<Arc<McpClient>, McpError> {
@@ -523,7 +527,7 @@ impl ServerConnection {
                     Box::pin(self.renew());
                 return renew.await;
             }
-            self.mark_tools_changed();
+            self.emit_tools_changed(ServerConnectionToolsChangedCause::Connect);
             self.subscribe_client(client, generation);
         }
         result

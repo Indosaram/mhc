@@ -46,6 +46,7 @@ pub mod service_connection;
 pub mod service_exposure;
 pub mod service_register;
 pub mod service_snapshot;
+pub mod service_tools_changed;
 pub mod service_types;
 pub mod shared_connection;
 pub mod shared_lease;
