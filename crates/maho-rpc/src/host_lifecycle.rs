@@ -819,11 +819,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             // binds its own generation name and adopts the public one by rename.
             #[cfg(unix)]
             let listener = {
-                let listener = tokio::net::UnixListener::bind(bind_socket)?;
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(bind_socket, std::fs::Permissions::from_mode(0o600))?;
-                }
+                // senpi `prepareSocketPath` + `listen`: a dead entry is cleared, a live listener's is never touched.
+                crate::host_lifecycle_proxy::prepare_socket_path(bind_socket).await?;
+                let listener = crate::host_lifecycle_proxy::listen(bind_socket)?;
                 // The key record names a listener that exists: published only after the bind succeeded.
                 if let Some(endpoint) = &public_endpoint {
                     endpoint.publish().map_err(std::io::Error::other)?;
