@@ -8,19 +8,12 @@ use crate::{
 };
 use maho_ext_api::{ToolContent, ToolDefinition, ToolError, ToolExecutionMode, ToolResult};
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{path::PathBuf, sync::Arc};
 #[derive(Clone)]
 pub struct McpNamedCatalogEntry {
     pub entry: McpToolCatalogEntry,
     pub name: String,
 }
-static NEXT_PROGRESS_TOKEN: AtomicU64 = AtomicU64::new(0);
 pub fn map_mcp_catalog_names(entries: &[McpToolCatalogEntry]) -> Vec<McpNamedCatalogEntry> {
     let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
         .expect("compiled collation data is available");
@@ -68,49 +61,7 @@ pub fn build_mcp_tool_definitions(
                     if !validator.validate(&call.params) {return Err(ToolError::Message("schema_changed: Arguments do not match the current MCP tool schema.".into()));}
                 }
                 let params=if call.params.is_object() || entry.modern {call.params}else{json!({})};
-                let operation=||async {
-                if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
-                    return Err(entry.runtime.as_ref().map(|runtime|&runtime.connection).or(entry.connection.as_ref()).and_then(|connection|crate::health::mark_mcp_connection_needs_auth(connection,&error)).unwrap_or(error));
-                }
-                let client=if let Some(runtime)=&entry.runtime {
-                    runtime.health.ensure_connection(&runtime.connection).await?;
-                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                    runtime.connection.client()?
-                }else{
-                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                    match &entry.connection {Some(connection)=>connection.client()?,None=>entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?}
-                };
-                let send=||async {
-                let client=if let Some(runtime)=&entry.runtime {runtime.connection.client()?}else if let Some(connection)=&entry.connection {connection.client()?}else{client.clone()};
-                let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
-                let mut notifications=client.notifications.subscribe();
-                let mut notifications_open=true;
-                let call_params=json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}});
-                // call.ts: `mcpRequestOptions(current.requestOrigin?.(), {signal})` - a fresh binding-issued origin per attempt.
-                let options=crate::request_origin::mcp_request_options(entry.request_origin.as_ref().and_then(|origin|origin()),Some(call.signal.clone()));
-                // tool-client.ts: a modern call validates structured output against the declared output schema.
-                let request=async {if crate::modern::request::is_modern_mcp_client(&client) {
-                    crate::tool_client::call_mcp_tool_request(&client,call_params,entry.output_schema.as_ref(),entry.request_timeout,&options).await.map(Value::Object)
-                } else {client.request_with_options("tools/call",call_params,entry.request_timeout,&options).await}};tokio::pin!(request);
-                let result=loop {tokio::select! {
-                    biased;
-                    notification=notifications.recv(),if notifications_open=>{
-                        let value=match notification {Ok(value)=>value,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,Err(tokio::sync::broadcast::error::RecvError::Closed)=>{notifications_open=false;continue}};
-                        let progress=value.get("params").unwrap_or(&Value::Null);
-                        if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
-                            let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));
-                            update(ToolResult {content:vec![ToolContent::text(maho_core::config_reference_redaction::redact_resolved_reference_values(&format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)),"<redacted>"))],details:Some(maho_core::config_reference_redaction::redact_resolved_reference_data(&json!({"progress":progress,"server":entry.server,"tool":entry.tool}))), structured_content: None, is_error: None }).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
-                        }
-                    }
-                    result=&mut request=>{call.signal.check().map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;break result?;},
-                }};
-                Ok::<_,crate::errors::McpError>(result)
-                };
-                if let Some(runtime)=&entry.runtime {crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,send).await}else{send().await}
-                };
-                let result=if let Some(runtime)=&entry.runtime {
-                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,operation)).await
-                }else{operation().await}.map_err(|error|ToolError::Message(if crate::modern::errors::as_mcp_mrtr_error(&error).is_some() {error.message.clone()} else {maho_core::config_reference_redaction::redact_resolved_reference_values(&format!("ToolExecError: {error}"),"<redacted>")}))?;
+                let result=super::call::call_mcp_tool(&entry,params,call.id,&call.signal,call.on_update.as_deref()).await?;
                 mapped_guarded_result(&entry,&result,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref()))
             })
         }));
