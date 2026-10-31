@@ -44,7 +44,12 @@ async fn concurrent_connects_share_one_client_and_transitions() {
         ServerConnectionState::Connected
     );
     assert!(states.try_recv().is_err());
-    assert_eq!(tools.recv().await.unwrap().generation, 0);
+    let tools_changed = tools.recv().await.unwrap();
+    assert_eq!(tools_changed.generation, 0);
+    assert_eq!(
+        tools_changed.cause,
+        maho_ext_mcp::connection_types::ToolsChangedCause::Connect
+    );
     assert_eq!(
         first
             .request("tools/list", serde_json::json!({}), Duration::from_secs(3))
@@ -150,10 +155,14 @@ async fn list_changed_after_call_reaches_connection() {
         )
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), changes.recv())
+    let changed = tokio::time::timeout(Duration::from_secs(3), changes.recv())
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        changed.cause,
+        maho_ext_mcp::connection_types::ToolsChangedCause::Notification
+    );
     connection.dispose().await.unwrap();
 }
 
