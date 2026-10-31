@@ -278,7 +278,7 @@ impl CodemodeSessionManager {
             let registrations = self.registrations.clone();
             let disposed = self.disposed.clone();
             let raw = self.javascript_raw.clone();
-            Arc::new(move || {
+            Arc::new(move || -> EvalKernelFuture<'static, Arc<dyn EvalKernel>> {
                 let launcher = launcher.clone();
                 let registrations = registrations.clone();
                 let disposed = disposed.clone();
