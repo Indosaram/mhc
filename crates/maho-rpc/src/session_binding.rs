@@ -149,8 +149,13 @@ pub fn session_event_record(
             to,
             chain_key,
             reason,
+            limit,
         } => {
-            json!({"type":"retry_fallback_applied","from":from,"to":to,"chainKey":chain_key,"reason":reason})
+            let mut record = json!({"type":"retry_fallback_applied","from":from,"to":to,"chainKey":chain_key,"reason":reason});
+            if let Some(limit) = limit {
+                record["limit"] = serde_json::to_value(limit)?;
+            }
+            record
         }
         E::RetryFallbackExhausted {
             chain_key,
@@ -159,8 +164,12 @@ pub fn session_event_record(
         E::RetryFallbackSucceeded { model, chain_key } => {
             json!({"type":"retry_fallback_succeeded","model":model,"chainKey":chain_key})
         }
-        E::RetryFallbackReverted { from, to } => {
-            json!({"type":"retry_fallback_reverted","from":from,"to":to})
+        E::RetryFallbackReverted { from, to, cause } => {
+            let mut record = json!({"type":"retry_fallback_reverted","from":from,"to":to});
+            if let Some(cause) = cause {
+                record["cause"] = cause.clone().into();
+            }
+            record
         }
         E::ModelChanged {
             model,
