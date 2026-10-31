@@ -70,8 +70,10 @@ pub trait SessionControlActions: Send + Sync {
 }
 
 /// One `session_control_wake` pass's drain; resolves to the pass's `SessionControlDrainResult`, if any.
-pub type SessionControlDrain =
-    std::sync::Arc<dyn Fn(Value) -> BoxFuture<'static, Option<Value>> + Send + Sync>;
+/// `Err` is senpi's rejected drain: the pass failed with that reason.
+pub type SessionControlDrain = std::sync::Arc<
+    dyn Fn(Value) -> BoxFuture<'static, Result<Option<Value>, String>> + Send + Sync,
+>;
 /// Asked once at clean exit: whether anything outside the transcript still names this session.
 pub type IsSessionReferenced = std::sync::Arc<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>;
 /// Releases a registered endpoint.

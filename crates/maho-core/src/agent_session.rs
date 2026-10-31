@@ -34065,11 +34065,10 @@ mod tests {
             .register_control_endpoint(
                 crate::extensions::session_control_types::RegisterControlEndpointOptions {
                     inbox_dir: "/tmp/inbox".into(),
-                    drain: Arc::new(
-                        |_: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
-                            Box::pin(async { None })
-                        },
-                    ),
+                    drain: Arc::new(|_: Value| {
+                        Box::pin(async { Ok(None) })
+                            as futures::future::BoxFuture<'static, Result<Option<Value>, String>>
+                    }),
                     is_session_referenced: None,
                 },
             )
