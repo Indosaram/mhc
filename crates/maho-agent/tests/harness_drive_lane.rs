@@ -2288,7 +2288,7 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
                     Arc::new(|_context| Box::pin(async { "lazy-context".to_owned() }));
                 resolve
             })),
-            system_prompt: Some(system_prompt),
+            system_prompt: Some(system_prompt.into()),
             resources: None,
             stream_options: None,
             retry: None,
@@ -2324,6 +2324,100 @@ async fn system_prompt_receives_lazily_resolved_tool_context() {
         .expect("system prompt resolved")
         .expect("sender alive");
     assert_eq!(seen.as_deref(), Some("lazy-context"));
+}
+
+/// Pinned `resolveSystemPrompt`: a plain-string `systemPrompt` is used as is and the configured
+/// `toolContext` resolver never runs for it.
+#[tokio::test]
+async fn string_system_prompt_is_used_without_resolving_tool_context() {
+    use maho_agent::harness::agent_harness::{
+        AgentHarnessOptions, AgentHarnessSystemPrompt, ToolContextResolver, ToolContextSource,
+    };
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let faux =
+        maho_ai::providers::faux::faux_provider(Default::default()).expect("valid faux provider");
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions {
+        auth: Some(Arc::new(FacadeAuth)),
+        ..Default::default()
+    }));
+    models.set_provider(faux.provider.clone());
+    faux.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into(),
+    ]);
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata {
+            id: "string-prompt".into(),
+            created_at: 1,
+            storage_version: 1,
+            cwd: None,
+            parent_session_id: None,
+            legacy_parent_session_path: None,
+        },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions {
+            now: Some(Arc::new(|| 10)),
+        })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let resolve: ToolContextResolver<String> = {
+        let resolutions = resolutions.clone();
+        Arc::new(move |_context| {
+            resolutions.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { "unused".to_owned() })
+        })
+    };
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<String> {
+            session,
+            models,
+            model: model.clone(),
+            thinking_level: None,
+            active_tool_names: None,
+            tools: Vec::new(),
+            tool_context: Some(ToolContextSource::Resolve(resolve)),
+            system_prompt: Some(AgentHarnessSystemPrompt::Text("plain prompt".into())),
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("the constructor attaches");
+    let lane = harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("lane");
+    let outcome = lane
+        .prompt(
+            PromptInput::Text {
+                text: "hi".into(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    assert!(matches!(outcome, RunOutcome::Settled(_)));
+    let log = faux.get_call_log();
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        log[0].context.system_prompt.as_deref(),
+        Some("plain prompt")
+    );
+    assert_eq!(resolutions.load(Ordering::SeqCst), 0);
 }
 
 // --- harness.test.ts: remaining runtime Harness scenarios (senpi 903b8336) ---
