@@ -495,8 +495,9 @@ impl HostSessionHandle {
             return;
         }
         // SAFETY-DIVERGENCE(omo rpc-host/handle.ts park): a parked session is not an exit, but the
-        // Rust manager has no parked-session listener yet, so a parking frame is left to the
-        // heartbeat instead of parking the record.
+        // Rust manager has no parked-session listener yet, so a parking frame is ignored here and
+        // the record is not parked; the session most likely ends later through the heartbeat's
+        // unknown_session path.
         if event.event_type == "session_parked"
             || matches!(
                 event.reason.as_deref(),
