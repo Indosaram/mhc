@@ -13,6 +13,8 @@ pub mod layout_tests;
 pub mod markdown_golden;
 #[path = "mouse_input_tests.rs"]
 pub mod mouse_input_tests;
+#[path = "select_list_tests.rs"]
+pub mod select_list_tests;
 #[path = "tui_lifecycle_tests.rs"]
 pub mod tui_lifecycle_tests;
 #[path = "tui_screen_golden.rs"]
