@@ -7,6 +7,9 @@ use maho_ai::tool_call_middleware::has_kimi_text_tool_call_recovery;
 use maho_ai::types::{
     AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, ErrorReason,
 };
+use maho_ai::utils::assistant_capture::{
+    CaptureHint, CapturedEvent, FrozenProgress, assistant_events, carry_assistant_capture,
+};
 use maho_ai::utils::diagnostics::AssistantMessageDiagnostic;
 use maho_ai::utils::empty_response_errors::{
     EMPTY_RESPONSE_ERROR, EMPTY_TOOL_USE_ERROR, FORWARDED_EMPTY_RESPONSE_ERROR,
@@ -17,6 +20,32 @@ use maho_ai::utils::visible_text::{has_visible_assistant_content, has_visible_te
 
 use crate::assistant_terminal_state::now_ms;
 use crate::types::StreamFn;
+
+/// `BufferedRecord = { event } | { progress }`.
+enum BufferedRecord {
+    Event(CapturedEvent),
+    Progress(FrozenProgress),
+}
+
+fn forward(outer_stream: &AssistantMessageEventStream, entry: BufferedRecord) {
+    match entry {
+        BufferedRecord::Event(event) => outer_stream.push_captured(event, CaptureHint::default()),
+        BufferedRecord::Progress(progress) => outer_stream.push_frozen_progress(progress),
+    }
+}
+
+/// A replaced error terminal relays the source capture, rewritten for the error message.
+fn replaced(source: &CapturedEvent, error: AssistantMessage) -> CapturedEvent {
+    let terminal = error.clone();
+    carry_assistant_capture(
+        source,
+        AssistantMessageEvent::Error {
+            reason: ErrorReason::Error,
+            error,
+        },
+        Some(&terminal),
+    )
+}
 
 fn is_empty_stop(message: &AssistantMessage) -> bool {
     message.stop_reason == maho_ai::types::StopReason::Stop
@@ -146,11 +175,33 @@ async fn run_retrying_stream(
     let mut stream = first_stream;
     let mut retrying = false;
     loop {
-        let mut buffered: Vec<AssistantMessageEvent> = Vec::new();
+        // Controls are held beside the events they follow, so a discarded attempt discards both.
+        let mut buffered: Vec<BufferedRecord> = Vec::new();
         let mut forwarding = false;
         let mut retry = false;
+        let progress: Arc<std::sync::Mutex<Vec<FrozenProgress>>> = Arc::default();
+        let read_progress = progress.clone();
+        let mut events = assistant_events(&stream, move |record| {
+            read_progress
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(record);
+        });
         loop {
-            let event = match stream.next().await {
+            let next = events.next().await;
+            // Progress read ahead of this event keeps its place before it.
+            for record in progress
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .drain(..)
+            {
+                if forwarding {
+                    outer_stream.push_frozen_progress(record);
+                } else {
+                    buffered.push(BufferedRecord::Progress(record));
+                }
+            }
+            let captured = match next {
                 Ok(Some(event)) => event,
                 Ok(None) => break,
                 Err(error) => {
@@ -158,6 +209,7 @@ async fn run_retrying_stream(
                     return;
                 }
             };
+            let event = captured.value.clone();
             match &event {
                 AssistantMessageEvent::Done {
                     message, reason, ..
@@ -166,13 +218,13 @@ async fn run_retrying_stream(
                     let empty_tool_use = is_empty_tool_use(message);
                     if is_empty_stop(message) || empty_tool_use {
                         if forwarding {
-                            outer_stream.push(AssistantMessageEvent::Error {
-                                reason: ErrorReason::Error,
-                                error: create_forwarded_empty_failure(
-                                    message.clone(),
-                                    empty_tool_use,
+                            outer_stream.push_captured(
+                                replaced(
+                                    &captured,
+                                    create_forwarded_empty_failure(message.clone(), empty_tool_use),
                                 ),
-                            });
+                                CaptureHint::default(),
+                            );
                             outer_stream.end(None);
                             return;
                         }
@@ -180,59 +232,67 @@ async fn run_retrying_stream(
                             retry = true;
                             break;
                         }
-                        let error = create_empty_response_failure(message.clone(), empty_tool_use);
-                        outer_stream.push(AssistantMessageEvent::Error {
-                            reason: ErrorReason::Error,
-                            error,
-                        });
+                        outer_stream.push_captured(
+                            replaced(
+                                &captured,
+                                create_empty_response_failure(message.clone(), empty_tool_use),
+                            ),
+                            CaptureHint::default(),
+                        );
                         outer_stream.end(None);
                         return;
                     }
                     let terminal = if retrying {
-                        AssistantMessageEvent::Done {
-                            reason: done_reason,
-                            message: append_retry_diagnostic(
-                                message.clone(),
-                                recovery_diagnostic_type(is_empty_tool_use(message)),
-                                retry_details(1, false),
-                            ),
-                        }
+                        let message = append_retry_diagnostic(
+                            message.clone(),
+                            recovery_diagnostic_type(is_empty_tool_use(message)),
+                            retry_details(1, false),
+                        );
+                        carry_assistant_capture(
+                            &captured,
+                            AssistantMessageEvent::Done {
+                                reason: done_reason,
+                                message: message.clone(),
+                            },
+                            Some(&message),
+                        )
                     } else {
-                        event.clone()
+                        captured
                     };
                     if !forwarding {
                         for pending in buffered.drain(..) {
-                            outer_stream.push(pending);
+                            forward(&outer_stream, pending);
                         }
                     }
-                    outer_stream.push(terminal);
+                    outer_stream.push_captured(terminal, CaptureHint::default());
                     outer_stream.end(None);
                     return;
                 }
                 AssistantMessageEvent::Error { .. } => {
                     if !forwarding {
                         for pending in buffered.drain(..) {
-                            outer_stream.push(pending);
+                            forward(&outer_stream, pending);
                         }
                     }
-                    outer_stream.push(event.clone());
+                    outer_stream.push_captured(captured, CaptureHint::default());
                     outer_stream.end(None);
                     return;
                 }
                 _ => {}
             }
             if forwarding {
-                outer_stream.push(event);
+                outer_stream.push_captured(captured, CaptureHint::default());
                 continue;
             }
-            buffered.push(event.clone());
+            buffered.push(BufferedRecord::Event(captured));
             if is_meaningful_content_event(&event, policy) {
                 for pending in buffered.drain(..) {
-                    outer_stream.push(pending);
+                    forward(&outer_stream, pending);
                 }
                 forwarding = true;
             }
         }
+        drop(events);
         if !retry {
             match stream.result().await {
                 Ok(mut result) => {
@@ -431,3 +491,11 @@ mod cancellation_tests {
         assert!(has_visible_assistant_content(message));
     }
 }
+
+#[cfg(test)]
+#[path = "empty_assistant_recovery_tests.rs"]
+mod capture_tests;
+
+#[cfg(test)]
+#[path = "internal_events_recovery_tests.rs"]
+mod agent_capture_tests;
