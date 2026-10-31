@@ -1074,7 +1074,7 @@ pub fn host_runtime_factory_with_mcp_registry(
                     scoped_models: super::startup::session_model_entries(scoped.scoped_models)?,
                     auto_title_sessions: profile.runtime.auto_title.or(config.auto_title_sessions),
                     session_profile: maho_ext_api::ExtensionSessionProfile {
-                        shared_host_enabled: true,
+                        shared_host_enabled: false,
                         session_kind: profile.session_kind.unwrap_or_default(),
                         session_context: profile.session_context.clone().unwrap_or_default(),
                     },
