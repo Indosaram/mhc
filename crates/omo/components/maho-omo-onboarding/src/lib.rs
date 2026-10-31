@@ -8,6 +8,7 @@ pub mod scan_component;
 pub mod scan_contract;
 pub mod scan_runtime;
 pub mod session_history;
+pub mod setup;
 pub mod state;
 pub mod state_rpc;
 pub mod tui_memory_runtime;

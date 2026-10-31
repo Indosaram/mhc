@@ -2048,6 +2048,12 @@ impl ModelRuntime {
                 ));
             }
             let signal = request.signal.clone();
+            // senpi `attemptWithTokenRecovery(model, options, undefined, ...)`: `limitAccountOf(undefined)`.
+            let request = crate::subscription_limits::limit_store::with_limit_capture(
+                request,
+                &model.provider,
+                &crate::subscription_limits::limit_store::limit_account_of(None, None),
+            );
             semaphores
                 .bracket(&model.provider, signal.as_ref(), || {
                     call(CallTarget::Models(models.clone()), &model, request)
@@ -2498,9 +2504,19 @@ async fn prepare_slot_request(
     if let Some(base_url) = resolution.auth.base_url {
         request_model.base_url = base_url;
     }
+    // senpi `attemptWithTokenRecovery`: the slot's account names the windows its response reports.
+    let account = crate::subscription_limits::limit_store::limit_account_of(
+        overrides.slot_name.as_deref(),
+        overrides.api_key.as_deref(),
+    );
     request.api_key = overrides.api_key.or(resolution.auth.api_key);
     request.headers = headers;
     request.env = env;
+    let request = crate::subscription_limits::limit_store::with_limit_capture(
+        request,
+        &request_model.provider,
+        &account,
+    );
     Ok((provider, request_model, request))
 }
 
@@ -2786,6 +2802,59 @@ mod tests {
         .expect("result");
         assert_eq!(message.stop_reason, maho_ai::types::StopReason::ToolUse);
         assert!(message.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(call) if call.name == "get_weather")));
+    }
+    /// senpi#3370: a real model-runtime request records what its response headers report, under the
+    /// provider and the `default` account (no rotation slot).
+    #[tokio::test]
+    async fn runtime_stream_records_the_limit_windows_its_response_reports() {
+        use maho_ai::providers::faux::{
+            FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message,
+            faux_provider,
+        };
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{}}"#);
+        let faux = faux_provider(RegisterFauxProviderOptions {
+            provider: Some("faux-limit-capture".into()),
+            response_headers: Some(std::collections::BTreeMap::from([
+                ("x-codex-primary-used-percent".to_owned(), "99".to_owned()),
+                ("x-codex-primary-window-minutes".to_owned(), "10080".to_owned()),
+                ("x-codex-primary-reset-at".to_owned(), "1792555751".to_owned()),
+            ])),
+            ..Default::default()
+        })
+        .expect("faux provider");
+        faux.core.set_responses(vec![
+            faux_assistant_message("ok", FauxAssistantMessageOptions::default()).into(),
+        ]);
+        runtime.register_native_provider(faux.provider.clone());
+        let model = runtime
+            .get_model("faux-limit-capture", "faux-1")
+            .expect("model");
+        let context = Context {
+            active_tool_names: None,
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+        };
+        let mut options = StreamOptions::default();
+        options.request.api_key = Some("fixture-key".into());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.stream(&model, &context, Some(options)).result(),
+        )
+        .await
+        .expect("bounded stream")
+        .expect("result");
+        let recorded = crate::subscription_limits::limit_store::subscription_limits()
+            .snapshot()
+            .into_iter()
+            .find(|limits| limits.provider == "faux-limit-capture")
+            .expect("the response's windows were recorded");
+        assert_eq!(recorded.account, "default");
+        assert_eq!(recorded.windows.len(), 1);
+        assert_eq!(
+            (recorded.windows[0].id.as_str(), recorded.windows[0].used_percent),
+            ("codex:primary", 99.0)
+        );
     }
     #[tokio::test]
     async fn preaborted_configured_stream_preserves_headers_and_stops_setup() {

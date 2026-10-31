@@ -1,9 +1,9 @@
 //! Port of `components/mermaid.ts`.
 //!
-//! The transformer replaces top-level `mermaid` code blocks with terminal diagrams. The layout
-//! engine that draws them is not ported (see `crate::grok_mermaid`), so `render` reports no art and
-//! every block keeps its original source, which is exactly what senpi does whenever it has no art
-//! to show.
+//! The transformer replaces top-level `mermaid` code blocks with terminal diagrams drawn by the
+//! `crate::grok_mermaid` layout engine (port of `grok-mermaid` 0.2.3). A block keeps its original
+//! source whenever the engine has no art to show (unsupported type, blank or oversized diagram), and
+//! a final render with parse warnings keeps the source plus a one-line warning.
 use std::rc::Rc;
 
 use maho_tui::components::markdown_lexer::Lexer;

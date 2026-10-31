@@ -41,3 +41,13 @@ fn final_renderer_preview_and_expansion() {
     assert_eq!(lines[2], "Content-Type: text/plain");
     assert_eq!(lines.last().expect("body"), "five");
 }
+#[test]
+fn renderer_applies_exported_theme_prefixes_and_default_ellipsis() {
+    let theme = Theme { colors: [("accent".to_string(), "\u{1b}[38;5;117m".to_string())].into_iter().collect(), ..Default::default() };
+    let mut call = render_call(&json!({"url":"https://example.test/page"}), &theme);
+    assert!(call.render(200)[0].contains("\u{1b}[38;5;117mhttps://example.test/page\u{1b}[39m"));
+    let mut result = AgentToolResult::text("x".repeat(130));
+    result.details = json!({});
+    let mut output = render_result(&result, ToolRenderResultOptions::default(), &Theme::default());
+    assert_eq!(strip_ansi(&output.render(200)[0]), format!("{}...", "x".repeat(117)));
+}
