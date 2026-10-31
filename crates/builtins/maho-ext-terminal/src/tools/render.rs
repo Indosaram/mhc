@@ -18,19 +18,19 @@ pub fn output_renderers()->maho_ext_api::types::ToolRenderers<(),Value> {
         Box::new(BashOutputResultComponent {text,is_partial:options.is_partial,expanded:options.expanded})
     }))}
 }
+/// render.ts `new Text(theme.fg("toolTitle", theme.bold(label)), 0, 0)`: the extension theme's colors are ANSI
+/// prefixes (the host exports each theme color as its SGR prefix), so the label goes through `Theme::fg`.
 fn call_component(label:&str,theme:&maho_ext_api::types::Theme)->Box<dyn Component> {
-    let prefix=theme.colors.get("toolTitle").and_then(|color|color.strip_prefix('#')).filter(|hex|hex.len()==6&&hex.is_ascii()).and_then(|hex| {
-        Some(format!("\x1b[38;2;{};{};{}m",u8::from_str_radix(&hex[..2],16).ok()?,u8::from_str_radix(&hex[2..4],16).ok()?,u8::from_str_radix(&hex[4..],16).ok()?))
-    }).unwrap_or_else(||"\x1b[39m".to_owned());
-    Box::new(maho_tui::components::text::Text::with_padding(format!("{prefix}\x1b[1m{label}\x1b[22m\x1b[39m"),0,0))
+    Box::new(maho_tui::components::text::Text::with_padding(theme.fg("toolTitle",&theme.bold(label)),0,0))
 }
 pub fn monitor_renderers()->maho_ext_api::types::ToolRenderers<(),Value> {
     maho_ext_api::types::ToolRenderers {render_call:Some(std::sync::Arc::new(|args,theme,_|call_component(&monitor_call_label(args),theme))),render_result:None}
 }
 pub fn bash_output_call_label(args:&Value)->String {format!("bash_output {}",args.get("bash_id").and_then(Value::as_str).unwrap_or(""))}
+/// render.ts `renderMonitorCall`: `description ?? command ?? ""`, so an absent or null description falls back.
 pub fn monitor_call_label(args:&Value)->String {
     if args.get("action").and_then(Value::as_str)==Some("rearm") {return format!("monitor rearm {}",args.get("bash_id").and_then(Value::as_str).unwrap_or("")).trim_end().to_owned();}
-    format!("monitor {}",args.get("description").or_else(||args.get("command")).and_then(Value::as_str).unwrap_or("")).trim_end().to_owned()
+    format!("monitor {}",args.get("description").and_then(Value::as_str).or_else(||args.get("command").and_then(Value::as_str)).unwrap_or("")).trim_end().to_owned()
 }
 pub fn visible_result_text(content:&[maho_tools::definition::ToolContent])->String {
     content.iter().filter_map(|content|match content {maho_tools::definition::ToolContent::Text {text,audience} if audience.as_deref()!=Some("model")=>Some(text.as_str()),_=>None}).collect::<Vec<_>>().join("\n")
@@ -40,11 +40,15 @@ mod tests {
     use super::*;
     #[test]
     fn themed_call_components_keep_tool_title_color_and_bold() {
-        let theme=maho_ext_api::types::Theme {colors:[("toolTitle".to_owned(),"#123456".to_owned())].into(),..Default::default()};
+        // The host exports theme colors as ANSI prefixes (maho-interactive extension_theme), not hex.
+        let theme=maho_ext_api::types::Theme {colors:[("toolTitle".to_owned(),"\x1b[38;2;18;52;86m".to_owned())].into(),..Default::default()};
         for label in [bash_output_call_label(&serde_json::json!({"bash_id":"bash_1"})),monitor_call_label(&serde_json::json!({"action":"rearm","bash_id":"mon_1"}))] {
             let mut component=call_component(&label,&theme);let lines=component.render(80);
-            assert!(lines[0].contains("\x1b[38;2;18;52;86m\x1b[1m"));assert!(lines[0].contains(&label));assert!(lines[0].contains("\x1b[22m\x1b[39m"));
+            assert!(lines[0].starts_with(&format!("\x1b[38;2;18;52;86m\x1b[1m{label}\x1b[22m\x1b[39m")),"{:?}",lines[0]);
         }
+        // A theme without toolTitle resets to the terminal default foreground, as Theme.fg does.
+        let mut plain=call_component("bash_output bash_2",&maho_ext_api::types::Theme::default());
+        assert!(plain.render(80)[0].starts_with("\x1b[39m\x1b[1mbash_output bash_2\x1b[22m\x1b[39m"));
         assert!(output_renderers().render_call.is_some());assert!(monitor_renderers().render_call.is_some());assert!(monitor_renderers().render_result.is_none());
     }
     #[test]
@@ -66,5 +70,27 @@ mod tests {
         assert_eq!(bash_output_call_label(&serde_json::json!({"bash_id":"bash_12"})),"bash_output bash_12");
         assert_eq!(monitor_call_label(&serde_json::json!({"action":"rearm","bash_id":"bash_3"})),"monitor rearm bash_3");
         assert_eq!(monitor_call_label(&serde_json::json!({"command":"printf ready"})),"monitor printf ready");
+        assert_eq!(monitor_call_label(&serde_json::json!({"description":"build","command":"make"})),"monitor build");
+        assert_eq!(monitor_call_label(&serde_json::json!({"description":null,"command":"make"})),"monitor make");
+        assert_eq!(monitor_call_label(&serde_json::json!({"action":"rearm"})),"monitor rearm");
+        assert_eq!(monitor_call_label(&serde_json::json!({"path":"/tmp/x"})),"monitor");
+        assert_eq!(bash_output_call_label(&serde_json::json!({})),"bash_output ");
+    }
+
+    #[test]
+    fn result_renderer_previews_partial_visible_text_and_expands_full_text() {
+        use maho_ai::types::{ContentBlock,TextAudience,TextContent};
+        let text=|text:&str,audience|ContentBlock::Text(TextContent {text:text.to_owned(),audience,text_signature:None});
+        let lines=(0..10).map(|index|format!("line{index}")).collect::<Vec<_>>().join("\n");
+        let result:maho_ext_api::types::AgentToolResult=serde_json::from_value(serde_json::json!({"content":[{"type":"text","text":lines}]})).unwrap();
+        let mut result=result;result.content.push(text("[model notice]",Some(TextAudience::Model)));
+        let render=|is_partial,expanded| {
+            let renderer=output_renderers().render_result.unwrap();
+            let mut context=maho_ext_api::types::ToolRenderContext {args:serde_json::json!({"bash_id":"bash_1"}),tool_call_id:"call".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:"/tmp".into(),execution_started:true,args_complete:true,is_partial,expanded,show_images:false,image_protocol:None,is_error:false,has_result:Some(true),spinner_frame:None};
+            renderer(&result,maho_ext_api::types::ToolRenderResultOptions {expanded,is_partial},&maho_ext_api::types::Theme::default(),&mut context).render(40)
+        };
+        assert_eq!(render(true,false),(2..10).map(|index|format!("line{index}")).collect::<Vec<_>>());
+        let full=render(false,false);assert_eq!(full.len(),10);assert!(!full.iter().any(|line|line.contains("model notice")));
+        assert_eq!(render(true,true).len(),10);
     }
 }
