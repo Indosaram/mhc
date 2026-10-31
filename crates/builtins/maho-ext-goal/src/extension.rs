@@ -149,6 +149,7 @@ impl GoalExtension {
         }
         for kind in [
             EventKind::SessionStart,
+            EventKind::SessionTree,
             EventKind::AgentStart,
             EventKind::MessageStart,
             EventKind::MessageEnd,
@@ -466,6 +467,50 @@ mod tests {
         api.registered.handlers[&EventKind::SessionShutdown][0](&mut shutdown, &context)
             .await
             .unwrap();
+    }
+    #[tokio::test]
+    async fn new_turn_and_tree_navigation_clear_todo_waiting_status() {
+        use maho_ext_api::*;
+        let dir = tempfile::tempdir().unwrap();
+        let reference = crate::types::GoalStoreRef {
+            base_dir: dir.path().into(),
+            thread_id: "s".into(),
+        };
+        let extension = GoalExtension {
+            reference: Arc::new(move |_| reference.clone()),
+            now: Arc::new(|| 0.0),
+        };
+        let mut api = ExtensionApi::new(
+            LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        extension.register(&mut api);
+        let ui = Arc::new(crate::test_context::Ui::default());
+        let mut context = crate::test_context::context();
+        context.ui = ui.clone();
+        let mut tree = ExtensionEvent::SessionTree {
+            new_leaf_id: None,
+            old_leaf_id: None,
+            summary_entry: None,
+            from_extension: None,
+        };
+        for event in [&mut ExtensionEvent::AgentStart, &mut tree] {
+            api.registered.handlers[&event.kind()][0](event, &context)
+                .await
+                .unwrap();
+        }
+        let cleared = ui
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|status| {
+                **status == (crate::delivery::TODO_WAITING_STATUS_KEY.to_owned(), None)
+            })
+            .count();
+        assert_eq!(cleared, 2);
     }
     #[tokio::test]
     async fn registered_factory_hooks_share_accounting_and_persist_user_abort() {
