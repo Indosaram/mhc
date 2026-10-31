@@ -21,37 +21,51 @@ pub struct PresenterLaunch {
     pub predecessor_host_instance: Option<Option<String>>,
 }
 
-/// The inherited descriptor as an owned stream, or `None` when it is not a socket or FIFO (senpi
-/// `presenterBootstrapStream`). Bootstrap is optional authority, never a reason to terminate the shared host.
+/// Takes ownership of the inherited reserved descriptor when it is a socket or FIFO (senpi
+/// `presenterBootstrapStream`'s `fstatSync` gate), and marks it close-on-exec so no process this host spawns
+/// inherits the enrollment channel. Dropping the result closes fd 4. Anything else at fd 4 is left untouched and
+/// yields `None`: bootstrap is optional authority, never a reason to terminate the shared host.
 ///
-/// SAFETY-DIVERGENCE(senpi presenterBootstrapStream): this crate forbids `unsafe`, so fd 4 cannot be adopted with
-/// `from_raw_fd`. Linux takes a duplicate through `pidfd_getfd` on this process; other unix systems reopen
-/// `/dev/fd/4`, which works for a FIFO but not a socket. The original fd 4 stays open in this process, so the
-/// relay's acknowledgement - not EOF - ends the exchange.
+/// Adoption happens at most once per process; a second call yields `None` instead of a second owner.
 #[cfg(unix)]
-pub fn presenter_bootstrap_stream(fd: i32) -> Option<BoxedPrivateStream> {
-    use std::os::fd::OwnedFd;
+#[allow(unsafe_code)]
+pub fn adopt_presenter_bootstrap_fd(fd: i32) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::{BorrowedFd, FromRawFd as _, OwnedFd};
     use std::os::unix::fs::FileTypeExt as _;
+    static ADOPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if fd != MCP_PRESENTER_BOOTSTRAP_FD {
         return None;
     }
-    #[cfg(target_os = "linux")]
-    let owned: Option<OwnedFd> = rustix::process::pidfd_open(
-        rustix::process::getpid(),
-        rustix::process::PidfdFlags::empty(),
-    )
-    .ok()
-    .and_then(|pidfd| {
-        rustix::process::pidfd_getfd(pidfd, fd, rustix::process::PidfdGetfdFlags::empty()).ok()
-    });
-    #[cfg(not(target_os = "linux"))]
-    let owned: Option<OwnedFd> = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(format!("/dev/fd/{fd}"))
-        .ok()
-        .map(OwnedFd::from);
-    let owned = owned?;
+    // SAFETY: `fcntl(F_GETFD)` takes no pointers and only reports whether `fd` is open (`-1`/EBADF otherwise).
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+        return None;
+    }
+    // SAFETY: fd 4 was just observed open, and the launch contract (`--mcp-presenter-fd 4`) reserves it for the
+    // bootstrap channel, so nothing else in this process closes it while this borrow lives.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let kind = std::fs::File::from(borrowed.try_clone_to_owned().ok()?)
+        .metadata()
+        .ok()?
+        .file_type();
+    if !kind.is_socket() && !kind.is_fifo() {
+        return None;
+    }
+    if ADOPTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    // SAFETY: fd 4 is open and is a socket or FIFO this process inherited for the bootstrap; the one-shot `ADOPTED`
+    // latch makes this the descriptor's only owner, so it is closed exactly once, when the `OwnedFd` drops.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    rustix::io::fcntl_setfd(&owned, rustix::io::FdFlags::CLOEXEC).ok()?;
+    Some(owned)
+}
+
+/// An adopted bootstrap descriptor as an owned stream, or `None` when it is not a socket or FIFO (senpi
+/// `presenterBootstrapStream`). Needs a tokio runtime.
+#[cfg(unix)]
+pub fn presenter_bootstrap_stream_from(owned: std::os::fd::OwnedFd) -> Option<BoxedPrivateStream> {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::fs::FileTypeExt as _;
     let file = std::fs::File::from(owned);
     let kind = file.metadata().ok()?.file_type();
     let owned = OwnedFd::from(file);
@@ -72,8 +86,24 @@ pub fn presenter_bootstrap_stream(fd: i32) -> Option<BoxedPrivateStream> {
         _ => None,
     }
 }
+
+/// The inherited descriptor as an owned stream (senpi `presenterBootstrapStream`): adopts fd 4 (closed with the
+/// stream, close-on-exec meanwhile) and wraps it. Needs a tokio runtime.
+#[cfg(unix)]
+pub fn presenter_bootstrap_stream(fd: i32) -> Option<BoxedPrivateStream> {
+    presenter_bootstrap_stream_from(adopt_presenter_bootstrap_fd(fd)?)
+}
 #[cfg(not(unix))]
 pub fn presenter_bootstrap_stream(_fd: i32) -> Option<BoxedPrivateStream> {
+    None
+}
+/// The adopted bootstrap descriptor; no platform without unix descriptors adopts one.
+#[cfg(unix)]
+pub type AdoptedPresenterBootstrap = std::os::fd::OwnedFd;
+#[cfg(not(unix))]
+pub type AdoptedPresenterBootstrap = std::convert::Infallible;
+#[cfg(not(unix))]
+pub fn adopt_presenter_bootstrap_fd(_fd: i32) -> Option<AdoptedPresenterBootstrap> {
     None
 }
 
@@ -100,7 +130,7 @@ impl ChildBootstrap {
         })
     }
     /// SAFETY-DIVERGENCE(senpi spawn stdio slot 4): Rust's `Command` exposes only the three standard slots and this
-    /// crate forbids the `unsafe` a `pre_exec` `dup2` needs, so `/bin/sh` performs it: `exec "$0" "$@" 4<&N N<&-`
+    /// crate denies the `unsafe` a `pre_exec` `dup2` needs, so `/bin/sh` performs it: `exec "$0" "$@" 4<&N N<&-`
     /// replaces the shell with the target (same pid) holding the channel at fd 4 and nothing else.
     pub fn command(&self, program: &std::ffi::OsStr) -> tokio::process::Command {
         use std::os::fd::AsRawFd;
@@ -368,6 +398,54 @@ mod tests {
 
     #[test]
     fn only_the_reserved_descriptor_is_adopted() {
-        assert!(presenter_bootstrap_stream(3).is_none());
+        assert!(adopt_presenter_bootstrap_fd(3).is_none());
+    }
+
+    const ADOPTION_CHILD_ENV: &str = "MAHO_RPC_PRESENTER_FD_ADOPTION_CHILD";
+
+    /// Re-executes this test binary with a socket at fd 4. The child adopts it, then spawns a process that must
+    /// not see fd 4, and checks fd 4 is gone once dropped; the parent checks the child test ran and passed.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn adopted_bootstrap_fd_is_closed_on_drop_and_never_inherited() {
+        if std::env::var_os(ADOPTION_CHILD_ENV).is_some() {
+            let owned =
+                adopt_presenter_bootstrap_fd(MCP_PRESENTER_BOOTSTRAP_FD).expect("fd 4 adopted");
+            assert!(adopt_presenter_bootstrap_fd(MCP_PRESENTER_BOOTSTRAP_FD).is_none());
+            assert!(
+                rustix::io::fcntl_getfd(&owned)
+                    .unwrap()
+                    .contains(rustix::io::FdFlags::CLOEXEC)
+            );
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", "test ! -e /proc/self/fd/4"])
+                .status()
+                .unwrap();
+            assert!(status.success(), "a spawned child inherited fd 4");
+            drop(owned);
+            assert!(!std::path::Path::new("/proc/self/fd/4").exists());
+            return;
+        }
+        let channel = ChildBootstrap::new().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let mut command = channel.command(exe.as_os_str());
+        command
+            .args([
+                "--exact",
+                "mcp_presenter_bootstrap::tests::adopted_bootstrap_fd_is_closed_on_drop_and_never_inherited",
+                "--test-threads=1",
+            ])
+            .env(ADOPTION_CHILD_ENV, "1")
+            .stdout(std::process::Stdio::piped());
+        let child = command.spawn().unwrap();
+        drop(channel);
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 }

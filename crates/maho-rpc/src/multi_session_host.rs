@@ -161,8 +161,10 @@ pub struct HostCore {
     request_settled: tokio::sync::Notify,
     /// The writer's MCP presenter state (senpi `SessionEventWriter` presenter half); enabled only by enforcement.
     pub presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
-    /// `--mcp-presenter-fd 4` (senpi `MultiSessionHostOptions.presenterBootstrapFd`).
-    presenter_bootstrap_fd: std::sync::OnceLock<i32>,
+    /// `--mcp-presenter-fd 4` (senpi `MultiSessionHostOptions.presenterBootstrapFd`), adopted (close-on-exec) as
+    /// soon as the host is configured so no child this host spawns inherits it.
+    presenter_bootstrap:
+        std::sync::Mutex<Option<crate::mcp_presenter_bootstrap::AdoptedPresenterBootstrap>>,
     /// The private control endpoint a socket host opens when it was launched with enforcement and a bootstrap.
     presenter_control:
         std::sync::Mutex<Option<std::sync::Arc<crate::mcp_presenter_control::McpPresenterControl>>>,
@@ -250,7 +252,7 @@ impl HostCore {
             active_requests: Default::default(),
             request_settled: tokio::sync::Notify::new(),
             presenters: Default::default(),
-            presenter_bootstrap_fd: std::sync::OnceLock::new(),
+            presenter_bootstrap: std::sync::Mutex::new(None),
             presenter_control: std::sync::Mutex::new(None),
         }
     }
@@ -366,9 +368,15 @@ impl HostCore {
         self
     }
     /// `--mcp-presenter-fd 4`: the inherited enrollment channel a socket host opens its presenter control with.
+    /// The descriptor is adopted here: it is close-on-exec from now on and closed when the host drops it.
     pub fn with_presenter_bootstrap_fd(self, fd: Option<i32>) -> Self {
-        if let Some(fd) = fd {
-            let _ = self.presenter_bootstrap_fd.set(fd);
+        if let Some(adopted) =
+            fd.and_then(crate::mcp_presenter_bootstrap::adopt_presenter_bootstrap_fd)
+        {
+            *self
+                .presenter_bootstrap
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(adopted);
         }
         self
     }
@@ -390,8 +398,12 @@ impl HostCore {
     async fn start_presenter_control(
         self: &std::sync::Arc<Self>,
     ) -> Option<tempfile_dir::PresenterDir> {
-        let fd = *self.presenter_bootstrap_fd.get()?;
-        let bootstrap = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream(fd)?;
+        let adopted = self
+            .presenter_bootstrap
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()?;
+        let bootstrap = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream_from(adopted)?;
         if !self.presenters.enabled() {
             drop(bootstrap);
             return None;

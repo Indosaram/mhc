@@ -45,8 +45,13 @@ maho-ext-host = { path = "../maho-ext-host" }
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 tokio = { workspace = true, features = ["test-util"] }
 
-[lints]
-workspace = true
+# Mirrors the workspace lints with unsafe_code = "deny": mcp_presenter_bootstrap.rs adopts the inherited fd 4
+# (`OwnedFd::from_raw_fd`) under a scoped allow.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
 
 [[test]]
 name = "integration"
