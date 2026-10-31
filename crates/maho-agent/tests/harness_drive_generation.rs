@@ -1510,10 +1510,13 @@ async fn local_retry_wait_is_abort_aware() {
     cancellation.resolve();
     drive.begin_abort(cancellation);
     drive.signal_abort();
-    assert!(
+    // Pinned: the refused admission is `AbortRequested` control flow the drive loop absorbs;
+    // the durable retry wait is left for reconciliation.
+    assert_eq!(
         run_retry_wait(lane.as_ref(), &drive, &current(&lane))
             .await
-            .is_err()
+            .expect("abort is control flow"),
+        ProcedureResult::Continue
     );
     assert!(matches!(
         current(&lane),
