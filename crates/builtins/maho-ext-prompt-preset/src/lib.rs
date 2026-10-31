@@ -32,6 +32,7 @@ pub mod kimi_k2_6;
 pub mod kimi_k2_7;
 pub mod kimi_k2_8;
 pub mod kimi_k3;
+pub mod kimi_k3_1;
 pub mod gpt_5;
 pub mod gpt_5_2;
 pub mod gpt_5_3_codex;

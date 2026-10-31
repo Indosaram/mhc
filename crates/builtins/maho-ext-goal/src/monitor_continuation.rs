@@ -101,7 +101,10 @@ impl MonitorAwareGoalContinuation {
                 crate::prompt::build_truncation_recovery_prompt()
             }
             crate::continuation::ContinuationPrompt::Full => {
-                crate::prompt::build_continuation_prompt(goal)
+                crate::prompt::build_continuation_prompt_for(
+                    goal,
+                    context.model.as_ref().map(|model| model.id.as_str()),
+                )
             }
         };
         if !verdict.stall_notice {
