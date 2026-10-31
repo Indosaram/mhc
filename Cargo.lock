@@ -5009,6 +5009,7 @@ dependencies = [
 name = "maho-isolation"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "maho-config",
  "maho-core",
  "maho-git",
@@ -5020,6 +5021,7 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5622,9 +5624,11 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-memory-core",
+ "maho-omo-bundled-skills",
  "maho-omo-start-work-continuation",
  "maho-test-support",
  "maho-tools",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
