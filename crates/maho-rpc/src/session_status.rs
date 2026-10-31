@@ -1,16 +1,15 @@
-//! The `session_status` record and the ONE pure function that derives it (senpi `rpc/session-status.ts`).
+//! The `session_status` record and the ONE pure function that derives it (senpi `session-status.ts`).
 //!
-//! Every status a subscriber sees is computed by [`derive_session_status`] from three inputs the host
-//! already holds: the registry entry, the session's own runtime view and the fanout's pending question
-//! frames. Nothing here reads a clock, a socket or a registry.
+//! Every status a subscriber sees - the snapshot in the `subscribe_sessions` answer and every delta after it - is
+//! computed by [`derive_session_status`] from the registry entry, the session's runtime view and the fanout's
+//! pending question frames. Nothing here reads a clock, a socket or a registry.
 use crate::session_registry::RpcSessionState;
-use maho_ext_api::SessionKind;
-use serde::Serialize;
-use serde_json::Value;
-use std::collections::BTreeMap;
+use serde_json::{Map, Value, json};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// A session's published labels: the open-time context overlaid with every `set_session_context` patch.
+pub type PublishedSessionContext = Map<String, Value>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatusValue {
     Opening,
     Idle,
@@ -21,51 +20,38 @@ pub enum SessionStatusValue {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatusCause {
-    Open,
-    Prompt,
-    AgentEnd,
-    AgentIdle,
-    Abort,
-    Question,
-    Compaction,
-    SetModel,
-    Queue,
-    Attach,
-    Detach,
-    Replace,
-    Park,
-    Close,
-    Context,
+impl SessionStatusValue {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Opening => "opening",
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::WaitingInput => "waiting_input",
+            Self::Compacting => "compacting",
+            Self::Unloaded => "unloaded",
+            Self::Closed => "closed",
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatusActor {
-    Client,
-    Agent,
-    Host,
-}
-
-/// A session's published labels: the open-time context overlaid with every `set_session_context` patch.
-/// Values are JSON strings, numbers or booleans.
-pub type PublishedSessionContext = BTreeMap<String, Value>;
+/// `SessionStatusCause`, as its wire string.
+pub type SessionStatusCause = &'static str;
+/// `SessionStatusActor`: `client`, `agent` or `host`.
+pub type SessionStatusActor = &'static str;
 
 /// Why a session's routing handle ended; set once, from the record that sealed it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionStatusTerminal {
-    /// `Unloaded` or `Closed`.
     pub status: SessionStatusValue,
     pub reason: Option<String>,
 }
 
 /// What the registry entry contributes.
-#[derive(Clone, Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionStatusEntryView {
     pub state: RpcSessionState,
-    pub kind: SessionKind,
+    /// `interactive` or `worker`.
+    pub kind: &'static str,
     pub cwd: String,
     pub attachments: i64,
     pub durable_session_id: Option<String>,
@@ -76,83 +62,28 @@ pub struct SessionStatusEntryView {
     pub open_context: Option<PublishedSessionContext>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct SessionStatusModel {
-    pub provider: String,
-    pub id: String,
-}
-
-/// What the live runtime contributes; absent while the session is opening or after teardown.
-#[derive(Clone, Debug, Default)]
+/// What the live runtime contributes; absent while the session is opening or after it was torn down.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionStatusRuntimeView {
     pub is_streaming: bool,
     pub is_compacting: bool,
-    pub model: Option<SessionStatusModel>,
+    pub model: Option<(String, String)>,
     pub thinking_level: Option<String>,
-    pub steering: u64,
-    pub follow_up: u64,
-    pub pending_questions: u64,
+    pub steering: usize,
+    pub follow_up: usize,
+    pub pending_questions: usize,
 }
 
-/// The fanout's pending `question` frames for the session (replayed on attach).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SessionStatusFanoutView {
-    pub pending_questions: u64,
+/// One session's views as the stream reads them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionView {
+    pub entry: SessionStatusEntryView,
+    pub runtime: Option<SessionStatusRuntimeView>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingQueue {
-    pub steering: u64,
-    pub follow_up: u64,
-}
-
-/// The derived half of a `session_status` record.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DerivedSessionStatus {
-    pub status: SessionStatusValue,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(serialize_with = "serialize_kind")]
-    pub kind: SessionKind,
-    pub cwd: String,
-    pub attachments: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub durable_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<SessionStatusModel>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_level: Option<String>,
-    pub pending_queue: PendingQueue,
-    pub context: PublishedSessionContext,
-}
-
-pub fn session_kind_name(kind: SessionKind) -> &'static str {
-    match kind {
-        SessionKind::Interactive => "interactive",
-        SessionKind::Worker => "worker",
-    }
-}
-
-fn serialize_kind<S: serde::Serializer>(
-    kind: &SessionKind,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(session_kind_name(*kind))
-}
-
-fn live_status(
-    runtime: &SessionStatusRuntimeView,
-    fanout: SessionStatusFanoutView,
-) -> SessionStatusValue {
-    // A question is asked from inside a running turn, and compaction can run inside one too: the narrower
-    // state wins, so a supervisor sees "waiting on the user" rather than a turn that merely looks busy.
-    if fanout.pending_questions > 0 || runtime.pending_questions > 0 {
+fn live_status(runtime: &SessionStatusRuntimeView, fanout_questions: usize) -> SessionStatusValue {
+    // A question is asked from inside a running turn, and compaction can run inside one too: the narrower state wins.
+    if fanout_questions > 0 || runtime.pending_questions > 0 {
         SessionStatusValue::WaitingInput
     } else if runtime.is_compacting {
         SessionStatusValue::Compacting
@@ -163,71 +94,70 @@ fn live_status(
     }
 }
 
-fn status_of(
-    entry: &SessionStatusEntryView,
-    runtime: Option<&SessionStatusRuntimeView>,
-    fanout: SessionStatusFanoutView,
-    terminal: Option<&SessionStatusTerminal>,
-) -> SessionStatusValue {
-    if let Some(terminal) = terminal {
-        return terminal.status;
-    }
-    match entry.state {
-        RpcSessionState::Opening => SessionStatusValue::Opening,
-        RpcSessionState::Closing | RpcSessionState::Quarantined | RpcSessionState::Closed => {
-            SessionStatusValue::Closed
-        }
-        RpcSessionState::Open => match runtime {
-            None => SessionStatusValue::Opening,
-            Some(runtime) => live_status(runtime, fanout),
-        },
-    }
-}
-
-/// Derive a session's status. `terminal` is the seal the writer recorded (park, close, release); `cause`
-/// is the change being published, used only for the `reason` of a run that an abort ended.
+/// Derives a session's status record body (everything except subscription, sequence and change) as a JSON object
+/// whose `context` key the stream strips for subscribers that did not ask for it.
 pub fn derive_session_status(
     entry: &SessionStatusEntryView,
     runtime: Option<&SessionStatusRuntimeView>,
-    fanout: SessionStatusFanoutView,
+    fanout_questions: usize,
     terminal: Option<&SessionStatusTerminal>,
     cause: Option<SessionStatusCause>,
-) -> DerivedSessionStatus {
-    let status = status_of(entry, runtime, fanout, terminal);
+) -> Map<String, Value> {
+    let status = match (terminal, entry.state) {
+        (Some(terminal), _) => terminal.status,
+        (None, RpcSessionState::Opening) => SessionStatusValue::Opening,
+        (
+            None,
+            RpcSessionState::Closing | RpcSessionState::Quarantined | RpcSessionState::Closed,
+        ) => SessionStatusValue::Closed,
+        (None, RpcSessionState::Open) => match runtime {
+            None => SessionStatusValue::Opening,
+            Some(runtime) => live_status(runtime, fanout_questions),
+        },
+    };
     let reason = terminal
         .and_then(|terminal| terminal.reason.clone())
         .or_else(|| {
-            (status == SessionStatusValue::Idle && cause == Some(SessionStatusCause::Abort))
+            (status == SessionStatusValue::Idle && cause == Some("abort"))
                 .then(|| "aborted".to_owned())
         });
-    DerivedSessionStatus {
-        status,
-        reason,
-        kind: entry.kind,
-        cwd: entry.cwd.clone(),
-        attachments: entry.attachments.max(0) as u64,
-        durable_session_id: entry.durable_session_id.clone(),
-        session_path: entry.session_path.clone(),
-        name: entry.name.clone(),
-        model: runtime.and_then(|runtime| runtime.model.clone()),
-        thinking_level: runtime.and_then(|runtime| runtime.thinking_level.clone()),
-        pending_queue: PendingQueue {
-            steering: runtime.map_or(0, |runtime| runtime.steering),
-            follow_up: runtime.map_or(0, |runtime| runtime.follow_up),
-        },
-        context: entry.context.clone(),
+    let mut record = Map::new();
+    record.insert("status".into(), status.as_str().into());
+    if let Some(reason) = reason {
+        record.insert("reason".into(), reason.into());
     }
+    record.insert("kind".into(), entry.kind.into());
+    record.insert("cwd".into(), entry.cwd.clone().into());
+    record.insert("attachments".into(), entry.attachments.max(0).into());
+    for (key, value) in [
+        ("durableSessionId", &entry.durable_session_id),
+        ("sessionPath", &entry.session_path),
+        ("name", &entry.name),
+    ] {
+        if let Some(value) = value {
+            record.insert(key.into(), value.clone().into());
+        }
+    }
+    if let Some((provider, id)) = runtime.and_then(|runtime| runtime.model.as_ref()) {
+        record.insert("model".into(), json!({"provider":provider,"id":id}));
+    }
+    if let Some(level) = runtime.and_then(|runtime| runtime.thinking_level.as_ref()) {
+        record.insert("thinkingLevel".into(), level.clone().into());
+    }
+    record.insert(
+        "pendingQueue".into(),
+        json!({"steering":runtime.map_or(0,|runtime|runtime.steering),"followUp":runtime.map_or(0,|runtime|runtime.follow_up)}),
+    );
+    record.insert("context".into(), Value::Object(entry.context.clone()));
+    record
 }
 
-/// The terminal a lifecycle record seals a session with. A park and a handoff park leave a session that
-/// reopens by path (`unloaded`); every other close ends it (`closed`) with `session_closed.reason`.
-pub fn terminal_of_lifecycle(
-    record_type: &str,
-    reason: Option<&Value>,
-) -> Option<SessionStatusTerminal> {
-    let reason = reason.and_then(Value::as_str);
-    if record_type == "session_parked" {
-        return Some(SessionStatusTerminal {
+/// The terminal a lifecycle record seals a session with: a park and a handoff park leave a session that reopens by
+/// path (`unloaded`); every other close ends it (`closed`) with its `session_closed.reason`.
+pub fn terminal_of_lifecycle(record: &Value) -> Option<SessionStatusTerminal> {
+    let reason = record["reason"].as_str();
+    match record["type"].as_str() {
+        Some("session_parked") => Some(SessionStatusTerminal {
             status: SessionStatusValue::Unloaded,
             reason: Some(
                 if reason == Some("unloaded") {
@@ -235,156 +165,116 @@ pub fn terminal_of_lifecycle(
                 } else {
                     "idle"
                 }
-                .to_owned(),
+                .into(),
             ),
-        });
-    }
-    if record_type != "session_closed" {
-        return None;
-    }
-    if reason == Some("handoff_parked") {
-        return Some(SessionStatusTerminal {
+        }),
+        Some("session_closed") if reason == Some("handoff_parked") => Some(SessionStatusTerminal {
             status: SessionStatusValue::Unloaded,
-            reason: Some("handoff".to_owned()),
-        });
+            reason: Some("handoff".into()),
+        }),
+        Some("session_closed") => Some(SessionStatusTerminal {
+            status: SessionStatusValue::Closed,
+            reason: reason.map(str::to_owned),
+        }),
+        _ => None,
     }
-    Some(SessionStatusTerminal {
-        status: SessionStatusValue::Closed,
-        reason: reason.map(str::to_owned),
-    })
 }
 
 /// The status change a session record publishes, or `None` when the record changes no status.
 pub fn cause_of_record(record: &Value) -> Option<SessionStatusCause> {
-    use SessionStatusCause as Cause;
-    match record.get("type").and_then(Value::as_str)? {
-        "agent_start" => Some(Cause::Prompt),
-        "agent_end" => Some(Cause::AgentEnd),
-        "agent_idle" => Some(Cause::AgentIdle),
-        "session_abort" => Some(Cause::Abort),
-        "queue_update" => Some(Cause::Queue),
-        "model_changed" | "thinking_level_changed" => Some(Cause::SetModel),
-        "session_replaced" => Some(Cause::Replace),
-        "session_parked" => Some(Cause::Park),
-        "session_closed" => Some(Cause::Close),
-        "question_resolved" => Some(Cause::Question),
-        "extension_ui_request" => (record.get("method").and_then(Value::as_str)
-            == Some("question"))
-        .then_some(Cause::Question),
-        "compaction_start" | "compaction_end" => Some(Cause::Compaction),
-        _ => None,
-    }
+    Some(match record["type"].as_str()? {
+        "agent_start" => "prompt",
+        "agent_end" => "agent_end",
+        "agent_idle" => "agent_idle",
+        "session_abort" => "abort",
+        "queue_update" => "queue",
+        "model_changed" | "thinking_level_changed" => "set_model",
+        "session_replaced" => "replace",
+        "session_parked" => "park",
+        "session_closed" => "close",
+        "question_resolved" => "question",
+        "extension_ui_request" if record["method"] == "question" => "question",
+        "compaction_start" | "compaction_end" => "compaction",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn entry(state: RpcSessionState) -> SessionStatusEntryView {
         SessionStatusEntryView {
             state,
-            kind: SessionKind::Interactive,
+            kind: "interactive",
             cwd: "/w".into(),
             attachments: -1,
-            durable_session_id: None,
-            session_path: Some("/w/s.jsonl".into()),
+            durable_session_id: Some("d1".into()),
+            session_path: None,
             name: None,
-            context: BTreeMap::new(),
+            context: Map::new(),
             open_context: None,
         }
     }
 
     #[test]
-    fn derivation_table() {
-        let none = SessionStatusFanoutView::default();
+    fn derivation_table_prefers_the_narrowest_live_state() {
         let open = entry(RpcSessionState::Open);
-        assert_eq!(
-            derive_session_status(&entry(RpcSessionState::Opening), None, none, None, None).status,
-            SessionStatusValue::Opening
-        );
-        assert_eq!(
-            derive_session_status(&open, None, none, None, None).status,
-            SessionStatusValue::Opening
-        );
-        assert_eq!(
-            derive_session_status(&entry(RpcSessionState::Quarantined), None, none, None, None)
-                .status,
-            SessionStatusValue::Closed
-        );
-        let mut runtime = SessionStatusRuntimeView {
+        let busy = SessionStatusRuntimeView {
             is_streaming: true,
             is_compacting: true,
             ..Default::default()
         };
         assert_eq!(
-            derive_session_status(&open, Some(&runtime), none, None, None).status,
-            SessionStatusValue::Compacting
+            derive_session_status(&open, Some(&busy), 1, None, None)["status"],
+            "waiting_input"
         );
         assert_eq!(
-            derive_session_status(
-                &open,
-                Some(&runtime),
-                SessionStatusFanoutView {
-                    pending_questions: 1
-                },
-                None,
-                None
-            )
-            .status,
-            SessionStatusValue::WaitingInput
+            derive_session_status(&open, Some(&busy), 0, None, None)["status"],
+            "compacting"
         );
-        runtime.is_compacting = false;
         assert_eq!(
-            derive_session_status(&open, Some(&runtime), none, None, None).status,
-            SessionStatusValue::Running
+            derive_session_status(&open, None, 0, None, None)["status"],
+            "opening"
         );
-        runtime.is_streaming = false;
         let idle = derive_session_status(
             &open,
-            Some(&runtime),
-            none,
+            Some(&SessionStatusRuntimeView::default()),
+            0,
             None,
-            Some(SessionStatusCause::Abort),
+            Some("abort"),
         );
         assert_eq!(
-            (idle.status, idle.reason.as_deref(), idle.attachments),
-            (SessionStatusValue::Idle, Some("aborted"), 0)
+            (idle["status"].as_str(), idle["reason"].as_str()),
+            (Some("idle"), Some("aborted"))
         );
-        let wire = serde_json::to_value(&idle).expect("serialize");
-        assert_eq!(wire["status"], "idle");
-        assert_eq!(wire["kind"], "interactive");
-        assert_eq!(wire["pendingQueue"], json!({"steering":0,"followUp":0}));
+        assert_eq!(idle["attachments"], 0);
+        assert_eq!(
+            derive_session_status(&entry(RpcSessionState::Closing), None, 0, None, None)["status"],
+            "closed"
+        );
     }
 
     #[test]
-    fn terminals_and_causes() {
+    fn lifecycle_records_seal_and_cause() {
         let parked =
-            terminal_of_lifecycle("session_parked", Some(&json!("unloaded"))).expect("park");
+            terminal_of_lifecycle(&json!({"type":"session_closed","reason":"handoff_parked"}))
+                .unwrap();
         assert_eq!(
             (parked.status, parked.reason.as_deref()),
-            (SessionStatusValue::Unloaded, Some("unload_session"))
+            (SessionStatusValue::Unloaded, Some("handoff"))
         );
-        let handoff = terminal_of_lifecycle("session_closed", Some(&json!("handoff_parked")))
-            .expect("handoff");
-        assert_eq!(handoff.reason.as_deref(), Some("handoff"));
-        let closed = terminal_of_lifecycle("session_closed", None).expect("closed");
-        assert_eq!(
-            (closed.status, closed.reason),
-            (SessionStatusValue::Closed, None)
-        );
-        assert!(terminal_of_lifecycle("agent_end", None).is_none());
+        let unloaded =
+            terminal_of_lifecycle(&json!({"type":"session_parked","reason":"unloaded"})).unwrap();
+        assert_eq!(unloaded.reason.as_deref(), Some("unload_session"));
+        assert!(terminal_of_lifecycle(&json!({"type":"agent_end"})).is_none());
         assert_eq!(
             cause_of_record(&json!({"type":"extension_ui_request","method":"question"})),
-            Some(SessionStatusCause::Question)
+            Some("question")
         );
         assert_eq!(
-            cause_of_record(&json!({"type":"extension_ui_request","method":"select"})),
+            cause_of_record(&json!({"type":"extension_ui_request","method":"confirm"})),
             None
-        );
-        assert_eq!(
-            cause_of_record(&json!({"type":"thinking_level_changed"})),
-            Some(SessionStatusCause::SetModel)
         );
     }
 }

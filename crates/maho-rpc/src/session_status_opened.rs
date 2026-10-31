@@ -1,9 +1,17 @@
 //! The `session_opened` record: the first lifecycle record of every session a host creates
 //! (senpi `rpc/session-status-opened.ts`).
 use crate::jsonl::serialize_json_line;
-use crate::session_status::{PublishedSessionContext, session_kind_name};
+use crate::session_status::PublishedSessionContext;
 use maho_ext_api::SessionKind;
 use serde::Serialize;
+
+/// A session kind as its wire string (`interactive` or `worker`).
+pub fn session_kind_name(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Interactive => "interactive",
+        SessionKind::Worker => "worker",
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SessionOpenedRecord {
