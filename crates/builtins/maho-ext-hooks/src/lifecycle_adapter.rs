@@ -4,10 +4,12 @@ use crate::types::{HookDiagnostic,Severity};
 use crate::diagnostics::{diagnostic,DiagnosticDraft};
 #[derive(Default)]
 pub struct LifecycleResultDetails {pub cancel:bool,pub contexts:Vec<String>,pub diagnostics:Vec<HookDiagnostic>,pub reason:Option<String>}
+// SAFETY-DIVERGENCE(senpi core/extensions/builtin/hooks/index.js:81-85, lifecycle-adapter.js:129-131): upstream attaches static parsed.diagnostics to Notification details; mhc derives lifecycle diagnostics from dispatch summaries to suppress spurious senpi.hook messages caused solely by static discovery/config warnings.
 pub fn lifecycle_result_details(event:&str,result:Option<&HookDispatchResult>)->LifecycleResultDetails {
     let Some(result)=result else {return LifecycleResultDetails::default();};
-    let mut details=LifecycleResultDetails {diagnostics:result.diagnostics.clone(),..Default::default()};
+    let mut details=LifecycleResultDetails::default();
     for summary in &result.summaries {
+        details.diagnostics.extend(summary.diagnostics.iter().cloned());
         let code=summary.run.exit_code;
         if code!=Some(0)&&!(code==Some(2)&&event=="PreCompact") {details.diagnostics.push(diagnostic(DiagnosticDraft {code:"invalid_root",event:Some(event),message:format!("Hook command failed {}.",code.map(|code|format!("with exit code {code}")).unwrap_or_else(||"without an exit code".to_owned())),path:"process.exitCode".to_owned(),severity:Some(Severity::Warning)},&summary.handler.source));}
         let Ok(raw)=serde_json::from_str::<Value>(summary.run.stdout.trim()) else {continue;};let Some(raw)=raw.as_object() else {continue;};let specific=raw.get("hookSpecificOutput").and_then(Value::as_object);
@@ -72,5 +74,37 @@ mod adapter_tests {
         assert!(details.contexts.is_empty());assert!(!details.cancel);
         assert!(details.diagnostics.iter().any(|diagnostic|diagnostic.code=="invalid_root"&&diagnostic.message.contains("exit code 2")));
         assert!(!details.diagnostics.iter().any(|diagnostic|diagnostic.message.contains("SECRET")));
+    }
+    #[tokio::test]
+    async fn notification_discovery_unsupported_event_warnings_omit_lifecycle_message_without_handler_failure() {
+        let mut result=dispatch(SupportedHookEvent::Notification,"","",0).await;
+        result.diagnostics.push(diagnostic(DiagnosticDraft {
+            code:"unsupported_event",
+            event:Some("PermissionRequest"),
+            message:"Hook event PermissionRequest is not executable in builtin hooks v1.".to_owned(),
+            path:"hooks.PermissionRequest".to_owned(),
+            severity:Some(Severity::Warning),
+        },&handler(SupportedHookEvent::Notification).source));
+        let details=lifecycle_result_details("Notification",Some(&result));
+        assert!(!result.diagnostics.is_empty());
+        assert!(details.diagnostics.is_empty());
+        assert!(lifecycle_message("Notification",&details,None).is_none());
+
+        let failed=dispatch(SupportedHookEvent::Notification,"","hook failed",1).await;
+        let failed_details=lifecycle_result_details("Notification",Some(&failed));
+        assert!(failed_details.diagnostics.iter().any(|d|d.code=="invalid_root"&&d.path=="process.exitCode"));
+        assert!(lifecycle_message("Notification",&failed_details,None).is_some());
+
+        let mut parse_failed=dispatch(SupportedHookEvent::Notification,"","",0).await;
+        parse_failed.summaries[0].diagnostics.push(diagnostic(DiagnosticDraft {
+            code:"invalid_root",
+            event:Some("Notification"),
+            message:"Hook stdout is not an object.".to_owned(),
+            path:"stdout".to_owned(),
+            severity:Some(Severity::Warning),
+        },&handler(SupportedHookEvent::Notification).source));
+        let parse_failed_details=lifecycle_result_details("Notification",Some(&parse_failed));
+        assert!(parse_failed_details.diagnostics.iter().any(|d|d.code=="invalid_root"&&d.path=="stdout"));
+        assert!(lifecycle_message("Notification",&parse_failed_details,None).is_some());
     }
 }
