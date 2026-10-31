@@ -30,13 +30,24 @@ pub fn session_counts(reply: &Value) -> HostSessionCounts {
     }
     counts
 }
+/// The occupancy a stop decision is made on. An observing read: looking must never keep a host from idling out.
 pub async fn read_session_counts(socket: &str, include_workers: bool) -> HostSessionCounts {
-    let mut command = serde_json::json!({"type":"list_sessions"});
+    read_session_counts_within(socket, include_workers, 10000).await
+}
+async fn read_session_counts_within(
+    socket: &str,
+    include_workers: bool,
+    timeout_ms: u64,
+) -> HostSessionCounts {
+    let mut command = serde_json::json!({
+        "type": "list_sessions",
+        crate::host_observe_request::OBSERVE_REQUEST_FIELD: true,
+    });
     if include_workers {
         command["include_workers"] = true.into();
     }
     session_counts(
-        &crate::host_probe::request_on_socket(socket, &command, 10000)
+        &crate::host_probe::request_on_socket(socket, &command, timeout_ms)
             .await
             .unwrap_or(Value::Null),
     )
@@ -79,9 +90,13 @@ async fn read_host_status_in_key_root(
     timeout_ms: u64,
 ) -> std::io::Result<Value> {
     let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);
+    // Both reads observe: looking at a host must never be what keeps it from idling out.
     let answered = crate::host_probe::request_on_socket(
         socket,
-        &serde_json::json!({"type": "get_protocol_info"}),
+        &serde_json::json!({
+            "type": "get_protocol_info",
+            crate::host_observe_request::OBSERVE_REQUEST_FIELD: true,
+        }),
         timeout_ms,
     )
     .await;
@@ -115,7 +130,16 @@ async fn read_host_status_in_key_root(
         .unwrap_or_default();
     let registered = crate::host_daemon_registration::read_host_registration(&paths)?;
     let process_start_time = process_start_time_for(registered.as_ref(), current);
-    let sessions = read_session_counts(socket, include_workers).await;
+    // A socket that did not answer who it is (or is stopping) will not answer what it holds: asking again would
+    // only spend a second budget on a hung endpoint.
+    let silent_or_stopping = host.as_ref().is_none_or(|host| {
+        host.lifecycle == Some(crate::host_protocol_info::HostLifecycle::Stopping)
+    });
+    let sessions = if silent_or_stopping {
+        HostSessionCounts::default()
+    } else {
+        read_session_counts_within(socket, include_workers, timeout_ms).await
+    };
     let env_keys = crate::host_daemon_env::read_daemon_env_keys(&paths)?;
     let identity = answered.as_ref().zip(host.as_ref());
     let mut report = serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_rss_mb":metrics.host_rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer});
@@ -170,6 +194,70 @@ mod tests {
         );
         assert_eq!(session_counts(&Value::Null), HostSessionCounts::default());
         assert_eq!(host_summary(None), Value::Null);
+    }
+    /// A fake host answering every request line with `info` for `get_protocol_info` and one session otherwise; it
+    /// returns every request it received once the reader is done with it.
+    #[cfg(unix)]
+    async fn status_of_fake_host(info: Value) -> (Value, Vec<Value>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("host.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let serve = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            loop {
+                let (socket, _) = tokio::select! {
+                    accepted = listener.accept() => accepted.unwrap(),
+                    _ = &mut stopped => return seen,
+                };
+                let (read, mut write) = socket.into_split();
+                let mut lines = tokio::io::BufReader::new(read).lines();
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let data = if request["type"] == "get_protocol_info" {
+                        info.clone()
+                    } else {
+                        serde_json::json!({"sessions": [{"kind": "interactive"}]})
+                    };
+                    seen.push(request.clone());
+                    let response =
+                        serde_json::json!({"id": request["id"], "success": true, "data": data});
+                    write
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let report = read_host_status(path.to_str().unwrap(), temp.path(), false)
+            .await
+            .unwrap();
+        stop.send(()).unwrap();
+        (report, serve.await.unwrap())
+    }
+    // senpi host-status.ts: both reads observe, and a stopping host is not asked what it holds.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn status_reads_observe_and_skip_the_listing_of_a_stopping_host() {
+        let info = serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[],"instanceId":"i"});
+        let (report, seen) = status_of_fake_host(info.clone()).await;
+        assert_eq!(report["sessions"]["total"], 1);
+        assert!(
+            seen.iter()
+                .any(|request| request["type"] == "list_sessions")
+        );
+        assert!(seen.iter().all(|request| request["observe"] == true));
+        let mut stopping = info;
+        stopping["lifecycle"] = "stopping".into();
+        let (report, seen) = status_of_fake_host(stopping).await;
+        assert_eq!(report["lifecycle"], "stopping");
+        assert_eq!(report["sessions"]["total"], 0);
+        assert!(
+            seen.iter()
+                .all(|request| request["type"] == "get_protocol_info")
+        );
+        assert!(seen.iter().all(|request| request["observe"] == true));
     }
     #[tokio::test]
     async fn absent_endpoint_has_complete_nullable_status() {
