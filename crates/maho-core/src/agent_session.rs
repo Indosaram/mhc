@@ -2381,6 +2381,8 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 .clone()
                 .map(|controller| CompactionSignalBridge::new(controller, signal.clone()));
         }
+        // Each compaction abort controller is an isCompacting fact: setting one is a lifecycle edge (senpi#3980).
+        session.refresh_lifecycle();
         session.emit(AgentSessionEvent::CompactionStart {
             reason: options.reason,
             request_id: Some(request_id),
@@ -2435,7 +2437,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                     error_message: options.error_message.clone(),
                 },
             );
-            session.state().compaction_abort_controller = None;
+            session.set_compaction_abort_controller(None);
             session.state().compaction_extension_signal = None;
             session.state().compaction_signal_bridge = None;
             session.emit(AgentSessionEvent::CompactionEnd {
@@ -2538,6 +2540,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 (request_id, owns)
             };
             if owns_controller {
+                session.refresh_lifecycle();
+            }
+            if owns_controller {
                 session.emit(AgentSessionEvent::CompactionStart {
                     reason: options.reason,
                     request_id: Some(request_id.clone()),
@@ -2568,7 +2573,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                     error_message: applied.as_ref().err().cloned(),
                 },
             );
-            session.state().compaction_abort_controller = None;
+            session.set_compaction_abort_controller(None);
             session.state().compaction_extension_signal = None;
             session.state().compaction_signal_bridge = None;
             let accepted_request_id = request_id.clone();
@@ -4206,7 +4211,19 @@ impl AgentSession {
                 reload_admission: tokio::sync::Mutex::new(()),
                 binding_readiness: Mutex::new(None),
                 retry_fallback: tokio::sync::Mutex::new(None),
-                work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
+                // Work held by the barrier is a lifecycle fact: its release is an edge (senpi#3980).
+                work_barrier: Arc::new(
+                    crate::session_work_barrier::SessionWorkBarrier::with_on_active_change({
+                        let session_cell = session_cell.clone();
+                        Arc::new(move || {
+                            if let Some(inner) =
+                                session_cell.get().and_then(std::sync::Weak::upgrade)
+                            {
+                                AgentSession { inner }.refresh_lifecycle();
+                            }
+                        })
+                    }),
+                ),
                 relocation_host: Mutex::new(None),
                 tool_barrier: crate::session_work_barrier::ToolBarrier::new({
                     let session_cell = session_cell.clone();
@@ -7465,6 +7482,45 @@ impl AgentSession {
         AutoCompactionOwnerGuard(self)
     }
 
+    /// senpi `set _compactionAbortController`: an abort controller is an isCompacting fact, so setting or clearing
+    /// one is a lifecycle edge (senpi#3980).
+    fn set_compaction_abort_controller(
+        &self,
+        controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
+    ) {
+        let changed = {
+            let mut state = self.state();
+            let same = match (&state.compaction_abort_controller, &controller) {
+                (Some(current), Some(next)) => current.same(next),
+                (None, None) => true,
+                _ => false,
+            };
+            state.compaction_abort_controller = controller;
+            !same
+        };
+        if changed {
+            self.refresh_lifecycle();
+        }
+    }
+
+    /// senpi `set _branchSummaryAbortController`: only the end of a tree navigation is a lifecycle edge; a record
+    /// written while it runs would become the leaf under it (senpi#4120).
+    fn set_branch_summary_abort_controller(
+        &self,
+        controller: Option<maho_ai::utils::abort::AbortController>,
+    ) {
+        let cleared = controller.is_none();
+        let changed = {
+            let mut state = self.state();
+            let changed = state.branch_summary_abort_controller.is_some() || !cleared;
+            state.branch_summary_abort_controller = controller;
+            changed
+        };
+        if cleared && changed {
+            self.refresh_lifecycle();
+        }
+    }
+
     pub fn is_retrying(&self) -> bool {
         self.state().retry_attempt > 0
     }
@@ -7699,7 +7755,7 @@ impl AgentSession {
         let signal = controller.signal();
         let extension_signal = maho_ext_api::AbortSignal::default();
         self.state().compaction_extension_signal = Some(extension_signal.clone());
-        self.state().compaction_abort_controller = Some(controller.clone());
+        self.set_compaction_abort_controller(Some(controller.clone()));
         let compact_reason = if reason == "manual" {
             maho_ext_api::CompactionReason::Manual
         } else if reason == "overflow" {
@@ -8001,7 +8057,7 @@ impl AgentSession {
         if !owns_terminal {
             return execution;
         }
-        self.state().compaction_abort_controller = None;
+        self.set_compaction_abort_controller(None);
         self.state().compaction_extension_signal = None;
         self.state().compaction_signal_bridge = None;
         match &execution {
@@ -11574,7 +11630,7 @@ impl AgentSession {
         // Only the end of a tree navigation is a lifecycle edge: a record written while it runs would become the leaf
         // under it (senpi#4120). It is session work: a prompt, tick or delivery arriving meanwhile waits for it
         // instead of starting a run on the leaf it is moving (senpi#4154).
-        self.state().branch_summary_abort_controller = Some(controller);
+        self.set_branch_summary_abort_controller(Some(controller));
         let session_work = self.work_barrier.begin();
         let signal = maho_ext_api::AbortSignal::default();
         let hook_signal = signal.clone();
@@ -11759,10 +11815,10 @@ impl AgentSession {
             })
         }
         .await;
-        // The navigation's two busy facts end together, then raise the one lifecycle edge (senpi#4154).
+        // The navigation's two busy facts end together, then raise the one lifecycle edge (senpi#4154): the
+        // controller clears silently while the barrier still holds, and the barrier's release is the edge.
         self.state().branch_summary_abort_controller = None;
         session_work.finish();
-        self.refresh_lifecycle();
         result
     }
 
@@ -34994,6 +35050,39 @@ mod tests {
             error_message: None,
         });
         assert!(!session.is_compacting());
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+    }
+
+    /// senpi test/suite/regressions/3980-lifecycle-compaction-edges.test.ts: releasing the session-work barrier,
+    /// and setting or clearing a compaction abort controller, are lifecycle edges; the getter never recomputes, so
+    /// without them the state a client reads would stay stale.
+    #[tokio::test]
+    async fn work_barrier_release_and_compaction_controllers_raise_lifecycle_edges() {
+        let session = test_session();
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        let guard = session.work_barrier.begin();
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "running");
+        drop(guard);
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+
+        let controller = crate::compaction::lifecycle::CompactionAbortController::new();
+        session.set_compaction_abort_controller(Some(controller.clone()));
+        assert_eq!(session.lifecycle_snapshot()["state"], "running");
+        session.set_compaction_abort_controller(None);
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+
+        // Only the end of a branch summary is an edge: setting it writes nothing, clearing it settles.
+        let records = lifecycle_record_count(&session);
+        session.set_branch_summary_abort_controller(Some(
+            maho_ai::utils::abort::AbortController::new(),
+        ));
+        assert_eq!(session.lifecycle_snapshot()["state"], "done");
+        assert_eq!(lifecycle_record_count(&session), records);
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "running");
+        session.set_branch_summary_abort_controller(None);
         assert_eq!(session.lifecycle_snapshot()["state"], "done");
     }
 
