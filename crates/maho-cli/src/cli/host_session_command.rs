@@ -267,9 +267,25 @@ fn emit(payload: &serde_json::Value) -> Result<(), String> {
 }
 
 fn usage(reason: &str, detail: &str) -> Result<i32, String> {
+    usage_to(
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+        reason,
+        detail,
+    )
+}
+
+/// senpi `usage`: the detail and the help on stderr, then exactly one JSON line on stdout.
+fn usage_to(
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    reason: &str,
+    detail: &str,
+) -> Result<i32, String> {
     let help = USAGE.replace("{app}", &maho_core::config::app_name());
-    writeln!(std::io::stderr().lock(), "{detail}\n{help}").map_err(|error| error.to_string())?;
-    emit(&serde_json::json!({ "action": "error", "reason": reason, "detail": detail }))?;
+    writeln!(stderr, "{detail}\n{help}").map_err(|error| error.to_string())?;
+    let payload = serde_json::json!({ "action": "error", "reason": reason, "detail": detail });
+    writeln!(stdout, "{payload}").map_err(|error| error.to_string())?;
     Ok(HOST_EXIT_USAGE)
 }
 
@@ -370,8 +386,10 @@ pub async fn run_host_session_command(args: &[String]) -> Result<i32, String> {
     };
     let agent_dir = PathBuf::from(maho_core::config::get_agent_dir());
     let socket = super::host_command::resolve_host_socket(parsed.socket.as_deref(), &agent_dir);
+    // An explicit root is resolved against the cwd, as upstream `resolve(keyRoot)`.
+    let explicit_root = parsed.key_root.as_deref().map(resolve);
     let key_root = maho_rpc::host_probe::rpc_key_root(
-        parsed.key_root.as_deref().map(Path::new),
+        explicit_root.as_deref().map(Path::new),
         Some(&agent_dir),
     );
     let request = HostSessionRequest {
@@ -554,6 +572,30 @@ mod tests {
                 children: UnloadChildren::Detach,
             }
         );
+    }
+
+    #[test]
+    fn returns_usage_with_one_stdout_json_line_and_stderr_help() {
+        let detail = parse_host_session_args(&[]).unwrap_err();
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        assert_eq!(
+            usage_to(&mut stdout, &mut stderr, "usage", &detail),
+            Ok(HOST_EXIT_USAGE)
+        );
+        let stdout = String::from_utf8(stdout).unwrap();
+        assert_eq!(stdout.lines().count(), 1);
+        let line: serde_json::Value = serde_json::from_str(stdout.trim_end()).unwrap();
+        assert_eq!(line["action"], "error");
+        assert_eq!(line["reason"], "usage");
+        assert!(String::from_utf8(stderr).unwrap().contains("usage:"));
+    }
+
+    #[test]
+    fn an_explicit_key_root_is_made_absolute() {
+        let parsed = parse(&["list", "--rpc-key-root", "relative-keys"]);
+        let resolved = resolve(parsed.key_root.as_deref().unwrap());
+        assert!(Path::new(&resolved).is_absolute());
+        assert!(resolved.ends_with("relative-keys"));
     }
 
     #[test]
