@@ -17,6 +17,7 @@
 use crate::cdp::{CdpClient, Event, Subscription};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -98,6 +99,8 @@ impl NetworkEntry {
 /// A text matcher (`string` = substring, or a predicate standing in for a `RegExp`).
 pub enum TextMatch {
     Contains(String),
+    /// Runs on the CDP reader thread under the client lock when used in [`SnoopOptions::matcher`]:
+    /// it must not call the client or block.
     Test(Box<dyn Fn(&str) -> bool + Send + Sync>),
 }
 
@@ -130,6 +133,8 @@ pub enum EntryMatch {
     #[default]
     All,
     Descriptor(MatchDescriptor),
+    /// Runs on the CDP reader thread under the client lock when used in [`SnoopOptions::matcher`]:
+    /// it must not call the client or block.
     Predicate(Box<dyn Fn(&NetworkEntry) -> bool + Send + Sync>),
 }
 
@@ -174,6 +179,8 @@ impl EntryMatch {
 
 /// `createNetworkSnoop` options.
 pub struct SnoopOptions {
+    /// Tested as each request finishes, on the CDP reader thread under the client lock: its
+    /// predicates must not call the client or block.
     pub matcher: EntryMatch,
     pub bodies: bool,
     pub max_entries: usize,
@@ -380,7 +387,9 @@ impl NetworkSnoop {
             if event.session_id.as_deref() == Some(session.as_str())
                 && HANDLED_METHODS.contains(&event.method.as_str())
             {
-                lock(&folded).fold(event);
+                // A panicking user predicate drops this event instead of unwinding the reader
+                // thread (upstream `enqueue` catches per task); `lock` recovers the poisoned core.
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| lock(&folded).fold(event)));
             }
             false
         });
@@ -861,6 +870,27 @@ mod tests {
         );
         let ids: Vec<String> = snoop.pop().into_iter().map(|e| e.request_id).collect();
         assert_eq!(ids, ["r1"]);
+    }
+
+    #[test]
+    fn a_panicking_predicate_drops_that_event_and_later_requests_are_still_recorded() {
+        let (cdp, _) = fake();
+        let mut snoop = snoop(
+            &cdp,
+            SnoopOptions {
+                matcher: EntryMatch::Predicate(Box::new(|entry: &NetworkEntry| {
+                    assert_ne!(entry.request_id, "boom", "user predicate panics");
+                    true
+                })),
+                bodies: false,
+                ..SnoopOptions::default()
+            },
+        );
+        round_trip(&cdp, "r1", Req::default());
+        round_trip(&cdp, "boom", Req::default());
+        round_trip(&cdp, "r2", Req::default());
+        let ids: Vec<String> = snoop.pop().into_iter().map(|e| e.request_id).collect();
+        assert_eq!(ids, ["r1", "r2"]);
     }
 
     #[test]
