@@ -1,8 +1,8 @@
 //! Port of senpi `anthropic-subscription/auth-block-recovery.ts` (pin 903b8336).
 //!
-//! deviation: the Rust `AccountSlot` does not carry `authRecoveryGrant`; the grant lives only on the
-//! stored account JSON, so recovery reads and writes it there. Behaviour is unchanged: the store is
-//! the only place the upstream field is persisted.
+//! `AccountSlot.auth_recovery_grant` carries the grant (senpi#2926). Recovery rewrites the stored
+//! account inside one store `modify`, so it reads and writes `authRecoveryGrant` on that stored JSON,
+//! which is the same field the slot deserializes.
 use crate::accounts::{AccountSlot, AccountSource};
 use maho_ai::auth::types::{Credential, CredentialStore, OAuthCredential};
 use maho_ai::utils::abort::AbortSignal;
