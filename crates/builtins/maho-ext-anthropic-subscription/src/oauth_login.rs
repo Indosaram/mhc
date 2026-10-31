@@ -160,6 +160,7 @@ fn to_slot(credential: OAuthCredential, name: String, source: AccountSource) -> 
         source,
         blocked_until: None,
         block_reason: None,
+        ..Default::default()
     }
 }
 
@@ -172,7 +173,9 @@ pub(crate) fn merge_login(
     let previous = list_accounts(before, None)?;
     let mut current = match current {
         Some(Credential::OAuth(current)) => current,
-        Some(Credential::ApiKey(_)) => anyhow::bail!("Provider account management requires an OAuth credential"),
+        Some(Credential::ApiKey(_)) => {
+            anyhow::bail!("Provider account management requires an OAuth credential")
+        }
         None => empty_credential(),
     };
     for slot in list_accounts(&logged, None)? {
@@ -206,13 +209,11 @@ impl OAuthAuth for AnthropicSubscriptionOAuth {
         &self,
         interaction: &ProviderAuthInteraction,
     ) -> anyhow::Result<OAuthCredential> {
-        let current = match self
-            .store
-            .read(crate::auth_lane::PROVIDER_ID, None)
-            .await?
-        {
+        let current = match self.store.read(crate::auth_lane::PROVIDER_ID, None).await? {
             Some(Credential::OAuth(current)) => current,
-            Some(Credential::ApiKey(_)) => anyhow::bail!("Provider account management requires an OAuth credential"),
+            Some(Credential::ApiKey(_)) => {
+                anyhow::bail!("Provider account management requires an OAuth credential")
+            }
             None => empty_credential(),
         };
         let existing = list_accounts(&current, None)?;
@@ -305,33 +306,82 @@ mod tests {
 
     #[test]
     fn login_merge_preserves_latest_siblings_pinning_and_provider_metadata() {
-        let before = add_account(&empty_credential(), to_slot(OAuthCredential::new("old", "r", 1.0), "default".into(), AccountSource::Login)).expect("initial slot");
-        let mut sibling = to_slot(OAuthCredential::new("sibling", "r", 2.0), "work".into(), AccountSource::Import);
+        let before = add_account(
+            &empty_credential(),
+            to_slot(
+                OAuthCredential::new("old", "r", 1.0),
+                "default".into(),
+                AccountSource::Login,
+            ),
+        )
+        .expect("initial slot");
+        let mut sibling = to_slot(
+            OAuthCredential::new("sibling", "r", 2.0),
+            "work".into(),
+            AccountSource::Import,
+        );
         sibling.display_name = Some("Work".into());
         sibling.block_reason = Some("rate_limit".into());
         sibling.blocked_until = Some(500.0);
-        let current = add_account(&before, sibling.clone()).expect("concurrent sibling")
+        let current = add_account(&before, sibling.clone())
+            .expect("concurrent sibling")
             .with_extra("pinned", serde_json::json!("work"))
             .with_extra("providerMetadata", serde_json::json!({"revision": 2}));
-        let logged = upsert_account(&before, to_slot(OAuthCredential::new("fresh", "rotated", 1000.0), "default".into(), AccountSource::Login)).expect("login result");
+        let logged = upsert_account(
+            &before,
+            to_slot(
+                OAuthCredential::new("fresh", "rotated", 1000.0),
+                "default".into(),
+                AccountSource::Login,
+            ),
+        )
+        .expect("login result");
 
-        let merged = merge_login(Some(Credential::OAuth(current.clone())), &before, logged).expect("merge");
+        let merged =
+            merge_login(Some(Credential::OAuth(current.clone())), &before, logged).expect("merge");
 
         let accounts = list_accounts(&merged, None).expect("accounts");
         assert_eq!(accounts[0].access, "fresh");
         assert_eq!(accounts[1], sibling);
         assert_eq!(merged.get_extra_str("pinned"), Some("work"));
-        assert_eq!(merged.get_extra("providerMetadata"), current.get_extra("providerMetadata"));
+        assert_eq!(
+            merged.get_extra("providerMetadata"),
+            current.get_extra("providerMetadata")
+        );
         crate::accounts::assert_sentinel_invariant(&merged).expect("sentinel");
     }
 
     #[test]
     fn login_merge_does_not_restore_a_removed_unchanged_slot() {
-        let before = add_account(&empty_credential(), to_slot(OAuthCredential::new("old", "r", 1.0), "default".into(), AccountSource::Login)).expect("initial slot");
-        let logged = add_account(&before, to_slot(OAuthCredential::new("new", "r", 2.0), "work".into(), AccountSource::Login)).expect("login result");
+        let before = add_account(
+            &empty_credential(),
+            to_slot(
+                OAuthCredential::new("old", "r", 1.0),
+                "default".into(),
+                AccountSource::Login,
+            ),
+        )
+        .expect("initial slot");
+        let logged = add_account(
+            &before,
+            to_slot(
+                OAuthCredential::new("new", "r", 2.0),
+                "work".into(),
+                AccountSource::Login,
+            ),
+        )
+        .expect("login result");
 
-        let merged = merge_login(Some(Credential::OAuth(empty_credential())), &before, logged).expect("merge");
+        let merged = merge_login(Some(Credential::OAuth(empty_credential())), &before, logged)
+            .expect("merge");
 
-        assert_eq!(list_accounts(&merged, None).expect("accounts").iter().map(|slot| slot.name.as_str()).collect::<Vec<_>>(), ["work"]);
+        assert_eq!(
+            list_accounts(&merged, None)
+                .expect("accounts")
+                .iter()
+                .map(|slot| slot.name.as_str())
+                .collect::<Vec<_>>(),
+            ["work"]
+        );
     }
 }

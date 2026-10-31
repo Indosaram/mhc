@@ -7,7 +7,7 @@ use crate::common;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use common::{create_editor, create_editor_with_theme, large_paste, paste, TestHost};
+use common::{TestHost, create_editor, create_editor_with_theme, large_paste, paste};
 use maho_tui::autocomplete::{
     ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSignal,
     AutocompleteSuggestions, MentionRange, SuggestionRequest,
@@ -24,6 +24,7 @@ const ALT_RIGHT: &str = "\x1bf";
 const ARROW_LEFT: &str = "\x1b[D";
 const ARROW_RIGHT: &str = "\x1b[C";
 const LINE_START: &str = "\x01";
+const LINE_END: &str = "\x05";
 
 fn type_text(editor: &mut Editor, text: &str) {
     for ch in text.chars() {
@@ -672,7 +673,10 @@ fn undo_after_deleting_the_first_of_two_paste_markers_restores_both_registry_ent
     let body_two = large_paste("SECOND", 12);
     paste(&mut editor, &body_one);
     paste(&mut editor, &body_two);
-    assert_eq!(editor.get_text(), "[paste #1 +12 lines][paste #2 +12 lines]");
+    assert_eq!(
+        editor.get_text(),
+        "[paste #1 +12 lines][paste #2 +12 lines]"
+    );
 
     editor.handle_editor_input(LINE_START);
     editor.handle_editor_input(FORWARD_DELETE);
@@ -680,7 +684,10 @@ fn undo_after_deleting_the_first_of_two_paste_markers_restores_both_registry_ent
     assert_eq!(editor.get_expanded_text(), body_two);
 
     editor.handle_editor_input(UNDO);
-    assert_eq!(editor.get_text(), "[paste #1 +12 lines][paste #2 +12 lines]");
+    assert_eq!(
+        editor.get_text(),
+        "[paste #1 +12 lines][paste #2 +12 lines]"
+    );
     assert_eq!(editor.get_expanded_text(), format!("{body_one}{body_two}"));
 }
 
@@ -927,6 +934,420 @@ fn keeps_paste_markers_working_alongside_image_markers() {
     assert_eq!(editor.get_expanded_text(), format!("[Image #1]{body}"));
 }
 
+#[test]
+fn restores_the_owners_attachment_payloads_when_undoing_a_marker_delete() {
+    use std::collections::BTreeMap;
+
+    let (mut editor, _host) = create_editor(30);
+    let payloads: Rc<RefCell<BTreeMap<u64, String>>> = Rc::new(RefCell::new(BTreeMap::new()));
+    let restored: Rc<RefCell<Vec<BTreeMap<u64, String>>>> = Rc::new(RefCell::new(Vec::new()));
+    let snapshot_source = payloads.clone();
+    editor.snapshot_attachment_state = Some(Box::new(move || {
+        let state: maho_tui::components::editor::AttachmentState =
+            Rc::new(snapshot_source.borrow().clone());
+        Some(state)
+    }));
+    let restore_sink = restored.clone();
+    editor.restore_attachment_state = Some(Box::new(
+        move |state: &maho_tui::components::editor::AttachmentState| {
+            let map = state
+                .downcast_ref::<BTreeMap<u64, String>>()
+                .expect("snapshot is the payload map")
+                .clone();
+            restore_sink.borrow_mut().push(map);
+        },
+    ));
+
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(1, "A".to_string());
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(2, "B".to_string());
+    editor.insert_image_marker();
+    payloads.borrow_mut().insert(3, "C".to_string());
+    editor.handle_editor_input(ARROW_LEFT);
+    editor.handle_editor_input(BACKSPACE);
+    assert_eq!(editor.get_text(), "[Image #1][Image #2]");
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "[Image #1][Image #2][Image #3]");
+    let last = restored
+        .borrow()
+        .last()
+        .cloned()
+        .expect("undo restored the payloads");
+    assert_eq!(
+        last.into_iter().collect::<Vec<_>>(),
+        vec![
+            (1, "A".to_string()),
+            (2, "B".to_string()),
+            (3, "C".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn renumbers_the_survivor_when_a_later_marker_is_backspaced() {
+    let (mut editor, _host) = create_editor(30);
+    editor.insert_image_marker();
+    type_text(&mut editor, " ");
+    editor.insert_image_marker();
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(BACKSPACE);
+
+    assert_eq!(editor.get_text(), "[Image #1] ");
+    assert_eq!(*orders.borrow(), vec![vec![1u64]]);
+}
+
+#[test]
+fn crosses_the_marker_as_one_unit_for_alt_left_alt_right_word_navigation() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "aa ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " bb");
+    assert_eq!(editor.get_text(), "aa [Image #1] bb");
+
+    editor.handle_editor_input(LINE_END);
+    editor.handle_editor_input(ALT_LEFT);
+    assert_eq!(editor.get_cursor().1, 14);
+    editor.handle_editor_input(ALT_LEFT);
+    assert_eq!(editor.get_cursor().1, 3);
+
+    editor.handle_editor_input(ALT_RIGHT);
+    assert_eq!(editor.get_cursor().1, 13);
+}
+
+fn content_lines(editor: &mut Editor, width: usize) -> Vec<String> {
+    let lines = editor.render_editor(width);
+    lines[1..lines.len() - 1]
+        .iter()
+        .map(|line| strip_terminal_sequences(line).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn wraps_the_marker_as_one_atomic_segment_and_never_breaks_at_its_inner_space() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "ab ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " cd");
+    assert_eq!(editor.get_text(), "ab [Image #1] cd");
+
+    // 13 usable columns + 1 reserved for the cursor.
+    assert_eq!(content_lines(&mut editor, 14), vec!["ab", "[Image #1] cd"]);
+}
+
+#[test]
+fn wraps_the_marker_onto_its_own_visual_line_when_it_does_not_fit() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "ab ");
+    editor.insert_image_marker();
+    type_text(&mut editor, " cd");
+
+    // 10 usable columns + 1 reserved for the cursor.
+    assert_eq!(
+        content_lines(&mut editor, 11),
+        vec!["ab", "[Image #1]", " cd"]
+    );
+}
+
+#[test]
+fn restores_marker_text_and_registry_entry_when_undoing_a_delete() {
+    let (mut editor, _host) = create_editor(30);
+    editor.insert_image_marker();
+    editor.handle_editor_input(BACKSPACE);
+    assert_eq!(editor.get_text(), "");
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "[Image #1]");
+    assert_eq!(editor.get_image_marker_state().ids, vec![1]);
+    assert_eq!(*orders.borrow(), vec![vec![1u64]]);
+}
+
+#[test]
+fn drops_the_registry_entry_when_undoing_an_insert() {
+    let (mut editor, _host) = create_editor(30);
+    type_text(&mut editor, "hi");
+    editor.insert_image_marker();
+    let orders = track_orders(&mut editor);
+
+    editor.handle_editor_input(UNDO);
+
+    assert_eq!(editor.get_text(), "hi");
+    assert!(editor.get_image_marker_state().ids.is_empty());
+    assert_eq!(*orders.borrow(), vec![Vec::<u64>::new()]);
+}
+
+// ---------- backslash+Enter newline workaround ----------
+
+fn submit_flag(editor: &mut Editor) -> Rc<RefCell<bool>> {
+    let submitted = Rc::new(RefCell::new(false));
+    let sink = submitted.clone();
+    editor.on_submit = Some(Box::new(move |_text: &str| {
+        *sink.borrow_mut() = true;
+    }));
+    submitted
+}
+
+#[test]
+fn inserts_newline_for_backslash_followed_by_lf_enter() {
+    let (mut editor, _host) = create_editor(30);
+    let submitted = submit_flag(&mut editor);
+
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\n");
+
+    assert_eq!(editor.get_text(), "\n");
+    assert!(!*submitted.borrow());
+}
+
+#[test]
+fn inserts_backslash_immediately_without_buffering() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    assert_eq!(editor.get_text(), "\\");
+}
+
+#[test]
+fn converts_standalone_backslash_to_newline_on_enter() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\r");
+    assert_eq!(editor.get_text(), "\n");
+}
+
+#[test]
+fn inserts_backslash_normally_when_followed_by_other_characters() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("x");
+    assert_eq!(editor.get_text(), "\\x");
+}
+
+#[test]
+fn does_not_trigger_newline_when_backslash_is_not_immediately_before_cursor() {
+    let (mut editor, _host) = create_editor(30);
+    let submitted = submit_flag(&mut editor);
+
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("x");
+    editor.handle_editor_input("\r");
+
+    assert!(*submitted.borrow());
+}
+
+#[test]
+fn only_removes_one_backslash_when_multiple_are_present() {
+    let (mut editor, _host) = create_editor(30);
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\\");
+    editor.handle_editor_input("\\");
+    assert_eq!(editor.get_text(), "\\\\\\");
+
+    editor.handle_editor_input("\r");
+    assert_eq!(editor.get_text(), "\\\\\n");
+}
+
+// ---------- character jump (Ctrl+]) ----------
+
+const JUMP_FORWARD: &str = "\x1d";
+const JUMP_BACKWARD: &str = "\x1b\x1d";
+
+#[test]
+fn jumps_forward_to_first_occurrence_of_character_on_same_line() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 4));
+}
+
+#[test]
+fn jumps_forward_to_next_occurrence_after_cursor() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+    for _ in 0..4 {
+        editor.handle_editor_input(ARROW_RIGHT);
+    }
+    assert_eq!(editor.get_cursor(), (0, 4));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 7));
+}
+
+#[test]
+fn jumps_forward_across_multiple_lines() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("abc\ndef\nghi");
+    editor.handle_editor_input("\x1b[A");
+    editor.handle_editor_input("\x1b[A");
+    editor.handle_editor_input(LINE_START);
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("g");
+
+    assert_eq!(editor.get_cursor(), (2, 0));
+}
+
+#[test]
+fn jumps_backward_to_first_occurrence_before_cursor_on_same_line() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    assert_eq!(editor.get_cursor(), (0, 11));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("o");
+
+    assert_eq!(editor.get_cursor(), (0, 7));
+}
+
+#[test]
+fn jumps_backward_across_multiple_lines() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("abc\ndef\nghi");
+    assert_eq!(editor.get_cursor(), (2, 3));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("a");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn does_nothing_when_character_is_not_found_forward() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("z");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn does_nothing_when_character_is_not_found_backward() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    assert_eq!(editor.get_cursor(), (0, 11));
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input("z");
+
+    assert_eq!(editor.get_cursor(), (0, 11));
+}
+
+#[test]
+fn jump_is_case_sensitive() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("Hello World");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("h");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("W");
+    assert_eq!(editor.get_cursor(), (0, 6));
+}
+
+#[test]
+fn cancels_jump_mode_when_ctrl_bracket_is_pressed_again() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input(JUMP_FORWARD);
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "ohello world");
+}
+
+#[test]
+fn cancels_jump_mode_on_escape_and_processes_the_escape() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("\x1b");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "ohello world");
+}
+
+#[test]
+fn cancels_backward_jump_mode_when_ctrl_alt_bracket_is_pressed_again() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+
+    editor.handle_editor_input(JUMP_BACKWARD);
+    editor.handle_editor_input(JUMP_BACKWARD);
+
+    editor.handle_editor_input("o");
+    assert_eq!(editor.get_text(), "hello worldo");
+}
+
+#[test]
+fn jump_searches_for_special_characters() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("foo(bar) = baz;");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("(");
+    assert_eq!(editor.get_cursor(), (0, 3));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("=");
+    assert_eq!(editor.get_cursor(), (0, 9));
+}
+
+#[test]
+fn jump_handles_empty_text_gracefully() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("x");
+
+    assert_eq!(editor.get_cursor(), (0, 0));
+}
+
+#[test]
+fn resets_last_action_when_jumping() {
+    let (mut editor, _host) = create_editor(30);
+    editor.set_text("hello world");
+    editor.handle_editor_input(LINE_START);
+
+    editor.handle_editor_input("x");
+    assert_eq!(editor.get_text(), "xhello world");
+
+    editor.handle_editor_input(JUMP_FORWARD);
+    editor.handle_editor_input("o");
+
+    editor.handle_editor_input("Y");
+    assert_eq!(editor.get_text(), "xhellYo world");
+
+    editor.handle_editor_input(UNDO);
+    assert_eq!(editor.get_text(), "xhello world");
+}
+
 // ---------- mention highlight ----------
 
 fn mention_provider() -> Rc<RefCell<dyn AutocompleteProvider>> {
@@ -1034,7 +1455,9 @@ fn styles_a_mention_on_every_logical_line_and_across_wrap_chunks() {
 
     let lines = editor.render_editor(12);
     assert!(
-        lines.iter().any(|line| line.contains(&styled("$debugging"))),
+        lines
+            .iter()
+            .any(|line| line.contains(&styled("$debugging"))),
         "{lines:?}"
     );
 }
@@ -1173,10 +1596,18 @@ struct DeferredRequests {
     )>,
 }
 
-fn deferred_provider(state: Rc<RefCell<DeferredRequests>>) -> Rc<RefCell<dyn AutocompleteProvider>> {
+fn deferred_provider(
+    state: Rc<RefCell<DeferredRequests>>,
+) -> Rc<RefCell<dyn AutocompleteProvider>> {
     struct DeferredProvider(Rc<RefCell<DeferredRequests>>);
     impl AutocompleteProvider for DeferredProvider {
-        fn get_suggestions(&mut self, _: &[String], _: usize, _: usize, _: bool) -> Option<AutocompleteSuggestions> {
+        fn get_suggestions(
+            &mut self,
+            _: &[String],
+            _: usize,
+            _: usize,
+            _: bool,
+        ) -> Option<AutocompleteSuggestions> {
             None
         }
 
@@ -1201,7 +1632,11 @@ fn deferred_provider(state: Rc<RefCell<DeferredRequests>>) -> Rc<RefCell<dyn Aut
             _item: &AutocompleteItem,
             _prefix: &str,
         ) -> ApplyCompletionResult {
-            ApplyCompletionResult { lines: lines.to_vec(), cursor_line, cursor_col }
+            ApplyCompletionResult {
+                lines: lines.to_vec(),
+                cursor_line,
+                cursor_col,
+            }
         }
     }
     Rc::new(RefCell::new(DeferredProvider(state)))
@@ -1229,13 +1664,23 @@ fn debounces_an_at_trigger_until_the_host_polls_past_the_deadline() {
     editor.set_autocomplete_provider(deferred_provider(state.clone()));
 
     editor.handle_editor_input("@");
-    assert_eq!(state.borrow().requests.len(), 0, "the @ request waits for the debounce");
+    assert_eq!(
+        state.borrow().requests.len(),
+        0,
+        "the @ request waits for the debounce"
+    );
 
-    assert!(editor.poll_autocomplete_at(after_debounce()), "the request is in flight");
+    assert!(
+        editor.poll_autocomplete_at(after_debounce()),
+        "the request is in flight"
+    );
     assert_eq!(state.borrow().requests.len(), 1);
     assert!(!editor.is_showing_autocomplete());
 
-    state.borrow().requests[0].1.send(file_page("@")).expect("resolve request");
+    state.borrow().requests[0]
+        .1
+        .send(file_page("@"))
+        .expect("resolve request");
     assert!(!editor.poll_autocomplete_at(after_debounce()));
     assert!(editor.is_showing_autocomplete());
 }
@@ -1249,7 +1694,10 @@ fn aborts_the_in_flight_request_and_ignores_its_stale_answer_after_another_keyst
     editor.handle_editor_input("@");
     editor.poll_autocomplete_at(after_debounce());
     editor.handle_editor_input("s");
-    assert!(state.borrow().requests[0].0.is_aborted(), "a newer keystroke aborts the walk");
+    assert!(
+        state.borrow().requests[0].0.is_aborted(),
+        "a newer keystroke aborts the walk"
+    );
 
     // The superseded request's receiver is gone, so its late answer cannot reach the editor.
     assert!(state.borrow().requests[0].1.send(file_page("@")).is_err());
@@ -1257,7 +1705,233 @@ fn aborts_the_in_flight_request_and_ignores_its_stale_answer_after_another_keyst
     assert_eq!(state.borrow().requests.len(), 2);
     assert!(!editor.is_showing_autocomplete());
 
-    state.borrow().requests[1].1.send(file_page("@s")).expect("resolve request");
+    state.borrow().requests[1]
+        .1
+        .send(file_page("@s"))
+        .expect("resolve request");
     editor.poll_autocomplete_at(after_debounce());
     assert!(editor.is_showing_autocomplete());
+}
+
+// ---------- editor-history-keybindings.test.ts ----------
+
+/// Restores the default global keybindings when the test ends (senpi's `afterEach`).
+struct DefaultKeybindingsOnDrop;
+
+impl Drop for DefaultKeybindingsOnDrop {
+    fn drop(&mut self) {
+        maho_tui::keybindings::set_keybindings(maho_tui::keybindings::KeybindingsManager::new(
+            maho_tui::keybindings::tui_keybindings(),
+            Default::default(),
+        ));
+    }
+}
+
+/// Only this test sends Ctrl+P/Ctrl+N, which are unbound by default, so installing the global
+/// bindings cannot change another test's keystrokes.
+#[test]
+fn browses_history_directly_without_first_moving_the_cursor() {
+    use maho_tui::keybindings::{KeybindingsManager, Keys, set_keybindings, tui_keybindings};
+
+    let _restore = DefaultKeybindingsOnDrop;
+    let mut user_bindings = maho_tui::keybindings::KeybindingsConfig::new();
+    user_bindings.insert(
+        "tui.editor.historyPrevious".to_string(),
+        Some(Keys::from("ctrl+p")),
+    );
+    user_bindings.insert(
+        "tui.editor.historyNext".to_string(),
+        Some(Keys::from("ctrl+n")),
+    );
+    set_keybindings(KeybindingsManager::new(tui_keybindings(), user_bindings));
+
+    let (mut editor, _host) = create_editor(24);
+    editor.add_to_history("older prompt");
+    editor.add_to_history("newer\nmultiline prompt");
+    editor.set_text("draft");
+    editor.handle_editor_input(ARROW_LEFT);
+    editor.handle_editor_input(ARROW_LEFT);
+
+    editor.handle_editor_input("\x10");
+    assert_eq!(editor.get_text(), "newer\nmultiline prompt");
+    assert_eq!(editor.get_cursor(), (0, 0));
+
+    editor.handle_editor_input("\x10");
+    assert_eq!(editor.get_text(), "older prompt");
+
+    editor.handle_editor_input("\x0e");
+    assert_eq!(editor.get_text(), "newer\nmultiline prompt");
+    assert_eq!(editor.get_cursor(), (1, 16));
+
+    editor.handle_editor_input("\x0e");
+    assert_eq!(editor.get_text(), "draft");
+    assert_eq!(editor.get_cursor(), (0, 3));
+}
+
+// ---------- editor-dollar-autocomplete.test.ts ----------
+
+/// senpi's awaited provider promises become channels the test resolves; the debounce timer and
+/// the promise continuation are driven with `poll_autocomplete_at`.
+mod editor_dollar_autocomplete {
+    use super::*;
+    use maho_tui::autocomplete::{CombinedAutocompleteProvider, CommandSpec};
+
+    type Request = (String, usize, usize);
+
+    struct RecordingProvider {
+        requests: Rc<RefCell<Vec<Request>>>,
+        answers: Rc<RefCell<Vec<std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>>>>,
+        immediate: Option<AutocompleteSuggestions>,
+    }
+
+    impl AutocompleteProvider for RecordingProvider {
+        fn get_suggestions(
+            &mut self,
+            _: &[String],
+            _: usize,
+            _: usize,
+            _: bool,
+        ) -> Option<AutocompleteSuggestions> {
+            None
+        }
+
+        fn request_suggestions(
+            &mut self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            _force: bool,
+            _signal: &AutocompleteSignal,
+        ) -> SuggestionRequest {
+            self.requests.borrow_mut().push((
+                lines.get(cursor_line).cloned().unwrap_or_default(),
+                cursor_line,
+                cursor_col,
+            ));
+            if let Some(answer) = self.immediate.clone() {
+                return SuggestionRequest::Ready(Some(answer));
+            }
+            let (sender, receiver) = std::sync::mpsc::channel();
+            self.answers.borrow_mut().push(sender);
+            SuggestionRequest::Pending(receiver)
+        }
+
+        fn apply_completion(
+            &self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            _item: &AutocompleteItem,
+            _prefix: &str,
+        ) -> ApplyCompletionResult {
+            ApplyCompletionResult {
+                lines: lines.to_vec(),
+                cursor_line,
+                cursor_col,
+            }
+        }
+    }
+
+    fn debugging(prefix: &str) -> AutocompleteSuggestions {
+        AutocompleteSuggestions {
+            items: vec![AutocompleteItem {
+                value: "$debugging".to_string(),
+                label: "$debugging".to_string(),
+                description: Some("Debug runtime failures".to_string()),
+            }],
+            prefix: prefix.to_string(),
+        }
+    }
+
+    fn after_debounce() -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_secs(1)
+    }
+
+    fn editor_with(
+        immediate: Option<AutocompleteSuggestions>,
+    ) -> (
+        Editor,
+        Rc<RefCell<Vec<Request>>>,
+        Rc<RefCell<Vec<std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>>>>,
+    ) {
+        let (mut editor, _host) = create_editor(24);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let answers = Rc::new(RefCell::new(Vec::new()));
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(RecordingProvider {
+            requests: Rc::clone(&requests),
+            answers: Rc::clone(&answers),
+            immediate,
+        })));
+        (editor, requests, answers)
+    }
+
+    #[test]
+    fn requests_and_renders_suggestions_when_the_prompt_starts_with_dollar() {
+        let (mut editor, requests, _answers) = editor_with(Some(debugging("$deb")));
+        type_text(&mut editor, "$deb");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(
+            requests.borrow().last().cloned(),
+            Some(("$deb".to_string(), 0, 4))
+        );
+        assert!(editor.render_editor(80).join("\n").contains("$debugging"));
+    }
+
+    #[test]
+    fn requests_dollar_autocomplete_on_a_later_logical_line() {
+        let (mut editor, requests, _answers) = editor_with(Some(debugging("$")));
+        type_text(&mut editor, "first line");
+        editor.handle_editor_input("\x1b[13;2u");
+        type_text(&mut editor, "text $");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(
+            requests.borrow().last().cloned(),
+            Some(("text $".to_string(), 1, 6))
+        );
+        assert!(editor.render_editor(80).join("\n").contains("$debugging"));
+    }
+
+    #[test]
+    fn reopens_dollar_autocomplete_after_a_multiline_paste_and_follow_up_typing() {
+        let provider = CombinedAutocompleteProvider::new(
+            vec![CommandSpec::with_description(
+                "skill:debugging",
+                "Debug runtime failures",
+            )],
+            "/tmp",
+            None,
+        );
+        let (mut editor, _host) = create_editor(24);
+        editor.set_autocomplete_provider(Rc::new(RefCell::new(provider)));
+
+        editor.handle_editor_input("\x1b[200~first line\ntext $\x1b[201~");
+        editor.handle_editor_input("d");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(editor.get_text(), "first line\ntext $d");
+        assert!(editor.is_showing_autocomplete());
+    }
+
+    #[test]
+    fn keeps_dollar_autocomplete_responsive_while_a_previous_request_is_pending() {
+        let (mut editor, requests, answers) = editor_with(None);
+        editor.handle_editor_input("$");
+        editor.poll_autocomplete_at(after_debounce());
+        assert_eq!(requests.borrow().len(), 1);
+
+        editor.handle_editor_input("d");
+        // The first request is superseded; its late answer cannot reach the editor.
+        let _ = answers.borrow()[0].send(None);
+        editor.poll_autocomplete_at(after_debounce());
+        assert_eq!(requests.borrow().len(), 2);
+        answers.borrow()[1]
+            .send(Some(debugging("$d")))
+            .expect("resolve the second request");
+        editor.poll_autocomplete_at(after_debounce());
+
+        assert_eq!(editor.get_text(), "$d");
+        assert_eq!(requests.borrow().len(), 2);
+    }
 }

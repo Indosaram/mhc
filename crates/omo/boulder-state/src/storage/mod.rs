@@ -1,6 +1,7 @@
 mod path;
 mod plan_progress;
 mod read_state;
+mod review_artifacts;
 mod session;
 mod stale_work;
 mod task;
@@ -16,6 +17,10 @@ pub use plan_progress::{find_prometheus_plans, get_plan_name, get_plan_progress}
 pub use read_state::{
     get_active_works, get_boulder_works, get_task_session_state, get_work_by_id,
     get_work_by_plan_name, get_work_for_session, get_work_resume_options, read_boulder_state,
+};
+pub use review_artifacts::{
+    MomusReviewArtifactInput, MomusReviewVerdict, format_momus_review_artifact,
+    get_plan_reviews_dir, hash_plan_content, is_contained_plan_path, write_momus_review_artifact,
 };
 pub use session::{append_session_id, append_session_id_for_work};
 pub use stale_work::{

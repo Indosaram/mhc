@@ -144,6 +144,7 @@ fn azure_model() -> Model {
 fn output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,
@@ -537,6 +538,46 @@ async fn openai_responses_replays_a_two_tool_call_stream() {
         .count();
     assert_eq!(tool_ends, 2, "the recorded stream carries two tool calls");
     assert_matches_golden(case, &events, &[]);
+}
+
+#[tokio::test]
+async fn openai_responses_body_outliving_the_request_timeout_still_completes() {
+    // The request timeout bounds the wait for response headers only. A stream that keeps
+    // delivering events past it (long reasoning turns) must finish, not die mid-body.
+    // Time is the behavior under test: the body is held open past the timeout on purpose.
+    const TIMEOUT_MS: u64 = 1_000;
+    let case = "ai-replay-openai-responses-basic";
+    let body = sse_fixture_bytes(case);
+    let split = find_subslice(&body, b"\n\n").expect("first frame") + 2;
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while find_subslice(&buffer, b"\r\n\r\n").is_none() {
+            let read = socket.read(&mut chunk).await.expect("read request");
+            assert!(read > 0, "request ended before its headers");
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        let header = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+        socket.write_all(header.as_bytes()).await.expect("write headers");
+        socket.write_all(&body[..split]).await.expect("write first frame");
+        socket.flush().await.expect("flush");
+        tokio::time::sleep(Duration::from_millis(TIMEOUT_MS * 3 / 2)).await;
+        socket.write_all(&body[split..]).await.expect("write rest");
+        socket.shutdown().await.expect("shutdown");
+    });
+    let model = replay_model(case, format!("http://{addr}/v1"));
+    let mut options = responses_options();
+    options.request.timeout_ms = Some(TIMEOUT_MS);
+    let events = collect(openai_responses::stream(&model, &hello_context(), Some(options))).await;
+    let last = events.last().expect("a terminal event");
+    assert!(
+        matches!(last, AssistantMessageEvent::Done { .. }),
+        "a stream still delivering past the request timeout must complete, got {last:?}"
+    );
+    server.await.expect("server");
 }
 
 #[tokio::test]

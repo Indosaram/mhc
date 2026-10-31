@@ -42,7 +42,8 @@ pub const PRE_COMMIT_HOOK_SCRIPT: &str = r##"#!/bin/sh
 # Installed by omo memory-core. Do not edit by hand - regenerated on startup.
 
 # provenance is the claim receipt the memory tool stamps (#10488); its value is always a quoted JSON string.
-ALL_KNOWN_KEYS="description read_only limit kind aliases provenance"
+# expires is the instant a file stops being projected (#11450); an unreadable value means no expiry, never a rejection.
+ALL_KNOWN_KEYS="description read_only limit kind aliases provenance expires"
 TAB=$(printf '\t')
 
 fm_value() {

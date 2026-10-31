@@ -13,6 +13,9 @@ pub trait CompletionCoordinator: Send + Sync {
     fn enqueue(&self, key: &str, source: &str, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<bool, HostError>;
     fn schedule_flush(&self);
     fn flush_soon(&self);
+    /// The idle-injection queue behind this coordinator, for non-completion sources (the
+    /// `task-status` liveness notice). `None` makes those notices steer directly.
+    fn idle_coordinator(&self) -> Option<Arc<dyn idle_injection::IdleInjectionCoordinator>> { None }
 }
 
 /// The run a completion belongs to: the engine's own reference, or the task it names.

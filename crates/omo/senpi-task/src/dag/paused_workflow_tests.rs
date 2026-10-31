@@ -137,6 +137,7 @@ fn setup_paused_run() -> PausedFixture {
         name: definition.name.clone(),
         parent_session_id: "parent-1".to_string(),
         root_session_id: "parent-1".to_string(),
+        parent_model: None,
         definition_fingerprint: "fixture".to_string(),
         definition: DagPersistedDefinition {
             key: definition.key.clone(),

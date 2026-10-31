@@ -683,6 +683,8 @@ impl Store {
             if exists {
                 tx.execute("DELETE FROM working_memory WHERE id = ?", [&id])
                     .map_err(sql_err)?;
+                tx.execute("DELETE FROM episodic_memory WHERE id = ?", [&id])
+                    .map_err(sql_err)?;
                 stats.overwritten += 1;
             } else {
                 stats.inserted += 1;
@@ -929,5 +931,36 @@ mod tests {
         assert_eq!(sha256_hex16("abc").len(), 16);
         assert_eq!(stable_memory_id("a", "b"), stable_memory_id("a", "b"));
         assert_ne!(generate_id("a", "t"), generate_id("a", "t"));
+    }
+
+    #[test]
+    fn test_import_json_force_deletes_episodic_conflict() {
+        let store = store();
+        store
+            .conn
+            .execute(
+                "INSERT INTO episodic_memory (id, content) VALUES (?1, ?2)",
+                ["ep-1", "episodic content"],
+            )
+            .expect("insert episodic");
+        let data = json!({
+            "working_memory": [{
+                "id": "ep-1",
+                "content": "new working content"
+            }]
+        });
+        let stats = store.import_json(&data, true).expect("force import");
+        assert_eq!(stats.overwritten, 1);
+        let episodic_count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM episodic_memory WHERE id = 'ep-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count episodic");
+        assert_eq!(episodic_count, 0);
+        let row = store.get("ep-1").expect("get").expect("row");
+        assert_eq!(row.content, "new working content");
     }
 }

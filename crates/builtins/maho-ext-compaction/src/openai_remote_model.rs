@@ -102,7 +102,28 @@ fn kernel_release() -> std::io::Result<String> {
         "kernel release lookup is unsupported on this platform",
     ))
 }
+/// The kernel release is read once per process: every OpenAI remote provider request builds these
+/// headers, and off Linux the lookup spawns a process. The first result, success or failure, is kept.
+fn cached_kernel_release() -> std::io::Result<&'static str> {
+    static RELEASE: std::sync::OnceLock<Result<String, (std::io::ErrorKind, String)>> = std::sync::OnceLock::new();
+    match RELEASE.get_or_init(|| kernel_release().map_err(|error| (error.kind(), error.to_string()))) {
+        Ok(release) => Ok(release.as_str()),
+        Err((kind, message)) => Err(std::io::Error::new(*kind, message.clone())),
+    }
+}
 pub fn create_live_openai_remote_compaction_headers(model: &Model, api_key: Option<&str>, additional: &BTreeMap<String, Option<String>>, session_id: Option<&str>) -> std::io::Result<Option<BTreeMap<String, String>>> {
-    let release = kernel_release()?;
+    let release = cached_kernel_release()?;
     Ok(create_openai_remote_compaction_headers(model, api_key, additional, session_id, release.trim_end()))
+}
+#[cfg(test)]
+mod kernel_release_tests {
+    #[test]
+    fn the_cached_release_is_read_once_and_reused() {
+        let first = super::cached_kernel_release().map_err(|error| error.to_string());
+        let second = super::cached_kernel_release().map_err(|error| error.to_string());
+        assert_eq!(first, second);
+        if let (Ok(first), Ok(second)) = (first, second) {
+            assert!(std::ptr::eq(first, second));
+        }
+    }
 }

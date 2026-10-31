@@ -7,7 +7,7 @@ use maho_agent::harness::session::types::{Session, SessionReader, SessionMetadat
 use maho_agent::harness::session::values::*;
 use serde_json::{Value, json};
 
-fn session() -> StorageBackedSession { StorageBackedSession::new(SessionMetadata { id: "restore".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, Arc::new(MemoryStorage::new(Default::default())), StorageBackedSessionOptions::default()) }
+fn session() -> StorageBackedSession { StorageBackedSession::new(SessionMetadata { id: "restore".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, Arc::new(MemoryStorage::new(Default::default())), StorageBackedSessionOptions::default()) }
 async fn commit(session: &dyn Session, writes: Vec<Write>) { let mutation = session.begin_mutation(&BACKGROUND_CONTEXT).await.expect("fixture mutation"); mutation.commit(writes, &BACKGROUND_CONTEXT).await.expect("fixture commit"); mutation.end(&BACKGROUND_CONTEXT).await; }
 fn configuration() -> Value { json!({"model":{"provider":"test","modelId":"model"},"thinkingLevel":"off","activeToolNames":[]}) }
 fn scope(at: &str) -> Value { json!({"at":at,"control":{"status":"running"},"settings":{"compaction":{"enabled":true,"reserveTokens":1000,"keepRecentTokens":2000},"steeringMode":"all","followUpMode":"all","toolExecution":"parallel"},"latestAssistantEntryId":null}) }

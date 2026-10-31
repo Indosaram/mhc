@@ -23,7 +23,9 @@ fn shared_skill_loader_materializes_once_at_current_runtime_cwd() {
     let loader = create_task_skill_loader(TaskSkillLoaderOptions {
         agent_dir: fixtures.join("agent"),
         home_dir: root.path().join("home"),
-        plugin_skills_dirs: vec![fixtures.join("skills")],
+        plugin_skills_dirs: Some(vec![fixtures.join("skills")]),
+        env: None,
+        logger: None,
         load_settings: None,
     });
     let manager = create_dag_manager(DagManagerOptions {
@@ -55,6 +57,7 @@ fn shared_skill_loader_materializes_once_at_current_runtime_cwd() {
         definition: definition.clone(),
         parent_session_id: "parent".into(),
         root_session_id: "root".into(),
+        parent_model: None,
     };
     manager.start(params).expect("start");
     let manifest = senpi_task::dag::skills::read_dag_skill_manifest(&store, "skills")
@@ -71,6 +74,7 @@ fn shared_skill_loader_materializes_once_at_current_runtime_cwd() {
             definition,
             parent_session_id: "parent".into(),
             root_session_id: "root".into(),
+            parent_model: None,
         })
         .expect("reuse");
     assert_eq!(

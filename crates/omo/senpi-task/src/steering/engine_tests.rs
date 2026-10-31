@@ -47,6 +47,11 @@ struct FakeHandle {
     order: Shared<Vec<String>>,
     last_text: Shared<Option<String>>,
     follow_up_gate: Option<FollowUpGate>,
+    /// The `clientMessageId` each identified input carried (`#2838 step 4`).
+    identities: Shared<Vec<String>>,
+    liveness: Shared<Option<crate::state::host_liveness::HostLivenessStatus>>,
+    /// Refuse every input with `HostSessionUnresponsiveError` (nothing sent).
+    unresponsive: Shared<bool>,
 }
 
 impl FakeHandle {
@@ -129,6 +134,31 @@ impl ManagedChildHandle for FakeHandle {
     }
     fn dispose(&self) -> Result<(), HostError> {
         Ok(())
+    }
+    fn steer_with_identity(
+        &self,
+        text: &str,
+        identity: &crate::manager::child_handle::InputIdentity,
+    ) -> Result<(), HostError> {
+        if *lock(&self.unresponsive) {
+            return Err(crate::runners::rpc_host::session_wire::host_session_unresponsive_error());
+        }
+        lock(&self.identities).push(identity.client_message_id.clone());
+        self.steer(text)
+    }
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &crate::manager::child_handle::InputIdentity,
+    ) -> Result<(), HostError> {
+        if *lock(&self.unresponsive) {
+            return Err(crate::runners::rpc_host::session_wire::host_session_unresponsive_error());
+        }
+        lock(&self.identities).push(identity.client_message_id.clone());
+        self.follow_up(text)
+    }
+    fn liveness(&self) -> Option<crate::state::host_liveness::HostLivenessStatus> {
+        *lock(&self.liveness)
     }
 }
 
@@ -1133,4 +1163,76 @@ fn revival_folds_only_reported_or_partial_positive_finite_spend() {
         assert!(revived.run_stats.is_none());
         assert_eq!(revived.run_start_epoch, record.notification.run_epoch + 1);
     }
+}
+
+/// `steering/pending-steering.ts`: a queued entry reaches the child under its own entry id.
+#[test]
+fn queued_entries_are_delivered_under_their_own_ids() {
+    let h = harness();
+    let record = h.seed_record();
+    send(&h, steer_input(&record.task_id, "first"));
+    send(&h, SendInput::new(&record.task_id, "second"));
+    let ids: Vec<String> = h
+        .load(&record.task_id)
+        .pending_steering
+        .expect("queue")
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
+    let fake = FakeHandle::new(&record.task_id, Flavor::Rpc);
+    h.set_live(&record.task_id, fake.clone());
+    h.engine.notify_started(&record.task_id).expect("notify");
+    assert_eq!(*lock(&fake.identities), ids);
+    assert_eq!(fake.order(), vec!["steer:first", "followUp:second"]);
+}
+
+/// An unresponsive session keeps the queue: the drain is skipped while liveness is not running,
+/// and an unresponsive refusal stops the drain with the entry still queued.
+#[test]
+fn an_unresponsive_session_keeps_the_queue() {
+    use crate::state::host_liveness::HostLivenessStatus;
+    let h = harness();
+    let record = h.seed_record();
+    send(&h, steer_input(&record.task_id, "first"));
+    let fake = FakeHandle::new(&record.task_id, Flavor::Rpc);
+    *lock(&fake.liveness) = Some(HostLivenessStatus::Unresponsive { since: 1 });
+    h.set_live(&record.task_id, fake.clone());
+    h.engine.notify_started(&record.task_id).expect("notify");
+    assert!(fake.steers().is_empty());
+    assert_eq!(pending_len(&h.load(&record.task_id)), 1);
+    *lock(&fake.liveness) = Some(HostLivenessStatus::Running);
+    *lock(&fake.unresponsive) = true;
+    h.engine.notify_started(&record.task_id).expect("notify");
+    assert_eq!(pending_len(&h.load(&record.task_id)), 1);
+    *lock(&fake.unresponsive) = false;
+    h.engine.notify_started(&record.task_id).expect("notify");
+    assert_eq!(fake.steers(), vec!["first"]);
+    assert_eq!(pending_len(&h.load(&record.task_id)), 0);
+}
+
+/// `steering/engine.ts`: a non-running, non-`running`-status child sends nothing and answers a
+/// retryable `unresponsive`; a running-status child would have queued instead.
+#[test]
+fn a_completed_child_whose_session_is_unresponsive_answers_retryable_unresponsive() {
+    use crate::state::host_liveness::HostLivenessStatus;
+    let h = harness();
+    let record = h.seed_record();
+    h.to_completed(&record);
+    let fake = FakeHandle::new(&record.task_id, Flavor::Rpc);
+    *lock(&fake.liveness) = Some(HostLivenessStatus::Unresponsive { since: 1 });
+    h.set_live(&record.task_id, fake.clone());
+
+    let outcome = send(&h, SendInput::new(&record.task_id, "second pass"));
+
+    let SendOutcome::Unresponsive {
+        task_id, retryable, ..
+    } = outcome
+    else {
+        panic!("expected unresponsive, got {outcome:?}");
+    };
+    assert_eq!(task_id, record.task_id);
+    assert!(retryable);
+    assert!(fake.follow_ups().is_empty());
+    assert_eq!(h.load(&record.task_id).status, TaskStatus::Completed);
+    assert_eq!(pending_len(&h.load(&record.task_id)), 0);
 }

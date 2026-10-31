@@ -27,4 +27,6 @@ fn specific_claude_release_precedes_generic_family() { assert_eq!(resolve_preset
 #[test]
 fn rolling_kimi_product_aliases_route_by_version() { assert_eq!(resolve_preset_name(model("kimi-for-coding"), P::Auto), Some(P::KimiK28)); assert_eq!(resolve_preset_name(model("kimi-for-coding-highspeed"), P::Auto), Some(P::KimiK27)); }
 #[test]
-fn swe2_atlas_prompt_routes_to_kimi_k3() { for id in ["swe-2", "devin/swe-2", "devin/swe-2-medium", "devin/swe-2-high", "devin/swe-2-max", "devin/swe-2-low", "devin/swe-2-high-lite"] { assert_eq!(resolve_preset_name(model(id), P::Auto), Some(P::KimiK3), "model id {id}"); } }
+fn swe2_served_lanes_route_to_kimi_k3() { let devin = |id| ModelMetadata { id, provider: "devin", name: None, prompt_preset: None }; for id in ["swe-2-medium", "swe-2-high", "swe-2-max", "devin/swe-2-medium", "devin/swe-2-high"] { assert_eq!(resolve_preset_name(devin(id), P::Auto), Some(P::KimiK3), "model id {id}"); } for id in ["swe-2", "swe-2-low", "swe-2-high-lite"] { assert_ne!(resolve_preset_name(devin(id), P::Auto), Some(P::KimiK3), "unserved model id {id} (senpi#2306)"); } }
+#[test]
+fn kimi_k3_1_ids_route_before_k3() { for id in ["k3.1-pro", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3-1-pro", "k3p1"] { assert_eq!(resolve_preset_name(model(id), P::Auto), Some(P::KimiK31), "model id {id}"); } assert_eq!(resolve_preset_name(ModelMetadata { id: "x", provider: "custom", name: Some("Kimi K3.1"), prompt_preset: None }, P::Auto), Some(P::KimiK31)); assert_eq!(resolve_preset_name(model("kimi-k3"), P::Auto), Some(P::KimiK3)); }

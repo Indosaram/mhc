@@ -13,6 +13,8 @@ use maho_ext_api::JsonValue;
 /// `WorkpoolAggregate` and `Kibitzer` are LATEST additions (audit checkout 20261006), selected for the
 /// recall production integration and recorded as latest, NOT pinned parity.
 pub enum IdleInjectionSource {
+    /// v5.1.52 (`task-status`): a child host's availability notice; ranked with `TaskCompletion`.
+    TaskStatus,
     TaskCompletion,
     /// Latest (`workpool-aggregate`); ranked with `TaskCompletion`.
     WorkpoolAggregate,

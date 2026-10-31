@@ -12,8 +12,9 @@ pub use maho_ai::{
     types::{ImageContent, JsonValue, ModelThinkingLevel, ThinkingLevel, Usage},
 };
 pub use maho_tools::definition::{
-    AbortSignal, ToolCall, ToolContent, ToolError, ToolExecutionMode, ToolExposure,
-    ToolPermissionParser, ToolPermissionRequest, ToolResult, ToolSessionManager,
+    AbortSignal, ToolCall, ToolContent, ToolDispatchIdentity, ToolDispatchIdentityResolver,
+    ToolDispatchOwner, ToolError, ToolExecutionMode, ToolExposure, ToolPermissionParser,
+    ToolPermissionRequest, ToolResult, ToolSessionManager,
 };
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
@@ -1169,8 +1170,17 @@ pub struct CredentialAccountSummary {
     pub source: CredentialAccountSource,
     pub blocked: bool,
     pub pinned: bool,
+    /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
+    pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+}
+
+/// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialAccountBlockedModel {
+    pub model: String,
+    pub until: i64,
 }
 
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
@@ -1441,6 +1451,36 @@ pub struct ReloadVetoDecision {
     pub cancelled: bool,
     pub reason: Option<String>,
 }
+/// senpi `UserActivityKind`: a draft keystroke in the composer or a submitted prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserActivityKind {
+    Draft,
+    Prompt,
+}
+pub type UserActivityListener = Arc<dyn Fn(UserActivityKind) + Send + Sync>;
+pub type UserActivityUnsubscribe = Box<dyn FnOnce() + Send>;
+/// Provider request prefix of the next user turn (see
+/// `ExtensionContextActions::get_prompt_cache_prefix_request`).
+#[derive(Clone, Debug)]
+pub struct PromptCachePrefixRequest {
+    pub model: Model,
+    pub context: maho_ai::types::Context,
+    pub options: maho_ai::types::SimpleStreamOptions,
+}
+#[derive(Clone, Debug, Default)]
+pub struct PromptCachePrefixRequestOptions {
+    /// Inspect composition without resolving credentials.
+    pub sizes_only: bool,
+    /// Aborting resolves the build as `Skipped`.
+    pub signal: Option<maho_ai::utils::abort::AbortSignal>,
+}
+/// Outcome of `getPromptCachePrefixRequest`.
+#[derive(Clone, Debug)]
+pub enum PromptCachePrefixResult {
+    Ready(Box<PromptCachePrefixRequest>),
+    Skipped(String),
+}
+pub const NO_PROMPT_CACHE_PREFIX_REASON: &str = "the host builds no prompt-cache prefix";
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptCacheKeepAliveSettings {
     pub enabled: bool,
@@ -1732,6 +1772,23 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings;
+    /// senpi `onUserActivity`: subscribe to host-authenticated activity; extensions cannot publish
+    /// it. `None` when the host cannot report activity.
+    fn on_user_activity(&self, _listener: UserActivityListener) -> Option<UserActivityUnsubscribe> {
+        None
+    }
+    /// senpi `getPromptCachePrefixRequest`: the provider request prefix the next user turn will
+    /// send, with an empty conversation. Hosts without a prefix builder skip.
+    fn get_prompt_cache_prefix_request(
+        &self,
+        _options: PromptCachePrefixRequestOptions,
+    ) -> ExtensionFuture<'_, PromptCachePrefixResult> {
+        Box::pin(async {
+            Ok(PromptCachePrefixResult::Skipped(
+                NO_PROMPT_CACHE_PREFIX_REASON.into(),
+            ))
+        })
+    }
     fn get_look_at_settings(&self) -> LookAtSettings;
     fn get_ask_user_settings(&self) -> AskUserSettings;
     fn get_image_settings(&self) -> ImageSettings;
@@ -2551,6 +2608,23 @@ impl ExtensionContext {
         &self,
     ) -> Result<PromptCacheKeepAliveSettings, ExtensionFailure> {
         Ok(self.actions()?.get_prompt_cache_keep_alive_settings())
+    }
+    pub fn on_user_activity(
+        &self,
+        listener: UserActivityListener,
+    ) -> Result<Option<UserActivityUnsubscribe>, ExtensionFailure> {
+        Ok(self.actions()?.on_user_activity(listener))
+    }
+    pub async fn get_prompt_cache_prefix_request(
+        &self,
+        options: PromptCachePrefixRequestOptions,
+    ) -> Result<PromptCachePrefixResult, ExtensionFailure> {
+        let result = self
+            .actions()?
+            .get_prompt_cache_prefix_request(options)
+            .await?;
+        self.actions()?;
+        Ok(result)
     }
     pub fn get_look_at_settings(&self) -> Result<LookAtSettings, ExtensionFailure> {
         Ok(self.actions()?.get_look_at_settings())
@@ -4789,6 +4863,13 @@ pub struct ExtensionRuntime {
     registration_pending: Arc<Mutex<Option<RegistrationPending>>>,
     registration_classifiers: Arc<Mutex<Vec<u64>>>,
     person_answer_pending: Arc<std::sync::atomic::AtomicBool>,
+    subscriptions: Arc<Mutex<TrackedSubscriptions>>,
+}
+/// senpi `eventBusUnsubscribers`: host subscriptions released when the runtime retires.
+#[derive(Default)]
+struct TrackedSubscriptions {
+    next_id: u64,
+    open: BTreeMap<u64, UserActivityUnsubscribe>,
 }
 #[derive(Default)]
 struct RegistrationPending {
@@ -4814,7 +4895,45 @@ impl ExtensionRuntime {
             registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))),
             registration_classifiers: Arc::default(),
             person_answer_pending: self.person_answer_pending.clone(),
+            subscriptions: self.subscriptions.clone(),
         }
+    }
+    /// senpi `trackEventBusSubscription`: ties a host subscription to this runtime's lifetime.
+    /// [`Self::invalidate`] runs every tracked unsubscribe once; the returned hook runs it early
+    /// and is a no-op afterwards. A runtime that already retired releases the subscription now.
+    pub fn track_subscription(
+        &self,
+        unsubscribe: UserActivityUnsubscribe,
+    ) -> UserActivityUnsubscribe {
+        let id = {
+            let mut tracked = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Checked under the lock: `invalidate` marks the runtime stale before it drains.
+            if self.assert_active().is_err() {
+                drop(tracked);
+                unsubscribe();
+                return Box::new(|| {});
+            }
+            let id = tracked.next_id;
+            tracked.next_id += 1;
+            tracked.open.insert(id, unsubscribe);
+            id
+        };
+        let subscriptions = Arc::downgrade(&self.subscriptions);
+        Box::new(move || {
+            let unsubscribe = subscriptions.upgrade().and_then(|subscriptions| {
+                subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .open
+                    .remove(&id)
+            });
+            if let Some(unsubscribe) = unsubscribe {
+                unsubscribe();
+            }
+        })
     }
     /// Marks that a question answer is being delivered: the `send_user_message` that follows
     /// synchronously is a person's input. The mark also lapses on the next scheduler turn.
@@ -5081,6 +5200,19 @@ impl ExtensionRuntime {
         Ok(())
     }
     pub fn invalidate(&self, message: &str) {
+        self.invalidate_state(message);
+        let released = std::mem::take(
+            &mut self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open,
+        );
+        for unsubscribe in released.into_values() {
+            unsubscribe();
+        }
+    }
+    fn invalidate_state(&self, message: &str) {
         let mut state = self
             .state
             .lock()
@@ -6881,6 +7013,22 @@ pub enum AgentSessionEvent {
         ok: bool,
         error_message: Option<String>,
     },
+    /// senpi `model_config_error` (senpi#4282): the route does not serve the model, so it is never retried or
+    /// fallen back; reported once per session and model. `error_excerpt` is at most 500 characters.
+    ModelConfigError {
+        model: String,
+        provider: String,
+        error_excerpt: String,
+    },
+    /// senpi `session_recovered` (senpi#4295): a torn session-file tail was set aside. Replayed to later subscribers
+    /// until the next prompt, so the person is told once wherever they look. `cause` is `disk_full`,
+    /// `write_failed` or `unknown`.
+    SessionRecovered {
+        cause: String,
+        backup_path: String,
+        dropped_bytes: u64,
+        notice: String,
+    },
     /// senpi `session_tool_child`: `state` is "spawned" | "exited" | "respawned"; `pid` is -1 when the child has none.
     SessionToolChild {
         state: String,
@@ -7089,5 +7237,174 @@ mod memory_reporter_tests {
         // Then
         assert!(weak.upgrade().is_none());
         assert!(runtime.memory_reporters("<memory-test>").is_empty());
+    }
+}
+
+// senpi extensions/types.ts data shapes the index.ts barrel names that had no Rust counterpart
+// (census ledger-crates-maho-ext-api rows 01-03). Handler aliases and per-tool event narrowings stay
+// TS-only; see parity.d/9720.md.
+
+/// senpi `AgentActivityOutcome`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentActivityOutcome {
+    Completed,
+    Aborted,
+    Error,
+}
+
+/// senpi `CustomEntryDraft`, `CustomMessageEntryDraft`, `ContextEditEntryDraft` and
+/// `CompactionEntryDraft`, joined as senpi `SessionBoundaryDraft` on their `type` tag.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionBoundaryDraft {
+    Custom {
+        #[serde(rename = "customType")]
+        custom_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<JsonValue>,
+    },
+    CustomMessage {
+        #[serde(rename = "customType")]
+        custom_type: String,
+        /// `string | (TextContent | ImageContent)[]`.
+        content: JsonValue,
+        display: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<JsonValue>,
+    },
+    ContextEdit {
+        #[serde(rename = "targetId")]
+        target_id: String,
+        /// `{ content } | null`.
+        replacement: Option<JsonValue>,
+    },
+    Compaction {
+        summary: String,
+        /// None creates a self-retaining compaction that keeps no preceding entries.
+        #[serde(rename = "firstKeptEntryId")]
+        first_kept_entry_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<JsonValue>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+    },
+}
+
+/// senpi `BoundaryContextPreview`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryContextPreview {
+    pub context_entries: Vec<JsonValue>,
+    pub context_messages: Vec<JsonValue>,
+    pub llm_messages: Vec<JsonValue>,
+    pub pending_messages: Vec<JsonValue>,
+    pub can_continue: bool,
+}
+
+/// senpi `BoundaryState`, the payload of `agent_before_settle`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryState {
+    pub entries: Vec<SessionBoundaryDraft>,
+    #[serde(rename = "continue")]
+    pub should_continue: bool,
+    pub context: BoundaryContextPreview,
+    pub outcome: AgentActivityOutcome,
+}
+
+/// senpi `BoundaryResult`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<SessionBoundaryDraft>>,
+    #[serde(rename = "continue", default, skip_serializing_if = "Option::is_none")]
+    pub should_continue: Option<bool>,
+}
+
+/// senpi `ToolAnnotations`: MCP-style behavior hints a tool declares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+/// senpi `KernelPreludeContribution`: the required subset of [`KernelPrelude`].
+pub type KernelPreludeContribution = KernelPrelude;
+/// senpi `ProjectTrustEventDecision`.
+pub type ProjectTrustEventDecision = TrustDecision;
+/// senpi `ExecuteToolResult<TDetails>`.
+pub type ExecuteToolResult = AgentToolResult;
+/// senpi `ExecuteToolUpdateCallback`.
+pub type ExecuteToolUpdateCallback = AgentToolUpdateCallback;
+/// senpi runner.ts `ExtensionToolHookName`, `ExtensionToolHookLifecycleStatus`,
+/// `ExtensionToolHookLifecycleEvent` and `ExtensionToolHookLifecycleObserver`.
+pub type ExtensionToolHookName = ToolHookName;
+pub type ExtensionToolHookLifecycleStatus = ToolHookStatus;
+pub type ExtensionToolHookLifecycleEvent = ToolHookLifecycleEvent;
+pub type ExtensionToolHookLifecycleObserver = Arc<dyn Fn(&ToolHookLifecycleEvent) + Send + Sync>;
+
+#[cfg(test)]
+mod boundary_draft_tests {
+    use super::*;
+
+    #[test]
+    fn boundary_drafts_and_state_keep_the_senpi_wire_shape() {
+        let drafts: Vec<SessionBoundaryDraft> = serde_json::from_value(serde_json::json!([
+            { "type": "custom", "customType": "note", "data": { "a": 1 } },
+            { "type": "custom_message", "customType": "m", "content": "hi", "display": true },
+            { "type": "context_edit", "targetId": "e1", "replacement": null },
+            { "type": "compaction", "summary": "s", "firstKeptEntryId": null }
+        ]))
+        .expect("drafts");
+        assert!(matches!(
+            &drafts[2],
+            SessionBoundaryDraft::ContextEdit {
+                replacement: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &drafts[3],
+            SessionBoundaryDraft::Compaction {
+                first_kept_entry_id: None,
+                ..
+            }
+        ));
+        let state = BoundaryState {
+            entries: drafts,
+            should_continue: false,
+            context: BoundaryContextPreview::default(),
+            outcome: AgentActivityOutcome::Aborted,
+        };
+        let wire = serde_json::to_value(&state).expect("state");
+        assert_eq!(wire["continue"], false);
+        assert_eq!(wire["outcome"], "aborted");
+        assert_eq!(wire["context"]["canContinue"], false);
+        assert_eq!(wire["entries"][0]["customType"], "note");
+        assert_eq!(
+            serde_json::to_value(BoundaryResult::default()).expect("result"),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn tool_annotations_use_camel_case_hints() {
+        let annotations: ToolAnnotations = serde_json::from_value(
+            serde_json::json!({ "readOnlyHint": true, "openWorldHint": false }),
+        )
+        .expect("annotations");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.destructive_hint, None);
+        assert_eq!(
+            serde_json::to_value(annotations).expect("wire"),
+            serde_json::json!({ "readOnlyHint": true, "openWorldHint": false })
+        );
     }
 }

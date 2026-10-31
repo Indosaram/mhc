@@ -1,5 +1,6 @@
 mod claim;
 mod concurrency;
+mod child_liveness;
 mod continue_outcome;
 mod core;
 mod facts;

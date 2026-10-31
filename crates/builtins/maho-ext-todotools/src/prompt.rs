@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Mario Zechner
 // Copyright (c) 2025-2026 Can Bölük
 // https://github.com/can1357/oh-my-pi
-pub const TODO_TOOL_DESCRIPTION:&str=r#"**Tasks referenced by verbatim content string, NEVER an auto-generated ID — no "task-1"/"task-N" exists. Pass the content text in the task field.**
+pub const TODO_TOOL_DESCRIPTION: &str = r#"**Tasks referenced by verbatim content string, NEVER an auto-generated ID — no "task-1"/"task-N" exists. Pass the content text in the task field.**
 
 On each completion the earliest still-open task (in phase order) auto-promotes to in_progress.
 Completing tasks out of phase order can move this pointer **back** to an earlier phase — expected; completed tasks are never reverted.

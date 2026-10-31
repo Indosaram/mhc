@@ -49,6 +49,7 @@ impl ModelRegistry for Registry {
 struct Ui {
     state: Arc<Mutex<ConfigLoadResult>>,
     observed: Mutex<Vec<bool>>,
+    notified: Mutex<Vec<(String, NotificationType)>>,
 }
 impl ExtensionUi for Ui {
     fn select<'a>(
@@ -75,7 +76,12 @@ impl ExtensionUi for Ui {
     ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn notify(&self, _: &str, _: NotificationType) {}
+    fn notify(&self, message: &str, kind: NotificationType) {
+        self.notified
+            .lock()
+            .expect("notifications")
+            .push((message.into(), kind));
+    }
     fn set_status(&self, _: &str, _: Option<&str>) {
         self.observed.lock().expect("observations").push(matches!(
             *self.state.lock().expect("state"),
@@ -98,36 +104,17 @@ impl ExtensionUi for Ui {
         Theme::default()
     }
 }
-#[tokio::test]
-async fn session_publishes_loaded_config_before_ui_callbacks() {
-    let temp = tempfile::tempdir().expect("temp");
-    std::fs::create_dir(temp.path().join(".pi")).expect("config directory");
-    std::fs::write(
-        temp.path().join(".pi/websearch.json"),
-        r#"{"providers":[{"provider":"duckduckgo-html"}],"auto":false}"#,
-    )
-    .expect("config");
-    let mut api = ExtensionApi::new(
-        LoadedExtension::new("pi-websearch", temp.path().into(), SourceInfo::default()),
-        ExtensionSessionProfile::default(),
-        EventBus::default(),
-        ExtensionRuntime::default(),
-    );
-    let state = register_search_lifecycle(&mut api);
-    let ui = Arc::new(Ui {
-        state: Arc::clone(&state),
-        observed: Mutex::new(Vec::new()),
-    });
-    let ctx = ExtensionContext {
-        ui: ui.clone(),
+fn context(ui: Arc<Ui>, cwd: &Path, provider: &str, api: &str) -> ExtensionContext {
+    ExtensionContext {
+        ui,
         mode: ExtensionMode::Print,
         has_ui: true,
-        cwd: temp.path().into(),
-        agent_dir: temp.path().join("agent"),
+        cwd: cwd.into(),
+        agent_dir: cwd.join("agent"),
         session_manager: Arc::new(Session),
         model_registry: Arc::new(Registry),
         model: Some(serde_json::from_value(serde_json::json!({
-            "id":"test", "name":"Test", "api":"openai-responses", "provider":"openai", "baseUrl":"https://api.openai.com/v1",
+            "id":"test", "name":"Test", "api":api, "provider":provider, "baseUrl":"https://api.openai.com/v1",
             "reasoning":false, "input":["text"], "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}, "contextWindow":1000, "maxTokens":100
         })).expect("model")),
         thinking_level: None,
@@ -150,7 +137,30 @@ async fn session_publishes_loaded_config_before_ui_callbacks() {
         logger: None,
         defer_macrotask: None,
         compaction_signal: Default::default(),
-    };
+    }
+}
+#[tokio::test]
+async fn session_publishes_loaded_config_before_ui_callbacks() {
+    let temp = tempfile::tempdir().expect("temp");
+    std::fs::create_dir(temp.path().join(".pi")).expect("config directory");
+    std::fs::write(
+        temp.path().join(".pi/websearch.json"),
+        r#"{"providers":[{"provider":"duckduckgo-html"}],"auto":false}"#,
+    )
+    .expect("config");
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("pi-websearch", temp.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let state = register_search_lifecycle(&mut api);
+    let ui = Arc::new(Ui {
+        state: Arc::clone(&state),
+        observed: Mutex::new(Vec::new()),
+        notified: Mutex::new(Vec::new()),
+    });
+    let ctx = context(ui.clone(), temp.path(), "openai", "openai-responses");
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
         sizes_only: false,
         reason: SessionReason::New,
@@ -191,4 +201,87 @@ fn registers_lifecycle_and_status_command() {
             .iter()
             .any(|command| command.name == "websearch")
     );
+}
+fn session_api(cwd: &Path) -> ExtensionApi {
+    ExtensionApi::new(
+        LoadedExtension::new("pi-websearch", cwd.into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    )
+}
+async fn start_session(api: &ExtensionApi, ctx: &ExtensionContext) {
+    let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        reason: SessionReason::New,
+        initial_model_provenance: None,
+        previous_session_file: None,
+        attended: None,
+    });
+    api.registered.handlers[&EventKind::SessionStart][0](&mut event, ctx)
+        .await
+        .expect("start");
+}
+#[tokio::test]
+async fn custom_openai_compatible_provider_without_config_reports_missing_config() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut api = session_api(temp.path());
+    let state = register_search_lifecycle(&mut api);
+    let ui = Arc::new(Ui {
+        state: Arc::clone(&state),
+        observed: Mutex::new(Vec::new()),
+        notified: Mutex::new(Vec::new()),
+    });
+    let ctx = context(ui.clone(), temp.path(), "apitopia", "openai-responses");
+    start_session(&api, &ctx).await;
+    let ConfigLoadResult::Failure { message, .. } = &*state.lock().expect("state") else {
+        panic!("expected missing config")
+    };
+    let notified = ui.notified.lock().expect("notifications");
+    assert_eq!(notified.len(), 1);
+    assert_eq!(&notified[0].0, message);
+    assert!(matches!(notified[0].1, NotificationType::Error));
+}
+#[tokio::test]
+async fn status_command_renders_provider_id_labels_and_collapses_native_ids() {
+    let temp = tempfile::tempdir().expect("temp");
+    std::fs::create_dir(temp.path().join(".pi")).expect("config directory");
+    std::fs::write(
+        temp.path().join(".pi/websearch.json"),
+        r#"{"strategy":"priority","fallback":true,"auto":true,"providers":[
+            {"id":"primary","provider":"exa","apiKey":"test-key"},
+            {"id":"backup","provider":"duckduckgo-html"},
+            {"id":"native-openai-abc123","provider":"openai","apiKey":"test-key"}]}"#,
+    )
+    .expect("config");
+    let mut api = session_api(temp.path());
+    let state = register_search_lifecycle(&mut api);
+    let ui = Arc::new(Ui {
+        state: Arc::clone(&state),
+        observed: Mutex::new(Vec::new()),
+        notified: Mutex::new(Vec::new()),
+    });
+    let ctx = context(ui.clone(), temp.path(), "local", "openai-completions");
+    start_session(&api, &ctx).await;
+    assert!(matches!(
+        &*state.lock().expect("state"),
+        ConfigLoadResult::Success { .. }
+    ));
+    let command = api
+        .registered
+        .commands
+        .iter()
+        .find(|command| command.name == "websearch")
+        .expect("status command");
+    (command.handler)("status", &ctx).await.expect("status");
+    let notified = ui.notified.lock().expect("notifications");
+    assert_eq!(notified.len(), 1);
+    assert!(matches!(notified[0].1, NotificationType::Info));
+    assert!(
+        notified[0]
+            .0
+            .contains("providers=exa/primary, duckduckgo-html/backup, openai/native"),
+        "{}",
+        notified[0].0
+    );
+    assert!(!notified[0].0.contains("primary/exa"));
 }

@@ -19,6 +19,10 @@ pub mod harness_drive_generation;
 pub mod harness_drive_lane;
 #[path = "harness_drive_progress.rs"]
 pub mod harness_drive_progress;
+#[path = "harness_drive_public.rs"]
+pub mod harness_drive_public;
+#[path = "harness_drive_reconcile.rs"]
+pub mod harness_drive_reconcile;
 #[path = "harness_drive_reducer.rs"]
 pub mod harness_drive_reducer;
 #[path = "harness_drive_restore.rs"]
@@ -29,6 +33,8 @@ pub mod harness_drive_retry;
 pub mod harness_drive_structural;
 #[path = "harness_drive_terminal.rs"]
 pub mod harness_drive_terminal;
+#[path = "harness_drive_tool_batch.rs"]
+pub mod harness_drive_tool_batch;
 #[path = "harness_drive_tools.rs"]
 pub mod harness_drive_tools;
 #[path = "harness_drive_watch.rs"]
@@ -109,6 +115,8 @@ pub mod proxy_events;
 pub mod tool_argument_purity;
 #[path = "tool_call_name_alias.rs"]
 pub mod tool_call_name_alias;
+#[path = "thrown_provider_error_boundary.rs"]
+pub mod thrown_provider_error_boundary;
 #[path = "tool_inline_is_error.rs"]
 pub mod tool_inline_is_error;
 

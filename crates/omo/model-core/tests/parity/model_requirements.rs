@@ -6,6 +6,7 @@
 
 use model_core::AGENT_MODEL_REQUIREMENTS;
 use model_core::CATEGORY_MODEL_REQUIREMENTS;
+use model_core::FABLE_55_RELEASED;
 use model_core::FallbackEntry;
 use model_core::ModelRequirement;
 use pretty_assertions::assert_eq;
@@ -41,11 +42,11 @@ fn oracle_has_gpt_5_6_sol_xhigh_as_primary() {
 }
 
 #[test]
-fn sisyphus_keeps_opus_primary_before_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle_fallbacks() {
+fn sisyphus_keeps_opus_primary_before_kimi_k3_1_pro_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle_fallbacks() {
     let sisyphus = &AGENT_MODEL_REQUIREMENTS["sisyphus"];
     let chain = &sisyphus.fallback_chain;
 
-    assert_eq!(chain.len(), 5);
+    assert_eq!(chain.len(), 6);
     assert_eq!(sisyphus.requires_any_model, Some(true));
     assert_eq!(
         chain[0],
@@ -58,23 +59,21 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle
     assert_eq!(
         chain[1],
         entry(
-            &[
-                "opencode-go",
-                "kimi-for-coding",
-                "moonshotai",
-                "opencode",
-                "bailian-coding-plan",
-                "moonshotai-cn",
-                "firmware",
-                "ollama-cloud",
-                "aihubmix",
-            ],
-            "kimi-k3",
+            &["opencode-go", "kimi-for-coding", "moonshotai", "moonshotai-cn"],
+            "kimi-k3.1-pro",
             None
         )
     );
     assert_eq!(
         chain[2],
+        entry(
+            &["opencode", "bailian-coding-plan", "firmware", "ollama-cloud", "aihubmix"],
+            "kimi-k3",
+            None
+        )
+    );
+    assert_eq!(
+        chain[3],
         entry(
             &[
                 "openai",
@@ -86,10 +85,10 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle
             Some("medium")
         )
     );
-    assert_eq!(chain[3].providers[0], "zai-coding-plan");
-    assert_eq!(chain[3].model, "glm-5.2");
-    assert_eq!(chain[4].providers[0], "opencode");
-    assert_eq!(chain[4].model, "big-pickle");
+    assert_eq!(chain[4].providers[0], "zai-coding-plan");
+    assert_eq!(chain[4].model, "glm-5.2");
+    assert_eq!(chain[5].providers[0], "opencode");
+    assert_eq!(chain[5].model, "big-pickle");
 }
 
 #[test]
@@ -163,7 +162,7 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
             Some("low")
         )
     );
-    assert_eq!(chain[1], entry(&["opencode-go"], "kimi-k3", None));
+    assert_eq!(chain[1], entry(&["opencode-go"], "kimi-k3.1-pro", None));
     assert_eq!(chain[2].model, "glm-4.6v");
     assert_eq!(
         chain[3],
@@ -181,10 +180,13 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_uses_fable_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_max() {
-    let chain = chain("prometheus");
+fn prometheus_uses_fable_5_5_once_released_then_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_1_pro_max_and_kimi_k3_max() {
+    let full_chain = chain("prometheus");
 
-    assert_eq!(chain.len(), 3);
+    // the 5.5 rung exists only once FABLE_55_RELEASED is true
+    let fable_55_rungs = usize::from(FABLE_55_RELEASED);
+    assert_eq!(full_chain.len(), fable_55_rungs + 4);
+    let chain = &full_chain[fable_55_rungs..];
     assert_eq!(
         chain[0],
         entry(
@@ -204,23 +206,22 @@ fn prometheus_uses_fable_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_max() {
     assert_eq!(
         chain[2],
         entry(
-            &[
-                "opencode-go",
-                "kimi-for-coding",
-                "moonshotai",
-                "opencode"
-            ],
-            "kimi-k3",
+            &["opencode-go", "kimi-for-coding", "moonshotai"],
+            "kimi-k3.1-pro",
             Some("max")
         )
     );
+    assert_eq!(chain[3], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
-fn metis_uses_fable_5_1_max_then_opus_5_max_then_kimi_k3_max() {
-    let chain = chain("metis");
+fn metis_uses_fable_5_5_once_released_then_5_1_max_then_opus_5_5_max_then_kimi_k3_1_pro_max_and_kimi_k3_max() {
+    let full_chain = chain("metis");
 
-    assert_eq!(chain.len(), 3);
+    // the 5.5 rung exists only once FABLE_55_RELEASED is true
+    let fable_55_rungs = usize::from(FABLE_55_RELEASED);
+    assert_eq!(full_chain.len(), fable_55_rungs + 4);
+    let chain = &full_chain[fable_55_rungs..];
     assert_eq!(
         chain[0],
         entry(
@@ -240,16 +241,12 @@ fn metis_uses_fable_5_1_max_then_opus_5_max_then_kimi_k3_max() {
     assert_eq!(
         chain[2],
         entry(
-            &[
-                "opencode-go",
-                "kimi-for-coding",
-                "moonshotai",
-                "opencode"
-            ],
-            "kimi-k3",
+            &["opencode-go", "kimi-for-coding", "moonshotai"],
+            "kimi-k3.1-pro",
             Some("max")
         )
     );
+    assert_eq!(chain[3], entry(&["opencode"], "kimi-k3", Some("max")));
 }
 
 #[test]
@@ -305,7 +302,7 @@ fn atlas_keeps_sonnet_kimi_gpt_5_6_sol_and_minimax_fallback_order() {
     assert_eq!(chain.len(), 6);
     assert_eq!(chain[0].model, "claude-sonnet-5");
     assert_eq!(chain[0].providers[0], "anthropic");
-    assert_eq!(chain[1].model, "kimi-k3");
+    assert_eq!(chain[1].model, "kimi-k3.1-pro");
     assert_eq!(chain[1].providers[0], "opencode-go");
     assert_eq!(
         chain[2],
@@ -345,7 +342,7 @@ fn sisyphus_junior_keeps_sonnet_kimi_minimax_and_big_pickle_fallbacks() {
         model_ids,
         vec![
             "claude-sonnet-5",
-            "kimi-k3",
+            "kimi-k3.1-pro",
             "gpt-5.6-sol",
             "minimax-m3",
             "MiniMax-M3",
@@ -574,7 +571,7 @@ fn visual_engineering_starts_with_argon_low() {
 }
 
 #[test]
-fn visual_engineering_follows_the_approved_4_rung_chain() {
+fn visual_engineering_follows_the_approved_5_rung_chain_with_the_gated_fable_5_5_rung_dropped() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -600,15 +597,11 @@ fn visual_engineering_follows_the_approved_4_rung_chain() {
                 Some("max")
             ),
             entry(
-                &[
-                    "kimi-for-coding",
-                    "moonshotai",
-                    "opencode-go",
-                    "opencode"
-                ],
-                "kimi-k3",
+                &["kimi-for-coding", "moonshotai", "opencode-go"],
+                "kimi-k3.1-pro",
                 Some("max")
             ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
         ]
     );
 }
@@ -735,21 +728,17 @@ fn unspecified_high_follows_the_approved_opus_first_3_rung_chain() {
                 Some("max")
             ),
             entry(
-                &[
-                    "kimi-for-coding",
-                    "moonshotai",
-                    "opencode-go",
-                    "opencode"
-                ],
-                "kimi-k3",
+                &["kimi-for-coding", "moonshotai", "opencode-go"],
+                "kimi-k3.1-pro",
                 Some("max")
             ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
         ]
     );
 }
 
 #[test]
-fn artistry_follows_the_approved_3_rung_chain() {
+fn artistry_follows_the_approved_4_rung_chain_with_the_gated_fable_5_5_rung_dropped() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
@@ -774,15 +763,11 @@ fn artistry_follows_the_approved_3_rung_chain() {
                 Some("max")
             ),
             entry(
-                &[
-                    "kimi-for-coding",
-                    "moonshotai",
-                    "opencode-go",
-                    "opencode"
-                ],
-                "kimi-k3",
+                &["kimi-for-coding", "moonshotai", "opencode-go"],
+                "kimi-k3.1-pro",
                 Some("max")
             ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
         ]
     );
 }

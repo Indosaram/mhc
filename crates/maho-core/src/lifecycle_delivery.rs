@@ -19,6 +19,7 @@ pub fn consume_lifecycle_delivery(
     active: &[Value],
     run_id: Option<&str>,
     message: &Value,
+    recovery_owner: Option<&crate::session_recovery_identity::RecoveryCarrier>,
     consumed: impl FnOnce(&str, Value) -> Result<(), String>,
 ) -> Result<Option<String>, String> {
     if message["role"] != "custom" {
@@ -40,11 +41,12 @@ pub fn consume_lifecycle_delivery(
     let id = if let Some(id) = existing.get(ticket) {
         id.clone()
     } else {
-        let e = manager.append_custom_message(
+        let e = manager.append_custom_message_with_recovery(
             message["customType"].as_str().unwrap_or_default(),
             message["content"].clone(),
             message["display"] == true,
             message.get("details").cloned(),
+            recovery_owner,
         );
         if let Some(error) = manager.last_persistence_error() {
             return Err(error.to_owned());
@@ -88,6 +90,7 @@ mod tests {
             &active,
             Some("run"),
             &message,
+            None,
             |ticket, run| {
                 assert_eq!(ticket, "t");
                 assert!(run["transcriptEntryId"].is_string());
@@ -95,9 +98,15 @@ mod tests {
             },
         )
         .expect("consume");
-        let second =
-            consume_lifecycle_delivery(&mut manager, &active, Some("run"), &message, |_, _| Ok(()))
-                .expect("replay");
+        let second = consume_lifecycle_delivery(
+            &mut manager,
+            &active,
+            Some("run"),
+            &message,
+            None,
+            |_, _| Ok(()),
+        )
+        .expect("replay");
         assert_eq!(first, second);
         assert_eq!(
             manager

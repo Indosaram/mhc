@@ -7,6 +7,7 @@ use maho_ai::types::{
     AssistantMessage, ContentBlock, StopReason, ToolResultMessage, Usage, UsageCost,
 };
 use maho_ai::utils::diagnostics::AssistantMessageDiagnostic;
+use maho_ai::utils::provider_error::sanitize_provider_error_message;
 use maho_ai::utils::stop_details::is_classifier_refusal;
 use serde_json::Value;
 
@@ -174,6 +175,12 @@ pub fn promote_stop_with_pending_tool_calls(message: AssistantMessage) -> Assist
     }
 }
 
+/// The stop reason the loop acts on; applied before `message_end` so every consumer sees the same
+/// object.
+pub fn settle_stop_reason(message: AssistantMessage) -> AssistantMessage {
+    demote_tool_use_without_tool_calls(promote_stop_with_pending_tool_calls(message))
+}
+
 pub fn should_terminate_assistant_turn(message: &AssistantMessage) -> bool {
     message.stop_reason == StopReason::Error
         || message.stop_reason == StopReason::Aborted
@@ -253,7 +260,7 @@ pub fn create_terminal_failure_assistant_message(
         }
         _ => None,
     };
-    AssistantMessage {
+    let mut message = AssistantMessage { credential_served_recently: None,
         content: partial_message
             .map(|message| message.content.clone())
             .unwrap_or_else(|| vec![ContentBlock::text("")]),
@@ -287,7 +294,7 @@ pub fn create_terminal_failure_assistant_message(
             error_message
         }),
         provider_diagnostic,
-        error_cause: partial_message.and_then(|message| message.error_cause),
+        error_cause: partial_message.and_then(|message| message.error_cause.clone()),
         abort_source,
         failure_source: None,
         raw_stop_reason: None,
@@ -296,7 +303,11 @@ pub fn create_terminal_failure_assistant_message(
         timestamp: partial_message
             .map(|message| message.timestamp)
             .unwrap_or_else(now_ms),
-    }
+    };
+    // A thrown provider error never passed the stream boundary: classify and redact it the same
+    // way (senpi#4282).
+    sanitize_provider_error_message(&mut message);
+    message
 }
 
 pub fn normalize_terminal_assistant_message(

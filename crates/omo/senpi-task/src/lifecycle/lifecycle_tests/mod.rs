@@ -3,13 +3,16 @@
 mod admission_lease;
 mod batch_admission;
 mod batch_admission_race;
+mod deferred_owner_reconcile;
 mod destroy;
 mod parity_5147;
 mod pending_cancel;
+mod provisional_exit;
 mod reconcile;
 mod reconcile_multi_session;
 mod reconcile_reattach;
 mod reconcile_revival;
+mod reconcile_startup;
 mod residency;
 mod shutdown;
 mod single_writer_audit;

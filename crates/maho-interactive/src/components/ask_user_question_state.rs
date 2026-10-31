@@ -113,9 +113,20 @@ impl AskUserQuestionState {
         }
     }
     pub fn active_question(&self) -> &Question {
-        &self.request.questions[self
-            .active_index
-            .min(self.request.questions.len().saturating_sub(1))]
+        static EMPTY: std::sync::LazyLock<Question> = std::sync::LazyLock::new(|| Question {
+            id: String::new(),
+            header: String::new(),
+            question: String::new(),
+            options: Vec::new(),
+            multi_select: false,
+        });
+        self.request
+            .questions
+            .get(
+                self.active_index
+                    .min(self.request.questions.len().saturating_sub(1)),
+            )
+            .unwrap_or(&EMPTY)
     }
     pub fn own_answer_row_index(&self) -> usize {
         self.active_question().options.len()
@@ -349,6 +360,19 @@ impl AskUserQuestionState {
 #[cfg(test)]
 mod parity_tests {
     use super::*;
+    #[test]
+    fn empty_questions_active_question_does_not_panic() {
+        let request = QuestionRequest {
+            request_id: "r".into(),
+            questions: vec![],
+            wait_for_answer: false,
+            timeout_ms: 0,
+        };
+        let state = AskUserQuestionState::new(request);
+        assert_eq!(state.active_question().id, "");
+        assert_eq!(state.own_answer_row_index(), 0);
+    }
+
     #[test]
     fn stale_non_finite_indices_and_local_resolution_are_handled() {
         let request = QuestionRequest {

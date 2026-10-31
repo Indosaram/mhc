@@ -11,12 +11,19 @@ pub fn search_details_value(details: &super::types::SearchDetails) -> Value {
     }).collect::<Vec<_>>(),"durationMs":details.duration_ms,"truncated":details.truncated});
     for (key, text) in [
         ("entryId", &details.entry_id),
+        ("model", &details.model),
         ("answer", &details.answer),
         ("error", &details.error),
     ] {
         if let Some(text) = text {
             value[key] = json!(text);
         }
+    }
+    if let Some(blocked) = details.blocked {
+        value["blocked"] = json!(blocked.as_str());
+    }
+    if let Some(seconds) = details.retry_after_seconds {
+        value["retryAfterSeconds"] = json!(seconds);
     }
     if let Some(strategy) = details.strategy {
         value["strategy"] = json!(match strategy {
@@ -29,7 +36,10 @@ pub fn search_details_value(details: &super::types::SearchDetails) -> Value {
         value["attempts"]=json!(attempts.iter().map(|attempt| {
         let mut value=json!({"provider":attempt.provider.as_str(),"durationMs":attempt.duration_ms,"resultsCount":attempt.results_count});
         if let Some(id)=&attempt.entry_id { value["entryId"]=json!(id); }
-        if let Some(error)=&attempt.error { value["error"]=json!(error); } value
+        if let Some(model)=&attempt.model { value["model"]=json!(model); }
+        if let Some(error)=&attempt.error { value["error"]=json!(error); }
+        if let Some(blocked)=attempt.blocked { value["blocked"]=json!(blocked.as_str()); }
+        if attempt.skipped { value["skipped"]=json!(true); } value
     }).collect::<Vec<_>>());
     }
     value
@@ -97,7 +107,16 @@ pub fn sync_routing_state(
         .is_none_or(|state| state.success_counts.len() != config.providers.len())
         || *key != next
     {
-        *state = Some(create_search_routing_state(config.providers.len()));
+        // Engine cooldowns outlive a provider-list change, so a blocked engine stays skipped.
+        let previous = state.take();
+        *state = Some(match previous {
+            Some(previous) => super::search::create_search_routing_state_with(
+                config.providers.len(),
+                previous.cooldowns,
+                previous.clock,
+            ),
+            None => create_search_routing_state(config.providers.len()),
+        });
         *key = next;
     }
 }
@@ -212,6 +231,14 @@ pub fn create_web_search_tool_with_registry(
                             .into(),
                     ));
                 }
+                let listed = config.providers.len();
+                let config = super::session_login_entries::config_with_session_logins(
+                    config,
+                    model.as_ref(),
+                    registry.as_ref(),
+                    Some(&call.signal),
+                )
+                .await?;
                 let config = super::native::config_with_native_routes(
                     config,
                     model.as_ref(),
@@ -219,6 +246,9 @@ pub fn create_web_search_tool_with_registry(
                     Some(&call.signal),
                 )
                 .await?;
+                if config.providers.is_empty() && listed > 0 {
+                    return Ok(error_result("No web search provider is usable: the websearch.json entries that rely on a senpi login have no matching login.".into(),None));
+                }
                 let labels: Vec<_> = config
                     .providers
                     .iter()
@@ -263,8 +293,7 @@ pub fn create_web_search_tool_with_registry(
                             truncated: false,
                             strategy: None,
                             attempts: Some(attempts.to_vec()),
-                            answer: None,
-                            error: None,
+                            ..Default::default()
                         };
                         details["attempts"] = search_details_value(&holder)["attempts"].clone();
                         update(ToolResult {
@@ -320,10 +349,12 @@ mod tests {
             strategy: RoutingStrategy::Priority,
             fallback: true,
             auto: true,
+            native_model: None,
             providers: vec![SearchProviderEntry {
                 config: SearchProviderConfig::new(SearchProvider::Exa),
                 priority: None,
                 weight: None,
+                fallback_model: None,
             }],
         }
     }
@@ -575,8 +606,7 @@ mod tests {
             truncated: false,
             strategy: Some(RoutingStrategy::RoundRobin),
             attempts: Some(vec![]),
-            answer: None,
-            error: None,
+            ..Default::default()
         };
         let value = search_details_value(&details);
         assert_eq!(value["durationMs"], 2.);
@@ -616,6 +646,29 @@ mod tests {
         config.providers[0].config.id = Some("second".into());
         sync_routing_state(&config, &mut key, &mut state);
         assert_eq!(state.unwrap().success_counts, [0]);
+    }
+    #[test]
+    fn cooldowns_survive_a_provider_list_change() {
+        let mut config = config();
+        let mut key = String::new();
+        let mut state = None;
+        sync_routing_state(&config, &mut key, &mut state);
+        let cooldown = super::super::search::EngineCooldown {
+            failures: 1,
+            until: f64::MAX,
+            reason: super::super::types::SearchBlockReason::Challenge,
+        };
+        state
+            .as_mut()
+            .unwrap()
+            .cooldowns
+            .insert("duckduckgo-html".into(), cooldown);
+        config.providers.push(config.providers[0].clone());
+        config.providers[1].config.id = Some("mojeek".into());
+        sync_routing_state(&config, &mut key, &mut state);
+        let state = state.unwrap();
+        assert_eq!(state.success_counts, [0, 0]);
+        assert_eq!(state.cooldowns.get("duckduckgo-html"), Some(&cooldown));
     }
     #[test]
     fn query_schema_and_default_limit() {

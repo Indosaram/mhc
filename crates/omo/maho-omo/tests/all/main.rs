@@ -7,6 +7,7 @@ mod entry;
 mod provisioning;
 mod reconciliation_9471;
 mod scheduler;
+mod settle_observers;
 mod support;
 mod task_coordinator;
 

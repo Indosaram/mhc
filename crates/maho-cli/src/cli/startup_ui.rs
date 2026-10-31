@@ -116,6 +116,69 @@ pub fn resolve_startup_theme_with_registered(
     Ok(StartupThemeResolution { theme: registry.current, diagnostics, load_error })
 }
 
+/// senpi `loadThemes(resources)`: every enabled resolved theme resource, first occurrence of a
+/// name wins, and a broken theme is skipped silently (the resource loader reports theme
+/// diagnostics later in startup).
+pub fn load_startup_package_themes(
+    resources: &[maho_core::package_manager::ResolvedResource],
+    mode: ColorMode,
+) -> Vec<Theme> {
+    let mut themes: Vec<Theme> = Vec::new();
+    for resource in resources.iter().filter(|resource| resource.enabled) {
+        let Ok(theme) = Theme::load_from_path(Path::new(&resource.path), mode) else {
+            continue;
+        };
+        if themes.iter().any(|known| known.name == theme.name) {
+            continue;
+        }
+        themes.push(theme);
+    }
+    themes
+}
+
+fn skip_missing_source(_source: &str) -> futures::future::BoxFuture<'_, maho_core::package_manager::MissingSourceAction> {
+    Box::pin(std::future::ready(maho_core::package_manager::MissingSourceAction::Skip))
+}
+
+/// senpi `loadStartupThemes(settingsManager)`: the package-resolved themes of the GLOBAL settings
+/// only (`SettingsManager.inMemory(getGlobalSettings(), { projectTrusted: false })`), resolved with
+/// every missing package skipped, never installed.
+pub async fn load_startup_themes(global_settings: maho_core::settings_manager::Settings, cwd: &str, agent_dir: &str, mode: ColorMode) -> Result<Vec<Theme>, String> {
+    let mut settings = maho_core::settings_manager::SettingsManager::in_memory(global_settings, false);
+    let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
+        cwd,
+        agent_dir,
+        settings_manager: &mut settings,
+    });
+    let skip: &maho_core::package_manager::MissingSourceCallback = &skip_missing_source;
+    let paths = manager.resolve(Some(skip)).await.map_err(|error| error.to_string())?;
+    Ok(load_startup_package_themes(&paths.themes, mode))
+}
+
+/// [`load_startup_themes`] for a pre-session dialog of this process. The startup dialogs are sync
+/// and may be called on a runtime thread, so the resolve runs on its own thread and runtime. The
+/// global settings are read from disk: no session exists yet to hold unsaved overrides. A failed
+/// resolve keeps the built-in themes, as upstream's later diagnostics report it.
+fn startup_package_themes() -> Vec<Theme> {
+    let agent_dir = maho_core::config::get_agent_dir();
+    let cwd = std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_owned());
+    let global = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), false).get_global().clone();
+    let mode = maho_interactive::theme::detect_color_mode();
+    let resolved = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        runtime.block_on(load_startup_themes(global, &cwd, &agent_dir, mode))
+    })
+    .join();
+    match resolved {
+        Ok(Ok(themes)) => themes,
+        Ok(Err(error)) => {
+            maho_core::output_guard::maho_write_stderr(&format!("theme: package themes: {error}\n"));
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 /// senpi `showStartupSelector`: a one-shot startup TUI holding an extension selector; resolves the
 /// chosen label, or `None` when cancelled.
 pub fn show_startup_selector(
@@ -187,6 +250,17 @@ pub(crate) fn detect_startup_theme(
     terminal: &mut maho_tui::terminal::ProcessTerminal,
     input: &std::rc::Rc<std::cell::RefCell<Vec<String>>>,
 ) -> Result<Option<Theme>, String> {
+    detect_startup_theme_with_registered(theme_setting, screen, terminal, input, Vec::new())
+}
+
+/// [`detect_startup_theme`] with the package themes `createStartupTui` registers.
+fn detect_startup_theme_with_registered(
+    theme_setting: Option<&str>,
+    screen: &mut maho_interactive::tui_renderer::InteractiveTui,
+    terminal: &mut maho_tui::terminal::ProcessTerminal,
+    input: &std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    registered: Vec<Theme>,
+) -> Result<Option<Theme>, String> {
     use maho_interactive::theme::{TerminalTheme, detection::detect_terminal_theme_for_auto, parse_auto_theme_setting};
     use maho_tui::terminal_colors::TerminalColorScheme;
     if theme_setting.is_some() && parse_auto_theme_setting(theme_setting).is_none() {
@@ -216,7 +290,7 @@ pub(crate) fn detect_startup_theme(
         std::env::var("COLORFGBG").ok().as_deref(),
     );
     let name = resolve_theme_setting(theme_setting, terminal_theme).unwrap_or_else(|| terminal_theme.name()).to_owned();
-    resolve_startup_theme(Some(name.as_str()), None).map(Some)
+    resolve_startup_theme_registered(Some(name.as_str()), None, registered).map(Some)
 }
 
 /// The shared startup-TUI lifecycle of senpi `showStartupSelector`/`showStartupInput`
@@ -234,7 +308,9 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
     use std::{cell::RefCell, rc::Rc};
     use maho_interactive::tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode};
     use maho_tui::{terminal::Terminal, tui::Component};
-    let theme = resolve_startup_theme(theme_setting, std::env::var("COLORFGBG").ok().as_deref())?;
+    // senpi `createStartupTui`: `setRegisteredThemes(await loadStartupThemes(settingsManager))`.
+    let registered = startup_package_themes();
+    let theme = resolve_startup_theme_registered(theme_setting, std::env::var("COLORFGBG").ok().as_deref(), registered.clone())?;
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
         tui_mode: TuiMode::Regular, show_hardware_cursor, bottom_shortcut: String::new(),
     }, theme.clone());
@@ -248,7 +324,7 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
     screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
-        let theme = detect_startup_theme(theme_setting, &mut screen, &mut terminal, &input)?.unwrap_or(theme);
+        let theme = detect_startup_theme_with_registered(theme_setting, &mut screen, &mut terminal, &input, registered)?.unwrap_or(theme);
         let dialog = build(&theme, usize::from(terminal.rows()));
         let component: Rc<RefCell<dyn Component>> = dialog.clone();
         screen.base_mut().add_child(component.clone());
@@ -281,11 +357,170 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
 /// Startup entry over the custom themes directory; callers holding resolved package theme
 /// resources pass them through [`resolve_startup_theme_with_registered`] instead of losing them.
 pub fn resolve_startup_theme(setting: Option<&str>, colorfgbg: Option<&str>) -> Result<Theme, String> {
+    resolve_startup_theme_registered(setting, colorfgbg, Vec::new())
+}
+
+/// [`resolve_startup_theme`] with registered (package-resolved) themes.
+fn resolve_startup_theme_registered(setting: Option<&str>, colorfgbg: Option<&str>, registered: Vec<Theme>) -> Result<Theme, String> {
     let custom_directory = PathBuf::from(crate::config::get_custom_themes_dir());
     let resolution =
-        resolve_startup_theme_with_registered(setting, colorfgbg, &custom_directory, Vec::new())?;
+        resolve_startup_theme_with_registered(setting, colorfgbg, &custom_directory, registered)?;
     for diagnostic in &resolution.diagnostics {
         eprintln!("theme: {diagnostic}");
     }
     Ok(resolution.theme)
+}
+
+/// senpi `OFFICIAL_PACKAGE_NAME`/`OFFICIAL_APP_NAME`/`OFFICIAL_CONFIG_DIR_NAME`.
+const OFFICIAL_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
+const OFFICIAL_APP_NAME: &str = "pi";
+const OFFICIAL_CONFIG_DIR_NAME: &str = ".pi";
+
+/// senpi `DistributionMetadata`.
+pub struct DistributionMetadata<'a> {
+    pub package_name: &'a str,
+    pub app_name: &'a str,
+    pub config_dir_name: &'a str,
+}
+
+fn is_official_distribution(metadata: &DistributionMetadata<'_>) -> bool {
+    metadata.package_name == OFFICIAL_PACKAGE_NAME && metadata.app_name == OFFICIAL_APP_NAME && metadata.config_dir_name == OFFICIAL_CONFIG_DIR_NAME
+}
+
+/// senpi `shouldRunFirstTimeSetup` with its inputs explicit: the official Pi distribution, experimental features on,
+/// the default agent directory (no `<PREFIX>_CODING_AGENT_DIR`), and no `settings.json` yet.
+pub fn should_run_first_time_setup_with(metadata: &DistributionMetadata<'_>, experimental: bool, agent_dir_override: Option<&str>, settings_path: &Path) -> bool {
+    is_official_distribution(metadata) && experimental && agent_dir_override.is_none_or(str::is_empty) && !settings_path.exists()
+}
+
+/// senpi `shouldRunFirstTimeSetup()` for this process. mhc and its brands are never the official Pi distribution
+/// (there is no npm `PACKAGE_NAME`; the app is the brand name), so this is always false and the first-time setup dialog
+/// (`showFirstTimeSetup`) is never shown, exactly as upstream behaves for any fork or rebrand.
+pub fn should_run_first_time_setup() -> bool {
+    let app_name = maho_core::config::app_name();
+    let config_dir_name = maho_core::config::config_dir_name();
+    let agent_dir_override = std::env::var(maho_core::config::env_agent_dir_var()).ok();
+    should_run_first_time_setup_with(
+        &DistributionMetadata { package_name: "", app_name: &app_name, config_dir_name: &config_dir_name },
+        maho_core::experimental::are_experimental_features_enabled(),
+        agent_dir_override.as_deref(),
+        Path::new(&maho_core::config::get_settings_path()),
+    )
+}
+
+#[cfg(test)]
+mod startup_theme_tests {
+    use super::*;
+    use maho_core::package_manager::{PathMetadata, ResolvedResource};
+    use maho_core::source_info::SourceScope;
+
+    fn theme_file(dir: &Path, file: &str, name: &str) -> String {
+        let source = include_str!("../../../maho-interactive/src/theme/dark.json");
+        let mut json: serde_json::Value = serde_json::from_str(source).expect("dark theme json");
+        json["name"] = serde_json::Value::String(name.to_owned());
+        let path = dir.join(file);
+        std::fs::write(&path, json.to_string()).expect("theme file");
+        path.to_string_lossy().into_owned()
+    }
+
+    fn resource(path: String, enabled: bool) -> ResolvedResource {
+        ResolvedResource {
+            path,
+            enabled,
+            metadata: PathMetadata {
+                skill_provenance: None,
+                source: "npm:themes".into(),
+                scope: SourceScope::User,
+                origin: maho_core::source_info::SourceOrigin::Package,
+                base_dir: None,
+            },
+        }
+    }
+
+    #[test]
+    fn package_themes_keep_enabled_first_named_themes_and_skip_broken_ones() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{ not json").expect("broken theme");
+        let resources = vec![
+            resource(theme_file(dir.path(), "off.json", "disabled-theme"), false),
+            resource(broken.to_string_lossy().into_owned(), true),
+            resource(theme_file(dir.path(), "a.json", "pkg-theme"), true),
+            resource(theme_file(dir.path(), "b.json", "pkg-theme"), true),
+            resource(theme_file(dir.path(), "c.json", "other-theme"), true),
+        ];
+        let themes = load_startup_package_themes(&resources, ColorMode::Truecolor);
+        let names: Vec<_> = themes.iter().map(|theme| theme.name.as_str()).collect();
+        assert_eq!(names, ["pkg-theme", "other-theme"]);
+        assert_eq!(themes[0].source_path.as_deref(), Some(dir.path().join("a.json").as_path()));
+    }
+
+    #[test]
+    fn a_registered_package_theme_is_the_startup_theme_it_names() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let themes = load_startup_package_themes(&[resource(theme_file(dir.path(), "a.json", "pkg-theme"), true)], ColorMode::Truecolor);
+        let resolution = resolve_startup_theme_with_registered(Some("pkg-theme"), Some("15;0"), dir.path(), themes).expect("resolve");
+        assert_eq!(resolution.theme.name, "pkg-theme");
+        assert!(resolution.load_error.is_none(), "{:?}", resolution.diagnostics);
+    }
+
+    #[tokio::test]
+    async fn startup_themes_come_from_global_packages_only() {
+        let agent = tempfile::tempdir().expect("agent dir");
+        let cwd = tempfile::tempdir().expect("cwd");
+        let package = agent.path().join("my-themes");
+        std::fs::create_dir_all(package.join("themes")).expect("package themes dir");
+        theme_file(&package.join("themes"), "global.json", "global-theme");
+        std::fs::write(package.join("package.json"), r#"{"name":"my-themes","pi":{"themes":["themes"]}}"#).expect("package.json");
+        let mut global = maho_core::settings_manager::Settings::new();
+        global.insert("packages".into(), serde_json::json!([package.to_string_lossy()]));
+        let themes = load_startup_themes(global, &cwd.path().to_string_lossy(), &agent.path().to_string_lossy(), ColorMode::Truecolor).await.expect("resolve");
+        let names: Vec<_> = themes.iter().map(|theme| theme.name.as_str()).collect();
+        assert_eq!(names, ["global-theme"]);
+    }
+}
+
+#[cfg(test)]
+mod first_time_setup_tests {
+    use super::*;
+
+    const OFFICIAL: DistributionMetadata<'static> = DistributionMetadata { package_name: OFFICIAL_PACKAGE_NAME, app_name: OFFICIAL_APP_NAME, config_dir_name: OFFICIAL_CONFIG_DIR_NAME };
+
+    fn settings() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("settings.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn returns_true_when_experimental_default_agent_dir_and_no_settings_json() {
+        let (_dir, path) = settings();
+        assert!(should_run_first_time_setup_with(&OFFICIAL, true, None, &path));
+    }
+
+    #[test]
+    fn returns_false_when_experimental_features_are_disabled() {
+        let (_dir, path) = settings();
+        assert!(!should_run_first_time_setup_with(&OFFICIAL, false, None, &path));
+    }
+
+    #[test]
+    fn returns_false_when_a_custom_agent_dir_is_set() {
+        let (dir, path) = settings();
+        assert!(!should_run_first_time_setup_with(&OFFICIAL, true, Some(&dir.path().to_string_lossy()), &path));
+    }
+
+    #[test]
+    fn returns_false_when_settings_json_already_exists() {
+        let (_dir, path) = settings();
+        std::fs::write(&path, "{}").expect("settings");
+        assert!(!should_run_first_time_setup_with(&OFFICIAL, true, None, &path));
+    }
+
+    #[test]
+    fn a_rebranded_distribution_never_runs_first_time_setup() {
+        let (_dir, path) = settings();
+        let maho = DistributionMetadata { package_name: "", app_name: "maho", config_dir_name: ".omo" };
+        assert!(!should_run_first_time_setup_with(&maho, true, None, &path));
+    }
 }

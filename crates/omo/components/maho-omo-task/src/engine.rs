@@ -113,6 +113,13 @@ pub fn compose_task_engine_with_clock(
     let runtime = Arc::new(Mutex::new(TaskRuntimeContext::new(deps.cwd.clone())));
     let state = runtime.clone();
     let actions = deps.actions.clone();
+    let child_liveness = crate::host_liveness_notice::child_liveness_notice(
+        deps.actions.clone(),
+        deps.coordinator
+            .as_ref()
+            .and_then(|coordinator| coordinator.idle_coordinator()),
+        runtime.clone(),
+    );
     let parent = Arc::new(TaskParentNotifier {
         actions: deps.actions,
         coordinator: deps.coordinator,
@@ -208,6 +215,7 @@ pub fn compose_task_engine_with_clock(
         planner,
         deps.cwd.to_string_lossy(),
     );
+    options.on_child_liveness = Some(child_liveness);
     options.host_transport = deps.host_transport;
     options.rpc_respawn_runner = rpc_respawn;
     options.admission_barrier = Some(senpi_task::pause::admission_barrier::AdmissionBarrier::new());

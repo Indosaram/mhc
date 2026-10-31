@@ -100,6 +100,7 @@ mod tests {
             id: id.to_owned(),
             description: id.to_owned(),
             line: text.to_owned(),
+            human_input: false,
         }
     }
     fn ids(items: &[&str]) -> Vec<String> {

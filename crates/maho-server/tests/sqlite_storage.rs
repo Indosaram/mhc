@@ -16,6 +16,7 @@ async fn durable_storage_reopens_and_failed_commit_rolls_back_sequences() {
         cwd: None,
         parent_session_id: None,
         legacy_parent_session_path: None,
+        path: None,
     };
     insert_session(&db, &metadata, 1).unwrap();
     let context = background_context();

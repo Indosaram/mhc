@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "acceptance_wiring.rs"]
+mod acceptance_wiring;
 #[path = "auth_commands.rs"]
 mod auth_commands;
 #[path = "close_admission.rs"]

@@ -167,14 +167,15 @@ impl RpcSecurityPresentations {
         connection: Option<&str>,
         fanout: &crate::session_event_fanout::SessionEventFanout,
     ) -> Option<bool> {
-        let state = self.sessions.get_mut(session)?;
+        let state = self.sessions.get(session)?;
         let pending = state.grants.get(request)?;
         if pending.0.as_deref() != connection
             || connection.is_some_and(|id| !fanout.connection_has(id, "grant_select"))
         {
             return Some(false);
         }
-        state.grants.remove(request);
+        // The entry stays until the worker reports the grant settled (`settle_grant`): a frame the worker refuses
+        // leaves the grant pending, and it must stay answerable only by its recipient.
         Some(true)
     }
 
@@ -350,6 +351,13 @@ mod tests {
             presentations.accept_worker_response("session-a", "req-1", Some("c-capable"), &fanout),
             Some(true)
         );
+        // An accepted answer keeps the grant answerable only by its recipient until the worker settles it.
+        assert_eq!(presentations.pending_grant_count("session-a"), 1);
+        assert_eq!(
+            presentations.accept_worker_response("session-a", "req-1", Some("c-normal"), &fanout),
+            Some(false)
+        );
+        presentations.settle_grant("session-a", "req-1");
         assert_eq!(presentations.pending_grant_count("session-a"), 0);
     }
 

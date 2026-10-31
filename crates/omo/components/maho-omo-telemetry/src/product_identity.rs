@@ -13,6 +13,55 @@ pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductCon
     config.product_name="omo-native".into();
     config
 }
+/// A valid `OMO_BUNDLED_SKILLS_DIR` (an absolute, listable directory), or `None` when it is absent, empty or
+/// invalid (`resolveBundledSkillsOverride`). An invalid value is reported once per process through `report`.
+pub fn resolve_bundled_skills_override(
+    env: &telemetry_core::TelemetryEnv,
+    report: &dyn Fn(&str),
+) -> Option<PathBuf> {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let value = env.get("OMO_BUNDLED_SKILLS_DIR").filter(|value| !value.is_empty())?;
+    let path = Path::new(value);
+    let problem = if !path.is_absolute() {
+        "relative".to_string()
+    } else {
+        match std::fs::read_dir(path) {
+            Ok(_) => return Some(path.to_path_buf()),
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => "ENOENT".to_string(),
+                std::io::ErrorKind::PermissionDenied => "EACCES".to_string(),
+                _ => "ENOTDIR".to_string(),
+            },
+        }
+    };
+    let message = format!(
+        "OMO_BUNDLED_SKILLS_DIR={value} ignored ({problem}); needs a readable absolute dir"
+    );
+    let first = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(message.clone());
+    if first {
+        report(&message);
+    }
+    None
+}
+/// The bundled skills directory, ending in a path separator (callers append `<skill>/SKILL.md`). A valid
+/// `OMO_BUNDLED_SKILLS_DIR` wins; otherwise `default_root` (the plugin's own skills).
+pub fn get_builtin_skills_root(
+    env: &telemetry_core::TelemetryEnv,
+    default_root: &Path,
+    report: &dyn Fn(&str),
+) -> PathBuf {
+    let root = resolve_bundled_skills_override(env, report).unwrap_or_else(|| default_root.to_path_buf());
+    let text = root.to_string_lossy();
+    if text.ends_with(std::path::MAIN_SEPARATOR) || text.ends_with('/') {
+        root
+    } else {
+        PathBuf::from(format!("{text}{}", std::path::MAIN_SEPARATOR))
+    }
+}
 pub const BUILTIN_SKILL_NAMES: &[&str] = &["adversarial-plan", "ast-grep", "browser", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "init-deep", "lsp-setup", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "ulw-execute", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa", "visualize"];
 pub use crate::event_schemas::{BUILTIN_CATEGORY_NAMES, EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_COMMON_PROPERTY_SCHEMAS, OMO_NATIVE_EVENT_SCHEMAS, OMO_NATIVE_PROPERTY_ALLOWLISTS, omo_native_event_schemas, builtin_category_names, curated_agents};
 /// Shipped v5.1.38 builtin skill vocabulary.
@@ -55,9 +104,6 @@ pub fn mask_provider_and_model(provider: &str, model: &str) -> (String, String) 
 /// Schema version shared by every native client.
 pub const OMO_NATIVE_SCHEMA_VERSION: u32 = 4;
 
-/// The first UTC day `machine_hash` no longer ships (exclusive; the last day it ships is 2026-12-14).
-pub const MACHINE_HASH_SUNSET: &str = "2026-12-15";
-const MACHINE_HASH_SUNSET_ISO: &str = "2026-12-15T00:00:00.000Z";
 const INSTALL_ID_FILE_NAME: &str = "install-id";
 
 fn is_install_id(value: &str) -> bool {
@@ -179,9 +225,6 @@ pub struct OmoNativeAttributionInput<'a> {
     pub env: Option<&'a telemetry_core::TelemetryEnv>,
     /// Injected by tests; defaults to the runtime's resolved agent home.
     pub state_dir: Option<&'a Path>,
-    /// Decides whether `machine_hash` is still inside its transition window.
-    pub now: Option<chrono::DateTime<chrono::Utc>>,
-    pub os_provider: Option<&'a dyn telemetry_core::TelemetryOsProvider>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,7 +232,6 @@ pub struct OmoNativeAttribution {
     pub surface: &'static str,
     pub install_hash: String,
     pub ci: bool,
-    pub machine_hash: Option<String>,
 }
 
 /// Shared attribution for every omo-native event. The install id is a random 64-hex id stored next to the
@@ -214,28 +256,12 @@ pub fn get_omo_native_attribution(input: &OmoNativeAttributionInput<'_>) -> OmoN
     } else {
         resolve_user_install_id(env)
     };
-    let now = input.now.unwrap_or_else(chrono::Utc::now);
-    let sunset = chrono::DateTime::parse_from_rfc3339(MACHINE_HASH_SUNSET_ISO)
-        .map(|sunset| sunset.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|_| now);
-    let machine_hash = if now < sunset {
-        let os: &dyn telemetry_core::TelemetryOsProvider = input
-            .os_provider
-            .unwrap_or(telemetry_core::get_default_telemetry_os_provider());
-        Some(telemetry_core::get_telemetry_distinct_id(
-            &create_omo_native_product_config().machine_id_prefix,
-            os,
-        ))
-    } else {
-        None
-    };
     let mut hash = Sha256::new();
     hash.update(install_id.as_bytes());
     OmoNativeAttribution {
         surface,
         install_hash: format!("{:x}", hash.finalize()),
         ci: is_ci_env(env.get("CI")),
-        machine_hash,
     }
 }
 
@@ -249,9 +275,6 @@ pub fn with_omo_native_attribution(
     properties.insert("surface".into(), serde_json::json!(attribution.surface));
     properties.insert("install_hash".into(), serde_json::json!(attribution.install_hash));
     properties.insert("ci".into(), serde_json::json!(attribution.ci));
-    if let Some(machine_hash) = attribution.machine_hash {
-        properties.insert("machine_hash".into(), serde_json::json!(machine_hash));
-    }
     telemetry_core::TelemetryProductConfig {
         additional_properties: Some(properties),
         ..product
@@ -309,7 +332,7 @@ mod identity_tests {
         assert_eq!(schemas["session_started"]["timezone"], serde_json::json!({"type":"string"}));
         assert_eq!(schemas["turn_completed"]["sample_rate"], serde_json::json!({"type":"number"}));
     }
-    #[test] fn native_product_identity() {let c=create_omo_native_product_config();assert_eq!(c.platform,"omo-senpi");assert_eq!(c.machine_id_prefix,"omo-senpi:");assert_eq!(c.product_env_prefix,"OMO_SENPI");assert_eq!(c.event_name,"daily_active");assert_eq!(c.cache_dir_name,"omo-native");assert!(!c.default_api_key.is_empty());}
+    #[test] fn native_product_identity() {let c=create_omo_native_product_config();assert_eq!(c.platform,"omo-senpi");assert_eq!(c.product_env_prefix,"OMO_SENPI");assert_eq!(c.event_name,"daily_active");assert_eq!(c.cache_dir_name,"omo-native");assert!(!c.default_api_key.is_empty());}
     #[test] fn explicit_agent_state_dir() {let e=telemetry_core::TelemetryEnv::from([("SENPI_CODING_AGENT_DIR".into(),"/fixture/agent".into())]);let expected=crate::index::get_senpi_agent_dir(&e).join("omo-senpi").join("omo-native");assert_eq!(get_omo_native_state_dir(&e),expected);}
     #[test] fn deleted_salt_recreated() {let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();std::fs::remove_file(t.path().join("session-id-salt")).unwrap();hash_session_id("s",t.path()).unwrap();assert!(t.path().join("session-id-salt").is_file());}
     #[test] fn histogram_privacy_bound() {let widest=std::iter::repeat_n(crate::wave_assembler::MAX_TRACKED_CALLS.to_string(),8).collect::<Vec<_>>().join(":");assert_eq!(widest.len(),39);assert!(widest.len()<=64);}

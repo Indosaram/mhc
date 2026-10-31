@@ -12,6 +12,8 @@ use super::host_session::{
     HostEndpointPort, HostSessionProbe, HostSessionRetryPolicy, NoHostEndpoint,
     default_host_session_retry_policy,
 };
+use super::deferred_owner_reconcile::DeferredOwnerRetries;
+use super::deferred_revival::ScopedRetries;
 use super::host_session_close::HostSessionCloser;
 use super::host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,
@@ -31,6 +33,10 @@ const DEFAULT_HOST_CLOSE_TIMEOUT_MS: u64 = 10_000;
 
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub type DequeuePendingFn = Arc<dyn Fn(&str) + Send + Sync>;
+/// One startup generation: shutdown, dispose or the caller's abort permanently invalidates it.
+pub type ReconcileActiveFn = Arc<dyn Fn() -> bool + Send + Sync>;
+/// The retry backoff wait (TS `HostSessionRetryPolicy.wait`).
+pub type RetryWaitFn = Arc<dyn Fn(u64) + Send + Sync>;
 pub type MutationSubscription =
     Arc<dyn Fn(Arc<dyn Fn() + Send + Sync>) -> Box<dyn FnOnce() + Send> + Send + Sync>;
 
@@ -60,8 +66,13 @@ pub struct LifecycleDeps {
     /// The ONLY way a session this process does not hold is ended; defaults to the production closer.
     pub host_session_close: Option<HostSessionCloser>,
     pub host_retry: Option<HostSessionRetryPolicy>,
+    // API-DIVERGENCE(omo lifecycle/host-session.ts): TS carries `wait` inside the retry policy; the
+    // native policy stays a plain comparable value, so the wait is its own dependency.
+    pub host_retry_wait: Option<RetryWaitFn>,
     pub host_endpoint: Option<Arc<dyn HostEndpointPort>>,
     pub host_close_timeout_ms: Option<u64>,
+    /// When the live-parent recovery worker scans; `None` keeps the 5 s production cadence.
+    pub live_parent_recovery: Option<super::live_parent_recovery::RecoverySchedule>,
 }
 
 impl LifecycleDeps {
@@ -90,14 +101,18 @@ impl LifecycleDeps {
             host_session_probe: None,
             host_session_close: None,
             host_retry: None,
+            host_retry_wait: None,
             host_endpoint: None,
             host_close_timeout_ms: None,
+            live_parent_recovery: None,
         }
     }
 }
 
 #[derive(Clone)]
 pub struct LifecycleContext {
+    /// Captures one startup generation (TS `reconcileActive`); `None` outside a fenced pass.
+    pub reconcile_active: Option<ReconcileActiveFn>,
     pub on_store_mutation: Option<MutationSubscription>,
     pub teardown_step_deadline_ms: u64,
     pub live_parents: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -120,6 +135,11 @@ pub struct LifecycleContext {
     pub host_session_probe: Arc<dyn HostSessionProbe>,
     pub host_session_close: Option<HostSessionCloser>,
     pub host_retry: HostSessionRetryPolicy,
+    pub host_retry_wait: RetryWaitFn,
+    /// Sessions whose deferred retries were stopped (TS `deferred-revival.ts` WeakMaps).
+    pub scoped_retries: Arc<ScopedRetries>,
+    /// Legacy owner retries in flight (TS `deferred-owner-reconcile.ts` `retrying`).
+    pub deferred_owner_retries: Arc<DeferredOwnerRetries>,
     pub host_endpoint: Arc<dyn HostEndpointPort>,
     pub host_close_timeout_ms: u64,
 }
@@ -159,7 +179,13 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         .host_transport
         .clone()
         .unwrap_or_else(|| Arc::new(NoHostTransport));
+    let scoped_retries = Arc::new(ScopedRetries::default());
+    let host_retry_wait = deps.host_retry_wait.unwrap_or_else(|| {
+        let retries = Arc::clone(&scoped_retries);
+        Arc::new(move |ms: u64| retries.wait(ms))
+    });
     LifecycleContext {
+        reconcile_active: None,
         on_store_mutation: deps.on_store_mutation,
         teardown_step_deadline_ms: deps.teardown_step_deadline_ms.unwrap_or(10_000),
         live_parents: Arc::default(),
@@ -192,6 +218,9 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         host_retry: deps
             .host_retry
             .unwrap_or_else(default_host_session_retry_policy),
+        host_retry_wait,
+        scoped_retries,
+        deferred_owner_retries: Arc::default(),
         host_endpoint: deps
             .host_endpoint
             .unwrap_or_else(|| Arc::new(NoHostEndpoint)),
@@ -226,6 +255,14 @@ impl LifecycleContext {
             step = (step * 2).min(Duration::from_millis(250));
         }
     }
+}
+
+/// TS `reconciliationActive`: an unfenced context is always active.
+pub fn reconciliation_active(context: &LifecycleContext) -> bool {
+    context
+        .reconcile_active
+        .as_ref()
+        .is_none_or(|active| active())
 }
 
 pub(crate) fn is_terminal(status: TaskStatus) -> bool {

@@ -6,7 +6,7 @@ pub fn build_anthropic_messages_search_request(ctx:&BuildContext<'_>,provider:Se
     let mut tool=json!({"type":"web_search_20250305","name":"web_search","max_uses":8});
     if let Some(domains)=ctx.allowed_domains { tool["allowed_domains"]=json!(domains); }
     if let Some(domains)=ctx.blocked_domains { tool["blocked_domains"]=json!(domains); }
-    BuiltSearchRequest{url:provider_url(provider,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("x-api-key".into(),ctx.api_key.unwrap_or_default().into()),("anthropic-version".into(),"2023-06-01".into())])),body:Some(json!({"model":model.unwrap_or(default_model),"max_tokens":1024,"messages":[{"role":"user","content":ctx.query}],"tools":[tool]}))}
+    BuiltSearchRequest{form:None,url:provider_url(provider,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("x-api-key".into(),ctx.api_key.unwrap_or_default().into()),("anthropic-version".into(),"2023-06-01".into())])),body:Some(json!({"model":model.unwrap_or(default_model),"max_tokens":1024,"messages":[{"role":"user","content":ctx.query}],"tools":[tool]}))}
 }
 pub fn build_request(ctx:&BuildContext<'_>,model:Option<&str>)->BuiltSearchRequest { build_anthropic_messages_search_request(ctx,SearchProvider::Anthropic,model,"claude-sonnet-4-5-20250929") }
 pub fn normalize_anthropic_messages_search_payload(data:&Value)->Vec<SearchResultItem> {

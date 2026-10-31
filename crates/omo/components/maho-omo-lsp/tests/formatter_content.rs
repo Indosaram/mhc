@@ -137,3 +137,38 @@ async fn required_formatter_failure_marks_result_and_stops_diagnostics() {
     let content=result.content.expect("original content preserved on required failure");
     assert_eq!(content,vec![original]);
 }
+
+// post-edit-diagnostics.test.ts: live status label is reported only for mutations that run diagnostics.
+async fn status_case(tool:&str)->Vec<String> {
+    let root=tempfile::tempdir().expect("private status workspace");
+    let path=root.path().join("clean.ts");
+    std::fs::write(&path,"const value=1\n").expect("mutation output");
+    let formatter=create_formatter_step(FormatterStepOptions {
+        markers:Some(Box::new(|_|Vec::new())),
+        daemon_format:Some(Box::new(|_|Box::pin(async {Ok(DaemonFormatResult::default())}))),
+        ..Default::default()
+    });
+    let mut api=ExtensionApi::new(LoadedExtension::new("lsp",root.path().to_path_buf(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+    LspComponent.register_with_options(&mut api,LspComponentOptions {
+        formatter:Some(formatter),
+        run_diagnostics:Some(Arc::new(|_|Box::pin(async {Ok(PostEditDiagnosticsOutcome::Text(String::new()))}))),
+    });
+    let statuses=Arc::new(Mutex::new(Vec::new()));
+    let observed=Arc::clone(&statuses);
+    let mut ctx=context(root.path().to_path_buf());
+    ctx.update_tool_hook_status=Some(Arc::new(move |status:&str|observed.lock().expect("statuses").push(status.to_owned())));
+    let input=if tool=="bash" {json!({"command":"ls"})} else {json!({"path":path})};
+    let mut event=ExtensionEvent::ToolResult(ToolResultEvent {tool_call_id:"status".into(),tool_name:tool.into(),input,content:vec![ToolContent::text("ok")],details:None,is_error:false,usage:None});
+    api.registered.handlers[&EventKind::ToolResult][0](&mut event,&ctx).await.expect("hook result");
+    statuses.lock().expect("statuses").clone()
+}
+
+#[tokio::test]
+async fn post_edit_diagnostics_report_live_status_label() {
+    assert_eq!(status_case("write").await,vec!["(OmO) Checking LSP Diagnostics".to_owned()]);
+}
+
+#[tokio::test]
+async fn non_mutation_tool_result_reports_no_live_status() {
+    assert!(status_case("bash").await.is_empty());
+}

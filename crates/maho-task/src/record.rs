@@ -95,9 +95,17 @@ pub struct TaskRecord {
     /// Root session of the owner (the owner itself for a top-level session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_session: Option<String>,
-    /// Messages delivered by the next run (`task_send` while no live channel exists).
+    /// Messages delivered by the next run (`task_send` while no live channel exists, and steers
+    /// written to a running child, keyed by their gateway delivery id; task.md Delta D7).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_messages: Vec<PendingMessage>,
+    /// Providers a first run was moved away from after a credential failure (task.md Delta D4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_providers: Vec<String>,
+    /// When the current run's child process was started (ms; the pid ownership check of
+    /// task.md Delta D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_started_at_ms: Option<u64>,
 }
 
 /// Milliseconds since the Unix epoch.
@@ -201,6 +209,169 @@ pub fn pid_alive(_pid: u32) -> bool {
     false
 }
 
+/// Slack for comparing a process's start time with the recorded spawn time (clock-tick and
+/// boot-time rounding).
+const START_SLACK_MS: u64 = 2_000;
+
+/// What the operating system reports about a live process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInfo {
+    /// Command line, arguments joined with single spaces.
+    pub command_line: String,
+    /// Start time in ms since the Unix epoch, when known.
+    pub started_at_ms: Option<u64>,
+    /// Executable image path or name, when known.
+    pub image: Option<String>,
+}
+
+/// Information about live process `pid`; `None` when it is gone or cannot be inspected.
+#[cfg(target_os = "linux")]
+pub fn process_info(pid: u32) -> Option<ProcessInfo> {
+    let base = PathBuf::from(format!("/proc/{pid}"));
+    let raw = std::fs::read(base.join("cmdline")).ok()?;
+    let command_line = raw
+        .split(|byte| *byte == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let started_at_ms = linux_start_ms(&base);
+    let image = std::fs::read_link(base.join("exe"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
+    Some(ProcessInfo {
+        command_line,
+        started_at_ms,
+        image,
+    })
+}
+
+/// Start time from `/proc/<pid>/stat` field 22 (clock ticks after boot) and `/proc/stat` `btime`.
+#[cfg(target_os = "linux")]
+fn linux_start_ms(base: &Path) -> Option<u64> {
+    let stat = std::fs::read_to_string(base.join("stat")).ok()?;
+    // Fields after the parenthesised command name; field 22 is the 20th of those.
+    let after = &stat[stat.rfind(')')? + 1..];
+    let ticks: u64 = after.split_whitespace().nth(19)?.parse().ok()?;
+    let boot = std::fs::read_to_string("/proc/stat").ok()?;
+    let btime: u64 = boot
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    // USER_HZ is 100 on every Linux ABI mhc supports.
+    Some(btime * 1_000 + ticks * 10)
+}
+
+/// Other Unix systems: `ps` (elapsed time and command line).
+#[cfg(all(unix, not(target_os = "linux")))]
+pub fn process_info(pid: u32) -> Option<ProcessInfo> {
+    let output = std::process::Command::new("ps")
+        .args(["-ww", "-p", &pid.to_string(), "-o", "etime=", "-o", "command="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    let (elapsed, command) = line.split_once(char::is_whitespace)?;
+    let started_at_ms = parse_etime(elapsed).map(|secs| now_ms().saturating_sub(secs * 1_000));
+    Some(ProcessInfo {
+        command_line: command.trim().to_owned(),
+        started_at_ms,
+        image: None,
+    })
+}
+
+/// `[[dd-]hh:]mm:ss` in seconds.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn parse_etime(text: &str) -> Option<u64> {
+    let (days, rest) = match text.split_once('-') {
+        Some((days, rest)) => (days.parse::<u64>().ok()?, rest),
+        None => (0, text),
+    };
+    let mut seconds = 0;
+    for part in rest.split(':') {
+        seconds = seconds * 60 + part.parse::<u64>().ok()?;
+    }
+    Some(days * 86_400 + seconds)
+}
+
+/// Windows: the process's image path and command line through PowerShell/CIM.
+#[cfg(windows)]
+pub fn process_info(pid: u32) -> Option<ProcessInfo> {
+    let script = format!(
+        "$p = Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; if ($p) {{ $p.ExecutablePath; $p.CommandLine }}"
+    );
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let image = lines.next()?.trim().to_owned();
+    let command_line = lines.collect::<Vec<_>>().join(" ").trim().to_owned();
+    (!image.is_empty()).then_some(ProcessInfo {
+        command_line,
+        started_at_ms: None,
+        image: Some(image),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn process_info(_pid: u32) -> Option<ProcessInfo> {
+    None
+}
+
+/// Whether `info` describes the child of `record` (task.md Delta D8): its command line carries
+/// `--session-id <session id>`; on Unix it did not start after the recorded spawn; on Windows
+/// its image is the current executable.
+pub fn matches_task_child(record: &TaskRecord, info: &ProcessInfo) -> bool {
+    let session = record.session_id.trim();
+    let tokens: Vec<&str> = info.command_line.split_whitespace().collect();
+    let carries_session = !session.is_empty()
+        && tokens.windows(2).any(|pair| pair[0] == "--session-id" && pair[1] == session);
+    if !carries_session {
+        return false;
+    }
+    if cfg!(unix)
+        && let (Some(started), Some(spawned)) = (info.started_at_ms, record.pid_started_at_ms)
+        && started > spawned.saturating_add(START_SLACK_MS)
+    {
+        return false;
+    }
+    if cfg!(windows) {
+        let own = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().to_lowercase()));
+        let image = info.image.as_deref().map(|image| {
+            Path::new(image)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        });
+        if own.is_none() || image != own {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the recorded pid of `record` is still alive **and** still that task's child.
+pub fn is_task_child(record: &TaskRecord) -> bool {
+    record
+        .pid
+        .filter(|pid| pid_alive(*pid) || cfg!(windows))
+        .and_then(process_info)
+        .is_some_and(|info| matches_task_child(record, &info))
+}
+
 /// Marks a record `interrupted` when it is active but no live process owns it (its owner process
 /// ended). Returns whether the record changed.
 pub fn reconcile(record: &mut TaskRecord, owned_here: bool) -> bool {
@@ -256,6 +427,8 @@ pub(crate) fn sample(id: &str) -> TaskRecord {
         owner_session: None,
         root_session: None,
         pending_messages: Vec::new(),
+        dropped_providers: Vec::new(),
+        pid_started_at_ms: None,
     }
 }
 
@@ -275,6 +448,37 @@ mod tests {
         assert!(reconcile(&mut record, false));
         assert_eq!(record.status, TaskStatus::Interrupted);
         assert!(!reconcile(&mut record, false));
+    }
+
+    /// task.md Delta D8: the command-line and start-time checks.
+    #[test]
+    fn task_child_match() {
+        let mut record = sample("A");
+        record.session_id = "sid-1".into();
+        record.pid_started_at_ms = Some(10_000);
+        let info = |command: &str, started: Option<u64>| ProcessInfo {
+            command_line: command.to_owned(),
+            started_at_ms: started,
+            image: None,
+        };
+        if cfg!(unix) {
+            assert!(matches_task_child(&record, &info("mhc -p --session-id sid-1 --name A", Some(9_000))));
+            assert!(!matches_task_child(&record, &info("sleep 30", Some(9_000))));
+            assert!(!matches_task_child(&record, &info("mhc --session-id sid-10", Some(9_000))));
+            // A process started well after the spawn reuses the pid.
+            assert!(!matches_task_child(&record, &info("mhc -p --session-id sid-1", Some(60_000))));
+            record.pid_started_at_ms = None;
+            assert!(matches_task_child(&record, &info("mhc -p --session-id sid-1", Some(60_000))));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn own_process_info() {
+        let info = process_info(std::process::id()).expect("info");
+        assert!(!info.command_line.is_empty());
+        let started = info.started_at_ms.expect("start");
+        assert!(started <= now_ms() + START_SLACK_MS, "{started}");
     }
 
     #[test]

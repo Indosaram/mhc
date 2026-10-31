@@ -13,6 +13,9 @@ pub const AUTO_TITLE_PER_SESSION_CAPABILITY: &str = "auto_title_per_session";
 pub const DURABLE_SESSION_ID_CAPABILITY: &str = "durable_session_id";
 pub const DETACH_CONNECTION_CAPABILITY: &str = "detach_connection";
 pub const SESSION_STATUS_CAPABILITY: &str = "session_status";
+/// Host capability: `subscribe_sessions { dialogs: true }` observes dialog registration and settlement
+/// (`ui_request_pending`/`ui_request_settled`) without receiving command replies (senpi#4266).
+pub const DIALOG_OBSERVER_CAPABILITY: &str = "dialog_observer";
 pub const WARM_CAPABILITY: &str = "warm";
 pub const MOVED_PATH_GUARD_CAPABILITY: &str = "moved_path_guard";
 pub const PROMPT_SURFACE_CAPABILITY: &str = "prompt_surface";
@@ -36,6 +39,24 @@ pub const SESSION_RELOCATION_CAPABILITY: &str = "session_relocation";
 /// The capability a client's handshake carries when it can present an MCP grant decision (senpi `grant_select`);
 /// only such a connection is ever asked, and only its answer counts.
 pub const GRANT_SELECT_CAPABILITY: &str = "grant_select";
+/// `get_state` and `get_entries` accept `observe: true` and then never count as an attachment (senpi#4267).
+pub const OBSERVE_READS_CAPABILITY: &str = "observe_reads";
+/// `get_entries` accepts `before` and `tail` and answers `next_before` (senpi#4267).
+pub const ENTRIES_TAIL_CAPABILITY: &str = "entries_tail";
+/// A terminal control endpoint serves the host's observe-and-drive command set (senpi#4267).
+pub const TUI_OBSERVER_CAPABILITY: &str = "tui_observer";
+/// `get_snapshot` answers state and history captured together with a `snapshot_marker` cursor.
+pub const SNAPSHOT_CURSOR_CAPABILITY: &str = "snapshot_cursor";
+/// `extension_ui_response.answerId` receipts and `get_state.answeredUiRequests`.
+pub const UI_ANSWER_LEDGER_CAPABILITY: &str = "ui_answer_ledger";
+/// Live-only, identity-fenced `attach_session { sessionId, durableSessionId }`.
+pub const ATTACH_SESSION_CAPABILITY: &str = "attach_session";
+/// `release_attachment` gives up one attachment without closing the session.
+pub const RELEASE_ATTACHMENT_CAPABILITY: &str = "release_attachment";
+/// `release_session` counts the caller's own attachment as its own, never as another client.
+pub const RELEASE_CALLER_AWARE_CAPABILITY: &str = "release_caller_aware";
+/// `reclaim_session { sessionPath, durableSessionId, expectedHostInstance }` ends a live session for its path.
+pub const RECLAIM_SESSION_CAPABILITY: &str = "reclaim_session";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 

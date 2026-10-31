@@ -19,7 +19,7 @@ pub fn render_schema_hint(tool_name: &str, schema: &Value) -> Option<String> {
     let mut used = 0;
     for line in lines {
         let next = used + line.encode_utf16().count() + usize::from(!kept.is_empty());
-        if next > budget - marker.encode_utf16().count() - 1 {
+        if next > budget.saturating_sub(marker.encode_utf16().count() + 1) {
             kept.push(marker);
             return Some(kept.join("\n"));
         }

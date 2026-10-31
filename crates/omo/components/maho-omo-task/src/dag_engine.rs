@@ -96,6 +96,8 @@ pub struct TaskDagEngine {
     rpc: Mutex<Option<Arc<crate::dag_rpc_bridge::DagRpcBridge>>>,
     surfaces: Mutex<Option<Arc<DagSurfaces>>>,
     active_session: Mutex<Option<String>>,
+    /// The latest session start's gated attach (`wireDagLifecycle().lastAttach`).
+    last_attach: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     wake: Mutex<Option<crate::dag_wake::DagWake>>,
     delivered: Mutex<BTreeMap<DagRunId, u64>>,
     /// Event-log (byte length, mtime) at the last successful durable publish per run: a log that
@@ -522,6 +524,7 @@ impl TaskDagEngine {
             rpc: Mutex::new(None),
             surfaces: Mutex::new(None),
             active_session: Mutex::new(None),
+            last_attach: Arc::default(),
             wake: Mutex::new(None),
             delivered: Mutex::new(BTreeMap::new()),
             published_log_len: Mutex::new(BTreeMap::new()),
@@ -606,8 +609,7 @@ impl TaskDagEngine {
                     options: Arc::new(move |record| {
                         options
                             .upgrade()
-                            .expect("live DAG runtime")
-                            .scheduler_options(record.clone())
+                            .map(|dag| dag.scheduler_options(record.clone()))
                     }),
                     pauses: self.pause_store(),
                     retire: Arc::new(move |run| {
@@ -1010,7 +1012,9 @@ impl TaskDagEngine {
             guidance_id: result.guidance_id,
             effect_id: None,
             delivery: match result.delivery {
-                senpi_task::dag::node_send::DagNodeDeliveryResult::Guidance => crate::dag_tool::DagToolSendDelivery::Guidance,
+                senpi_task::dag::node_send::DagNodeDeliveryResult::Guidance => {
+                    crate::dag_tool::DagToolSendDelivery::Guidance
+                }
                 senpi_task::dag::node_send::DagNodeDeliveryResult::Steer => {
                     crate::dag_tool::DagToolSendDelivery::Steer
                 }
@@ -1378,6 +1382,14 @@ impl TaskDagEngine {
             cancel.cancel();
         }
         self.lease_watch.dispose();
+    }
+
+    /// Settles when the latest session start's gated attach ended (`lastAttach()`).
+    pub async fn last_attach(&self) {
+        let handle = lock(&self.last_attach).take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
     }
 
     /// TS `runtime.attach(event)`.
@@ -1755,6 +1767,8 @@ impl TaskDagEngine {
             }),
         );
         let attach = Arc::downgrade(self);
+        let bridge = component.bridge.clone();
+        let last_attach = self.last_attach.clone();
         api.on(
             maho_ext_api::EventKind::SessionStart,
             Arc::new(move |event, context| {
@@ -1764,14 +1778,28 @@ impl TaskDagEngine {
                     _ => None,
                 };
                 let coordinator = idle_injection::from_slot(&context.idle_coordinator);
+                let bridge = bridge.clone();
                 Box::pin(async move {
-                    if let Some(dag) = attach.upgrade() {
-                        tokio::task::spawn_blocking(move || {
-                            dag.attach(start.as_ref(), coordinator)
-                        })
-                        .await
-                        .map_err(failure)?;
-                    }
+                    // DAG recovery assumes the session-start task reconcile finished (a revivable
+                    // child already carries a handle). Admission does not wait for that reconcile, so
+                    // the attach waits for it instead; a superseded start never attaches.
+                    let latest = tokio::spawn(async move {
+                        if !bridge.after_session_start_reconcile().await {
+                            return;
+                        }
+                        if let Some(dag) = attach.upgrade() {
+                            let attached = tokio::task::spawn_blocking(move || {
+                                dag.attach(start.as_ref(), coordinator)
+                            })
+                            .await;
+                            if let Err(error) = attached {
+                                maho_ext_api::diagnostic(&format!(
+                                    "omo-senpi DAG attach after reconcile failed: {error}"
+                                ));
+                            }
+                        }
+                    });
+                    *lock(&last_attach) = Some(latest);
                     Ok(maho_ext_api::EventResult::None)
                 })
             }),

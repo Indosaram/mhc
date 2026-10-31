@@ -278,7 +278,7 @@ fn detect_capabilities_from_environment(
         return plain(None, true, true);
     }
 
-    if term_program == "alacritty" || term_program == "vscode" || term_program == "zed" {
+    if term_program == "alacritty" || term_program == "zed" {
         return plain(None, true, true);
     }
 
@@ -294,6 +294,11 @@ fn detect_capabilities_from_environment(
             image_probe: probed.is_none().then_some(ImageProbe::Kitty),
             ..plain(probed, has_true_color_hint, false)
         };
+    }
+
+    // After every other terminal: the VS Code marker is inherited by terminals started from VS Code (#2826).
+    if terminal_capabilities::is_vs_code_terminal(env) {
+        return plain(None, true, true);
     }
 
     if is_windows_console {

@@ -839,6 +839,12 @@ impl MemoryRuntime {
                 identity_str,
             )
         });
+        let this = self.clone();
+        let write_notice_session: maho_omo_memory::tools::WriteNoticeSessionResolver =
+            Arc::new(move || {
+                this.context()
+                    .map(|context| context.session_manager.session_id().to_owned())
+            });
         let cwd = self.host.cwd.clone();
         let resolve_cwd = Arc::new(move || cwd.clone());
         let this = self.clone();
@@ -938,6 +944,7 @@ impl MemoryRuntime {
             resolve_context: resolve,
             resolve_tool_context: tools,
             write_notice: Some(write_notice),
+            write_notice_session: Some(write_notice_session),
             tool_exposure,
             resolve_cwd: resolve_cwd.clone(),
             captured_tools: self.host.captured_tools.clone(),

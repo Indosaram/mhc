@@ -66,7 +66,7 @@ fn marker(elided: usize) -> String {
 }
 
 /// Lengths and slicing follow JS semantics (UTF-16 code units).
-fn cap_text(text: String) -> (String, bool) {
+pub(crate) fn cap_text(text: String) -> (String, bool) {
     // UTF-16 units never outnumber UTF-8 bytes, so a short string needs no unit buffer or copy.
     if text.len() <= TRANSCRIPT_MAX_CHARS {
         return (text, false);
@@ -76,10 +76,16 @@ fn cap_text(text: String) -> (String, bool) {
         return (text, false);
     }
     let budget = TRANSCRIPT_MAX_CHARS.saturating_sub(marker(units.len()).encode_utf16().count());
-    let head_len = budget / 2;
-    let tail_len = budget - head_len;
-    let elided_count = units.len() - head_len - tail_len;
+    let mut head_len = budget / 2;
+    if head_len > 0 && (0xD800..=0xDBFF).contains(&units[head_len - 1]) {
+        head_len -= 1;
+    }
+    let mut tail_start = units.len() - (budget - head_len);
+    if tail_start < units.len() && (0xDC00..=0xDFFF).contains(&units[tail_start]) {
+        tail_start += 1;
+    }
+    let elided_count = tail_start - head_len;
     let head = String::from_utf16_lossy(&units[..head_len]);
-    let tail = String::from_utf16_lossy(&units[units.len() - tail_len..]);
+    let tail = String::from_utf16_lossy(&units[tail_start..]);
     (format!("{head}{}{tail}", marker(elided_count)), true)
 }

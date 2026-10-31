@@ -150,6 +150,22 @@ pub fn transform_messages(
     normalize_tool_call_id: Option<NormalizeToolCallId<'_>>,
     options: &TransformMessagesOptions,
 ) -> Vec<Message> {
+    transform_messages_with_sources(messages, model, normalize_tool_call_id, options)
+        .into_iter()
+        .map(|(message, _)| message)
+        .collect()
+}
+
+/// [`transform_messages`] plus the index in `messages` each output message was derived from;
+/// `None` marks a synthesized message (the "No result provided" tool result). senpi carries
+/// request-local provenance on the message object itself; a typed `Message` cannot, so the
+/// Responses converter's `sealContextProvenance` pass maps provenance back through this index.
+pub fn transform_messages_with_sources(
+    messages: &[Message],
+    model: &Model,
+    normalize_tool_call_id: Option<NormalizeToolCallId<'_>>,
+    options: &TransformMessagesOptions,
+) -> Vec<(Message, Option<usize>)> {
     use std::collections::HashMap;
 
     let mut tool_call_id_map: HashMap<String, String> = HashMap::new();
@@ -265,7 +281,7 @@ pub fn transform_messages(
         })
         .collect();
 
-    let mut result: Vec<Message> = Vec::with_capacity(transformed.len());
+    let mut result: Vec<(Message, Option<usize>)> = Vec::with_capacity(transformed.len());
     let mut tool_results_by_id: HashMap<String, Vec<(ToolResultMessage, usize, bool)>> =
         HashMap::new();
     let mut next_tool_call_index_by_id: HashMap<String, Vec<usize>> = HashMap::new();
@@ -317,7 +333,10 @@ pub fn transform_messages(
                     && (!dropped_call_ids.contains(&result_message.tool_call_id)
                         || next_tool_call_index_by_id.contains_key(&result_message.tool_call_id))
                 {
-                    result.push(Message::ToolResult(result_message.clone()));
+                    result.push((
+                        Message::ToolResult(result_message.clone()),
+                        Some(source_index),
+                    ));
                 }
                 continue;
             }
@@ -328,7 +347,7 @@ pub fn transform_messages(
                     continue;
                 }
 
-                result.push(message.clone());
+                result.push((message.clone(), Some(source_index)));
                 for block in &assistant.content {
                     let ContentBlock::ToolCall(tool_call) = block else {
                         continue;
@@ -349,26 +368,32 @@ pub fn transform_messages(
                             })
                         });
 
-                    if let Some((matched_message, _, consumed)) = matched {
+                    if let Some((matched_message, matched_index, consumed)) = matched {
                         *consumed = true;
-                        result.push(Message::ToolResult(matched_message.clone()));
+                        result.push((
+                            Message::ToolResult(matched_message.clone()),
+                            Some(*matched_index),
+                        ));
                         continue;
                     }
 
-                    result.push(Message::ToolResult(ToolResultMessage {
-                        nested_calls: None,
-                        tool_call_id: tool_call.id.clone(),
-                        tool_name: tool_call.name.clone(),
-                        content: vec![ContentBlock::text("No result provided")],
-                        details: None,
-                        usage: None,
-                        added_tool_names: None,
-                        is_error: true,
-                        timestamp: now_ms(),
-                    }));
+                    result.push((
+                        Message::ToolResult(ToolResultMessage {
+                            nested_calls: None,
+                            tool_call_id: tool_call.id.clone(),
+                            tool_name: tool_call.name.clone(),
+                            content: vec![ContentBlock::text("No result provided")],
+                            details: None,
+                            usage: None,
+                            added_tool_names: None,
+                            is_error: true,
+                            timestamp: now_ms(),
+                        }),
+                        None,
+                    ));
                 }
             }
-            other => result.push(other.clone()),
+            other => result.push((other.clone(), Some(source_index))),
         }
     }
 
@@ -400,6 +425,7 @@ mod tests {
     fn assistant_message(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
         Message::Assistant(Box::new(AssistantMessage {
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
             error_cause: None,
             prompt_cache_breakpoint: None,

@@ -8,6 +8,7 @@ pub mod foreground_detach;
 pub mod foreground_window;
 pub mod kill_bash;
 pub mod monitor;
+pub mod monitor_manifest_binding;
 pub mod monitor_schema;
 pub mod render;
 pub mod sleep_wait;

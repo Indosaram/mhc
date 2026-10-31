@@ -6,7 +6,9 @@ use std::rc::Rc;
 use super::input::{Input, InputOptions};
 use crate::fuzzy::fuzzy_filter;
 use crate::keybindings::get_keybindings;
-use crate::tui::{Component, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType};
+use crate::tui::{
+    Component, TuiMouseButton, TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType,
+};
 use crate::utils::{truncate_to_width, visible_width, wrap_text_with_ansi};
 
 /// Called by a submenu when it closes: `selected_value` commits a new value for the item
@@ -62,8 +64,17 @@ pub struct SettingsList {
 }
 
 impl SettingsList {
-    pub fn new(items: Vec<SettingItem>, max_visible: usize, theme: SettingsListTheme, options: SettingsListOptions) -> Self {
-        let search_input = if options.enable_search { Some(Input::new(InputOptions::default())) } else { None };
+    pub fn new(
+        items: Vec<SettingItem>,
+        max_visible: usize,
+        theme: SettingsListTheme,
+        options: SettingsListOptions,
+    ) -> Self {
+        let search_input = if options.enable_search {
+            Some(Input::new(InputOptions::default()))
+        } else {
+            None
+        };
         Self {
             filtered_items: items.clone(),
             items,
@@ -89,7 +100,11 @@ impl SettingsList {
     }
 
     pub fn select_item(&mut self, id: &str) {
-        let items = if self.search_enabled { &self.filtered_items } else { &self.items };
+        let items = if self.search_enabled {
+            &self.filtered_items
+        } else {
+            &self.items
+        };
         if let Some(index) = items.iter().position(|item| item.id == id) {
             self.selected_index = index;
         }
@@ -118,7 +133,12 @@ impl SettingsList {
         } else {
             "  Enter/Space to change \u{b7} Esc to cancel"
         };
-        lines.push(truncate_to_width(&(self.theme.hint)(text), width, "", false));
+        lines.push(truncate_to_width(
+            &(self.theme.hint)(text),
+            width,
+            "",
+            false,
+        ));
     }
 
     fn render_main_list(&mut self, width: usize) -> Vec<String> {
@@ -141,39 +161,73 @@ impl SettingsList {
 
         let display_items: Vec<SettingItem> = self.get_display_items().to_vec();
         if display_items.is_empty() {
-            lines.push(truncate_to_width(&(self.theme.hint)("  No matching settings"), width, "", false));
+            lines.push(truncate_to_width(
+                &(self.theme.hint)("  No matching settings"),
+                width,
+                "",
+                false,
+            ));
             self.add_hint_line(&mut lines, width);
             return lines;
         }
 
         let (start_index, end_index) = self.get_visible_range(display_items.len());
-        let max_label_width = self.items.iter().map(|item| visible_width(&item.label)).max().unwrap_or(0).min(36);
+        let max_label_width = self
+            .items
+            .iter()
+            .map(|item| visible_width(&item.label))
+            .max()
+            .unwrap_or(0)
+            .min(36);
 
         for i in start_index..end_index {
             let Some(item) = display_items.get(i) else {
                 continue;
             };
             let is_selected = i == self.selected_index;
-            let prefix = if is_selected { self.theme.cursor.clone() } else { "  ".to_string() };
+            let prefix = if is_selected {
+                self.theme.cursor.clone()
+            } else {
+                "  ".to_string()
+            };
             let prefix_width = visible_width(&prefix);
 
-            let label_padded = format!("{}{}", item.label, " ".repeat(max_label_width.saturating_sub(visible_width(&item.label))));
+            let label_padded = format!(
+                "{}{}",
+                item.label,
+                " ".repeat(max_label_width.saturating_sub(visible_width(&item.label)))
+            );
             let label_text = (self.theme.label)(&label_padded, is_selected);
 
             let separator = "  ";
             let used_width = prefix_width + max_label_width + visible_width(separator);
             let value_max_width = (width as i64) - (used_width as i64) - 2;
             let value_text = (self.theme.value)(
-                &truncate_to_width(&item.current_value, value_max_width.max(0) as usize, "", false),
+                &truncate_to_width(
+                    &item.current_value,
+                    value_max_width.max(0) as usize,
+                    "",
+                    false,
+                ),
                 is_selected,
             );
 
-            lines.push(truncate_to_width(&format!("{prefix}{label_text}{separator}{value_text}"), width, "", false));
+            lines.push(truncate_to_width(
+                &format!("{prefix}{label_text}{separator}{value_text}"),
+                width,
+                "",
+                false,
+            ));
         }
 
         if start_index > 0 || end_index < display_items.len() {
             let scroll_text = format!("  ({}/{})", self.selected_index + 1, display_items.len());
-            lines.push((self.theme.hint)(&truncate_to_width(&scroll_text, width.saturating_sub(2), "", false)));
+            lines.push((self.theme.hint)(&truncate_to_width(
+                &scroll_text,
+                width.saturating_sub(2),
+                "",
+                false,
+            )));
         }
 
         if let Some(selected_item) = display_items.get(self.selected_index)
@@ -214,7 +268,11 @@ impl SettingsList {
         } else if let Some(values) = &item.values
             && !values.is_empty()
         {
-            let current_index = values.iter().position(|v| v == &item.current_value).map(|i| i as i64).unwrap_or(-1);
+            let current_index = values
+                .iter()
+                .position(|v| v == &item.current_value)
+                .map(|i| i as i64)
+                .unwrap_or(-1);
             let next_index = ((current_index + 1) as usize) % values.len();
             let new_value = values[next_index].clone();
             let item_id = item.id.clone();
@@ -316,12 +374,21 @@ impl Component for SettingsList {
         {
             let delta: i64 = if wheel_delta < 0 { -1 } else { 1 };
             let previous_index = self.selected_index;
-            self.selected_index = ((self.selected_index as i64 + delta).max(0) as usize).min(display_items_len - 1);
+            self.selected_index =
+                ((self.selected_index as i64 + delta).max(0) as usize).min(display_items_len - 1);
             let changed = self.selected_index != previous_index;
-            return Some(TuiMouseEventResult { handled: true, capture: false, focus: false, render: Some(changed) });
+            return Some(TuiMouseEventResult {
+                handled: true,
+                capture: false,
+                focus: false,
+                render: Some(changed),
+            });
         }
         if event.button != TuiMouseButton::Left
-            || !matches!(event.event_type, TuiMouseEventType::Press | TuiMouseEventType::Click)
+            || !matches!(
+                event.event_type,
+                TuiMouseEventType::Press | TuiMouseEventType::Click
+            )
         {
             return None;
         }
@@ -336,13 +403,23 @@ impl Component for SettingsList {
         if event.event_type == TuiMouseEventType::Press {
             self.mouse_pressed_index = Some(item_index);
             self.selected_index = item_index;
-            return Some(TuiMouseEventResult { handled: true, capture: false, focus: true, render: None });
+            return Some(TuiMouseEventResult {
+                handled: true,
+                capture: false,
+                focus: true,
+                render: None,
+            });
         }
         if event.event_type == TuiMouseEventType::Click {
             self.selected_index = self.mouse_pressed_index.unwrap_or(item_index);
             self.mouse_pressed_index = None;
             self.activate_item();
-            return Some(TuiMouseEventResult { handled: true, capture: false, focus: false, render: None });
+            return Some(TuiMouseEventResult {
+                handled: true,
+                capture: false,
+                focus: false,
+                render: None,
+            });
         }
         None
     }
@@ -360,15 +437,27 @@ impl Component for SettingsList {
             if display_items_len == 0 {
                 return;
             }
-            self.selected_index = if self.selected_index == 0 { display_items_len - 1 } else { self.selected_index - 1 };
+            self.selected_index = if self.selected_index == 0 {
+                display_items_len - 1
+            } else {
+                self.selected_index - 1
+            };
         } else if kb.matches(data, "tui.select.down") {
             if display_items_len == 0 {
                 return;
             }
-            self.selected_index = if self.selected_index == display_items_len - 1 { 0 } else { self.selected_index + 1 };
+            self.selected_index = if self.selected_index == display_items_len - 1 {
+                0
+            } else {
+                self.selected_index + 1
+            };
         } else if kb.matches(data, "tui.select.confirm")
             || (data == " "
-                && (!self.search_enabled || self.search_input.as_ref().is_some_and(|input| input.get_value().is_empty())))
+                && (!self.search_enabled
+                    || self
+                        .search_input
+                        .as_ref()
+                        .is_some_and(|input| input.get_value().is_empty())))
         {
             self.activate_item();
         } else if kb.matches(data, "tui.select.cancel") {
@@ -390,5 +479,77 @@ impl Component for SettingsList {
 
     fn has_input_handler(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Port of senpi `settings-list.test.ts`.
+
+    use super::*;
+
+    fn test_theme() -> SettingsListTheme {
+        SettingsListTheme {
+            label: Rc::new(|text: &str, _selected: bool| text.to_string()),
+            value: Rc::new(|text: &str, _selected: bool| text.to_string()),
+            description: Rc::new(|text: &str| text.to_string()),
+            cursor: "> ".to_string(),
+            hint: Rc::new(|text: &str| text.to_string()),
+        }
+    }
+
+    fn items() -> Vec<SettingItem> {
+        vec![SettingItem {
+            id: "tui-mode".to_string(),
+            label: "TUI mode".to_string(),
+            description: None,
+            current_value: "regular".to_string(),
+            values: Some(vec!["regular".to_string(), "fullscreen".to_string()]),
+            submenu: None,
+        }]
+    }
+
+    fn searchable() -> (SettingsList, Rc<RefCell<Vec<(String, String)>>>) {
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let mut list = SettingsList::new(
+            items(),
+            10,
+            test_theme(),
+            SettingsListOptions {
+                enable_search: true,
+            },
+        );
+        let sink = Rc::clone(&changes);
+        list.on_change = Some(Box::new(move |id: &str, value: &str| {
+            sink.borrow_mut().push((id.to_string(), value.to_string()));
+        }));
+        list.on_cancel = Some(Box::new(|| {}));
+        (list, changes)
+    }
+
+    #[test]
+    fn includes_spaces_in_an_active_search_instead_of_changing_the_selected_setting() {
+        let (mut list, changes) = searchable();
+        for character in "TUI mode".chars() {
+            list.handle_input(&character.to_string());
+        }
+        assert!(changes.borrow().is_empty());
+        assert!(list.render(80)[0].contains("TUI mode"));
+
+        list.handle_input("\r");
+        assert_eq!(
+            *changes.borrow(),
+            [("tui-mode".to_string(), "fullscreen".to_string())]
+        );
+    }
+
+    #[test]
+    fn keeps_space_as_a_change_shortcut_before_a_search_query_is_entered() {
+        let (mut list, changes) = searchable();
+        list.handle_input(" ");
+        assert_eq!(
+            *changes.borrow(),
+            [("tui-mode".to_string(), "fullscreen".to_string())]
+        );
     }
 }

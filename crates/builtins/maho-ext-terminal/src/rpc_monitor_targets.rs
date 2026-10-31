@@ -16,6 +16,15 @@ pub enum RpcEvents {
     Kinds(Vec<String>),
 }
 
+/// Upstream `endpointSockets`: every endpoint socket the user runs under this agent dir (hosts and
+/// terminal endpoints); a directory that names no socket is skipped.
+pub fn endpoint_sockets(agent_dir: &std::path::Path) -> Vec<String> {
+    maho_rpc::host_endpoints::list_host_endpoints(agent_dir)
+        .into_iter()
+        .filter_map(|endpoint| endpoint.socket)
+        .collect()
+}
+
 const STATUS_KINDS: [&str; 2] = ["session_status", "effect_status"];
 
 pub fn parse_rpc_target(target: &str, self_durable_id: Option<&str>) -> Result<RpcTarget, String> {
@@ -118,6 +127,30 @@ pub fn matches_task(target: &RpcTarget, row: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rpc-monitor-targets.ts `endpointSockets`: every endpoint directory that names a socket is
+    /// listed; one whose record names no socket (a foreign record) is skipped.
+    #[test]
+    fn endpoint_sockets_lists_named_sockets_and_skips_unnamed_endpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(endpoint_sockets(temp.path()).is_empty());
+        for (socket, recorded) in [
+            ("/run/a.sock", "/run/a.sock"),
+            ("/run/b.sock", "/run/other.sock"),
+        ] {
+            let paths = maho_rpc::host_daemon_paths::create_host_daemon_paths(socket, temp.path());
+            maho_rpc::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+            std::fs::write(
+                &paths.endpoint_file,
+                json!({"socket": recorded}).to_string(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            endpoint_sockets(temp.path()),
+            vec!["/run/a.sock".to_owned()]
+        );
+    }
 
     #[test]
     fn parses_targets() {

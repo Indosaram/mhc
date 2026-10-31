@@ -8,3 +8,11 @@ fn containment_cases(){let cwd=Path::new("/home/user/project");let home=Path::ne
 fn command_cases(){let cwd=Path::new("/home/user/project");let home=Path::new("/home/user");for (command,expected) in [
     ("ls -la",vec![]),("cat /home/other/project/file.txt",vec!["/home/other/project/file.txt"]),("cat ../sibling/file.txt",vec!["../sibling/file.txt"]),("cat ./src/file.ts src/utils.ts",vec![]),("cat ~/other-project/file.txt",vec!["~/other-project/file.txt"]),("cat $HOME/other-project/file.txt",vec!["$HOME/other-project/file.txt"]),("cat \"/home/other/file with spaces.txt\"",vec!["/home/other/file with spaces.txt"]),("cp /home/other/file1 /home/other/file2 .",vec!["/home/other/file1","/home/other/file2"]),("ls -la --color=auto /home/other/project",vec!["/home/other/project"]),("ENV_VAR=value cat file.txt",vec![]),("cp ./internal.txt /home/external/file.txt",vec!["/home/external/file.txt"]),("cat /etc/passwd | grep root > /home/other/output.txt",vec!["/etc/passwd","/home/other/output.txt"]),("mkdir -p /home/other/new-dir",vec!["/home/other/new-dir"]),("touch /home/other/file.txt",vec!["/home/other/file.txt"]),
 ]{assert_eq!(extract_external_paths(command,cwd,home),expected,"{command}");}}
+
+#[cfg(windows)]
+#[test]
+fn resolve_without_open_handles_windows_drive_symlink_target() {
+    let (root, parts) = maho_ext_permission_system::external_dir::split_link_target(Path::new(r"C:\target\file.txt"));
+    assert_eq!(root, Some(std::path::PathBuf::from(format!("C:{}", std::path::MAIN_SEPARATOR))));
+    assert_eq!(parts, vec!["target".to_string(), "file.txt".to_string()]);
+}

@@ -63,6 +63,7 @@ fn given_a_completed_task_with_run_stats_when_the_status_row_renders_then_durati
             age_ms: 10,
             pid: None,
             child_session_id: None,
+            host_liveness: None,
             final_response: None,
             error_message: None,
             run_stats: Some(run_stats),

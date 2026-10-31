@@ -205,3 +205,57 @@ async fn orphan_delivery_group_holds_session_until_all_members_exit() -> Result<
     replacement.release()?;
     Ok(())
 }
+struct NoDelivery;
+#[async_trait::async_trait]
+impl super::runner::Delivery for NoDelivery {
+    async fn should_defer(
+        &self,
+        _job: &ScheduledJob,
+        _probes: &dyn ProcessProbes,
+    ) -> Result<Option<String>> {
+        panic!("another session's job must not be delivered");
+    }
+    async fn deliver(
+        &self,
+        _event: &super::runner::ScheduledPromptEvent,
+        _lock: &mut DeliveryLock,
+        _probes: &dyn ProcessProbes,
+        _timeout_ms: u64,
+    ) -> std::result::Result<(), String> {
+        panic!("another session's job must not be delivered");
+    }
+}
+#[tokio::test]
+async fn live_session_pass_keeps_another_sessions_tombstone() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let other = create_scheduled_job(
+        dir.path(),
+        NewScheduledJob {
+            session_id: "session-b".into(),
+            ..input(None)
+        },
+        10,
+    )?;
+    let tombstone = tombstone_path(dir.path(), &other.id);
+    write_atomic(&tombstone, "cancelled\n")?;
+    filetime::set_file_mtime(&tombstone, filetime::FileTime::from_unix_time(0, 0))?;
+    let probes = Probes {
+        now: 10 * 24 * 60 * 60 * 1000,
+        ..Probes::new(101)
+    };
+    let result = super::runner::run_due_jobs(&super::runner::RunDueOptions {
+        dir: dir.path(),
+        probes: &probes,
+        delivery: &NoDelivery,
+        concurrency: 1,
+        delivery_timeout_ms: 1_000,
+        session_id: Some("session-a"),
+    })
+    .await?;
+    assert!(result.events.is_empty());
+    assert!(
+        tombstone.exists(),
+        "another session's live tombstone was pruned"
+    );
+    Ok(())
+}

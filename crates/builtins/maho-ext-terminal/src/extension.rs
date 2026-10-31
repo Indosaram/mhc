@@ -1,31 +1,24 @@
+pub use crate::extension_state::monitor_state_payload;
+#[cfg(test)]
+use crate::extension_state::remove_ended_monitor_state_dir;
+use crate::extension_state::{
+    Backgrounds, Lifecycle, bind_monitor_events, manifest_now_ms, publish_backgrounds,
+    send_completion_notice,
+};
 use crate::manager::TerminalManager;
 use crate::tools::{
     bash_input::{BashInputInput, execute_bash_input},
     bash_output::execute_bash_output_view,
     bash_resize::execute_bash_resize,
     context::TerminalToolResult,
-    kill_bash::execute_kill_bash_shared,
 };
 use maho_ext_api::types::{EventKind, EventResult, Extension, ExtensionApi, ExtensionFailure};
 use maho_tools::definition::{ToolContent, ToolDefinition, ToolError, ToolResult};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 pub struct TerminalExtension;
-type Backgrounds = Arc<Mutex<indexmap::IndexMap<String, crate::session_bundle::BackgroundSession>>>;
-/// The session's manifest recorder (upstream `state.manifestWriter`), bound while a lifecycle owns it.
-type Lifecycle = Arc<tokio::sync::Mutex<Option<crate::terminal_state::TerminalStateLifecycle>>>;
-fn manifest_now_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
-}
-fn publish_backgrounds(backgrounds: &Backgrounds, sender: &ExtensionApi) {
-    let items=backgrounds.lock().expect("terminal backgrounds").values().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>();
-    sender.events.emit(
-        "wake_source_state",
-        &json!({"source":"terminal-background-sessions","activeCount":items.len(),"items":items}),
-    );
-}
 fn bind_completion(
     id: String,
     manager: Arc<Mutex<TerminalManager>>,
@@ -72,90 +65,6 @@ fn bind_completion(
         };
         send_completion_notice(&id, &view, &sender, &delivery, &notifier);
     }))
-}
-/// `state.notifier?.notifyCompletion(id, runtime)`: the once-only completion notice of a background session, read
-/// through `TerminalExitView` (a live session's, or the summary a tool child sent).
-fn send_completion_notice(
-    id: &str,
-    view: &crate::tools::context::TerminalExitView,
-    sender: &Arc<ExtensionApi>,
-    delivery: &Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
-    notifier: &Arc<Mutex<crate::notify::TerminalNotifier>>,
-) {
-    notifier
-        .lock()
-        .expect("terminal notifier")
-        .notify_completion(
-            id,
-            *delivery.lock().expect("terminal delivery"),
-            view,
-            |content, delivery| {
-                use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
-                if let Err(error) = sender.send_message(
-                    CustomMessage {
-                        custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
-                        content: vec![ToolContent::text(content)],
-                        display: false,
-                        details: None,
-                    },
-                    SendMessageOptions {
-                        trigger_turn: true,
-                        deliver_as: Some(
-                            if delivery == crate::notify::NotificationDelivery::Steer {
-                                DeliverAs::Steer
-                            } else {
-                                DeliverAs::FollowUp
-                            },
-                        ),
-                    },
-                ) {
-                    maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));
-                }
-            },
-        );
-}
-pub fn monitor_state_payload(snapshot: &[crate::monitor_registry::MonitorSnapshotEntry]) -> Value {
-    let monitors=snapshot.iter().map(|entry| {
-        let mut value=json!({"id":entry.id,"description":entry.description,"paused":entry.paused,"startedAtMs":entry.started_at_ms,"command":entry.command,"filter":entry.filter,"deadlineMs":entry.deadline_ms,"lastFiredAtMs":entry.last_fired_at_ms});
-        for (key,field) in [("command",entry.command.as_ref().map(|value|json!(value))),("filter",entry.filter.as_ref().map(|value|json!(value))),("persistent",entry.persistent.map(|value|json!(value))),("deadlineMs",entry.deadline_ms.map(|value|json!(value))),("fireCount",entry.fire_count.map(|value|json!(value))),("lastFiredAtMs",entry.last_fired_at_ms.map(|value|json!(value)))] {if let Some(field)=field {value[key]=field;}}
-        value
-    }).collect::<Vec<_>>();
-    json!({"activeCount":snapshot.len(),"monitors":monitors})
-}
-fn monitor_ended_payload(event: &crate::monitor_registry::MonitorEndedEvent) -> Value {
-    json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
-}
-fn bind_monitor_events(
-    mut state: tokio::sync::watch::Receiver<Vec<crate::monitor_registry::MonitorSnapshotEntry>>,
-    sender: Arc<ExtensionApi>,
-    lifecycle: Lifecycle,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let snapshot = state.borrow_and_update().clone();
-            let payload = monitor_state_payload(&snapshot);
-            sender.events.emit("terminal_monitor_state", &payload);
-            if let Err(error) = sender.rpc_emit("terminal_monitor_state", &payload) {
-                maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));
-            }
-            sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
-            // Upstream `onMonitorState`: the manifest mirrors mute state and burned fire windows and
-            // prunes monitors that ended.
-            if let Some(lifecycle) = lifecycle.lock().await.as_mut()
-                && let Err(error) = lifecycle
-                    .writer
-                    .observe_monitor_state(&snapshot, manifest_now_ms())
-                    .await
-            {
-                maho_ext_api::diagnostic(&format!(
-                    "terminal manifest monitor sync failed: {error}"
-                ));
-            }
-            if state.changed().await.is_err() {
-                return;
-            }
-        }
-    })
 }
 fn tool_result(result: TerminalToolResult) -> Result<ToolResult, ToolError> {
     if result.is_error == Some(true) {
@@ -228,68 +137,526 @@ fn spill_monitor_overflow(
         }
     }
 }
+/// Upstream `terminalStateDir`: no durable terminal state for a context without an absolute session
+/// dir, or for a one-shot `print`/`json` turn, which has no later generation to restore into.
 fn terminal_state_dir(
     ctx: &maho_ext_api::types::ExtensionContext,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let terminal_dir = crate::monitor_state_dir::terminal_state_dir(Some(ctx))?;
     let session_dir = ctx.session_manager.get_session_dir()?;
-    if session_dir.as_os_str().is_empty() || !session_dir.is_absolute() {
-        return None;
-    }
-    Some((session_dir.clone(), session_dir.join("extensions/terminal")))
+    Some((session_dir, terminal_dir))
 }
-/// Upstream `restoreDigestSentence`: ONE coalesced sentence with empty clauses omitted.
-fn restore_digest_sentence(digest: &crate::restore::RestoreDigest) -> Option<String> {
-    let mut clauses = Vec::new();
-    for (label, count) in [("restored", digest.restored), ("lost", digest.lost)] {
-        if count > 0 {
-            clauses.push(format!("{label} {count}"));
+/// The per-generation restore digest slot (upstream `PersistenceState.digestSlot`/`generation`):
+/// one decided digest per generation, held until a model is bound to hear it.
+#[derive(Default)]
+struct DigestState {
+    generation: u64,
+    slot: crate::restore_digest::DigestSlot,
+    /// Upstream `settings.notify !== "off"`: the model channel stays silent when off.
+    notify_off: bool,
+}
+type Digests = Arc<Mutex<DigestState>>;
+/// Upstream `RESTORE_STATUS_KEY`.
+const RESTORE_STATUS_KEY: &str = "terminal-restore";
+
+/// Native restore results as the upstream digest shape `restore_digest` reads.
+fn restore_digest_input(
+    digest: &crate::restore::RestoreDigest,
+    downtime_ms: f64,
+) -> crate::restore_digest::RestoreDigestInput {
+    crate::restore_digest::RestoreDigestInput {
+        store_error: digest.store_error,
+        results: digest
+            .results
+            .iter()
+            .map(|result| crate::restore_digest::MonitorRestoreResult {
+                monitor_id: result.monitor_id.clone(),
+                description: result.description.clone(),
+                kind: if result.file { "file" } else { "command" }.to_owned(),
+                outcome: result.outcome.to_owned(),
+                command: result.command.clone(),
+                path: result.path.clone(),
+                reason: result.reason.clone(),
+                orphan: None,
+            })
+            .collect(),
+        // A background session never survives its generation: it is reported, never respawned.
+        background_sessions: digest
+            .background_sessions
+            .iter()
+            .map(|session| crate::restore_digest::BackgroundRestoreResult {
+                id: session.id.clone(),
+                command: session.command.clone(),
+                outcome: "exited".to_owned(),
+                pid: None,
+            })
+            .collect(),
+        downtime_ms,
+    }
+}
+
+/// Upstream `flushRestoreDigest`: deliver the pending digest once a model is bound; with
+/// `terminal.notify` off only the user is told.
+fn flush_restore_digest(
+    digests: &Digests,
+    sender: &ExtensionApi,
+    ctx: &maho_ext_api::types::ExtensionContext,
+    has_model: bool,
+) {
+    let mut state = digests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let notify_off = state.notify_off;
+    state.slot.flush(|message| {
+        if notify_off {
+            ctx.ui.notify(
+                &message.content,
+                maho_ext_api::types::NotificationType::Info,
+            );
+            return true;
+        }
+        let notify = |content: &str| {
+            ctx.ui
+                .notify(content, maho_ext_api::types::NotificationType::Info)
+        };
+        crate::restore_digest::deliver_restore_digest(
+            has_model,
+            ctx.has_ui.then_some(&notify as &dyn Fn(&str)),
+            message,
+            |custom, options| {
+                if let Err(error) = sender.send_message(custom, options) {
+                    maho_ext_api::diagnostic(&format!("terminal restore digest failed: {error}"));
+                }
+            },
+        )
+    });
+}
+
+/// Upstream `sweepTerminalStateDir` after a takeover: stale leases and empty manifests of other
+/// sessions; housekeeping only, a failure leaves the files for the next start.
+fn sweep_terminal_state(
+    terminal_dir: &std::path::Path,
+    encoded: &str,
+) -> tokio::task::JoinHandle<()> {
+    let dir = terminal_dir.to_path_buf();
+    let keep: std::collections::HashSet<String> =
+        [format!("{encoded}.lease"), format!("{encoded}.json")]
+            .into_iter()
+            .collect();
+    tokio::task::spawn_blocking(move || {
+        let options = crate::terminal_state_gc::SweepOptions {
+            self_pid: f64::from(std::process::id()),
+            keep: &keep,
+            limit: None,
+            is_process_alive: None,
+            read_process_start_ms: None,
+        };
+        let _ = crate::terminal_state_gc::sweep_terminal_state_dir(&dir, &options);
+    })
+}
+/// What a takeover (an immediate acquire or a lease-keeper handover) needs to restore.
+#[derive(Clone)]
+struct TakeoverContext {
+    state: Lifecycle,
+    /// Upstream `state.recordedBackgroundIds`, cleared when `own` installs its writer.
+    recorded: crate::extension_state::RecordedBackgroundIds,
+    manager: Arc<Mutex<TerminalManager>>,
+    monitors: Arc<Mutex<crate::monitor_registry::MonitorRegistry>>,
+    digests: Digests,
+    terminal_dir: std::path::PathBuf,
+    encoded: String,
+    shell: Option<String>,
+    settings: crate::settings::ResolvedTerminalSettings,
+    generation: u64,
+    /// Upstream `whenRestoreDecided`: the last generation whose restore was decided.
+    decided: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Upstream `restoreSessionTestHooks.keeperIntervalMs`; `None` in production.
+    keeper_interval_ms: Option<u64>,
+    /// Upstream `restoreSessionTestHooks.graceMs`; `None` (RESTORE_GRACE_MS) in production.
+    restore_grace_ms: Option<u64>,
+    /// Upstream `own` ends with `flushRestoreDigest`: deliver the decided digest once a model is bound.
+    flush: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Upstream `state.restoreInFlight`, awaited by shutdown.
+    restore_tasks: RestoreTasks,
+    /// Set by shutdown: the grace window ends at once.
+    grace_stop: Arc<tokio::sync::watch::Sender<bool>>,
+}
+/// Upstream `restoreInFlight`: the detached restore tasks (a takeover's `own`, the grace-window
+/// `decide`) that shutdown awaits before it records the manifest.
+type RestoreTasks = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
+/// Awaits every restore task in flight, including one a task spawned while it was awaited.
+async fn await_restores(tasks: &RestoreTasks) {
+    loop {
+        let next = tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
+        let Some(task) = next else {
+            return;
+        };
+        let _ = task.await;
+    }
+}
+/// Upstream `stopPersistence` (restore half): the generation is over, so a restore still in its
+/// grace window ends it at once (a watch still running counts as restored and stays in the
+/// manifest), decides nothing for the slot, and is awaited before the manifest is recorded. Native
+/// divergence: upstream awaits the whole grace window instead of cutting it short.
+async fn stop_restores(
+    digests: &Digests,
+    grace_stop: &tokio::sync::watch::Sender<bool>,
+    tasks: &RestoreTasks,
+) {
+    digests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .generation += 1;
+    grace_stop.send_replace(true);
+    await_restores(tasks).await;
+}
+type ExitWatch = tokio::sync::watch::Receiver<Option<Result<maho_pty::PtyExit, String>>>;
+impl TakeoverContext {
+    /// Upstream durable-command `exitsWithin(runtime, graceMs)`: a respawned command watch is
+    /// restored only if it is still running when the grace window closes. An exit inside it is
+    /// `completed` (code 0) or `lost` with `exited <code> in <ms>ms: <first output line>`, and the
+    /// entry is not kept in the manifest (its id is returned). All windows share one deadline
+    /// (upstream `Promise.all`).
+    async fn settle_restored_commands(
+        &self,
+        digest: &mut crate::restore::RestoreDigest,
+    ) -> Vec<String> {
+        let watches: Vec<(usize, String, ExitWatch)> = {
+            let mut manager = self
+                .manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            digest
+                .results
+                .iter()
+                .enumerate()
+                .filter(|(_, result)| {
+                    !result.file && matches!(result.outcome, "restored" | "muted")
+                })
+                .filter_map(|(index, result)| {
+                    let id = manager.resolve_id(&result.monitor_id)?;
+                    let exit = manager.get(&id)?.subscribe_exit();
+                    Some((index, id, exit))
+                })
+                .collect()
+        };
+        let mut settled_ids = Vec::new();
+        if watches.is_empty() {
+            return settled_ids;
+        }
+        let started = std::time::Instant::now();
+        let mut stopped = self.grace_stop.subscribe();
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(
+                self.restore_grace_ms
+                    .unwrap_or(crate::shared::RESTORE_GRACE_MS),
+            );
+        for (index, id, mut exit) in watches {
+            let code = tokio::select! {
+                biased;
+                settled = tokio::time::timeout_at(deadline, exit.wait_for(Option::is_some)) => match settled {
+                    Ok(Ok(settled)) => settled
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok())
+                        .and_then(|exit| exit.exit_code),
+                    _ => continue,
+                },
+                // Shutdown: every watch not yet seen exiting counts as restored.
+                _ = stopped.wait_for(|stop| *stop) => break,
+            };
+            let result = &mut digest.results[index];
+            match result.outcome {
+                "muted" => digest.muted -= 1,
+                _ => digest.restored -= 1,
+            }
+            if code == Some(0) {
+                result.outcome = "completed";
+                digest.completed += 1;
+            } else {
+                let output = self
+                    .manager
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&id)
+                    .and_then(|runtime| runtime.full_output().ok())
+                    .unwrap_or_default();
+                let line = crate::output_format::sanitize_terminal_output(&output)
+                    .split('\n')
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(|line| line.chars().take(200).collect::<String>())
+                    .unwrap_or_default();
+                let exit =
+                    code.map_or_else(|| "exited".to_owned(), |code| format!("exited {code}"));
+                let elapsed = started.elapsed().as_millis();
+                result.outcome = "lost";
+                result.reason = Some(if line.is_empty() {
+                    format!("{exit} in {elapsed}ms")
+                } else {
+                    format!("{exit} in {elapsed}ms: {line}")
+                });
+                digest.lost += 1;
+            }
+            settled_ids.push(result.monitor_id.clone());
+        }
+        settled_ids
+    }
+    /// Upstream `own(lease)`: restore the manifest, set the decided digest, sweep stale state.
+    async fn own(&self, mut lifecycle: crate::terminal_state::TerminalStateLifecycle, now: f64) {
+        // Upstream `startPersistence`: stale overflow files are swept fire-and-forget; errors are swallowed.
+        {
+            let dir = self.terminal_dir.clone();
+            tokio::spawn(async move {
+                let _ =
+                    crate::monitor_overflow_file::sweep_monitor_overflow_files_default(&dir).await;
+            });
+        }
+        let restore_state = lifecycle.read_restore_state().await;
+        let downtime = match &restore_state {
+            Ok(Some(manifest)) => (now - manifest.updated_at).max(0.0),
+            _ => 0.0,
+        };
+        let readable_manifest = matches!(restore_state, Ok(Some(_)));
+        let digest = {
+            let mut manager = self
+                .manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut monitors = self
+                .monitors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lifecycle.apply_restore(
+                restore_state,
+                &mut manager,
+                &mut monitors,
+                now,
+                self.shell.as_deref(),
+                &self.settings,
+            )
+        };
+        // Bound before the grace window: monitors created meanwhile reach this recorder. Upstream
+        // `bindTerminalManifestWriter` drains the specs queued while unbound; the state lock is
+        // held across bind and install, so no monitor call sees the session bound with no
+        // lifecycle installed (which would drop its spec).
+        let mut slot = self.state.lock().await;
+        let session_id = lifecycle.writer.session_id().to_owned();
+        crate::tools::monitor_manifest_binding::bind_and_drain(
+            &session_id,
+            &mut lifecycle.writer,
+            terminal_now_ms(),
+        )
+        .await;
+        crate::extension_state::replace_lifecycle(&mut slot, &self.recorded, Some(lifecycle));
+        drop(slot);
+        // Upstream restores on a detached promise: session_start never waits on a grace window.
+        let this = self.clone();
+        let task = tokio::spawn(async move {
+            this.decide(digest, downtime, readable_manifest).await;
+        });
+        self.restore_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(task);
+    }
+
+    /// The rest of upstream `own(lease)` once the restore ran: settle the grace window, rewrite a
+    /// readable manifest, drop dead watches' state dirs, set the decided digest, sweep, signal.
+    async fn decide(
+        &self,
+        mut digest: crate::restore::RestoreDigest,
+        downtime: f64,
+        readable_manifest: bool,
+    ) {
+        let settled = self.settle_restored_commands(&mut digest).await;
+        // A watch that did not come back never runs again: its baseline dir goes with it (upstream
+        // removes these before its generation check).
+        for result in digest
+            .results
+            .iter()
+            .filter(|result| matches!(result.outcome, "lost" | "expired" | "completed"))
+        {
+            let _ = crate::monitor_state_dir::remove_monitor_state_dir(
+                &self.terminal_dir,
+                &result.monitor_id,
+            )
+            .await;
+        }
+        // Upstream `if (generation !== state.generation) return;`: a restore that a newer
+        // generation overtook touches neither that generation's manifest nor its digest slot, and
+        // sweeps, flushes and signals nothing.
+        if self
+            .digests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+            != self.generation
+        {
+            return;
+        }
+        if let Some(lifecycle) = self.state.lock().await.as_mut() {
+            for monitor_id in &settled {
+                lifecycle.writer.forget_restored(monitor_id);
+            }
+            // Upstream `persistRestored`: a readable manifest is rewritten to the restore's truth,
+            // so a watch that did not come back is gone from disk and never re-run.
+            if readable_manifest {
+                lifecycle.writer.persist_restored(terminal_now_ms()).await;
+            }
+        }
+        let mut digests = self
+            .digests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if digests.generation == self.generation
+            && (digest.store_error
+                || !digest.results.is_empty()
+                || !digest.background_sessions.is_empty())
+        {
+            digests
+                .slot
+                .set(crate::restore_digest::build_restore_digest(
+                    &restore_digest_input(&digest, downtime),
+                    self.generation,
+                    crate::restore_digest::RestoreDigestOutcome::Decided,
+                    None,
+                ));
+        }
+        drop(digests);
+        drop(sweep_terminal_state(&self.terminal_dir, &self.encoded));
+        if let Some(flush) = &self.flush {
+            flush();
+        }
+        self.decided.send_replace(self.generation);
+    }
+}
+
+/// Upstream `wait(holder)`: a deferred digest and a lease keeper that hands the session over
+/// once the holder is gone.
+fn wait_for_lease(
+    ctx: &maho_ext_api::types::ExtensionContext,
+    context: &TakeoverContext,
+    keeper: &Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>>,
+    holder: Option<crate::manifest_lease::LeaseRecord>,
+    session_dir: std::path::PathBuf,
+    session_id: String,
+) {
+    let holder_pid = holder.as_ref().map(|holder| holder.pid as u32);
+    let status = holder_pid.map_or_else(
+        || "monitors waiting for the session lease".to_owned(),
+        |pid| format!("monitors held by pid {pid}"),
+    );
+    ctx.ui.set_status(RESTORE_STATUS_KEY, Some(status.as_str()));
+    context
+        .digests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .slot
+        .set(crate::restore_digest::build_restore_digest(
+            &crate::restore_digest::RestoreDigestInput::default(),
+            context.generation,
+            crate::restore_digest::RestoreDigestOutcome::Deferred,
+            holder_pid,
+        ));
+    let takeover = context.clone();
+    let ui = ctx.ui.clone();
+    let error_ui = ctx.ui.clone();
+    let next = crate::lease_keeper::create_lease_keeper(crate::lease_keeper::LeaseKeeperOptions {
+        dir: context.terminal_dir.clone(),
+        encoded_session_id: context.encoded.clone(),
+        on_takeover: Box::new(move |lease| {
+            ui.set_status(RESTORE_STATUS_KEY, None);
+            let takeover = takeover.clone();
+            let mut lifecycle =
+                crate::terminal_state::TerminalStateLifecycle::new(&session_dir, &session_id);
+            lifecycle.adopt_lease(lease);
+            let tasks = takeover.restore_tasks.clone();
+            let task = tokio::spawn(async move {
+                takeover.own(lifecycle, terminal_now_ms()).await;
+            });
+            tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(task);
+        }),
+        on_error: Some(Box::new(move |error| {
+            error_ui.notify(
+                &format!("Terminal lease check failed, still waiting: {error}"),
+                maho_ext_api::types::NotificationType::Warning,
+            );
+        })),
+        interval_ms: context.keeper_interval_ms,
+        self_pid: f64::from(std::process::id()),
+        self_started_at_ms: crate::process_identity::own_process_started_at_ms(None),
+        is_process_alive: None,
+        read_process_start_ms: None,
+    });
+    next.start(holder);
+    if let Some(previous) = keeper
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(next)
+    {
+        previous.stop();
+    }
+}
+
+/// Upstream `startPersistence` `acquire()`: own the lease and restore, or wait on its holder.
+async fn acquire_or_wait(
+    ctx: &maho_ext_api::types::ExtensionContext,
+    context: &TakeoverContext,
+    keeper: &Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>>,
+    mut lifecycle: crate::terminal_state::TerminalStateLifecycle,
+    session_dir: std::path::PathBuf,
+    session_id: String,
+    now: f64,
+) {
+    match lifecycle.acquire(
+        &context.terminal_dir,
+        &context.encoded,
+        f64::from(std::process::id()),
+        now,
+    ) {
+        Ok(crate::terminal_state::TerminalStateAdoption::Acquired) => {
+            ctx.ui.set_status(RESTORE_STATUS_KEY, None);
+            context.own(lifecycle, now).await;
+        }
+        Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere { pid }) => {
+            wait_for_lease(
+                ctx,
+                context,
+                keeper,
+                Some(crate::manifest_lease::LeaseRecord::v1(pid, 0.0)),
+                session_dir,
+                session_id,
+            );
+        }
+        Err(error) => {
+            ctx.ui.notify(
+                &format!("Terminal lease not acquired yet, retrying: {error}"),
+                maho_ext_api::types::NotificationType::Warning,
+            );
+            wait_for_lease(ctx, context, keeper, None, session_dir, session_id);
         }
     }
-    if digest.expired > 0 {
-        clauses.push(format!("expired {}", digest.expired));
-    }
-    if digest.muted > 0 {
-        clauses.push(format!("muted {}", digest.muted));
-    }
-    if digest.attached_elsewhere > 0 {
-        clauses.push(format!("attached elsewhere {}", digest.attached_elsewhere));
-    }
-    if digest.store_error {
-        clauses.push("the terminal manifest could not be read".to_owned());
-    }
-    (!clauses.is_empty()).then(|| format!("Terminal state after restart: {}.", clauses.join("; ")))
 }
-/// Upstream `sendTerminalReminder`: a `<system-reminder>` through the terminal notification delivery.
-fn send_terminal_reminder(
-    sender: &ExtensionApi,
-    delivery: Option<crate::notify::NotificationDelivery>,
-    sentence: &str,
-) {
-    use maho_ext_api::types::{CustomMessage, DeliverAs, SendMessageOptions};
-    let Some(delivery) = delivery else {
-        return;
-    };
-    if let Err(error) = sender.send_message(
-        CustomMessage {
-            custom_type: crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),
-            content: vec![ToolContent::text(format!(
-                "<system-reminder>{sentence}</system-reminder>"
-            ))],
-            display: false,
-            details: None,
-        },
-        SendMessageOptions {
-            trigger_turn: true,
-            deliver_as: Some(if delivery == crate::notify::NotificationDelivery::Steer {
-                DeliverAs::Steer
-            } else {
-                DeliverAs::FollowUp
-            }),
-        },
-    ) {
-        maho_ext_api::diagnostic(&format!("terminal reminder failed: {error}"));
+
+/// Upstream `stopPersistence` (first half): stop waiting; a tick in flight either releases what it
+/// acquired or finishes its takeover before the caller flushes the manifest.
+async fn stop_waiting(keeper: &Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>>) {
+    let waiting = keeper
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(waiting) = waiting {
+        waiting.stop();
+        waiting.settled().await;
     }
 }
+
 impl Extension for TerminalExtension {
     fn register(&self, api: &mut ExtensionApi) {
         // The session cwd the child placement reads, set by the first session-start handler.
@@ -303,17 +670,24 @@ impl Extension for TerminalExtension {
         let start_configuration = configuration.clone();
         let configuration_manager = manager.clone();
         let start_cwd = session_cwd.clone();
+        // Upstream `state.ctx`, read by the monitor-ended sink at call time.
+        let session_ctx: Arc<Mutex<Option<maho_ext_api::types::ExtensionContext>>> = Arc::default();
+        let start_ctx = session_ctx.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let configuration = start_configuration.clone();
                 let manager = configuration_manager.clone();
                 let context_cwd = start_cwd.clone();
+                let session_ctx = start_ctx.clone();
                 Box::pin(async move {
                     *context_cwd
                         .lock()
                         .map_err(|_| ExtensionFailure::new("terminal context cwd poisoned"))? =
                         Some(ctx.cwd.clone());
+                    *session_ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
                     let loaded = crate::settings::load_session_settings(ctx)?;
                     manager
                         .lock()
@@ -330,26 +704,37 @@ impl Extension for TerminalExtension {
         let terminal_notifier = Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
         let notifier: Arc<Mutex<Option<crate::monitor_notify::MonitorNotifier>>> =
             Arc::new(Mutex::new(None));
-        let event_notifier = notifier.clone();
-        let ended_bus = api.events.clone();
+        let sender = Arc::new(ExtensionApi::new(
+            api.registered.clone(),
+            api.profile.clone(),
+            api.events.clone(),
+            api.runtime.clone(),
+        ));
+        let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
+        let recorded_background_ids: crate::extension_state::RecordedBackgroundIds =
+            Arc::default();
+        // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
+        let terminal_state = crate::extension_state::TerminalExtensionState {
+            sender: sender.clone(),
+            ctx: session_ctx,
+            configuration: configuration.clone(),
+            session_cwd,
+            backgrounds: backgrounds.clone(),
+            lifecycle: state_lifecycle.clone(),
+            monitor_notifier: notifier.clone(),
+            notifier: terminal_notifier.clone(),
+            delivery: completion_delivery.clone(),
+            recorded_background_ids: recorded_background_ids.clone(),
+        };
+        let sinks = crate::extension_state::bundle_sinks(&terminal_state);
+        let (on_monitor_event, on_monitor_ended) = (
+            sinks.on_monitor_event.clone(),
+            sinks.on_monitor_ended.clone(),
+        );
         let monitors = Arc::new(Mutex::new(
             crate::monitor_registry::MonitorRegistry::new_with_ended(
-                move |event| {
-                    if let Some(notifier) =
-                        event_notifier.lock().expect("monitor notifier").as_ref()
-                        && let Err(error) = notifier.notify_event(event)
-                    {
-                        maho_ext_api::diagnostic(&format!("monitor delivery failed: {error}"));
-                    }
-                },
-                move |event| {
-                    let payload = monitor_ended_payload(&event);
-                    ended_bus.emit(crate::shared::TERMINAL_MONITOR_ENDED_EVENT, &payload);
-                    ended_bus.emit(
-                        "senpi:extension-rpc-event",
-                        &json!({"name":crate::shared::TERMINAL_MONITOR_ENDED_EVENT,"data":payload}),
-                    );
-                },
+                move |event| on_monitor_event(event),
+                move |event| on_monitor_ended(event),
             ),
         ));
         let bundle = Arc::new(Mutex::new(
@@ -362,7 +747,7 @@ impl Extension for TerminalExtension {
         let reload_bundle = bundle.clone();
         let reload_configuration = configuration.clone();
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let bundle=reload_bundle.clone();let configuration=reload_configuration.clone();Box::pin(async move {
-            let previous=crate::session_bundle::claim_parked_bundle(ctx.session_manager.session_id());
+            let previous=crate::extension_state::session_key_of(Some(ctx)).and_then(|key|crate::session_bundle::claim_parked_bundle(&key));
             if let Some(mut previous)=previous {
                 if matches!(event,maho_ext_api::types::ExtensionEvent::SessionStart(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                     let live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.adopt(&previous);live.manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).configure(&configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.0);
@@ -470,13 +855,9 @@ impl Extension for TerminalExtension {
                 })
             }),
         );
-        let sender = Arc::new(ExtensionApi::new(
-            api.registered.clone(),
-            api.profile.clone(),
-            api.events.clone(),
-            api.runtime.clone(),
-        ));
-        let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
+        let digests: Digests = Arc::new(Mutex::new(DigestState::default()));
+        let lease_keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> =
+            Arc::new(Mutex::new(None));
         let telemetry_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> =
             Arc::new(Mutex::new(None));
         let telemetry_monitors = monitors.clone();
@@ -560,7 +941,7 @@ impl Extension for TerminalExtension {
                             && !notice_shown.swap(true, std::sync::atomic::Ordering::SeqCst)
                         {
                             ctx.ui.notify(
-                                "native Anthropic bash active — monitor sessions remain available",
+                                "native Anthropic bash active: monitor sessions remain available",
                                 maho_ext_api::types::NotificationType::Info,
                             );
                         }
@@ -628,11 +1009,21 @@ impl Extension for TerminalExtension {
         // a context without one keeps no durable terminal state, like upstream's SDK/in-memory
         // sessions. A reload generation keeps the lease: the same pid still owns it.
         let start_lifecycle = state_lifecycle.clone();
+        let start_recorded = recorded_background_ids.clone();
         let lifecycle_manager = manager.clone();
         let lifecycle_monitors = monitors.clone();
         let lifecycle_settings = configuration.clone();
         let lifecycle_sender = sender.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();Box::pin(async move {
+        let lifecycle_digests = digests.clone();
+        let lifecycle_keeper = lease_keeper.clone();
+        let lifecycle_decided = Arc::new(tokio::sync::watch::channel(0u64).0);
+        let restore_tasks: RestoreTasks = Arc::default();
+        // The current generation's grace-window stop signal; each SessionStart installs a fresh one.
+        let grace_stop: Arc<Mutex<Arc<tokio::sync::watch::Sender<bool>>>> =
+            Arc::new(Mutex::new(Arc::new(tokio::sync::watch::channel(false).0)));
+        let start_restore_tasks = restore_tasks.clone();
+        let start_grace_stop = grace_stop.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();let recorded=start_recorded.clone();Box::pin(async move {
             let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
             let session_id=ctx.session_manager.session_id().to_owned();
             let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
@@ -641,31 +1032,62 @@ impl Extension for TerminalExtension {
             // A reload generation inherits the lease (same pid) and only rebinds the recorder so
             // manifest coverage continues; a fresh generation acquires the lease and restores.
             let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
-            if reload {
-                *state.lock().await=Some(lifecycle);
-            } else {
-                let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
-                let delivery=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
-                match lifecycle.acquire(&terminal_dir,&encoded,f64::from(std::process::id()),now) {
-                    Ok(crate::terminal_state::TerminalStateAdoption::Acquired)=>{
-                        // Upstream `startPersistence`: stale overflow files are swept fire-and-forget; errors are swallowed.
-                        {let dir=terminal_dir.clone();tokio::spawn(async move {let _=crate::monitor_overflow_file::sweep_monitor_overflow_files_default(&dir).await;});}
-                        let restore_state=lifecycle.read_restore_state().await;
-                        let digest={let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let mut monitors=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);lifecycle.apply_restore(restore_state,&mut manager,&mut monitors,now,shell.as_deref(),&settings)};
-                        if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
-                        *state.lock().await=Some(lifecycle);
-                    }
-                    Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>send_terminal_reminder(&sender,delivery,&format!("Terminal monitors for this session are attached in another live process (pid {pid}); nothing was restored here.")),
-                    Err(error)=>send_terminal_reminder(&sender,delivery,&format!("Terminal state after restart: the session lease could not be acquired ({error}); nothing was restored.")),
-                }
+            // Upstream `holdsLease`: only a reload whose process still holds this session's lease
+            // token keeps it; any other reload acquires (or waits) like a fresh start.
+            if reload && crate::manifest_lease::current_lease_token(&encoded).is_some() {
+                // Bound at once: the specs queued before this generation's writer drain into it.
+                // The state lock is held across bind and install, so a monitor call cannot see the
+                // session bound while no lifecycle is installed (its spec would be dropped).
+                // SF-2: seeded from disk first, so the first post-reload write keeps the pre-reload
+                // entries instead of rewriting the manifest from an empty writer.
+                lifecycle.writer.seed_from_disk().await;
+                let mut slot=state.lock().await;
+                crate::tools::monitor_manifest_binding::bind_and_drain(&session_id,&mut lifecycle.writer,now).await;
+                crate::extension_state::replace_lifecycle(&mut slot,&recorded,Some(lifecycle));
+                return Ok(EventResult::None);
             }
+            let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
+            // Upstream `startPersistence`: a new generation gets a fresh digest slot.
+            let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
+            let context=TakeoverContext {state:state.clone(),recorded,manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
+            acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
+            flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
         })}));
         let shutdown_lifecycle = state_lifecycle.clone();
         let shutdown_monitors = monitors.clone();
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();Box::pin(async move {
-            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
-            let Some(mut lifecycle)=state.lock().await.take() else {return Ok(EventResult::None);};
+        let shutdown_keeper = lease_keeper.clone();
+        let shutdown_digests = digests.clone();
+        let shutdown_recorded = recorded_background_ids.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let recorded=shutdown_recorded.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
+            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
+                // Upstream `detachPersistence`: the recorder detaches without writing and the
+                // session unbinds, so specs created until the next generation binds are queued for
+                // it. The lease is deliberately kept: the same pid holds it across the reload.
+                stop_waiting(&keeper).await;
+                stop_restores(&digests,&grace_stop,&restore_tasks).await;
+                let mut slot=state.lock().await;
+                if let Some(lifecycle)=crate::extension_state::replace_lifecycle(&mut slot,&recorded,None) {crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());}
+                return Ok(EventResult::None);
+            }
+            // Upstream `stopPersistence`: stop waiting; a tick in flight either releases what it
+            // acquired or finishes its takeover before the manifest is flushed.
+            stop_waiting(&keeper).await;
+            // Upstream `retireLeaseToken(lease.token)` runs BEFORE `await state.restoreInFlight`:
+            // this process's token for the session (acquired, taken over, or inherited across a
+            // reload) stops counting as a live same-pid holder before the shutdown waits.
+            if let Some(token)=crate::manifest_lease::current_lease_token(&maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id())) {crate::manifest_lease::retire_lease_token(&token);}
+            // Upstream `await state.restoreInFlight`: the restore (a takeover's `own` and its grace
+            // window) finishes before the final sync, the shutdown record and the release.
+            stop_restores(&digests,&grace_stop,&restore_tasks).await;
+            // Unbound under the state lock, like the bind: a monitor call never sees the session
+            // bound with no lifecycle installed.
+            let mut slot=state.lock().await;
+            let Some(mut lifecycle)=crate::extension_state::replace_lifecycle(&mut slot,&recorded,None) else {return Ok(EventResult::None);};
+            crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());
+            drop(slot);
+            // Idempotent: the lease this lifecycle holds is the token retired above.
+            lifecycle.retire_token();
             // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
             // carries each watch's burned fire window and mute state.
             let snapshot=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
@@ -681,6 +1103,20 @@ impl Extension for TerminalExtension {
             }
             Ok(EventResult::None)
         })}));
+        // Upstream `model_select`: a digest decided before a model was bound is delivered now.
+        let select_digests = digests.clone();
+        let select_sender = sender.clone();
+        api.on(
+            EventKind::ModelSelect,
+            Arc::new(move |_, ctx| {
+                let digests = select_digests.clone();
+                let sender = select_sender.clone();
+                Box::pin(async move {
+                    flush_restore_digest(&digests, &sender, ctx, true);
+                    Ok(EventResult::None)
+                })
+            }),
+        );
         let bash_sender = sender.clone();
         let lifecycle_delivery = completion_delivery.clone();
         let lifecycle_notifier = notifier.clone();
@@ -840,6 +1276,7 @@ impl Extension for TerminalExtension {
         let restored_notifier = terminal_notifier.clone();
         let restored_tasks = completion_tasks.clone();
         let restored_lifecycle = state_lifecycle.clone();
+        let restored_recorded = recorded_background_ids.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, _| {
@@ -850,6 +1287,7 @@ impl Extension for TerminalExtension {
                 let notifier = restored_notifier.clone();
                 let tasks = restored_tasks.clone();
                 let lifecycle = restored_lifecycle.clone();
+                let recorded = restored_recorded.clone();
                 Box::pin(async move {
                     publish_backgrounds(&backgrounds, &sender);
                     let entries = backgrounds
@@ -859,19 +1297,12 @@ impl Extension for TerminalExtension {
                         .cloned()
                         .collect::<Vec<_>>();
                     // Upstream `onBackgroundState`: each live background session is recorded once per writer.
-                    if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                        for entry in &entries {
-                            lifecycle
-                                .writer
-                                .record_background_start(
-                                    &entry.id,
-                                    &entry.description,
-                                    entry.started_at_ms,
-                                    manifest_now_ms(),
-                                )
-                                .await;
-                        }
-                    }
+                    crate::extension_state::record_background_starts(
+                        &lifecycle,
+                        &recorded,
+                        entries.clone(),
+                    )
+                    .await;
                     let ids = entries
                         .into_iter()
                         .map(|entry| entry.id)
@@ -902,85 +1333,10 @@ impl Extension for TerminalExtension {
         let bash_lifecycle = state_lifecycle.clone();
         // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
         // session cwd, the shell environment, and the hooks a background session that lives on the child reports to.
-        let mut terminal_context = crate::tools::context::TerminalToolContext::new(
-            configuration.clone(),
-            Arc::new(maho_core::utils::shell::get_shell_env),
-        );
-        terminal_context.session_cwd = session_cwd;
-        {
-            let (backgrounds, sender, lifecycle) = (
-                backgrounds.clone(),
-                bash_sender.clone(),
-                state_lifecycle.clone(),
-            );
-            terminal_context.on_background_start = Some(Arc::new(
-                move |id: &str, description: &str, started_at_ms: f64| {
-                    backgrounds
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(
-                            id.to_owned(),
-                            crate::session_bundle::BackgroundSession {
-                                id: id.to_owned(),
-                                description: description.to_owned(),
-                                started_at_ms,
-                            },
-                        );
-                    publish_backgrounds(&backgrounds, &sender);
-                    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-                        return;
-                    };
-                    let (lifecycle, id, description) =
-                        (lifecycle.clone(), id.to_owned(), description.to_owned());
-                    handle.spawn(async move {
-                        if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                            lifecycle
-                                .writer
-                                .record_background_start(
-                                    &id,
-                                    &description,
-                                    started_at_ms,
-                                    manifest_now_ms(),
-                                )
-                                .await;
-                        }
-                    });
-                },
-            ));
-        }
-        {
-            let (backgrounds, sender, lifecycle, delivery, notifier) = (
-                backgrounds.clone(),
-                bash_sender.clone(),
-                state_lifecycle.clone(),
-                completion_delivery.clone(),
-                terminal_notifier.clone(),
-            );
-            terminal_context.on_background_exit = Some(Arc::new(
-                move |id: &str, view: crate::tools::context::TerminalExitView| {
-                    backgrounds
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .shift_remove(id);
-                    publish_backgrounds(&backgrounds, &sender);
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        let (lifecycle, id) = (lifecycle.clone(), id.to_owned());
-                        handle.spawn(async move {
-                            if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
-                                lifecycle
-                                    .writer
-                                    .record_background_exit(&id, manifest_now_ms())
-                                    .await;
-                            }
-                        });
-                    }
-                    send_completion_notice(id, &view, &sender, &delivery, &notifier);
-                },
-            ));
-        }
+        let terminal_context = crate::extension_state::build_tool_context(&terminal_state);
         let mut bash = ToolDefinition::new(
             "bash",
-            r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops — subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
+            r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops: subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
             crate::tools::bash::pty_bash_schema(),
             Arc::new(move |call| {
                 let manager = Arc::clone(&bash_manager);
@@ -1094,7 +1450,7 @@ impl Extension for TerminalExtension {
             ),
             (
                 "bash_input",
-                "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session — e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
+                "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session: e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
                 "Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",
                 crate::tools::bash_input::bash_input_schema(),
             ),
@@ -1113,6 +1469,7 @@ impl Extension for TerminalExtension {
         ] {
             let manager = Arc::clone(&manager);
             let monitors = monitors.clone();
+            let kill_session_ctx = session_ctx.clone();
             let mut tool = ToolDefinition::new(
                 name,
                 description,
@@ -1120,6 +1477,7 @@ impl Extension for TerminalExtension {
                 Arc::new(move |call| {
                     let manager = Arc::clone(&manager);
                     let monitors = monitors.clone();
+                    let kill_ctx = kill_session_ctx.clone();
                     Box::pin(async move {
                         let id = call.params.get("bash_id").and_then(Value::as_str);
                         if name == "kill_bash" {
@@ -1130,51 +1488,22 @@ impl Extension for TerminalExtension {
                                 .get("all")
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false);
-                            if all {
-                                // stop_file runs the monitor-ended callbacks, so the manager lock is not held across it.
-                                let count = {
-                                    let mut count = manager
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                        .size();
-                                    let mut monitors = monitors
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    for id in monitors
-                                        .snapshot()
-                                        .into_iter()
-                                        .filter(|record| record.id.starts_with("watch_"))
-                                        .map(|record| record.id)
-                                    {
-                                        count += usize::from(monitors.stop_file(&id));
-                                    }
-                                    count
-                                };
-                                crate::manager::teardown_shared(&manager)
-                                    .await
-                                    .map_err(|error| ToolError::Message(error.to_string()))?;
-                                return tool_result(crate::tools::context::text_result(format!(
-                                    "Killed {count} session(s)."
-                                )));
-                            }
-                            if let Some(id) = id {
-                                let resolved = crate::tools::context::resolve_terminal_id(
-                                    &manager
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                                    id,
-                                );
-                                let stopped = monitors
+                            let terminal_dir = crate::monitor_state_dir::terminal_state_dir(
+                                kill_ctx
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .stop_file(&resolved);
-                                if stopped {
-                                    return tool_result(crate::tools::context::text_result(
-                                        format!("Killed {id}."),
-                                    ));
-                                }
-                            }
-                            return tool_result(execute_kill_bash_shared(&manager, id, all).await);
+                                    .as_ref(),
+                            );
+                            return tool_result(
+                                crate::tools::kill_bash::execute_kill_bash_with_monitors(
+                                    &manager,
+                                    &monitors,
+                                    terminal_dir.as_deref(),
+                                    id,
+                                    all,
+                                )
+                                .await,
+                            );
                         }
                         let mut manager = manager
                             .lock()
@@ -1301,8 +1630,12 @@ impl Extension for TerminalExtension {
                     // and :207-217 caps durable creates before any spawn. The writer lock is async; the
                     // manager/registry locks are held only across the synchronous registration.
                     let mut lifecycle = lifecycle.lock().await;
+                    let session_key =
+                        crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(
                         &call.params,
+                        settings.max_durable_monitors,
+                        session_key.as_deref(),
                         lifecycle.as_ref().map(|lifecycle| &lifecycle.writer),
                     ) {
                         return tool_result(refused);
@@ -1314,7 +1647,7 @@ impl Extension for TerminalExtension {
                         let mut monitors = monitors
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let result = crate::tools::monitor::execute_configured_monitor(
+                        let result = crate::tools::monitor::execute_configured_monitor_in(
                             &mut manager,
                             &mut monitors,
                             &call.params,
@@ -1322,6 +1655,9 @@ impl Extension for TerminalExtension {
                             approved_parent.as_deref(),
                             shell.as_deref(),
                             &settings,
+                            lifecycle
+                                .as_ref()
+                                .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
                         );
                         if call.params.get("action").and_then(Value::as_str) == Some("rearm")
                             && let Some(notifier) = notifier
@@ -1354,22 +1690,37 @@ impl Extension for TerminalExtension {
                                     == Some(true))
                                 .then(|| monitors.file_checkpoint(&id))
                                 .flatten();
-                            (registration, checkpoint)
+                            let deadline_ms =
+                                crate::tools::monitor::registration_deadline_ms(&monitors, &id);
+                            (registration.with_deadline_ms(deadline_ms), checkpoint)
                         });
                         (result, recorded)
                     };
                     if let Some(lifecycle) = lifecycle.as_mut()
                         && let Some((registration, checkpoint)) = recorded
                     {
-                        let monitor_id = registration.monitor_id.clone();
+                        let monitor_id = registration.registration.monitor_id.clone();
                         lifecycle
                             .writer
-                            .record_register(registration, manifest_now_ms())
+                            .record_register_with(registration, manifest_now_ms())
                             .await;
                         if let Some(checkpoint) = checkpoint {
                             lifecycle
                                 .writer
                                 .schedule_checkpoint(&monitor_id, checkpoint);
+                        }
+                    } else if let Some((registration, _)) = recorded {
+                        // Upstream `handMonitorSpec`: no writer is bound yet (the lease is held
+                        // elsewhere), so the spec waits, bounded, for the writer that binds next.
+                        if crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                            session_key.as_deref(),
+                            registration.registration,
+                        )
+                        .is_some()
+                        {
+                            maho_ext_api::diagnostic(
+                                "terminal manifest: a writer is bound for this session but not held by this generation; the monitor spec was not recorded",
+                            );
                         }
                     }
                     drop(lifecycle);
@@ -1380,16 +1731,20 @@ impl Extension for TerminalExtension {
         monitor_tool.prompt_snippet=Some("Subscribe to a command's output or a file's create/modify event as injected events instead of polling".to_owned());
         monitor_tool.prompt_guidelines=Some(vec![
             "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
-            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already — when the run creates that directory too, use the `command` branch instead."#.to_owned(),
+            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already; when the run creates that directory too, use the `command` branch instead."#.to_owned(),
             r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
+            "A non-persistent command watch is a watcher with a deadline: timeout_ms KILLS the watched command when it fires (the summary says killed at deadline). Put long jobs in a run_in_background session and only watch them.".to_owned(),
             "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
         ]);
         api.register_tool_with_renderers(monitor_tool, crate::tools::render::monitor_renderers())
             .expect("valid builtin monitor registration");
         let activity = notifier.clone();
         let input_monitors = monitors.clone();
-        api.on(EventKind::Input,Arc::new(move |event,_| {let notifier=activity.clone();let monitors=input_monitors.clone();Box::pin(async move {
+        let input_digests = digests.clone();
+        let input_sender = sender.clone();
+        api.on(EventKind::Input,Arc::new(move |event,ctx| {let notifier=activity.clone();let monitors=input_monitors.clone();let digests=input_digests.clone();let sender=input_sender.clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::Input(event) if event.source==maho_ext_api::types::InputSource::Extension) {return Ok(EventResult::None);}
+            flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             let resumed=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resume(None);
             if let Some(notifier)=notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.as_ref() {notifier.note_activity().map_err(ExtensionFailure::new)?;if !resumed.is_empty() {notifier.resume(resumed.into_iter().map(|(id,_)|id).collect()).map_err(ExtensionFailure::new)?;}}
             Ok(EventResult::None)
@@ -1807,5 +2162,1305 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+}
+
+/// Port of the persistence rows of terminal-restore-session.test.ts, terminal-restore-digest.test.ts
+/// and terminal-resumption-channel-state.test.ts (senpi v2026.10.27-2): the restore digest slot and
+/// its flush, own/wait/stop around the lease keeper, the post-takeover sweep and the stable
+/// `mon_` id on the wake-source channel.
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use maho_ext_api::types::*;
+    use std::path::{Path, PathBuf};
+
+    #[derive(Default)]
+    struct RecordingUi {
+        notes: Mutex<Vec<String>>,
+        statuses: Mutex<Vec<(String, Option<String>)>>,
+    }
+    impl ExtensionUi for RecordingUi {
+        fn select<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [String],
+            _: ExtensionUiDialogOptions,
+        ) -> UiFuture<'a, Option<String>> {
+            Box::pin(async { None })
+        }
+        fn confirm<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: ExtensionUiDialogOptions,
+        ) -> UiFuture<'a, bool> {
+            Box::pin(async { false })
+        }
+        fn input<'a>(
+            &'a self,
+            _: &'a str,
+            _: Option<&'a str>,
+            _: ExtensionUiDialogOptions,
+        ) -> UiFuture<'a, Option<String>> {
+            Box::pin(async { None })
+        }
+        fn notify(&self, message: &str, _: NotificationType) {
+            self.notes.lock().unwrap().push(message.to_owned());
+        }
+        fn set_status(&self, key: &str, text: Option<&str>) {
+            self.statuses
+                .lock()
+                .unwrap()
+                .push((key.to_owned(), text.map(str::to_owned)));
+        }
+        fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+        fn set_header(&self, _: Option<ComponentFactory>) {}
+        fn set_footer(&self, _: Option<ComponentFactory>) {}
+        fn set_title(&self, _: &str) {}
+        fn paste_to_editor(&self, _: &str) {}
+        fn set_editor_text(&self, _: &str) {}
+        fn get_editor_text(&self) -> String {
+            String::new()
+        }
+        fn custom(
+            &self,
+            _: ComponentFactory,
+            _: CustomUiOptions,
+        ) -> ExtensionFuture<'_, JsonValue> {
+            Box::pin(async { Err("unavailable".into()) })
+        }
+        fn theme(&self) -> Theme {
+            Theme::default()
+        }
+    }
+
+    struct Session {
+        dir: PathBuf,
+    }
+    impl maho_tools::definition::ToolSessionManager for Session {
+        fn session_id(&self) -> &str {
+            "terminal-persistence"
+        }
+        fn session_file(&self) -> Option<&Path> {
+            None
+        }
+    }
+    impl SessionManager for Session {
+        fn get_session_dir(&self) -> Option<PathBuf> {
+            Some(self.dir.clone())
+        }
+        fn get_entries(&self) -> Vec<SessionEntry> {
+            vec![]
+        }
+        fn get_branch(&self) -> Vec<SessionEntry> {
+            vec![]
+        }
+        fn get_leaf_id(&self) -> Option<String> {
+            None
+        }
+        fn get_session_name(&self) -> Option<String> {
+            None
+        }
+    }
+    struct Registry;
+    impl ModelRegistry for Registry {
+        fn get_all(&self) -> Vec<Model> {
+            vec![]
+        }
+        fn get_available(&self) -> Vec<Model> {
+            vec![]
+        }
+        fn find(&self, _: &str, _: &str) -> Option<Model> {
+            None
+        }
+        fn has_configured_auth(&self, _: &Model) -> bool {
+            false
+        }
+        fn get_api_key_for_provider<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> ExtensionFuture<'a, Option<String>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    type Sent = Arc<Mutex<Vec<(CustomMessage, SendMessageOptions)>>>;
+    struct Actions {
+        sent: Sent,
+    }
+    impl ExtensionActions for Actions {
+        fn send_message(
+            &self,
+            message: CustomMessage,
+            options: SendMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            self.sent.lock().unwrap().push((message, options));
+            Ok(())
+        }
+        fn send_user_message(
+            &self,
+            _: UserMessageContent,
+            _: SendUserMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            Err("unexpected user message".into())
+        }
+        fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+            Ok(vec![])
+        }
+    }
+
+    fn model() -> Model {
+        maho_ai::models_generated::get_builtin_model("google", "gemini-2.5-flash")
+            .expect("catalog model")
+            .clone()
+    }
+
+    fn context(dir: &Path, ui: Arc<RecordingUi>, model: Option<Model>) -> ExtensionContext {
+        ExtensionContext {
+            ui,
+            mode: ExtensionMode::Tui,
+            has_ui: true,
+            cwd: dir.into(),
+            agent_dir: dir.into(),
+            session_manager: Arc::new(Session { dir: dir.into() }),
+            model_registry: Arc::new(Registry),
+            model,
+            thinking_level: None,
+            service_tier: None,
+            effective_service_tier: None,
+            scoped_models: vec![],
+            goal_store_file: None,
+            loaded_extension_paths: vec![],
+            signal: None,
+            steering_signal: None,
+            is_idle_fn: Arc::new(|| true),
+            wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
+            is_project_trusted_fn: Arc::new(|| true),
+            is_compacting_fn: Arc::new(|| false),
+            get_system_prompt_fn: Arc::new(String::new),
+            get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default),
+            registered_mcp_servers: vec![],
+            update_tool_hook_status: None,
+            idle_coordinator: None,
+            logger: None,
+            defer_macrotask: None,
+            compaction_signal: Default::default(),
+        }
+    }
+
+    fn sender(dir: &Path) -> (Arc<ExtensionApi>, Sent) {
+        let sent: Sent = Arc::default();
+        let runtime = ExtensionRuntime::default();
+        runtime.bind(Arc::new(Actions { sent: sent.clone() }));
+        let api = ExtensionApi::new(
+            LoadedExtension::new("terminal", dir.to_owned(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            runtime,
+        );
+        (Arc::new(api), sent)
+    }
+
+    fn digest(
+        outcome: crate::restore_digest::RestoreDigestOutcome,
+        generation: u64,
+    ) -> crate::restore_digest::RestoreDigestMessage {
+        crate::restore_digest::build_restore_digest(
+            &crate::restore_digest::RestoreDigestInput {
+                results: vec![crate::restore_digest::MonitorRestoreResult {
+                    monitor_id: "mon_RESTORED00000001".into(),
+                    description: "watch".into(),
+                    kind: "command".into(),
+                    outcome: "lost".into(),
+                    command: Some("cat".into()),
+                    path: None,
+                    reason: None,
+                    orphan: None,
+                }],
+                ..Default::default()
+            },
+            generation,
+            outcome,
+            None,
+        )
+    }
+
+    fn digests_of(sent: &Sent) -> Vec<(JsonValue, SendMessageOptions)> {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .filter(|(message, _)| {
+                message.custom_type == crate::restore_digest::RESTORE_DIGEST_CUSTOM_TYPE
+            })
+            .map(|(message, options)| {
+                (message.details.clone().unwrap_or_default(), options.clone())
+            })
+            .collect()
+    }
+
+    /// terminal-restore-session.test.ts (f): a decided digest waits for a model, then is delivered
+    /// exactly once; an actionable digest wakes the agent as a follow-up.
+    #[test]
+    fn flush_restore_digest_waits_for_a_model_and_delivers_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (api, sent) = sender(dir.path());
+        let ui = Arc::new(RecordingUi::default());
+        let digests: Digests = Arc::default();
+        digests.lock().unwrap().slot.set(digest(
+            crate::restore_digest::RestoreDigestOutcome::Decided,
+            1,
+        ));
+
+        flush_restore_digest(
+            &digests,
+            &api,
+            &context(dir.path(), ui.clone(), None),
+            false,
+        );
+        assert!(
+            digests_of(&sent).is_empty(),
+            "no model bound: the digest stays pending"
+        );
+        assert!(digests.lock().unwrap().slot.pending().is_some());
+
+        let ctx = context(dir.path(), ui.clone(), Some(model()));
+        flush_restore_digest(&digests, &api, &ctx, true);
+        flush_restore_digest(&digests, &api, &ctx, true);
+        let delivered = digests_of(&sent);
+        assert_eq!(delivered.len(), 1, "delivered exactly once");
+        assert_eq!(delivered[0].0["outcome"], "decided");
+        assert!(delivered[0].1.trigger_turn);
+        assert_eq!(delivered[0].1.deliver_as, Some(DeliverAs::FollowUp));
+        assert_eq!(
+            ui.notes.lock().unwrap().len(),
+            1,
+            "the user sees it once too"
+        );
+
+        // A deferred note never displaces a decided digest, and none follows a delivered one.
+        digests.lock().unwrap().slot.set(digest(
+            crate::restore_digest::RestoreDigestOutcome::Deferred,
+            1,
+        ));
+        flush_restore_digest(&digests, &api, &ctx, true);
+        assert_eq!(digests_of(&sent).len(), 1);
+    }
+
+    /// terminal-restore-digest.test.ts (e): notify off keeps the model channel silent; only the user hears it.
+    #[test]
+    fn flush_restore_digest_with_notify_off_tells_only_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let (api, sent) = sender(dir.path());
+        let ui = Arc::new(RecordingUi::default());
+        let digests: Digests = Arc::default();
+        {
+            let mut state = digests.lock().unwrap();
+            state.notify_off = true;
+            state.slot.set(digest(
+                crate::restore_digest::RestoreDigestOutcome::Decided,
+                1,
+            ));
+        }
+        flush_restore_digest(
+            &digests,
+            &api,
+            &context(dir.path(), ui.clone(), None),
+            false,
+        );
+        assert!(sent.lock().unwrap().is_empty());
+        assert_eq!(ui.notes.lock().unwrap().len(), 1);
+        assert!(digests.lock().unwrap().slot.pending().is_none());
+    }
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        session_dir: PathBuf,
+        terminal_dir: PathBuf,
+        encoded: String,
+        context: TakeoverContext,
+        decided: tokio::sync::watch::Receiver<u64>,
+    }
+    fn fixture(generation: u64, keeper_interval_ms: Option<u64>) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().to_owned();
+        let terminal_dir = session_dir.join("extensions/terminal");
+        let encoded = maho_core::session_sidecar_store::encoded_session_id("terminal-persistence");
+        let decided = Arc::new(tokio::sync::watch::channel(0u64).0);
+        let receiver = decided.subscribe();
+        let digests: Digests = Arc::default();
+        digests.lock().unwrap().generation = generation;
+        let context = TakeoverContext {
+            state: Arc::new(tokio::sync::Mutex::new(None)),
+            recorded: Arc::default(),
+            manager: Arc::new(Mutex::new(TerminalManager::default())),
+            monitors: Arc::new(Mutex::new(crate::monitor_registry::MonitorRegistry::new(
+                |_| {},
+            ))),
+            digests,
+            terminal_dir: terminal_dir.clone(),
+            encoded: encoded.clone(),
+            shell: None,
+            settings: crate::settings::TERMINAL_SETTINGS_DEFAULTS.clone(),
+            generation,
+            decided,
+            keeper_interval_ms,
+            restore_grace_ms: None,
+            flush: None,
+            restore_tasks: Arc::default(),
+            grace_stop: Arc::new(tokio::sync::watch::channel(false).0),
+        };
+        Fixture {
+            dir,
+            session_dir,
+            terminal_dir,
+            encoded,
+            context,
+            decided: receiver,
+        }
+    }
+    /// A manifest the previous generation left: one persistent command watch.
+    async fn persisted_watch(fixture: &Fixture, monitor_id: &str) {
+        persisted_command(fixture, monitor_id, "cat").await;
+    }
+    async fn persisted_command(fixture: &Fixture, monitor_id: &str, command: &str) {
+        persisted_command_for(fixture, "terminal-persistence", monitor_id, command).await;
+    }
+    async fn persisted_command_for(
+        fixture: &Fixture,
+        session_id: &str,
+        monitor_id: &str,
+        command: &str,
+    ) {
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(&fixture.session_dir, session_id);
+        writer
+            .record_register(
+                crate::terminal_manifest_model::MonitorRegistration {
+                    monitor_id: monitor_id.to_owned(),
+                    spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                        description: format!("watch {monitor_id}"),
+                        command: command.into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: Some(fixture.session_dir.to_string_lossy().into_owned()),
+                        persistent: true,
+                    },
+                },
+                terminal_now_ms() - 60_000.0,
+            )
+            .await;
+        writer.record_shutdown(terminal_now_ms() - 60_000.0).await;
+    }
+    async fn decided(fixture: &mut Fixture) {
+        let generation = fixture.context.generation;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            fixture.decided.wait_for(|decided| *decided >= generation),
+        )
+        .await
+        .expect("restore decided in time")
+        .expect("decision channel open");
+    }
+    fn teardown(fixture: &Fixture) {
+        fixture.context.monitors.lock().unwrap().dispose();
+        fixture.context.manager.lock().unwrap().teardown().unwrap();
+    }
+
+    /// restore-session `own(lease)`: the manifest is restored, the decided digest names every watch,
+    /// the lifecycle is bound and the decision is signalled.
+    #[tokio::test]
+    async fn own_restores_the_manifest_sets_one_decided_digest_and_binds_the_lifecycle() {
+        let mut fixture = fixture(1, None);
+        persisted_watch(&fixture, "mon_OWNED0000000001").await;
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        assert_eq!(
+            lifecycle
+                .acquire(
+                    &fixture.terminal_dir,
+                    &fixture.encoded,
+                    f64::from(std::process::id()),
+                    terminal_now_ms()
+                )
+                .unwrap(),
+            crate::terminal_state::TerminalStateAdoption::Acquired
+        );
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        decided(&mut fixture).await;
+        let pending = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.clone())
+            .expect("decided digest");
+        assert_eq!(
+            pending.outcome,
+            crate::restore_digest::RestoreDigestOutcome::Decided
+        );
+        assert_eq!(pending.monitors.len(), 1);
+        assert_eq!(pending.monitors[0].monitor_id, "mon_OWNED0000000001");
+        assert_eq!(pending.monitors[0].outcome, "restored");
+        assert!(
+            fixture
+                .context
+                .state
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|lifecycle| lifecycle.is_owner())
+        );
+        assert_eq!(fixture.context.monitors.lock().unwrap().snapshot().len(), 1);
+        teardown(&fixture);
+    }
+
+    /// A takeover that lands after a newer generation started never overwrites that generation's digest.
+    #[tokio::test]
+    async fn own_from_a_stale_generation_sets_no_digest() {
+        let fixture = fixture(1, None);
+        // The script exits 0 at once, so the grace window settles it `completed`; a stale restore
+        // must still neither forget it from the bound lifecycle nor rewrite the manifest.
+        persisted_command(&fixture, "mon_STALEGEN00000001", "true").await;
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        lifecycle
+            .acquire(
+                &fixture.terminal_dir,
+                &fixture.encoded,
+                f64::from(std::process::id()),
+                terminal_now_ms(),
+            )
+            .unwrap();
+        // `own` up to the detached grace window, inline so the test awaits `decide` itself.
+        let restore_state = lifecycle.read_restore_state().await;
+        let digest = {
+            let mut manager = fixture.context.manager.lock().unwrap();
+            let mut monitors = fixture.context.monitors.lock().unwrap();
+            lifecycle.apply_restore(
+                restore_state,
+                &mut manager,
+                &mut monitors,
+                terminal_now_ms(),
+                None,
+                &fixture.context.settings,
+            )
+        };
+        *fixture.context.state.lock().await = Some(lifecycle);
+        // A newer generation started meanwhile: it owns the slot (its deferred note).
+        fixture.context.digests.lock().unwrap().generation = 2;
+        fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .set(self::digest(
+                crate::restore_digest::RestoreDigestOutcome::Deferred,
+                2,
+            ));
+        let flushes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = flushes.clone();
+        let mut context = fixture.context.clone();
+        context.flush = Some(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        // The grace window ends when the script exits (bounded by RESTORE_GRACE_MS).
+        context.decide(digest, 0.0, true).await;
+        assert_eq!(
+            *fixture.decided.borrow(),
+            0,
+            "a stale restore signals nothing"
+        );
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let slot = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| (message.details.generation, message.details.outcome));
+        assert_eq!(
+            slot,
+            Some((2, crate::restore_digest::RestoreDigestOutcome::Deferred)),
+            "the newer generation's slot is untouched"
+        );
+        assert_eq!(
+            manifest_ids(&fixture),
+            ["mon_STALEGEN00000001"],
+            "the stale restore rewrites no manifest"
+        );
+        assert_eq!(
+            fixture
+                .context
+                .state
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .writer
+                .monitor_ids(),
+            ["mon_STALEGEN00000001"],
+            "the bound lifecycle's entries are untouched"
+        );
+        teardown(&fixture);
+    }
+
+    /// restore-session `stopPersistence`: a shutdown inside the grace window awaits the restore in
+    /// flight before the shutdown record. The still-running persistent watch stays in the recorded
+    /// manifest with its state dir, and no digest (let alone a `lost` one) is sent afterwards.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_inside_the_grace_window_keeps_the_watch_and_sends_no_digest() {
+        let mut fixture = fixture(1, None);
+        persisted_watch(&fixture, "mon_GRACESHUTDOWN01").await;
+        fixture.context.restore_grace_ms = Some(600_000);
+        let flushes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = flushes.clone();
+        fixture.context.flush = Some(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        lifecycle
+            .acquire(
+                &fixture.terminal_dir,
+                &fixture.encoded,
+                f64::from(std::process::id()),
+                terminal_now_ms(),
+            )
+            .unwrap();
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        let state_dir = crate::monitor_state_dir::monitor_state_dir(
+            &fixture.terminal_dir,
+            "mon_GRACESHUTDOWN01",
+        );
+        assert!(state_dir.is_dir(), "the restored watch has its state dir");
+        // The SessionShutdown order: stop the restore in flight, then sync, record, release.
+        stop_restores(
+            &fixture.context.digests,
+            &fixture.context.grace_stop,
+            &fixture.context.restore_tasks,
+        )
+        .await;
+        assert!(fixture.context.restore_tasks.lock().unwrap().is_empty());
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        let snapshot = fixture.context.monitors.lock().unwrap().snapshot();
+        lifecycle
+            .writer
+            .observe_monitor_state(&snapshot, terminal_now_ms())
+            .await
+            .unwrap();
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        // The manager goes down after the record (the bundle shutdown); the restore is already over,
+        // so the dying watch is never judged.
+        teardown(&fixture);
+        assert_eq!(manifest_ids(&fixture), ["mon_GRACESHUTDOWN01"]);
+        assert!(
+            state_dir.is_dir(),
+            "the watch's baseline survives the shutdown"
+        );
+        assert!(
+            pending_monitors(&fixture).is_empty(),
+            "no digest is decided for a generation that shut down"
+        );
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(*fixture.decided.borrow_and_update(), 0);
+    }
+
+    /// terminal-restore-session.test.ts (g2): an unreadable manifest is left exactly as it was
+    /// (fail closed) and the decided digest says `corrupt`.
+    #[tokio::test]
+    async fn an_unreadable_manifest_is_left_exactly_as_it_was() {
+        let mut fixture = fixture(1, None);
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let manifest = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        std::fs::write(&manifest, "{not a manifest").unwrap();
+        own_once(&mut fixture).await;
+        let outcome = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.outcome);
+        assert_eq!(
+            outcome,
+            Some(crate::restore_digest::RestoreDigestOutcome::Corrupt)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            "{not a manifest"
+        );
+        teardown(&fixture);
+    }
+
+    /// terminal-restore-session.test.ts (i): a watch created while waiting on a foreign holder is
+    /// queued (upstream `handMonitorSpec`), drained into the takeover's writer and on disk with the
+    /// restored watch at shutdown.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_watch_created_while_waiting_is_on_disk_after_the_takeover() {
+        // Its own session id: the pending-spec binding map is process-wide, and the other tests'
+        // takeovers bind "terminal-persistence".
+        let session = "terminal-waiter";
+        let mut fixture = fixture(1, Some(10));
+        fixture.encoded = maho_core::session_sidecar_store::encoded_session_id(session);
+        fixture.context.encoded = fixture.encoded.clone();
+        persisted_command_for(&fixture, session, "mon_WAITERBASE0001", "cat").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let lease = fixture
+            .terminal_dir
+            .join(format!("{}.lease", fixture.encoded));
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
+        std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
+        let ctx = context(fixture.dir.path(), Arc::new(RecordingUi::default()), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        wait_for_lease(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            Some(holder),
+            fixture.session_dir.clone(),
+            session.into(),
+        );
+        // Created while held: no writer is bound, so the spec waits for the takeover's writer.
+        assert!(
+            crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                Some(session),
+                crate::terminal_manifest_model::MonitorRegistration {
+                    monitor_id: "mon_CREATEDWHILEHLD".into(),
+                    spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                        description: "created while held".into(),
+                        command: "cat".into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: None,
+                        persistent: true,
+                    },
+                },
+            )
+            .is_none()
+        );
+        std::fs::remove_file(&lease).unwrap();
+        decided(&mut fixture).await;
+        stop_waiting(&keeper).await;
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(session);
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        let mut ids = manifest_ids(&fixture);
+        ids.sort();
+        assert_eq!(ids, ["mon_CREATEDWHILEHLD", "mon_WAITERBASE0001"]);
+        teardown(&fixture);
+    }
+
+    /// 02a7938a0: `own` binds the writer and installs the lifecycle under one hold of the state
+    /// lock. A monitor call that lands between the bind and the install (interleaved through the
+    /// after-bind seam) must wait for the lifecycle and record through it; with the lock free at
+    /// that instant it would see the session bound with no lifecycle and drop its spec.
+    #[tokio::test]
+    async fn a_monitor_call_between_bind_and_install_records_its_spec() {
+        // Its own session id: the binding map and the after-bind seam are process-wide.
+        let session = "terminal-bind-race";
+        let mut fixture = fixture(1, None);
+        fixture.encoded = maho_core::session_sidecar_store::encoded_session_id(session);
+        fixture.context.encoded = fixture.encoded.clone();
+        let mut lifecycle =
+            crate::terminal_state::TerminalStateLifecycle::new(&fixture.session_dir, session);
+        assert_eq!(
+            lifecycle
+                .acquire(
+                    &fixture.terminal_dir,
+                    &fixture.encoded,
+                    f64::from(std::process::id()),
+                    terminal_now_ms()
+                )
+                .unwrap(),
+            crate::terminal_state::TerminalStateAdoption::Acquired
+        );
+        let registration = || crate::terminal_manifest_model::MonitorRegistration {
+            monitor_id: "mon_BINDRACE00000001".into(),
+            spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                description: "between bind and install".into(),
+                command: "cat".into(),
+                filter: None,
+                human_input: None,
+                wakes_per_hour: None,
+                cwd: None,
+                persistent: true,
+            },
+        };
+        let handed: Arc<Mutex<Option<tokio::task::JoinHandle<bool>>>> = Arc::default();
+        let hook_handed = handed.clone();
+        let state = fixture.context.state.clone();
+        crate::tools::monitor_manifest_binding::set_after_bind_hook(
+            session,
+            Box::new(move || {
+                // The registered monitor tool's protocol: take the state lock, record through the
+                // installed lifecycle, else hand the spec to the binding (dropped when bound).
+                let task = match state.clone().try_lock_owned() {
+                    Ok(slot) => {
+                        let kept = slot.is_none()
+                            && crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                                Some(session),
+                                registration(),
+                            )
+                            .is_none();
+                        tokio::spawn(async move { kept })
+                    }
+                    Err(_) => tokio::spawn(async move {
+                        let mut slot = state.lock().await;
+                        match slot.as_mut() {
+                            Some(lifecycle) => {
+                                lifecycle
+                                    .writer
+                                    .record_register(registration(), terminal_now_ms())
+                                    .await;
+                                true
+                            }
+                            None => crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                                Some(session),
+                                registration(),
+                            )
+                            .is_none(),
+                        }
+                    }),
+                };
+                *hook_handed.lock().unwrap() = Some(task);
+            }),
+        );
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        let task = handed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the monitor call ran between bind and install");
+        assert!(
+            task.await.unwrap(),
+            "a spec handed off between bind and install is recorded, not dropped"
+        );
+        decided(&mut fixture).await;
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(session);
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        assert_eq!(manifest_ids(&fixture), ["mon_BINDRACE00000001"]);
+        teardown(&fixture);
+    }
+
+    /// extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended (exit, timeout, kill)
+    /// loses its restore baseline dir; a disposed one (shutdown or reload) keeps it, and an event
+    /// with no stable id or no durable state dir removes nothing.
+    #[test]
+    fn an_ended_watch_loses_its_state_dir_and_a_disposed_one_keeps_it() {
+        use crate::monitor_registry::{MonitorEndedEvent, MonitorEndedReason};
+        let dir = tempfile::tempdir().unwrap();
+        let ui = Arc::new(RecordingUi::default());
+        let ctx = context(dir.path(), ui.clone(), None);
+        let terminal_dir = crate::monitor_state_dir::terminal_state_dir(Some(&ctx)).unwrap();
+        let ended = |monitor_id: Option<&str>, reason| MonitorEndedEvent {
+            id: "bash_1".into(),
+            monitor_id: monitor_id.map(str::to_owned),
+            description: "watch".into(),
+            started_at_ms: 0.0,
+            ended_at_ms: 1.0,
+            reason,
+            exit_code: None,
+            fire_count: 0,
+        };
+        for (monitor_id, reason, kept) in [
+            ("mon_DISPOSEDWATCH01", MonitorEndedReason::Disposed, true),
+            ("mon_EXITEDWATCH001", MonitorEndedReason::Exit, false),
+            ("mon_TIMEDOUTWATCH1", MonitorEndedReason::Timeout, false),
+            ("mon_KILLEDWATCH001", MonitorEndedReason::Killed, false),
+        ] {
+            let state =
+                crate::monitor_state_dir::ensure_monitor_state_dir_sync(&terminal_dir, monitor_id)
+                    .unwrap();
+            remove_ended_monitor_state_dir(&ended(Some(monitor_id), reason.clone()), Some(&ctx));
+            assert_eq!(state.is_dir(), kept, "{reason:?}");
+        }
+        let unnamed = crate::monitor_state_dir::ensure_monitor_state_dir_sync(
+            &terminal_dir,
+            "mon_UNNAMED00001",
+        )
+        .unwrap();
+        remove_ended_monitor_state_dir(&ended(None, MonitorEndedReason::Exit), Some(&ctx));
+        remove_ended_monitor_state_dir(
+            &ended(Some("mon_UNNAMED00001"), MonitorEndedReason::Exit),
+            None,
+        );
+        assert!(unnamed.is_dir());
+        assert!(ui.notes.lock().unwrap().is_empty());
+    }
+
+    /// The post-takeover sweep removes other sessions' stale leases and empty manifests and keeps
+    /// this session's own lease and manifest.
+    #[tokio::test]
+    async fn sweep_after_takeover_removes_stale_state_and_keeps_our_own() {
+        let fixture = fixture(1, None);
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        // Beyond any pid_max, so the probe answers ESRCH.
+        let dead_pid = f64::from(i32::MAX);
+        let write = |name: &str, content: &str| {
+            std::fs::write(fixture.terminal_dir.join(name), content).unwrap()
+        };
+        write(
+            "other.lease",
+            &json!({"pid":dead_pid,"startedAtMs":1.0}).to_string(),
+        );
+        write("other.json", r#"{"monitors":[],"backgroundSessions":[]}"#);
+        write(
+            &format!("{}.lease", fixture.encoded),
+            &json!({"pid":dead_pid,"startedAtMs":1.0}).to_string(),
+        );
+        write(
+            &format!("{}.json", fixture.encoded),
+            r#"{"monitors":[],"backgroundSessions":[]}"#,
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sweep_terminal_state(&fixture.terminal_dir, &fixture.encoded),
+        )
+        .await
+        .expect("sweep finished in time")
+        .expect("sweep task");
+        assert!(!fixture.terminal_dir.join("other.lease").exists());
+        assert!(!fixture.terminal_dir.join("other.json").exists());
+        assert!(
+            fixture
+                .terminal_dir
+                .join(format!("{}.lease", fixture.encoded))
+                .exists()
+        );
+        assert!(
+            fixture
+                .terminal_dir
+                .join(format!("{}.json", fixture.encoded))
+                .exists()
+        );
+    }
+
+    /// terminal-restore-session.test.ts (b) and (j): a live holder defers the restore (status + a
+    /// deferred digest); once the holder's lease is gone the keeper takes over and restores exactly
+    /// once, replacing the deferred note with the decided digest.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_defers_then_the_keeper_takes_over_and_restores_once() {
+        let mut fixture = fixture(1, Some(10));
+        persisted_watch(&fixture, "mon_TAKEOVER00000001").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let lease = fixture
+            .terminal_dir
+            .join(format!("{}.lease", fixture.encoded));
+        // A live foreign holder: our parent process stands in for it.
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
+        std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
+        let ui = Arc::new(RecordingUi::default());
+        let ctx = context(fixture.dir.path(), ui.clone(), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        wait_for_lease(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            Some(holder.clone()),
+            fixture.session_dir.clone(),
+            "terminal-persistence".into(),
+        );
+        assert!(
+            ui.statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(key, text)| key == RESTORE_STATUS_KEY
+                    && text.as_deref()
+                        == Some(format!("monitors held by pid {}", holder.pid as u32).as_str()))
+        );
+        assert_eq!(
+            fixture
+                .context
+                .digests
+                .lock()
+                .unwrap()
+                .slot
+                .pending()
+                .map(|message| message.details.outcome),
+            Some(crate::restore_digest::RestoreDigestOutcome::Deferred)
+        );
+        assert!(
+            fixture.context.state.lock().await.is_none(),
+            "nothing is restored while the holder lives"
+        );
+
+        // The holder goes away: the keeper acquires, takes over and restores.
+        std::fs::remove_file(&lease).unwrap();
+        decided(&mut fixture).await;
+        let pending = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.clone())
+            .expect("decided digest");
+        assert_eq!(
+            pending.outcome,
+            crate::restore_digest::RestoreDigestOutcome::Decided
+        );
+        assert_eq!(pending.monitors[0].monitor_id, "mon_TAKEOVER00000001");
+        assert!(
+            ui.statuses
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|(key, text)| key == RESTORE_STATUS_KEY && text.is_none())
+        );
+        let lease_record: crate::manifest_lease::LeaseRecord =
+            serde_json::from_slice(&std::fs::read(&lease).unwrap()).unwrap();
+        assert_eq!(
+            lease_record.pid,
+            f64::from(std::process::id()),
+            "the takeover holds the lease"
+        );
+        assert_eq!(
+            fixture.context.monitors.lock().unwrap().snapshot().len(),
+            1,
+            "restored exactly once"
+        );
+        stop_waiting(&keeper).await;
+        teardown(&fixture);
+    }
+
+    /// restore-session `stopPersistence`: stopping while still waiting takes nothing over, and a
+    /// later disappearance of the holder's lease is not acted on.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_while_waiting_takes_nothing_over() {
+        let fixture = fixture(1, Some(10));
+        persisted_watch(&fixture, "mon_STOPPED00000001").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let lease = fixture
+            .terminal_dir
+            .join(format!("{}.lease", fixture.encoded));
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
+        std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
+        let ctx = context(fixture.dir.path(), Arc::new(RecordingUi::default()), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        wait_for_lease(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            Some(holder),
+            fixture.session_dir.clone(),
+            "terminal-persistence".into(),
+        );
+        let waiting = keeper.lock().unwrap().clone().expect("keeper armed");
+        stop_waiting(&keeper).await;
+        assert!(keeper.lock().unwrap().is_none());
+        assert_eq!(
+            waiting.state(),
+            crate::lease_keeper::LeaseKeeperState::Stopped
+        );
+        std::fs::remove_file(&lease).unwrap();
+        // The stopped keeper is settled: no tick is in flight and none is armed.
+        waiting.settled().await;
+        assert_eq!(
+            waiting.state(),
+            crate::lease_keeper::LeaseKeeperState::Stopped
+        );
+        assert!(!lease.exists(), "a stopped keeper never acquires");
+        assert!(fixture.context.state.lock().await.is_none());
+        teardown(&fixture);
+    }
+
+    fn pending_monitors(fixture: &Fixture) -> Vec<crate::restore_digest::MonitorRestoreResult> {
+        fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.monitors.clone())
+            .unwrap_or_default()
+    }
+    fn manifest_ids(fixture: &Fixture) -> Vec<String> {
+        let path = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        let Ok(raw) = std::fs::read(&path) else {
+            return vec![];
+        };
+        let saved: JsonValue = serde_json::from_slice(&raw).unwrap();
+        saved["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["monitorId"].as_str().unwrap().to_owned())
+            .collect()
+    }
+    async fn own_once(fixture: &mut Fixture) {
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        assert_eq!(
+            lifecycle
+                .acquire(
+                    &fixture.terminal_dir,
+                    &fixture.encoded,
+                    f64::from(std::process::id()),
+                    terminal_now_ms()
+                )
+                .unwrap(),
+            crate::terminal_state::TerminalStateAdoption::Acquired
+        );
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        decided(fixture).await;
+    }
+
+    /// terminal-restore-session.test.ts (c): a lease whose pid now belongs to a process that
+    /// started long after the lease was taken is reclaimed at once - no "held by" wait.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_lease_held_by_a_reused_pid_is_reclaimed_at_session_start() {
+        let mut fixture = fixture(1, Some(10));
+        persisted_watch(&fixture, "mon_PIDREUSED000001").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        // A live unrelated process (our parent) whose lease claims it was taken an hour before
+        // that process actually started: the pid was reused.
+        let pid = f64::from(std::os::unix::process::parent_id());
+        let real_start =
+            crate::manifest_lease::read_process_start_ms(pid).expect("parent start instant");
+        std::fs::write(
+            fixture
+                .terminal_dir
+                .join(format!("{}.lease", fixture.encoded)),
+            json!({"pid":pid,"startedAtMs":real_start - 3_600_000.0}).to_string(),
+        )
+        .unwrap();
+        let ui = Arc::new(RecordingUi::default());
+        let ctx = context(fixture.dir.path(), ui.clone(), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        acquire_or_wait(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            crate::terminal_state::TerminalStateLifecycle::new(
+                &fixture.session_dir,
+                "terminal-persistence",
+            ),
+            fixture.session_dir.clone(),
+            "terminal-persistence".into(),
+            terminal_now_ms(),
+        )
+        .await;
+        assert!(
+            !ui.statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, text)| text.as_deref().is_some_and(|text| text.contains("held by"))),
+            "a reused pid is not a holder"
+        );
+        assert!(keeper.lock().unwrap().is_none(), "nothing waits on it");
+        decided(&mut fixture).await;
+        let monitors = pending_monitors(&fixture);
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].monitor_id, "mon_PIDREUSED000001");
+        assert_eq!(monitors[0].outcome, "restored");
+        stop_waiting(&keeper).await;
+        teardown(&fixture);
+    }
+
+    /// terminal-restore-session.test.ts (a3): a watch that exits 0 inside the grace window is
+    /// `completed`, is dropped from the manifest at once, and a second start never re-runs it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_completed_watch_is_gone_from_the_manifest_and_never_rerun() {
+        let mut fixture = fixture(1, None);
+        let runs = fixture.dir.path().join("runs.log");
+        persisted_command(
+            &fixture,
+            "mon_COMPLETEDONCE01",
+            &format!("echo run >> '{}'", runs.display()),
+        )
+        .await;
+        own_once(&mut fixture).await;
+        let monitors = pending_monitors(&fixture);
+        assert_eq!(
+            monitors
+                .iter()
+                .map(|entry| entry.outcome.as_str())
+                .collect::<Vec<_>>(),
+            ["completed"]
+        );
+        assert!(
+            manifest_ids(&fixture).is_empty(),
+            "the completed watch is gone from disk before shutdown"
+        );
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        teardown(&fixture);
+
+        // The next process: nothing to restore, and the command never ran again.
+        let mut second = fixture;
+        second.context.generation = 2;
+        second.context.digests.lock().unwrap().generation = 2;
+        second.context.digests.lock().unwrap().slot = crate::restore_digest::create_digest_slot();
+        second.context.manager = Arc::new(Mutex::new(TerminalManager::default()));
+        second.context.monitors = Arc::new(Mutex::new(
+            crate::monitor_registry::MonitorRegistry::new(|_| {}),
+        ));
+        own_once(&mut second).await;
+        assert!(pending_monitors(&second).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&runs)
+                .unwrap()
+                .trim()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["run"]
+        );
+        teardown(&second);
+    }
+
+    /// terminal-restore-session.test.ts (d): a watch whose script is gone is lost with its non-zero
+    /// exit code and first output line; lost and expired state dirs are removed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lost_script_carries_its_exit_reason_and_lost_and_expired_state_dirs_go() {
+        let mut fixture = fixture(1, None);
+        let missing = fixture.dir.path().join("missing.sh");
+        persisted_command(
+            &fixture,
+            "mon_MISSINGSCRIPT01",
+            &format!("sh {}", missing.display()),
+        )
+        .await;
+        // An expired watch next to it: same manifest, deadline already passed.
+        let manifest = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        let mut saved: JsonValue =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        let mut expired = saved["monitors"][0].clone();
+        expired["monitorId"] = json!("mon_EXPIREDWATCH001");
+        expired["command"] = json!("cat");
+        expired["expiresAt"] = json!(terminal_now_ms() - 1_000.0);
+        saved["monitors"].as_array_mut().unwrap().push(expired);
+        std::fs::write(&manifest, saved.to_string()).unwrap();
+        for monitor_id in ["mon_MISSINGSCRIPT01", "mon_EXPIREDWATCH001"] {
+            let dir =
+                crate::monitor_state_dir::monitor_state_dir(&fixture.terminal_dir, monitor_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("base"), "baseline").unwrap();
+        }
+        own_once(&mut fixture).await;
+        let monitors = pending_monitors(&fixture);
+        assert_eq!(
+            monitors
+                .iter()
+                .map(|entry| (entry.monitor_id.as_str(), entry.outcome.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("mon_MISSINGSCRIPT01", "lost"),
+                ("mon_EXPIREDWATCH001", "expired")
+            ]
+        );
+        let reason = monitors[0].reason.clone().expect("lost reason");
+        assert!(
+            regex::Regex::new(r"^exited [1-9]\d* in \d+ms: .*missing\.sh")
+                .unwrap()
+                .is_match(&reason),
+            "{reason}"
+        );
+        for monitor_id in ["mon_MISSINGSCRIPT01", "mon_EXPIREDWATCH001"] {
+            assert!(
+                !crate::monitor_state_dir::monitor_state_dir(&fixture.terminal_dir, monitor_id)
+                    .exists(),
+                "{monitor_id} state dir removed"
+            );
+        }
+        assert!(manifest_ids(&fixture).is_empty());
+        teardown(&fixture);
+    }
+
+    /// terminal-resumption-channel-state.test.ts: the wake-source channel names a monitor by its
+    /// stable `mon_` id, never the runtime `bash_N` id (row 42).
+    #[tokio::test]
+    async fn wake_source_state_names_monitors_by_their_stable_mon_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (api, _) = sender(dir.path());
+        let (states, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = api.events.on(
+            "wake_source_state",
+            Arc::new(move |state| {
+                if state["source"] == "terminal-monitors" {
+                    states.send(state.clone()).unwrap();
+                }
+            }),
+        );
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let task = bind_monitor_events(
+            registry.subscribe_state(),
+            api,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        );
+        let (id, monitor_id) = registry
+            .register_persistent_file(
+                "dual emit monitor",
+                &dir.path().join("file"),
+                crate::terminal_manifest_model::FileEvent::Create,
+            )
+            .unwrap();
+        assert!(monitor_id.starts_with("mon_"));
+        assert_ne!(id, monitor_id);
+        let state = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let state = received.recv().await.unwrap();
+                if state["activeCount"] == 1 {
+                    return state;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state["monitors"].as_array().unwrap().len(), 1);
+        assert_eq!(state["monitors"][0]["id"], monitor_id);
+        assert_eq!(state["monitors"][0]["description"], "dual emit monitor");
+        assert!(state["monitors"][0]["startedAtMs"].is_number());
+        registry.dispose();
+        task.abort();
     }
 }

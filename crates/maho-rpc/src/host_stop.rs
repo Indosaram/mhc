@@ -222,6 +222,8 @@ async fn stop_host_locked(options: StopHostOptions) -> std::io::Result<StopHostO
         .clone()
         .unwrap_or_else(|| maho_core::config::get_agent_dir().into());
     let paths = crate::host_daemon_paths::create_host_daemon_paths(&options.socket, &agent_dir);
+    // A pointer an earlier prune dropped is given back to the one proven live generation (senpi#1911).
+    crate::host_pointer_election::elect_pointer(&paths, &options.socket, true);
     let timeout_ms = options
         .timeout_ms
         .unwrap_or(crate::host_stop_drain::DEFAULT_DRAIN_PROBE_TIMEOUT_MS);
@@ -295,6 +297,23 @@ async fn stop_host_locked(options: StopHostOptions) -> std::io::Result<StopHostO
             }
         },
     };
+    // The intent goes first: the supervisor that reaps the generation records an operator stop, not an outside kill.
+    crate::host_stop_intent::write_stop_intent(
+        &crate::host_daemon_paths::generation_paths(&paths, &instance_id),
+        &crate::host_stop_intent::HostStopIntent {
+            sender: crate::host_stop_intent::HostStopSender {
+                pid: std::process::id(),
+                kind: "stop".into(),
+                generation: None,
+            },
+            chain: None,
+            target_pid: pid,
+            reason: "operator_stop".into(),
+            signal: "SIGTERM".into(),
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        },
+        |line| crate::host_supervisor_log::write_stderr_line(&line),
+    );
     #[cfg(unix)]
     {
         let delivered =

@@ -84,6 +84,20 @@ pub fn signal_supervisor_process_group(pid: u32, signal: &str, env: &BTreeMap<St
     #[cfg(not(unix))] { Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"POSIX process groups are unavailable")) }
 }
 
+/// Kills `pid`'s whole tree and settles only after taskkill has finished, `true` when it exited 0.
+/// Callers that record the run's exit must await this: the model can close while taskkill is still
+/// walking its descendants, and a failed taskkill must not be reported as a contained tree.
+pub async fn terminate_supervisor_win32_tree(pid: Option<u32>, env: &BTreeMap<String,String>) -> std::io::Result<bool> {
+    let Some(pid)=pid else { return Ok(true); };
+    let command=test_command(env,"OMO_MEMORY_SUPERVISOR_TASKKILL_COMMAND")?.unwrap_or_else(||vec!["taskkill".into()]);
+    let outcome=tokio::process::Command::new(&command[0]).args(&command[1..]).args(["/pid",&pid.to_string(),"/T","/F"]).envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().await;
+    match outcome {
+        Ok(status) if status.success() => Ok(true),
+        Ok(status) => { maho_ext_api::diagnostic(&format!("taskkill /pid {pid} /T /F exited with {}",status.code().map_or_else(||"a signal".to_owned(),|code|code.to_string()))); Ok(false) },
+        Err(error) => { maho_ext_api::diagnostic(&format!("taskkill /pid {pid} /T /F failed: {error}")); Ok(false) },
+    }
+}
+
 pub fn record_supervisor_graceful_deadline(pid: Option<u32>, env: &BTreeMap<String,String>) -> std::io::Result<()> {
     match pid { Some(pid)=>record_test_termination(env,"win32-graceful",pid),None=>Ok(()) }
 }
@@ -189,5 +203,14 @@ mod tests {
         let env=BTreeMap::from([("OMO_MEMORY_SUPERVISOR_ALLOW_TEST_SEAMS".into(),"1".into()),("OUTPUT".into(),output.to_string_lossy().into_owned()),("OMO_MEMORY_SUPERVISOR_TASKKILL_COMMAND".into(),serde_json::json!(["/bin/sh","-c","printf '%s\\n' \"$@\" > \"$OUTPUT\"","seam"]).to_string())]);
         terminate_supervisor_child_hard(SupervisorRuntimePlatform::Win32,Some(42),true,&env).unwrap();
         assert_eq!(std::fs::read_to_string(output).unwrap(),"/pid\n42\n/T\n/F\n");
+    }
+    #[cfg(unix)]
+    #[tokio::test] async fn win32_tree_kill_reports_only_a_clean_taskkill_exit() {
+        let root=tempfile::tempdir().unwrap(); let output=root.path().join("arguments");
+        let seam=|script:&str|BTreeMap::from([("OMO_MEMORY_SUPERVISOR_ALLOW_TEST_SEAMS".into(),"1".into()),("OUTPUT".into(),output.to_string_lossy().into_owned()),("OMO_MEMORY_SUPERVISOR_TASKKILL_COMMAND".into(),serde_json::json!(["/bin/sh","-c",script,"seam"]).to_string())]);
+        assert!(terminate_supervisor_win32_tree(Some(42),&seam("printf '%s\\n' \"$@\" > \"$OUTPUT\"")).await.unwrap());
+        assert_eq!(std::fs::read_to_string(&output).unwrap(),"/pid\n42\n/T\n/F\n");
+        assert!(!terminate_supervisor_win32_tree(Some(42),&seam("exit 128")).await.unwrap());
+        assert!(terminate_supervisor_win32_tree(None,&BTreeMap::new()).await.unwrap());
     }
 }

@@ -26,9 +26,9 @@ pub struct OllamaProviderOptions {
     pub fetch: Option<reqwest::Client>,
 }
 
-fn normalize_ollama_host(value: &str) -> String {
+fn normalize_ollama_host(value: &str) -> Result<String, ModelsError> {
     let mut host = Url::parse(value)
-        .unwrap_or_else(|error| panic!("invalid Ollama base URL {value}: {error}"));
+        .map_err(|error| ModelsError::new(ModelsErrorCode::Provider, format!("invalid Ollama base URL {value}: {error}")))?;
     let path = host.path().to_owned();
     let trimmed = path
         .strip_suffix("/v1/")
@@ -37,7 +37,7 @@ fn normalize_ollama_host(value: &str) -> String {
         .unwrap_or(path);
     host.set_path(&trimmed);
     let text = host.to_string();
-    text.strip_suffix('/').map(str::to_owned).unwrap_or(text)
+    Ok(text.strip_suffix('/').map(str::to_owned).unwrap_or(text))
 }
 
 async fn fetch_ollama_json(
@@ -356,7 +356,7 @@ pub fn ollama_provider(
             .base_url
             .as_deref()
             .unwrap_or(DEFAULT_OLLAMA_CLOUD_URL),
-    );
+    )?;
     let fetch = options.fetch.clone().unwrap_or_default();
     let base_url = format!("{host}/v1");
     let fetch_models: FetchModels = {
@@ -392,4 +392,18 @@ pub fn ollama_provider(
         images: indexmap::IndexMap::new(),
         api: ProviderApi::Single(builtin_api_streams("openai-completions")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ollama_provider_returns_err_on_malformed_url() {
+        let result = ollama_provider(Some(OllamaProviderOptions {
+            base_url: Some("not a url".into()),
+            fetch: None,
+        }));
+        assert!(result.is_err());
+    }
 }

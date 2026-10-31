@@ -72,6 +72,7 @@ impl JsonlSessionMetadata {
             cwd: Some(self.cwd.clone()),
             parent_session_id: self.parent_session_id.clone(),
             legacy_parent_session_path: self.legacy_parent_session_path.clone(),
+            path: None,
         }
     }
 }

@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::types::{AssistantMessage, AssistantMessageEvent, ContentBlock, ToolCall};
+use crate::utils::assistant_capture::{FrozenProgress, push_assistant_progress};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 use super::types::{StreamParserEvent, ToolCallFormat};
@@ -38,6 +39,8 @@ fn clone_content_block(block: &ContentBlock) -> ContentBlock {
 pub struct RecoveryNativeProjection {
     stream: AssistantMessageEventStream,
     ranges_by_inner_index: HashMap<usize, ContentRange>,
+    copied_inner_indexes: HashSet<usize>,
+    pending_progress: HashMap<usize, Vec<FrozenProgress>>,
     native_lifecycle_by_inner_index: HashMap<usize, NativeLifecycle>,
     reserved_ids: HashSet<String>,
     recovered_ids: HashSet<String>,
@@ -52,6 +55,8 @@ impl RecoveryNativeProjection {
         Self {
             stream,
             ranges_by_inner_index: HashMap::new(),
+            copied_inner_indexes: HashSet::new(),
+            pending_progress: HashMap::new(),
             native_lifecycle_by_inner_index: HashMap::new(),
             reserved_ids: HashSet::new(),
             recovered_ids: HashSet::new(),
@@ -117,6 +122,7 @@ impl RecoveryNativeProjection {
                 start: outer_index,
                 end,
             },
+            false,
         )
     }
 
@@ -127,7 +133,33 @@ impl RecoveryNativeProjection {
                 start: outer_index,
                 end: outer_index + 1,
             },
+            true,
         )
+    }
+
+    /// Relays a source control to the outer block that copies its source block. Controls of a
+    /// block the projection rebuilds (prose split into text and recovered calls) describe no
+    /// outer block and are dropped; controls of a block not projected yet wait for it.
+    pub fn relay_progress(&mut self, progress: FrozenProgress) {
+        let content_index = progress.content_index();
+        let Some(range) = self.ranges_by_inner_index.get(&content_index).copied() else {
+            self.pending_progress
+                .entry(content_index)
+                .or_default()
+                .push(progress);
+            return;
+        };
+        if !self.copied_inner_indexes.contains(&content_index) {
+            return;
+        }
+        if range.start == content_index {
+            push_assistant_progress(&self.stream, progress);
+        } else {
+            push_assistant_progress(
+                &self.stream,
+                std::sync::Arc::new(progress.with_content_index(range.start)),
+            );
+        }
     }
 
     pub fn extend_text(&mut self, message: &AssistantMessage, inner_index: usize) {
@@ -165,22 +197,26 @@ impl RecoveryNativeProjection {
         self.reserved_ids.insert(tool_call.id.clone());
         let outer_index = message.content.len();
         message.content.push(clone_content_block(block));
-        if !self.record_range(
-            inner_index,
-            ContentRange {
-                start: outer_index,
-                end: outer_index + 1,
-            },
-        ) {
-            return ProjectNativeStartResult::Invalid;
-        }
         self.native_lifecycle_by_inner_index
             .insert(inner_index, NativeLifecycle::Started);
         self.stream.push(AssistantMessageEvent::ToolcallStart {
             content_index: outer_index,
             partial: message.clone(),
         });
-        ProjectNativeStartResult::Projected
+        // Recorded after the start, as a thinking copy is, so controls held for the call follow
+        // its start event. The guards above already rule out both reasons record_range refuses.
+        if self.record_range(
+            inner_index,
+            ContentRange {
+                start: outer_index,
+                end: outer_index + 1,
+            },
+            true,
+        ) {
+            ProjectNativeStartResult::Projected
+        } else {
+            ProjectNativeStartResult::Invalid
+        }
     }
 
     pub fn project_native_delta(
@@ -313,10 +349,18 @@ impl RecoveryNativeProjection {
                 start: outer_index,
                 end: outer_index + 1,
             },
+            true,
         )
     }
 
-    fn record_range(&mut self, inner_index: usize, range: ContentRange) -> bool {
+    /// Flushes the controls held for `inner_index`; a copied block with a start event records its
+    /// range after that start.
+    fn record_range(
+        &mut self,
+        inner_index: usize,
+        range: ContentRange,
+        copies_source: bool,
+    ) -> bool {
         if self.ranges_by_inner_index.contains_key(&inner_index)
             || inner_index as i64 <= self.highest_projected_inner_index
         {
@@ -324,6 +368,16 @@ impl RecoveryNativeProjection {
         }
         self.ranges_by_inner_index.insert(inner_index, range);
         self.highest_projected_inner_index = inner_index as i64;
+        if copies_source {
+            self.copied_inner_indexes.insert(inner_index);
+        }
+        for progress in self
+            .pending_progress
+            .remove(&inner_index)
+            .unwrap_or_default()
+        {
+            self.relay_progress(progress);
+        }
         true
     }
 
@@ -373,6 +427,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

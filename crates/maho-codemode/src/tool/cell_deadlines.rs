@@ -23,8 +23,16 @@ pub struct CellDeadlines {
 
 impl CellDeadlines {
     pub fn new(cell_id: String, hard_limit_seconds: f64, run_budget_seconds: f64) -> Self {
-        let hard_deadline = tokio::time::Instant::now() + Duration::from_secs_f64(hard_limit_seconds);
-        let budget = Arc::new(RunBudget::new(cell_id.clone(), (run_budget_seconds * 1000.0) as u64));
+        let hard_duration = Duration::try_from_secs_f64(hard_limit_seconds.max(0.0))
+            .unwrap_or(Duration::from_secs(86400 * 365))
+            .min(Duration::from_secs(86400 * 365));
+        let hard_deadline = tokio::time::Instant::now() + hard_duration;
+        let budget_ms = if run_budget_seconds.is_finite() && run_budget_seconds > 0.0 {
+            (run_budget_seconds.min(86400.0 * 365.0) * 1000.0) as u64
+        } else {
+            0
+        };
+        let budget = Arc::new(RunBudget::new(cell_id.clone(), budget_ms));
         let mut budget_signal = budget.signal();
         let worker_budget = Arc::clone(&budget);
         let settled = Arc::new(AtomicBool::new(false));

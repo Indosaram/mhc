@@ -231,6 +231,22 @@ pub fn summarization_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::typ
         .collect()
 }
 
+/// The active tools as the provider request declares them: [`summarization_tools`] plus each
+/// tool's freeform and constrained-sampling declaration, which decide whether a tool call converts
+/// to a Responses `custom_tool_call` or a `function_call`.
+pub fn request_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::types::Tool> {
+    summarization_tools(api)
+        .into_iter()
+        .map(|mut tool| {
+            if let Some(definition) = api.runtime.live_tool_definition(&tool.name) {
+                tool.freeform = definition.freeform;
+                tool.constrained_sampling = definition.constrained_sampling;
+            }
+            tool
+        })
+        .collect()
+}
+
 pub fn prepare_accepted_restoration(
     state: &mut crate::restoration_tracker::RestorationTrackerState,
     context: &maho_ext_api::ExtensionContext,
@@ -307,9 +323,15 @@ pub fn prepare_accepted_restoration(
 }
 
 /// senpi `isAutomaticCompactionBlocked(ctx.sessionManager.getBranch(), ctx.model, ctx.getCompactionSettings())`.
-pub fn automatic_compaction_blocked(context: &maho_ext_api::ExtensionContext) -> Result<bool, maho_ext_api::ExtensionFailure> {
+pub fn automatic_compaction_blocked(
+    context: &maho_ext_api::ExtensionContext,
+) -> Result<bool, maho_ext_api::ExtensionFailure> {
     let settings = live_settings(context)?;
-    Ok(crate::rejected_recovery::is_automatic_compaction_blocked(&crate::speculative::branch_values(context), context.model.as_ref(), &settings))
+    Ok(crate::rejected_recovery::is_automatic_compaction_blocked(
+        &crate::speculative::branch_values(context),
+        context.model.as_ref(),
+        &settings,
+    ))
 }
 
 /// senpi `generateCompaction`: a successful summary is probed for a replayable suffix before it is
@@ -320,17 +342,38 @@ pub async fn generate_compaction(
     signal: Option<&maho_ai::utils::abort::AbortSignal>,
     on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<maho_ext_api::CompactionResult>, crate::speculative::SummaryGenerationError> {
-    use crate::{deterministic_fallback::{RecoveryMetadata, RequiredCompactionFallbackFailure, UnsafeRetainedSuffixError, create_required_compaction_fallback, DeterministicFallbackDiagnostic}, rejected_recovery::would_compaction_overflow};
-    let compaction = crate::speculative::run_extension_compaction_for_context(context, snapshot, signal, on_progress).await?;
-    let Some(summary) = compaction else { return Ok(None) };
+    use crate::{
+        deterministic_fallback::{
+            DeterministicFallbackDiagnostic, RecoveryMetadata, RequiredCompactionFallbackFailure,
+            UnsafeRetainedSuffixError, create_required_compaction_fallback,
+        },
+        rejected_recovery::would_compaction_overflow,
+    };
+    let compaction = crate::speculative::run_extension_compaction_for_context(
+        context,
+        snapshot,
+        signal,
+        on_progress,
+    )
+    .await?;
+    let Some(summary) = compaction else {
+        return Ok(None);
+    };
     if signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) {
         return Ok(Some(summary));
     }
-    let (branch, model, settings) = (&snapshot.branch_entries, &snapshot.model, &snapshot.preparation.settings);
+    let (branch, model, settings) = (
+        &snapshot.branch_entries,
+        &snapshot.model,
+        &snapshot.preparation.settings,
+    );
     if !would_compaction_overflow(branch, &summary, true, model, settings) {
         return Ok(Some(summary));
     }
-    let empty = maho_ext_api::CompactionResult { summary: String::new(), ..summary.clone() };
+    let empty = maho_ext_api::CompactionResult {
+        summary: String::new(),
+        ..summary.clone()
+    };
     if !would_compaction_overflow(branch, &empty, true, model, settings) {
         return Ok(Some(summary));
     }
@@ -340,11 +383,31 @@ pub async fn generate_compaction(
     // alone cannot turn a provider failure or an oversized summary into a durable latch.
     let mut diagnostics = DeterministicFallbackDiagnostic::default();
     let viable = create_required_compaction_fallback(
-        &snapshot.preparation, snapshot.context_window, RequiredCompactionFallbackFailure::UnsafeRetainedContent,
-        RecoveryMetadata { task_intent: None, summary: Some("") }, branch, &mut diagnostics,
+        &snapshot.preparation,
+        snapshot.context_window,
+        RequiredCompactionFallbackFailure::UnsafeRetainedContent,
+        RecoveryMetadata {
+            task_intent: None,
+            summary: Some(""),
+        },
+        branch,
+        &mut diagnostics,
     );
-    if viable.is_none() && matches!(diagnostics.rejection_reason, Some("unsafe-retained-content" | "atomic-tool-chain-cut" | "retained-token-budget-exceeded")) {
-        return Err(crate::speculative::SummaryGenerationError::UnsafeRetainedSuffix(Box::new(UnsafeRetainedSuffixError { diagnostics })));
+    if viable.is_none()
+        && matches!(
+            diagnostics.rejection_reason,
+            Some(
+                "unsafe-retained-content"
+                    | "atomic-tool-chain-cut"
+                    | "retained-token-budget-exceeded"
+            )
+        )
+    {
+        return Err(
+            crate::speculative::SummaryGenerationError::UnsafeRetainedSuffix(Box::new(
+                UnsafeRetainedSuffixError { diagnostics },
+            )),
+        );
     }
     Ok(Some(summary))
 }
@@ -362,7 +425,9 @@ impl From<&crate::speculative::SummaryGenerationError> for RequiredFailure {
             kind: crate::speculative::summary_failure(error),
             message: error.to_string(),
             unsafe_diagnostics: match error {
-                crate::speculative::SummaryGenerationError::UnsafeRetainedSuffix(unsafe_error) => Some(unsafe_error.diagnostics.clone()),
+                crate::speculative::SummaryGenerationError::UnsafeRetainedSuffix(unsafe_error) => {
+                    Some(unsafe_error.diagnostics.clone())
+                }
                 _ => None,
             },
         }
@@ -371,7 +436,11 @@ impl From<&crate::speculative::SummaryGenerationError> for RequiredFailure {
 
 impl From<&crate::speculative_job::LiveSummaryFailure> for RequiredFailure {
     fn from(failure: &crate::speculative_job::LiveSummaryFailure) -> Self {
-        Self { kind: failure.fallback, message: failure.message.clone(), unsafe_diagnostics: failure.unsafe_diagnostics.clone() }
+        Self {
+            kind: failure.fallback,
+            message: failure.message.clone(),
+            unsafe_diagnostics: failure.unsafe_diagnostics.clone(),
+        }
     }
 }
 
@@ -396,8 +465,15 @@ pub fn recover_required_compaction(
         None
     } else {
         fallback::create_required_compaction_fallback(
-            &snapshot.preparation, snapshot.context_window, failure_kind,
-            fallback::RecoveryMetadata { task_intent: intent.as_deref(), summary: None }, &snapshot.branch_entries, &mut diagnostics,
+            &snapshot.preparation,
+            snapshot.context_window,
+            failure_kind,
+            fallback::RecoveryMetadata {
+                task_intent: intent.as_deref(),
+                summary: None,
+            },
+            &snapshot.branch_entries,
+            &mut diagnostics,
         )
     };
     let Some(compaction) = compaction else {
@@ -405,9 +481,17 @@ pub fn recover_required_compaction(
         let settings = live_settings(context)?;
         // Provider/timeout/abort/empty-summary failures never create or replace this record, even
         // when their opportunistic deterministic fallback fails.
-        if terminal && !rejected::is_automatic_compaction_blocked(branch, Some(&snapshot.model), &settings) {
+        if terminal
+            && !rejected::is_automatic_compaction_blocked(branch, Some(&snapshot.model), &settings)
+        {
             let last = diagnostics.candidate_rejections.last();
-            let entry_id = last.and_then(|candidate| candidate.get("unsafeEntryId").or_else(|| candidate.get("firstKeptEntryId"))).cloned();
+            let entry_id = last
+                .and_then(|candidate| {
+                    candidate
+                        .get("unsafeEntryId")
+                        .or_else(|| candidate.get("firstKeptEntryId"))
+                })
+                .cloned();
             api.append_entry(rejected::REJECTED_RECOVERY_ENTRY, Some(serde_json::json!({
                 "failureKind": "unsafe-retained-content",
                 "stateKey": rejected::compaction_recovery_state_key(branch, Some(&snapshot.model), &settings),
@@ -415,14 +499,40 @@ pub fn recover_required_compaction(
                 "entryId": entry_id,
             })))?;
         }
-        return Ok(RequiredRecovery { compaction: None, rejection_reason: Some(fallback::format_required_compaction_fallback_rejection(&diagnostics, terminal)) });
+        return Ok(RequiredRecovery {
+            compaction: None,
+            rejection_reason: Some(fallback::format_required_compaction_fallback_rejection(
+                &diagnostics,
+                terminal,
+            )),
+        });
     };
     // The compaction itself succeeds, so nothing else tells the user their transcript was reduced
     // without a provider summary. Say it plainly here, and never with the internal retry-suppression marker (#1741).
-    context.ui.notify(&fallback::format_required_compaction_fallback_notice(failure_kind, Some(&cause.message)), maho_ext_api::NotificationType::Warning);
-    Ok(RequiredRecovery { compaction: Some(compaction), rejection_reason: None })
+    context.ui.notify(
+        &fallback::format_required_compaction_fallback_notice(failure_kind, Some(&cause.message)),
+        maho_ext_api::NotificationType::Warning,
+    );
+    Ok(RequiredRecovery {
+        compaction: Some(compaction),
+        rejection_reason: None,
+    })
 }
 
+/// index.ts `session_before_compact`: whether a classified summary failure recovers through the deterministic
+/// fallback. A required-fallback compaction always does; an unsafe-retained fault and a terminal provider failure
+/// recover on every compaction kind.
+pub fn admits_deterministic_recovery(
+    required_fallback: bool,
+    failure: crate::deterministic_fallback::RequiredCompactionFallbackFailure,
+) -> bool {
+    use crate::deterministic_fallback::RequiredCompactionFallbackFailure as Failure;
+    required_fallback
+        || matches!(
+            failure,
+            Failure::UnsafeRetainedContent | Failure::SummarizationProviderFailure
+        )
+}
 pub async fn generate_core_route_compaction(
     api: &maho_ext_api::ExtensionApi,
     context: &maho_ext_api::ExtensionContext,
@@ -567,11 +677,28 @@ pub async fn generate_core_route_compaction(
                             maho_ai::compat::stream_simple(model, context, Some(options.clone()))
                         });
                     let client = reqwest::Client::new();
-                    let operation = crate::openai_remote::run_remote_compaction(crate::openai_remote::RemoteCompactionOptions {
-                            model:&request_model,request:&request,request_id:&event.request_id,first_kept_entry_id:&event.preparation.first_kept_entry_id,
-                            system_prompt:&system_prompt,session_id,api_key:key,headers,extra_body:auth.extra_body,origin:serde_json::json!({"endpoint":origin.endpoint,"trustDomain":origin.trust_domain,"authTenantFingerprint":origin.auth_tenant_fingerprint}),
-                            signal:&signal,timeout:remote_deadline.next_attempt(),deadline:remote_deadline.clone(),now_ms:chrono::Utc::now().timestamp_millis() as u64,client:&client,runner:&runner,provider_request:Some(&prepared),
-                        },&emit);
+                    let operation = crate::openai_remote::run_remote_compaction(
+                        crate::openai_remote::RemoteCompactionOptions {
+                            model: &request_model,
+                            request: &request,
+                            request_id: &event.request_id,
+                            first_kept_entry_id: &event.preparation.first_kept_entry_id,
+                            system_prompt: &system_prompt,
+                            session_id,
+                            api_key: key,
+                            headers,
+                            extra_body: auth.extra_body,
+                            origin: serde_json::json!({"endpoint":origin.endpoint,"trustDomain":origin.trust_domain,"authTenantFingerprint":origin.auth_tenant_fingerprint}),
+                            signal: &signal,
+                            timeout: remote_deadline.next_attempt(),
+                            deadline: remote_deadline.clone(),
+                            now_ms: chrono::Utc::now().timestamp_millis() as u64,
+                            client: &client,
+                            runner: &runner,
+                            provider_request: Some(&prepared),
+                        },
+                        &emit,
+                    );
                     tokio::pin!(operation);
                     let remote = tokio::select! {
                         biased;
@@ -638,12 +765,12 @@ pub async fn generate_core_route_compaction(
                 usage.context_window > 0
                     && usage.tokens.is_some_and(|tokens| {
                         tokens as f64
-                            >= usage.context_window as f64
-                                - maho_core::compaction::compaction::resolve_effective_reserve_tokens(
-                                    usage.context_window as f64,
-                                    preparation.settings.reserve_tokens as f64,
-                                    preparation.settings.ideal.reserve_scaling_enabled,
-                                )
+                        >= usage.context_window as f64
+                            - maho_core::compaction::compaction::resolve_effective_reserve_tokens(
+                                usage.context_window as f64,
+                                preparation.settings.reserve_tokens as f64,
+                                preparation.settings.ideal.reserve_scaling_enabled,
+                            )
                     })
             }));
     let snapshot = crate::speculative::SpeculativeCompactionSnapshot {
@@ -659,7 +786,14 @@ pub async fn generate_core_route_compaction(
         tools: summarization_tools(api),
         origin: Some("core-route".into()),
     };
-    let result = if let Some(inherited) = inherited_warm_failure.filter(|failure| required_fallback && crate::deterministic_fallback::classify_required_compaction_fallback_failure(failure.fallback, &failure.message).is_some()) {
+    let result = if let Some(inherited) = inherited_warm_failure.filter(|failure| {
+        required_fallback
+            && crate::deterministic_fallback::classify_required_compaction_fallback_failure(
+                failure.fallback,
+                &failure.message,
+            )
+            .is_some()
+    }) {
         // senpi inheritedWarmFailure: reuse the warm job's terminal failure for the deterministic
         // fallback instead of paying for a second summary request.
         Err(RequiredFailure::from(&inherited))
@@ -701,14 +835,31 @@ pub async fn generate_core_route_compaction(
             ..Default::default()
         })),
         Err(error) => {
-            let failure = crate::deterministic_fallback::classify_required_compaction_fallback_failure(error.kind, &error.message);
+            let failure =
+                crate::deterministic_fallback::classify_required_compaction_fallback_failure(
+                    error.kind,
+                    &error.message,
+                );
             // senpi: a terminal unsafe-retained fault recovers (and latches) even when the reason
-            // alone would not require a deterministic fallback.
-            if let Some(failure) = failure.filter(|failure| required_fallback || *failure == crate::deterministic_fallback::RequiredCompactionFallbackFailure::UnsafeRetainedContent) {
-                let recovery = recover_required_compaction(api, context, &snapshot, failure, &error)?;
+            // alone would not require a deterministic fallback. A terminal provider failure (dead
+            // model, dead credential) has no cheaper recovery on any compaction kind either: without
+            // it a soft pre_prompt compaction cancelled and the pending prompt wedged on
+            // "Compaction rejected: compaction generator failed".
+            if let Some(failure) =
+                failure.filter(|failure| admits_deterministic_recovery(required_fallback, *failure))
+            {
+                let recovery =
+                    recover_required_compaction(api, context, &snapshot, failure, &error)?;
                 return Ok(match recovery.compaction {
-                    Some(compaction) => EventResult::SessionBefore(SessionBeforeEventResult { compaction: Some(compaction), ..Default::default() }),
-                    None => EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: recovery.rejection_reason, ..Default::default() }),
+                    Some(compaction) => EventResult::SessionBefore(SessionBeforeEventResult {
+                        compaction: Some(compaction),
+                        ..Default::default()
+                    }),
+                    None => EventResult::SessionBefore(SessionBeforeEventResult {
+                        cancel: Some(true),
+                        reason: recovery.rejection_reason,
+                        ..Default::default()
+                    }),
                 });
             }
             Ok(EventResult::SessionBefore(SessionBeforeEventResult {
@@ -855,7 +1006,7 @@ pub async fn apply_live_blocking_compaction(
                 None => std::future::pending::<()>().await,
             }
         };
-        let operation = generate_compaction(context,&snapshot,Some(&ai_signal),&progress);
+        let operation = generate_compaction(context, &snapshot, Some(&ai_signal), &progress);
         tokio::pin!(operation);
         tokio::select! {
             biased;
@@ -863,16 +1014,28 @@ pub async fn apply_live_blocking_compaction(
             result = &mut operation => result,
         }
     };
-    let aborted = signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted);
+    let aborted = signal
+        .as_ref()
+        .is_some_and(maho_ext_api::AbortSignal::is_aborted);
     // senpi applyBlockingCompaction: a required-fallback failure recovers through the deterministic checkpoint.
     let generated = match generated {
         Err(error) if !aborted => {
             let cause = RequiredFailure::from(&error);
-            match crate::deterministic_fallback::classify_required_compaction_fallback_failure(cause.kind, &cause.message) {
+            match crate::deterministic_fallback::classify_required_compaction_fallback_failure(
+                cause.kind,
+                &cause.message,
+            ) {
                 Some(failure_kind) => {
-                    let recovery = recover_required_compaction(api, context, &snapshot, failure_kind, &cause)?;
+                    let recovery =
+                        recover_required_compaction(api, context, &snapshot, failure_kind, &cause)?;
                     if recovery.compaction.is_none() {
-                        end_compaction_feedback(context, signal, false, "failed", recovery.rejection_reason.as_deref())?;
+                        end_compaction_feedback(
+                            context,
+                            signal,
+                            false,
+                            "failed",
+                            recovery.rejection_reason.as_deref(),
+                        )?;
                         return Ok(crate::speculative::SpeculativeCompactionResult::Failed);
                     }
                     Ok(recovery.compaction)

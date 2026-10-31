@@ -1,93 +1,683 @@
-use std::sync::{Arc,Mutex};
-use maho_ai::types::BoxFuture;
-use maho_agent::harness::context::{Context,BACKGROUND_CONTEXT};
-use maho_agent::harness::events::{HarnessEvent,HarnessEventBus};
-use maho_agent::harness::runtime::types::{RuntimeLane,LaneState};
+use maho_agent::harness::context::{BACKGROUND_CONTEXT, Context};
+use maho_agent::harness::events::{HarnessEvent, HarnessEventBus};
 use maho_agent::harness::runtime::restore::restore_lane;
 use maho_agent::harness::runtime::transcript::watch_lane;
+use maho_agent::harness::runtime::types::{LaneState, RuntimeLane};
+use maho_agent::harness::session::commit::insert_entry;
 use maho_agent::harness::session::memory::MemoryStorage;
-use maho_agent::harness::session::session::{StorageBackedSession,StorageBackedSessionOptions};
+use maho_agent::harness::session::session::{StorageBackedSession, StorageBackedSessionOptions};
 use maho_agent::harness::session::types::*;
 use maho_agent::harness::session::values::*;
-use maho_agent::harness::session::commit::insert_entry;
-use serde_json::{Value,json};
+use maho_ai::types::BoxFuture;
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 
-fn tool_state()->Value {
-    let mut state=scope("tools");
-    state["batch"]=json!({"assistantEntryId":"assistant","configuration":configuration(),"turnId":"turn","calls":[{"status":"outcome_ready","sourceIndex":0,"resultEntryId":"result","terminate":false}]});
+fn tool_state() -> Value {
+    let mut state = scope("tools");
+    state["batch"] = json!({"assistantEntryId":"assistant","configuration":configuration(),"turnId":"turn","calls":[{"status":"outcome_ready","sourceIndex":0,"resultEntryId":"result","terminate":false}]});
     state
 }
-fn assistant_entry()->NewEntry {
-    let message=maho_ai::providers::faux::faux_assistant_message(maho_ai::providers::faux::faux_tool_call("read",serde_json::from_value(json!({"path":"file"})).expect("args"),Some("call")),Default::default());
-    NewEntry::message("assistant",None,maho_ai::types::Message::Assistant(Box::new(message)).into())
+fn assistant_entry() -> NewEntry {
+    let message = maho_ai::providers::faux::faux_assistant_message(
+        maho_ai::providers::faux::faux_tool_call(
+            "read",
+            serde_json::from_value(json!({"path":"file"})).expect("args"),
+            Some("call"),
+        ),
+        Default::default(),
+    );
+    NewEntry::message(
+        "assistant",
+        None,
+        maho_ai::types::Message::Assistant(Box::new(message)).into(),
+    )
 }
 
 #[tokio::test]
 async fn faults_missing_or_mismatched_staged_results() {
-    for mismatched in [false,true] {
-        let lane=fixture().await;
-        let mut writes=vec![insert_entry(assistant_entry()),Write::Value(set_value(&branch_tip("main"),json!("assistant")))];
-        if mismatched {writes.push(Write::Value(set_value(&pending_entry("result"),json!({"type":"message","payload":{"role":"toolResult","toolCallId":"other-call","toolName":"read","content":[],"isError":false,"timestamp":2}}))));}
-        install(&lane,tool_state(),writes).await;
-        let result=watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await;
-        let error=match result {Ok(_)=>panic!("corrupt result accepted"),Err(error)=>error};
-        assert!(error.message.contains(if mismatched {"mismatched staged result"}else{"missing its staged result"}));
+    for mismatched in [false, true] {
+        let lane = fixture().await;
+        let mut writes = vec![
+            insert_entry(assistant_entry()),
+            Write::Value(set_value(&branch_tip("main"), json!("assistant"))),
+        ];
+        if mismatched {
+            writes.push(Write::Value(set_value(&pending_entry("result"),json!({"type":"message","payload":{"role":"toolResult","toolCallId":"other-call","toolName":"read","content":[],"isError":false,"timestamp":2}}))));
+        }
+        install(&lane, tool_state(), writes).await;
+        let result = watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT).await;
+        let error = match result {
+            Ok(_) => panic!("corrupt result accepted"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains(if mismatched {
+            "mismatched staged result"
+        } else {
+            "missing its staged result"
+        }));
     }
 }
 
 #[tokio::test]
 async fn reduces_frames_and_projects_running_settled_tools_with_full_indexes() {
-    let lane=fixture().await;
-    let mut partial=maho_ai::providers::faux::faux_assistant_message("",maho_ai::providers::faux::FauxAssistantMessageOptions{stop_reason:Some(maho_ai::types::StopReason::Pending),..Default::default()});partial.content.clear();
-    install(&lane,effect(),vec![Write::List(append_list(&pending_assistant_frames("op","response"),json!({"type":"start","partial":partial}))),Write::List(append_list(&pending_assistant_frames("op","response"),json!({"type":"text_start","contentIndex":0,"content":{"type":"text","text":""}}))),Write::List(append_list(&pending_assistant_frames("op","response"),json!({"type":"text_delta","contentIndex":0,"delta":"partial"})))]).await;
-    let watch=watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await.expect("frame watch");
-    assert_eq!(watch.snapshot().expect("snapshot")["operation"]["streamingMessage"]["content"],json!([{"type":"text","text":"partial"}]));watch.unsubscribe();
-    let lane=fixture().await;
-    let mut state=tool_state();
-    state["batch"]["calls"]=json!([{"status":"completed","sourceIndex":1,"resultEntryId":"completed","terminate":false},{"status":"effect_pending","sourceIndex":2,"resultEntryId":"result","replay":"safe"},{"status":"effect_pending","sourceIndex":3,"resultEntryId":"without-checkpoint","replay":"never"},{"status":"outcome_ready","sourceIndex":4,"resultEntryId":"ready","terminate":true},{"status":"outcome_ready","sourceIndex":5,"resultEntryId":"synthetic","terminate":false},{"status":"planned","sourceIndex":6,"resultEntryId":"planned"}]);
-    let mut content=vec![maho_ai::providers::faux::faux_text("before")];
-    for (id,name,source) in [("call-completed","completed","completed"),("call-running","read","running"),("call-without-checkpoint","write","without-checkpoint"),("call-ready","real","real"),("call-synthetic","missing","synthetic"),("call-planned","planned","planned")] {content.push(maho_ai::providers::faux::faux_tool_call(name,serde_json::from_value(json!({"source":source})).expect("source args"),Some(id)));}
-    let assistant=NewEntry::message("assistant",None,maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message(content,Default::default()))).into());
+    let lane = fixture().await;
+    let mut partial = maho_ai::providers::faux::faux_assistant_message(
+        "",
+        maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(maho_ai::types::StopReason::Pending),
+            ..Default::default()
+        },
+    );
+    partial.content.clear();
+    install(
+        &lane,
+        effect(),
+        vec![
+            Write::List(append_list(
+                &pending_assistant_frames("op", "response"),
+                json!({"type":"start","partial":partial}),
+            )),
+            Write::List(append_list(
+                &pending_assistant_frames("op", "response"),
+                json!({"type":"text_start","contentIndex":0,"content":{"type":"text","text":""}}),
+            )),
+            Write::List(append_list(
+                &pending_assistant_frames("op", "response"),
+                json!({"type":"text_delta","contentIndex":0,"delta":"partial"}),
+            )),
+        ],
+    )
+    .await;
+    let watch = watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("frame watch");
+    assert_eq!(
+        watch.snapshot().expect("snapshot")["operation"]["streamingMessage"]["content"],
+        json!([{"type":"text","text":"partial"}])
+    );
+    watch.unsubscribe();
+    let lane = fixture().await;
+    let mut state = tool_state();
+    state["batch"]["calls"] = json!([{"status":"completed","sourceIndex":1,"resultEntryId":"completed","terminate":false},{"status":"effect_pending","sourceIndex":2,"resultEntryId":"result","replay":"safe"},{"status":"effect_pending","sourceIndex":3,"resultEntryId":"without-checkpoint","replay":"never"},{"status":"outcome_ready","sourceIndex":4,"resultEntryId":"ready","terminate":true},{"status":"outcome_ready","sourceIndex":5,"resultEntryId":"synthetic","terminate":false},{"status":"planned","sourceIndex":6,"resultEntryId":"planned"}]);
+    let mut content = vec![maho_ai::providers::faux::faux_text("before")];
+    for (id, name, source) in [
+        ("call-completed", "completed", "completed"),
+        ("call-running", "read", "running"),
+        ("call-without-checkpoint", "write", "without-checkpoint"),
+        ("call-ready", "real", "real"),
+        ("call-synthetic", "missing", "synthetic"),
+        ("call-planned", "planned", "planned"),
+    ] {
+        content.push(maho_ai::providers::faux::faux_tool_call(
+            name,
+            serde_json::from_value(json!({"source":source})).expect("source args"),
+            Some(id),
+        ));
+    }
+    let assistant = NewEntry::message(
+        "assistant",
+        None,
+        maho_ai::types::Message::Assistant(Box::new(
+            maho_ai::providers::faux::faux_assistant_message(content, Default::default()),
+        ))
+        .into(),
+    );
     let completed:NewEntry=serde_json::from_value(json!({"id":"completed","parentId":"assistant","type":"message","message":{"role":"toolResult","toolCallId":"call-completed","toolName":"completed","content":[{"type":"text","text":"completed"}],"isError":false,"timestamp":2}})).expect("completed entry");
-    let usage=json!({"input":1,"output":2,"cacheRead":3,"cacheWrite":4,"totalTokens":10,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}});
+    let usage = json!({"input":1,"output":2,"cacheRead":3,"cacheWrite":4,"totalTokens":10,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}});
     install(&lane,state,vec![insert_entry(assistant),insert_entry(completed),Write::Value(set_value(&branch_tip("main"),json!("completed"))),Write::Value(set_value(&operation_tool_args("op","turn",2),json!({"path":"file"}))),Write::Value(set_value(&operation_tool_args("op","turn",3),json!({"path":"output"}))),Write::Value(set_value(&operation_tool_args("op","turn",4),json!({"path":"settled"}))),Write::Value(set_value(&pending_tool_output("op","result"),json!({"content":[{"type":"text","text":"partial"}],"details":{"bytes":1}}))),Write::Value(set_value(&pending_entry("ready"),json!({"type":"message","payload":{"role":"toolResult","toolCallId":"call-ready","toolName":"real","content":[{"type":"text","text":"settled"}],"details":{"kind":"real"},"usage":usage,"addedToolNames":["later"],"isError":false,"timestamp":3}}))),Write::Value(set_value(&pending_entry("synthetic"),json!({"type":"message","payload":{"role":"toolResult","toolCallId":"call-synthetic","toolName":"missing","content":[{"type":"text","text":"unavailable"}],"isError":true,"timestamp":4}})))]).await;
-    let watch=watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await.expect("tools watch");let snapshot=watch.snapshot().expect("snapshot");
-    assert_eq!(snapshot["transcript"].as_array().expect("transcript").iter().map(|e|e["id"].as_str().expect("id")).collect::<Vec<_>>(),["assistant","completed"]);
-    assert_eq!(snapshot["operation"]["runningTools"],json!([
-        {"status":"running","toolCallId":"call-running","toolName":"read","args":{"path":"file"},"result":{"content":[{"type":"text","text":"partial"}],"details":{"bytes":1}}},
-        {"status":"running","toolCallId":"call-without-checkpoint","toolName":"write","args":{"path":"output"}},
-        {"status":"settled","toolCallId":"call-ready","toolName":"real","args":{"path":"settled"},"result":{"content":[{"type":"text","text":"settled"}],"details":{"kind":"real"},"usage":usage,"addedToolNames":["later"],"terminate":true},"isError":false},
-        {"status":"settled","toolCallId":"call-synthetic","toolName":"missing","args":{"source":"synthetic"},"result":{"content":[{"type":"text","text":"unavailable"}]},"isError":true}
-    ]));watch.unsubscribe();
+    let watch = watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("tools watch");
+    let snapshot = watch.snapshot().expect("snapshot");
+    assert_eq!(
+        snapshot["transcript"]
+            .as_array()
+            .expect("transcript")
+            .iter()
+            .map(|e| e["id"].as_str().expect("id"))
+            .collect::<Vec<_>>(),
+        ["assistant", "completed"]
+    );
+    assert_eq!(
+        snapshot["operation"]["runningTools"],
+        json!([
+            {"status":"running","toolCallId":"call-running","toolName":"read","args":{"path":"file"},"result":{"content":[{"type":"text","text":"partial"}],"details":{"bytes":1}}},
+            {"status":"running","toolCallId":"call-without-checkpoint","toolName":"write","args":{"path":"output"}},
+            {"status":"settled","toolCallId":"call-ready","toolName":"real","args":{"path":"settled"},"result":{"content":[{"type":"text","text":"settled"}],"details":{"kind":"real"},"usage":usage,"addedToolNames":["later"],"terminate":true},"isError":false},
+            {"status":"settled","toolCallId":"call-synthetic","toolName":"missing","args":{"source":"synthetic"},"result":{"content":[{"type":"text","text":"unavailable"}]},"isError":true}
+        ])
+    );
+    watch.unsubscribe();
 }
 
-struct Lane {session:StorageBackedSession,state:Mutex<LaneState>}
+struct Lane {
+    session: StorageBackedSession,
+    state: Mutex<LaneState>,
+}
 impl RuntimeLane for Lane {
-    fn name(&self)->&str{"main"}
-    fn session(&self)->&dyn Session{&self.session}
-    fn state(&self)->LaneState{self.state.lock().expect("state lock").clone()}
-    fn publish_state(&self,state:LaneState){*self.state.lock().expect("state lock")=state;}
-    fn emit<'a>(&'a self,_:Vec<HarnessEvent>,_:&'a Context)->BoxFuture<'a,()>{Box::pin(async {})}
+    fn name(&self) -> &str {
+        "main"
+    }
+    fn session(&self) -> &dyn Session {
+        &self.session
+    }
+    fn state(&self) -> LaneState {
+        self.state.lock().expect("state lock").clone()
+    }
+    fn publish_state(&self, state: LaneState) {
+        *self.state.lock().expect("state lock") = state;
+    }
+    fn emit<'a>(&'a self, _: Vec<HarnessEvent>, _: &'a Context) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
 }
-async fn commit(lane:&Lane,writes:Vec<Write>){let mutation=lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.expect("mutation");mutation.commit(writes,&BACKGROUND_CONTEXT).await.expect("commit");mutation.end(&BACKGROUND_CONTEXT).await;lane.publish_state(restore_lane(&lane.session,"main",&BACKGROUND_CONTEXT).await.expect("restore"));}
-fn configuration()->Value{json!({"model":{"provider":"configured","modelId":"model"},"thinkingLevel":"off","activeToolNames":[]})}
-fn scope(at:&str)->Value{json!({"at":at,"control":{"status":"running"},"settings":{"compaction":{"enabled":true,"reserveTokens":1000,"keepRecentTokens":2000},"steeringMode":"all","followUpMode":"all","toolExecution":"parallel"},"latestAssistantEntryId":null})}
-fn effect()->Value{let mut s=scope("assistant.effect_pending");s["generationContext"]=json!({"stepId":"step","triggerEntryId":"trigger","configuration":configuration(),"streamOptions":{},"retryPolicy":{"maxAttempts":2,"baseDelayMs":0,"maxAgentDelayMs":30000},"overflowRecoveryUsed":false});s["attempt"]=json!(1);s["responseEntryId"]=json!("response");s["usageId"]=json!("usage");s["intendedOutputLimit"]=json!(100);s["contextWindow"]=json!(1000);s}
-async fn fixture()->Arc<Lane>{let session=StorageBackedSession::new(SessionMetadata{id:"watch".into(),created_at:1,storage_version:1,cwd:None,parent_session_id:None,legacy_parent_session_path:None},Arc::new(MemoryStorage::new(Default::default())),StorageBackedSessionOptions::default());let mutation=session.begin_mutation(&BACKGROUND_CONTEXT).await.expect("setup mutation");mutation.commit(vec![Write::Value(set_value(&branch_tip("main"),Value::Null)),Write::Value(set_value(&lane_config("main"),configuration())),Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":null,"lastOperationId":null,"inbox":[]})))],&BACKGROUND_CONTEXT).await.expect("setup");mutation.end(&BACKGROUND_CONTEXT).await;let state=restore_lane(&session,"main",&BACKGROUND_CONTEXT).await.expect("restore");Arc::new(Lane{session,state:Mutex::new(state)})}
-async fn install(lane:&Lane,state:Value,mut writes:Vec<Write>){writes.extend([Write::Value(set_value(&operation_meta("op"),json!({"operationId":"op","lane":"main","sourceTipId":null,"startedAt":1,"intent":{"kind":"run","promptEntryIds":[]}}))),Write::Value(set_value(&operation_state("op"),state)),Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":"op","lastOperationId":null,"inbox":[]})))]);commit(lane,writes).await;}
-fn user(id:&str,parent:Option<String>)->NewEntry{NewEntry::message(id,parent,maho_ai::types::Message::User(maho_ai::types::UserMessage{content:maho_ai::types::UserContent::Text(id.into()),timestamp:2}).into())}
+async fn commit(lane: &Lane, writes: Vec<Write>) {
+    let mutation = lane
+        .session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .expect("mutation");
+    mutation
+        .commit(writes, &BACKGROUND_CONTEXT)
+        .await
+        .expect("commit");
+    mutation.end(&BACKGROUND_CONTEXT).await;
+    lane.publish_state(
+        restore_lane(&lane.session, "main", &BACKGROUND_CONTEXT)
+            .await
+            .expect("restore"),
+    );
+}
+fn configuration() -> Value {
+    json!({"model":{"provider":"configured","modelId":"model"},"thinkingLevel":"off","activeToolNames":[]})
+}
+fn scope(at: &str) -> Value {
+    json!({"at":at,"control":{"status":"running"},"settings":{"compaction":{"enabled":true,"reserveTokens":1000,"keepRecentTokens":2000},"steeringMode":"all","followUpMode":"all","toolExecution":"parallel"},"latestAssistantEntryId":null})
+}
+fn effect() -> Value {
+    let mut s = scope("assistant.effect_pending");
+    s["generationContext"] = json!({"stepId":"step","triggerEntryId":"trigger","configuration":configuration(),"streamOptions":{},"retryPolicy":{"maxAttempts":2,"baseDelayMs":0,"maxAgentDelayMs":30000},"overflowRecoveryUsed":false});
+    s["attempt"] = json!(1);
+    s["responseEntryId"] = json!("response");
+    s["usageId"] = json!("usage");
+    s["intendedOutputLimit"] = json!(100);
+    s["contextWindow"] = json!(1000);
+    s
+}
+async fn fixture() -> Arc<Lane> {
+    let session = StorageBackedSession::new(
+        SessionMetadata {
+            id: "watch".into(),
+            created_at: 1,
+            storage_version: 1,
+            cwd: None,
+            parent_session_id: None,
+            legacy_parent_session_path: None,
+            path: None,
+        },
+        Arc::new(MemoryStorage::new(Default::default())),
+        StorageBackedSessionOptions::default(),
+    );
+    let mutation = session
+        .begin_mutation(&BACKGROUND_CONTEXT)
+        .await
+        .expect("setup mutation");
+    mutation
+        .commit(
+            vec![
+                Write::Value(set_value(&branch_tip("main"), Value::Null)),
+                Write::Value(set_value(&lane_config("main"), configuration())),
+                Write::Value(set_value(
+                    &lane_state("main"),
+                    json!({"currentOperationId":null,"lastOperationId":null,"inbox":[]}),
+                )),
+            ],
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("setup");
+    mutation.end(&BACKGROUND_CONTEXT).await;
+    let state = restore_lane(&session, "main", &BACKGROUND_CONTEXT)
+        .await
+        .expect("restore");
+    Arc::new(Lane {
+        session,
+        state: Mutex::new(state),
+    })
+}
+async fn install(lane: &Lane, state: Value, mut writes: Vec<Write>) {
+    writes.extend([Write::Value(set_value(&operation_meta("op"),json!({"operationId":"op","lane":"main","sourceTipId":null,"startedAt":1,"intent":{"kind":"run","promptEntryIds":[]}}))),Write::Value(set_value(&operation_state("op"),state)),Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":"op","lastOperationId":null,"inbox":[]})))]);
+    commit(lane, writes).await;
+}
+fn user(id: &str, parent: Option<String>) -> NewEntry {
+    NewEntry::message(
+        id,
+        parent,
+        maho_ai::types::Message::User(maho_ai::types::UserMessage {
+            content: maho_ai::types::UserContent::Text(id.into()),
+            timestamp: 2,
+        })
+        .into(),
+    )
+}
 
 #[tokio::test]
-async fn captures_compaction_bounded_transcript_and_isolates_snapshot(){let lane=fixture().await;let compact:NewEntry=serde_json::from_value(json!({"id":"compact","parentId":"root","type":"compaction","summary":"summary","retainedTail":[],"tokensBefore":10,"fromHook":false})).expect("compaction");let root:NewEntry=serde_json::from_value(json!({"id":"root","parentId":null,"type":"custom","customType":"root"})).expect("root");commit(&lane,vec![insert_entry(root),insert_entry(compact),insert_entry(user("after",Some("compact".into()))),Write::Value(set_value(&branch_tip("main"),json!("after")))]).await;let bus=HarnessEventBus::new();let first=watch_lane(lane.clone(),bus.clone(),&BACKGROUND_CONTEXT).await.expect("watch");let mut snapshot=first.snapshot().expect("snapshot");assert_eq!(snapshot["transcript"].as_array().expect("transcript").iter().map(|e|e["id"].as_str().expect("id")).collect::<Vec<_>>(),["compact","after"]);assert_eq!(snapshot["configuration"],configuration());assert_eq!(snapshot["stats"]["messageCount"],1);assert_eq!(snapshot["operation"],Value::Null);assert_eq!(snapshot["queues"],json!([]));assert_eq!(snapshot["faulted"],false);snapshot["transcript"]=json!([]);snapshot["tipId"]=Value::Null;let second=watch_lane(lane,bus,&BACKGROUND_CONTEXT).await.expect("second watch");assert_eq!(second.snapshot().expect("snapshot")["tipId"],"after");assert_eq!(second.snapshot().expect("snapshot")["transcript"].as_array().expect("transcript").len(),2);first.unsubscribe();second.unsubscribe();}
+async fn captures_compaction_bounded_transcript_and_isolates_snapshot() {
+    let lane = fixture().await;
+    let compact:NewEntry=serde_json::from_value(json!({"id":"compact","parentId":"root","type":"compaction","summary":"summary","retainedTail":[],"tokensBefore":10,"fromHook":false})).expect("compaction");
+    let root: NewEntry = serde_json::from_value(
+        json!({"id":"root","parentId":null,"type":"custom","customType":"root"}),
+    )
+    .expect("root");
+    commit(
+        &lane,
+        vec![
+            insert_entry(root),
+            insert_entry(compact),
+            insert_entry(user("after", Some("compact".into()))),
+            Write::Value(set_value(&branch_tip("main"), json!("after"))),
+        ],
+    )
+    .await;
+    let bus = HarnessEventBus::new();
+    let first = watch_lane(lane.clone(), bus.clone(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("watch");
+    let mut snapshot = first.snapshot().expect("snapshot");
+    assert_eq!(
+        snapshot["transcript"]
+            .as_array()
+            .expect("transcript")
+            .iter()
+            .map(|e| e["id"].as_str().expect("id"))
+            .collect::<Vec<_>>(),
+        ["compact", "after"]
+    );
+    assert_eq!(snapshot["configuration"], configuration());
+    assert_eq!(snapshot["stats"]["messageCount"], 1);
+    assert_eq!(snapshot["operation"], Value::Null);
+    assert_eq!(snapshot["queues"], json!([]));
+    assert_eq!(snapshot["faulted"], false);
+    snapshot["transcript"] = json!([]);
+    snapshot["tipId"] = Value::Null;
+    let second = watch_lane(lane, bus, &BACKGROUND_CONTEXT)
+        .await
+        .expect("second watch");
+    assert_eq!(second.snapshot().expect("snapshot")["tipId"], "after");
+    assert_eq!(
+        second.snapshot().expect("snapshot")["transcript"]
+            .as_array()
+            .expect("transcript")
+            .len(),
+        2
+    );
+    first.unsubscribe();
+    second.unsubscribe();
+}
 
 #[tokio::test]
-async fn omits_streaming_presentation_without_frames(){let lane=fixture().await;install(&lane,effect(),vec![]).await;let watch=watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await.expect("watch");assert!(watch.snapshot().expect("snapshot")["operation"].get("streamingMessage").is_none());watch.unsubscribe();}
+async fn omits_streaming_presentation_without_frames() {
+    let lane = fixture().await;
+    install(&lane, effect(), vec![]).await;
+    let watch = watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("watch");
+    assert!(
+        watch.snapshot().expect("snapshot")["operation"]
+            .get("streamingMessage")
+            .is_none()
+    );
+    watch.unsubscribe();
+}
 
 #[tokio::test]
-async fn dereferences_queues_pending_writes_and_deferred_handles(){let lane=fixture().await;let handle=json!({"provider":"provider","modelId":"model","api":"test","id":"deferred"});let mut message=maho_ai::providers::faux::faux_assistant_message("",Default::default());message.stop_reason=maho_ai::types::StopReason::Deferred;message.deferred=Some(serde_json::from_value(handle.clone()).expect("handle"));let mut state=scope("deferred.suspended");state["control"]=json!({"status":"cancel_requested","requestedAt":2});state["stepId"]=json!("step");state["sourceEntryId"]=json!("source");state["poll"]=json!(3);state["configuration"]=configuration();state["streamOptions"]=json!({});install(&lane,state,vec![insert_entry(NewEntry::message("source",None,maho_ai::types::Message::Assistant(Box::new(message)).into())),Write::Value(set_value(&branch_tip("main"),json!("source")))]).await;let mut writes=Vec::new();let mut inbox=Vec::new();for(id,kind)in[("next","nextRun"),("steer","steer"),("follow","followUp"),("write","write")]{inbox.push(json!({"entryId":id,"kind":kind}));let payload=if id=="write"{json!({"type":"custom","customType":"note","payload":{"id":id}})}else{json!({"type":"message","payload":{"role":"user","content":id,"timestamp":1}})};writes.push(Write::Value(set_value(&pending_entry(id),payload)));}writes.push(Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":"op","lastOperationId":null,"inbox":inbox}))));commit(&lane,writes).await;let watch=watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await.expect("watch");let snapshot=watch.snapshot().expect("snapshot");assert_eq!(snapshot["queues"].as_array().expect("queues").len(),4);for(i,id)in["next","steer","follow"].iter().enumerate(){assert_eq!(snapshot["queues"][i]["message"]["content"],*id);}assert_eq!(snapshot["queues"][3],json!({"entryId":"write","kind":"write","type":"custom","customType":"note","data":{"id":"write"}}));assert_eq!(snapshot["operation"],json!({"id":"op","kind":"run","startedAt":1,"fromTipId":null,"status":"aborting","deferred":{"handle":handle,"poll":3},"runningTools":[]}));watch.unsubscribe();}
+async fn dereferences_queues_pending_writes_and_deferred_handles() {
+    let lane = fixture().await;
+    let handle = json!({"provider":"provider","modelId":"model","api":"test","id":"deferred"});
+    let mut message = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+    message.stop_reason = maho_ai::types::StopReason::Deferred;
+    message.deferred = Some(serde_json::from_value(handle.clone()).expect("handle"));
+    let mut state = scope("deferred.suspended");
+    state["control"] = json!({"status":"cancel_requested","requestedAt":2});
+    state["stepId"] = json!("step");
+    state["sourceEntryId"] = json!("source");
+    state["poll"] = json!(3);
+    state["configuration"] = configuration();
+    state["streamOptions"] = json!({});
+    install(
+        &lane,
+        state,
+        vec![
+            insert_entry(NewEntry::message(
+                "source",
+                None,
+                maho_ai::types::Message::Assistant(Box::new(message)).into(),
+            )),
+            Write::Value(set_value(&branch_tip("main"), json!("source"))),
+        ],
+    )
+    .await;
+    let mut writes = Vec::new();
+    let mut inbox = Vec::new();
+    for (id, kind) in [
+        ("next", "nextRun"),
+        ("steer", "steer"),
+        ("follow", "followUp"),
+        ("write", "write"),
+    ] {
+        inbox.push(json!({"entryId":id,"kind":kind}));
+        let payload = if id == "write" {
+            json!({"type":"custom","customType":"note","payload":{"id":id}})
+        } else {
+            json!({"type":"message","payload":{"role":"user","content":id,"timestamp":1}})
+        };
+        writes.push(Write::Value(set_value(&pending_entry(id), payload)));
+    }
+    writes.push(Write::Value(set_value(
+        &lane_state("main"),
+        json!({"currentOperationId":"op","lastOperationId":null,"inbox":inbox}),
+    )));
+    commit(&lane, writes).await;
+    let watch = watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("watch");
+    let snapshot = watch.snapshot().expect("snapshot");
+    assert_eq!(snapshot["queues"].as_array().expect("queues").len(), 4);
+    for (i, id) in ["next", "steer", "follow"].iter().enumerate() {
+        assert_eq!(snapshot["queues"][i]["message"]["content"], *id);
+    }
+    assert_eq!(
+        snapshot["queues"][3],
+        json!({"entryId":"write","kind":"write","type":"custom","customType":"note","data":{"id":"write"}})
+    );
+    assert_eq!(
+        snapshot["operation"],
+        json!({"id":"op","kind":"run","startedAt":1,"fromTipId":null,"status":"aborting","deferred":{"handle":handle,"poll":3},"runningTools":[]})
+    );
+    watch.unsubscribe();
+}
 
 #[tokio::test]
-async fn faults_required_payload_corruption_and_unsubscribes(){let lane=fixture().await;commit(&lane,vec![Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":null,"lastOperationId":null,"inbox":[{"entryId":"missing","kind":"nextRun"}]})))]).await;assert!(watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await.is_err());}
+async fn faults_required_payload_corruption_and_unsubscribes() {
+    let lane = fixture().await;
+    commit(&lane,vec![Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":null,"lastOperationId":null,"inbox":[{"entryId":"missing","kind":"nextRun"}]})))]).await;
+    assert!(
+        watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT)
+            .await
+            .is_err()
+    );
+}
 
 #[tokio::test]
-async fn returns_snapshot_after_without_replay(){let lane=fixture().await;commit(&lane,vec![insert_entry(user("existing",None)),Write::Value(set_value(&branch_tip("main"),json!("existing")))]).await;let watch=watch_lane(lane,HarnessEventBus::new(),&BACKGROUND_CONTEXT).await.expect("watch");let count=Arc::new(std::sync::atomic::AtomicUsize::new(0));let captured=count.clone();watch.start(Arc::new(move|_,_|{captured.fetch_add(1,std::sync::atomic::Ordering::SeqCst);Box::pin(async{})})).await;assert_eq!(watch.snapshot().expect("snapshot")["transcript"][0]["id"],"existing");assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst),0);watch.unsubscribe();}
+async fn returns_snapshot_after_without_replay() {
+    let lane = fixture().await;
+    commit(
+        &lane,
+        vec![
+            insert_entry(user("existing", None)),
+            Write::Value(set_value(&branch_tip("main"), json!("existing"))),
+        ],
+    )
+    .await;
+    let watch = watch_lane(lane, HarnessEventBus::new(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("watch");
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = count.clone();
+    watch
+        .start(Arc::new(move |_, _| {
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {})
+        }))
+        .await;
+    assert_eq!(
+        watch.snapshot().expect("snapshot")["transcript"][0]["id"],
+        "existing"
+    );
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    watch.unsubscribe();
+}
+
+/// Pinned `BlockingScanStorage`: once armed, the next `scan_branch` signals `started` and parks
+/// until `release` fires, so the watch holds the lane line while a later append queues behind it.
+struct BlockingScanStorage {
+    decorator: maho_agent::harness::session::StorageDecorator,
+    armed: std::sync::atomic::AtomicBool,
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl Storage for BlockingScanStorage {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<CommitResult, maho_agent::harness::session::session::SessionError>>
+    {
+        self.decorator.commit(writes, context)
+    }
+    fn get_entries<'a>(
+        &'a self,
+        ids: Vec<String>,
+        context: &'a Context,
+    ) -> BoxFuture<
+        'a,
+        Result<
+            std::collections::BTreeMap<String, Entry>,
+            maho_agent::harness::session::session::SessionError,
+        >,
+    > {
+        self.decorator.get_entries(ids, context)
+    }
+    fn get_value<'a>(
+        &'a self,
+        address: &'a maho_agent::harness::session::values::Value,
+        context: &'a Context,
+    ) -> BoxFuture<
+        'a,
+        Result<Option<StoredValue>, maho_agent::harness::session::session::SessionError>,
+    > {
+        self.decorator.get_value(address, context)
+    }
+    fn scan_values<'a>(
+        &'a self,
+        prefix: &'a maho_agent::harness::session::values::Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<StoredValue>, maho_agent::harness::session::session::SessionError>>
+    {
+        self.decorator.scan_values(prefix, context)
+    }
+    fn read_list<'a>(
+        &'a self,
+        address: &'a ValueList,
+        options: Option<ListReadOptions>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<ListElement>, maho_agent::harness::session::session::SessionError>>
+    {
+        self.decorator.read_list(address, options, context)
+    }
+    fn scan_branch<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<Entry>, maho_agent::harness::session::session::SessionError>>
+    {
+        Box::pin(async move {
+            if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let started = self.started.lock().expect("started lock").take();
+                let release = self.release.lock().expect("release lock").take();
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+            }
+            self.decorator.scan_branch(query, context).await
+        })
+    }
+    fn scan_branch_structure<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<
+        'a,
+        Result<Vec<EntryStructure>, maho_agent::harness::session::session::SessionError>,
+    > {
+        self.decorator.scan_branch_structure(query, context)
+    }
+    fn scan_entries<'a>(
+        &'a self,
+        query: EntryScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<Entry>, maho_agent::harness::session::session::SessionError>>
+    {
+        self.decorator.scan_entries(query, context)
+    }
+    fn scan_usage<'a>(
+        &'a self,
+        query: UsageScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<UsageRow>, maho_agent::harness::session::session::SessionError>>
+    {
+        self.decorator.scan_usage(query, context)
+    }
+    fn get_stats<'a>(
+        &'a self,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<SessionStats, maho_agent::harness::session::session::SessionError>>
+    {
+        self.decorator.get_stats(context)
+    }
+    fn close<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, ()> {
+        self.decorator.close(context)
+    }
+}
+
+#[tokio::test]
+async fn returns_snapshot_before_plus_buffered_events_when_watch_wins_the_lane_line() {
+    use maho_agent::harness::context::{create_context_key, with_context_value};
+    use std::time::Duration;
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let storage = Arc::new(BlockingScanStorage {
+        decorator: maho_agent::harness::session::StorageDecorator::new(Arc::new(
+            MemoryStorage::new(Default::default()),
+        )),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        started: Mutex::new(Some(started_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata {
+            id: "watch-race".into(),
+            created_at: 1,
+            storage_version: 1,
+            cwd: None,
+            parent_session_id: None,
+            legacy_parent_session_path: None,
+            path: None,
+        },
+        storage.clone(),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let seed: LaneConfiguration =
+        serde_json::from_value(configuration()).expect("seed configuration");
+    let harness = maho_agent::harness::runtime::harness::create_agent_harness(
+        session,
+        seed,
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("harness");
+    let lane = harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("main lane");
+    let root = lane
+        .append_custom_entry("root".into(), None, &BACKGROUND_CONTEXT)
+        .await
+        .expect("root entry");
+
+    storage
+        .armed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let watch_task = tokio::spawn(watch_lane(
+        lane.clone(),
+        lane.events.clone(),
+        &BACKGROUND_CONTEXT,
+    ));
+    tokio::time::timeout(Duration::from_secs(5), started_rx)
+        .await
+        .expect("watch reaches its branch scan")
+        .expect("started sender");
+    let source_key = Arc::new(create_context_key::<String>("watch.event.source"));
+    let source_context = with_context_value(
+        source_key.as_ref(),
+        "append".to_owned(),
+        &BACKGROUND_CONTEXT,
+    );
+    let append_lane = lane.clone();
+    let append_context = source_context.clone();
+    let append = tokio::spawn(async move {
+        append_lane
+            .append_message(
+                maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::User(
+                    maho_ai::types::UserMessage {
+                        content: maho_ai::types::UserContent::Text("later".into()),
+                        timestamp: 2,
+                    },
+                )),
+                &append_context,
+            )
+            .await
+    });
+    release_tx.send(()).expect("release blocked scan");
+    let watch = tokio::time::timeout(Duration::from_secs(5), watch_task)
+        .await
+        .expect("watch settles")
+        .expect("watch task")
+        .expect("watch");
+    assert_eq!(
+        watch.snapshot().expect("snapshot")["transcript"]
+            .as_array()
+            .expect("transcript")
+            .iter()
+            .map(|e| e["id"].as_str().expect("id").to_owned())
+            .collect::<Vec<_>>(),
+        vec![root]
+    );
+
+    let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+    let key = source_key.clone();
+    watch
+        .start(Arc::new(move |event, event_context| {
+            let _ = seen_tx.send((
+                event.event_type(),
+                event_context.value(key.as_ref()) == Some("append".to_owned()),
+            ));
+            Box::pin(async {})
+        }))
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), append)
+        .await
+        .expect("append settles")
+        .expect("append task")
+        .expect("append");
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        seen.push(
+            tokio::time::timeout(Duration::from_secs(5), seen_rx.recv())
+                .await
+                .expect("buffered event delivered")
+                .expect("listener open"),
+        );
+    }
+    assert_eq!(
+        seen.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+        ["message_start", "message_end", "entry_added"]
+    );
+    assert!(seen.iter().all(|(_, same)| *same));
+    watch.unsubscribe();
+}

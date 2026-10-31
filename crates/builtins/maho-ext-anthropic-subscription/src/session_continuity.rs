@@ -32,7 +32,10 @@ fn from_binding(input:&ContinuityInput<'_>,binding:&Snapshot)->Decision {
     let shared=common_prefix(&binding.sent_hashes,input.current_hashes);
     let matches_prefix=||binding.sent_prefix_hash.as_ref().map_or(shared==binding.sent_count,|hash|prefix_digest(input.current_hashes,binding.sent_count)==*hash);
     if binding.unanswered_turn_digest.as_ref().is_some_and(|hash|prefix_digest(input.current_hashes,input.current_hashes.len())==*hash)&&input.current_hashes.len()>=binding.sent_count&&matches_prefix() {
-        return match &binding.last_assistant_uuid {Some(uuid)=>Decision::Fork {sdk_session_id:binding.sdk_session_id.clone(),at_uuid:uuid.clone(),from:binding.sent_count,reason:"timeout_retry".into()},None=>flatten("timeout_retry")};
+        // The pre-turn boundary may be unmapped (Claude Code rejected it, senpi#1958); any earlier mapped
+        // boundary still lies inside the prefix just proven, so fork there (senpi#1973).
+        let boundary=match &binding.last_assistant_uuid {Some(uuid)=>Some((binding.sent_count,uuid)),None=>binding.assistant_uuid_by_index.range(1..=binding.sent_count).next_back().map(|(index,uuid)|(*index,uuid))};
+        return match boundary {Some((from,uuid))=>Decision::Fork {sdk_session_id:binding.sdk_session_id.clone(),at_uuid:uuid.clone(),from,reason:"timeout_retry".into()},None=>flatten("timeout_retry")};
     }
     if binding.sent_prefix_hash.is_some() {
         if input.current_hashes.len()>=binding.sent_count&&matches_prefix() {return reattach(binding,reason.unwrap_or("registry_miss"));}
@@ -87,6 +90,16 @@ mod tests {
     fn restored_retry_checkpoint_and_confirmation() {
         let hashes=vec!["h1".into(),"h2".into(),"h3".into()];let mut binding=snapshot();binding.sent_prefix_hash=Some(prefix_digest(&hashes,2));binding.unanswered_turn_digest=Some(prefix_digest(&hashes,3));let mut request=input(&hashes);request.binding=Some(&binding);
         assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a2".into(),from:2,reason:"timeout_retry".into()});binding.sdk_session_id_confirmed=Some(false);let mut request=input(&hashes);request.binding=Some(&binding);assert_eq!(decide(&request),flatten("session_unconfirmed"));request.transcript_available=false;assert_eq!(decide(&request),flatten("transcript_missing"));
+    }
+    #[test]
+    fn retry_checkpoint_without_a_pre_turn_anchor_forks_at_an_earlier_boundary_issue_1973() {
+        let hashes=vec!["h1".into(),"h2".into(),"h3".into()];let mut binding=snapshot();
+        binding.sent_prefix_hash=Some(prefix_digest(&hashes,2));binding.unanswered_turn_digest=Some(prefix_digest(&hashes,3));
+        binding.last_assistant_uuid=None;binding.assistant_uuid_by_index=BTreeMap::from([(1,"a1".into())]);
+        let mut request=input(&hashes);request.binding=Some(&binding);
+        assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a1".into(),from:1,reason:"timeout_retry".into()});
+        binding.assistant_uuid_by_index.clear();let mut request=input(&hashes);request.binding=Some(&binding);
+        assert_eq!(decide(&request),flatten("timeout_retry"));
     }
     #[test]
     fn restored_prefix_fails_closed_and_invalidations_are_sanitized() {

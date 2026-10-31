@@ -40,6 +40,8 @@ pub struct ImportReport {
     pub skipped_existing: u64,
     pub skipped_people_files: u64,
     pub skipped_non_markdown: u64,
+    /// Files whose readable `expires` instant was not later than the import time.
+    pub expired_on_import: u64,
     pub warnings: Vec<Warning>,
 }
 
@@ -53,7 +55,7 @@ impl ImportReport {
             );
         }
         let mut out = format!(
-            "{} {} memory block(s) from {} of {} Markdown file(s) in {} ({} already present{}{}).",
+            "{} {} memory block(s) from {} of {} Markdown file(s) in {} ({} already present{}{}{}).",
             if self.dry_run {
                 "Would import"
             } else {
@@ -80,6 +82,7 @@ impl ImportReport {
             } else {
                 String::new()
             },
+            format!(", {} file(s) expired on import", self.expired_on_import),
         );
         for warning in &self.warnings {
             out.push_str(&format!(
@@ -146,6 +149,115 @@ fn split_frontmatter(text: &str) -> (Option<Value>, &str, Option<String>) {
         text,
         Some("frontmatter is not closed; read as body".into()),
     )
+}
+
+/// Parses an `expires` value into epoch milliseconds (UTC).
+///
+/// Accepts `YYYY-MM-DD` (midnight UTC) or `YYYY-MM-DDTHH:MM[:SS[.f{1,9}]]` followed by `Z` or
+/// `+HH:MM` / `-HH:MM`; surrounding whitespace is ignored and sub-millisecond digits are
+/// truncated. Anything else (impossible dates, out-of-range fields, no zone) yields `None`.
+pub fn parse_expires(value: &str) -> Option<i64> {
+    let text = value.trim();
+    let bytes = text.as_bytes();
+    let digits = |range: std::ops::Range<usize>| -> Option<u32> {
+        let part = bytes.get(range)?;
+        if part.is_empty() || !part.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        part.iter()
+            .try_fold(0u32, |acc, digit| Some(acc * 10 + u32::from(digit - b'0')))
+    };
+    if bytes.len() < 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let year = i32::try_from(digits(0..4)?).ok()?;
+    let date = chrono::NaiveDate::from_ymd_opt(year, digits(5..7)?, digits(8..10)?)?;
+    if bytes.len() == 10 {
+        return Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
+    }
+    if bytes[10] != b'T' || bytes.get(13) != Some(&b':') {
+        return None;
+    }
+    let hour = digits(11..13)?;
+    let minute = digits(14..16)?;
+    let mut at = 16;
+    let mut second = 0;
+    let mut millis = 0;
+    if bytes.get(at) == Some(&b':') {
+        second = digits(at + 1..at + 3)?;
+        at += 3;
+        if bytes.get(at) == Some(&b'.') {
+            let start = at + 1;
+            let len = bytes[start..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            if !(1..=9).contains(&len) {
+                return None;
+            }
+            let fraction = &text[start..start + len.min(3)];
+            millis = format!("{fraction:0<3}").parse().ok()?;
+            at = start + len;
+        }
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let offset_minutes: i64 = match &bytes[at..] {
+        [b'Z'] => 0,
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
+            let offset_hour = digits(at + 1..at + 3)?;
+            let offset_minute = digits(at + 4..at + 6)?;
+            if offset_hour > 23 || offset_minute > 59 {
+                return None;
+            }
+            let total = i64::from(offset_hour * 60 + offset_minute);
+            if *sign == b'-' { -total } else { total }
+        }
+        _ => return None,
+    };
+    let local = date
+        .and_hms_milli_opt(hour, minute, second, millis)?
+        .and_utc()
+        .timestamp_millis();
+    Some(local - offset_minutes * 60_000)
+}
+
+/// Formats epoch milliseconds the way the store stamps times (`YYYY-MM-DDTHH:MM:SS.mmmZ`).
+pub fn format_instant(millis: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(millis)
+        .map(|time| time.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+
+/// The `expires` key of a file's frontmatter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expiry {
+    /// No `expires` key.
+    Absent,
+    /// A readable value: the instant and the value as written.
+    At { millis: i64, written: String },
+    /// A value that cannot be read; the file has no expiry.
+    Unusable(String),
+}
+
+/// Reads the `expires` key of parsed frontmatter.
+pub fn expiry_of(frontmatter: Option<&Value>) -> Expiry {
+    let Some(value) = frontmatter.and_then(|fm| fm.get("expires")) else {
+        return Expiry::Absent;
+    };
+    match value
+        .as_str()
+        .and_then(|text| Some((text, parse_expires(text)?)))
+    {
+        Some((text, millis)) => Expiry::At {
+            millis,
+            written: text.to_owned(),
+        },
+        None => Expiry::Unusable(match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        }),
+    }
 }
 
 fn heading_text(line: &str) -> Option<String> {
@@ -351,6 +463,16 @@ fn collect_files(root: &Path, dir: &Path, report: &mut ImportReport, out: &mut V
 
 /// Imports the legacy store at `options.root` into `store`.
 pub fn import(store: &Store, options: &ImportOptions) -> Result<ImportReport, String> {
+    import_at(store, options, chrono::Utc::now().timestamp_millis())
+}
+
+/// [`import`] with an explicit import time (epoch milliseconds, UTC); expiries are judged and
+/// missing timestamps filled against it.
+pub fn import_at(
+    store: &Store,
+    options: &ImportOptions,
+    now_millis: i64,
+) -> Result<ImportReport, String> {
     let root = &options.root;
     let mut report = ImportReport {
         root: root.display().to_string(),
@@ -363,7 +485,7 @@ pub fn import(store: &Store, options: &ImportOptions) -> Result<ImportReport, St
     }
     let mut files = Vec::new();
     collect_files(root, root, &mut report, &mut files);
-    let imported_at = now_iso();
+    let imported_at = format_instant(now_millis).unwrap_or_else(now_iso);
     for path in files {
         let rel = relative(root, &path);
         report.files_scanned += 1;
@@ -396,6 +518,24 @@ pub fn import(store: &Store, options: &ImportOptions) -> Result<ImportReport, St
                 reason: reason.clone(),
             });
         }
+        let expiry = expiry_of(parsed.frontmatter.as_ref());
+        let (valid_until, expires_written) = match &expiry {
+            Expiry::At { millis, written } => (format_instant(*millis), Some(written.clone())),
+            Expiry::Unusable(value) => {
+                report.warnings.push(Warning {
+                    path: rel.clone(),
+                    reason: format!("unusable `expires` value {value:?}; imported without expiry"),
+                });
+                (None, None)
+            }
+            Expiry::Absent => (None, None),
+        };
+        if let Expiry::At { millis, .. } = expiry
+            && millis <= now_millis
+            && !parsed.blocks.is_empty()
+        {
+            report.expired_on_import += 1;
+        }
         let description = parsed
             .frontmatter
             .as_ref()
@@ -425,6 +565,16 @@ pub fn import(store: &Store, options: &ImportOptions) -> Result<ImportReport, St
             if options.dry_run {
                 continue;
             }
+            let mut metadata = json!({
+                "legacy_path": rel,
+                "section": block.section,
+                "block": index,
+                "frontmatter": parsed.frontmatter,
+                "importer": IMPORTER,
+            });
+            if let (Some(written), Some(map)) = (&expires_written, metadata.as_object_mut()) {
+                map.insert("expires".into(), Value::String(written.clone()));
+            }
             store.remember(
                 &content,
                 &RememberOptions {
@@ -436,13 +586,8 @@ pub fn import(store: &Store, options: &ImportOptions) -> Result<ImportReport, St
                     trust_tier: Some("IMPORTED".into()),
                     memory_type: kind.memory_type.into(),
                     memory_id: Some(id),
-                    metadata: Some(json!({
-                        "legacy_path": rel,
-                        "section": block.section,
-                        "block": index,
-                        "frontmatter": parsed.frontmatter,
-                        "importer": IMPORTER,
-                    })),
+                    valid_until: valid_until.clone(),
+                    metadata: Some(metadata),
                     ..Default::default()
                 },
             )?;
@@ -598,6 +743,279 @@ mod tests {
         .expect("missing");
         assert!(!missing.found);
         assert!(missing.text().contains("nothing to import"));
+    }
+
+    fn instant(iso: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(iso)
+            .expect("iso")
+            .timestamp_millis()
+    }
+
+    fn expires_line(line: &str) -> Option<String> {
+        let parsed = parse_markdown(&format!("---\n{line}\n---\nbody\n"));
+        match expiry_of(parsed.frontmatter.as_ref()) {
+            Expiry::At { millis, .. } => format_instant(millis),
+            _ => None,
+        }
+    }
+
+    fn recall_at(store: &Store, query: &str, at: &str) -> Vec<String> {
+        store
+            .recall(
+                query,
+                10,
+                &RecallOptions {
+                    ignore_session_scope: true,
+                    valid_at: Some(at.into()),
+                    update_recall_counts: false,
+                    ..Default::default()
+                },
+            )
+            .expect("recall")
+            .into_iter()
+            .map(|result| result.id)
+            .collect()
+    }
+
+    const TRIP: &str = "---\nexpires: 2031-03-14\n---\n- Lisbon flight booked\n- Lisbon hotel near the river\n- Lisbon rental car picked up\n";
+
+    #[test]
+    fn expires_date_is_midnight_utc() {
+        assert_eq!(
+            expires_line("expires: 2031-03-14").as_deref(),
+            Some("2031-03-14T00:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn expires_offset_is_normalised_to_utc() {
+        assert_eq!(
+            expires_line("expires: 2031-03-14T01:20-05:30").as_deref(),
+            Some("2031-03-14T06:50:00.000Z")
+        );
+    }
+
+    #[test]
+    fn expires_quoted_fraction_is_truncated_to_millis() {
+        assert_eq!(
+            expires_line("expires: '2031-03-14T06:50:09.1234567Z'").as_deref(),
+            Some("2031-03-14T06:50:09.123Z")
+        );
+        assert_eq!(
+            expires_line("expires: \"  2031-03-14T06:50:09.9Z \"").as_deref(),
+            Some("2031-03-14T06:50:09.900Z")
+        );
+        assert_eq!(
+            expires_line("expires: 2031-03-14T06:50+01:00").as_deref(),
+            Some("2031-03-14T05:50:00.000Z")
+        );
+    }
+
+    #[test]
+    fn unreadable_expires_values_mean_no_expiry() {
+        for line in [
+            "expires: 2031-03-14T06:50:09",
+            "expires: 2031-04-31",
+            "expires: 2031-03-14T06:61Z",
+            "expires: 2031-03-14/06:50Z",
+            "expires: when the release ships",
+            "expires: [2031-03-14]",
+            "expires:",
+        ] {
+            assert_eq!(expires_line(line), None, "{line}");
+        }
+        for value in [
+            "2031-03-14T24:00Z",
+            "2031-03-14T06:50:60Z",
+            "2031-03-14T06:50+24:00",
+            "2031-03-14T06:50+05:60",
+            "2031-03-14T06:50:09.Z",
+            "2031-03-14T06:50:09.1234567890Z",
+            "2031-03-14 06:50Z",
+            "2031-3-14",
+            "",
+        ] {
+            assert_eq!(parse_expires(value), None, "{value}");
+        }
+        assert_eq!(expiry_of(None), Expiry::Absent);
+    }
+
+    #[test]
+    fn free_text_expires_imports_blocks_with_one_warning() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/plan.md",
+            "---\nexpires: when the release ships\n---\n- first idea\n- second idea\n",
+        );
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(report.blocks_imported, 2);
+        assert_eq!(report.expired_on_import, 0);
+        let warnings: Vec<&Warning> = report
+            .warnings
+            .iter()
+            .filter(|warning| warning.path == "notes/plan.md")
+            .collect();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].reason.contains("expires"));
+        let first = sha256_hex16("notes/plan.md\u{0}0\u{0}- first idea");
+        let row = store.get(&first).expect("get").expect("row");
+        assert_eq!(row.valid_until, None);
+        let metadata: Value =
+            serde_json::from_str(row.metadata.as_deref().expect("metadata")).expect("json");
+        assert!(metadata.get("expires").is_none());
+        assert_eq!(
+            metadata["frontmatter"]["expires"],
+            json!("when the release ships")
+        );
+    }
+
+    #[test]
+    fn expiring_file_is_recalled_until_the_exclusive_bound() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(dir.path(), "notes/trip.md", TRIP);
+        let store = Store::open_in_memory("import").expect("store");
+        let options = ImportOptions {
+            root: dir.path().into(),
+            include_people: false,
+            dry_run: false,
+        };
+        let report = import_at(&store, &options, instant("2031-03-10T12:00:00Z")).expect("import");
+        assert_eq!(report.blocks_imported, 3);
+        assert_eq!(report.expired_on_import, 0);
+        let ids: Vec<String> = (0..3)
+            .map(|index| {
+                let text = parse_markdown(TRIP).blocks[index].text.clone();
+                sha256_hex16(&format!("notes/trip.md\0{index}\0{text}"))
+            })
+            .collect();
+        for id in &ids {
+            let row = store.get(id).expect("get").expect("row");
+            assert_eq!(row.valid_until.as_deref(), Some("2031-03-14T00:00:00.000Z"));
+            let metadata: Value =
+                serde_json::from_str(row.metadata.as_deref().expect("metadata")).expect("json");
+            assert_eq!(metadata["expires"], json!("2031-03-14"));
+            assert_eq!(metadata["frontmatter"]["expires"], json!("2031-03-14"));
+        }
+        let mut before = recall_at(&store, "lisbon", "2031-03-13T23:59:59.999Z");
+        before.sort();
+        let mut expected = ids.clone();
+        expected.sort();
+        assert_eq!(before, expected);
+        assert!(recall_at(&store, "lisbon", "2031-03-14T00:00:00.000Z").is_empty());
+
+        write(
+            dir.path(),
+            "notes/trip.md",
+            &TRIP.replace("2031-03-14", "2032-01-01"),
+        );
+        let again = import_at(&store, &options, instant("2031-03-11T00:00:00Z")).expect("again");
+        assert_eq!((again.blocks_imported, again.skipped_existing), (0, 3));
+        let row = store.get(&ids[0]).expect("get").expect("row");
+        assert_eq!(row.valid_until.as_deref(), Some("2031-03-14T00:00:00.000Z"));
+    }
+
+    #[test]
+    fn file_expired_at_import_is_kept_but_not_recalled() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(dir.path(), "notes/trip.md", TRIP);
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import_at(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                include_people: false,
+                dry_run: false,
+            },
+            instant("2031-04-02T00:00:00Z"),
+        )
+        .expect("import");
+        assert_eq!(report.blocks_imported, 3);
+        assert_eq!(report.expired_on_import, 1);
+        assert_eq!(store.stats().expect("stats").working, 3);
+        assert!(recall_at(&store, "lisbon", "2031-04-02T00:00:00.000Z").is_empty());
+        let as_json = serde_json::to_value(&report).expect("json");
+        assert_eq!(as_json["expired_on_import"], json!(1));
+        assert!(report.text().contains("1 file(s) expired on import"));
+    }
+
+    #[test]
+    fn already_expired_rows_leave_active_counts_and_dry_run_counts_them() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/old.md",
+            "---\nexpires: 2020-01-01\n---\nOld sprint goal.\n",
+        );
+        write(dir.path(), "notes/keep.md", "Permanent note.\n");
+        let store = Store::open_in_memory("import").expect("store");
+        let options = ImportOptions {
+            root: dir.path().into(),
+            include_people: false,
+            dry_run: true,
+        };
+        let dry = import(&store, &options).expect("dry");
+        assert_eq!(dry.expired_on_import, 1);
+        assert_eq!(store.stats().expect("stats").working, 0);
+        let report = import(
+            &store,
+            &ImportOptions {
+                dry_run: false,
+                ..options
+            },
+        )
+        .expect("import");
+        assert_eq!(report.expired_on_import, 1);
+        let stats = store.stats().expect("stats");
+        assert_eq!((stats.working, stats.working_active), (2, 1));
+        let recalled = store
+            .recall(
+                "sprint goal",
+                5,
+                &RecallOptions {
+                    ignore_session_scope: true,
+                    ..Default::default()
+                },
+            )
+            .expect("recall");
+        assert!(recalled.is_empty());
+    }
+
+    #[test]
+    fn tree_without_expires_reports_zero_expired() {
+        let dir = tempfile::tempdir().expect("dir");
+        write(
+            dir.path(),
+            "notes/a.md",
+            "---\ndescription: x\n---\none\n\ntwo\n",
+        );
+        let store = Store::open_in_memory("import").expect("store");
+        let report = import(
+            &store,
+            &ImportOptions {
+                root: dir.path().into(),
+                include_people: false,
+                dry_run: false,
+            },
+        )
+        .expect("import");
+        assert_eq!(report.expired_on_import, 0);
+        assert!(report.warnings.is_empty());
+        assert_eq!(
+            serde_json::to_value(&report).expect("json")["expired_on_import"],
+            json!(0)
+        );
+        let id = sha256_hex16("notes/a.md\u{0}0\u{0}one");
+        assert_eq!(store.get(&id).expect("get").expect("row").valid_until, None);
     }
 
     #[test]

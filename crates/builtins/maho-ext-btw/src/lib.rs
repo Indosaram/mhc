@@ -90,7 +90,7 @@ impl Extension for Btw{
                     }
                 };
                 if signal.aborted(){return Err(ExtensionFailure::new("Side query cancelled"));}
-                let mut options=maho_ai::types::SimpleStreamOptions::default();options.stream.request.api_key=auth.auth.api_key;options.stream.request.headers=auth.auth.headers;options.stream.request.env=auth.env;options.stream.request.signal=Some(signal.clone());options.stream.request.affinity_session_id=Some(format!("{}:btw:{id}",ctx.session_manager.session_id()));options.stream.extra_body=auth.extra_body;options.reasoning=thinking_level;
+                let mut options=maho_ai::types::SimpleStreamOptions::default();options.stream.request.api_key=auth.auth.api_key;options.stream.request.headers=auth.auth.headers;options.stream.request.env=auth.env;options.stream.request.signal=Some(signal.clone());options.stream.request.affinity_session_id=Some(format!("{}:btw:{id}",ctx.session_manager.session_id()));options.stream.extra_body=auth.extra_body;options.reasoning=thinking_level;options.stream.request.cwd=Some(ctx.cwd.to_string_lossy().into_owned());
                 let stream=ctx.model_registry.stream_simple(&model,&context,Some(options))?;
                 let mut reply=String::new();
                 collect_with_signal(&stream,&signal,|delta|{reply.push_str(delta);if let Some(panel)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().filter(|active|active.id==id).and_then(|active|active.panel.clone()){panel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).answer.push_str(delta);}}).await

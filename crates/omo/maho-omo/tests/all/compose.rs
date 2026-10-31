@@ -112,3 +112,26 @@ fn a_failed_component_registration_keeps_its_error_identity_without_duplicating_
     let second = extension.runtime().expect("still the same retained runtime");
     assert!(Arc::ptr_eq(&first, &second), "a failed component must not duplicate the mount");
 }
+
+#[test]
+fn pycache_prefix_goes_to_the_user_cache_unless_the_user_set_python_bytecode_vars() {
+    let run = |set: Option<&'static str>| {
+        let logger = Arc::new(RecordingLogger::new());
+        let provisioning = maho_omo::ProvisioningOptions {
+            env: Some(Arc::new(move |name: &str| match name {
+                "XDG_CACHE_HOME" => Some("/cache".to_owned()),
+                n if Some(n) == set => Some(String::new()),
+                _ => None,
+            })),
+            ..Default::default()
+        };
+        let extension = OmoExtension::with_options(Vec::new(), manual_runtime_options(logger), provisioning);
+        let mut api = new_api();
+        extension.register(&mut api);
+        extension.environment().get("PYTHONPYCACHEPREFIX").cloned()
+    };
+    let expected = std::path::Path::new("/cache").join("omo-senpi").join("pycache");
+    assert_eq!(run(None), Some(expected.to_string_lossy().into_owned()));
+    assert_eq!(run(Some("PYTHONDONTWRITEBYTECODE")), None);
+    assert_eq!(run(Some("PYTHONPYCACHEPREFIX")), None);
+}

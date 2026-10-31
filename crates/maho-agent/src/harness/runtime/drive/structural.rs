@@ -2033,6 +2033,7 @@ mod compaction_error_tests {
                     cwd: None,
                     parent_session_id: None,
                     legacy_parent_session_path: None,
+                    path: None,
                 },
                 Arc::new(MemoryStorage::new(Default::default())),
                 StorageBackedSessionOptions::default(),
@@ -2183,3 +2184,7 @@ mod compaction_error_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "structural_tests.rs"]
+mod structural_tests;

@@ -746,6 +746,11 @@ pub struct SettingsManager {
     project_settings: Settings,
     settings: Settings,
     project_trusted: bool,
+    /// senpi `trustFromFullAccess`: the project trust exists only because the session runs Full access
+    /// (senpi#3414); leaving it withdraws the trust, and going back restores it (#3420).
+    trust_from_full_access: bool,
+    /// senpi `trustEpoch`: counts project-trust changes; a reload compares it before installing what it loaded (#3420).
+    trust_epoch: u64,
     global_settings_load_error: Option<String>,
     project_settings_load_error: Option<String>,
     errors: Vec<SettingsError>,
@@ -799,6 +804,8 @@ impl SettingsManager {
             project_settings: project_load.0,
             settings,
             project_trusted,
+            trust_from_full_access: false,
+            trust_epoch: 0,
             global_settings_load_error: global_load.1,
             project_settings_load_error: project_load.1,
             errors,
@@ -897,6 +904,28 @@ impl SettingsManager {
         self.project_trusted
     }
 
+    /// senpi `SettingsManagerCreateOptions.trustFromFullAccess`: marks the project trust as coming only
+    /// from the session's Full access preset (never asked, never saved).
+    pub fn set_trust_from_full_access(&mut self, from_full_access: bool) {
+        self.trust_from_full_access = from_full_access;
+    }
+
+    /// senpi `isTrustFromFullAccess`: the project is trusted, and only because of Full access.
+    pub fn is_trust_from_full_access(&self) -> bool {
+        self.trust_from_full_access && self.project_trusted
+    }
+
+    /// senpi `canRestoreFullAccessTrust`: a Full-access-only trust was withdrawn in this session and
+    /// Full access may restore it.
+    pub fn can_restore_full_access_trust(&self) -> bool {
+        self.trust_from_full_access && !self.project_trusted
+    }
+
+    /// senpi `getTrustEpoch`.
+    pub fn trust_epoch(&self) -> u64 {
+        self.trust_epoch
+    }
+
     /// senpi `getTodoFirstTurnPlan`: `remind` and `off` are honored; anything else is `force`.
     pub fn get_todo_first_turn_plan(&self) -> &'static str {
         match self.settings.get("todo").and_then(|todo| todo.get("firstTurnPlan")).and_then(Value::as_str) {
@@ -924,6 +953,7 @@ impl SettingsManager {
             return;
         }
         self.project_trusted = trusted;
+        self.trust_epoch += 1;
         if !trusted {
             self.project_settings = Settings::new();
             self.project_settings_load_error = None;
@@ -1062,6 +1092,26 @@ impl SettingsManager {
         .unwrap_or(DEFAULT_SESSION_SHUTDOWN_QUIT_BUDGET_MS))
     }
 
+    /// senpi `getExtensionEventHandlerWarnMs`: how long one agent lifecycle event handler may run before
+    /// the host reports it as stalled. 0 disables.
+    pub fn get_extension_event_handler_warn_ms(&self) -> Result<u64, String> {
+        Ok(parse_timeout_setting(
+            self.get_value("extensionEventHandlerWarnMs"),
+            "extensionEventHandlerWarnMs",
+        )?
+        .unwrap_or(maho_ext_host::runner::handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_WARN_MS))
+    }
+
+    /// senpi `getExtensionEventHandlerTimeoutMs`: hard cap on one agent lifecycle event handler; past it
+    /// the session's event queue moves on. 0 disables.
+    pub fn get_extension_event_handler_timeout_ms(&self) -> Result<u64, String> {
+        Ok(parse_timeout_setting(
+            self.get_value("extensionEventHandlerTimeoutMs"),
+            "extensionEventHandlerTimeoutMs",
+        )?
+        .unwrap_or(maho_ext_host::runner::handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_TIMEOUT_MS))
+    }
+
     /// `getEngineTurnSettings`: non-negative integer overrides of the engine-turn bounds (senpi#2967).
     pub fn get_engine_turn_settings(&self) -> EngineTurnSettings {
         let configured = self.get_value("engineTurns");
@@ -1087,6 +1137,36 @@ impl SettingsManager {
         self.get_value("enableSessionShare")
             .and_then(Value::as_bool)
             .unwrap_or(true)
+    }
+
+    /// senpi `getEnableAnalytics`: opt-in analytics data sharing, default false.
+    pub fn get_enable_analytics(&self) -> bool {
+        self.get_value("enableAnalytics")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// senpi `getTrackingId`: the analytics identifier, generated on the first opt-in.
+    pub fn get_tracking_id(&self) -> Option<String> {
+        self.get_string("trackingId")
+    }
+
+    /// senpi `setEnableAnalytics`: stores the opt-in globally and generates a tracking identifier
+    /// on the first opt-in; opting out keeps an existing identifier.
+    pub fn set_enable_analytics(&mut self, enabled: bool) -> Result<(), String> {
+        let mut values = Settings::from_iter([("enableAnalytics".into(), Value::Bool(enabled))]);
+        let has_tracking_id = self
+            .global_settings
+            .get("trackingId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+        if enabled && !has_tracking_id {
+            values.insert(
+                "trackingId".into(),
+                Value::String(uuid::Uuid::new_v4().to_string()),
+            );
+        }
+        self.set(SettingsScope::Global, &values)
     }
 
     /// `handoffHint` settings with their defaults (senpi#3230).
@@ -2273,6 +2353,31 @@ mod tests {
     }
 
     #[test]
+    fn bash_redact_secrets_in_output_is_true_only_for_boolean_true() {
+        for (json_text, expected) in [
+            ("{}", false),
+            (r#"{"tools":{"bash":{}}}"#, false),
+            (r#"{"tools":{"bash":{"redactSecretsInOutput":true}}}"#, true),
+            (
+                r#"{"tools":{"bash":{"redactSecretsInOutput":false}}}"#,
+                false,
+            ),
+            (
+                r#"{"tools":{"bash":{"redactSecretsInOutput":"true"}}}"#,
+                false,
+            ),
+            (r#"{"tools":{"bash":{"redactSecretsInOutput":1}}}"#, false),
+        ] {
+            let manager = SettingsManager::in_memory(settings(json_text), false);
+            assert_eq!(
+                manager.get_bash_redact_secrets_in_output(),
+                expected,
+                "{json_text}"
+            );
+        }
+    }
+
+    #[test]
     fn strips_comments_without_touching_comment_like_text_in_strings() {
         let parsed = settings(
             "{\n  // line comment\n  \"a\": \"// not a comment\",\n  /* block\n     comment */ \"b\": \"/* also not */\"\n}",
@@ -2516,6 +2621,42 @@ mod tests {
         );
         assert_eq!(storage.content(SettingsScope::Project), None);
         reset_self_write_tracker_for_tests();
+    }
+
+    // senpi `first-time-setup.test.ts` "analytics settings".
+    #[test]
+    fn analytics_defaults_to_disabled_with_no_tracking_identifier() {
+        let manager = SettingsManager::in_memory(Settings::new(), true);
+        assert!(!manager.get_enable_analytics());
+        assert_eq!(manager.get_tracking_id(), None);
+    }
+
+    #[test]
+    fn analytics_opt_in_generates_a_tracking_identifier() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        manager.set_enable_analytics(true).expect("opt in");
+        assert!(manager.get_enable_analytics());
+        let id = manager.get_tracking_id().expect("tracking id");
+        assert_eq!(id.len(), 36);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'), "{id}");
+    }
+
+    #[test]
+    fn analytics_opt_out_does_not_generate_a_tracking_identifier() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        manager.set_enable_analytics(false).expect("opt out");
+        assert!(!manager.get_enable_analytics());
+        assert_eq!(manager.get_tracking_id(), None);
+    }
+
+    #[test]
+    fn analytics_toggling_keeps_the_tracking_identifier() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        manager.set_enable_analytics(true).expect("opt in");
+        let id = manager.get_tracking_id();
+        manager.set_enable_analytics(false).expect("opt out");
+        manager.set_enable_analytics(true).expect("opt in again");
+        assert_eq!(manager.get_tracking_id(), id);
     }
 
     #[test]
@@ -2961,6 +3102,21 @@ mod tests {
     }
 
     #[test]
+    fn extension_event_handler_budget_defaults_and_rejects_invalid_values() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        assert_eq!(manager.get_extension_event_handler_warn_ms(), Ok(60_000));
+        assert_eq!(manager.get_extension_event_handler_timeout_ms(), Ok(1_200_000));
+        manager.apply_overrides(&settings(
+            r#"{"extensionEventHandlerWarnMs":0,"extensionEventHandlerTimeoutMs":"soon"}"#,
+        ));
+        assert_eq!(manager.get_extension_event_handler_warn_ms(), Ok(0));
+        assert_eq!(
+            manager.get_extension_event_handler_timeout_ms(),
+            Err("Invalid extensionEventHandlerTimeoutMs setting: soon".to_owned())
+        );
+    }
+
+    #[test]
     fn session_shutdown_quit_budget_defaults_validates_and_floors() {
         let mut manager = SettingsManager::in_memory(Settings::new(), true);
         assert_eq!(
@@ -3049,6 +3205,42 @@ mod tests {
         manager.set_project_trusted(false);
         assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
         assert!(manager.get_project().is_empty());
+    }
+
+    #[test]
+    fn a_full_access_only_trust_is_withdrawn_and_restored_and_counted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let agent = home.join(".omo").join("agent");
+        let project = tmp.path().join("proj");
+        std::fs::create_dir_all(&agent).expect("mkdir");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let mut manager = SettingsManager::create(
+            &project.to_string_lossy(),
+            &agent.to_string_lossy(),
+            &home.to_string_lossy(),
+            true,
+        );
+        // An ordinary trust is neither withdrawn nor restored by the preset (senpi#3414).
+        assert!(!manager.is_trust_from_full_access());
+        assert!(!manager.can_restore_full_access_trust());
+        assert_eq!(manager.trust_epoch(), 0);
+
+        manager.set_trust_from_full_access(true);
+        assert!(manager.is_trust_from_full_access());
+        assert!(!manager.can_restore_full_access_trust());
+
+        manager.set_project_trusted(false);
+        assert!(!manager.is_trust_from_full_access());
+        assert!(manager.can_restore_full_access_trust());
+        assert_eq!(manager.trust_epoch(), 1);
+
+        // An unchanged trust is not a change: the epoch stays (#3420).
+        manager.set_project_trusted(false);
+        assert_eq!(manager.trust_epoch(), 1);
+        manager.set_project_trusted(true);
+        assert!(manager.is_trust_from_full_access());
+        assert_eq!(manager.trust_epoch(), 2);
     }
 
     #[test]

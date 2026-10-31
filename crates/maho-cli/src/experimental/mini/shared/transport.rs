@@ -31,6 +31,24 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> JsonConnection<R, W> {
     pub async fn close(&mut self) -> std::io::Result<()> { self.closed = true; self.output.shutdown().await }
     pub fn closed(&self) -> bool { self.closed }
 }
+/// senpi `childConnection`: a spawned child is connected at birth; the parent reads its stdout and writes its stdin.
+pub type ChildConnection = JsonConnection<tokio::process::ChildStdout, tokio::process::ChildStdin>;
+/// senpi `childConnection` minus the close hook: takes the child's pipes, or fails when it was spawned without them.
+pub fn child_connection(child: &mut tokio::process::Child) -> Result<ChildConnection, String> {
+    match (child.stdout.take(), child.stdin.take()) {
+        (Some(input), Some(output)) => Ok(JsonConnection::new(input, output)),
+        _ => Err("Child process was spawned without pipes".to_owned()),
+    }
+}
+/// senpi `childConnection`'s close: `signalSpawnedChild` (senpi#3706). A child without a pid (never started, or
+/// already reaped) is never signalled; returns whether a signal was sent.
+pub fn signal_spawned_child(child: &mut tokio::process::Child) -> bool {
+    child.id().is_some() && child.start_kill().is_ok()
+}
+/// senpi `parentConnection`: the child's own view of the pipes its parent created.
+pub fn parent_connection() -> JsonConnection<tokio::io::Stdin, tokio::io::Stdout> {
+    JsonConnection::new(tokio::io::stdin(), tokio::io::stdout())
+}
 #[cfg(unix)]
 pub type SocketConnection = JsonConnection<tokio::net::unix::OwnedReadHalf, tokio::net::unix::OwnedWriteHalf>;
 #[cfg(unix)]

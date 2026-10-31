@@ -302,3 +302,74 @@ fn registration_completes_migration_before_loading_configuration() {
     .register(&mut api);
     assert_eq!(*order.lock().unwrap(), vec!["migration", "config"]);
 }
+
+#[derive(Default)]
+struct RecordingLogger(std::sync::Mutex<Vec<(&'static str, String)>>);
+impl ComponentLogger for RecordingLogger {
+    fn info(&self, message: &str, _: Option<&JsonValue>) {
+        self.0.lock().expect("log").push(("info", message.into()));
+    }
+    fn warn(&self, message: &str, _: Option<&JsonValue>) {
+        self.0.lock().expect("log").push(("warn", message.into()));
+    }
+    fn error(&self, message: &str, _: Option<&JsonValue>) {
+        self.0.lock().expect("log").push(("error", message.into()));
+    }
+}
+
+// Pin index.test.ts: "#given config diagnostics without a UI #when session_start fires #then it logs a
+// single fallback warning".
+#[tokio::test]
+async fn config_diagnostics_without_ui_log_one_fallback_warning() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("startup", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    let home = root.path().to_string_lossy().into_owned();
+    let env = BTreeMap::from([("HOME".into(), home.clone()), ("USERPROFILE".into(), home)]);
+    ConfigStartupComponent {
+        run_migration: Some(Arc::new(|_| SenpiStartupMigrationResult::default())),
+        load_config: Some(Arc::new(move |cwd: &str| {
+            let mut config = maho_omo_config_resolution::load_senpi_omo_config(
+                omo_config_core::LoadOmoConfigOptions {
+                    cwd: Some(cwd.to_owned()),
+                    env: Some(env.clone()),
+                    ..Default::default()
+                },
+            );
+            config
+                .diagnostics
+                .push(maho_omo_config_resolution::SenpiConfigDiagnostic::Config(
+                    omo_config_core::OmoConfigDiagnostic {
+                        kind: "parse",
+                        path: "/config".into(),
+                        message: "diagnostic".into(),
+                        issue_paths: vec![],
+                    },
+                ));
+            config
+        })),
+    }
+    .register(&mut api);
+    let logger = Arc::new(RecordingLogger::default());
+    let mut ctx = support::context();
+    ctx.has_ui = false;
+    ctx.logger = Some(logger.clone());
+    for _ in 0..2 {
+        let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+            reason: SessionReason::Startup,
+            initial_model_provenance: None,
+            previous_session_file: None,
+            attended: None,
+        });
+        api.registered.handlers[&EventKind::SessionStart][0](&mut event, &ctx).await?;
+    }
+    let logged = logger.0.lock().expect("log");
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].0, "warn");
+    assert!(logged[0].1.contains("diagnostic"));
+    Ok(())
+}

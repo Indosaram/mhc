@@ -353,29 +353,85 @@ pub async fn resolve_runtime_project_trust_with_warnings(
     has_ui: bool,
     selector: Box<super::project_trust::Selector>,
 ) -> (bool, Vec<String>) {
+    let resolved =
+        resolve_launch_project_trust(config, cwd, mode, has_ui, selector, None).await;
+    (resolved.trusted, resolved.warnings)
+}
+
+/// The project trust one session starts with (senpi main.ts `createServices`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchProjectTrust {
+    pub trusted: bool,
+    /// senpi `trustFromFullAccess`: trusted only because the session runs Full access; leaving Full
+    /// access withdraws it (senpi#3414, #3420). Hand it to `SettingsManager::set_trust_from_full_access`.
+    pub trust_from_full_access: bool,
+    pub warnings: Vec<String>,
+}
+
+impl LaunchProjectTrust {
+    /// `SettingsManager.create(cwd, agentDir, { projectTrusted, trustFromFullAccess })`.
+    pub fn settings_manager(&self, cwd: &str, agent_dir: &str) -> SettingsManager {
+        let mut settings =
+            SettingsManager::create(cwd, agent_dir, &maho_core::config::home_dir(), self.trusted);
+        settings.set_trust_from_full_access(self.trust_from_full_access);
+        settings
+    }
+}
+
+/// [`resolve_runtime_project_trust_with_warnings`] for a session launched with `launch_profile`
+/// (senpi main.ts `createServices`): a session whose explicit preset is `full-access` (the session's
+/// `permission-preset` flag, else the global `permissionPreset`) trusts its project without asking,
+/// for that session only. Nothing is cached or saved, and a saved "do not trust" still wins (senpi#3414).
+pub async fn resolve_launch_project_trust(
+    config: &CliRuntimeConfiguration,
+    cwd: &str,
+    mode: AppMode,
+    has_ui: bool,
+    selector: Box<super::project_trust::Selector>,
+    launch_profile: Option<&AgentSessionLaunchProfile>,
+) -> LaunchProjectTrust {
     let cached = config
         .project_trust_by_cwd
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(cwd)
         .copied();
-    if let Some(trusted) = cached {
-        return (trusted, Vec::new());
-    }
-    let should_resolve = config.project_trust_override.is_none()
-        && maho_core::trust_manager::has_trust_requiring_project_resources(cwd, None);
+    let has_trust_requiring_resources =
+        maho_core::trust_manager::has_trust_requiring_project_resources(cwd, None);
     let bootstrap = SettingsManager::create(
         cwd,
         &config.agent_dir,
         &maho_core::config::home_dir(),
         false,
     );
+    let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
+    let saved = trust_store.get(cwd).ok().flatten();
+    let flags = maho_core::session_extension_flags::session_extension_flag_values(
+        &config.extension_flag_values.clone().unwrap_or_default(),
+        launch_profile,
+    );
+    let full_access_trust = maho_core::project_trust::preset_trusts_project(
+        flags.get("permission-preset"),
+        bootstrap.get_global().get("permissionPreset"),
+    ) && saved != Some(false);
+    // Trusted only because of Full access: the resources need trust and nothing else granted it.
+    let trust_from_full_access = full_access_trust
+        && has_trust_requiring_resources
+        && cached.is_none()
+        && config.project_trust_override.is_none()
+        && saved != Some(true);
+    if let Some(trusted) = cached {
+        return LaunchProjectTrust { trusted, trust_from_full_access, warnings: Vec::new() };
+    }
+    if full_access_trust && config.project_trust_override.is_none() {
+        return LaunchProjectTrust { trusted: true, trust_from_full_access, warnings: Vec::new() };
+    }
+    let should_resolve = config.project_trust_override.is_none() && has_trust_requiring_resources;
     let default_project_trust = bootstrap
         .get_global()
         .get("defaultProjectTrust")
         .and_then(serde_json::Value::as_str)
         .and_then(maho_core::project_trust::DefaultProjectTrust::parse);
-    let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
     let selector: Arc<super::project_trust::Selector> = Arc::from(selector);
     let mut warnings = Vec::new();
     let extension_trust = if should_resolve {
@@ -449,7 +505,7 @@ pub async fn resolve_runtime_project_trust_with_warnings(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(cwd.to_owned(), trusted);
     }
-    (trusted, warnings)
+    LaunchProjectTrust { trusted, trust_from_full_access: false, warnings }
 }
 
 /// senpi `resolveCliPaths` entry: package sources and remote URLs (`isLocalPath` false) are kept
@@ -555,21 +611,19 @@ pub async fn mount_agent_session_runtime(
     let settings_manager = match settings_manager {
         Some(settings_manager) => settings_manager,
         None => {
-            let (trusted, warnings) = resolve_runtime_project_trust_with_warnings(
+            let launch_profile = launch_config.launch_profile();
+            let resolved = resolve_launch_project_trust(
                 config,
                 &cwd,
                 to_project_trust_mode(config.app_mode),
                 false,
                 Box::new(|_, _| None),
+                Some(&launch_profile),
             )
             .await;
-            trust_warnings = warnings;
-            SettingsManager::create(
-                &cwd,
-                &config.agent_dir,
-                &maho_core::config::home_dir(),
-                trusted,
-            )
+            let settings = resolved.settings_manager(&cwd, &config.agent_dir);
+            trust_warnings = resolved.warnings;
+            settings
         }
     };
     let settings_manager = Some(settings_manager);
@@ -1032,20 +1086,20 @@ pub fn host_runtime_factory_with_mcp_registry(
                     &config.models,
                     &scope_models,
                 );
-                let trusted = resolve_runtime_project_trust(
+                // senpi main.ts `createServices`: the open's `permissionPreset` decides Full-access trust.
+                let resolved = resolve_launch_project_trust(
                     &config,
                     &profile.runtime.cwd,
                     to_project_trust_mode(config.app_mode),
                     false,
                     Box::new(|_, _| None),
+                    Some(&profile.runtime),
                 )
                 .await;
-                let settings = SettingsManager::create(
-                    &profile.runtime.cwd,
-                    &config.agent_dir,
-                    &maho_core::config::home_dir(),
-                    trusted,
-                );
+                for warning in &resolved.warnings {
+                    maho_core::output_guard::maho_write_stderr(&format!("Warning: {warning}\n"));
+                }
+                let settings = resolved.settings_manager(&profile.runtime.cwd, &config.agent_dir);
                 let is_continuing = !session_manager.current_context().messages.is_empty();
                 let initial = resolve_cli_initial_model(
                     creation_model,
@@ -1075,12 +1129,24 @@ pub fn host_runtime_factory_with_mcp_registry(
                     scoped_models: super::startup::session_model_entries(scoped.scoped_models)?,
                     auto_title_sessions: profile.runtime.auto_title.or(config.auto_title_sessions),
                     session_profile: maho_ext_api::ExtensionSessionProfile {
-                        shared_host_enabled: true,
+                        shared_host_enabled: false,
                         session_kind: profile.session_kind.unwrap_or_default(),
                         session_context: profile.session_context.clone().unwrap_or_default(),
                     },
                     mcp_registry: Some(mcp_registry),
-                    extension_flag_values: config.extension_flag_values.clone(),
+                    // senpi main.ts `sessionExtensionFlagValues(parsed.unknownFlags, launchProfile)`: the
+                    // open's preset is the session's, so the trust resolved from it is enforced by it.
+                    extension_flag_values: profile
+                        .runtime
+                        .permission_preset
+                        .as_ref()
+                        .map(|_| {
+                            maho_core::session_extension_flags::session_extension_flag_values(
+                                &config.extension_flag_values.clone().unwrap_or_default(),
+                                Some(&profile.runtime),
+                            )
+                        })
+                        .or_else(|| config.extension_flag_values.clone()),
                     ..Default::default()
                 };
                 let mounted = mount_agent_session_runtime(
@@ -1092,6 +1158,11 @@ pub fn host_runtime_factory_with_mcp_registry(
                 .await?;
                 let mut runtime = mounted.runtime;
                 apply_launch_profile(&mut runtime, &profile)?;
+                // senpi `launchProfile.permissionPreset`: replacements keep it, and a later preset change
+                // moves a Full-access-only trust with it (senpi#3414, #3420).
+                if let Some(preset) = profile.runtime.permission_preset.clone() {
+                    runtime.set_permission_preset(preset).await;
+                }
                 Ok(runtime)
             })
                 as std::pin::Pin<

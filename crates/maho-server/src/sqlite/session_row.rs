@@ -38,7 +38,9 @@ pub fn has_session(db: &Connection, id: &str) -> rusqlite::Result<bool> {
         |row| row.get(0),
     )
 }
+/// `path` is the canonical database file the row was read from (senpi `metadataFromSessionRow(path, ...)`).
 pub fn metadata_from_row(
+    path: &str,
     row: SessionRow,
     current_version: u32,
 ) -> Result<SessionMetadata, ValueError> {
@@ -61,6 +63,7 @@ pub fn metadata_from_row(
         parent_session_id: row.parent_session_id,
         cwd: None,
         legacy_parent_session_path: None,
+        path: Some(path.to_owned()),
     })
 }
 pub fn insert_session(

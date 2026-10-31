@@ -120,6 +120,15 @@ mod tests {
     fn mismatch_rejected_without_overwrite() { let root = tempfile::tempdir().unwrap(); ensure_reflection_completion(root.path(), &record()).unwrap(); let mut bad = record(); bad.outcome = "failed".into(); assert!(ensure_reflection_completion(root.path(), &bad).is_err()); assert_eq!(read_reflection_completion(root.path(), "run-offline").unwrap().unwrap().outcome, "merged"); }
     #[test]
     fn offline_record_pending() { let root = tempfile::tempdir().unwrap();let expected=record(); assert_eq!(ensure_reflection_completion(root.path(), &expected).unwrap().delivery.status, DeliveryStatus::Pending);assert_eq!(std::fs::read(root.path().join("run-offline.json")).unwrap(),format!("{}\n",serde_json::to_string_pretty(&expected).unwrap()).as_bytes());assert_eq!(std::fs::read_dir(root.path()).unwrap().count(),1); }
+    // completion.test.ts: the landed palace collector reads runId, outcome and finishedAt from a worker record.
+    #[test]
+    fn palace_collector_reads_worker_completion_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent-test");
+        ensure_reflection_completion(&paths.reflection.join("completions"), &record()).unwrap();
+        let reflection = crate::palace::reflection_collector::collect_reflection(&paths, 5).unwrap();
+        assert_eq!(reflection.outcomes, vec![crate::palace::reflection_collector::PalaceReflectionOutcome { run_id: "run-offline".into(), outcome: "merged".into(), finished_at: "2026-08-16T11:59:00.000Z".into() }]);
+    }
     #[test]
     fn corrupt_record_ignored() { let root = tempfile::tempdir().unwrap(); std::fs::write(root.path().join("bad.json"), "{").unwrap(); assert!(read_completion_record(&root.path().join("bad.json")).is_none()); }
 }

@@ -56,7 +56,15 @@ impl OutputObserverGuard {
 }
 
 impl OutputState {
+    #[cfg(test)]
     fn ingest(&mut self, chunk: &[u8]) -> String {
+        let decoded = self.decode(chunk);
+        self.append(&decoded);
+        decoded
+    }
+
+    /// `TextDecoder.decode(chunk, { stream: true })`: a split UTF-8 sequence waits for its tail.
+    fn decode(&mut self, chunk: &[u8]) -> String {
         self.pending_utf8.extend_from_slice(chunk);
         let mut decoded = String::new();
         let mut consumed = 0;
@@ -82,11 +90,21 @@ impl OutputState {
             }
         }
         self.pending_utf8.drain(..consumed);
-        self.buffer.extend(decoded.encode_utf16());
+        decoded
+    }
+
+    /// `TextDecoder.decode()` at end of stream: an unfinished sequence becomes U+FFFD.
+    fn decode_end(&mut self) -> String {
+        let tail = String::from_utf8_lossy(&self.pending_utf8).into_owned();
+        self.pending_utf8.clear();
+        tail
+    }
+
+    fn append(&mut self, text: &str) {
+        self.buffer.extend(text.encode_utf16());
         let overflow = self.buffer.len().saturating_sub(MAX_SESSION_OUTPUT_CHARS);
         self.buffer.drain(..overflow);
         self.dropped_chars += overflow;
-        decoded
     }
 
     fn read_delta(&mut self) -> DeltaRead {
@@ -125,6 +143,173 @@ impl OutputState {
 }
 
 type ExitState = Arc<(Mutex<Option<Result<PtyExit, String>>>, Condvar)>;
+type OutputObservers = Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>;
+
+/// runtime-session.ts `ingest`: retain the text, feed the screen and hand it to the output listeners.
+fn deliver(
+    state: &mut OutputState,
+    text: String,
+    screen: &Mutex<Option<crate::screen::TerminalScreen>>,
+    listeners: &OutputObservers,
+) {
+    if text.is_empty() {
+        return;
+    }
+    state.append(&text);
+    let decoded = crate::screen_text::sanitize_string(&text);
+    if let Ok(mut screen) = screen.lock()
+        && let Some(screen) = screen.as_mut()
+    {
+        screen.feed(&decoded);
+    }
+    if !decoded.is_empty()
+        && let Ok(mut listeners) = listeners.lock()
+    {
+        let mut decoded = decoded;
+        let last = listeners.len();
+        let mut index = 0;
+        listeners.retain(|listener| {
+            index += 1;
+            let text = if index == last {
+                std::mem::take(&mut decoded)
+            } else {
+                decoded.clone()
+            };
+            listener.send(text).is_ok()
+        });
+    }
+}
+
+/// How long decoded output may sit in the redactor before held ordinary text is published (upstream `setTimeout(.., 50)`).
+const REDACTION_IDLE_FLUSH: Duration = Duration::from_millis(50);
+
+/// `redactSecretsInOutput`: the session's `SecretOutputRedactor` plus the idle-flush timer state. `pushes` counts
+/// every push so the flusher restarts its 50 ms window on new output; `done` ends the flusher (exit or dispose).
+#[derive(Default)]
+struct RedactionState {
+    redactor: maho_tools::secret_output_redactor::SecretOutputRedactor,
+    pushes: u64,
+    pending: bool,
+    done: bool,
+}
+type Redaction = Arc<(Mutex<RedactionState>, Condvar)>;
+
+/// The idle timer: 50 ms after the last push, publish what `flushIdle` releases. Lock order is output, then
+/// redaction, the same order the data path takes.
+fn spawn_redaction_flusher(
+    redaction: Redaction,
+    output: Arc<Mutex<OutputState>>,
+    screen: Arc<Mutex<Option<crate::screen::TerminalScreen>>>,
+    listeners: OutputObservers,
+) {
+    std::thread::spawn(move || {
+        loop {
+            let pushes = {
+                let (lock, signal) = &*redaction;
+                let guard = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let guard = signal
+                    .wait_while(guard, |state| !state.pending && !state.done)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.done {
+                    return;
+                }
+                let pushes = guard.pushes;
+                let (guard, _) = signal
+                    .wait_timeout_while(guard, REDACTION_IDLE_FLUSH, |state| {
+                        !state.done && state.pushes == pushes
+                    })
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.done {
+                    return;
+                }
+                if guard.pushes != pushes {
+                    continue;
+                }
+                pushes
+            };
+            let Ok(mut state) = output.lock() else {
+                return;
+            };
+            let text = {
+                let mut guard = redaction
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.done {
+                    return;
+                }
+                if guard.pushes != pushes {
+                    continue;
+                }
+                guard.pending = false;
+                guard.redactor.flush_idle()
+            };
+            deliver(&mut state, text, &screen, &listeners);
+        }
+    });
+}
+
+/// The PTY data path (`onData`): decode, pass through the redactor when it is on (arming the idle
+/// timer), then retain, project and publish what it releases.
+fn ingest_chunk(
+    state: &mut OutputState,
+    chunk: &[u8],
+    redaction: Option<&Redaction>,
+    screen: &Mutex<Option<crate::screen::TerminalScreen>>,
+    listeners: &OutputObservers,
+) {
+    let decoded = state.decode(chunk);
+    let text = match redaction {
+        Some(redaction) => {
+            let mut guard = redaction
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let text = guard.redactor.push(&decoded);
+            guard.pushes += 1;
+            guard.pending = true;
+            drop(guard);
+            redaction.1.notify_all();
+            text
+        }
+        None => decoded,
+    };
+    deliver(state, text, screen, listeners);
+}
+
+/// `onExit`: stop the idle timer and publish what the redactor still holds (`push(decode()) + finish()`).
+fn finish_redaction(
+    state: &mut OutputState,
+    redaction: &Redaction,
+    screen: &Mutex<Option<crate::screen::TerminalScreen>>,
+    listeners: &OutputObservers,
+) {
+    let tail = state.decode_end();
+    let text = {
+        let mut guard = redaction
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.done = true;
+        let pushed = guard.redactor.push(&tail);
+        pushed + &guard.redactor.finish()
+    };
+    redaction.1.notify_all();
+    deliver(state, text, screen, listeners);
+}
+
+fn stop_redaction(redaction: Option<&Redaction>) {
+    if let Some(redaction) = redaction {
+        redaction
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .done = true;
+        redaction.1.notify_all();
+    }
+}
 
 // Both notification surfaces share one linearization point, including poisoned cleanup.
 fn settle_exit(
@@ -142,28 +327,6 @@ fn settle_exit(
     *state = Some(result.clone());
     sender.send_replace(Some(result));
     exit.1.notify_all();
-}
-
-fn parser_snapshot(parser: &mut vt100::Parser) -> Option<TerminalScreenSnapshot> {
-    let screen = parser.screen_mut();
-    let (rows, cols) = screen.size();
-    let visible_grid = screen.rows(0, cols).collect();
-    let cursor = screen.cursor_position();
-    screen.set_scrollback(usize::MAX);
-    let count = screen.scrollback();
-    let mut scrollback = Vec::with_capacity(count);
-    for offset in (1..=count).rev() {
-        screen.set_scrollback(offset);
-        scrollback.push(screen.rows(0, cols).next().unwrap_or_default());
-    }
-    screen.set_scrollback(0);
-    Some(TerminalScreenSnapshot {
-        cols,
-        rows,
-        visible_grid,
-        scrollback,
-        cursor,
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,9 +353,9 @@ pub struct TerminalRuntimeSession {
     exit_signal: tokio::sync::watch::Receiver<Option<Result<PtyExit, String>>>,
     exit_sender: tokio::sync::watch::Sender<Option<Result<PtyExit, String>>>,
     observers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
-    screen: Arc<Mutex<Option<vt100::Parser>>>,
+    screen: Arc<Mutex<Option<crate::screen::TerminalScreen>>>,
     final_screen: Arc<Mutex<Option<TerminalScreenSnapshot>>>,
-    scrollback: usize,
+    redaction: Option<Redaction>,
 }
 
 impl TerminalRuntimeSession {
@@ -204,41 +367,47 @@ impl TerminalRuntimeSession {
         options: PtySessionOptions,
         scrollback: usize,
     ) -> Result<Self, RuntimeError> {
+        Self::start_with_runtime_options(command, options, scrollback, false)
+    }
+    /// `new TerminalRuntimeSession(command, { ...options, scrollback, redactSecretsInOutput })`: with redaction on,
+    /// decoded PTY text goes through a `SecretOutputRedactor` before the buffer, the screen and the output listeners
+    /// see it; held text is published after 50 ms idle and the rest on exit.
+    pub fn start_with_runtime_options(
+        command: &str,
+        options: PtySessionOptions,
+        scrollback: usize,
+        redact_secrets_in_output: bool,
+    ) -> Result<Self, RuntimeError> {
         let output = Arc::new(Mutex::new(OutputState::default()));
         let sink = Arc::clone(&output);
-        let observers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>> =
-            Arc::new(Mutex::new(vec![]));
+        let observers: OutputObservers = Arc::new(Mutex::new(vec![]));
         let listeners = observers.clone();
-        let screen = Arc::new(Mutex::new(Some(vt100::Parser::new(
-            options.rows,
+        let screen = Arc::new(Mutex::new(Some(crate::screen::TerminalScreen::new(
             options.cols,
+            options.rows,
             scrollback,
         ))));
         let projection = screen.clone();
+        let redaction: Option<Redaction> = redact_secrets_in_output
+            .then(|| Arc::new((Mutex::new(RedactionState::default()), Condvar::new())));
+        if let Some(redaction) = &redaction {
+            spawn_redaction_flusher(
+                redaction.clone(),
+                output.clone(),
+                screen.clone(),
+                observers.clone(),
+            );
+        }
+        let chunk_redaction = redaction.clone();
         let on_chunk = move |chunk: &[u8]| {
             if let Ok(mut state) = sink.lock() {
-                let decoded = crate::screen_text::sanitize_string(&state.ingest(chunk));
-                if let Ok(mut screen) = projection.lock()
-                    && let Some(screen) = screen.as_mut()
-                {
-                    screen.process(decoded.as_bytes());
-                }
-                if !decoded.is_empty()
-                    && let Ok(mut listeners) = listeners.lock()
-                {
-                    let mut decoded = decoded;
-                    let last = listeners.len();
-                    let mut index = 0;
-                    listeners.retain(|listener| {
-                        index += 1;
-                        let text = if index == last {
-                            std::mem::take(&mut decoded)
-                        } else {
-                            decoded.clone()
-                        };
-                        listener.send(text).is_ok()
-                    });
-                }
+                ingest_chunk(
+                    &mut state,
+                    chunk,
+                    chunk_redaction.as_ref(),
+                    &projection,
+                    &listeners,
+                );
             }
         };
         let (session, waiter) =
@@ -260,6 +429,9 @@ impl TerminalRuntimeSession {
         let completion_sender = exit_sender.clone();
         let release_screen = screen.clone();
         let released_snapshot = final_screen.clone();
+        let exit_redaction = redaction.clone();
+        let exit_output = output.clone();
+        let exit_listeners = observers.clone();
         let exit_thread = std::thread::spawn(move || {
             // session-exit.ts `normalizeTerminalExit`: any requested kill (SIGTERM included) marks the exit cancelled.
             let result = match waiter.join() {
@@ -280,16 +452,16 @@ impl TerminalRuntimeSession {
                 }),
                 Err(_) => Err("terminal exit waiter panicked".to_owned()),
             };
+            // onExit: stop the idle timer and publish what the redactor still holds (`push(decode()) + finish()`).
+            if let Some(redaction) = &exit_redaction
+                && let Ok(mut state) = exit_output.lock()
+            {
+                finish_redaction(&mut state, redaction, &release_screen, &exit_listeners);
+            }
             if let Ok(mut guard) = release_screen.lock()
                 && let Some(mut parser) = guard.take()
             {
-                let mut snapshot = parser_snapshot(&mut parser).unwrap_or(TerminalScreenSnapshot {
-                    cols: 0,
-                    rows: 0,
-                    visible_grid: vec![],
-                    scrollback: vec![],
-                    cursor: (0, 0),
-                });
+                let mut snapshot = parser.snapshot();
                 snapshot.scrollback.clear();
                 if let Ok(mut final_guard) = released_snapshot.lock() {
                     *final_guard = Some(snapshot);
@@ -309,7 +481,7 @@ impl TerminalRuntimeSession {
             observers,
             screen,
             final_screen,
-            scrollback,
+            redaction,
         })
     }
 
@@ -441,7 +613,7 @@ impl TerminalRuntimeSession {
     pub fn snapshot(&self) -> Result<TerminalScreenSnapshot, RuntimeError> {
         let mut parser = self.screen.lock().map_err(|_| RuntimeError::Poisoned)?;
         if let Some(parser) = parser.as_mut() {
-            return parser_snapshot(parser).ok_or(RuntimeError::Poisoned);
+            return Ok(parser.snapshot());
         }
         Ok(self
             .final_screen
@@ -457,8 +629,8 @@ impl TerminalRuntimeSession {
             }))
     }
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), RuntimeError> {
-        // The PTY resize is best-effort and meaningless once the process is gone: upstream's
-        // The pipe fallback rejects the resize with a note but the screen projection still resizes.
+        // The PTY resize is best-effort and meaningless once the process is gone. The pipe fallback
+        // rejects the resize with a note but the screen projection still resizes.
         let session_resize = if self.exited()? {
             Ok(())
         } else {
@@ -467,33 +639,15 @@ impl TerminalRuntimeSession {
                 TerminalSessionBackend::PipeFallback(session) => session.resize(cols, rows),
             }
         };
-        let retained = lossy_utf16(
-            self.output
-                .lock()
-                .map_err(|_| RuntimeError::Poisoned)?
-                .buffer
-                .iter()
-                .copied(),
-        );
-        let replay_limit = crate::screen_text::normalize_replay_history_length(
-            usize::from(cols),
-            usize::from(rows),
-            self.scrollback,
-        );
-        let retained = if retained.encode_utf16().count() > replay_limit {
-            crate::screen_text::sanitized_tail(&retained, replay_limit)
-        } else {
-            retained
-        };
-        let mut screen = self.screen.lock().map_err(|_| RuntimeError::Poisoned)?;
-        if let Some(screen) = screen.as_mut() {
-            if retained.is_empty() {
-                screen.screen_mut().set_size(rows, cols);
-            } else {
-                let mut rebuilt = vt100::Parser::new(rows, cols, self.scrollback);
-                rebuilt.process(retained.as_bytes());
-                *screen = rebuilt;
-            }
+        // runtime-session.ts `resizeScreen`: the screen replays its own operation history at the new
+        // geometry (pi-pty screen.ts), independent of the log buffer and its read cursor.
+        if let Some(screen) = self
+            .screen
+            .lock()
+            .map_err(|_| RuntimeError::Poisoned)?
+            .as_mut()
+        {
+            screen.resize(cols, rows);
         }
         session_resize?;
         Ok(())
@@ -563,6 +717,8 @@ impl TerminalRuntimeSession {
 
 impl Drop for TerminalRuntimeSession {
     fn drop(&mut self) {
+        // dispose(): clear the idle timer so the flusher thread ends with the session.
+        stop_redaction(self.redaction.as_ref());
         match self.exited() {
             Ok(false) => {
                 if let Err(error) = self.kill() {
@@ -760,6 +916,74 @@ mod tests {
     }
 
     #[test]
+    fn redaction_off_keeps_secret_output_verbatim() -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            "printf",
+            crate::shared::test_sh_options("stty -echo; printf 'API_KEY=synthetic123\\n'")
+                .timeout(Duration::from_secs(5)),
+            crate::shared::DEFAULT_SCROLLBACK,
+            false,
+        )?;
+        runtime.wait(Duration::from_secs(10))?;
+        assert!(runtime.full_output()?.contains("API_KEY=synthetic123"));
+        runtime.dispose()
+    }
+
+    #[test]
+    fn redaction_hides_a_secret_in_retained_and_observed_output() -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            "printf",
+            crate::shared::test_sh_options(
+                "stty -echo; read go; printf 'API_KEY=synthetic123 done\\n'",
+            ),
+            crate::shared::DEFAULT_SCROLLBACK,
+            true,
+        )?;
+        let (history, mut observed) = runtime.subscribe_output()?;
+        assert!(history.is_empty());
+        let mut writer = runtime;
+        writer.write(b"go\n")?;
+        writer.wait(Duration::from_secs(10))?;
+        let output = writer.full_output()?;
+        assert!(!output.contains("synthetic123"), "{output:?}");
+        assert!(output.contains("API_KEY=<redacted> done"), "{output:?}");
+        let mut seen = String::new();
+        while let Ok(text) = observed.try_recv() {
+            seen.push_str(&text);
+        }
+        assert!(!seen.contains("synthetic123"), "{seen:?}");
+        assert!(seen.contains("<redacted>"), "{seen:?}");
+        writer.dispose()
+    }
+
+    #[tokio::test]
+    async fn redaction_publishes_an_idle_prompt_without_waiting_for_exit()
+    -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start_with_runtime_options(
+            "prompt",
+            crate::shared::test_sh_options("stty -echo; printf 'Enter name'; read value"),
+            crate::shared::DEFAULT_SCROLLBACK,
+            true,
+        )?;
+        let (history, mut observed) = runtime.subscribe_output()?;
+        let seen = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut seen = history;
+            while !seen.contains("Enter name") {
+                let Some(text) = observed.recv().await else {
+                    break;
+                };
+                seen.push_str(&text);
+            }
+            seen
+        })
+        .await
+        .expect("idle prompt published");
+        assert!(seen.contains("Enter name"), "{seen:?}");
+        assert!(!runtime.exited()?);
+        runtime.dispose()
+    }
+
+    #[test]
     fn split_utf8_and_delta_cursor() {
         let mut state = OutputState::default();
         state.ingest(&[0xe2, 0x82]);
@@ -867,5 +1091,322 @@ mod tests {
         runtime.wait(Duration::from_secs(5))?;
         assert!(receiver.try_recv().is_err());
         runtime.dispose()
+    }
+
+    /// The runtime's output pipeline without a PTY (upstream `vi.mock("@earendil-works/pi-pty")`):
+    /// `emit` is one `onData` chunk, `idle` is the 50 ms idle timer firing (fake timers), and
+    /// `finish` is `onExit`.
+    struct SyntheticRuntime {
+        state: OutputState,
+        redaction: Option<Redaction>,
+        screen: Mutex<Option<crate::screen::TerminalScreen>>,
+        listeners: OutputObservers,
+        observed: tokio::sync::mpsc::UnboundedReceiver<String>,
+    }
+    impl SyntheticRuntime {
+        fn new(redact: bool) -> Self {
+            let (sender, observed) = tokio::sync::mpsc::unbounded_channel();
+            Self {
+                state: OutputState::default(),
+                redaction: redact
+                    .then(|| Arc::new((Mutex::new(RedactionState::default()), Condvar::new()))),
+                screen: Mutex::new(Some(crate::screen::TerminalScreen::new(120, 40, 0))),
+                listeners: Arc::new(Mutex::new(vec![sender])),
+                observed,
+            }
+        }
+        fn emit(&mut self, text: &str) {
+            ingest_chunk(
+                &mut self.state,
+                text.as_bytes(),
+                self.redaction.as_ref(),
+                &self.screen,
+                &self.listeners,
+            );
+        }
+        /// The idle timer fires: publish what `flushIdle` releases (only when output is pending).
+        fn idle(&mut self) {
+            let Some(redaction) = &self.redaction else {
+                return;
+            };
+            let text = {
+                let mut guard = redaction.0.lock().unwrap();
+                if !guard.pending || guard.done {
+                    return;
+                }
+                guard.pending = false;
+                guard.redactor.flush_idle()
+            };
+            deliver(&mut self.state, text, &self.screen, &self.listeners);
+        }
+        fn finish(&mut self) {
+            if let Some(redaction) = self.redaction.clone() {
+                finish_redaction(&mut self.state, &redaction, &self.screen, &self.listeners);
+            }
+        }
+        /// No idle timer remains armed (upstream `vi.getTimerCount() === 0`).
+        fn timer_idle(&self) -> bool {
+            self.redaction.as_ref().is_none_or(|redaction| {
+                let guard = redaction.0.lock().unwrap();
+                guard.done || !guard.pending
+            })
+        }
+        fn full_output(&self) -> String {
+            lossy_utf16(self.state.buffer.iter().copied())
+        }
+        fn observed(&mut self) -> String {
+            let mut seen = String::new();
+            while let Ok(text) = self.observed.try_recv() {
+                seen.push_str(&text);
+            }
+            seen
+        }
+        fn screen_text(&self) -> String {
+            let mut screen = self.screen.lock().unwrap();
+            screen
+                .as_mut()
+                .unwrap()
+                .snapshot()
+                .visible_grid
+                .join("\n")
+                .trim_end()
+                .to_owned()
+        }
+    }
+
+    /// senpi `bash-redaction-fixtures.ts` `secretOutputCases`: synthetic credentials assembled at runtime.
+    fn secret_output_cases() -> Vec<(String, String, String)> {
+        // base64url without padding of '{"alg":"HS256"}' and '{"sub":"test"}'.
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature123".to_owned();
+        let mut cases: Vec<(String, String, String)> = [
+            "gh|p_",
+            "gh|o_",
+            "gh|s_",
+            "github|_pat_",
+            "xo|x|a|-",
+            "xo|x|b|-",
+            "xo|x|p|-",
+            "xo|x|o|-",
+            "xo|x|r|-",
+            "xo|x|s|-",
+            "s|k-",
+            "s|k-ant-",
+            "s|k-proj-",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, parts)| {
+            (
+                format!("prefix {index}"),
+                format!("{}{}", parts.replace('|', ""), "synthetic123".repeat(4)),
+                "<redacted>".to_owned(),
+            )
+        })
+        .collect();
+        cases.push((
+            "AWS".into(),
+            format!("AK{}{}", "IA", "A1".repeat(8)),
+            "<redacted>".into(),
+        ));
+        cases.push((
+            "Google".into(),
+            format!("AI{}{}", "za", "a".repeat(35)),
+            "<redacted>".into(),
+        ));
+        cases.push(("JWT".into(), jwt, "<redacted>".into()));
+        cases.push((
+            "PEM".into(),
+            // base64 of "synthetic key material".
+            "-----BEGIN RSA PRIVATE KEY-----\nc3ludGhldGljIGtleSBtYXRlcmlhbA==\n-----END RSA PRIVATE KEY-----".into(),
+            "<redacted>".into(),
+        ));
+        cases.push((
+            "Bearer".into(),
+            "Bearer synthetic-value123".into(),
+            "Bearer <redacted>".into(),
+        ));
+        for key in [
+            "API_KEY",
+            "ACCESS_TOKEN",
+            "CLIENT_SECRET",
+            "PASSWORD",
+            "DB_PASSWORD_FILE",
+            "HTTP_AUTHORIZATION",
+        ] {
+            cases.push((
+                key.into(),
+                format!("{key}=synthetic-value123"),
+                format!("{key}=<redacted>"),
+            ));
+        }
+        cases.push((
+            "quoted assignment".into(),
+            "DB_PASSWORD=\"synthetic multi word value\"".into(),
+            "DB_PASSWORD=\"<redacted>\"".into(),
+        ));
+        cases
+    }
+
+    // Port of test/suite/terminal-output-redaction.test.ts (senpi v2026.10.27-2).
+
+    #[test]
+    fn keeps_a_pem_opener_and_body_private_across_idle_pauses() {
+        let (_, input, _) = secret_output_cases()
+            .into_iter()
+            .find(|(name, _, _)| name == "PEM")
+            .unwrap();
+        let mut runtime = SyntheticRuntime::new(true);
+        for character in input.chars() {
+            runtime.emit(&character.to_string());
+            runtime.idle();
+            assert!(["", "<redacted>"].contains(&runtime.full_output().as_str()));
+        }
+        runtime.finish();
+        assert_eq!(runtime.full_output(), "<redacted>");
+        assert!(runtime.timer_idle());
+    }
+
+    /// senpi#4358: fragments below a full public prefix remain ordinary output.
+    #[test]
+    fn flushes_idle_prompt_text_and_complete_controls() {
+        for input in [
+            "Enter name",
+            "\x1b[10;5H",
+            "Enter name\x1b[10;5H",
+            "I",
+            "e.g.",
+            "git",
+            "sk",
+            "AI",
+            "s",
+            "g",
+            "x",
+            "A",
+            "AK",
+            "e",
+            "C",
+            "D",
+            "eye",
+        ] {
+            let mut runtime = SyntheticRuntime::new(true);
+            runtime.emit(input);
+            runtime.idle();
+            assert_eq!(runtime.observed(), input, "{input:?}");
+            assert_eq!(runtime.state.read_delta().text, input, "{input:?}");
+            runtime.emit(" next\n");
+            assert_eq!(
+                runtime.full_output(),
+                format!("{input} next\n"),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_ordinary_words_continued_across_repeated_idle_pauses() {
+        let mut runtime = SyntheticRuntime::new(true);
+        for part in ["going to s", "l", "eep now"] {
+            runtime.emit(part);
+            runtime.idle();
+        }
+        assert_eq!(runtime.full_output(), "going to sleep now");
+        runtime.finish();
+        assert_eq!(runtime.full_output(), "going to sleep now");
+    }
+
+    #[test]
+    fn re_evaluates_secrets_split_at_every_idle_boundary_and_suppresses_their_completion() {
+        for (name, input, _) in secret_output_cases().into_iter().filter(|(name, _, _)| {
+            name.starts_with("prefix") || ["AWS", "Google", "JWT"].contains(&name.as_str())
+        }) {
+            let minimum_length = if name.starts_with("prefix") {
+                if input.starts_with("sk-") {
+                    3
+                } else {
+                    input.find("synthetic").unwrap()
+                }
+            } else if name == "JWT" {
+                3
+            } else {
+                4
+            };
+            for split in 1..input.len() {
+                let mut runtime = SyntheticRuntime::new(true);
+                runtime.emit(&input[..split]);
+                runtime.idle();
+                let released = if split < minimum_length {
+                    &input[..split]
+                } else {
+                    ""
+                };
+                assert_eq!(runtime.full_output(), released, "{name} at {split}");
+                runtime.idle();
+                assert_eq!(runtime.full_output(), released, "{name} at {split}");
+                runtime.emit(&format!("{} done\n", &input[split..]));
+                assert_eq!(
+                    runtime.full_output(),
+                    format!("{released}<redacted> done\n"),
+                    "{name} at {split}"
+                );
+                assert!(!runtime.full_output().contains(&input));
+            }
+        }
+    }
+
+    #[test]
+    fn withholds_a_split_bearer_body_from_observers_retained_output_and_screen() {
+        let mut runtime = SyntheticRuntime::new(true);
+        let mut observed = String::new();
+        for part in ["Bearer ", "abcdef", "1-ghijklmnop"] {
+            runtime.emit(part);
+            runtime.idle();
+            observed.push_str(&runtime.observed());
+            assert_eq!(runtime.full_output(), "Bearer ");
+            assert_eq!(observed, "Bearer ");
+            assert_eq!(runtime.screen_text(), "Bearer");
+        }
+        assert_eq!(runtime.state.read_delta().text, "Bearer ");
+        runtime.finish();
+        observed.push_str(&runtime.observed());
+        assert_eq!(runtime.state.read_delta().text, "<redacted>");
+        assert_eq!(runtime.full_output(), "Bearer <redacted>");
+        assert_eq!(observed, "Bearer <redacted>");
+        assert_eq!(runtime.screen_text(), "Bearer <redacted>");
+    }
+
+    #[test]
+    fn protects_observers_delta_retained_output_and_screen() {
+        for enabled in [false, true] {
+            let mut runtime = SyntheticRuntime::new(enabled);
+            let fixtures = secret_output_cases();
+            let input = fixtures
+                .iter()
+                .map(|(_, input, _)| input.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let expected = if enabled {
+                fixtures
+                    .iter()
+                    .map(|(_, _, expected)| expected.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                input.clone()
+            };
+            let mut observed = String::new();
+            for character in input.chars() {
+                runtime.emit(&character.to_string());
+                observed.push_str(&runtime.observed());
+                if enabled {
+                    assert!(expected.starts_with(&observed), "{observed:?}");
+                }
+            }
+            runtime.finish();
+            observed.push_str(&runtime.observed());
+            assert_eq!(runtime.full_output(), expected);
+            assert_eq!(runtime.state.read_delta().text, expected);
+            assert_eq!(runtime.state.read_delta().text, "");
+            assert_eq!(observed, expected);
+        }
     }
 }

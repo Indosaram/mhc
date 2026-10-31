@@ -1,12 +1,14 @@
 pub const CONTINUATION_CAP_BLOCKED_REASON: &str = "continuation cap reached";
 pub const REPETITION_BLOCKED_REASON: &str = "repeated assistant output";
 pub const LENGTH_EXHAUSTED_BLOCKED_REASON: &str = "output truncation repeated";
+/// Retired by omo#10280; still mechanical so a goal persisted with it resumes on the next message.
 pub const UNATTENDED_CONTINUATION_BLOCKED_REASON: &str = "unattended continuation limit reached";
+pub const NO_PROGRESS_BLOCKED_REASON: &str = "no progress across repeated automatic continuations (no new tool result, todo change, or new message)";
 pub const PROVIDER_ERROR_BLOCKED_REASON: &str = "provider error ended the turn (retries exhausted)";
 pub const CONTEXT_OVERFLOW_BLOCKED_REASON: &str = "context overflow ended the turn (compaction did not recover)";
 pub const PROVIDER_AUTH_BLOCKED_REASON_PREFIX: &str = "provider rejected the request: ";
 pub fn is_mechanical_continuation_block(reason: Option<&str>) -> bool {
-    reason.is_some_and(|reason| reason.starts_with(PROVIDER_AUTH_BLOCKED_REASON_PREFIX) || [CONTINUATION_CAP_BLOCKED_REASON, REPETITION_BLOCKED_REASON, LENGTH_EXHAUSTED_BLOCKED_REASON, UNATTENDED_CONTINUATION_BLOCKED_REASON, PROVIDER_ERROR_BLOCKED_REASON, CONTEXT_OVERFLOW_BLOCKED_REASON].contains(&reason))
+    reason.is_some_and(|reason| reason.starts_with(PROVIDER_AUTH_BLOCKED_REASON_PREFIX) || [CONTINUATION_CAP_BLOCKED_REASON, REPETITION_BLOCKED_REASON, LENGTH_EXHAUSTED_BLOCKED_REASON, UNATTENDED_CONTINUATION_BLOCKED_REASON, NO_PROGRESS_BLOCKED_REASON, PROVIDER_ERROR_BLOCKED_REASON, CONTEXT_OVERFLOW_BLOCKED_REASON].contains(&reason))
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderAuthBlock { pub http_status: u16, pub provider: String, pub model: String }
@@ -28,7 +30,7 @@ pub fn continuation_cap_recovery_hint(reason: &str) -> String {
 }
 #[cfg(test)] mod tests {
     use super::*;
-    #[test] fn runtime_guard_reasons_are_mechanical() { let result = [CONTINUATION_CAP_BLOCKED_REASON, REPETITION_BLOCKED_REASON, LENGTH_EXHAUSTED_BLOCKED_REASON, UNATTENDED_CONTINUATION_BLOCKED_REASON, PROVIDER_ERROR_BLOCKED_REASON, CONTEXT_OVERFLOW_BLOCKED_REASON].map(|reason| is_mechanical_continuation_block(Some(reason))); assert!(result.into_iter().all(|value| value)); }
+    #[test] fn runtime_guard_reasons_are_mechanical() { let result = [CONTINUATION_CAP_BLOCKED_REASON, REPETITION_BLOCKED_REASON, LENGTH_EXHAUSTED_BLOCKED_REASON, UNATTENDED_CONTINUATION_BLOCKED_REASON, NO_PROGRESS_BLOCKED_REASON, PROVIDER_ERROR_BLOCKED_REASON, CONTEXT_OVERFLOW_BLOCKED_REASON].map(|reason| is_mechanical_continuation_block(Some(reason))); assert!(result.into_iter().all(|value| value)); }
     #[test] fn unknown_reason_and_absence_are_not_mechanical() { let result = [is_mechanical_continuation_block(None), is_mechanical_continuation_block(Some("waiting for credentials"))]; assert_eq!(result, [false, false]); }
     #[test] fn provider_auth_blocks_are_mechanical_and_include_recovery_guidance() {
         let block=ProviderAuthBlock { http_status:401,provider:"anthropic".into(),model:"claude-test".into() };

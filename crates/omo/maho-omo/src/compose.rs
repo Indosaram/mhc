@@ -19,6 +19,8 @@ use maho_ext_api::{
 };
 use idle_injection::IdleInjectionCoordinator;
 
+use maho_omo_comment_checker::resolver::default_comment_checker_cache_dir;
+
 use crate::coordinator::{Delivery, IdleInjectionDelivery, IdleInjectionMessage};
 use crate::logger::StderrLogger;
 use crate::provisioning::{
@@ -141,6 +143,27 @@ impl Extension for OmoExtension {
         for (name, value) in updates {
             if let Some(value) = value { environment.insert(name, value); }
         }
+        // Shell children inherit this environment: a bundled skill's Python must not write
+        // __pycache__ into a signed app, so bytecode goes to <user cache>/omo-senpi/pycache unless
+        // the user set either variable, even to an empty string.
+        if self.provisioning.read("PYTHONDONTWRITEBYTECODE").is_none()
+            && self.provisioning.read("PYTHONPYCACHEPREFIX").is_none()
+        {
+            let env: std::collections::BTreeMap<String, String> =
+                ["XDG_CACHE_HOME", "LOCALAPPDATA", "APPDATA"]
+                    .into_iter()
+                    .filter_map(|name| Some((name.to_owned(), self.provisioning.read(name)?)))
+                    .collect();
+            let platform = if cfg!(windows) { "win32" } else { "linux" };
+            let cache_dir = default_comment_checker_cache_dir(platform, Some(&env), Some("omo-senpi"));
+            if let Some(root) = cache_dir.parent() {
+                let prefix = root.join("pycache").to_string_lossy().into_owned();
+                if let Some(sink) = &self.provisioning.sink {
+                    sink("PYTHONPYCACHEPREFIX", Some(&prefix));
+                }
+                environment.insert("PYTHONPYCACHEPREFIX".to_owned(), prefix);
+            }
+        }
         drop(environment);
 
         api.register_flag(
@@ -182,10 +205,19 @@ impl Extension for OmoExtension {
         // armed before a reload can never call `sendMessage` on a stale API; every still-queued
         // injection is handed back to its producer as a delivery failure. Registered before the
         // component loop so the runtime-binding pass below leaves it unwrapped.
+        let settles = crate::settle_observers::SettleObservers::new(runtime.logger());
         let shutdown_runtime = Arc::clone(&runtime);
-        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+        let shutdown_settles = settles.clone();
+        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, context| {
             shutdown_runtime.startup_deferral().retire();
             shutdown_runtime.coordinator().retire();
+            shutdown_settles.retire(Some(context.session_manager.session_id()));
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }));
+        // On A -> B switches the host sends session_shutdown on A before starting B.
+        let start_settles = settles.clone();
+        api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, context| {
+            start_settles.retire(Some(context.session_manager.session_id()));
             Box::pin(async { Ok(maho_ext_api::EventResult::None) })
         }));
         for kind in [maho_ext_api::EventKind::Input, maho_ext_api::EventKind::BeforeAgentStart] {
@@ -205,7 +237,16 @@ impl Extension for OmoExtension {
                 runtime.logger().info("omo-senpi component disabled by flag", Some(&details));
                 continue;
             }
-            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| component.register(api, &runtime))) {
+            let settled_before = api.registered.handlers.get(&maho_ext_api::EventKind::AgentSettled).map_or(0, Vec::len);
+            let registration = catch_unwind(AssertUnwindSafe(|| component.register(api, &runtime)));
+            // Upstream `prewarm-diagnostics`: every `agent_settled` handler a component registered
+            // runs under a bounded settle observer.
+            if let Some(handlers) = api.registered.handlers.get_mut(&maho_ext_api::EventKind::AgentSettled) {
+                for handler in handlers.iter_mut().skip(settled_before) {
+                    *handler = settles.wrap(component.name, None, Arc::clone(handler));
+                }
+            }
+            if let Err(payload) = registration {
                 let details = serde_json::json!({
                     "component": component.name,
                     "error": panic_reason(payload.as_ref()),

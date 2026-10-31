@@ -9,6 +9,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub const TODO_WAITING_STATUS_KEY: &str = "todo-waiting";
+
 pub struct GoalDelivery {
     runtime: Arc<GoalRuntime>,
     reference: crate::accounting_hooks::GoalStoreReference,
@@ -62,6 +64,13 @@ impl GoalDelivery {
             neutral_lifecycle: Default::default(),
             last_facts: Default::default(),
         }
+    }
+    /// `session_tree` in goal/index.ts: a tree move restarts the todo-owed reminder chain.
+    pub fn reset_todo_chain(&self) {
+        self.todo_backstop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset_chain();
     }
     pub fn queue_callback(self: &Arc<Self>) -> crate::command_registration::QueueGoalContinuation {
         let owner = self.clone();
@@ -372,7 +381,21 @@ impl GoalDelivery {
         ctx: &ExtensionContext,
         goal: Option<&Goal>,
     ) -> Result<(), ExtensionFailure> {
+        // Pin goal/index.ts session_start/session_tree/agent_start: the todo-waiting footer status
+        // describes only the turn that just ended, so every new turn or branch change clears it.
+        if matches!(
+            event,
+            ExtensionEvent::SessionStart(_)
+                | ExtensionEvent::SessionTree { .. }
+                | ExtensionEvent::AgentStart
+        ) {
+            ctx.ui.set_status(TODO_WAITING_STATUS_KEY, None);
+        }
         match event {
+            ExtensionEvent::SessionTree { .. } => {
+                self.todo_backstop.lock().map_err(failure)?.reset_chain();
+                return Ok(());
+            }
             ExtensionEvent::SessionStart(start) => {
                 let neutral = maho_ext_api::goal_lifecycle::goal_lifecycle_service(
                     ctx.session_manager.session_id(),
@@ -504,11 +527,12 @@ impl GoalDelivery {
                     )
                     && let Some(goal) = goal.filter(|goal| goal.status == GoalStatus::Active)
                 {
-                    let (sources, user) = {
-                        let monitor = self.runtime.monitor.lock().map_err(failure)?;
+                    let (sources, user, (tool_effect, human_input)) = {
+                        let mut monitor = self.runtime.monitor.lock().map_err(failure)?;
                         (
                             monitor.has_active_wake_sources(),
                             monitor.ended_turn_was_user_initiated,
+                            std::mem::take(&mut monitor.last_turn_progress),
                         )
                     };
                     let branch = ctx.session_manager.get_branch();
@@ -525,16 +549,26 @@ impl GoalDelivery {
                             messages,
                         )),
                     );
-                    let reset = !user
-                        && (continuation_turn_used_tools(messages)
-                            || goal
-                                .last_continuation_signature
-                                .as_ref()
-                                .is_some_and(|previous| previous != &signature));
+                    // omo#10280: progress is a new tool effect, a todo change, or human input;
+                    // varied narration still resets the consecutive streak but not the no-progress count.
+                    let signature_changed = goal
+                        .last_continuation_signature
+                        .as_ref()
+                        .is_some_and(|previous| previous != &signature);
+                    let todo_progress = crate::continuation::has_goal_todo_progress(
+                        goal.last_continuation_signature.as_deref(),
+                        Some(&signature),
+                    );
+                    let made_progress = tool_effect || human_input || todo_progress;
+                    let reset = !user && (made_progress || signature_changed);
                     let refreshed = if reset {
-                        crate::store::reset_continuation_streak(&(self.reference)(ctx), false)
-                            .await
-                            .map_err(failure)?
+                        crate::store::reset_continuation_streak_with_progress(
+                            &(self.reference)(ctx),
+                            human_input,
+                            made_progress,
+                        )
+                        .await
+                        .map_err(failure)?
                     } else {
                         None
                     };
@@ -579,8 +613,10 @@ impl GoalDelivery {
                     &ended,
                     goal,
                     Some(&outcome),
-                    (crate::turn_end_liveness_report::deadline_stop_pending(ctx),
-                    self.pending.load(Ordering::Acquire)),
+                    (
+                        crate::turn_end_liveness_report::deadline_stop_pending(ctx),
+                        self.pending.load(Ordering::Acquire),
+                    ),
                     &*self.runtime.monitor.lock().map_err(failure)?,
                     (self.now)() as i64,
                 )?;
@@ -618,8 +654,12 @@ impl GoalDelivery {
                                 &ended_live,
                                 goal.as_ref(),
                                 Some(&outcome_live),
-                                (crate::turn_end_liveness_report::deadline_stop_pending(&context),
-                                pending.load(Ordering::Acquire)),
+                                (
+                                    crate::turn_end_liveness_report::deadline_stop_pending(
+                                        &context,
+                                    ),
+                                    pending.load(Ordering::Acquire),
+                                ),
                                 &monitor,
                                 now() as i64,
                             ) {
@@ -1137,5 +1177,343 @@ mod tests {
             .await
             .unwrap();
         session.dispose().await;
+    }
+    mod no_progress_guard {
+        //! Port of test/suite/regressions/omo-10280-goal-no-progress-guard.test.ts (senpi 903b8336),
+        //! driven through the real agent_start/agent_end handlers of the runtime and delivery owner.
+        use super::*;
+        use maho_agent::types::{AgentMessage, CustomAgentMessage};
+        use maho_ai::types::{Message, StopReason};
+        use maho_ext_api::{
+            ExtensionContextActions, ExtensionRuntime, LoadedExtension, SessionEntry,
+            SessionManager, SessionReason, SessionShutdownEvent, ToolSessionManager,
+        };
+        struct Branch {
+            entries: Mutex<Vec<SessionEntry>>,
+            actions: Arc<dyn ExtensionContextActions>,
+        }
+        impl ToolSessionManager for Branch {
+            fn session_id(&self) -> &str {
+                "no-progress"
+            }
+            fn session_file(&self) -> Option<&std::path::Path> {
+                None
+            }
+        }
+        impl SessionManager for Branch {
+            fn get_entries(&self) -> Vec<SessionEntry> {
+                self.entries.lock().unwrap().clone()
+            }
+            fn get_branch(&self) -> Vec<SessionEntry> {
+                self.get_entries()
+            }
+            fn get_leaf_id(&self) -> Option<String> {
+                None
+            }
+            fn get_session_name(&self) -> Option<String> {
+                None
+            }
+            fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> {
+                Some(self.actions.as_ref())
+            }
+        }
+        fn assistant(text: &str) -> maho_ai::types::AssistantMessage {
+            maho_ai::providers::faux::faux_assistant_message(text, Default::default())
+        }
+        fn narration(text: &str) -> Vec<AgentMessage> {
+            vec![AgentMessage::Llm(Message::Assistant(Box::new(assistant(
+                text,
+            ))))]
+        }
+        fn tool_turn(
+            turn: usize,
+            name: &str,
+            arguments: serde_json::Value,
+            text: &str,
+            is_error: bool,
+        ) -> Vec<AgentMessage> {
+            let serde_json::Value::Object(arguments) = arguments else {
+                panic!("arguments must be an object")
+            };
+            let call = maho_ai::providers::faux::faux_assistant_message(
+                vec![maho_ai::providers::faux::faux_tool_call(
+                    name,
+                    arguments,
+                    Some("call"),
+                )],
+                maho_ai::providers::faux::FauxAssistantMessageOptions {
+                    stop_reason: Some(StopReason::ToolUse),
+                    ..Default::default()
+                },
+            );
+            let result = serde_json::from_value(serde_json::json!({
+                "role": "toolResult", "toolCallId": "call", "toolName": name,
+                "content": [{"type": "text", "text": text}], "isError": is_error, "timestamp": 0
+            }))
+            .unwrap();
+            let mut messages = vec![
+                AgentMessage::Llm(Message::Assistant(Box::new(call))),
+                AgentMessage::Llm(Message::ToolResult(result)),
+            ];
+            messages.extend(narration(&format!(
+                "step {turn} ({name}): looked at the result again"
+            )));
+            messages
+        }
+        fn edit_turn(turn: usize) -> Vec<AgentMessage> {
+            tool_turn(
+                turn,
+                "edit",
+                serde_json::json!({"path": format!("src/step-{turn}.ts"), "newText": format!("export const step = {turn};")}),
+                &format!("Edited src/step-{turn}.ts"),
+                false,
+            )
+        }
+        fn test_run_output(turn: usize) -> String {
+            format!(
+                "(fail) parser > rejects empty input [0.41ms]\n 0 pass\n 1 fail\nRan 1 test across 1 file. [{:.2}ms]\nstarted 2026-10-17T18:{:02}:07Z pid {} run {:x}",
+                40.0 + turn as f64 * 0.37,
+                turn % 60,
+                4100 + turn,
+                0x9f3a_2b10_usize + turn
+            )
+        }
+        fn same_failing_test_turn(turn: usize) -> Vec<AgentMessage> {
+            tool_turn(
+                turn,
+                "bash",
+                serde_json::json!({"command": "bun test src/parser.test.ts"}),
+                &test_run_output(turn),
+                true,
+            )
+        }
+        fn swallowed_exit_with_counter_arg_turn(turn: usize) -> Vec<AgentMessage> {
+            tool_turn(
+                turn,
+                "bash",
+                serde_json::json!({"command": format!("bun test src/parser.test.ts --bail={turn}; true")}),
+                &test_run_output(turn),
+                false,
+            )
+        }
+        fn advancing_poll_turn(turn: usize) -> Vec<AgentMessage> {
+            tool_turn(
+                turn,
+                "bash_output",
+                serde_json::json!({"bash_id": "bash_3"}),
+                &format!("building {turn}/200 modules [{:.1}s]", turn as f64 * 1.7),
+                false,
+            )
+        }
+        fn monitor_notification(human_input: bool) -> AgentMessage {
+            let mut monitor = serde_json::json!({"id":"bash_7","description":"team chat","eventCount":1,"kinds":["line"]});
+            if human_input {
+                monitor["humanInput"] = true.into();
+            }
+            AgentMessage::Custom(CustomAgentMessage::Custom(
+                serde_json::from_value(serde_json::json!({
+                    "role": "custom",
+                    "customType": crate::continuation::MONITOR_NOTIFICATION_CUSTOM_TYPE,
+                    "content": "<system-reminder>Monitor event(team chat): can you also check the logs?</system-reminder>",
+                    "display": false,
+                    "details": {"monitors": [monitor]},
+                    "timestamp": 1
+                }))
+                .unwrap(),
+            ))
+        }
+        struct Harness {
+            reference: crate::types::GoalStoreRef,
+            runtime: Arc<GoalRuntime>,
+            owner: Arc<GoalDelivery>,
+            capture: Arc<Capture>,
+            branch: Arc<Branch>,
+            context: ExtensionContext,
+            session: maho_core::agent_session::AgentSession,
+            _dir: tempfile::TempDir,
+        }
+        impl Harness {
+            async fn start() -> Self {
+                let dir = tempfile::tempdir().unwrap();
+                let reference = crate::types::GoalStoreRef {
+                    base_dir: dir.path().into(),
+                    thread_id: "s".into(),
+                };
+                let stored = reference.clone();
+                let resolver: crate::accounting_hooks::GoalStoreReference =
+                    Arc::new(move |_| stored.clone());
+                let runtime = Arc::new(GoalRuntime::new(resolver.clone(), Arc::new(|| 0.0)));
+                let capture = Arc::new(Capture(Mutex::new(Vec::new())));
+                let transport = ExtensionRuntime::default();
+                transport.bind(capture.clone());
+                let api = ExtensionApi::new(
+                    LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+                    Default::default(),
+                    Default::default(),
+                    transport,
+                );
+                let owner = Arc::new(GoalDelivery::new(
+                    runtime.clone(),
+                    resolver,
+                    Arc::new(|| 0.0),
+                    &api,
+                ));
+                let mut context = crate::test_context::context();
+                let session = crate::test_context::bind_session(&mut context);
+                context.has_ui = false;
+                let branch = Arc::new(Branch {
+                    entries: Mutex::new(Vec::new()),
+                    actions: session.extension_context_actions(),
+                });
+                context.session_manager = branch.clone();
+                crate::store::create_goal(&reference, "Keep working", None, 0)
+                    .await
+                    .unwrap();
+                Self {
+                    reference,
+                    runtime,
+                    owner,
+                    capture,
+                    branch,
+                    context,
+                    session,
+                    _dir: dir,
+                }
+            }
+            async fn dispatch(&self, event: ExtensionEvent) {
+                let goal = self.runtime.event(&event, &self.context).await.unwrap();
+                self.owner
+                    .event(&event, &self.context, goal.as_ref())
+                    .await
+                    .unwrap();
+            }
+            async fn turn(&self, messages: Vec<AgentMessage>) {
+                self.dispatch(ExtensionEvent::AgentStart).await;
+                let last = messages
+                    .iter()
+                    .rev()
+                    .find_map(AgentMessage::as_assistant)
+                    .unwrap();
+                self.branch.entries.lock().unwrap().push(SessionEntry {
+                    id: "a".into(),
+                    parent_id: None,
+                    timestamp: String::new(),
+                    kind: "message".into(),
+                    data: serde_json::json!({"message": last}),
+                });
+                self.dispatch(ExtensionEvent::AgentEnd {
+                    messages,
+                    aborted: Some(false),
+                    abort_source: None,
+                    will_retry: Some(false),
+                })
+                .await;
+            }
+            fn sent(&self) -> usize {
+                self.capture.0.lock().unwrap().len()
+            }
+            fn goal(&self) -> Goal {
+                crate::store::read_goal(&self.reference).unwrap().unwrap()
+            }
+            async fn finish(self) {
+                self.dispatch(ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+                    reason: SessionReason::Quit,
+                    target_session_file: None,
+                    signal: None,
+                }))
+                .await;
+                self.session.dispose().await;
+            }
+        }
+        const LIMIT: usize = crate::continuation::GOAL_NO_PROGRESS_CONTINUATION_LIMIT as usize;
+        fn assert_blocked_no_progress(goal: &Goal) {
+            assert_eq!(goal.status, GoalStatus::Blocked);
+            assert_eq!(
+                goal.blocked_reason.as_deref(),
+                Some(crate::continuation_recovery::NO_PROGRESS_BLOCKED_REASON)
+            );
+        }
+        #[tokio::test]
+        async fn stops_a_varied_narration_loop_with_no_tool_use_at_the_guard() {
+            let harness = Harness::start().await;
+            for index in 1..=LIMIT + 1 {
+                harness
+                    .turn(narration(&format!("still thinking about it, take {index}")))
+                    .await;
+            }
+            assert_eq!(harness.sent(), LIMIT);
+            assert_blocked_no_progress(&harness.goal());
+            harness.finish().await;
+        }
+        #[tokio::test]
+        async fn never_stops_a_session_that_keeps_making_real_edits() {
+            let harness = Harness::start().await;
+            let turns = LIMIT + 20;
+            for index in 1..=turns {
+                harness.turn(edit_turn(index)).await;
+            }
+            assert_eq!(harness.sent(), turns);
+            let goal = harness.goal();
+            assert_eq!(goal.status, GoalStatus::Active);
+            assert_eq!(goal.no_progress_continuations, Some(1));
+            harness.finish().await;
+        }
+        #[tokio::test]
+        async fn stops_tool_loops_that_fail_or_only_vary_noise_at_the_guard() {
+            for loop_turn in [
+                same_failing_test_turn as fn(usize) -> Vec<AgentMessage>,
+                swallowed_exit_with_counter_arg_turn,
+            ] {
+                let harness = Harness::start().await;
+                for index in 1..=LIMIT + 1 {
+                    harness.turn(loop_turn(index)).await;
+                }
+                assert_eq!(harness.sent(), LIMIT);
+                assert_blocked_no_progress(&harness.goal());
+                harness.finish().await;
+            }
+        }
+        #[tokio::test]
+        async fn keeps_counting_a_poll_whose_build_counter_advances_as_progress() {
+            let harness = Harness::start().await;
+            let turns = LIMIT + 20;
+            for index in 1..=turns {
+                harness.turn(advancing_poll_turn(index)).await;
+            }
+            assert_eq!(harness.sent(), turns);
+            assert_eq!(harness.goal().status, GoalStatus::Active);
+            harness.finish().await;
+        }
+        #[tokio::test]
+        async fn human_input_monitor_delivery_resets_the_guard_and_machine_status_does_not() {
+            let harness = Harness::start().await;
+            for index in 1..LIMIT {
+                harness.turn(narration(&format!("waiting {index}"))).await;
+            }
+            assert_eq!(
+                harness.goal().no_progress_continuations,
+                Some(LIMIT as u64 - 1)
+            );
+            let mut human = vec![monitor_notification(true)];
+            human.extend(narration("on it, checking the logs"));
+            harness.turn(human).await;
+            let goal = harness.goal();
+            assert_eq!(goal.status, GoalStatus::Active);
+            assert_eq!(goal.no_progress_continuations, Some(1));
+            assert_eq!(goal.unattended_continuations, Some(1));
+            harness.finish().await;
+
+            let harness = Harness::start().await;
+            for index in 1..LIMIT {
+                harness.turn(narration(&format!("waiting {index}"))).await;
+            }
+            let mut machine = vec![monitor_notification(false)];
+            machine.extend(narration("build is still running"));
+            harness.turn(machine).await;
+            assert_eq!(harness.goal().no_progress_continuations, Some(LIMIT as u64));
+            harness.turn(narration("still waiting on the build")).await;
+            assert_blocked_no_progress(&harness.goal());
+            harness.finish().await;
+        }
     }
 }

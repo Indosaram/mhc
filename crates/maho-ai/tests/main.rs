@@ -29,6 +29,8 @@ pub mod google_shared_retry;
 pub mod google_shared_signed_empty_blocks;
 #[path = "google_shared_tool_call_id.rs"]
 pub mod google_shared_tool_call_id;
+#[path = "google_thinking_level_generation.rs"]
+pub mod google_thinking_level_generation;
 #[path = "google_thinking_level_map.rs"]
 pub mod google_thinking_level_map;
 #[path = "google_thinking_signature.rs"]
@@ -51,6 +53,8 @@ pub mod replay_misc;
 pub mod replay_support;
 #[path = "task_13_qa.rs"]
 pub mod task_13_qa;
+#[path = "tool_call_middleware_truncation_e2e.rs"]
+pub mod tool_call_middleware_truncation_e2e;
 
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "anthropic_common/mod.rs"]

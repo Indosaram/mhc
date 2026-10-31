@@ -1,4 +1,6 @@
 //! Current member of each family; aliases read this registry.
+//! `kimiK3` is the previous Kimi generation, kept for the rungs of providers that do not serve
+//! `kimi` yet (OpenCode Zen, Bailian, Firmware, Ollama Cloud, AIHubMix).
 pub const CLAUDE_OPUS: &str = "claude-opus-5-5";
 pub const CLAUDE_SONNET: &str = "claude-sonnet-5-5";
 pub const CLAUDE_HAIKU: &str = "claude-haiku-5-5";
@@ -13,6 +15,7 @@ pub const LATEST_MODEL_BY_FAMILY: &[(&str, &str)] = &[
     ("gptLunaFast", "gpt-6-luna-fast"),
     ("glm", "glm-5.3"),
     ("glmFlash", "glm-5.3-flash"),
-    ("kimi", "kimi-k3"),
+    ("kimi", "kimi-k3.1-pro"),
+    ("kimiK3", "kimi-k3"),
     ("geminiPro", "gemini-4-argon"),
 ];

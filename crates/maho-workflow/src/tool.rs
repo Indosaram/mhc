@@ -24,6 +24,9 @@ pub const ACTIONS: &[&str] = &[
 pub struct Caller {
     pub session_id: String,
     pub root_session: Option<String>,
+    /// The calling session's current model (`provider/id`); stored in a new run as its
+    /// `parent_model` (Delta D1).
+    pub parent_model: Option<String>,
 }
 
 impl Caller {
@@ -31,7 +34,15 @@ impl Caller {
         Self {
             session_id: session_id.into(),
             root_session: None,
+            parent_model: None,
         }
+    }
+
+    /// This caller with `model` as its session's current model.
+    #[must_use]
+    pub fn with_parent_model(mut self, model: Option<String>) -> Self {
+        self.parent_model = model.filter(|model| !model.trim().is_empty());
+        self
     }
 }
 

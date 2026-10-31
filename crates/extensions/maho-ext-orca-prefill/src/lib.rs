@@ -1,4 +1,6 @@
-use maho_ext_api::{EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, SessionReason};
+use maho_ext_api::{
+    EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, SessionReason,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,22 +12,36 @@ pub const PREFILL_ENV: &str = "ORCA_PI_PREFILL";
 /// deletion is recorded in `maho_ext_api::process_env` so spawned children do not inherit it.
 static PREFILL_TAKEN: AtomicBool = AtomicBool::new(false);
 
-/// Read the prefill once per process; `read` supplies the raw value on the first call only.
+/// Read the prefill once per process. Like upstream (`if (!prefill) return` precedes the `delete`),
+/// an unset or empty value is neither consumed nor deleted; only a non-empty value latches.
+///
+/// `maho_process_env` is not used for the real `remove_var`: it is only sound before any thread is
+/// spawned, and this runs inside the multi-threaded runtime at `session_start`.
 pub fn take_process_prefill(read: impl FnOnce() -> Option<String>) -> Option<String> {
-    if PREFILL_TAKEN.swap(true, Ordering::SeqCst) { return None; }
+    if PREFILL_TAKEN.load(Ordering::SeqCst) {
+        return None;
+    }
+    let prefill = read().filter(|value| !value.is_empty())?;
+    if PREFILL_TAKEN.swap(true, Ordering::SeqCst) {
+        return None;
+    }
     maho_ext_api::process_env::delete(PREFILL_ENV);
-    read()
+    Some(prefill)
 }
 
 /// Whether the prefill was consumed, so spawned children must not inherit it.
-pub fn process_prefill_taken() -> bool { PREFILL_TAKEN.load(Ordering::SeqCst) }
+pub fn process_prefill_taken() -> bool {
+    PREFILL_TAKEN.load(Ordering::SeqCst)
+}
 
 pub trait PrefillEnvironment: Send + Sync {
     fn pane_key(&self) -> Option<String>;
     fn take_prefill(&self) -> Option<String>;
 }
 
-pub struct OrcaPrefill { pub environment: Arc<dyn PrefillEnvironment> }
+pub struct OrcaPrefill {
+    pub environment: Arc<dyn PrefillEnvironment>,
+}
 impl Extension for OrcaPrefill {
     fn register(&self, api: &mut ExtensionApi) {
         let environment = Arc::clone(&self.environment);
@@ -49,21 +65,36 @@ impl Extension for OrcaPrefill {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    struct Environment { value: Mutex<Option<String>> }
+    struct Environment {
+        value: Mutex<Option<String>>,
+    }
     impl PrefillEnvironment for Environment {
-        fn pane_key(&self) -> Option<String> { Some("pane".into()) }
-        fn take_prefill(&self) -> Option<String> { self.value.lock().unwrap().take() }
+        fn pane_key(&self) -> Option<String> {
+            Some("pane".into())
+        }
+        fn take_prefill(&self) -> Option<String> {
+            self.value.lock().unwrap().take()
+        }
     }
     #[test]
     fn consumed_when_taken() {
-        let environment = Environment { value: Mutex::new(Some("prompt".into())) };
+        let environment = Environment {
+            value: Mutex::new(Some("prompt".into())),
+        };
         let value = environment.take_prefill();
         assert_eq!(value.as_deref(), Some("prompt"));
         assert_eq!(environment.take_prefill(), None);
     }
     #[test]
     fn process_prefill_is_taken_once() {
-        assert_eq!(take_process_prefill(|| Some("prompt".into())).as_deref(), Some("prompt"));
+        // Upstream returns before `delete` when the prefill is unset or empty.
+        assert_eq!(take_process_prefill(|| Some(String::new())), None);
+        assert_eq!(take_process_prefill(|| None), None);
+        assert!(!process_prefill_taken());
+        assert_eq!(
+            take_process_prefill(|| Some("prompt".into())).as_deref(),
+            Some("prompt")
+        );
         assert!(process_prefill_taken());
         assert!(!maho_ext_api::process_env::vars().contains_key(PREFILL_ENV));
         assert_eq!(take_process_prefill(|| Some("again".into())), None);

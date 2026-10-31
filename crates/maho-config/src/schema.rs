@@ -459,10 +459,10 @@ fn memory_fields(with_defaults: bool) -> Vec<Field> {
         dd(
             "projection",
             obj(vec![
-                dd("max_entries_per_directory", int_min(0.0), json!(40)),
-                dd("max_bytes", int_min(0.0), json!(24576)),
+                dd("max_entries_per_directory", int_min(0.0), json!(0)),
+                dd("max_bytes", int_min(0.0), json!(40960)),
             ]),
-            json!({}),
+            json!({"max_entries_per_directory": 0, "max_bytes": 40960}),
         ),
         dd(
             "reflection",

@@ -12,13 +12,24 @@ pub struct RgbColor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OscColorTarget { Foreground, Background, Palette(u16) }
+pub enum OscColorTarget {
+    Foreground,
+    Background,
+    Palette(u16),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OscColorResponse { pub target: OscColorTarget, pub rgb: Option<RgbColor> }
+pub struct OscColorResponse {
+    pub target: OscColorTarget,
+    pub rgb: Option<RgbColor>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TerminalColors { pub foreground: Option<RgbColor>, pub background: Option<RgbColor>, pub palette: Vec<Option<RgbColor>> }
+pub struct TerminalColors {
+    pub foreground: Option<RgbColor>,
+    pub background: Option<RgbColor>,
+    pub palette: Vec<Option<RgbColor>>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalColorScheme {
@@ -26,12 +37,12 @@ pub enum TerminalColorScheme {
     Light,
 }
 
-
 static OSC11_BACKGROUND_COLOR_RESPONSE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)$").expect("valid regex")
 });
 static OSC_COLOR_RESPONSE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\x1b\](?:(1[01])|4;(\d{1,3}));([^\x07\x1b]*)(?:\x07|\x1b\\)$").expect("valid regex")
+    Regex::new(r"(?i)^\x1b\](?:(1[01])|4;(\d{1,3}));([^\x07\x1b]*)(?:\x07|\x1b\\)$")
+        .expect("valid regex")
 });
 static COLOR_SCHEME_REPORT_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:\x1b\[\?997;(1|2)n)+$").expect("valid regex"));
@@ -117,16 +128,26 @@ pub fn parse_osc_color_response(data: &str) -> Option<OscColorResponse> {
 fn parse_osc_color_value(raw_value: &str) -> Option<RgbColor> {
     let value = raw_value.trim();
     if let Some(hex) = value.strip_prefix('#') {
-        if HEX6.is_match(hex) { return Some(hex_to_rgb(value)); }
+        if HEX6.is_match(hex) {
+            return Some(hex_to_rgb(value));
+        }
         if HEX12.is_match(hex) {
-            return Some(RgbColor { r: parse_osc_hex_channel(&hex[0..4])?, g: parse_osc_hex_channel(&hex[4..8])?, b: parse_osc_hex_channel(&hex[8..12])? });
+            return Some(RgbColor {
+                r: parse_osc_hex_channel(&hex[0..4])?,
+                g: parse_osc_hex_channel(&hex[4..8])?,
+                b: parse_osc_hex_channel(&hex[8..12])?,
+            });
         }
         return None;
     }
     let rgb_value = RGB_PREFIX.replace(value, "");
     let mut parts = rgb_value.split('/');
     let (r, g, b) = (parts.next()?, parts.next()?, parts.next()?);
-    Some(RgbColor { r: parse_osc_hex_channel(r)?, g: parse_osc_hex_channel(g)?, b: parse_osc_hex_channel(b)? })
+    Some(RgbColor {
+        r: parse_osc_hex_channel(r)?,
+        g: parse_osc_hex_channel(g)?,
+        b: parse_osc_hex_channel(b)?,
+    })
 }
 
 pub fn is_terminal_color_da1(data: &str) -> bool {
@@ -229,17 +250,232 @@ mod tests {
 
     #[test]
     fn parses_osc_foreground_background_and_palette_replies() {
-        assert_eq!(parse_osc_color_response("\x1b]10;#123456\x07"), Some(OscColorResponse { target: OscColorTarget::Foreground, rgb: Some(rgb(0x12, 0x34, 0x56)) }));
-        assert_eq!(parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"), Some(OscColorResponse { target: OscColorTarget::Background, rgb: Some(rgb(255, 0, 128)) }));
-        assert_eq!(parse_osc_color_response("\x1b]4;256;#abcdef\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(256), rgb: Some(rgb(0xab, 0xcd, 0xef)) }));
-        assert_eq!(parse_osc_color_response("\x1b]4;1;rgb:ff/00/00/ff\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(1), rgb: Some(rgb(255, 0, 0)) }));
+        assert_eq!(
+            parse_osc_color_response("\x1b]10;#123456\x07"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Foreground,
+                rgb: Some(rgb(0x12, 0x34, 0x56))
+            })
+        );
+        assert_eq!(
+            parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Background,
+                rgb: Some(rgb(255, 0, 128))
+            })
+        );
+        assert_eq!(
+            parse_osc_color_response("\x1b]4;256;#abcdef\x07"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Palette(256),
+                rgb: Some(rgb(0xab, 0xcd, 0xef))
+            })
+        );
+        assert_eq!(
+            parse_osc_color_response("\x1b]4;1;rgb:ff/00/00/ff\x07"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Palette(1),
+                rgb: Some(rgb(255, 0, 0))
+            })
+        );
     }
 
     #[test]
     fn parses_default_and_palette_color_replies() {
-        assert_eq!(parse_osc_color_response("\x1b]10;#123456\x07"), Some(OscColorResponse { target: OscColorTarget::Foreground, rgb: Some(rgb(0x12, 0x34, 0x56)) }));
-        assert_eq!(parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"), Some(OscColorResponse { target: OscColorTarget::Background, rgb: Some(rgb(255, 0, 128)) }));
-        assert_eq!(parse_osc_color_response("\x1b]4;15;#abcdef\x07"), Some(OscColorResponse { target: OscColorTarget::Palette(15), rgb: Some(rgb(0xab, 0xcd, 0xef)) }));
+        assert_eq!(
+            parse_osc_color_response("\x1b]10;#123456\x07"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Foreground,
+                rgb: Some(rgb(0x12, 0x34, 0x56))
+            })
+        );
+        assert_eq!(
+            parse_osc_color_response("\x1b]11;rgb:ffff/0000/8000\x1b\\"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Background,
+                rgb: Some(rgb(255, 0, 128))
+            })
+        );
+        assert_eq!(
+            parse_osc_color_response("\x1b]4;15;#abcdef\x07"),
+            Some(OscColorResponse {
+                target: OscColorTarget::Palette(15),
+                rgb: Some(rgb(0xab, 0xcd, 0xef))
+            })
+        );
         assert!(is_terminal_color_da1("\x1b[?1;2c"));
+    }
+}
+
+#[cfg(test)]
+mod query_terminal_colors_tests {
+    //! Port of the `TUI.queryTerminalColors` cases of senpi `terminal-colors.test.ts`, driven
+    //! through `TuiBase` with an explicit clock instead of real timers.
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::{RgbColor, TerminalColors};
+    use crate::terminal::{InputHandler, ResizeHandler, Terminal, TerminalError};
+    use crate::tui::{Component, TuiBase};
+
+    #[derive(Default)]
+    struct TestTerminal {
+        writes: Vec<String>,
+    }
+
+    impl Terminal for TestTerminal {
+        fn start(&mut self, _on_input: InputHandler, _on_resize: ResizeHandler) {}
+        fn stop(&mut self) -> Result<(), TerminalError> {
+            Ok(())
+        }
+        fn drain_input(&mut self, _max_ms: u64, _idle_ms: u64) {}
+        fn write(&mut self, data: &str) {
+            self.writes.push(data.to_string());
+        }
+        fn columns(&self) -> u16 {
+            80
+        }
+        fn rows(&self) -> u16 {
+            24
+        }
+        fn kitty_protocol_active(&self) -> bool {
+            false
+        }
+        fn move_by(&mut self, _lines: i64) {}
+        fn hide_cursor(&mut self) {}
+        fn show_cursor(&mut self) {}
+        fn clear_line(&mut self) {}
+        fn clear_from_cursor(&mut self) {}
+        fn clear_screen(&mut self) {}
+        fn set_title(&mut self, _title: &str) {}
+        fn set_progress(&mut self, _active: bool) {}
+    }
+
+    struct InputRecorder(Rc<RefCell<Vec<String>>>);
+
+    impl Component for InputRecorder {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            Vec::new()
+        }
+        fn handle_input(&mut self, data: &str) {
+            self.0.borrow_mut().push(data.to_string());
+        }
+        fn has_input_handler(&self) -> bool {
+            true
+        }
+    }
+
+    const DA1: &str = "\x1b[?62;22c";
+    const BLACK: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
+    const WHITE: RgbColor = RgbColor {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+
+    fn palette_replies() -> Vec<String> {
+        (0..16)
+            .map(|index| format!("\x1b]4;{index};#000000\x07"))
+            .collect()
+    }
+
+    fn setup() -> (TuiBase, TestTerminal, Rc<RefCell<Vec<String>>>) {
+        let mut base = TuiBase::new();
+        let inputs = Rc::new(RefCell::new(Vec::new()));
+        let component: Rc<RefCell<dyn Component>> =
+            Rc::new(RefCell::new(InputRecorder(Rc::clone(&inputs))));
+        base.add_child(Rc::clone(&component));
+        base.set_focus(Some(component));
+        (base, TestTerminal::default(), inputs)
+    }
+
+    fn send(base: &mut TuiBase, data: &str) {
+        base.handle_terminal_input(data, false);
+    }
+
+    #[test]
+    fn queries_all_colors_in_one_write_and_consumes_the_replies() {
+        let (mut base, mut terminal, inputs) = setup();
+        let query = base.query_terminal_colors(&mut terminal, 1000, 0);
+        let written = terminal.writes.last().cloned().unwrap_or_default();
+        assert!(
+            written.starts_with("\x1b]10;?\x07\x1b]11;?\x07\x1b]4;0;?\x07")
+                && written.ends_with("\x1b[c")
+        );
+
+        send(&mut base, "x");
+        send(&mut base, "\x1b]10;#ffffff\x07");
+        send(&mut base, "\x1b]11;rgb:0000/0000/0000\x1b\\");
+        for reply in palette_replies() {
+            send(&mut base, &reply);
+        }
+        // Resolves once every reply arrived, without waiting for DA1.
+        assert_eq!(
+            query.result(),
+            Some(TerminalColors {
+                foreground: Some(WHITE),
+                background: Some(BLACK),
+                palette: vec![Some(BLACK); 16],
+            })
+        );
+        send(&mut base, DA1);
+        assert_eq!(*inputs.borrow(), ["x"]);
+    }
+
+    #[test]
+    fn resolves_on_da1_with_the_replies_that_arrived_in_query_order() {
+        let (mut base, mut terminal, _inputs) = setup();
+        let first = base.query_terminal_colors(&mut terminal, 1000, 0);
+        let second = base.query_terminal_colors(&mut terminal, 1000, 0);
+        send(&mut base, "\x1b]11;#000000\x07");
+        // An incomplete palette is dropped.
+        for reply in &palette_replies()[..8] {
+            send(&mut base, reply);
+        }
+        send(&mut base, DA1);
+        send(&mut base, DA1);
+
+        assert_eq!(
+            first.result(),
+            Some(TerminalColors {
+                foreground: None,
+                background: Some(BLACK),
+                palette: Vec::new(),
+            })
+        );
+        assert_eq!(second.result(), Some(TerminalColors::default()));
+    }
+
+    #[test]
+    fn reports_late_replies_after_a_timeout_and_consumes_them_until_da1() {
+        let (mut base, mut terminal, inputs) = setup();
+        let late = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&late);
+        let query = base.query_terminal_colors_with_late_reply(
+            &mut terminal,
+            1,
+            0,
+            Some(Box::new(move |colors| sink.borrow_mut().push(colors))),
+        );
+        base.poll_terminal_queries(5);
+        assert_eq!(query.result().and_then(|colors| colors.background), None);
+        assert!(query.result().is_some());
+
+        send(&mut base, "\x1b]11;#ffffff\x07");
+        send(&mut base, DA1);
+        assert_eq!(
+            *late.borrow(),
+            [TerminalColors {
+                foreground: None,
+                background: Some(WHITE),
+                palette: Vec::new(),
+            }]
+        );
+        assert!(inputs.borrow().is_empty());
+
+        // With no query pending, color replies are ordinary input again.
+        send(&mut base, "\x1b]11;#ffffff\x07");
+        assert_eq!(*inputs.borrow(), ["\x1b]11;#ffffff\x07"]);
     }
 }

@@ -3,10 +3,9 @@
 //! when the holder is gone. Losing the race to another waiter is not an error: the keeper keeps
 //! waiting on the new holder.
 //!
-//! Native lease shape: the Rust `manifest_lease` records `{pid, startedAtMs}` and takes
-//! synchronous probes, so the keeper's holder is a `LeaseRecord`. Like upstream, a tick only polls
-//! the file and pid liveness; a recycled holder pid is told apart by the start-instant check in
-//! `acquire_terminal_lease_with` (`classify_lease`, v1 rule) whenever the keeper acquires.
+//! Native shape: `manifest_lease` takes synchronous probes, so the keeper's holder is a
+//! `LeaseRecord` (upstream `LeaseHolder`). Like upstream, a tick only polls the file and pid
+//! liveness; a recycled holder pid is told apart by `classify_lease` whenever the keeper acquires.
 use crate::manifest_lease::{
     AcquireTerminalLeaseResult, LeaseProbes, LeaseRecord, acquire_terminal_lease_with,
     release_terminal_lease,
@@ -30,8 +29,8 @@ pub type ProcessStartProbe = Arc<dyn Fn(f64) -> Option<f64> + Send + Sync>;
 pub struct LeaseKeeperOptions {
     pub dir: PathBuf,
     pub encoded_session_id: String,
-    /// The acquired lease: its path and the pid it records.
-    pub on_takeover: Box<dyn FnMut(PathBuf, f64) + Send>,
+    /// The acquired lease: its path, the pid it records and its generation token.
+    pub on_takeover: Box<dyn FnMut(crate::terminal_state::HeldLease) + Send>,
     /// A tick that failed (e.g. the state dir became unwritable); the keeper keeps waiting.
     pub on_error: Option<Box<dyn FnMut(std::io::Error) + Send>>,
     pub interval_ms: Option<u64>,
@@ -228,22 +227,22 @@ impl LeaseKeeper {
         if inner.state != LeaseKeeperState::Waiting {
             drop(inner);
             // stop() landed while the acquire was in flight: hand the lease straight back.
-            if let AcquireTerminalLeaseResult::Acquired { path, pid } = result {
-                release_terminal_lease(&path, pid)?;
+            if let AcquireTerminalLeaseResult::Acquired { path, pid, token } = result {
+                release_terminal_lease(&path, pid, Some(token.as_str()))?;
             }
             return Ok(());
         }
         match result {
-            AcquireTerminalLeaseResult::Acquired { path, pid } => {
+            AcquireTerminalLeaseResult::Acquired { path, pid, token } => {
                 inner.state = LeaseKeeperState::Owner;
                 inner.timer = None;
                 let mut on_takeover = std::mem::replace(
                     &mut inner.options.on_takeover,
-                    Box::new(|_: PathBuf, _: f64| {}),
+                    Box::new(|_: crate::terminal_state::HeldLease| {}),
                 );
                 // Run the callback with the mutex released: it may call back into the keeper.
                 drop(inner);
-                on_takeover(path, pid);
+                on_takeover(crate::terminal_state::HeldLease { path, pid, token });
             }
             AcquireTerminalLeaseResult::Held { holder } => {
                 inner.holder = Some(holder);
@@ -314,7 +313,7 @@ mod tests {
         let keeper = create_lease_keeper(LeaseKeeperOptions {
             dir: dir.to_path_buf(),
             encoded_session_id: "s".into(),
-            on_takeover: Box::new(move |_: PathBuf, _: f64| {
+            on_takeover: Box::new(move |_: crate::terminal_state::HeldLease| {
                 count.fetch_add(1, Ordering::SeqCst);
                 if let Some(on_takeover) = on_takeover.as_mut() {
                     on_takeover();
@@ -352,10 +351,7 @@ mod tests {
     }
 
     fn holder() -> Option<LeaseRecord> {
-        Some(LeaseRecord {
-            pid: HOLDER_PID,
-            started_at_ms: 1.0,
-        })
+        Some(LeaseRecord::v1(HOLDER_PID, 1.0))
     }
 
     #[tokio::test(start_paused = true)]
@@ -480,7 +476,7 @@ mod tests {
         let keeper = create_lease_keeper(LeaseKeeperOptions {
             dir: blocked.join("state"),
             encoded_session_id: "s".into(),
-            on_takeover: Box::new(|_: PathBuf, _: f64| {}),
+            on_takeover: Box::new(|_: crate::terminal_state::HeldLease| {}),
             on_error: Some(Box::new(move |_: std::io::Error| {
                 let keeper = error_slot.lock().unwrap().clone().unwrap();
                 error_seen.store(keeper.inner.try_lock().is_ok(), Ordering::SeqCst);

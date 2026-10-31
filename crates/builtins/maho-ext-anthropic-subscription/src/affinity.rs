@@ -10,6 +10,12 @@ pub struct AffinityOptions<'a> {
     pub pin_source: Option<PinSource>,
     /// With `false`, only one account may serve (senpi#3465).
     pub account_fallback: Option<bool>,
+    /// The account this session's SDK transcript lives under; kept while it can serve (senpi#2891).
+    pub preferred_account: Option<&'a str>,
+    /// The user's account order (senpi#3591): tried after the pin and the session's own account, before HRW.
+    pub account_order: Option<&'a [String]>,
+    /// The requested model; an account blocked only for another model stays eligible for it (senpi#2555).
+    pub model: Option<&'a str>,
 }
 /// The origin of an account pin, highest precedence first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,9 +37,18 @@ pub struct AllAccountsBlockedError {
     pub soonest_unblock_at: Option<f64>,
     pub block_reason: Option<&'static str>,
     pub unavailable_account: Option<UnavailableAccount>,
+    /// The requested model when a usage limit on that model, not the accounts, is what blocks it somewhere.
+    pub limited_model: Option<String>,
 }
 impl std::fmt::Display for AllAccountsBlockedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let (Some(model), Some(at)) = (&self.limited_model, self.soonest_unblock_at) {
+            return write!(
+                f,
+                "All Anthropic Subscription accounts have hit the usage limit for model {model} until {}.",
+                crate::model_blocks::iso_ms(at)
+            );
+        }
         match self.soonest_unblock_at {
             None => f.write_str("All Anthropic Subscription accounts are blocked until re-login."),
             Some(at) => {
@@ -76,8 +91,34 @@ pub fn rendezvous_order(key: &str, accounts: &[AccountSlot]) -> Vec<AccountSlot>
         .map(|(_, account)| account.clone())
         .collect()
 }
-fn is_blocked(account: &AccountSlot, now: f64) -> bool {
+fn is_account_blocked(account: &AccountSlot, now: f64) -> bool {
     account.blocked_until.is_some_and(|until| until > now)
+}
+/// Whether the account cannot serve `model` now: an account-level block or a live block on that model.
+pub fn is_blocked_for(account: &AccountSlot, now: f64, model: Option<&str>) -> bool {
+    is_account_blocked(account, now)
+        || crate::model_blocks::active_model_block_until(account.model_blocks.as_ref(), model, now)
+            .is_some()
+}
+/// Moves the named accounts, in the user's order, ahead of the HRW ranking; unknown names are skipped.
+pub fn apply_account_order(order: Option<&[String]>, ranked: Vec<AccountSlot>) -> Vec<AccountSlot> {
+    let Some(order) = order.filter(|order| !order.is_empty()) else {
+        return ranked;
+    };
+    let mut front: Vec<AccountSlot> = Vec::new();
+    for name in order {
+        if !front.iter().any(|slot| &slot.name == name)
+            && let Some(slot) = ranked.iter().find(|slot| &slot.name == name)
+        {
+            front.push(slot.clone());
+        }
+    }
+    let rest: Vec<_> = ranked
+        .into_iter()
+        .filter(|slot| !front.iter().any(|f| f.name == slot.name))
+        .collect();
+    front.extend(rest);
+    front
 }
 pub fn clear_expired_blocks(accounts: &[AccountSlot], now: f64) -> Vec<AccountSlot> {
     accounts
@@ -89,7 +130,10 @@ pub fn clear_expired_blocks(accounts: &[AccountSlot], now: f64) -> Vec<AccountSl
             {
                 account.blocked_until = None;
                 account.block_reason = None;
+                account.blocked_at = None;
             }
+            account.model_blocks =
+                crate::model_blocks::prune_model_blocks(account.model_blocks.as_ref(), now, None);
             account
         })
         .collect()
@@ -102,13 +146,32 @@ fn select_unblocked(
     if let Some(pin) = accounts
         .iter()
         .find(|a| Some(a.name.as_str()) == options.pinned_account)
-        && !is_blocked(pin, now)
+        && !is_blocked_for(pin, now, options.model)
     {
         return Some(pin.clone());
     }
-    rendezvous_order(get_affinity_key(options), accounts)
-        .into_iter()
-        .find(|a| !is_blocked(a, now))
+    if let Some(preferred) = accounts
+        .iter()
+        .find(|a| Some(a.name.as_str()) == options.preferred_account)
+        && !is_blocked_for(preferred, now, options.model)
+    {
+        return Some(preferred.clone());
+    }
+    apply_account_order(
+        options.account_order,
+        rendezvous_order(get_affinity_key(options), accounts),
+    )
+    .into_iter()
+    .find(|a| !is_blocked_for(a, now, options.model))
+}
+fn unblock_at(account: &AccountSlot, now: f64, model: Option<&str>) -> Option<f64> {
+    let account_until = account.blocked_until.filter(|until| *until > now);
+    let model_until =
+        crate::model_blocks::active_model_block_until(account.model_blocks.as_ref(), model, now);
+    match (account_until, model_until) {
+        (Some(a), Some(m)) => Some(a.max(m)),
+        (a, m) => a.or(m),
+    }
 }
 pub fn select_account(
     accounts: &[AccountSlot],
@@ -119,11 +182,18 @@ pub fn select_account(
     let single: Vec<AccountSlot>;
     let mut unavailable_account = None;
     if options.account_fallback == Some(false) {
-        let name = options.pinned_account.map(str::to_owned).or_else(|| {
-            rendezvous_order(get_affinity_key(options), accounts)
+        let name = options
+            .pinned_account
+            .or(options.preferred_account)
+            .map(str::to_owned)
+            .or_else(|| {
+                apply_account_order(
+                    options.account_order,
+                    rendezvous_order(get_affinity_key(options), accounts),
+                )
                 .first()
                 .map(|a| a.name.clone())
-        });
+            });
         single = accounts
             .iter()
             .filter(|a| Some(&a.name) == name.as_ref())
@@ -143,9 +213,21 @@ pub fn select_account(
         .ok_or_else(|| AllAccountsBlockedError {
             soonest_unblock_at: candidates
                 .iter()
-                .filter_map(|a| a.blocked_until)
-                .filter(|until| *until > now)
+                .filter_map(|a| unblock_at(a, now, options.model))
                 .min_by(f64::total_cmp),
+            limited_model: candidates
+                .iter()
+                .any(|a| {
+                    !is_account_blocked(a, now)
+                        && crate::model_blocks::active_model_block_until(
+                            a.model_blocks.as_ref(),
+                            options.model,
+                            now,
+                        )
+                        .is_some()
+                })
+                .then(|| options.model.map(str::to_owned))
+                .flatten(),
             block_reason: candidates
                 .iter()
                 .all(|a| a.block_reason.as_deref() == Some("auth_error"))
@@ -168,17 +250,90 @@ mod tests {
                 source: AccountSource::Login,
                 blocked_until: None,
                 block_reason: None,
+                ..Default::default()
             })
             .into()
     }
     #[test]
     fn mixed_blocks_are_not_classified_as_auth() {
         let mut pool = accounts();
-        for account in &mut pool { account.blocked_until = Some(100.0); }
+        for account in &mut pool {
+            account.blocked_until = Some(100.0);
+        }
         pool[0].block_reason = Some("auth_error".into());
-        assert_eq!(select_account(&pool, &Default::default(), 1.0).unwrap_err().block_reason, None);
-        for account in &mut pool { account.block_reason = Some("auth_error".into()); }
-        assert_eq!(select_account(&pool, &Default::default(), 1.0).unwrap_err().block_reason, Some("auth_error"));
+        assert_eq!(
+            select_account(&pool, &Default::default(), 1.0)
+                .unwrap_err()
+                .block_reason,
+            None
+        );
+        for account in &mut pool {
+            account.block_reason = Some("auth_error".into());
+        }
+        assert_eq!(
+            select_account(&pool, &Default::default(), 1.0)
+                .unwrap_err()
+                .block_reason,
+            Some("auth_error")
+        );
+    }
+    #[test]
+    fn model_blocks_preferred_account_and_order_steer_selection() {
+        let mut pool = accounts();
+        pool[0].model_blocks = Some(
+            [(
+                "opus".to_owned(),
+                crate::model_blocks::ModelBlock {
+                    blocked_until: 500.0,
+                },
+            )]
+            .into(),
+        );
+        let options = |model| AffinityOptions {
+            pinned_account: Some("alpha"),
+            model,
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&pool, &options(Some("claude-sonnet-5")), 1.0)
+                .unwrap()
+                .name,
+            "alpha"
+        );
+        assert_ne!(
+            select_account(&pool, &options(Some("claude-opus-5")), 1.0)
+                .unwrap()
+                .name,
+            "alpha"
+        );
+        let order = ["charlie".to_owned()];
+        let ordered = AffinityOptions {
+            session_id: Some("session-01"),
+            account_order: Some(&order),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&pool, &ordered, 1.0).unwrap().name,
+            "charlie"
+        );
+        let preferred = AffinityOptions {
+            account_order: Some(&order),
+            preferred_account: Some("bravo"),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_account(&pool, &preferred, 1.0).unwrap().name,
+            "bravo"
+        );
+        let single = vec![pool[0].clone()];
+        let error = select_account(&single, &options(Some("claude-opus-5")), 1.0).unwrap_err();
+        assert_eq!(error.limited_model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(error.soonest_unblock_at, Some(500.0));
+        assert!(
+            error
+                .to_string()
+                .contains("usage limit for model claude-opus-5")
+        );
     }
     #[test]
     fn key_precedence() {

@@ -11,7 +11,13 @@ pub fn convert_json_schema_to_type_box(schema: &Value) -> SchemaConversionResult
 /// tool's execute path (expose/register.rs) because tool definitions carry plain JSON Schema here.
 pub fn convert_json_schema_to_type_box_with(schema: &Value, modern: bool) -> SchemaConversionResult {
     if modern && (schema.is_boolean() || schema.is_object()) {
-        return SchemaConversionResult { schema: if schema.is_boolean() { json!({"allOf":[schema]}) } else { schema.clone() }, warnings: Vec::new() };
+        let parameters = if schema.is_boolean() { json!({"allOf":[schema]}) } else { schema.clone() };
+        // schema-compat.ts: `registerToolArgumentValidator(parameters, compileModernSchema(schema))`, so pi-ai
+        // validates the model's arguments against the exact 2020-12 schema instead of coercing them.
+        if let Ok(validator) = crate::modern::tool_schema::compile_modern_schema(schema) {
+            maho_ai::utils::validation::register_tool_argument_validator(&parameters, std::sync::Arc::new(move |value: &Value| validator.errors(value)));
+        }
+        return SchemaConversionResult { schema: parameters, warnings: Vec::new() };
     }
     let mut stripped = schema.clone();
     if let Some(map) = stripped.as_object_mut() { map.remove("$schema"); map.remove("additionalProperties"); }

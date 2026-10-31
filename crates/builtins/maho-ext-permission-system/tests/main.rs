@@ -3,10 +3,24 @@
 
 #[path = "arity.rs"]
 mod arity;
+#[path = "bash_command_segments.rs"]
+mod bash_command_segments;
+#[path = "canonical_identity.rs"]
+mod canonical_identity;
 #[path = "cli_source.rs"]
 mod cli_source;
 #[path = "config.rs"]
 mod config;
+#[path = "context_support.rs"]
+mod context_support;
+#[path = "dispatch.rs"]
+mod dispatch;
+#[path = "dispatch_metadata.rs"]
+mod dispatch_metadata;
+#[path = "dispatch_policy.rs"]
+mod dispatch_policy;
+#[path = "denial_is_final.rs"]
+mod denial_is_final;
 #[path = "events.rs"]
 mod events;
 #[path = "external.rs"]
@@ -17,6 +31,10 @@ mod external_paths;
 mod guarded;
 #[path = "integration_source.rs"]
 mod integration_source;
+#[path = "integration_suite.rs"]
+mod integration_suite;
+#[path = "multi_mode.rs"]
+mod multi_mode;
 #[path = "native_persistence.rs"]
 mod native_persistence;
 #[path = "non_interactive.rs"]
@@ -29,6 +47,8 @@ mod parser_contract_source;
 mod parsers;
 #[path = "preset_source.rs"]
 mod preset_source;
+#[path = "read_permission.rs"]
+mod read_permission;
 #[path = "registration.rs"]
 mod registration;
 #[path = "resume_parsers.rs"]

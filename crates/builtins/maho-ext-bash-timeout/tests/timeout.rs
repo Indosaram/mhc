@@ -27,3 +27,5 @@ fn preserved_when_milliseconds() { let p=json!({"command":"noop","timeout":30000
 fn injected_when_nonpositive() { for value in [0,-5] { assert_eq!(apply_bash_timeout(&json!({"command":"noop","timeout":value}),resolve_bash_timeout_defaults(None,None))["timeout"],1800); } }
 #[test]
 fn immutable_when_injected() { let p=json!({"command":"noop"}); let before=p.clone(); let _result=apply_bash_timeout(&p,resolve_bash_timeout_defaults(None,None)); assert_eq!(p,before); }
+#[test]
+fn preserved_when_non_object() { let defaults=resolve_bash_timeout_defaults(None,None); assert_eq!(apply_bash_timeout(&json!(null),defaults),json!(null)); assert_eq!(apply_bash_timeout(&json!("echo hi"),defaults),json!("echo hi")); }

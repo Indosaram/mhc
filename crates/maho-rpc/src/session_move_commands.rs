@@ -110,33 +110,33 @@ pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Va
         "cancel"=>ledger.decline(id,DeclineReason::Cancelled).await.map(wire).map_err(|error|error.to_string()),
         "status"=>maho_core::session_move::import::answer_move_status(&ledger,id,command["sessionPath"].as_str().map(Path::new)).await.map(status_wire),
         "export"=>{
-            let path=Path::new(text(command,"sessionPath")?);closed(hosted_paths,&path.to_string_lossy())?;
-            let entries=maho_core::session_manager::load_entries_from_file(&path.to_string_lossy());
+            let path=&ordered_real_path(text(command,"sessionPath")?).await;closed(hosted_paths,&path.to_string_lossy())?;
+            let entries=load_entries(path).await;
             if !matches!(session_ownership(&entries),SessionOwnership::Refused(ref owner) if owner.state==RefusedState::Moving&&owner.move_id==id){return Err("move_not_released: release the session for this move first".into());}
             let destination=root.join("outgoing").join(id);
             let dropped=command["droppedUserMessages"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
-            let state=maho_core::session_move::extension_state::sealed_outgoing_state_dir(path,id)?;
+            let state=maho_core::session_move::extension_state::sealed_outgoing_state_dir(path,id).await?;
             let guard=||closed(hosted_paths,&path.to_string_lossy());
             let manifest=maho_core::session_move::export::export_session_for_move(maho_core::session_move::export::ExportSessionForMoveOptions{session_file:path,move_id:id,target:text(command,"target")?,dropped_user_messages:&dropped,bundle_dir:&destination,extension_state_dir:state.as_deref(),resolve_extension_state:None,guard:Some(&guard),locked_guard:Some(&guard)}).await?;
             let files=1+manifest.sidecars.len()+manifest.payloads.iter().map(|payload|payload.files.len()).sum::<usize>();
             Ok(json!({"move_id":id,"session_id":manifest.session_id,"bundle_dir":destination,"files":files}))
         },
         "finish"=>{
-            let path=Path::new(text(command,"sessionPath")?);let guard=||closed(hosted_paths,&path.to_string_lossy());
+            let path=&ordered_real_path(text(command,"sessionPath")?).await;let guard=||closed(hosted_paths,&path.to_string_lossy());
             let answer=maho_core::session_move::move_ledger::parse_move_status(&command["answer"]).ok_or("invalid_move_request: invalid move answer")?;
             maho_core::session_move::finish::finish_move(maho_core::session_move::finish::FinishMoveOptions{session_file:path,bundle_dir:&root.join("outgoing").join(id),move_id:id,answer:&answer,guard:Some(&guard)}).await?;
-            let entries=maho_core::session_manager::load_entries_from_file(&path.to_string_lossy());
+            let entries=load_entries(path).await;
             let state=match session_ownership(&entries){SessionOwnership::Writable=>"writable",SessionOwnership::Refused(owner)=>if owner.state==RefusedState::Moved{"moved"}else{"moving"}};
             Ok(json!({"ownership":state}))
         },
         "import"=>{
             let cwd=Path::new(text(command,"cwd")?);let dir=PathBuf::from(maho_core::session_manager::get_default_session_dir_with(&cwd.to_string_lossy(),agent_dir));
             let outcome=maho_core::session_move::import::import_moved_session(maho_core::session_move::import::ImportMovedSessionOptions{bundle_dir:Path::new(text(command,"bundleDir")?),target_cwd:cwd,ledger:&ledger,session_dir:Some(&dir),from:command["from"].as_str(),read_identity:None}).await?;
-            let entries=maho_core::session_manager::load_entries_from_file(&outcome.to_string_lossy());
+            let entries=load_entries(&outcome).await;
             Ok(json!({"session_id":maho_core::session_move::ownership::header_session_id(&entries),"session_path":outcome}))
         },
         "revoke"=>{
-            let path=Path::new(text(command,"sessionPath")?);let guard=||closed(hosted_paths,&path.to_string_lossy());
+            let path=&ordered_real_path(text(command,"sessionPath")?).await;let guard=||closed(hosted_paths,&path.to_string_lossy());
             maho_core::session_move::revoke::revoke_imported_move(maho_core::session_move::revoke::RevokeMoveOptions{session_file:path,move_id:id,ledger:&ledger,guard:Some(&guard)}).await?;Ok(json!({"ownership":"moved"}))
         },
         _=>Err("invalid_move_request: invalid move operation".into()),
@@ -168,6 +168,51 @@ pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Va
         }
     }
 }
+/// senpi `orderedRealPath`: resolves a session file's real path off the async workers, serialized per resolved path so
+/// the move steps for one file enter the per-file move lock in the order they were called.
+async fn ordered_real_path(path: &str) -> PathBuf {
+    static CHAINS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
+    > = std::sync::OnceLock::new();
+    let key = std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path));
+    let chain = std::sync::Arc::clone(
+        CHAINS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key.clone())
+            .or_default(),
+    );
+    // tokio's mutex is FIFO: waiters resolve in call order.
+    let turn = chain.lock().await;
+    let resolved = tokio::fs::canonicalize(path)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(path));
+    drop(turn);
+    let mut chains = CHAINS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The last caller of a key drops its chain (senpi deletes the entry once its own promise is the tail).
+    if chains.get(&key).is_some_and(|tail| {
+        std::sync::Arc::ptr_eq(tail, &chain) && std::sync::Arc::strong_count(tail) == 2
+    }) {
+        chains.remove(&key);
+    }
+    resolved
+}
+/// senpi `loadEntriesFromFileAsync`: no sync fs on the RPC move path.
+async fn load_entries(path: &Path) -> Vec<Value> {
+    let path = path.to_string_lossy().into_owned();
+    tokio::task::spawn_blocking(move || maho_core::session_manager::load_entries_from_file(&path))
+        .await
+        .unwrap_or_default()
+}
+// Open remainder (senpi refuseOpenHere): upstream resolves hosted paths with async realpath; the guard maho-core's
+// export/finish/revoke options take is a sync closure, so this check still canonicalizes synchronously until the core
+// guard signature becomes async. Not a divergence: the blocking fs the upstream change removed is still here.
 fn real(path: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }

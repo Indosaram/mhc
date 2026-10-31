@@ -5,9 +5,9 @@
 //! name, `env` for an environment key, `default` for a single credential - never by key material.
 //! Nothing reported yet means the account is absent.
 //!
-//! deviation: `withLimitCapture` (header capture on a request's `onResponse`) is not ported here; it
-//! needs the header readers of `limit_windows` and the provider stream options, and callers record
-//! the windows they read through `SubscriptionLimitStore::record`.
+//! Requests feed the store through `with_limit_capture`, which wraps a request's `on_response` so the
+//! response headers are read for limit windows (Codex, Claude unified) while the caller's own hook still
+//! runs.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -489,6 +489,44 @@ pub fn limit_account_of(slot_name: Option<&str>, api_key: Option<&str>) -> Strin
     }
 }
 
+/// Request options whose `on_response` also records the windows the response headers carry, into the
+/// process's store.
+pub fn with_limit_capture(
+    options: maho_ai::types::ProviderRequestOptions,
+    provider: &str,
+    account: &str,
+) -> maho_ai::types::ProviderRequestOptions {
+    with_limit_capture_in(options, provider, account, subscription_limits())
+}
+
+/// `with_limit_capture` against a chosen store (upstream's `store` parameter).
+pub fn with_limit_capture_in(
+    mut options: maho_ai::types::ProviderRequestOptions,
+    provider: &str,
+    account: &str,
+    store: &'static SubscriptionLimitStore,
+) -> maho_ai::types::ProviderRequestOptions {
+    let inner = options.on_response.take();
+    let (provider, account) = (provider.to_owned(), account.to_owned());
+    options.on_response = Some(Arc::new(move |response, model| {
+        let headers: std::collections::HashMap<String, String> = response
+            .headers
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let windows = [
+            super::limit_windows::codex_windows_from_headers(&headers),
+            super::limit_windows::claude_windows_from_headers(&headers),
+        ]
+        .concat();
+        store.record(&provider, &account, &windows, Utc::now());
+        if let Some(inner) = &inner {
+            inner(response, model);
+        }
+    }));
+    options
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,5 +780,88 @@ mod tests {
             DateTime::from_timestamp(1, 0).unwrap_or_default(),
         );
         assert_eq!(store.snapshot().len(), 1);
+    }
+
+    fn codex_fixture_headers() -> std::collections::BTreeMap<String, String> {
+        // senpi test/fixtures/subscription-limits/codex-response-headers.json.
+        [
+            ("x-codex-credits-balance", "1000.0"),
+            ("x-codex-credits-has-credits", "True"),
+            ("x-codex-credits-unlimited", "False"),
+            ("x-codex-primary-over-secondary-limit-percent", "0"),
+            ("x-codex-primary-reset-after-seconds", "523382"),
+            ("x-codex-primary-reset-at", "1792555751"),
+            ("x-codex-primary-used-percent", "99"),
+            ("x-codex-primary-window-minutes", "10080"),
+            ("x-codex-secondary-reset-after-seconds", "0"),
+            ("x-codex-secondary-reset-at", ""),
+            ("x-codex-secondary-used-percent", "0"),
+            ("x-codex-secondary-window-minutes", "0"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect()
+    }
+
+    /// senpi#3370: the windows a response reports are kept per provider and slot, and the caller's own
+    /// `on_response` still runs.
+    #[test]
+    fn limit_capture_records_the_response_windows_and_runs_the_callers_hook() {
+        static STORE: OnceLock<SubscriptionLimitStore> = OnceLock::new();
+        let store = STORE.get_or_init(SubscriptionLimitStore::new);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let options = with_limit_capture_in(
+            maho_ai::types::ProviderRequestOptions {
+                on_response: Some(Arc::new(move |response, _| {
+                    sink.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(response.status);
+                })),
+                ..Default::default()
+            },
+            "chatgpt-subscription",
+            &limit_account_of(Some("work"), None),
+            store,
+        );
+        let model = maho_ai::providers::faux::faux_provider(Default::default())
+            .expect("faux provider")
+            .get_model(None)
+            .expect("model");
+        options.on_response.as_ref().expect("hook")(
+            &maho_ai::types::ProviderResponse {
+                status: 200,
+                headers: codex_fixture_headers(),
+            },
+            &model,
+        );
+        assert_eq!(
+            *seen.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![200]
+        );
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            (snapshot[0].provider.as_str(), snapshot[0].account.as_str()),
+            ("chatgpt-subscription", "work")
+        );
+        assert_eq!(snapshot[0].windows.len(), 1);
+        let weekly = &snapshot[0].windows[0];
+        assert_eq!(
+            (
+                weekly.id.as_str(),
+                weekly.label.as_str(),
+                weekly.window_minutes,
+                weekly.used_percent
+            ),
+            ("codex:primary", "7d", Some(10080), 99.0)
+        );
+        assert_eq!(
+            [
+                limit_account_of(None, None),
+                limit_account_of(None, Some("k"))
+            ],
+            ["default".to_owned(), "env".to_owned()]
+        );
     }
 }

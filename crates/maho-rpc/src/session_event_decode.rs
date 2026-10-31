@@ -392,6 +392,17 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
             ok: get(record, "ok")?,
             error_message: get(record, "errorMessage"),
         }),
+        "model_config_error" => Some(E::ModelConfigError {
+            model: get(record, "model")?,
+            provider: get(record, "provider")?,
+            error_excerpt: get(record, "errorExcerpt")?,
+        }),
+        "session_recovered" => Some(E::SessionRecovered {
+            cause: get(record, "cause")?,
+            backup_path: get(record, "backupPath")?,
+            dropped_bytes: get(record, "droppedBytes")?,
+            notice: get(record, "notice")?,
+        }),
         "session_tool_child" => Some(E::SessionToolChild {
             state: get(record, "state")?,
             generation: get(record, "generation")?,
@@ -549,6 +560,17 @@ mod tests {
             AgentSessionEvent::BashExecutionUpdate {
                 id: Some("b".into()),
                 delta: "out".into(),
+            },
+            AgentSessionEvent::ModelConfigError {
+                model: "p/m".into(),
+                provider: "p".into(),
+                error_excerpt: "model not found".into(),
+            },
+            AgentSessionEvent::SessionRecovered {
+                cause: "disk_full".into(),
+                backup_path: "/s.jsonl.torn".into(),
+                dropped_bytes: 12,
+                notice: "repaired".into(),
             },
         ];
         for event in events {

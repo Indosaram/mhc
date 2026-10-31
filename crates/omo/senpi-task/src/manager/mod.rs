@@ -25,6 +25,8 @@ pub mod run_pause;
 pub mod runner;
 pub mod runtime_fallback_event;
 pub mod start_admission;
+pub mod start_credentials_refusal;
+pub mod start_failure_cause;
 pub mod transcript_log;
 pub mod types;
 pub mod workpool_admission;

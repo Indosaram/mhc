@@ -55,6 +55,14 @@ fn cwd_home_and_descendants_abbreviate() {
     );
 }
 #[test]
+fn compact_cwd_shortens_windows_paths_by_component() {
+    use maho_interactive::components::footer_layout::{compact_cwd, elide_path};
+    assert_eq!(compact_cwd(r"C:\Users\me\code\proj\src"), r"C:\…\proj\src");
+    assert_eq!(compact_cwd(r"~\code\proj\src"), r"~\…\proj\src");
+    assert_eq!(compact_cwd("~/a/b/c/d"), "~/…/c/d");
+    assert_eq!(elide_path(r"C:\Users\me\proj\src", 9), r"…\src");
+}
+#[test]
 fn footer_wide_session_stays_within_budget() {
     let mut s = snapshot();
     s.session_name = Some("中文".repeat(30));

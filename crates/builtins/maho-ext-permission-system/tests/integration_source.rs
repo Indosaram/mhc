@@ -15,7 +15,7 @@ async fn parsed_tools_persist_always_approval_across_service_reconstruction() ->
             let parsed = create_builtin_parser_registry().parse(name, &input, (directory.path(), Path::new("/home/test")));
             assert_eq!(parsed.len(), 1);
             assert_eq!(parsed[0].permission, permission);
-            let request = Request { id: name.into(), session_id: "original".into(), permission: parsed[0].permission.clone(), patterns: parsed[0].patterns.clone(), always: parsed[0].always.clone(), metadata: Default::default(), tool: None };
+            let request = Request { id: name.into(), session_id: "original".into(), permission: parsed[0].permission.clone(), patterns: parsed[0].patterns.clone(), always: parsed[0].always.clone(), original_paths: None, metadata: Default::default(), tool: None };
             let mut service = PermissionService::new(vec![], vec![], PermissionEventEmitter::default());
             let completion = service.ask(request.clone());
             assert_eq!(serde_json::to_value(service.list())?, serde_json::to_value(vec![request.clone()])?);

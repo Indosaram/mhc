@@ -368,6 +368,7 @@ fn given_real_manager_under_collision_when_team_members_spawn_then_no_member_sta
         team_run_id: "collision-run",
         manager: &manager,
         lead_session_id: "parent-1",
+        root_session_id: None,
         spawn_depth: 1,
         max_parallel: 1,
         deadline_at: 1_000,

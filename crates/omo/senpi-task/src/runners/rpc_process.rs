@@ -128,6 +128,12 @@ impl RpcProcessRunner {
             task_id: spec.task_id.clone(),
             heartbeat_interval_ms: self.heartbeat_interval_ms,
             now: Arc::clone(&self.now),
+            input_store: spec.task_store_dir.as_ref().map(|dir| {
+                crate::store::TaskRecordStore::new(&crate::store::StateDirConfig {
+                    project_dir: std::path::PathBuf::from(&spec.cwd),
+                    task_state_dir: Some(std::path::PathBuf::from(dir)),
+                })
+            }),
         });
         if let (Some(model), Some(chain)) = (&spec.model, &spec.fallback_models)
             && !chain.is_empty() {
@@ -161,15 +167,27 @@ impl RpcProcessRunner {
             None => handle
                 .start_initial_prompt(&spec.prompt)
                 .map(|()| None)
-                .map_err(|error| (RunnerFailureKind::ChildPromptFailed, error.to_string())),
+                .map_err(|error| {
+                    (
+                        RunnerFailureKind::ChildPromptFailed,
+                        error.to_string(),
+                        crate::manager::start_failure_cause::classify_start_cause(&error),
+                    )
+                }),
             Some(path) => client
                 .switch_session(path)
                 .map(|result| Some((path.clone(), result)))
-                .map_err(|error| (RunnerFailureKind::SessionUnavailable, error.to_string())),
+                .map_err(|error| {
+                    (
+                        RunnerFailureKind::SessionUnavailable,
+                        error.to_string(),
+                        crate::manager::start_failure_cause::classify_start_cause(&error),
+                    )
+                }),
         };
         let resume = match started {
             Ok(resume) => resume,
-            Err((kind, message)) => {
+            Err((kind, message, cause)) => {
                 let unresolved = match handle.exit_outcome() {
                     Some(ChildExitOutcome::Crashed { facts }) => {
                         child_unresolved_model_error(&facts.stderr_tail)
@@ -215,7 +233,7 @@ impl RpcProcessRunner {
                         RunnerFailureKind::ModelUnavailable,
                         format!("the child could not resolve its model: {detail}"),
                     ),
-                    None => RunnerFailure::new(kind, message),
+                    None => RunnerFailure::new(kind, message).with_cause(cause),
                 });
             }
         };

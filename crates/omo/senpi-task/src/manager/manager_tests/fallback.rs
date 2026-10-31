@@ -12,7 +12,9 @@ use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{ChildPlanner, ManagerStartSpec, ResolvedChildPlan};
 use crate::runners::{RunnerFailureKind, RunnerOutcome};
 use crate::shared::ManagedChildEvent;
-use crate::state::{ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskStatus};
+use crate::state::{
+    ProvisionalExit, ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskStatus,
+};
 
 fn category_record(provider: &str, model_id: &str) -> ResolvedModelRecord {
     ResolvedModelRecord::new(ResolvedModelSource::Category, provider, model_id)
@@ -247,6 +249,40 @@ fn given_native_fallback_advanced_once_when_model_terminates_then_handoff_uses_r
     );
 }
 
+#[test]
+fn given_a_provisional_exit_when_runtime_fallback_hands_off_then_the_exit_is_dropped() {
+    // fallback-handoff.ts handOffToNextRung: the failed rung's unconfirmed exit leaves with it.
+    let runner = FakeRunner::new();
+    let harness = harness_with(
+        fallback_plan(vec![category_record("vendor-b", "fallback-model")]),
+        &runner,
+        ExecutionMode::Process,
+    );
+    let task_id = start_in(&harness, ExecutionMode::Process);
+    let first = launched(&runner, &task_id, 1);
+    let epoch = load(&harness, &task_id).notification.run_epoch;
+    harness
+        .store
+        .mutate(&task_id, |record| TaskRecord {
+            provisional_exit: Some(ProvisionalExit {
+                observed_at: "2030-01-01T00:00:00.000Z".to_string(),
+                run_epoch: epoch,
+                code: Some(1),
+                signal: None,
+            }),
+            ..record.clone()
+        })
+        .expect("seed provisional exit");
+
+    first.fail(RunnerFailureKind::ChildPromptFailed, "primary unavailable");
+
+    launched(&runner, &task_id, 2);
+    let handed_off = load(&harness, &task_id);
+    assert_eq!(handed_off.model, "vendor-b/fallback-model");
+    assert_eq!(handed_off.notification.run_epoch, epoch + 1);
+    assert_eq!(handed_off.provisional_exit, None);
+}
+
 // manager-runtime-fallback.test.ts
 
 #[test]
@@ -386,4 +422,49 @@ fn start_failure_matrix_does_not_spend_same_account_parent_on_auth_or_quota() {
         assert!(!displays(record.fallback_models.as_ref()).contains(&"vendor-a/parent".to_owned()));
         assert_eq!(runner.started_count(), 2);
     }
+}
+
+// auth-failure-fallback.test.ts (#10806): a typed provider_credentials_missing prompt refusal walks
+// the chain past every rung on the refusing provider and records not_signed_in on the parent rung.
+#[test]
+fn credentials_refusal_skips_refusing_provider_and_records_not_signed_in() {
+    let runner = FakeRunner::new();
+    *super::fakes::lock(&runner.hook) = Some(Arc::new(move |_, call| {
+        (call == 1).then(|| {
+            let refusal = crate::runners::rpc::protocol_client::RpcClientError::Command(
+                crate::runners::rpc::errors::RpcCommandError::with_refusal(
+                    "prompt",
+                    "No API key found for vendor-a.",
+                    &serde_json::json!({"errorCode": "provider_credentials_missing", "errorData": {"provider": "vendor-a"}}),
+                ),
+            );
+            Err(crate::manager::types::ManagedRunnerError::Runner(
+                crate::runners::RunnerFailure::new(
+                    RunnerFailureKind::ChildPromptFailed,
+                    refusal.to_string(),
+                )
+                .with_cause(crate::manager::start_failure_cause::classify_start_cause(&refusal)),
+            ))
+        })
+    }));
+    let harness = harness_with(
+        fallback_plan(vec![
+            category_record("vendor-a", "sibling"),
+            category_record("vendor-c", "parent"),
+        ]),
+        &runner,
+        ExecutionMode::InProcess,
+    );
+    let task = started(harness.manager.start(&ManagerStartSpec {
+        parent_model: Some("vendor-c/parent".into()),
+        ..base_spec()
+    }));
+    let record = load(&harness, &task.task_id);
+    assert_eq!(record.model, "vendor-c/parent");
+    assert_eq!(record.fallback_models, Some(Vec::new()));
+    assert_eq!(
+        record.parent_model_fallback.map(|note| note.reason),
+        Some(crate::state::ParentModelFallbackReason::NotSignedIn)
+    );
+    assert_eq!(runner.started_count(), 2);
 }

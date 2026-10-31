@@ -131,13 +131,10 @@ impl LiveParentRecovery {
                         && (expired
                             || super::deferred_revival_reasons::PERMANENT_REVIVAL_REASONS
                                 .contains(&reason.as_str()))
-                        && let Some(fresh) = context.store.load(&record.task_id)? {
-                            super::suspended_expiry::expire_suspended_child(
-                                context,
-                                &fresh,
-                                &|| true,
-                            )?;
-                        }
+                        && let Some(fresh) = context.store.load(&record.task_id)?
+                    {
+                        super::suspended_expiry::expire_suspended_child(context, &fresh, &|| true)?;
+                    }
                 }
             }
         }
@@ -166,8 +163,36 @@ impl Drop for RecoverySubscription {
         }
     }
 }
+/// When the recovery worker scans: on every store mutation and each `Every` interval, or never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoverySchedule {
+    Every(std::time::Duration),
+    /// No worker thread (tests that drive reconcile passes must not race an unfenced scan).
+    Disabled,
+}
+
+impl Default for RecoverySchedule {
+    fn default() -> Self {
+        Self::Every(std::time::Duration::from_millis(5_000))
+    }
+}
+
 pub fn start_live_parent_recovery(context: LifecycleContext) -> Arc<RecoverySubscription> {
+    start_live_parent_recovery_with(context, RecoverySchedule::default())
+}
+
+pub fn start_live_parent_recovery_with(
+    context: LifecycleContext,
+    schedule: RecoverySchedule,
+) -> Arc<RecoverySubscription> {
     let (stop, receiver) = std::sync::mpsc::channel();
+    let RecoverySchedule::Every(interval) = schedule else {
+        return Arc::new(RecoverySubscription {
+            stop,
+            worker: None,
+            unsubscribe: Mutex::new(None),
+        });
+    };
     let scanning = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let callback_scanning = scanning.clone();
     let unsubscribe = context.on_store_mutation.as_ref().map(|subscribe| {
@@ -181,7 +206,7 @@ pub fn start_live_parent_recovery(context: LifecycleContext) -> Arc<RecoverySubs
     let worker = std::thread::spawn(move || {
         let recovery = LiveParentRecovery::default();
         loop {
-            match receiver.recv_timeout(std::time::Duration::from_millis(5_000)) {
+            match receiver.recv_timeout(interval) {
                 Ok(true) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(false) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     scanning.store(true, std::sync::atomic::Ordering::Release);

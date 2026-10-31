@@ -7,6 +7,8 @@ pub mod agent_loop;
 pub mod assistant_terminal_state;
 pub mod empty_assistant_recovery;
 pub mod harness;
+pub mod internal_events;
+pub mod invocation_input;
 pub mod local_failure;
 pub mod proxy;
 pub mod response_timing;
@@ -38,9 +40,10 @@ pub use assistant_terminal_state::{
     TerminalAssistantMessageEvent, create_terminal_failure_assistant_message,
     demote_tool_use_without_tool_calls, is_stream_idle_timeout_error,
     normalize_terminal_assistant_message, promote_stop_with_pending_tool_calls,
-    should_finalize_idle_as_stop, should_terminate_assistant_turn,
+    settle_stop_reason, should_finalize_idle_as_stop, should_terminate_assistant_turn,
 };
 pub use empty_assistant_recovery::with_empty_assistant_recovery;
+pub use internal_events::{InternalAgentChannel, OrderedAgentRecord, create_internal_agent_channel};
 pub use local_failure::{LocalFailure, LocalFailurePort, is_local_failure, local_failure_port};
 pub use proxy::{
     ProxyAssistantMessageEvent, ProxySerializableStreamOptions, ProxyStreamOptions, stream_proxy,

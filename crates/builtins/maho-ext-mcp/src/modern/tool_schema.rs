@@ -48,6 +48,18 @@ impl ModernSchemaValidator {
     pub fn validate(&self, value: &Value) -> bool {
         maho_ai::utils::validation::strict_errors(&self.schema, value).is_empty()
     }
+    /// Ajv-shaped errors for pi-ai's protocol-owned tool-argument validation (no coercion, no null removal).
+    pub fn errors(
+        &self,
+        value: &Value,
+    ) -> Result<(), Vec<maho_ai::utils::tool_argument_validator::ToolArgumentValidationError>> {
+        let issues = maho_ai::utils::validation::strict_issues(&self.schema, value);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
 }
 
 /// No coercion/default insertion/removal, no network resolver, no shared $id namespace.

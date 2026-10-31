@@ -10,10 +10,11 @@ use std::{
 
 struct Session {
     dir: PathBuf,
+    id: &'static str,
 }
 impl ToolSessionManager for Session {
     fn session_id(&self) -> &str {
-        "terminal-lifecycle"
+        self.id
     }
     fn session_file(&self) -> Option<&Path> {
         None
@@ -101,11 +102,15 @@ impl ExtensionUi for Ui {
 fn context(dir: &Path) -> ExtensionContext {
     ExtensionContext {
         ui: Arc::new(Ui),
-        mode: ExtensionMode::Print,
+        // Rpc: a long-lived host. A one-shot print/json turn keeps no durable terminal state.
+        mode: ExtensionMode::Rpc,
         has_ui: false,
         cwd: dir.into(),
         agent_dir: dir.into(),
-        session_manager: Arc::new(Session { dir: dir.into() }),
+        session_manager: Arc::new(Session {
+            dir: dir.into(),
+            id: "terminal-lifecycle",
+        }),
         model_registry: Arc::new(Registry),
         model: None,
         thinking_level: None,
@@ -271,16 +276,45 @@ async fn session_start_acquires_the_lease_and_shutdown_records_then_releases_it(
 
 #[tokio::test]
 async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit() {
+    // Its own session id: the lease token map is process-wide and keyed by session.
+    let id = "terminal-lifecycle-reload";
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
     let dir = tempfile::tempdir().unwrap();
-    let ctx = context(dir.path());
-    let lease = state_dir(dir.path()).join(format!("{}.lease", encoded()));
-    let manifest = state_dir(dir.path()).join(format!("{}.json", encoded()));
+    let mut ctx = context(dir.path());
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.path().into(),
+        id,
+    });
+    let lease = state_dir(dir.path()).join(format!("{encoded}.lease"));
+    let manifest = state_dir(dir.path()).join(format!("{encoded}.json"));
     let owner = api(dir.path());
     start(&owner, &ctx, SessionReason::Startup).await;
     assert!(lease.is_file());
+    // A pre-reload persistent watch: recorded at once, so the manifest exists before the reload.
+    let monitor = owner
+        .registered
+        .tools
+        .iter()
+        .find(|tool| tool.definition.name == "monitor")
+        .expect("monitor tool");
+    let result = (monitor.definition.execute)(maho_tools::definition::ToolCall {
+        id: "pre-reload",
+        params: serde_json::json!({"description":"pre-reload watch","command":"cat","persistent":true}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect("persistent monitor starts");
+    let monitor_id = result
+        .details
+        .as_ref()
+        .and_then(|details| details["monitor_id"].as_str())
+        .expect("monitor id")
+        .to_owned();
+    assert!(manifest.is_file(), "the registration is recorded at once");
     shutdown(&owner, &ctx, SessionReason::Reload).await;
     assert!(lease.is_file(), "a reload keeps the lease");
-    assert!(!manifest.exists(), "a reload records nothing");
     let reloaded = api(dir.path());
     start(&reloaded, &ctx, SessionReason::Reload).await;
     assert!(lease.is_file());
@@ -293,6 +327,19 @@ async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit
         manifest.is_file(),
         "the reload generation records the manifest"
     );
+    // SF-2 seedFromDisk: the reload writer started from the pre-reload manifest, so the watch
+    // that survived the reload is still recorded (suspended) after quit.
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).expect("manifest written"))
+            .expect("manifest json");
+    let monitors = saved["monitors"].as_array().expect("monitors");
+    assert_eq!(
+        monitors.len(),
+        1,
+        "the pre-reload watch survives the reload: {saved}"
+    );
+    assert_eq!(monitors[0]["monitorId"], monitor_id);
+    assert_eq!(monitors[0]["suspended"], true);
 }
 
 #[tokio::test]
@@ -301,6 +348,7 @@ async fn a_context_without_a_session_dir_keeps_no_durable_terminal_state() {
     let mut ctx = context(dir.path());
     ctx.session_manager = Arc::new(Session {
         dir: PathBuf::new(),
+        id: "terminal-lifecycle",
     });
     let api = api(dir.path());
     start(&api, &ctx, SessionReason::Startup).await;
@@ -351,4 +399,188 @@ async fn a_persistent_monitor_created_through_the_registered_tool_is_recorded_in
     );
     assert_eq!(monitors[0]["monitorId"], monitor_id);
     assert_eq!(monitors[0]["suspended"], true);
+}
+
+/// A spec the monitor tool queued while no writer was bound (upstream `handMonitorSpec`) is
+/// drained into the writer SessionStart binds, on the fresh-start (`own`) and the reload path,
+/// and is in the manifest the next shutdown writes. The binding map is process-wide, so each
+/// case uses its own session id.
+async fn queued_spec_is_recorded_after_session_start(
+    id: &'static str,
+    reason: SessionReason,
+    dir: tempfile::TempDir,
+) {
+    use maho_ext_terminal::terminal_manifest_model::{MonitorRegistration, MonitorSpec};
+    let mut ctx = context(dir.path());
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.path().into(),
+        id,
+    });
+    let manifest = state_dir(dir.path()).join(format!(
+        "{}.json",
+        maho_core::session_sidecar_store::encoded_session_id(id)
+    ));
+    assert!(
+        maho_ext_terminal::tools::monitor_manifest_binding::hand_monitor_spec(
+            Some(id),
+            MonitorRegistration {
+                monitor_id: "mon_QUEUEDWHILEUNBND".into(),
+                spec: MonitorSpec::Command {
+                    description: "queued watch".into(),
+                    command: "cat".into(),
+                    filter: None,
+                    human_input: None,
+                    wakes_per_hour: None,
+                    cwd: None,
+                    persistent: true,
+                },
+            },
+        )
+        .is_none(),
+        "no writer is bound yet, so the spec is queued"
+    );
+    let api = api(dir.path());
+    start(&api, &ctx, reason).await;
+    assert!(
+        maho_ext_terminal::tools::monitor_manifest_binding::is_terminal_manifest_writer_bound(id)
+    );
+    assert_eq!(
+        maho_ext_terminal::tools::monitor_manifest_binding::pending_durable_spec_count(id),
+        0,
+        "the queue drained into the bound writer"
+    );
+    // The drain records through the bound writer, which persists at once: the entry is on disk
+    // before any shutdown (the spec has no live runtime here, so the shutdown sync would drop it).
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).expect("manifest written"))
+            .expect("manifest json");
+    let monitors = saved["monitors"].as_array().expect("monitors");
+    assert_eq!(monitors.len(), 1, "the queued spec is recorded: {saved}");
+    assert_eq!(monitors[0]["monitorId"], "mon_QUEUEDWHILEUNBND");
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+}
+
+#[tokio::test]
+async fn a_spec_queued_while_unbound_is_recorded_after_a_fresh_session_start() {
+    queued_spec_is_recorded_after_session_start(
+        "terminal-queued-fresh",
+        SessionReason::Startup,
+        tempfile::tempdir().unwrap(),
+    )
+    .await;
+}
+
+/// The reload bind path: the pre-reload generation holds the lease and detaches on its reload
+/// shutdown (upstream `detachPersistence` unbinds), a spec is queued while unbound, and the reload
+/// generation that inherits the lease drains it.
+#[tokio::test]
+async fn a_spec_queued_while_unbound_is_recorded_after_a_reload_session_start() {
+    let id = "terminal-queued-reload";
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = context(dir.path());
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.path().into(),
+        id,
+    });
+    let owner = api(dir.path());
+    start(&owner, &ctx, SessionReason::Startup).await;
+    assert!(
+        maho_ext_terminal::tools::monitor_manifest_binding::is_terminal_manifest_writer_bound(id)
+    );
+    shutdown(&owner, &ctx, SessionReason::Reload).await;
+    assert!(
+        !maho_ext_terminal::tools::monitor_manifest_binding::is_terminal_manifest_writer_bound(id),
+        "a reload shutdown detaches the recorder"
+    );
+    queued_spec_is_recorded_after_session_start(id, SessionReason::Reload, dir).await;
+}
+
+/// terminal-restore-session.test.ts (g): a print-mode (one-shot) start restores nothing and takes
+/// no lease; json likewise (upstream `terminalStateDir` skips both).
+#[tokio::test]
+async fn a_print_or_json_start_takes_no_lease_and_records_no_manifest() {
+    for mode in [ExtensionMode::Print, ExtensionMode::Json] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = context(dir.path());
+        ctx.mode = mode;
+        let api = api(dir.path());
+        start(&api, &ctx, SessionReason::Startup).await;
+        assert!(
+            !state_dir(dir.path()).exists(),
+            "{mode:?}: no lease is taken"
+        );
+        shutdown(&api, &ctx, SessionReason::Quit).await;
+        assert!(
+            !state_dir(dir.path()).exists(),
+            "{mode:?}: no manifest is recorded"
+        );
+    }
+}
+
+/// The token the lease file records for `id`.
+fn lease_token(dir: &Path, id: &str) -> Option<String> {
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
+    let raw = std::fs::read(state_dir(dir).join(format!("{encoded}.lease"))).ok()?;
+    maho_ext_terminal::manifest_lease::read_lease_record(&raw)?.token
+}
+
+/// A context for session `id` whose session dir is `dir`.
+fn context_for(dir: &Path, id: &'static str) -> ExtensionContext {
+    let mut ctx = context(dir);
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.into(),
+        id,
+    });
+    ctx
+}
+
+/// The resumed generation owns the lease under a new token: it acquired (or re-entered) and did
+/// not wait on a "held by" holder, which would leave the lease file on the first token.
+fn assert_owned_under_a_new_token(dir: &Path, id: &str, first: &str) {
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
+    let current = maho_ext_terminal::manifest_lease::current_lease_token(&encoded)
+        .expect("the resumed generation holds a token");
+    assert_ne!(current, first, "the token rotates");
+    assert_eq!(lease_token(dir, id).as_deref(), Some(current.as_str()));
+}
+
+/// terminal-restore-session.test.ts (h): an in-process /resume rotates the token and owns the
+/// lease, never "held by".
+#[tokio::test]
+async fn an_in_process_resume_rotates_the_token_and_is_never_held_by() {
+    let id = "terminal-lifecycle-resume";
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), id);
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    let first = lease_token(dir.path(), id).expect("the fresh start holds a v2 lease");
+    shutdown(&api, &ctx, SessionReason::Resume).await;
+    start(&api, &ctx, SessionReason::Resume).await;
+    assert_owned_under_a_new_token(dir.path(), id, &first);
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    assert_eq!(lease_token(dir.path(), id), None, "quit releases the lease");
+}
+
+/// terminal-restore-session.test.ts (h2): a lease this process never released (its shutdown cut
+/// short, so the stale same-pid record is back on disk) is re-entered, not "held by".
+#[tokio::test]
+async fn a_same_pid_lease_left_by_a_cut_short_shutdown_is_re_entered() {
+    let id = "terminal-lifecycle-reentry";
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), id);
+    let lease = state_dir(dir.path()).join(format!(
+        "{}.lease",
+        maho_core::session_sidecar_store::encoded_session_id(id)
+    ));
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    let stale = std::fs::read(&lease).unwrap();
+    let first = lease_token(dir.path(), id).expect("the fresh start holds a v2 lease");
+    shutdown(&api, &ctx, SessionReason::Resume).await;
+    assert!(!lease.exists(), "the resume shutdown released the lease");
+    std::fs::write(&lease, stale).unwrap();
+    start(&api, &ctx, SessionReason::Resume).await;
+    assert_owned_under_a_new_token(dir.path(), id, &first);
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    assert!(!lease.exists(), "quit releases the re-entered lease");
 }

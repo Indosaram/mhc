@@ -101,6 +101,13 @@ fn append_thinking(
     let index = state.thinking_index.expect("thinking index is set");
     let ContentBlock::Thinking(block) = &mut output.content[index] else { return };
     block.thinking.push_str(&message.delta_thinking);
+    crate::utils::assistant_capture::push_assistant_signature(
+        events,
+        index,
+        &output.content[index],
+        Some(&message.delta_signature),
+    );
+    let ContentBlock::Thinking(block) = &mut output.content[index] else { return };
     if !message.delta_signature.is_empty() {
         block.thinking_signature = Some(message.delta_signature.clone());
     }
@@ -172,6 +179,18 @@ fn append_tool_call(
     let entry = state.tool_calls.get_mut(&tool_call_id).expect("tool call entry exists");
     let content_index = entry.content_index;
     let ContentBlock::ToolCall(block) = &mut output.content[content_index] else { return };
+    if !call.name.is_empty() && call.name != block.name {
+        crate::utils::assistant_capture::push_assistant_progress(
+            events,
+            crate::utils::assistant_capture::AssistantProgress::metadata(
+                crate::utils::assistant_capture::BlockMetadata {
+                    content_index,
+                    name: Some(call.name.clone()),
+                    ..Default::default()
+                },
+            ),
+        );
+    }
     if !call.name.is_empty() {
         block.name = call.name.clone();
     }

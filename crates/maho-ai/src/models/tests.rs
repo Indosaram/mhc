@@ -17,7 +17,7 @@ fn builtin(provider: &str, id: &str) -> Model {
 #[test]
 fn catalog_matches_senpi_generated_counts_and_order() {
     assert_eq!(get_builtin_providers().len(), 43);
-    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1899);
+    assert_eq!(MODELS.values().map(IndexMap::len).sum::<usize>(), 1900);
     assert_eq!(
         get_builtin_providers().first().copied(),
         Some("alibaba-token-plan")

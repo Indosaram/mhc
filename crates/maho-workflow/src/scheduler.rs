@@ -332,6 +332,7 @@ impl WorkflowScheduler {
             name: definition.name.clone(),
             parent_session: caller.session_id.clone(),
             root_session: caller.root_session.clone(),
+            parent_model: caller.parent_model.clone(),
             status: RunStatus::Running,
             fingerprint: print,
             definition,
@@ -469,6 +470,7 @@ impl WorkflowScheduler {
     fn dispatch(self: &Arc<Self>, live: &Arc<LiveRun>, run: &mut WorkflowRun, id: &str, notices: &mut Vec<Notice>) {
         let Some(spec) = run.definition.nodes.iter().find(|n| n.id == id).cloned() else { return };
         let run_id = run.run_id.clone();
+        let parent_model = run.parent_model.clone();
         let Some(node) = run.nodes.get_mut(id) else { return };
         let mut prompt = node.prompt.clone();
         if !node.pending_guidance.is_empty() {
@@ -485,6 +487,7 @@ impl WorkflowScheduler {
             subagent_type: spec.subagent_type.clone(),
             model: spec.model.clone(),
             label: spec.label.clone(),
+            parent_model,
         };
         let now = now_ms();
         match self.executor.start(&request) {

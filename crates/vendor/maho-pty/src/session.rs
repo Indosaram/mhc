@@ -44,6 +44,9 @@ pub struct PtySessionOptions {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// Variables the child must not inherit from this process (an `undefined` entry in the
+    /// upstream env record); a later `env` for the same key sets it again.
+    pub env_remove: Vec<String>,
     pub cols: u16,
     pub rows: u16,
     pub timeout: Option<Duration>,
@@ -56,6 +59,7 @@ impl PtySessionOptions {
             args: Vec::new(),
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
             cols: 80,
             rows: 24,
             timeout: None,
@@ -73,7 +77,17 @@ impl PtySessionOptions {
     }
 
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.push((key.into(), value.into()));
+        let key = key.into();
+        self.env_remove.retain(|removed| removed != &key);
+        self.env.push((key, value.into()));
+        self
+    }
+
+    /// Unset `key` in the child, whether inherited or set earlier through `env`.
+    pub fn env_remove(mut self, key: impl Into<String>) -> Self {
+        let key = key.into();
+        self.env.retain(|(name, _)| name != &key);
+        self.env_remove.push(key);
         self
     }
 
@@ -134,6 +148,9 @@ impl PtySession {
         }
         for (key, value) in &opts.env {
             command.env(key, value);
+        }
+        for key in &opts.env_remove {
+            command.env_remove(key);
         }
 
         let reader = pair

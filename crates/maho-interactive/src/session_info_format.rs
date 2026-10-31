@@ -3,9 +3,13 @@ use crate::theme::theme::{Theme, ThemeColor};
 use serde_json::Value;
 fn grouped(number: f64) -> String {
     let raw = format!("{:.0}", number);
-    let mut result = String::new();
-    for (i, c) in raw.chars().enumerate() {
-        if i > 0 && (raw.len() - i) % 3 == 0 {
+    let (sign, digits) = match raw.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", raw.as_str()),
+    };
+    let mut result = String::from(sign);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
             result.push(',');
         }
         result.push(c);
@@ -126,6 +130,12 @@ mod tests {
         let output = format_session_info(&stats, Some("Test"), &theme);
         assert!(output.contains("+ unpriced turns"));
         assert!(output.contains("$0.50"));
+    }
+
+    #[test]
+    fn grouped_negative_number_places_commas_correctly() {
+        assert_eq!(grouped(-100.0), "-100");
+        assert_eq!(grouped(-1000.0), "-1,000");
     }
 
     #[test]

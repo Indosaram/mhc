@@ -453,6 +453,8 @@ const poolWidth = Number.parseInt(process.env.SENPI_CODEMODE_PROCESS_POOL_WIDTH 
 delete process.env.SENPI_CODEMODE_PROCESS_CWD;
 delete process.env.SENPI_CODEMODE_PROCESS_POOL_WIDTH;
 
+const { markKernelProcessMode } = await import("./worker-webview.js");
+markKernelProcessMode();
 
 const { createWorkerCore } = await import("./worker-core.js");
 

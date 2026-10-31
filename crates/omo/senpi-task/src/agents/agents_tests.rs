@@ -508,7 +508,8 @@ fn fallback_chain_table_is_pinned() {
             vec![
                 entry(&claude, "claude-fable-5-1", Some("max")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
-                entry(&["opencode-go", "kimi-for-coding", "moonshotai", "opencode"], "kimi-k3", Some("max")),
+                entry(&["opencode-go", "kimi-for-coding", "moonshotai"], "kimi-k3.1-pro", Some("max")),
+                entry(&["opencode"], "kimi-k3", Some("max")),
             ],
         ),
         (

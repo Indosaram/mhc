@@ -2,23 +2,19 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::Duration;
 
 use senpi_desktop_core::protocol::MethodRejection;
-use senpi_desktop_protocol::{
-    JsonRpcErrorData, MethodRejectionData,
-};
+use senpi_desktop_protocol::{JsonRpcErrorData, MethodRejectionData};
 use senpi_desktop_service::child::{
-    acquiring_engine_child_factory, default_engine_path, AcquiringEngineChildOptions,
+    AcquiringEngineChildOptions, acquiring_engine_child_factory, default_engine_path,
 };
 use senpi_desktop_service::parse::parse_error_data;
-use senpi_desktop_service::rpc_client::{
-    CallOptions, DesktopError, DesktopServiceErrorCode,
-};
+use senpi_desktop_service::rpc_client::{CallOptions, DesktopError, DesktopServiceErrorCode};
 use senpi_desktop_service::service::{
-    DesktopSessionOpenParams, DesktopService, DesktopServiceOptions,
+    DesktopService, DesktopServiceOptions, DesktopSessionOpenParams,
 };
 use senpi_desktop_service::timeouts::{RESTART_MESSAGE, START_TIMEOUT_MESSAGE};
 use serde_json::json;
@@ -115,21 +111,38 @@ async fn test_04_routes_out_of_order_replies_to_request_ids() {
 
     let held_call = tokio::spawn({
         let s = Arc::clone(&service);
-        async move { s.call("windows", json!({ "fake": "hold" }), CallOptions::default()).await }
+        async move {
+            s.call("windows", json!({ "fake": "hold" }), CallOptions::default())
+                .await
+        }
     });
     log.nth_request("windows", 1).await;
 
     let release_call = tokio::spawn({
         let s = Arc::clone(&service);
-        async move { s.call("displays", json!({ "fake": "release" }), CallOptions::default()).await }
+        async move {
+            s.call(
+                "displays",
+                json!({ "fake": "release" }),
+                CallOptions::default(),
+            )
+            .await
+        }
     });
 
-    let (res_held, res_release) = tokio::try_join!(held_call, release_call).expect("both joined ok");
+    let (res_held, res_release) =
+        tokio::try_join!(held_call, release_call).expect("both joined ok");
     let held_val = res_held.expect("held call ok");
     let release_val = res_release.expect("release call ok");
 
-    assert_eq!(release_val.get("method").and_then(|m| m.as_str()), Some("displays"));
-    assert_eq!(held_val.get("method").and_then(|m| m.as_str()), Some("held"));
+    assert_eq!(
+        release_val.get("method").and_then(|m| m.as_str()),
+        Some("displays")
+    );
+    assert_eq!(
+        held_val.get("method").and_then(|m| m.as_str()),
+        Some("held")
+    );
     service.close().await.expect("close ok");
 }
 
@@ -150,7 +163,10 @@ async fn test_05_sends_cancel_for_aborted_call_and_keeps_engine() {
 
     let capture_call = tokio::spawn({
         let s = Arc::clone(&service);
-        async move { s.call("capture", json!({ "fake": "cancellable" }), opts).await }
+        async move {
+            s.call("capture", json!({ "fake": "cancellable" }), opts)
+                .await
+        }
     });
 
     let sent = log.nth_request("capture", 1).await;
@@ -167,11 +183,18 @@ async fn test_05_sends_cancel_for_aborted_call_and_keeps_engine() {
 
     let cancel_req = log.nth_request("$/cancel", 1).await;
     assert_eq!(
-        cancel_req.params.and_then(|p| p.get("id").and_then(|i| i.as_u64())),
+        cancel_req
+            .params
+            .and_then(|p| p.get("id").and_then(|i| i.as_u64())),
         sent.id
     );
     assert_eq!(log.kills(), 0);
-    assert!(service.call("displays", json!({}), CallOptions::default()).await.is_ok());
+    assert!(
+        service
+            .call("displays", json!({}), CallOptions::default())
+            .await
+            .is_ok()
+    );
     service.close().await.expect("close ok");
 }
 
@@ -182,11 +205,17 @@ async fn test_06_kills_engine_ignoring_cancel_after_grace_and_replays() {
         create_child: Some(log.factory.clone()),
         on_notification: Some(log.notification_tracer(0)),
     }));
-    service.open(DesktopSessionOpenParams {
-        display: Some("all".to_string()),
-        ..Default::default()
-    }).await.expect("open ok");
-    service.ensure_stop_path("ctrl+alt+shift+escape").await.expect("arm ok");
+    service
+        .open(DesktopSessionOpenParams {
+            display: Some("all".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("open ok");
+    service
+        .ensure_stop_path("ctrl+alt+shift+escape")
+        .await
+        .expect("arm ok");
 
     let opts = CallOptions {
         timeout: Some(Duration::from_millis(100)),
@@ -212,12 +241,17 @@ async fn test_06_kills_engine_ignoring_cancel_after_grace_and_replays() {
     }
     assert_eq!(log.kills(), 1);
 
-    let next = service.call("displays", json!({}), CallOptions::default()).await;
+    let next = service
+        .call("displays", json!({}), CallOptions::default())
+        .await;
     assert!(next.is_ok());
 
     let r_open = log.nth_request("session.open", 2).await;
     assert_eq!(
-        r_open.params.as_ref().and_then(|p| p.get("display").and_then(|d| d.as_str())),
+        r_open
+            .params
+            .as_ref()
+            .and_then(|p| p.get("display").and_then(|d| d.as_str())),
         Some("all")
     );
     service.close().await.expect("close ok");
@@ -261,7 +295,10 @@ async fn test_08_heartbeats_every_heartbeat_ms_and_stops_on_close() {
     log.nth_request("stopPath.heartbeat", 3).await;
     service.close().await.expect("close ok");
     let reqs = log.requests.lock().await;
-    let hb_count = reqs.iter().filter(|r| r.method == "stopPath.heartbeat").count();
+    let hb_count = reqs
+        .iter()
+        .filter(|r| r.method == "stopPath.heartbeat")
+        .count();
     assert!(hb_count >= 3);
 }
 
@@ -296,8 +333,13 @@ async fn test_09_fans_audit_and_stop_path_changed_to_listeners() {
     let audit_signal = audit_notify.notified();
     tokio::pin!(audit_signal);
     audit_signal.as_mut().enable();
-    service.call("click", json!({ "fake": "notify" }), CallOptions::default()).await.expect("notify call");
-    tokio::time::timeout(Duration::from_secs(5), audit_signal).await.expect("audit signal");
+    service
+        .call("click", json!({ "fake": "notify" }), CallOptions::default())
+        .await
+        .expect("notify call");
+    tokio::time::timeout(Duration::from_secs(5), audit_signal)
+        .await
+        .expect("audit signal");
     assert!(audit_count.load(Ordering::SeqCst) >= 1);
     service.close().await.expect("close ok");
 }
@@ -313,13 +355,23 @@ async fn test_10_rejects_every_pending_call_with_closed_on_engine_exit() {
 
     let held_call = tokio::spawn({
         let s = Arc::clone(&service);
-        async move { s.call("windows", json!({ "fake": "hold" }), CallOptions::default()).await }
+        async move {
+            s.call("windows", json!({ "fake": "hold" }), CallOptions::default())
+                .await
+        }
     });
     log.nth_request("windows", 1).await;
 
     let exit_call = tokio::spawn({
         let s = Arc::clone(&service);
-        async move { s.call("displays", json!({ "fake": "exit" }), CallOptions::default()).await }
+        async move {
+            s.call(
+                "displays",
+                json!({ "fake": "exit" }),
+                CallOptions::default(),
+            )
+            .await
+        }
     });
 
     let (res_held, res_exit) = tokio::join!(held_call, exit_call);
@@ -343,8 +395,14 @@ async fn test_11_arms_stop_path_once_per_chord() {
     });
     service.open(Default::default()).await.expect("open ok");
 
-    let status1 = service.ensure_stop_path("ctrl+alt+shift+escape").await.expect("arm ok");
-    let status2 = service.ensure_stop_path("ctrl+alt+shift+escape").await.expect("read ok");
+    let status1 = service
+        .ensure_stop_path("ctrl+alt+shift+escape")
+        .await
+        .expect("arm ok");
+    let status2 = service
+        .ensure_stop_path("ctrl+alt+shift+escape")
+        .await
+        .expect("read ok");
     assert_eq!(status1.stop_path, status2.stop_path);
 
     log.nth_request("stopPath.start", 1).await;
@@ -359,43 +417,94 @@ async fn test_12_acquiring_reacquires_before_every_engine_spawn() {
     let request_log = requested.clone();
     let spawn_log = spawned.clone();
     let factory = acquiring_engine_child_factory(AcquiringEngineChildOptions {
-        version: "5.0.2".into(), host: Some("linux-x64".into()),
+        version: "5.0.2".into(),
+        host: Some("linux-x64".into()),
         acquire: Arc::new(move |version, host| {
             let mut log = request_log.lock().unwrap();
             log.push((version, host));
-            let path = PathBuf::from(format!("/cache/generation-{}/senpi-desktop-engine", log.len()));
-            Box::pin(async move { Ok(senpi_desktop_service::child::AcquiredDesktopEngine { path: Some(path), diagnostic_message: None }) })
+            let path = PathBuf::from(format!(
+                "/cache/generation-{}/senpi-desktop-engine",
+                log.len()
+            ));
+            Box::pin(async move {
+                Ok(senpi_desktop_service::child::AcquiredDesktopEngine {
+                    path: Some(path),
+                    diagnostic_message: None,
+                })
+            })
         }),
         spawn_engine: Some(Arc::new(move |path| {
             spawn_log.lock().unwrap().push(path.clone());
             let python_cmd = if cfg!(windows) { "python" } else { "python3" };
             let child = tokio::process::Command::new(python_cmd)
-                .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_engine.py"))
-                .arg("--stdio").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-                .spawn().expect("fake engine");
-            Ok(senpi_desktop_service::child::EngineChild::new(path.display().to_string(), child))
+                .arg(
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_engine.py"),
+                )
+                .arg("--stdio")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("fake engine");
+            Ok(senpi_desktop_service::child::EngineChild::new(
+                path.display().to_string(),
+                child,
+            ))
         })),
     });
-    let service = DesktopService::new(DesktopServiceOptions { create_child: Some(factory.clone()), on_notification: None });
-    assert_eq!(service.open(Default::default()).await.unwrap().backend, "fake");
+    let service = DesktopService::new(DesktopServiceOptions {
+        create_child: Some(factory.clone()),
+        on_notification: None,
+    });
+    assert_eq!(
+        service.open(Default::default()).await.unwrap().backend,
+        "fake"
+    );
     let second = factory().await.unwrap();
     second.end();
-    tokio::time::timeout(Duration::from_secs(5), second.wait_exited()).await.expect("second exit");
-    assert_eq!(*requested.lock().unwrap(), vec![("5.0.2".into(), Some("linux-x64".into())), ("5.0.2".into(), Some("linux-x64".into()))]);
-    assert_eq!(*spawned.lock().unwrap(), vec![PathBuf::from("/cache/generation-1/senpi-desktop-engine"), PathBuf::from("/cache/generation-2/senpi-desktop-engine")]);
+    tokio::time::timeout(Duration::from_secs(5), second.wait_exited())
+        .await
+        .expect("second exit");
+    assert_eq!(
+        *requested.lock().unwrap(),
+        vec![
+            ("5.0.2".into(), Some("linux-x64".into())),
+            ("5.0.2".into(), Some("linux-x64".into()))
+        ]
+    );
+    assert_eq!(
+        *spawned.lock().unwrap(),
+        vec![
+            PathBuf::from("/cache/generation-1/senpi-desktop-engine"),
+            PathBuf::from("/cache/generation-2/senpi-desktop-engine")
+        ]
+    );
     service.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn test_13_unavailable_acquisition_spawns_nothing() {
     let factory = acquiring_engine_child_factory(AcquiringEngineChildOptions {
-        version: "5.0.2".into(), host: Some("linux-arm64".into()),
-        acquire: Arc::new(|_, _| Box::pin(async { Ok(senpi_desktop_service::child::AcquiredDesktopEngine { path: None, diagnostic_message: Some("native-unavailable".into()) }) })),
+        version: "5.0.2".into(),
+        host: Some("linux-arm64".into()),
+        acquire: Arc::new(|_, _| {
+            Box::pin(async {
+                Ok(senpi_desktop_service::child::AcquiredDesktopEngine {
+                    path: None,
+                    diagnostic_message: Some("native-unavailable".into()),
+                })
+            })
+        }),
         spawn_engine: Some(Arc::new(|_| panic!("must not spawn"))),
     });
-    let service = DesktopService::new(DesktopServiceOptions { create_child: Some(factory), on_notification: None });
+    let service = DesktopService::new(DesktopServiceOptions {
+        create_child: Some(factory),
+        on_notification: None,
+    });
     let err = service.open(Default::default()).await.unwrap_err();
-    assert!(matches!(err, DesktopError::Service(ref error) if error.code() == DesktopServiceErrorCode::Closed));
+    assert!(
+        matches!(err, DesktopError::Service(ref error) if error.code() == DesktopServiceErrorCode::Closed)
+    );
 }
 
 #[test]
@@ -413,7 +522,10 @@ fn test_14_decodes_typed_permission_guidance() {
     let parsed = parse_error_data(&data);
     assert!(parsed.is_some());
     if let Some(JsonRpcErrorData::Engine(engine_data)) = parsed {
-        assert_eq!(engine_data.code, senpi_desktop_core::error::ErrorCode::PermissionDenied);
+        assert_eq!(
+            engine_data.code,
+            senpi_desktop_core::error::ErrorCode::PermissionDenied
+        );
         assert!(engine_data.permission.is_some());
     } else {
         panic!("expected Engine error data");
@@ -448,10 +560,12 @@ fn test_17_locates_default_sibling_engine_path() {
 
 fn assert_malformed_permission_metadata_is_not_exposed(key: &str, invalid: serde_json::Value) {
     let base = json!({"permission":"accessibility","settingsUrl":"settings","app":"QA App","relaunchRequired":true});
-        let mut permission = base.clone();
-        permission[key] = invalid;
-        let data = parse_error_data(&json!({"code":"PermissionDenied","permission":permission}));
-        assert!(matches!(data, Some(JsonRpcErrorData::Engine(ref error)) if error.permission.is_none() && error.hint.is_none()));
+    let mut permission = base.clone();
+    permission[key] = invalid;
+    let data = parse_error_data(&json!({"code":"PermissionDenied","permission":permission}));
+    assert!(
+        matches!(data, Some(JsonRpcErrorData::Engine(ref error)) if error.permission.is_none() && error.hint.is_none())
+    );
 }
 
 #[test]
@@ -472,6 +586,50 @@ fn null_app_is_not_exposed() {
 #[test]
 fn string_relaunch_flag_is_not_exposed() {
     assert_malformed_permission_metadata_is_not_exposed("relaunchRequired", json!("true"));
+}
+
+#[test]
+fn decodes_typed_permission_guidance_without_losing_the_engine_message() {
+    let data = parse_error_data(&json!({
+        "code": "PermissionDenied",
+        "hint": null,
+        "permission": {
+            "permission": "accessibility",
+            "settingsUrl": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            "app": "QA App",
+            "relaunchRequired": true
+        }
+    }));
+    let error = senpi_desktop_service::rpc_client::DesktopEngineRpcError {
+        method: "click".to_string(),
+        rpc_code: -32000,
+        message: "engine diagnostic".to_string(),
+        data: data.clone(),
+    };
+    assert_eq!(error.to_string(), "engine diagnostic");
+    assert_eq!(error.data, data);
+    assert!(matches!(
+        error.data,
+        Some(JsonRpcErrorData::Engine(ref engine)) if engine.hint.is_none() && engine.permission.is_some()
+    ));
+}
+
+#[test]
+fn keeps_legacy_errors_and_method_rejections_compatible() {
+    let legacy = parse_error_data(&json!({ "code": "PermissionDenied", "hint": "old" }));
+    assert!(matches!(
+        legacy,
+        Some(JsonRpcErrorData::Engine(ref engine))
+            if engine.code == senpi_desktop_core::error::ErrorCode::PermissionDenied
+                && engine.hint.as_deref() == Some("old")
+                && engine.permission.is_none()
+    ));
+    assert_eq!(
+        parse_error_data(&json!({ "reason": "hostOnly" })),
+        Some(JsonRpcErrorData::Rejected(MethodRejectionData {
+            reason: MethodRejection::HostOnly
+        }))
+    );
 }
 
 #[test]

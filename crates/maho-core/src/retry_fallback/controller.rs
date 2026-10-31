@@ -1,5 +1,5 @@
 use maho_ai::types::{Model,ModelThinkingLevel};
-use std::collections::HashSet;
+use std::collections::{HashMap,HashSet};
 use super::{chains::*,cooldown::{SelectorCooldowns,SelectorFailure},expansion::FallbackAuthTiers,settings::{ResolvedRetryFallbackSettings,FallbackRevertPolicy}};
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -52,6 +52,16 @@ mod tests {
         controller.note_refused_provider("p");assert!(!controller.can_try_fallback());
         controller.reset_turn();assert!(controller.can_try_fallback());
     }
+    /// senpi test/suite/regressions/3131-spent-account.test.ts "allows a deliberate manual model selection to
+    /// probe an account again": an account limit spends the provider until a manual selection clears it.
+    #[test]
+    fn an_account_limit_spends_the_provider_until_a_manual_selection(){
+        let mut controller=controller();let model=controller.deps.current.0.clone();
+        controller.note_unusable(&model,SelectorFailure{retry_after_ms:None,error_message:Some("You have hit your session limit")});
+        assert!(controller.is_provider_spent("p"));assert_eq!(controller.account_error("p").as_deref(),Some("You have hit your session limit"));
+        controller.note_unusable(&model,SelectorFailure{retry_after_ms:None,error_message:Some("429 rate limit exceeded")});
+        controller.clear_for_manual_model_change(&model);assert!(!controller.is_provider_spent("p"));assert_eq!(controller.account_error("p"),None);
+    }
 }
 #[derive(Debug,Clone)]
 pub enum FallbackEvent {
@@ -80,9 +90,11 @@ pub struct RetryFallbackController<D> {
     /// Conservatively skip the refused provider for this turn: this synchronous scan cannot resolve
     /// asynchronously prepared request credentials, including per-model endpoints or keys (senpi#2491).
     refused_providers:HashSet<String>,
+    /// senpi `UnusableEntries.accountErrors`: the raw provider error that spent each account.
+    account_errors:HashMap<String,String>,
 }
 impl<D:RetryFallbackDeps> RetryFallbackController<D> {
-    pub fn new(deps:D,cooldowns:SelectorCooldowns)->Self {Self{deps,cooldowns,state:None,exhausted_chain_key:None,tried:HashSet::new(),cache:None,refused_providers:HashSet::new()}}
+    pub fn new(deps:D,cooldowns:SelectorCooldowns)->Self {Self{deps,cooldowns,state:None,exhausted_chain_key:None,tried:HashSet::new(),cache:None,refused_providers:HashSet::new(),account_errors:HashMap::new()}}
     pub fn reset_turn(&mut self){self.tried.clear();self.refused_providers.clear();self.exhausted_chain_key=None;}
     pub fn clear(&mut self){self.state=None;self.cache=None;self.reset_turn();}
     fn canonical_chains(&mut self)->FallbackChains {
@@ -141,6 +153,16 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
         self.deps.log(FallbackLogLevel::Info,"fallback_applied",&[("from",Some(from.as_str())),("to",Some(to.as_str())),("chainKey",Some(key.as_str())),("reason",Some(reason_name))]);
         self.deps.emit(FallbackEvent::Applied{from,to,chain_key:key,reason});Ok(true)
     }
+    fn unusable(&mut self)->super::unusable::UnusableEntries<'_> {super::unusable::UnusableEntries::new(&mut self.cooldowns,&mut self.account_errors)}
+    /// senpi `noteHealthFailure` (unusable half): an account limit spends the whole provider, a model limit
+    /// or billing/quota exhaustion parks that entry, on the session's own cooldown clock.
+    pub fn note_unusable(&mut self,model:&Model,failure:SelectorFailure<'_>){self.unusable().note(model,failure);}
+    /// senpi `isProviderSpent`: the provider's account hit a usage limit that has not yet reset.
+    pub fn is_provider_spent(&mut self,provider:&str)->bool {self.unusable().is_provider_spent(provider)}
+    /// senpi `accountError`: the raw error that spent a still-spent provider.
+    pub fn account_error(&mut self,provider:&str)->Option<String> {self.unusable().account_error(provider)}
+    /// The spent accounts as of now, for readers that cannot await this controller.
+    pub fn spent_accounts(&mut self)->super::unusable::SpentAccounts {self.unusable().spent_accounts()}
     pub fn note_manual_thinking_level(&mut self){if let Some(state)=&mut self.state{state.last_applied_thinking_level=None;}}
     pub fn notify_compaction_applied(&mut self)->bool {
         let Some(state)=&mut self.state else{return false;};let was=state.pinned;state.pinned_by_refusal=false;state.pinned=state.pinned_by_billing;
@@ -152,7 +174,7 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
     pub fn clear_for_manual_model_change(&mut self,model:&Model){
         let selector=format_selector(model,None);
         if self.state.is_some(){self.deps.log(FallbackLogLevel::Info,"fallback_cleared_manual",&[("selector",Some(selector.as_str()))]);}
-        self.state=None;self.cooldowns.clear(&selector);
+        self.state=None;self.cooldowns.clear(&selector);self.unusable().clear(model);
     }
     pub async fn maybe_restore_primary(&mut self,policy:FallbackRevertPolicy)->Result<bool,String> {
         let Some(state)=self.state.clone() else{return Ok(false);};

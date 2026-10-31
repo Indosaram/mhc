@@ -6,6 +6,27 @@ pub const EAGER_HIGHLIGHT_LANGUAGES: &[&str] = &[
     "lua",
 ];
 
+/// highlight.js aliases of the eager languages (`hljs.getLanguage` resolves names and aliases,
+/// case-insensitively).
+const EAGER_HIGHLIGHT_ALIASES: &[(&str, &[&str])] = &[
+    ("python", &["py", "gyp", "ipython"]), ("java", &["jsp"]), ("go", &["golang"]),
+    ("javascript", &["js", "jsx", "mjs", "cjs"]), ("json", &["jsonc", "json5"]),
+    ("cpp", &["cc", "c++", "h++", "hpp", "hh", "hxx", "cxx"]),
+    ("typescript", &["ts", "tsx", "mts", "cts"]), ("php", &[]),
+    ("ruby", &["rb", "gemspec", "podspec", "thor", "irb"]), ("c", &["h"]), ("csharp", &["cs", "c#"]),
+    ("nix", &["nixos"]), ("bash", &["sh", "zsh"]), ("rust", &["rs"]), ("scala", &[]),
+    ("kotlin", &["kt", "kts", "ktm", "ktx"]), ("swift", &[]), ("dart", &[]), ("groovy", &[]),
+    ("perl", &["pl", "pm"]), ("lua", &["pluto"]),
+];
+
+/// senpi `supportsLanguage`: only the eagerly registered languages answer at startup. The deferred
+/// full highlight.js bundle (`loadAllHighlightLanguages`) has no native counterpart: code blocks are
+/// coloured by `maho_interactive::theme::highlight::highlight_code` (syntect grammars).
+pub fn supports_language(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    EAGER_HIGHLIGHT_ALIASES.iter().any(|(language, aliases)| *language == name || aliases.contains(&name.as_str()))
+}
+
 pub type HighlightFormatter = Box<dyn Fn(&str) -> String>;
 pub type HighlightTheme = BTreeMap<String, HighlightFormatter>;
 fn formatter<'a>(scopes: &[Option<String>], theme: &'a HighlightTheme) -> Option<&'a HighlightFormatter> {
@@ -55,4 +76,22 @@ pub fn render_highlighted_html(html: &str, theme: &HighlightTheme) -> String {
     }
     flush(&mut output, &mut buffer, &scopes, theme);
     output
+}
+
+/// senpi `highlight(code, { language, ignoreIllegals, theme })`: `code` tokenized into
+/// highlight.js classes (by the TUI's grammar set, `maho_interactive::theme::highlight`) and each
+/// run passed through the `theme` formatter of its class, as `renderHighlightedHtml` does for
+/// highlight.js output. `Err` when the language is not registered (`hljs.highlight` throws). The
+/// no-language branch (`hljs.highlightAuto`) has no counterpart: the only caller, `highlightCode`,
+/// always passes a supported language.
+pub fn highlight(code: &str, language: &str, theme: &HighlightTheme) -> Result<String, String> {
+    let runs = maho_interactive::theme::highlight::highlight_runs(code, language)?;
+    let mut output = String::new();
+    for (class, text) in runs {
+        match formatter(&[class.map(str::to_owned)], theme) {
+            Some(format) => output.push_str(&format(&text)),
+            None => output.push_str(&text),
+        }
+    }
+    Ok(output)
 }
