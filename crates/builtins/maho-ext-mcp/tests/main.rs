@@ -11,6 +11,8 @@ pub mod callback;
 pub mod commands;
 #[path = "config.rs"]
 pub mod config;
+#[path = "config_identity.rs"]
+pub mod config_identity;
 #[path = "connection.rs"]
 pub mod connection;
 #[path = "control_inventory.rs"]
@@ -35,10 +37,18 @@ pub mod instructions;
 pub mod lifecycle_registration;
 #[path = "log.rs"]
 pub mod log;
+#[path = "modern_era.rs"]
+pub mod modern_era;
+#[path = "modern_mrtr_privacy.rs"]
+pub mod modern_mrtr_privacy;
+#[path = "modern_wire.rs"]
+pub mod modern_wire;
 #[path = "notifications.rs"]
 pub mod notifications;
 #[path = "oauth.rs"]
 pub mod oauth;
+#[path = "oauth_issuer.rs"]
+pub mod oauth_issuer;
 #[path = "oauth_client_auth.rs"]
 pub mod oauth_client_auth;
 #[path = "oauth_flow.rs"]
@@ -116,3 +126,14 @@ pub mod auth_https;
 pub mod auth_challenge_parse;
 #[path = "auth_refresh_coalescing.rs"]
 pub mod auth_refresh_coalescing;
+// senpi#3858 configuration reference ports.
+#[path = "reference_support.rs"]
+pub mod reference_support;
+#[path = "reference_trust.rs"]
+pub mod reference_trust;
+#[path = "reference_generations.rs"]
+pub mod reference_generations;
+#[path = "reference_disclosure.rs"]
+pub mod reference_disclosure;
+#[path = "config_reference_admission.rs"]
+pub mod config_reference_admission;

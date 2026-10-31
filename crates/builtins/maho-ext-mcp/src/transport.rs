@@ -128,6 +128,8 @@ pub struct McpTransportConnection {
     pub auth: Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
     pub auth_challenge_handler: Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>,
     pub elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// Upstream `elicitationEnabled`: false withholds the elicitation capability entirely.
+    pub elicitation_enabled: bool,
     server_requests: Mutex<Option<tokio::task::JoinHandle<()>>>,
     shutdown: tokio::sync::Mutex<bool>,
 }
@@ -150,6 +152,7 @@ pub fn create_mcp_transport(
         auth: None,
         auth_challenge_handler: None,
         elicitation_ui: None,
+        elicitation_enabled: true,
         server_requests: Mutex::new(None),
         shutdown: tokio::sync::Mutex::new(false),
     })
@@ -188,19 +191,36 @@ impl McpTransportConnection {
                 {
                     env.insert("OAUTH_ACCESS_TOKEN".into(), tokens.access_token);
                 }
-                let client = McpClient::materialize_with_policy(
+                let spawn = || async {
+                    let client = McpClient::materialize_with_policy(
+                        &self.server_name,
+                        &spec,
+                        self.logger.clone(),
+                        self.project_policy,
+                    )
+                    .await?;
+                    if let Some(auth) = &self.auth {
+                        client.set_auth(auth.clone()).await;
+                    }
+                    if let Some(handler) = &self.auth_challenge_handler {
+                        client.set_auth_challenge_handler(handler.clone()).await;
+                    }
+                    Ok::<_, McpError>(client)
+                };
+                // senpi dispatch.ts: discovery selects the era before the legacy handshake.
+                let client = crate::modern::dispatch::materialize_negotiated_transport(
+                    crate::modern::dispatch::NegotiationInputs {
+                        spec: &spec,
+                        logger: self.logger.clone(),
+                        auth: self.auth.clone(),
+                        ui: self.elicitation_ui.clone(),
+                        elicitation_enabled: self.elicitation_enabled,
+                    },
                     &self.server_name,
-                    &spec,
-                    self.logger.clone(),
-                    self.project_policy,
+                    self.connect_timeout,
+                    spawn,
                 )
                 .await?;
-                if let Some(auth) = &self.auth {
-                    client.set_auth(auth.clone()).await;
-                }
-                if let Some(handler) = &self.auth_challenge_handler {
-                    client.set_auth_challenge_handler(handler.clone()).await;
-                }
                 *self
                     .server_requests
                     .lock()
@@ -233,6 +253,7 @@ pub async fn connect_mcp_transport(
     let connect = async {
         let client = connection.materialize().await?;
         client.initialize(connection.connect_timeout).await?;
+        crate::modern::dispatch::log_negotiated_version(&client, &connection.logger, &connection.server_name);
         Ok::<_, McpError>(client)
     };
     match tokio::time::timeout(connection.connect_timeout, connect).await {
