@@ -118,3 +118,22 @@ fn given_an_error_transcript_entry_when_rendered_then_it_is_shown_as_an_error_li
     // then
     assert_eq!(rendered.text, "error: upstream gateway timeout");
 }
+
+#[test]
+fn given_a_transcript_elided_at_surrogate_boundary_when_rendered_then_no_replacement_characters() {
+    let mut text = "a".repeat(14974);
+    text.push('🎉');
+    text.push_str(&"b".repeat(25013));
+    let entries = vec![assistant(&text)];
+
+    let rendered = render_transcript(
+        &entries,
+        &RenderOptions {
+            mode: TranscriptMode::Full,
+            tail_lines: 60,
+        },
+    );
+
+    assert_eq!(rendered.truncated, true);
+    assert!(!rendered.text.contains('\u{FFFD}'));
+}
