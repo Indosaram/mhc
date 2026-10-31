@@ -279,20 +279,26 @@ pub struct ParsedFrontmatter {
 /// `parseFrontmatter(content)` retaining string-valued template metadata.
 pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
     let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
-    if !normalized.starts_with("---") {
-        return ok(ParsedFrontmatter {
-            frontmatter: Default::default(),
-            body: normalized,
-        });
-    }
-    let Some(end_index) = normalized[3..].find("\n---").map(|index| index + 3) else {
+    let Some(rest) = normalized.strip_prefix("---\n") else {
         return ok(ParsedFrontmatter {
             frontmatter: Default::default(),
             body: normalized,
         });
     };
-    let yaml_string = &normalized[4..end_index];
-    let body = normalized[end_index + 4..].trim().to_string();
+    let (yaml_string, body) = if let Some(after) = rest.strip_prefix("---\n") {
+        ("", after.trim().to_string())
+    } else if rest == "---" {
+        ("", String::new())
+    } else if let Some(end_index) = rest.find("\n---") {
+        let after = &rest[end_index + 4..];
+        let after = after.strip_prefix('\n').unwrap_or(after);
+        (&rest[..end_index], after.trim().to_string())
+    } else {
+        return ok(ParsedFrontmatter {
+            frontmatter: Default::default(),
+            body: normalized,
+        });
+    };
     match parse_yaml_mapping(yaml_string) {
         Ok(frontmatter) => ok(ParsedFrontmatter { frontmatter, body }),
         Err(message) => Err(message),
@@ -300,6 +306,9 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
 }
 
 fn parse_yaml_mapping(source: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    if source.trim().is_empty() {
+        return Ok(Default::default());
+    }
     let value: serde_yaml::Value =
         serde_yaml::from_str(source).map_err(|error| error.to_string())?;
     Ok(match value {
