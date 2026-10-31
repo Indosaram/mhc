@@ -2,7 +2,7 @@
 
 use pretty_assertions::assert_eq;
 
-use crate::tools::output::render::{RenderOptions, TRANSCRIPT_MAX_CHARS, render_transcript};
+use crate::tools::output::render::{RenderOptions, TRANSCRIPT_MAX_CHARS, cap_text, render_transcript};
 use crate::tools::output::types::{TranscriptEntry, TranscriptMode};
 
 fn assistant(text: &str) -> TranscriptEntry {
@@ -121,19 +121,22 @@ fn given_an_error_transcript_entry_when_rendered_then_it_is_shown_as_an_error_li
 
 #[test]
 fn given_a_transcript_elided_at_surrogate_boundary_when_rendered_then_no_replacement_characters() {
-    let mut text = "a".repeat(14974);
+    let mut text = "a".repeat(14985);
     text.push('🎉');
-    text.push_str(&"b".repeat(25013));
-    let entries = vec![assistant(&text)];
+    text.push_str(&"b".repeat(25000));
+    let (rendered, elided) = cap_text(text);
 
-    let rendered = render_transcript(
-        &entries,
-        &RenderOptions {
-            mode: TranscriptMode::Full,
-            tail_lines: 60,
-        },
-    );
+    assert_eq!(elided, true);
+    assert!(!rendered.contains('\u{FFFD}'));
+}
 
-    assert_eq!(rendered.truncated, true);
-    assert!(!rendered.text.contains('\u{FFFD}'));
+#[test]
+fn given_a_transcript_elided_at_tail_surrogate_boundary_when_rendered_then_no_replacement_characters() {
+    let mut text = "a".repeat(25000);
+    text.push('🎉');
+    text.push_str(&"b".repeat(14985));
+    let (rendered, elided) = cap_text(text);
+
+    assert_eq!(elided, true);
+    assert!(!rendered.contains('\u{FFFD}'));
 }
