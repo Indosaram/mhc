@@ -65,6 +65,8 @@ impl RecordQueue{
 }
 #[derive(Default)]pub struct SessionRecordScheduler{queues:BTreeMap<(Option<String>,String),RecordQueue>,ready:VecDeque<(Option<String>,String)>,in_flight:Option<(Option<String>,String)>,in_flight_bytes:usize,reservations:CloseResponseReservations,sealed:BTreeSet<String>}
 pub struct SessionWriterActor{
+    /// Receivers of the internal structured lane (senpi `structuredLanes`); never a legacy destination.
+    pub structured_lanes:crate::session_structured_lanes::SessionStructuredLanes,
     scheduler:std::sync::Arc<std::sync::Mutex<SessionRecordScheduler>>,
     changed:std::sync::Arc<tokio::sync::Notify>,
     state:tokio::sync::watch::Sender<Result<bool,String>>,
@@ -99,9 +101,11 @@ impl SessionWriterActor{
                 pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acknowledge_write();
             }
         });
-        Self{scheduler,changed,state,task}
+        Self{structured_lanes:Default::default(),scheduler,changed,state,task}
     }
-    pub fn enqueue(&self,session_id:&str,value:Value)->Result<(),String>{
+    pub fn enqueue(&self,session_id:&str,mut value:Value)->Result<(),String>{
+        // Lifecycle copies are stamped where the host enqueues them (senpi `observeLifecycleDelivery`).
+        crate::lifecycle_delivery::observe_lifecycle_delivery(&mut value);
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.state.borrow().clone()?;
         let incoming=crate::jsonl::serialize_json_line(&value).map_err(|error|error.to_string())?.len();
@@ -121,13 +125,21 @@ impl SessionWriterActor{
         scheduler.reservations.reserve(session_id,response,terminal,buffered).map_err(|error|error.to_string())
     }
     pub fn release_close_response(&self,id:u64){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reservations.release(id);}
+    /// senpi `isSessionSealed`: the writer accepts no further output for this session.
+    pub fn is_session_sealed(&self,session_id:&str)->bool{self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed.contains(session_id)}
+    /// senpi `registerAcceptance`: a sealed session takes no new lane.
+    pub fn register_acceptance(&self,fanout:&std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>,session_id:&str,lane:crate::session_registry::SharedAcceptanceLane){
+        if self.is_session_sealed(session_id){return;}
+        let lanes=std::sync::Arc::clone(&fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acceptance);
+        lanes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_owned(),lane);
+    }
     pub fn forget_session(&self,session_id:&str){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed.remove(session_id);}
     pub fn complete_close_response(&self,id:u64,session_id:&str,mut response:Value,terminal:bool,reason:Option<&str>)->Result<(),String>{
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.state.borrow().clone()?;
         if !scheduler.reservations.release(id){return Ok(());}
-        if terminal{
-            if !scheduler.sealed.insert(session_id.into()){return Ok(());}
+        // A terminal close racing an overflow/park seal does not re-seal: only the closed response is appended.
+        if terminal&&scheduler.sealed.insert(session_id.into()){
             let mut lifecycle=serde_json::json!({"type":"session_closed","sessionId":session_id});
             if let Some(reason)=reason{lifecycle["reason"]=reason.into();}
             scheduler.enqueue(session_id,None,lifecycle);
@@ -178,6 +190,160 @@ impl SessionRecordScheduler{
         if self.queues.get(&key).is_some_and(|queue|!queue.records.is_empty()){self.ready.push_back(key);}else{self.queues.remove(&key);}
     }
 }
+/// The writer's MCP presenter integration (senpi `SessionEventWriter` presenter state): one authority when the
+/// deployment enables presenters, a presenter connection per registered RPC connection, and one private form
+/// binding per session. Private records bypass event queues, snapshots, mirrors, replay and overflow previews.
+#[derive(Default)]
+pub struct SessionMcpPresenters {
+    authority: std::sync::OnceLock<crate::mcp_presenter_authority::McpPresenterAuthority>,
+    connections: std::sync::Mutex<BTreeMap<String, crate::mcp_presenter_authority::McpPresenterConnection>>,
+    bindings: std::sync::Mutex<BTreeMap<String, std::sync::Arc<crate::mcp_form_types::McpFormBinding>>>,
+}
+/// Who answers the connection's raw writes: `false` when the connection is gone or its write failed.
+pub type PresenterSend = std::sync::Arc<dyn Fn(&Value) -> bool + Send + Sync>;
+fn guard<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+impl SessionMcpPresenters {
+    /// Deployment switch. Ordinary RPC behavior is unchanged unless the host explicitly enables it.
+    pub fn enable(&self) -> crate::mcp_presenter_authority::McpPresenterAuthority {
+        self.authority.get_or_init(Default::default).clone()
+    }
+    /// senpi `mcpPresenters`.
+    pub fn authority(&self) -> Option<&crate::mcp_presenter_authority::McpPresenterAuthority> {
+        self.authority.get()
+    }
+    pub fn enabled(&self) -> bool {
+        self.authority.get().is_some()
+    }
+    pub fn connection(&self, id: &str) -> Option<crate::mcp_presenter_authority::McpPresenterConnection> {
+        guard(&self.connections).get(id).cloned()
+    }
+    pub fn find_connection(&self, nonce: &str) -> Option<crate::mcp_presenter_authority::McpPresenterConnection> {
+        guard(&self.connections).values().find(|connection| connection.nonce == nonce).cloned()
+    }
+    pub fn binding(&self, session_id: &str) -> Option<std::sync::Arc<crate::mcp_form_types::McpFormBinding>> {
+        guard(&self.bindings).get(session_id).cloned()
+    }
+    /// senpi `bindMcpForms`: binds the session, attaches every connection already attached to it, and registers the
+    /// private forms for the durable session. `None` when presenters are off.
+    pub fn bind(
+        &self,
+        session_id: &str,
+        durable_id: &str,
+        admit: std::sync::Arc<dyn Fn() + Send + Sync>,
+        attached: &[String],
+    ) -> Option<McpFormsUnbind> {
+        let authority = self.authority.get()?;
+        let binding = authority.bind(session_id, durable_id, admit);
+        guard(&self.bindings).insert(session_id.to_owned(), std::sync::Arc::clone(&binding));
+        for id in attached {
+            if let Some(connection) = self.connection(id) {
+                authority.attach(&connection, &binding);
+            }
+        }
+        let registration = crate::mcp_form_types::bind_private_mcp_forms(durable_id, std::sync::Arc::clone(&binding));
+        Some(McpFormsUnbind{session_id:session_id.to_owned(),binding,_registration:registration})
+    }
+    /// The per-connection presenter (senpi `registerConnection` presenter half); a previous one is detached first.
+    pub fn register_connection(&self, id: &str, send: PresenterSend) {
+        if let Some(previous) = guard(&self.connections).remove(id)
+            && let Some(authority) = self.authority.get()
+        {
+            authority.detach(&previous, None);
+        }
+        if let Some(authority) = self.authority.get() {
+            let connection = authority.connect(id, send);
+            guard(&self.connections).insert(id.to_owned(), connection);
+        }
+    }
+    pub fn unregister_connection(&self, id: &str) {
+        let connection = guard(&self.connections).remove(id);
+        if let (Some(connection), Some(authority)) = (connection, self.authority.get()) {
+            authority.detach(&connection, None);
+        }
+    }
+    pub fn attach(&self, id: &str, session_id: &str) {
+        if let (Some(authority), Some(connection), Some(binding)) =
+            (self.authority.get(), self.connection(id), self.binding(session_id))
+        {
+            authority.attach(&connection, &binding);
+        }
+    }
+    pub fn detach(&self, id: &str, session_id: &str) {
+        if let (Some(authority), Some(connection), Some(binding)) =
+            (self.authority.get(), self.connection(id), self.binding(session_id))
+        {
+            authority.detach(&connection, Some(binding.id));
+        }
+    }
+    /// A connection whose capabilities lack `interactive_user` + `mcp_form_presenter_v1` loses its grants.
+    pub fn capabilities_changed(&self, id: &str, capabilities: &[String]) {
+        let presents = capabilities.iter().any(|value| value == "interactive_user")
+            && capabilities.iter().any(|value| value == crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY);
+        if !presents
+            && let (Some(authority), Some(connection)) = (self.authority.get(), self.connection(id))
+        {
+            authority.withdraw(&connection);
+        }
+    }
+    /// A sealed or closed session's binding is disposed (senpi `closeSession` / `sealLifecycle`).
+    pub fn dispose_session(&self, session_id: &str) {
+        let binding = guard(&self.bindings).remove(session_id);
+        if let Some(binding) = binding {
+            binding.dispose();
+        }
+    }
+    /// senpi `handleMcpForm`: `None` when presenters are off or the record is not private; otherwise the
+    /// `mcp_form_reply` to write raw to the sending connection (outside queues, snapshots and replay).
+    pub fn handle(&self, value: &Value, connection: Option<&str>) -> Option<Value> {
+        let authority = self.authority.get()?;
+        let kind = value.get("type").and_then(Value::as_str)?;
+        if !kind.starts_with("mcp_form_") && kind != "mcp_presenter_context" {
+            return None;
+        }
+        let sender = connection.and_then(|id| self.connection(id));
+        let reply = if kind == "mcp_presenter_context" {
+            let context = match (value.get("sessionId").and_then(Value::as_str), &sender) {
+                (Some(session_id), Some(sender)) => authority.connection_context(sender, session_id),
+                _ => None,
+            };
+            match context {
+                Some(context) => serde_json::json!({"ok":true,"context":context.to_value()}),
+                None => serde_json::json!({"error":crate::mcp_presenter_authority::PRESENTER_NOT_AUTHORIZED}),
+            }
+        } else {
+            match &sender {
+                Some(sender) => authority.receive(sender, value).to_value(),
+                None => serde_json::json!({"error":crate::mcp_presenter_authority::PRESENTER_NOT_AUTHORIZED}),
+            }
+        };
+        let mut answer = serde_json::json!({"type":"mcp_form_reply"});
+        if let Some(id) = value.get("id").filter(|id| id.is_string()) {
+            answer["id"] = id.clone();
+        }
+        if let (Some(answer), Some(reply)) = (answer.as_object_mut(), reply.as_object()) {
+            answer.extend(reply.clone());
+        }
+        Some(answer)
+    }
+    /// A raw reply write failed: the sender loses its presenter state (senpi `catch { detach(sender) }`).
+    pub fn reply_failed(&self, id: &str) {
+        if let (Some(authority), Some(connection)) = (self.authority.get(), self.connection(id)) {
+            authority.detach(&connection, None);
+        }
+    }
+}
+/// What `bindMcpForms` returns: disposing the binding and forgetting it unless a newer one replaced it.
+pub struct McpFormsUnbind{session_id:String,binding:std::sync::Arc<crate::mcp_form_types::McpFormBinding>,_registration:crate::mcp_form_types::PrivateFormsRegistration}
+impl McpFormsUnbind{
+    pub fn binding(&self)->&std::sync::Arc<crate::mcp_form_types::McpFormBinding>{&self.binding}
+    pub fn unbind(self,presenters:&SessionMcpPresenters){
+        self.binding.dispose();
+        let mut bindings=guard(&presenters.bindings);
+        if bindings.get(&self.session_id).is_some_and(|current|current.id==self.binding.id){bindings.remove(&self.session_id);}
+    }
+}
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
     fn delta(text:&str)->Value{json!({"type":"message_update","message":{"content":text},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":text,"partial":{}}})}
@@ -196,4 +362,28 @@ impl SessionRecordScheduler{
     }
     #[test]fn tool_updates_replace_only_same_key_until_barrier(){let mut queue=RecordQueue::default();queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":1}));queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":2}));assert_eq!(queue.pop().unwrap()["value"],2);assert!(queue.pop().is_none());}
     #[test]fn scheduler_round_robins_only_after_current_record_drains(){let mut scheduler=SessionRecordScheduler::default();scheduler.enqueue("a",None,json!({"n":1}));scheduler.enqueue("a",None,json!({"n":2}));scheduler.enqueue("b",None,json!({"n":3}));assert_eq!(scheduler.next_record().unwrap().1["n"],1);assert!(scheduler.next_record().is_none());scheduler.enqueue("a",None,json!({"n":4}));scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],3);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],2);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],4);scheduler.acknowledge_write();assert!(scheduler.next_record().is_none());}
+    #[test]fn presenters_answer_private_records_only_when_enabled_and_withdraw_on_capability_loss(){
+        let presenters=SessionMcpPresenters::default();
+        assert_eq!(presenters.handle(&json!({"type":"mcp_form_sync","id":"1"}),Some("c")),None);
+        presenters.enable();
+        presenters.register_connection("c",std::sync::Arc::new(|_|true));
+        let unbind=presenters.bind("s","durable-writer-test",std::sync::Arc::new(||{}),&["c".to_owned()]).unwrap();
+        let context=presenters.handle(&json!({"type":"mcp_presenter_context","id":"2","sessionId":"s"}),Some("c")).unwrap();
+        assert_eq!(context["type"],"mcp_form_reply");assert_eq!(context["id"],"2");assert_eq!(context["ok"],true);
+        assert_eq!(context["context"]["bindingEpoch"],unbind.binding().epoch.as_str());
+        assert_eq!(presenters.handle(&json!({"type":"mcp_form_sync","id":"3","sessionId":"s"}),Some("c")).unwrap()["error"],"presenter_not_authorized");
+        assert_eq!(presenters.handle(&json!({"type":"get_state"}),Some("c")),None);
+        let authority=presenters.authority().unwrap().clone();
+        let owner=authority.enroll(None);
+        let connection=presenters.connection("c").unwrap();
+        let registration=owner.register(unbind.binding(),&connection,crate::mcp_form_types::McpPresenterKind::Desktop).unwrap();
+        owner.acquire(&registration).unwrap();
+        assert!(unbind.binding().capture().is_some());
+        presenters.capabilities_changed("c",&["interactive_user".to_owned()]);
+        assert!(unbind.binding().capture().is_none());
+        assert!(crate::mcp_form_types::private_mcp_forms("durable-writer-test").is_some());
+        unbind.unbind(&presenters);
+        assert!(presenters.binding("s").is_none());
+        assert!(crate::mcp_form_types::private_mcp_forms("durable-writer-test").is_none());
+    }
 }

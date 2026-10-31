@@ -177,6 +177,10 @@ impl Component for ExtensionSelectorComponent {
     }
 
     fn handle_input(&mut self, data: &str) {
+        // senpi `answerSettled`: a disposed (settled or aborted) form cannot answer twice.
+        if self.disposed {
+            return;
+        }
         let kb = &self.keybindings;
         if kb.matches(data, "app.tools.expand") {
             if let Some(callback) = &mut self.on_toggle_tools_expanded {

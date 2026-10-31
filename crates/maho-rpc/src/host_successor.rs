@@ -6,9 +6,17 @@ pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket
     let mut stderr_options=std::fs::OpenOptions::new();stderr_options.create(true).append(true);
     #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;stderr_options.mode(0o600);}
     let stderr=stderr_options.open(&context.paths.stderr_log)?;
-    let mut command=tokio::process::Command::new(&options.launch.command);command.args(&options.launch.args).env_clear().envs(options.env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr);
-    #[cfg(unix)] command.process_group(0);
-    let mut child=command.spawn()?;
+    // senpi `startSuccessor`: an enforcing predecessor never downgrades, and the presenter channel enrolls this
+    // replacement against the host it replaces.
+    let bootstrap=crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
+    let enforce=crate::mcp_presenter_bootstrap::presenter_enforcement()||context.host.capabilities.iter().any(|capability|capability==crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY);
+    let args:Vec<String>=options.launch.args.iter().cloned().chain(crate::mcp_presenter_bootstrap::presenter_launch_args(bootstrap.is_some(),enforce)).collect();
+    let env=options.env;
+    let configure=|command:&mut tokio::process::Command|{command.env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr);#[cfg(unix)] command.process_group(0);};
+    #[cfg(unix)]
+    let(mut child,presenter_enrollment)=crate::mcp_presenter_bootstrap::spawn_with_presenter_bootstrap(options.launch.command.as_os_str(),&args,configure,bootstrap,crate::mcp_presenter_bootstrap::PresenterLaunch{kind:"replacement",predecessor_host_instance:context.host.instance_id.clone().map(Some)})?;
+    #[cfg(not(unix))]
+    let(mut child,presenter_enrollment)={drop(bootstrap);let mut command=tokio::process::Command::new(&options.launch.command);command.args(&args);configure(&mut command);(command.spawn()?,None::<tokio::task::JoinHandle<()>>)};
     let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
     let result:std::io::Result<Option<HostProtocolInfo>>=async{
         let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(options.readiness_ms);
@@ -23,11 +31,12 @@ pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket
         }
     }.await;
     match result{
-        Ok(Some(protocol))=>Ok(Ok(RunningSuccessor{child,protocol})),
+        Ok(Some(protocol))=>{if let Some(enrollment)=presenter_enrollment{let _=enrollment.await;}Ok(Ok(RunningSuccessor{child,protocol}))}
         result=>{
+            if let Some(enrollment)=presenter_enrollment{enrollment.abort();}
             let _=child.kill().await;let _=child.wait().await;
             let reason=if result.is_err(){"successor_unavailable"}else{abort_reason(std::path::Path::new(socket),replaced)};
-            Ok(Err(crate::host_handoff::HandoffRefusal{reason,upgradeable:true}))
+            Ok(Err(crate::host_handoff::HandoffRefusal{reason,upgradeable:true,detail:None}))
         }
     }
 }

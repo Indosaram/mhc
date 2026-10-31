@@ -69,6 +69,8 @@ pub async fn read_host_status_with(
     if prune {
         crate::host_generations::prune_dead_generations(&paths)?;
     }
+    // A lost pointer is given back to the one proven live generation (senpi#1911); `prune: false` only looks.
+    let pointer = crate::host_pointer_election::elect_pointer(&paths, socket, prune);
     let generations = crate::host_generations::read_generation_rows(&paths)?;
     let current = generations.iter().find(|row| row.current);
     let metrics = current
@@ -88,7 +90,7 @@ pub async fn read_host_status_with(
     let sessions = read_session_counts(socket, include_workers).await;
     let env_keys = crate::host_daemon_env::read_daemon_env_keys(&paths)?;
     Ok(
-        serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations}),
+        serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer}),
     )
 }
 /// The registered host's start time, only when it is the very generation `current` names (same instance and pid).
@@ -136,5 +138,9 @@ mod tests {
         assert!(report["host_footprint_mb"].is_null());
         assert_eq!(report["sessions"]["total"], 0);
         assert_eq!(report["env_keys"], serde_json::json!([]));
+        assert_eq!(
+            report["pointer"],
+            serde_json::json!({"state":"missing","instanceId":null,"candidates":[]})
+        );
     }
 }

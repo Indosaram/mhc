@@ -22,6 +22,8 @@ pub struct WorkerRoutes {
     /// The writer's security bridge: which connections can present a grant, and where a settled dialog is recorded
     /// (senpi \`SessionEventWriter\`'s grant methods). \`None\` forwards a worker's grant traffic unchanged.
     pub security: Option<std::sync::Arc<dyn crate::session_worker_client::WorkerSecurityWriter>>,
+    /// The host writer's presenter state when private MCP forms are enforced (senpi `writer.mcpPresenters`).
+    pub presenters: Option<std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>>,
 }
 pub struct WorkerSessionEntry {
     pub close: SessionCloseState,
@@ -432,6 +434,7 @@ impl WorkerSessionRegistry {
             routes,
         );
         let security = output_routes.security.clone();
+        let presenters = output_routes.presenters.clone();
         SessionWorkerCallbacks {
             reserve: Box::new(move |path| {
                 reserve
@@ -486,6 +489,7 @@ impl WorkerSessionRegistry {
                 }
             }),
             security,
+            presenters,
         }
     }
     pub fn mark_close(

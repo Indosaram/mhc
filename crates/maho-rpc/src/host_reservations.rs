@@ -111,6 +111,38 @@ pub fn process_is_live(pid: u32) -> bool {
         })
         .unwrap_or(false)
 }
+/// Whether `pid` is a process still RUNNING: live, and not an exited-but-unreaped zombie (state Z), which
+/// makes no more writes (senpi `processIsRunning`, senpi#4119). Reads the kernel state in process instead of
+/// spawning `ps -o stat=`; an unreadable state on a live pid answers running, as the pinned source does.
+pub fn process_is_running(pid: u32) -> bool {
+    if !process_is_live(pid) {
+        return false;
+    }
+    !process_is_zombie(pid)
+}
+#[cfg(target_os = "linux")]
+fn process_is_zombie(pid: u32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(") ")
+                .and_then(|(_, rest)| rest.chars().next())
+        })
+        .is_some_and(|state| state == 'Z')
+}
+#[cfg(target_os = "macos")]
+fn process_is_zombie(pid: u32) -> bool {
+    /// `SZOMB` from `<sys/proc.h>`.
+    const SZOMB: u32 = 5;
+    i32::try_from(pid)
+        .ok()
+        .and_then(|pid| libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(pid, 1).ok())
+        .is_some_and(|info| info.pbi_status == SZOMB)
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_is_zombie(_pid: u32) -> bool {
+    false
+}
 /// `Proven`: the pid runs and its start time matches the claim. `Gone`: the pid is dead, or runs with a
 /// different start time. `Unproven`: the pid runs but no start time was recorded or none can be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +152,8 @@ pub enum ClaimIdentity {
     Unproven,
 }
 pub fn claim_owner_identity(owner: &SessionPathOwner) -> ClaimIdentity {
-    if !process_is_live(owner.pid) {
+    // An exited, unreaped owner (state Z) makes no more writes: the claim is gone (senpi#4119).
+    if !process_is_running(owner.pid) {
         return ClaimIdentity::Gone;
     }
     let Some(recorded) = &owner.process_start_time else {
@@ -418,6 +451,32 @@ fn endpoint_reservations_dir(
         None => socket.map(|socket| {
             crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir).dir
         }),
+    }
+}
+/// A test child left as an exited-but-unreaped zombie. Dropping it reaps the child, so an early test
+/// failure (an unwrap or assert before the end) still leaves no zombie behind.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) struct ZombieChild(std::process::Child);
+#[cfg(all(test, target_os = "linux"))]
+impl ZombieChild {
+    /// Spawns `/usr/bin/true` and waits for its exit without reaping it.
+    pub(crate) fn spawn() -> Self {
+        let child = Self(std::process::Command::new("/usr/bin/true").spawn().unwrap());
+        rustix::process::waitid(
+            rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child.0)),
+            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+        )
+        .unwrap();
+        child
+    }
+    pub(crate) fn id(&self) -> u32 {
+        self.0.id()
+    }
+}
+#[cfg(all(test, target_os = "linux"))]
+impl Drop for ZombieChild {
+    fn drop(&mut self) {
+        let _ = self.0.wait();
     }
 }
 #[cfg(test)]

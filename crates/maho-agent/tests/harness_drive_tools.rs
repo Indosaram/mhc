@@ -122,6 +122,7 @@ fn lane(
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions {
             now: Some(Arc::new(|| 10)),

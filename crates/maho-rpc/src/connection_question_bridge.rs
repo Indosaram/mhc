@@ -66,7 +66,8 @@ pub async fn degrade_question(
         comment,
         unanswered,
         auto_resolved_after_ms: None,
-        cancel_origin: (status == QuestionStatus::Cancelled).then_some(maho_ext_api::QuestionCancelOrigin::User),
+        cancel_origin: (status == QuestionStatus::Cancelled)
+            .then_some(maho_ext_api::QuestionCancelOrigin::User),
         resolved_by: Some(maho_ext_api::QuestionResolvedBy::LocalUi),
     })
 }
@@ -83,6 +84,8 @@ struct Pending {
 pub struct ConnectionQuestionBridge {
     pending: BTreeMap<String, Pending>,
     resolved: BTreeSet<String>,
+    /// Told when a question appears or ends (senpi `changed?: (change?: UiRequestChange) => void`).
+    changed: Option<crate::session_extension_ui_requests::UiRequestChanged>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum QuestionReply {
@@ -134,6 +137,22 @@ fn parse_answers(value: &Value) -> BTreeMap<String, QuestionAnswer> {
         .collect()
 }
 impl ConnectionQuestionBridge {
+    /// A bridge that reports each question it registers and settles.
+    pub fn with_changed(changed: crate::session_extension_ui_requests::UiRequestChanged) -> Self {
+        Self {
+            changed: Some(changed),
+            ..Self::default()
+        }
+    }
+    /// Installs the change listener after construction (a hosted session's binding learns its routing id late).
+    pub fn set_changed(&mut self, changed: crate::session_extension_ui_requests::UiRequestChanged) {
+        self.changed = Some(changed);
+    }
+    fn notify(&self, change: crate::session_extension_ui_requests::UiRequestChange) {
+        if let Some(changed) = &self.changed {
+            changed(Some(change));
+        }
+    }
     pub fn ask(
         &mut self,
         request: QuestionRequest,
@@ -145,6 +164,13 @@ impl ConnectionQuestionBridge {
         let questions=request.questions.iter().map(|question|json!({"id":question.id,"header":question.header,"question":question.question,"multiSelect":question.multi_select,"options":question.options.iter().map(|option|json!({"label":option.label,"description":option.description})).collect::<Vec<_>>()})).collect::<Vec<_>>();
         let frame = json!({"type":"extension_ui_request","method":"question","id":id,"requestId":request.request_id,"toolCallId":request.request_id,"waitForAnswer":request.wait_for_answer,"questions":questions,"timeout":timeout,"askedAtMs":now,"deadlineAtMs":now+timeout,"remainingMs":timeout});
         let (sender, receiver) = oneshot::channel();
+        self.notify(
+            crate::session_extension_ui_requests::UiRequestChange::Pending {
+                ui_request_id: id.clone(),
+                method: "question".into(),
+                request: frame.clone(),
+            },
+        );
         self.pending.insert(
             id,
             Pending {
@@ -176,6 +202,19 @@ impl ConnectionQuestionBridge {
     fn finish(&mut self, id: &str, status: QuestionStatus, now: u64) -> Option<Value> {
         let pending = self.pending.remove(id)?;
         self.resolved.insert(id.into());
+        self.notify(
+            crate::session_extension_ui_requests::UiRequestChange::Settled {
+                ui_request_id: id.to_owned(),
+                disposition: if matches!(
+                    status,
+                    QuestionStatus::Answered | QuestionStatus::CommentSubmitted
+                ) {
+                    "answered"
+                } else {
+                    "cancelled"
+                },
+            },
+        );
         let unanswered = pending
             .request
             .questions
@@ -208,8 +247,13 @@ impl ConnectionQuestionBridge {
             answers: pending.answers,
             comment: pending.comment,
             unanswered,
-            cancel_origin: (status == QuestionStatus::Cancelled).then_some(maho_ext_api::QuestionCancelOrigin::User),
-            resolved_by: matches!(status, QuestionStatus::Answered | QuestionStatus::CommentSubmitted).then_some(maho_ext_api::QuestionResolvedBy::RpcConnection),
+            cancel_origin: (status == QuestionStatus::Cancelled)
+                .then_some(maho_ext_api::QuestionCancelOrigin::User),
+            resolved_by: matches!(
+                status,
+                QuestionStatus::Answered | QuestionStatus::CommentSubmitted
+            )
+            .then_some(maho_ext_api::QuestionResolvedBy::RpcConnection),
             auto_resolved_after_ms: (status == QuestionStatus::TimedOut)
                 .then_some(now.saturating_sub(pending.asked_at)),
         };
@@ -341,6 +385,27 @@ mod tests {
             bridge.respond(&json!({"id":id}), 3).0,
             QuestionReply::AlreadyResolved
         );
+    }
+    #[test]
+    fn changes_report_the_question_pending_then_answered_or_cancelled() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        let mut bridge = ConnectionQuestionBridge::with_changed(Box::new(move |change| {
+            sink.lock()
+                .unwrap()
+                .push(change.map(|change| change.record()));
+        }));
+        let (frame, _answered) = bridge.ask(request(), None, 0);
+        let id = frame["id"].as_str().unwrap().to_owned();
+        bridge.respond(&json!({"id":id,"answers":{"q":{"selected":["yes"]}}}), 1);
+        let (other, _cancelled) = bridge.ask(request(), None, 2);
+        bridge.cancel_all(3);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].as_ref().unwrap()["type"], "ui_request_pending");
+        assert_eq!(seen[0].as_ref().unwrap()["method"], "question");
+        assert_eq!(seen[1].as_ref().unwrap()["disposition"], "answered");
+        assert_eq!(seen[3].as_ref().unwrap()["uiRequestId"], other["id"]);
+        assert_eq!(seen[3].as_ref().unwrap()["disposition"], "cancelled");
     }
     #[test]
     fn rpc_answer_resolution_record_names_resolver() {

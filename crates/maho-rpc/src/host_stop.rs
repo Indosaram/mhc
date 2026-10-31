@@ -222,6 +222,8 @@ async fn stop_host_locked(options: StopHostOptions) -> std::io::Result<StopHostO
         .clone()
         .unwrap_or_else(|| maho_core::config::get_agent_dir().into());
     let paths = crate::host_daemon_paths::create_host_daemon_paths(&options.socket, &agent_dir);
+    // A pointer an earlier prune dropped is given back to the one proven live generation (senpi#1911).
+    crate::host_pointer_election::elect_pointer(&paths, &options.socket, true);
     let timeout_ms = options
         .timeout_ms
         .unwrap_or(crate::host_stop_drain::DEFAULT_DRAIN_PROBE_TIMEOUT_MS);

@@ -88,6 +88,11 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let cwd_text = cwd.to_string_lossy();
     let agent_dir = maho_core::config::get_agent_dir();
+    if mode == AppMode::Interactive
+        && let Some(refusal) = super::args::tui_presenter_enforcement_refusal(&parsed)
+    {
+        return Err(refusal.to_owned());
+    }
     if mode != AppMode::Interactive {
         super::stdout_guard::take_over_stdout();
         // senpi main.ts:1008-1012: route process-wide stdout writes (`maho_write_stdout`) to stderr
@@ -159,6 +164,16 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     );
     indicator.during_surface_write(|| report_startup_settings_diagnostics(&startup_settings));
     if mode == AppMode::Rpc && parsed.multi_session {
+        // senpi v2026.10.27-2 main.ts hands `presenterBootstrapFd`/`mcpPresenterEnforcement` to
+        // `runMultiSessionHost`. OPEN: maho-rpc has no presenter-aware host entry
+        // (`run_multi_session_host_with_presenter`, senpi-rpc-rest-31 / host-09), so a host asked
+        // to enforce presenters refuses to start instead of serving without enforcement.
+        if parsed.presenter_bootstrap_fd.is_some() || parsed.mcp_presenter_enforcement {
+            return Err(
+                "--mcp-presenter-fd and --mcp-presenter-enforcement are not supported by this build's host yet"
+                    .to_owned(),
+            );
+        }
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
         // upstream it starts only after the stdout takeover and the migrations above, and never
@@ -216,8 +231,13 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     // senpi main.ts:1157-1161: decide the final runtime cwd before creating cwd-bound runtime
     // services. --session and --resume may select a session from another project, so project
     // trust, settings, resources and models resolve against the target session cwd.
+    // senpi v2026.10.27-2 `createSessionManager`: ancestry applies to fresh sessions only.
+    if let Some(warning) = super::args::spawned_by_ignored_warning(&parsed) {
+        indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: {warning}\x1b[39m"));
+    }
     let identity = Some(maho_core::session_manager::NewSessionOptions {
         id: parsed.session_id.clone(),
+        spawned_by: parsed.spawned_by.clone(),
         ..Default::default()
     });
     let session_dir = resolve_session_dir(
@@ -286,7 +306,14 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     } else if let Some(id) = parsed.session_id.as_deref() {
         // senpi main.ts:537-547: an existing exact-id project session is resumed, not duplicated.
         match find_local_session_by_exact_id(id, &cwd_text, session_dir.as_deref()) {
-            Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
+            Some(path) => {
+                if parsed.spawned_by.is_some() {
+                    indicator.during_surface_write(|| {
+                        eprintln!("\x1b[33mWarning: --spawned-by is ignored when resuming an existing session.\x1b[39m")
+                    });
+                }
+                SessionManager::open(&path, session_dir.as_deref(), None, None)?
+            }
             None => {
                 indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m"));
                 SessionManager::create(&cwd_text, session_dir.as_deref(), identity)
@@ -1060,6 +1087,8 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     session.emit_session_shutdown_for_quit(true).await;
     session.dispose().await;
     drop(process_lifetime);
+    // senpi's endpoint `process.once("exit", unregisterTuiEndpointSync)`: nothing is left registered.
+    maho_interactive::session_control_lifecycle::unregister_endpoints_at_exit();
     if let Some(code) = signal_code {
         std::process::exit(code);
     }

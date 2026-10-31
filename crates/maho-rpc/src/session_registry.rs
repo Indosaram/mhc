@@ -20,6 +20,9 @@ pub struct RpcSessionLaunchProfile {
     pub retry_fallback: Option<serde_json::Value>,
     /// The host endpoint this session's holder record names (senpi `holderEndpoint`).
     pub holder_endpoint: Option<maho_core::session_holders::SessionHolderEndpoint>,
+    /// The validated ancestry of a child session, merged into the launch profile (senpi `spawnedBy`) for the
+    /// runtime factory to write into the new session's header.
+    pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
 }
 pub struct SessionIdentity {
     pub kind: maho_ext_api::SessionKind,
@@ -56,12 +59,20 @@ pub struct RpcSessionEntry {
     pub last_command_at: f64,
     /// Patches `set_session_context` applied over the frozen open-time context (senpi `contextOverlay`).
     pub context_overlay: Option<crate::session_context_patch::SessionContextOverlay>,
+    /// The in-process session's ordered acceptance lane, present only while the compact-updates flag is on.
+    pub acceptance: Option<SharedAcceptanceLane>,
 }
+pub type SharedAcceptanceLane =
+    Arc<std::sync::Mutex<crate::session_acceptance_lane::SessionAcceptanceLane>>;
 #[derive(Default)]
 pub struct RpcSessionRegistry {
     entries: BTreeMap<String, RpcSessionEntry>,
     next_handle: u64,
     worker_refusal: Option<(u64, u64)>,
+    /// A session worker's own registry: its host owns the acceptance lane, so the isolate opens none.
+    pub worker_isolate: bool,
+    /// The compact-updates flag as this registry sees it; `None` reads the process environment.
+    pub compact_updates: Option<bool>,
 }
 pub enum OpenAdmission {
     Create(String),
@@ -225,6 +236,7 @@ impl RpcSessionRegistry {
                 identity,
                 last_command_at: now,
                 context_overlay: None,
+                acceptance: None,
             },
         );
         Ok(OpenAdmission::Create(handle))
@@ -241,6 +253,24 @@ impl RpcSessionRegistry {
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
         entry.durable_session_id = Some(runtime.session().session_id());
         entry.session_path = runtime.session().session_file();
+        // senpi `openSession`: the lane bootstraps from the manager's journal before admission.
+        let compact_updates = self
+            .compact_updates
+            .unwrap_or_else(maho_core::engine_socket_flag::compact_updates_enabled);
+        if compact_updates && !self.worker_isolate {
+            let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::default();
+            let transcript = runtime
+                .session()
+                .with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            lane.bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap { transcript },
+                None,
+            );
+            runtime
+                .session()
+                .set_session_recovery_epoch(lane.recovery_epoch());
+            entry.acceptance = Some(Arc::new(std::sync::Mutex::new(lane)));
+        }
         entry.close.writing = true;
         entry.close.state = RpcSessionState::Open;
         entry.runtime = Some(runtime);

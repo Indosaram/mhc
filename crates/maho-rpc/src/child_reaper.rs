@@ -162,6 +162,43 @@ impl<S: ChildReaperSyscalls> ChildReaper<S> {
         ))
     }
 }
+/// senpi `ChildReaperOptions`: the reaper's injected clock and window beside its syscalls.
+pub struct ChildReaperOptions<S> {
+    pub syscalls: S,
+    pub min_waitable_ms: Option<u64>,
+}
+impl<S: ChildReaperSyscalls> ChildReaperOptions<S> {
+    pub fn build(self) -> ChildReaper<S> {
+        ChildReaper::new(
+            self.syscalls,
+            self.min_waitable_ms
+                .unwrap_or(30_000)
+                .max(MIN_WAITABLE_FLOOR_MS),
+        )
+    }
+}
+/// Reap the given pids, when exited, right now (senpi `collectOrphanedChildren`): the kernel worker calls this for
+/// the children a terminated thread left behind, without waiting a reaper window. Returns the pids reaped.
+pub fn collect_orphaned_children(pids: &[i32]) -> Vec<i32> {
+    let platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        std::env::consts::OS
+    };
+    let Some(syscalls) = crate::child_reaper_syscalls::load_child_reaper_syscalls(platform) else {
+        return Vec::new();
+    };
+    collect_orphaned_children_with(syscalls, pids)
+}
+fn collect_orphaned_children_with(
+    mut syscalls: impl ChildReaperSyscalls,
+    pids: &[i32],
+) -> Vec<i32> {
+    pids.iter()
+        .copied()
+        .filter(|pid| *pid > 0 && syscalls.is_waitable(*pid) && syscalls.reap_exited(*pid))
+        .collect()
+}
 /// Handle for the armed reaper task. Dropping or calling `stop` clears the tick.
 pub struct ChildReaperHandle {
     task: tokio::task::JoinHandle<()>,
@@ -339,5 +376,52 @@ mod tests {
             )
             .is_none()
         );
+    }
+}
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+    struct Fake {
+        waitable: Vec<i32>,
+        reaped: Vec<i32>,
+    }
+    impl ChildReaperSyscalls for Fake {
+        fn list_direct_children(&mut self) -> Vec<i32> {
+            Vec::new()
+        }
+        fn is_waitable(&mut self, pid: i32) -> bool {
+            self.waitable.contains(&pid)
+        }
+        fn reap_exited(&mut self, pid: i32) -> bool {
+            self.reaped.push(pid);
+            true
+        }
+        fn describe(&mut self, _pid: i32) -> String {
+            String::new()
+        }
+    }
+    #[test]
+    fn only_positive_waitable_pids_are_reaped() {
+        let fake = Fake {
+            waitable: vec![-1, 0, 5, 9],
+            reaped: Vec::new(),
+        };
+        assert_eq!(
+            collect_orphaned_children_with(fake, &[-1, 0, 5, 7, 9]),
+            vec![5, 9]
+        );
+        assert!(collect_orphaned_children(&[]).is_empty());
+    }
+    #[test]
+    fn options_floor_the_window() {
+        let reaper = ChildReaperOptions {
+            syscalls: Fake {
+                waitable: vec![],
+                reaped: vec![],
+            },
+            min_waitable_ms: Some(1),
+        }
+        .build();
+        assert_eq!(reaper.child_count(), 0);
     }
 }
