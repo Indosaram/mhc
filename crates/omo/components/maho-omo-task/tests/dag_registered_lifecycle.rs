@@ -386,6 +386,7 @@ async fn live_lifecycle(shutdown_live: bool, peer_live: bool) {
             definition,
             parent_session_id: "session".into(),
             root_session_id: "session".into(),
+            parent_model: None,
         })
         .expect("start")
         .snapshot
