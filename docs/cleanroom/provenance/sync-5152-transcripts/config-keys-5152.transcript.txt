@@ -1,0 +1,45 @@
+st_01a18d3d [completed] transcript via event-log:
+assistant: I read this as a clean-room implementation task - read the spec delta, change maho-config defaults plus tests, commit. I'll stop when the commit exists and I've reported the sha.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: maho-memory doesn't consume these keys. Let me check how defaults are materialised and whether a JSON Schema export exists.
+tool: bash
+tool: bash
+tool[error]: bash
+tool: bash
+assistant: No JSON Schema export exists in this crate; the schema's `Field.default` (via `schema::document_rule()`) is the source the schema would be generated from, so I'll test that. Now edit.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: maho-memory reads only `memory.enabled`, not projection, so it stays untouched. Format, provenance, commit.
+tool: bash
+assistant: Ask: implement the v5.1.52 Delta D1 (new `memory.projection` defaults) in maho-config as a clean-room change and commit it - wanted: a commit sha, the tests added or changed, and the ambiguities I resolved. For you: the commit is in. As instructed, I didn't run cargo, so none of the new tests have been run. Now: done. Next: nothing.
+
+**Commit:** `d876576` - `feat(maho-config): config-keys defaults from omo v5.1.52 spec (clean room)`. It touches only `crates/maho-config/{src/schema.rs, tests/load.rs, PROVENANCE.md}`.
+
+**Change** (`src/schema.rs`, `memory_fields`):
+- `max_entries_per_directory` now defaults to 0 (was 40).
+- `max_bytes` now defaults to 40960 (was 24576).
+- The `projection` object default is now `{"max_entries_per_directory": 0, "max_bytes": 40960}`, as the spec says (it was `{}`).
+- Agent overrides (`memory.agents.<name>.projection`) still have no default of their own, because they are built with `with_defaults = false`.
+
+**Tests added in `tests/load.rs`:**
+- `memory_without_projection_gets_the_new_projection_defaults`: given `{"memory":{"enabled":true}}`, the view has 0 and 40960.
+- `written_projection_max_bytes_wins_and_entries_default_to_zero`: a written `max_bytes` of 24576 is kept and entries default to 0.
+- `written_projection_entries_win_and_max_bytes_defaults_to_40960`: a written entries value of 40 is kept and `max_bytes` defaults to 40960.
+- `negative_projection_value_is_pruned_and_the_default_applies`: covers the spec's error case.
+- `schema_defaults_of_projection_keys_are_0_and_40960`: checks the defaults on the schema rule (see the third point below).
+
+**Tests changed:** none. No existing test checked 40 or 24576; I searched the whole repo for those values.
+
+**Ambiguities I resolved:**
+- **`projection` object default:** I set it to the full object the spec lists. With the old `{}` the result in the merged view would be the same, because the fields fill themselves in, but now the schema matches the spec exactly.
+- **maho-memory:** I left it alone. It reads only `memory.enabled` from the config (in `extension.rs`) and never reads the `projection` keys, so the new defaults don't reach it. No PROVENANCE entry was needed there.
+- **"Regenerated JSON Schema" test:** this crate has no JSON Schema export. The closest thing is the `Field.default` values on `schema::document_rule()`, so the test checks those.
+- **`model_pad`:** not implemented. The spec says to keep treating it as an unknown key.
+
+I ran rustfmt (edition 2024) on the two changed `.rs` files only. I added just my three files to the commit and didn't touch maho-telemetry. I didn't hit an `index.lock` conflict.
