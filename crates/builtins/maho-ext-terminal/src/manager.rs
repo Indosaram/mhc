@@ -466,6 +466,10 @@ pub async fn teardown_shared(manager: &Arc<Mutex<TerminalManager>>) -> Result<()
     manager.id_counters.clear();
     first_error.map_or(Ok(()), Err)
 }
+/// Upstream `isCapacityError`: whether a create failed because every registry slot is live.
+pub fn is_capacity_error(error: &ManagerError) -> bool {
+    matches!(error, ManagerError::Capacity(_))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,10 +550,12 @@ mod tests {
         manager.bind_monitor_id("mon_1", &id);
         assert_eq!(manager.resolve_id("mon_1"), Some(id.clone()));
         assert_eq!(manager.active_size()?, 1);
-        assert!(matches!(
-            manager.create("read", crate::shared::test_sh_options("read value")),
-            Err(ManagerError::Capacity(1))
-        ));
+        let refused = manager
+            .create("read", crate::shared::test_sh_options("read value"))
+            .unwrap_err();
+        assert!(matches!(refused, ManagerError::Capacity(1)));
+        assert!(is_capacity_error(&refused));
+        assert!(!is_capacity_error(&ManagerError::InvalidIdScope));
         assert!(manager.stop(&id)?);
         assert!(manager.get(&id).is_some());
         manager.teardown()?;
