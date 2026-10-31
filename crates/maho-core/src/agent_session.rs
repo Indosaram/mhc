@@ -3775,10 +3775,12 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
                     to,
                     chain_key,
                     reason,
+                    limit,
                 } => AgentSessionEvent::RetryFallbackApplied {
                     from,
                     to,
                     chain_key,
+                    limit,
                     reason: match reason {
                         FallbackReason::Transient => "transient",
                         FallbackReason::Refusal => "refusal",
@@ -3787,8 +3789,12 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
                     }
                     .to_owned(),
                 },
-                FallbackEvent::Reverted { from, to } => {
-                    AgentSessionEvent::RetryFallbackReverted { from, to }
+                FallbackEvent::Reverted { from, to, stranded } => {
+                    AgentSessionEvent::RetryFallbackReverted {
+                        from,
+                        to,
+                        cause: stranded.then(|| "fallback-unusable".to_owned()),
+                    }
                 }
             });
         }

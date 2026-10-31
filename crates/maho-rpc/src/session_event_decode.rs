@@ -253,6 +253,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
             to: get(record, "to")?,
             chain_key: get(record, "chainKey")?,
             reason: get(record, "reason")?,
+            limit: get(record, "limit"),
         }),
         "retry_fallback_exhausted" => Some(E::RetryFallbackExhausted {
             chain_key: get(record, "chainKey")?,
@@ -265,6 +266,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
         "retry_fallback_reverted" => Some(E::RetryFallbackReverted {
             from: get(record, "from")?,
             to: get(record, "to")?,
+            cause: get(record, "cause"),
         }),
         "model_changed" => Some(E::ModelChanged {
             model: get(record, "model")?,
