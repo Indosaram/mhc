@@ -108,6 +108,39 @@ fn calculates_total_context_tokens_from_usage() {
     assert_eq!(calculate_context_tokens(&with_null_context), 0);
 }
 
+// oh-my-openagent#10792: compaction uses occupied context, not cumulative billing.
+#[test]
+fn keeps_cumulative_sdk_billing_below_the_context_threshold_when_the_last_request_fits() {
+    let mut billed = usage(2_000, 300, 700_000, 0);
+    billed.context_usage = Some(Some(maho_ai::types::ContextUsage {
+        input: 352_000,
+        output: 200,
+    }));
+    let message = assistant_message("done", billed);
+    let estimate = estimate_context_tokens(&[message]);
+    assert_eq!(estimate.tokens, 352_200);
+    assert!(!should_compact(
+        estimate.tokens,
+        1_000_000,
+        &CompactionSettings {
+            enabled: true,
+            reserve_tokens: 300_000,
+            keep_recent_tokens: 20_000,
+        }
+    ));
+    assert_eq!(billed.total_tokens, 702_300);
+}
+
+#[test]
+fn estimates_content_when_no_request_level_context_measurement_exists() {
+    let mut billed = usage(700_000, 300, 0, 0);
+    billed.context_usage = Some(None);
+    assert_eq!(
+        estimate_context_tokens(&[assistant_message("done", billed)]).tokens,
+        1
+    );
+}
+
 #[test]
 fn keeps_cumulative_sdk_billing_below_the_context_threshold_when_the_last_request_fits() {
     let mut billed = usage(2_000, 300, 700_000, 0);

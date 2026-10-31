@@ -47,6 +47,37 @@ pub async fn read_deferred_source_handle(
     Ok(handle)
 }
 
+/// Pinned `runDeferredSuspended`: poll one durably suspended deferred response when this pass
+/// carries a permit.
+pub async fn run_deferred_suspended(
+    lane: &dyn RuntimeDriveLane,
+    drive: &Drive,
+    deferred: &DeferredSuspendedOperation,
+) -> Result<ProcedureResult, SessionError> {
+    run_deferred(
+        lane,
+        drive,
+        &OperationState::DeferredSuspended(deferred.clone()),
+    )
+    .await
+}
+
+/// Pinned `recoverDeferredPoll`: replace one orphaned unknown-outcome poll under fresh ids when
+/// this pass carries a permit.
+pub async fn recover_deferred_poll(
+    lane: &dyn RuntimeDriveLane,
+    drive: &Drive,
+    deferred: &DeferredEffectPendingOperation,
+) -> Result<ProcedureResult, SessionError> {
+    run_deferred(
+        lane,
+        drive,
+        &OperationState::DeferredEffectPending(deferred.clone()),
+    )
+    .await
+}
+
+/// Pinned `runDeferred`: advance or report the wait for one deferred run phase.
 pub async fn run_deferred(
     lane: &dyn RuntimeDriveLane,
     drive: &Drive,

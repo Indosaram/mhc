@@ -1272,10 +1272,11 @@ async fn unknown_deferred_poll_replaces_ids_and_deletes_abandoned_frames() {
             .len(),
         1
     );
-    maho_agent::harness::runtime::drive::deferred::run_deferred(
+    // Pinned `recoverDeferredPoll(lane, replacement, unknown)`.
+    maho_agent::harness::runtime::drive::deferred::recover_deferred_poll(
         lane.as_ref(),
         &poll_drive(),
-        &unknown,
+        old,
     )
     .await
     .expect("recover poll");
