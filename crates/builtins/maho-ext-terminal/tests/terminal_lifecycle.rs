@@ -412,13 +412,15 @@ async fn queued_spec_is_recorded_after_session_start(
         0,
         "the queue drained into the bound writer"
     );
-    shutdown(&api, &ctx, SessionReason::Quit).await;
+    // The drain records through the bound writer, which persists at once: the entry is on disk
+    // before any shutdown (the spec has no live runtime here, so the shutdown sync would drop it).
     let saved: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&manifest).expect("manifest written"))
             .expect("manifest json");
     let monitors = saved["monitors"].as_array().expect("monitors");
     assert_eq!(monitors.len(), 1, "the queued spec is recorded: {saved}");
     assert_eq!(monitors[0]["monitorId"], "mon_QUEUEDWHILEUNBND");
+    shutdown(&api, &ctx, SessionReason::Quit).await;
 }
 
 #[tokio::test]

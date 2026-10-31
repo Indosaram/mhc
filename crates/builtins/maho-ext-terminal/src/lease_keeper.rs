@@ -228,7 +228,7 @@ impl LeaseKeeper {
             drop(inner);
             // stop() landed while the acquire was in flight: hand the lease straight back.
             if let AcquireTerminalLeaseResult::Acquired { path, pid, token } = result {
-                release_terminal_lease(&path, pid, Some(&token))?;
+                release_terminal_lease(&path, pid, Some(token.as_str()))?;
             }
             return Ok(());
         }
