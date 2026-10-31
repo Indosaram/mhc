@@ -365,20 +365,42 @@ pub async fn rebind_session_file(
     };
 
     // senpi `withSessionMoveLock`: a session another live process holds is refused with
-    // `SessionHeldError` naming it, instead of being moved out from under it.
-    let holders = live_holders_of(&source, &header.id).await?;
-    if !holders.is_empty() {
-        return Err(std::io::Error::other(
-            crate::session_hold_errors::SessionHeldError::new(source.to_string_lossy(), holders),
-        ));
-    }
-    crate::session_move::session_lock::with_session_move_lock(
+    // `SessionHeldError` naming it, instead of being moved out from under it. The holders are read
+    // under the move lock, so one that appeared just before it is still named.
+    let held = |holders: Vec<crate::session_holder_records::SessionHolder>| {
+        std::io::Error::other(crate::session_hold_errors::SessionHeldError::new(
+            source.to_string_lossy(),
+            holders,
+        ))
+    };
+    let moved = crate::session_move::session_lock::with_session_move_lock(
         &source,
-        async { Ok(move_session_file(&source, &target, &cwd.to_string_lossy()).await) },
+        async {
+            let holders = match live_holders_of(&source, &header.id).await {
+                Ok(holders) => holders,
+                Err(error) => return Ok(Err(error)),
+            };
+            if !holders.is_empty() {
+                return Ok(Err(held(holders)));
+            }
+            Ok(move_session_file(&source, &target, &cwd.to_string_lossy()).await)
+        },
         None,
     )
-    .await
-    .map_err(std::io::Error::other)?
+    .await;
+    match moved {
+        Ok(result) => result,
+        // The lock itself refused because a live holder or another mover has the session: name the holders
+        // when there are any, as the typed check inside the lock would have.
+        Err(lock_error) => {
+            let holders = live_holders_of(&source, &header.id).await?;
+            if holders.is_empty() {
+                Err(std::io::Error::other(lock_error))
+            } else {
+                Err(held(holders))
+            }
+        }
+    }
 }
 
 async fn live_holders_of(

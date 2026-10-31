@@ -786,6 +786,12 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     }
     let session = Arc::new(created.session);
     super::memory_report_registry::register_session(&session);
+    // senpi `projectTrustContextFactory`: a /resume or RPC switch into another project decides its trust with
+    // the launch's cache and resolution; the interactive mode may ask (hasUI true), the others never do.
+    session.set_switch_project_trust(Some(super::host_runtime::switch_project_trust(
+        &trust_config,
+        mode == AppMode::Interactive,
+    )));
     // senpi main.ts:1253: `setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides())`.
     maho_tui::terminal_image::set_capability_overrides(session.with_settings_manager(|settings| {
         settings.get_terminal_capability_overrides(&maho_core::config::current_env())
