@@ -1,0 +1,60 @@
+st_01a18f43 [completed] transcript via event-log:
+assistant: I read this as a scoped clean-room fix task - edit the clean tree for the 5 listed fixes, rustfmt-check, commit. I'll stop when the commit exists and I report its sha with one line per fix.
+tool: bash
+tool: read
+tool: bash
+tool: read
+tool: bash
+tool: read
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Now the classifier.
+tool: bash
+tool: bash
+tool: bash
+tool[error]: bash
+tool: bash
+tool: bash
+tool[error]: bash
+tool: bash
+tool: bash
+assistant: HEAD's manager.rs, skills.rs and addon.rs already fail `rustfmt --check` (the parent commit too). To meet the check constraint, I'll format the changed files.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Next I'll check the anthropic-subscription crate in the clean tree, so the token-expiry match follows the text that crate actually emits.
+tool: bash
+tool: bash
+tool: bash
+assistant: Ask: fix the 5 findings from the clean-room review in `/home/projects/mhc-ws/sync5152-clean` and commit there - wanted: the sha and one line per fix. For you: all 5 fixes are in commit **acfba0d** (parent 24cc0c5). Nothing has been compiled or run yet, because cargo was not allowed. Clippy, the new tests and the test that should fail on the old code are all unconfirmed. The only check run was `rustfmt --edition 2024 --check` on the 5 changed files, and it passes. Now: done. Next: nothing in my scope; the maho-cli wiring for D1 is yours.
+
+1. **result_large_err:** `follow_up` now takes `&mut TaskRecord` and returns `Option<(TaskRecord, String)>`, so no large record sits in an `Err` value. The only caller, in `launch`, is updated.
+2. **D4 queued messages:** `execute()` now also returns the prompt it actually ran, including the messages merged in while the task was queued. `reroute` retries with that prompt instead of the original one. The new test `d4_retry_keeps_messages_queued_before_the_first_run` (concurrency 1, a blocker task, `task_send` to the queued task) expects the retry to get "do it\n\nmessage one"; the old code would retry with "do it". I added a `Fixture::with_concurrency` helper for it.
+3. **D2 classifier:**
+   - "session expired" / "session has expired" now count as rejected only when the text also mentions `/login`.
+   - The bare "token expired" / "token has expired" phrases are removed. The spec's token text is still covered by "token was rejected", which the anthropic-subscription crate emits.
+   - The 403 account words now match only on whole-word boundaries, so "keyword" and "monkey" no longer count. `api_key` still counts, because `_` is treated as a boundary.
+   - New and extended tests: `expiry_needs_the_engine_texts` and `forbidden_only_about_the_account`.
+4. **Skills test:** `bundled_root_comes_from_the_shared_resolver` now passes no extra roots, so the bundled root can only come from the resolver.
+5. **outcome_of:** new unit test `addon::tests::outcome_of_failed_runs`. It covers an error with an exit code (not infrastructure), an error without one (infrastructure), no error with exit code 3, and a completed run.
+
+The commit also contains a lot of formatting-only changes. `manager.rs`, `skills.rs` and `addon.rs` already failed the rustfmt check at 24cc0c5, so I reformatted those whole files to make the required check pass.
+assistant: I read this as two small fixes in the clean tree - add plural support in has_word plus tests, and remove the needless borrow; then rustfmt-check and commit. I'll stop when the commit exists and I report its sha.
+tool: bash
+tool: bash
+tool: bash
+assistant: Ask: round 2 of the clean-room fixes - wanted: plural account words in the 403 check plus the needless-borrow fix, committed in the clean tree, with the sha. For you: both fixes are committed as **125f411** on top of acfba0d. Nothing has been compiled or run yet, because cargo was not allowed, so the new assertions and clippy are unconfirmed. `rustfmt --edition 2024 --check` passes on both changed files. Now: done. Next: nothing in my scope.
+
+1. **Plurals:** `has_word` in `credentials.rs` now also accepts the word with a trailing `s`, as long as the next character is not a letter or digit. New assertions expect Rejected for "403 forbidden: invalid credentials", "403 forbidden: tokens revoked", "403: accounts are suspended" and "forbidden: keys disabled". The existing "keyword" and "monkey" assertions still expect NoFailure.
+2. **Needless borrow:** in `manager.rs` `follow_up`, `self.transcript(&settled)` is now `self.transcript(settled)`.

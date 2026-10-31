@@ -1,0 +1,154 @@
+st_01a18d77 [completed] transcript via event-log:
+assistant: I read this as a clean-room implementation task - read the three specs' 5152 Delta sections and the four crates, implement APPLIES items with tests, commit once. I'll stop when the commit exists and the report is delivered.
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: write
+tool: bash
+tool: bash
+tool: bash
+tool: edit
+assistant: Now models.rs (fallback plan + parent as last candidate):
+tool: bash
+tool: bash
+assistant: Now the steering transcript module and manager changes.
+tool: write
+tool: bash
+assistant: Now the manager: D1 env plumbing, D3 annotation, D4 reroute, D7 follow-up, D8 check.
+tool: bash
+assistant: Now the manager.
+tool: bash
+tool: bash
+assistant: Let me make the session-id match token-exact instead of substring, and drop that awkward assertion.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: write
+tool: bash
+tool: write
+error: 503: {"code":"MODEL_QUOTA_EXHAUSTED","message":"every account that can serve model 'claude-opus-5-5' is temporarily rate-limited; earliest retry in 3m","retry_after_seconds":225,"type":"quota_exhausted"} (retry-after-ms: 225000)
+error: 503: {"code":"MODEL_QUOTA_EXHAUSTED","message":"every account that can serve model 'claude-opus-5-5' is temporarily rate-limited; earliest retry in 2m","retry_after_seconds":165,"type":"quota_exhausted"} (retry-after-ms: 165000)
+error: 503: {"code":"MODEL_QUOTA_EXHAUSTED","message":"every account that can serve model 'claude-opus-5-5' is temporarily rate-limited; earliest retry in 1m","retry_after_seconds":104,"type":"quota_exhausted"} (retry-after-ms: 104000)
+error: 503: {"code":"MODEL_QUOTA_EXHAUSTED","message":"every account that can serve model 'claude-opus-5-5' is temporarily rate-limited; earliest retry in 0m","retry_after_seconds":44,"type":"quota_exhausted"} (retry-after-ms: 44000)
+error: 503: {"code":"MODEL_QUOTA_EXHAUSTED","message":"every account that can serve model 'claude-opus-5-5' is temporarily rate-limited","retry_after_seconds":0,"type":"quota_exhausted"}
+error: 503: {"message":"no available accounts for this model","type":"invalid_request_error"}
+assistant: Resuming. Checking worktree state first, then I'll fix the remaining items (one prior test that D8 intentionally changes, a `use` path), add PROVENANCE, format-check, and commit.
+tool: bash
+assistant: HEAD has moved since the brief (was 89d53a2). Let me see what landed so I don't clobber anything.
+tool: bash
+assistant: Unrelated crates; `delegate.rs` untouched, so my use of `DelegateInput` is still valid. Checkpointing now as instructed (I'll amend it into the single deliverable commit).
+tool: bash
+tool: bash
+assistant: Fixing two compile hazards I spotted on review (a relative `use` of enum variants, and an unused-on-Windows helper), then verifying the models.rs edit region and stale imports.
+tool: bash
+assistant: Checkpoint `0b2a558` holds the work so far. Now rustfmt: first I'll see whether the touched files were rustfmt-clean before my change, so I don't reformat unrelated code.
+tool: bash
+assistant: Every pre-existing file shows "dirty" even at the base commit. That suggests the check from `/tmp` misses the repo's rustfmt config, so I'll check in place.
+tool: bash
+assistant: The baseline files really are not rustfmt-clean, so running rustfmt over them would reformat lots of code I didn't touch. I'll format only the four new files fully and leave the rest alone.
+tool: bash
+assistant: Now the PROVENANCE sections, in the format the earlier 5152 commits used.
+tool: bash
+tool: bash
+assistant: Wiring is consistent. Now I'll fold the checkpoint into the one deliverable commit and confirm it only touches the three crates.
+tool: bash
+assistant: Ask: implement the v5.1.52 delta of the task, workflow-dag and team specs in clean-room mode, as one commit - wanted: the sha, one line per D-item, the spec ambiguities, and the API changes outside callers must adapt to. For you: committed as **`24cc0c5`**, 23 files, all inside `crates/maho-task`, `crates/maho-workflow` and `crates/maho-team`. Nothing was compiled or run, per the brief: no `cargo`, so every test listed below is still unrun until the merged tree builds. The four new files pass `rustfmt --edition 2024 --check`. The edited existing files fail that check, but they already failed it at 89d53a2, so I did not reformat them. Now: nothing open. Next: nothing; the brief is done.
+
+The root moved HEAD to `ba5600a` mid-task (model-selection D6). My commit sits on top of it and does not touch those files. The checkpoint commit was folded into the single commit.
+
+**Per D-item**
+- **task D1** (ancestry): implemented. The child environment now carries `MAHO_TASK_PARENT_SESSION`; the root falls back to the parent when empty. `spawned_by_from` / `current_spawned_by` build the `spawnedBy` value. Tests: `runner::child_env_carries_parent_and_root`, `settings::spawned_by_from_the_environment`, `d1_resume_passes_the_same_ancestry`.
+- **task D2** (classifier): implemented in `credentials::classify`. Tests: `missing_credentials`, `authentication_required_only_without_a_model`, `rejected_credentials`, `forbidden_only_about_the_account`, `unrelated_failures`, `rejected_wins_over_missing`.
+- **task D3** (remedy line): implemented, added once per record. Tests: `credentials::remedy_lines`, `d4_same_provider_only_fails_with_the_remedy_line`, `d4_explicit_model_is_not_rerouted`.
+- **task D4** (first-run fallback): implemented. A retry runs in a fresh session, keeps `runs` at 1, gets a `(fallback: <provider> …)` source suffix and a hook note, and causes only one delivery. Tests: `d4_first_run_moves_to_another_provider`, `d4_same_provider_only…`, `d4_explicit_model…`, `d4_no_retry_without_a_clean_credential_failure`, `d4_each_provider_is_dropped_once`, `models::resolve_without_dropped_providers`.
+- **task D7** (steer dedupe): implemented. The gateway delivery id becomes the pending-entry id, and each steer is decided from the child's transcript. Tests: `d7_answered_steer_is_not_repeated`, `d7_unanswered_steer_gets_one_follow_up_without_its_text`, `d7_undrained_steer_is_delivered_once_and_lost_files_are_reported`, `d7_restarted_parent_drops_admitted_pending_entries`, `steering::admission_states`.
+- **task D8** (pid ownership): implemented on both the `control::cancel` and `TaskManager::cancel` paths. Tests: `d8_reused_pid_is_not_signalled`, `d8_real_child_is_signalled`, `record::task_child_match`. The existing `cancel_foreign_running_task_signals_its_owner` now spawns a child whose command line carries `--session-id`; it is meant to fail without that change.
+- **workflow-dag D1** (`parent_model`): implemented: stored at start and passed on every dispatch. Tests: `delta_d1_parent_model_survives_retry_and_recovery`, `state::parent_model_round_trips_and_is_optional`, `models::parent_model_is_the_last_candidate`.
+- **workflow-dag D2** (bundled skills root from the shared resolver): implemented via `skills::skill_roots`. Test: `skills::bundled_root_comes_from_the_shared_resolver`.
+- **team D1** (member ancestry): implemented through `Lineage` in maho-task. Tests: `tests/ancestry.rs`, `top_level_lead_members_and_follow_ups` and `nested_lead_members_record_the_tree_root`.
+
+**Spec ambiguities and my choices**
+- **D1:** this tree cannot complete D1 alone. The session header has to be written by `maho-core`/`maho-cli`, which were out of scope. The CLI must call `maho_task::current_spawned_by()` when it creates a **new** session and put the result in `spawned_by`.
+- **D2:** the exact phrase lists are mine, written as categories from the spec; for example, "401" only counts as a standalone number. "Names a model" is a case-insensitive substring check for "model" or the failed model id.
+- **D4:** the parent model is now the last candidate of every category or agent choice, not only on reroute. An explicit model gets no fallback plan. Steers written to a refused attempt are dropped from the inbox before the retry.
+- **D7:**
+  - "Answered" means any assistant message after the delivery whose `stopReason` is not `error` or `aborted`.
+  - An admitted but unanswered steer starts a follow-up with a fixed prompt (`ACT_ON_RECEIVED`).
+  - An uncertain steer becomes a hook note, so it shows in the envelope.
+  - The transcript file is looked up up to two directory levels deep.
+- **D8:**
+  - On Linux the start time comes from `/proc`, assuming USER_HZ = 100, with 2 s of slack.
+  - Other Unix systems use `ps`; Windows uses a PowerShell/CIM query that checks the image name against the current executable.
+  - The session id must appear as an exact `--session-id <id>` token pair.
+- **Workflow side effect:** a failed child that exited with a code is no longer treated as an infrastructure failure, even when its error has text. Before, any error text triggered automatic retries, which would re-run a credential failure for no gain.
+
+**Cross-crate API changes callers must adapt to**
+- New public fields:
+  - `RunSpec.parent_session` and `NodeRequest.parent_model`.
+  - `ModelChoice.fallback`.
+  - `TaskRecord.dropped_providers` and `TaskRecord.pid_started_at_ms`; both are serde-defaulted, so older records still load.
+  - `WorkflowRun.parent_model`, which is optional.
+  - `maho_workflow::Caller.parent_model`.
+
+  Code that builds these structs with literals must add them. That includes `maho-cli/src/cli/delegation.rs` and anything else outside these crates; a grep found no `RunSpec` or `ModelChoice` literals outside these crates.
+- The workflow addon now appends the bundled skills root itself through `maho_skills::RootResolver`. `maho-cli/delegation.rs` should stop adding `bundled_skills_root()` to `skill_roots`; there is no duplicate if it doesn't, because roots are de-duplicated.
+- New public exports:
+  - `TaskScope::detached_in`, `TaskScope::parent_model`, `TaskScope::with_parent_model`.
+  - `Lineage`, `SpawnedBy`, `PARENT_SESSION_ENV`, `current_spawned_by`.
+  - The modules `maho_task::credentials` and `maho_task::steering`.
+  - `maho_task::record::{process_info, is_task_child}`.
+- `maho-workpool` was not changed; it still reads `current_depth` and `current_root_session`, which are kept.

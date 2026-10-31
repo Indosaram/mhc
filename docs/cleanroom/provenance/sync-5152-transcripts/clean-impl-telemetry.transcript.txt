@@ -1,0 +1,78 @@
+st_01a18d3c [completed] transcript via event-log:
+assistant: I read this as a change ask - implement spec delta D1-D6 in crates/maho-telemetry with tests, commit. I'll stop when the commit exists and I've reported sha/tests/ambiguities.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Enough context. Implementing: settings (D5 resource, status), otlp (D3/D4), extension (D6 re-check), and a delta test module.
+tool[error]: bash
+tool: bash
+assistant: Whitespace/indent matched? The file wasn't written (assert before write). Likely the issue is the indentation of `}` (16 spaces). Let me use the edit tool instead.
+tool: bash
+tool: edit
+tool: bash
+tool: bash
+assistant: The slice matched an earlier doc comment and duplicated content; reverting and redoing it with a precise anchor.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Now otlp.rs (D3/D4).
+tool: bash
+assistant: Now the extension (D6): re-check config at push, once-per-session discard diagnostic, injectable config source and reporter for tests.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Now the delta test module with a small OTLP decoder.
+tool: write
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Ask: Implement the v5.1.52 Delta D1-D6 of the telemetry spec as a clean room in `crates/maho-telemetry`, with tests, and commit it - wanted: one commit plus a report. For you: I committed it as `1b1a428` (`feat(maho-telemetry): telemetry behavior from omo v5.1.52 spec (clean room)`). The commit only touches `crates/maho-telemetry/**`, and the PROVENANCE section for method C / `0be789b7` / telemetry-5152 is appended. None of this has been compiled or tested, because cargo was off-limits. rustfmt `--check` passes on the changed files. The `rg` check for ultrawork/ulw/boulder/Sisyphus/Kibitzer found nothing. Now: nothing - the work is done. Next: nothing; compiling and testing happen on the merged tree.
+
+**What changed**
+- **D1 (model ids):** the code already passed model ids through unchanged, so only tests were added.
+- **D3 (`otlp.rs`):** the exported input count is now `input + cacheRead + cacheWrite`, and the sum stops at the integer maximum instead of overflowing. It is used for the chat span's `gen_ai.usage.input_tokens`, the `input` histogram point and the run log's `mhc.agent.usage.input_tokens`. The ledger and `mhc usage` keep the uncached `input`.
+- **D4 (`otlp.rs`):** `gen_ai_provider_name` maps provider ids to the OpenTelemetry well-known names from the spec table. Chat spans, token points and cost points also carry `mhc.provider.id`.
+- **D5 (`settings.rs`):** the export resource now has `service.instance.id` (a random UUID, made once per process), `os.type` and `host.arch`. All three are set before `OTEL_RESOURCE_ATTRIBUTES`, so the user can override them. `--status` now prints a `resource:` line.
+- **D6 (`extension.rs`):** before every push the extension checks the configuration again. If export is now off, the payloads are discarded and one diagnostic is printed per session, giving the payload count. If the configuration can't be read, nothing is sent. Environment variables are not re-read. If export was off at startup it never starts later.
+
+**Tests added (unrun): 23, in `src/delta_5152_tests.rs`**
+They decode the protobuf payloads with a small test-only reader and cover:
+- **D1 (3):** new model ids in the ledger and chat span, exact ids in `byModel`, and no `custom`/`other` placeholder.
+- **D2 (4):** the host name and its SHA-256 never appear, `SHELL`/`TERM_PROGRAM` never appear, the only file created is `stats/usage.jsonl`, and the default resource keys are exactly the expected set.
+- **D3 (3):** 1050 / 900 / 50 with the ledger still at 100; the run log total of 1060 with points 1050 and 10; no point when all buckets are 0; and the overflow cap.
+- **D4 (3):** Bedrock on spans and metric points, `kimi-coding` unchanged plus the full mapping table, and the ledger keeping `google-vertex`.
+- **D5 (5):** the Linux x86_64 case (only compiled on that target), every platform mapping and its omission, user overrides (with `service.version` and `process.pid` still winning), the `--status` line, and the instance id being equal within one process but different across processes.
+- **D6 (5):** turned off mid-session (one diagnostic, then a second run with no further line, ledger still written), the master switch turned off, export still on so payloads are sent, off at startup so nothing is ever sent, and an unreadable configuration failing closed.
+
+**Spec ambiguities and what I chose**
+1. **Where the D6 re-check reads the configuration:** a new `TelemetryExtension::config_source` hook. By default it reloads `maho_config::load_native(cwd, env)` with the environment captured when the extension registered. If a config file has Read/Parse errors, it keeps the previous values (matching config.md §14). The "no view available" case is an `Err` from the hook, and that fails closed. The tests use a JSON file standing in for the project config, not a real project config.
+2. **When the discard diagnostic fires:** once per session, shared by the "turned off" and "unreadable" cases. The count is the number of payloads for the run (up to 3 signals). Wording: `telemetry export skipped because <reason>; discarded N payload(s)`.
+3. **Which switches count as turned off:** only an explicit `false` for `telemetry.enabled` or `telemetry.otlpExportEnabled`. A missing key means unchanged.
+4. **D2 host-name test:** nothing in the crate reads a host name, so the test sets `HOSTNAME`, `HOST` and `COMPUTERNAME` in the resolve environment and checks the raw payloads.
+5. **Cross-process instance-id test:** it re-runs the test binary on the same test with an env flag and reads `instance-id=` from the child's stdout.
+6. **D5 Linux x86_64 test:** gated with `#[cfg]` to that target. The mapping test covers every platform on every build.
+7. **New injection points:** `TelemetryExtension` has two new fields (`config_source`, `report`), and `Shared::new` / `on_record` / `finish_run` / `flush` are now `pub(crate)` so the tests can call them. `maho-cli` only uses `TelemetryExtension::new` plus a field assignment, so it should still compile, but that is unchecked.
