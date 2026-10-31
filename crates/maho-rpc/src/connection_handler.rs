@@ -624,7 +624,7 @@ pub fn build_rpc_session_state_with_dialogs(
     state
 }
 /// The leading capabilities of the classic `get_protocol_info` list that precede the negotiated ones.
-const CLASSIC_BASE_CAPABILITIES: usize = 3;
+const CLASSIC_BASE_CAPABILITIES: usize = 6;
 pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
@@ -1128,7 +1128,8 @@ async fn handle_session_command_with_sink(
             let argv=std::env::args().skip(1).collect::<Vec<_>>();
             let cwd=std::env::current_dir().map(|cwd|cwd.to_string_lossy().into_owned()).unwrap_or_default();
             let mut data=crate::protocol_identity::host_launch_profile(&argv,&cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&env));
-            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned()];
+            // senpi v2026.10.27-2: the classic binding answers get_snapshot, the UI-answer ledger and backward `tail` pages too.
+            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY.to_owned(),crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY.to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned(),crate::custom_capability::ENTRIES_TAIL_CAPABILITY.to_owned()];
             for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if !capabilities.contains(&capability){capabilities.push(capability);}}
             data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
             data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
@@ -2702,12 +2703,16 @@ mod new_session_tests {
         assert_eq!(info["success"], true);
         assert_eq!(info["data"]["mode"], "classic");
         assert_eq!(info["data"]["protocolVersion"], 1);
-        assert!(
-            info["data"]["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|capability| capability == "multi_session")
+        assert_eq!(
+            info["data"]["capabilities"].as_array().unwrap()[..CLASSIC_BASE_CAPABILITIES],
+            [
+                "multi_session",
+                "snapshot_cursor",
+                "ui_answer_ledger",
+                "auto_title_sessions",
+                "media_placeholders",
+                "entries_tail"
+            ]
         );
         let open = serde_json::to_value(
             handle_session_command(

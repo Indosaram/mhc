@@ -28,6 +28,13 @@ pub fn is_observing_request(line: &str) -> bool {
     record.get(OBSERVE_REQUEST_FIELD) == Some(&serde_json::Value::Bool(true))
         && kind.is_some_and(|kind| OBSERVING_COMMANDS.contains(&kind))
 }
+/// The host generation this process runs in (`SENPI_RPC_HOST_INSTANCE_ID`, trimmed), or `None` outside any host.
+pub fn origin_host_instance(env: &std::collections::HashMap<String, String>) -> Option<String> {
+    env.get(crate::protocol_identity::HOST_INSTANCE_ID_ENV)
+        .map(|instance| instance.trim())
+        .filter(|instance| !instance.is_empty())
+        .map(str::to_owned)
+}
 /// The generation a request line says its client runs in; `None` when unmarked or not JSON.
 pub fn request_origin_host_instance(line: &str) -> Option<String> {
     let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
@@ -41,6 +48,45 @@ pub fn request_origin_host_instance(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // senpi host-observe-request.test.ts (senpi#4267).
+    #[test]
+    fn get_state_observe_a_marked_read_is_an_observing_read() {
+        for kind in ["get_state", "get_entries"] {
+            assert!(is_observing_request(
+                &serde_json::json!({"type":kind,"sessionId":"s1","observe":true}).to_string()
+            ));
+        }
+    }
+    #[test]
+    fn an_unmarked_read_is_not_an_observing_read() {
+        for kind in ["get_state", "get_entries"] {
+            assert!(!is_observing_request(
+                &serde_json::json!({"type":kind,"sessionId":"s1"}).to_string()
+            ));
+            assert!(!is_observing_request(
+                &serde_json::json!({"type":kind,"sessionId":"s1","observe":"true"}).to_string()
+            ));
+        }
+    }
+    #[test]
+    fn still_ignores_observe_on_a_command_that_is_not_a_read() {
+        assert!(!is_observing_request(
+            &serde_json::json!({"type":"prompt","sessionId":"s1","message":"x","observe":true})
+                .to_string()
+        ));
+    }
+    #[test]
+    fn origin_host_instance_reads_the_trimmed_generation() {
+        let env = |value: &str| {
+            std::collections::HashMap::from([(
+                crate::protocol_identity::HOST_INSTANCE_ID_ENV.to_owned(),
+                value.to_owned(),
+            )])
+        };
+        assert_eq!(origin_host_instance(&env(" g1 ")).as_deref(), Some("g1"));
+        assert_eq!(origin_host_instance(&env("  ")), None);
+        assert_eq!(origin_host_instance(&Default::default()), None);
+    }
     #[test]
     fn only_marked_reads_observe_and_warm_always_does() {
         assert!(is_observing_request(
