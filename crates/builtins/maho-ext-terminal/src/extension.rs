@@ -499,6 +499,49 @@ fn wait_for_lease(
     }
 }
 
+/// Upstream `startPersistence` `acquire()`: own the lease and restore, or wait on its holder.
+async fn acquire_or_wait(
+    ctx: &maho_ext_api::types::ExtensionContext,
+    context: &TakeoverContext,
+    keeper: &Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>>,
+    mut lifecycle: crate::terminal_state::TerminalStateLifecycle,
+    session_dir: std::path::PathBuf,
+    session_id: String,
+    now: f64,
+) {
+    match lifecycle.acquire(
+        &context.terminal_dir,
+        &context.encoded,
+        f64::from(std::process::id()),
+        now,
+    ) {
+        Ok(crate::terminal_state::TerminalStateAdoption::Acquired) => {
+            ctx.ui.set_status(RESTORE_STATUS_KEY, None);
+            context.own(lifecycle, now).await;
+        }
+        Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere { pid }) => {
+            wait_for_lease(
+                ctx,
+                context,
+                keeper,
+                Some(crate::manifest_lease::LeaseRecord {
+                    pid,
+                    started_at_ms: 0.0,
+                }),
+                session_dir,
+                session_id,
+            );
+        }
+        Err(error) => {
+            ctx.ui.notify(
+                &format!("Terminal lease not acquired yet, retrying: {error}"),
+                maho_ext_api::types::NotificationType::Warning,
+            );
+            wait_for_lease(ctx, context, keeper, None, session_dir, session_id);
+        }
+    }
+}
+
 /// Upstream `stopPersistence` (first half): stop waiting; a tick in flight either releases what it
 /// acquired or finishes its takeover before the caller flushes the manifest.
 async fn stop_waiting(keeper: &Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>>) {
@@ -877,20 +920,7 @@ impl Extension for TerminalExtension {
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
             let context=TakeoverContext {state:state.clone(),manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None};
-            let mut lifecycle=lifecycle;
-            match lifecycle.acquire(&terminal_dir,&encoded,f64::from(std::process::id()),now) {
-                Ok(crate::terminal_state::TerminalStateAdoption::Acquired)=>{
-                    ctx.ui.set_status(RESTORE_STATUS_KEY,None);
-                    context.own(lifecycle,now).await;
-                }
-                Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>{
-                    wait_for_lease(ctx,&context,&keeper,Some(crate::manifest_lease::LeaseRecord {pid,started_at_ms:0.0}),session_dir,session_id);
-                }
-                Err(error)=>{
-                    ctx.ui.notify(&format!("Terminal lease not acquired yet, retrying: {error}"),maho_ext_api::types::NotificationType::Warning);
-                    wait_for_lease(ctx,&context,&keeper,None,session_dir,session_id);
-                }
-            }
+            acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
             flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
         })}));
@@ -2724,6 +2754,72 @@ mod persistence_tests {
         );
         assert!(!lease.exists(), "a stopped keeper never acquires");
         assert!(fixture.context.state.lock().await.is_none());
+        teardown(&fixture);
+    }
+
+    fn pending_monitors(fixture: &Fixture) -> Vec<crate::restore_digest::MonitorRestoreResult> {
+        fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.monitors.clone())
+            .unwrap_or_default()
+    }
+
+    /// terminal-restore-session.test.ts (c): a lease whose pid now belongs to a process that
+    /// started long after the lease was taken is reclaimed at once - no "held by" wait.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_lease_held_by_a_reused_pid_is_reclaimed_at_session_start() {
+        let mut fixture = fixture(1, Some(10));
+        persisted_watch(&fixture, "mon_PIDREUSED000001").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        // A live unrelated process (our parent) whose lease claims it was taken an hour before
+        // that process actually started: the pid was reused.
+        let pid = f64::from(std::os::unix::process::parent_id());
+        let real_start =
+            crate::manifest_lease::read_process_start_ms(pid).expect("parent start instant");
+        std::fs::write(
+            fixture
+                .terminal_dir
+                .join(format!("{}.lease", fixture.encoded)),
+            json!({"pid":pid,"startedAtMs":real_start - 3_600_000.0}).to_string(),
+        )
+        .unwrap();
+        let ui = Arc::new(RecordingUi::default());
+        let ctx = context(fixture.dir.path(), ui.clone(), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        acquire_or_wait(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            crate::terminal_state::TerminalStateLifecycle::new(
+                &fixture.session_dir,
+                "terminal-persistence",
+            ),
+            fixture.session_dir.clone(),
+            "terminal-persistence".into(),
+            terminal_now_ms(),
+        )
+        .await;
+        assert!(
+            !ui.statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, text)| text.as_deref().is_some_and(|text| text.contains("held by"))),
+            "a reused pid is not a holder"
+        );
+        assert!(keeper.lock().unwrap().is_none(), "nothing waits on it");
+        decided(&mut fixture).await;
+        let monitors = pending_monitors(&fixture);
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].monitor_id, "mon_PIDREUSED000001");
+        assert_eq!(monitors[0].outcome, "restored");
+        stop_waiting(&keeper).await;
         teardown(&fixture);
     }
 
