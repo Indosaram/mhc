@@ -2357,6 +2357,7 @@ impl HostCore {
         retain: bool,
         overlay: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, OpenRefusal> {
+        let requested = profile.clone();
         let opened = workers
             .open_session(
                 profile,
@@ -2383,7 +2384,13 @@ impl HostCore {
                 }
                 return Err(OpenRefusal::sealed(data));
             }
-            Ok(crate::worker_session_registry::WorkerOpen::Attached(handle)) => (handle, true),
+            Ok(crate::worker_session_registry::WorkerOpen::Attached(handle)) => {
+                // senpi worker `attach`: the surface, browser engine and permission preset follow the client.
+                if let Err(error) = workers.apply_attach_profile(&handle, &requested).await {
+                    eprintln!("senpi rpc session {handle} attach profile failed: {error}");
+                }
+                (handle, true)
+            }
         };
         if !attached && let Some(overlay) = overlay.and_then(serde_json::Value::as_object) {
             let overlay = overlay.clone();
@@ -3127,15 +3134,8 @@ impl HostCore {
         let now = crate::connection_handler::now_ms();
         if let Some(workers) = &self.workers {
             workers
-                .with_entry(session_id, |entry| {
-                    if entry.close.state != crate::session_registry::RpcSessionState::Open {
-                        return Err(crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION);
-                    }
-                    entry.close.attachments += 1;
-                    entry.last_command_at = now;
-                    Ok(())
-                })
-                .unwrap_or(Err(crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION))?;
+                .attach_session(session_id, now)
+                .map_err(|_| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION)?;
         } else {
             let resumed = {
                 let mut registry = self.registry.lock().await;
