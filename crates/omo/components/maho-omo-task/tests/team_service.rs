@@ -119,11 +119,18 @@ impl TeamRuntimeManagerPort for RecordingMembers {
     lead.child_session_id=Some("lead".into()); TaskRecordStore::new(&f.state_dir).save(&lead).expect("save lead");
     let service=f.service.with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(f.manager.clone(),None));
     service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"nested","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create");
-    let specs=members.0.lock().expect("specs"); assert_eq!(specs.len(),1); assert_eq!(specs[0].depth,3);
+    let specs=members.0.lock().expect("specs"); assert_eq!(specs.len(),1); assert_eq!(specs[0].depth,3); assert_eq!(specs[0].root_session_id.as_deref(),Some("tree-root"));
 }
 #[test] fn hosted_lead_falls_back_to_session_ancestry() {
     let members=Arc::new(RecordingMembers::default()); let f=fixture_with_members(members.clone());
     let service=f.service.with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(f.manager.clone(),Some(maho_omo_task::team_service::TeamLeadAncestry { depth:4,root_session_id:Some("tree-root".into()) })));
     service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"hosted","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create");
-    let specs=members.0.lock().expect("specs"); assert_eq!(specs[0].depth,5);
+    let specs=members.0.lock().expect("specs"); assert_eq!(specs[0].depth,5); assert_eq!(specs[0].root_session_id.as_deref(),Some("tree-root"));
+}
+#[test] fn root_lead_members_record_the_lead_as_tree_root() {
+    let members=Arc::new(RecordingMembers::default()); let f=fixture_with_members(members.clone());
+    let service=f.service.with_resolve_ancestry(maho_omo_task::team_service::task_tree_ancestry_resolver(f.manager.clone(),None));
+    service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"rooted","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"},{"name":"beta","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create");
+    let specs=members.0.lock().expect("specs"); assert_eq!(specs.len(),2);
+    for spec in specs.iter() { assert_eq!(spec.parent_session_id,"lead"); assert_eq!(spec.root_session_id.as_deref(),Some("lead")); assert_eq!(spec.depth,1); }
 }

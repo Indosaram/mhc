@@ -70,10 +70,8 @@ pub fn create_team_service(deps: TeamServiceDeps) -> TeamServiceResult<TeamServi
 }
 impl TeamService {
     /// Resolves the current lead like the task tool does, including shared in-process child sessions:
-    /// members spawn one level below it, so a child session leading a team cannot reset depth.
-    ///
-    /// OPEN: upstream also records `rootSessionId` on the members; the native `CreateTeamDeps`
-    /// (senpi-task lane) has no such field yet, so only the depth is applied here.
+    /// members spawn one level below it and record the lead's tree root (`rootSessionId`), so a
+    /// child session leading a team cannot reset depth or root.
     #[must_use]
     pub fn with_resolve_ancestry(mut self, resolve: ResolveTeamAncestry) -> Self { self.resolve_ancestry = Some(resolve); self }
     fn assert_owned(&self, run: &str) -> TeamServiceResult<()> {
@@ -88,10 +86,12 @@ impl TeamService {
 impl TeamToolsService for TeamService {
     fn create_team(&self, input: &CreateTeamToolInput) -> TeamServiceResult<CreateTeamResult> {
         let session = (self.deps.session_id)().filter(|id| !id.is_empty()).ok_or_else(|| TeamToolServiceError::new("team tools require an active lead session; none was captured yet"))?;
-        let spawn_depth = self.resolve_ancestry.as_ref().and_then(|resolve| resolve(&session)).map_or(0, |ancestry| ancestry.depth) + 1;
+        let ancestry = self.resolve_ancestry.as_ref().and_then(|resolve| resolve(&session));
+        let root_session_id = Some(ancestry.as_ref().and_then(|ancestry| ancestry.root_session_id.clone()).unwrap_or_else(|| session.clone()));
+        let spawn_depth = ancestry.map_or(0, |ancestry| ancestry.depth) + 1;
         let ports = build_member_ports(&self.deps.omo_config, &self.deps.agent_names);
         let resolved = resolve_team_spec(input.team_name.as_deref(), input.inline_spec.as_ref(), &ports, &self.deps.state_dir.project_dir, self.deps.omo_config.get("teams").and_then(Value::as_object)).map_err(|error| TeamToolServiceError::with_code(error.name(), &error.message, error.code.as_str()))?;
-        create_team(&resolved.spec, resolved.source, &CreateTeamDeps { manager: self.deps.member_manager.clone(), state_dir: self.deps.state_dir.clone(), team_bounds: self.deps.bounds, lead_session_id: session, spawn_depth, now: self.deps.now.clone(), member_extension: Some(self.deps.member_extension.clone()), write_member_map: None }).map_err(runtime_error)
+        create_team(&resolved.spec, resolved.source, &CreateTeamDeps { manager: self.deps.member_manager.clone(), state_dir: self.deps.state_dir.clone(), team_bounds: self.deps.bounds, lead_session_id: session, root_session_id, spawn_depth, now: self.deps.now.clone(), member_extension: Some(self.deps.member_extension.clone()), write_member_map: None }).map_err(runtime_error)
     }
     fn delete_team(&self, input: &DeleteTeamToolInput) -> TeamServiceResult<DeleteTeamResult> {
         assert_canonical_team_run_id(&input.team_run_id)?; self.assert_owned(&input.team_run_id)?;
