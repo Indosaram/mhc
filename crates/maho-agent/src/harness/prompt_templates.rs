@@ -222,7 +222,10 @@ async fn load_template_from_file(
 }
 
 fn strip_md_suffix(name: &str) -> String {
-    if name.len() >= 3 && name[name.len() - 3..].eq_ignore_ascii_case(".md") {
+    if name.len() >= 3
+        && name.is_char_boundary(name.len() - 3)
+        && name[name.len() - 3..].eq_ignore_ascii_case(".md")
+    {
         name[..name.len() - 3].to_string()
     } else {
         name.to_string()
@@ -499,5 +502,13 @@ mod tests {
             // Then positional and sliced replacements are not recursive.
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn strip_md_suffix_unicode_emoji_no_panic() {
+        assert_eq!(strip_md_suffix("🚀"), "🚀");
+        assert_eq!(strip_md_suffix("안녕"), "안녕");
+        assert_eq!(strip_md_suffix("template.md"), "template");
+        assert_eq!(strip_md_suffix("template.MD"), "template");
     }
 }
