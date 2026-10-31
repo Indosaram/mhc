@@ -6,7 +6,7 @@ use maho_agent::harness::session::{MemoryStorage, MemoryStorageOptions, StorageB
 use maho_agent::harness::session::types::*;
 
 async fn fixture() -> Result<Arc<Lane>, maho_agent::harness::session::session::SessionError> {
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
     session.attach();
     create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await?.lane("main", None, &BACKGROUND_CONTEXT).await
 }
@@ -117,7 +117,7 @@ async fn captures_eligible_tags_in_order_and_leaves_second_items() {
 
 async fn gated_fixture() -> Result<(Arc<Lane>, Arc<maho_agent::harness::session::testing::GatingStorage>), maho_agent::harness::session::session::SessionError> {
     let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, storage.clone(), StorageBackedSessionOptions::default()));
     session.attach();
     let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await?;
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await?;
@@ -423,7 +423,7 @@ async fn wait_for_idle_tracks_operation_without_installed_drive() {
 
 #[tokio::test]
 async fn close_waits_for_admitted_idle_callback() {
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "closing-idle".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "closing-idle".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
     session.attach();
     let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await.unwrap();
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
@@ -455,7 +455,7 @@ async fn acceptance_commits_exact_write_families_and_event_context() {
     use maho_agent::harness::context::{create_context_key, with_context_value};
     static KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("accept.context"));
     let storage = Arc::new(InstrumentedStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "instrumented-accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "instrumented-accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, storage.clone(), StorageBackedSessionOptions::default()));
     session.attach();
     let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await.unwrap();
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();

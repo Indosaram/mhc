@@ -155,3 +155,75 @@ async fn shared_container_deletion_preserves_other_session() {
     );
     repo.close(&context).await;
 }
+
+/// senpi repo.ts stores `path: canonicalPath` (realpath of the database file) in every metadata it hands out.
+#[cfg(unix)]
+#[tokio::test]
+async fn metadata_carries_the_canonical_database_path() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let linked = root.path().join("linked");
+    std::os::unix::fs::symlink(&real, &linked).unwrap();
+    let repo = SqliteSessionRepo::new(linked.clone(), None, Arc::new(|| 123));
+    let context = background_context();
+    let canonical = |name: &str| {
+        std::fs::canonicalize(real.join(name))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let session = repo
+        .create(
+            SessionCreateOptions {
+                id: Some("source".into()),
+                ..Default::default()
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+    let metadata = session.metadata().clone();
+    assert_eq!(
+        metadata.path.as_deref(),
+        Some(canonical("source.sqlite").as_str())
+    );
+    let fork = repo
+        .fork(
+            metadata.clone(),
+            ForkOptions::Tree {
+                id: Some("copy".into()),
+            },
+            &context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.metadata().path.as_deref(),
+        Some(canonical("copy.sqlite").as_str())
+    );
+    fork.close(&context).await;
+    session.close(&context).await;
+    let listed = repo.list(None, &context).await.unwrap();
+    let mut paths = listed
+        .iter()
+        .map(|row| row.path.clone().unwrap())
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![canonical("copy.sqlite"), canonical("source.sqlite")]
+    );
+    let reopened = repo.open(metadata.clone(), &context).await.unwrap();
+    assert_eq!(reopened.metadata(), &metadata);
+    reopened.close(&context).await;
+    repo.close(&context).await;
+}
+
+/// Metadata serialized before the `path` field existed still loads.
+#[test]
+fn metadata_without_a_path_still_deserializes() {
+    let old: SessionMetadata =
+        serde_json::from_value(json!({"id":"s","createdAt":1,"storageVersion":1})).unwrap();
+    assert_eq!(old.path, None);
+}
