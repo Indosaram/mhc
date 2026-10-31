@@ -342,7 +342,7 @@ impl HostCore {
                     })
                 }),
                 poll_ms: None,
-                log: Some(Box::new(|line| eprintln!("senpi rpc host: {line}"))),
+                log: Some(Box::new(|line: &str| eprintln!("senpi rpc host: {line}"))),
             },
         );
         let _ = self.handover.set(HostHandoverGate {
