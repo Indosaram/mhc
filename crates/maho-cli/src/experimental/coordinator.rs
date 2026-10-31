@@ -62,6 +62,36 @@ impl CoordinatorConnection {
     pub async fn close(&mut self) -> Result<(), String> { self.peer_ids.clear(); self.connection.close().await.map_err(|error| error.to_string()) }
 }
 pub const COORDINATOR_PROTOCOL_VERSION: u32 = 3;
+/// senpi `coordinator-entry.ts`: the entry consumes the internal role (so descendants do not inherit it) and refuses
+/// anything but an internal coordinator invocation.
+pub fn require_coordinator_role(role: Option<crate::experimental::process::InternalProcessRole>) -> Result<(), String> {
+    if role == Some(crate::experimental::process::InternalProcessRole::Coordinator) { Ok(()) } else { Err("Coordinator entrypoint requires an internal coordinator invocation".to_owned()) }
+}
+/// senpi `runCoordinatorProcess(args)`: both socket paths are required; runs until SIGINT/SIGTERM, which shut the
+/// coordinator down and remove its sockets.
+#[cfg(unix)]
+pub async fn run_coordinator_process(args: &[String]) -> Result<(), String> {
+    let [public, control, ..] = args else { return Err("Coordinator requires public and control socket paths".to_owned()); };
+    let shutdown = maho_ai::utils::abort::AbortController::new();
+    let signal = shutdown.signal();
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|error| error.to_string())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|error| error.to_string())?;
+    let coordinator = run_coordinator(std::path::Path::new(public), std::path::Path::new(control), &signal);
+    tokio::pin!(coordinator);
+    tokio::select! { result = &mut coordinator => result, _ = interrupt.recv() => { shutdown.abort(None); coordinator.await }, _ = terminate.recv() => { shutdown.abort(None); coordinator.await } }
+}
+/// senpi `coordinator-entry.ts` as one call: consume the role from the process environment, require `coordinator`,
+/// then run the coordinator on its own runtime.
+#[cfg(unix)]
+pub fn run_coordinator_entry(args: &[String]) -> Result<(), String> {
+    require_coordinator_role(crate::experimental::process::consume_process_internal_role()?)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+    runtime.block_on(run_coordinator_process(args))
+}
+#[cfg(not(unix))]
+pub fn run_coordinator_entry(_args: &[String]) -> Result<(), String> {
+    Err("Coordinator named-pipe transport has not been ported on this platform".to_owned())
+}
 /// senpi `CoordinatorConnectionEvent`: what a registered server observes from its peers.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CoordinatorConnectionEvent {
