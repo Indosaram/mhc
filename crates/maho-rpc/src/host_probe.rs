@@ -331,6 +331,7 @@ async fn ask_on(
     .ok()
     .flatten()
 }
+#[cfg(unix)]
 fn session_count_of(reply: &Value) -> Option<usize> {
     reply.get("sessions")?.as_array().map(Vec::len)
 }
