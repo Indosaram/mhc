@@ -222,7 +222,10 @@ async fn load_template_from_file(
 }
 
 fn strip_md_suffix(name: &str) -> String {
-    if name.len() >= 3 && name[name.len() - 3..].eq_ignore_ascii_case(".md") {
+    if name.len() >= 3
+        && name.is_char_boundary(name.len() - 3)
+        && name[name.len() - 3..].eq_ignore_ascii_case(".md")
+    {
         name[..name.len() - 3].to_string()
     } else {
         name.to_string()
@@ -291,7 +294,7 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
             body: normalized,
         });
     };
-    let yaml_string = &normalized[4..end_index];
+    let yaml_string = normalized.get(4..end_index).unwrap_or("");
     let body = normalized[end_index + 4..].trim().to_string();
     match parse_yaml_mapping(yaml_string) {
         Ok(frontmatter) => ok(ParsedFrontmatter { frontmatter, body }),
@@ -300,6 +303,9 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, String> {
 }
 
 fn parse_yaml_mapping(source: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    if source.trim().is_empty() {
+        return Ok(Default::default());
+    }
     let value: serde_yaml::Value =
         serde_yaml::from_str(source).map_err(|error| error.to_string())?;
     Ok(match value {
@@ -490,5 +496,13 @@ mod tests {
             // Then positional and sliced replacements are not recursive.
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn strip_md_suffix_unicode_emoji_no_panic() {
+        assert_eq!(strip_md_suffix("🚀"), "🚀");
+        assert_eq!(strip_md_suffix("안녕"), "안녕");
+        assert_eq!(strip_md_suffix("template.md"), "template");
+        assert_eq!(strip_md_suffix("template.MD"), "template");
     }
 }

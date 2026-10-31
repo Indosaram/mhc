@@ -37,10 +37,13 @@ use crate::engine_run_pause::RunPauseSource;
 pub type DagGuidanceDelivery =
     Arc<dyn Fn(&str, &GuidanceInput) -> Result<Option<String>, String> + Send + Sync>;
 
+pub type SchedulerOptionsCallback =
+    Arc<dyn Fn(&DagRunRecordV1) -> Option<DagSchedulerOptions> + Send + Sync>;
+
 pub struct DagRunPauseSourcePorts {
     pub barrier: AdmissionBarrier,
     pub records: RecordsCallback,
-    pub options: Arc<dyn Fn(&DagRunRecordV1) -> DagSchedulerOptions + Send + Sync>,
+    pub options: SchedulerOptionsCallback,
     pub pauses: Arc<DagPauseStore>,
     pub retire: RetireCallback,
     pub prepare_resume: Arc<dyn Fn(&str) + Send + Sync>,
@@ -116,8 +119,11 @@ struct SourceGuidancePorts<'a> {
 impl GuidancePorts for SourceGuidancePorts<'_> {
     type Error = String;
     fn save(&mut self, records: &[Guidance]) -> Result<(), String> {
+        let Some(options) = (self.source.ports.options)(&self.record) else {
+            return Err("DAG runtime disposed".to_string());
+        };
         let journal = senpi_task::dag::node_control_context::control_journal(
-            &(self.source.ports.options)(&self.record),
+            &options,
             self.record.clone(),
             std::collections::BTreeMap::new(),
         )
@@ -164,7 +170,10 @@ impl RunPauseSource for DagRunPauseSource {
             }
         }
         for record in records {
-            let current = (self.ports.options)(&record)
+            let Some(options) = (self.ports.options)(&record) else {
+                continue;
+            };
+            let current = options
                 .store
                 .read_checkpoint::<DagRunRecordV1>(&record.run_id)
                 .ok()
@@ -188,7 +197,9 @@ impl RunPauseSource for DagRunPauseSource {
             {
                 continue;
             }
-            let options = (self.ports.options)(&current);
+            let Some(options) = (self.ports.options)(&current) else {
+                continue;
+            };
             let journal = senpi_task::dag::node_control_context::control_journal(
                 &options,
                 current.clone(),
@@ -326,5 +337,60 @@ impl RunPauseSource for DagRunPauseSource {
                 at: record.updated_at.clone(),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guidance_save_handles_dropped_runtime() {
+        let record: DagRunRecordV1 = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "checkpointSeq": 0,
+            "runId": "run-1",
+            "runKey": "key",
+            "name": "test",
+            "parentSessionId": "parent",
+            "rootSessionId": "root",
+            "definitionFingerprint": "fp",
+            "definition": { "key": "k", "name": "n", "nodes": [] },
+            "status": "running",
+            "generation": 0,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "nodes": [],
+            "edges": [],
+            "waves": [],
+            "criticalPath": [],
+            "bottlenecks": [],
+            "diagnostics": [],
+        }))
+        .expect("valid record");
+        let dir = std::env::temp_dir().join("omo_test_dag").join("sub");
+        let _ = std::fs::create_dir_all(&dir);
+        let ports = Arc::new(DagRunPauseSourcePorts {
+            barrier: AdmissionBarrier::new(),
+            records: Arc::new(|_| vec![]),
+            options: Arc::new(|_| None),
+            pauses: Arc::new(DagPauseStore::new(dir.join("runs"))),
+            retire: Arc::new(|_| Ok(())),
+            prepare_resume: Arc::new(|_| ()),
+            install_resumed_run: Arc::new(|_, _, _, _| Err("skipped".into())),
+            adopt: Arc::new(|_| ()),
+            cancel_run: Arc::new(|_| Ok(())),
+            deliver_guidance: None,
+        });
+        let pause_source = DagRunPauseSource::new(ports);
+        pause_source.quiesce("parent", 1);
+        let mut guidance = SourceGuidancePorts {
+            source: &pause_source,
+            record,
+        };
+        assert_eq!(
+            guidance.save(&[]).unwrap_err(),
+            "DAG runtime disposed"
+        );
     }
 }

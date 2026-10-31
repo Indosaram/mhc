@@ -160,7 +160,9 @@ fn repair_lone_surrogate_escapes(json: &str) -> String {
                         && chars.get(index + 7) == Some(&'u')
                         && hex4(&chars, index + 8).is_some_and(is_low);
                     if paired {
-                        result.extend(&chars[index..index + 6]);
+                        result.extend(&chars[index..index + 12]);
+                        index += 12;
+                        continue;
                     } else {
                         result.push_str("\\uFFFD");
                     }
@@ -454,5 +456,16 @@ mod tests {
         let schema = json!({"type": "object", "properties": {"s": {"type": "string"}}});
         let result = coerce_antml_parameters(&[param("s", &lone_high)], &tool(schema)).expect("coerces");
         assert_eq!(result.get("s"), Some(&json!("\u{FFFD}")));
+    }
+
+    #[test]
+    fn preserves_valid_surrogate_pairs_in_json() {
+        let schema = json!({"type": "object", "properties": {"obj": {"type": "object"}}});
+        let result = coerce_antml_parameters(
+            &[param("obj", r#"{"emoji": "\uD83D\uDE00"}"#)],
+            &tool(schema),
+        )
+        .expect("coerces");
+        assert_eq!(result.get("obj"), Some(&json!({"emoji": "😀"})));
     }
 }

@@ -73,7 +73,21 @@ fn header_paths(header: &str) -> Option<(String, String)> {
     let rest = rest.trim_end_matches(['\n', '\r']);
     if let Some(stripped) = rest.strip_prefix('"') {
         // Quoted form: "a/x" "b/y".
-        let end = stripped.find("\" ")?;
+        let mut end = None;
+        let bytes = stripped.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'"' && bytes.get(i + 1) == Some(&b' ') {
+                end = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let end = end?;
         let a = &stripped[..end];
         let b = stripped[end + 2..].trim_matches('"');
         return Some((
@@ -82,6 +96,12 @@ fn header_paths(header: &str) -> Option<(String, String)> {
         ));
     }
     let a_rest = rest.strip_prefix("a/")?;
+    if let Some(split) = a_rest.rfind(" \"b/") {
+        let a = &a_rest[..split];
+        let b = a_rest[split + 1..].trim_matches('"');
+        let b = b.strip_prefix("b/").unwrap_or(b);
+        return Some((a.to_owned(), b.to_owned()));
+    }
     // `a/<p> b/<p>`: the separator is the last " b/" (paths may contain spaces).
     let split = a_rest.rfind(" b/")?;
     Some((a_rest[..split].to_owned(), a_rest[split + 3..].to_owned()))
@@ -452,6 +472,22 @@ mod tests {
         assert_eq!(
             header_files("diff --git \"a/x y\" \"b/x z\""),
             vec!["x y", "x z"]
+        );
+    }
+
+    #[test]
+    fn test_header_paths_asymmetrical_quote() {
+        assert_eq!(
+            header_paths(r#"diff --git a/plain.rs "b/with space.rs""#),
+            Some(("plain.rs".into(), "with space.rs".into()))
+        );
+    }
+
+    #[test]
+    fn test_header_paths_escaped_quote() {
+        assert_eq!(
+            header_paths(r#"diff --git "a/foo\" bar" "b/foo\" bar""#),
+            Some(("foo\\\" bar".into(), "foo\\\" bar".into()))
         );
     }
 

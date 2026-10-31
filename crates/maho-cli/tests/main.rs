@@ -174,6 +174,8 @@ pub mod ulw_loop_entry;
 pub mod utilities;
 #[path = "version_check.rs"]
 pub mod version_check;
+#[path = "provider_consent.rs"]
+pub mod provider_consent;
 
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "native_update_support/mod.rs"]

@@ -103,7 +103,7 @@ fn format_status(event: &Value, theme: Option<&Theme>) -> String {
         "cat"=>{parts.push(plural(event_number(event,"files"),"file","files"));parts.push(format!("{} chars",event_number(event,"chars")));}
         "ls"=>parts.push(plural(event_number(event,"count"),"entry","entries")),
         "env"=>{
-            let key=text(event,"key");let value:String=text(event,"value").encode_utf16().take(30).map(|n|char::from_u32(u32::from(n)).unwrap_or('�')).collect();
+            let key=text(event,"key");let value:String=std::char::decode_utf16(text(event,"value").encode_utf16().take(30)).map(|r|r.unwrap_or('�')).collect();
             if matches!(text(event,"action"),"get"|"set") && !key.is_empty() {parts.push(format!("{}{key}={value}",if text(event,"action")=="set" {"set "} else {""}));}
             else {parts.push(plural(event_number(event,"count"),"variable","variables"));}
         }

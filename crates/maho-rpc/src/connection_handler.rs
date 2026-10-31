@@ -1451,6 +1451,7 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
             .ask(request.clone(), None, now);
         (self.out)(frame);
         let questions = self.questions.clone();
+        let out = self.out.clone();
         Box::pin(async move {
             match tokio::time::timeout(
                 std::time::Duration::from_millis(request.timeout_ms),
@@ -1460,11 +1461,19 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
             {
                 Ok(Ok(response)) => Ok(response),
                 _ => {
-                    let deadline = now.saturating_add(request.timeout_ms);
-                    questions
+                    let deadline = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or_else(
+                            |_| now.saturating_add(request.timeout_ms),
+                            |elapsed| elapsed.as_millis() as u64,
+                        );
+                    let resolved = questions
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .expire(deadline);
+                    for record in resolved {
+                        (out)(record);
+                    }
                     Ok(maho_ext_api::QuestionResponse {
                         status: maho_ext_api::QuestionStatus::TimedOut,
                         answers: Default::default(),
@@ -1971,6 +1980,17 @@ impl RpcConnectionHandler {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            if value["type"] == "extension_ui_progress" {
+                if let Some(record) = self
+                    .questions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .progress(value, now)
+                {
+                    self.out_record(record);
+                }
+                return Ok(None);
+            }
             let (kind, resolved) = self
                 .questions
                 .lock()
@@ -3375,6 +3395,108 @@ mod connection_events_tests {
         );
         rendered.release().await;
         plain.release().await;
+    }
+
+    #[tokio::test]
+    async fn test_extension_ui_progress_does_not_settle_question() {
+        let session = session();
+        let (capable, records) = handler(
+            &session,
+            &[crate::custom_capability::QUESTION_CAPABILITY],
+        )
+        .await;
+        let ui = capable.ui().clone();
+        let question_task = tokio::spawn(async move {
+            maho_ext_api::ExtensionUi::question(
+                ui.as_ref(),
+                maho_ext_api::QuestionRequest {
+                    request_id: "req1".into(),
+                    questions: vec![maho_ext_api::Question {
+                        id: "q1".into(),
+                        header: "h".into(),
+                        question: "prompt".into(),
+                        options: vec![],
+                        multi_select: false,
+                    }],
+                    wait_for_answer: true,
+                    timeout_ms: 10_000,
+                },
+                Default::default(),
+            )
+            .await
+        });
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let requests = of_type(&records, "question_request");
+                if let Some(first) = requests.first() {
+                    return first["id"].as_str().expect("id").to_owned();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("question_request frame emitted");
+
+        let progress_line = serde_json::json!({
+            "type": "extension_ui_progress",
+            "id": id,
+            "answers": {"q1": {"selected": ["A"]}}
+        })
+        .to_string();
+        let outcome = capable.handle_input_line(&progress_line).await.expect("handle line");
+        assert!(outcome.is_none());
+
+        assert!(!question_task.is_finished());
+        let updates = of_type(&records, "question_updated");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["id"], id);
+
+        let response_line = serde_json::json!({
+            "type": "extension_ui_response",
+            "id": id,
+            "answers": {"q1": {"selected": ["B"]}}
+        })
+        .to_string();
+        capable.handle_input_line(&response_line).await.expect("handle line");
+
+        let response = question_task.await.expect("task join").expect("response ok");
+        assert_eq!(response.answers.get("q1").unwrap().selected, vec!["B".to_string()]);
+        capable.release().await;
+    }
+
+    #[tokio::test]
+    async fn test_question_timeout_emits_question_resolved_event() {
+        let session = session();
+        let (capable, records) = handler(
+            &session,
+            &[crate::custom_capability::QUESTION_CAPABILITY],
+        )
+        .await;
+        let response = maho_ext_api::ExtensionUi::question(
+            capable.ui().as_ref(),
+            maho_ext_api::QuestionRequest {
+                request_id: "req_timeout".into(),
+                questions: vec![maho_ext_api::Question {
+                    id: "q1".into(),
+                    header: "h".into(),
+                    question: "prompt".into(),
+                    options: vec![],
+                    multi_select: false,
+                }],
+                wait_for_answer: true,
+                timeout_ms: 20,
+            },
+            Default::default(),
+        )
+        .await
+        .expect("response ok");
+        assert_eq!(response.status, maho_ext_api::QuestionStatus::TimedOut);
+
+        let resolved = of_type(&records, "question_resolved");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0]["outcome"], "timed_out");
+        assert_eq!(resolved[0]["requestId"], "req_timeout");
+        capable.release().await;
     }
 }
 #[cfg(test)]

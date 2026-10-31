@@ -145,3 +145,5 @@ mod timeouts;
 mod tool_result_marshal;
 #[path = "worker_host.rs"]
 mod worker_host;
+#[path = "env_scrub.rs"]
+mod env_scrub;
