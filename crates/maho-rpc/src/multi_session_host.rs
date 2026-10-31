@@ -2876,6 +2876,7 @@ impl HostCore {
                 let owner = CURRENT_CONNECTION.try_with(Clone::clone).ok().flatten();
                 route_session_record(&fanout, &writer, &tag, owner.as_deref(), value);
             });
+        let structured_scope = scope.clone();
         let sink =
             crate::session_binding::closed_scope_record_sink(session_id.to_owned(), scope, sink);
         let binding = std::sync::Arc::new(
@@ -2888,6 +2889,14 @@ impl HostCore {
             )
             .await,
         );
+        // senpi session-binding.ts: `writeStructured` only when `structuredLaneEnabled()`.
+        if crate::structured_session_records::structured_lane_enabled() {
+            binding.install_structured_lane(
+                runtime.session(),
+                self.default_writer.structured_lanes.clone(),
+                structured_scope,
+            );
+        }
         // senpi session-binding `bindMcpForms(session, ui)`, only when the deployment enforces presenters.
         if self.presenters.enabled() {
             let attached = self
