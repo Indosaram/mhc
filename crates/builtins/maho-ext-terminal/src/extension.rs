@@ -661,9 +661,10 @@ async fn create_rpc_monitor_call(
     monitors: &Arc<Mutex<crate::monitor_registry::MonitorRegistry>>,
     lifecycle: Option<&mut crate::terminal_state::TerminalStateLifecycle>,
 ) -> TerminalToolResult {
-    if let Some(refused) =
-        crate::tools::monitor_rpc::precheck_create(input, crate::tools::monitor_rpc::MonitorSource::Rpc)
-    {
+    if let Some(refused) = crate::tools::monitor_rpc::precheck_create(
+        input,
+        crate::tools::monitor_rpc::MonitorSource::Rpc,
+    ) {
         return refused;
     }
     if input.get("persistent").and_then(Value::as_bool) == Some(true)
@@ -788,8 +789,7 @@ impl Extension for TerminalExtension {
             api.runtime.clone(),
         ));
         let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
-        let recorded_background_ids: crate::extension_state::RecordedBackgroundIds =
-            Arc::default();
+        let recorded_background_ids: crate::extension_state::RecordedBackgroundIds = Arc::default();
         // Upstream `state.ensurePersistence`: set by a start with nothing to restore.
         let ensure_persistence: crate::extension_state::EnsurePersistence = Arc::default();
         // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
@@ -1740,50 +1740,44 @@ impl Extension for TerminalExtension {
                     // valid rpc, file or command create binds persistence (lazy lease +
                     // recorder), before durable admission and before the writer lock is taken
                     // (the bind installs the lifecycle under that lock).
-                    let source = if call.params.get("action").and_then(Value::as_str)
-                        != Some("rearm")
-                    {
-                        let source =
-                            match crate::tools::monitor_rpc::monitor_source_of(&call.params) {
-                                Ok(source) => source,
-                                Err(error) => return tool_result(error_result(error)),
-                            };
-                        if let Some(refused) =
-                            crate::tools::monitor_rpc::precheck_create(&call.params, source)
-                        {
-                            return tool_result(refused);
-                        }
-                        if source == crate::tools::monitor_rpc::MonitorSource::Rpc
-                            || crate::tools::monitor_schema::is_file_create_input(&call.params)
-                            || crate::tools::monitor_schema::is_create_input(&call.params)
-                        {
-                            crate::extension_state::ensure_persistence(&ensure).await;
-                        }
-                        Some(source)
-                    } else {
-                        None
-                    };
+                    let source =
+                        if call.params.get("action").and_then(Value::as_str) != Some("rearm") {
+                            let source =
+                                match crate::tools::monitor_rpc::monitor_source_of(&call.params) {
+                                    Ok(source) => source,
+                                    Err(error) => return tool_result(error_result(error)),
+                                };
+                            if let Some(refused) =
+                                crate::tools::monitor_rpc::precheck_create(&call.params, source)
+                            {
+                                return tool_result(refused);
+                            }
+                            if source == crate::tools::monitor_rpc::MonitorSource::Rpc
+                                || crate::tools::monitor_schema::is_file_create_input(&call.params)
+                                || crate::tools::monitor_schema::is_create_input(&call.params)
+                            {
+                                crate::extension_state::ensure_persistence(&ensure).await;
+                            }
+                            Some(source)
+                        } else {
+                            None
+                        };
                     let mut lifecycle = lifecycle.lock().await;
                     let session_key =
                         crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
                     // The rpc branch (monitor-rpc.ts) arms a watch over every RPC host and terminal.
-                    {
-                        match source {
-                            Some(crate::tools::monitor_rpc::MonitorSource::Rpc) => {
-                                return tool_result(
-                                    create_rpc_monitor_call(
-                                        &call.params,
-                                        &settings,
-                                        session_key,
-                                        &manager,
-                                        &monitors,
-                                        lifecycle.as_mut(),
-                                    )
-                                    .await,
-                                );
-                            }
-                            _ => {}
-                        }
+                    if let Some(crate::tools::monitor_rpc::MonitorSource::Rpc) = source {
+                        return tool_result(
+                            create_rpc_monitor_call(
+                                &call.params,
+                                &settings,
+                                session_key,
+                                &manager,
+                                &monitors,
+                                lifecycle.as_mut(),
+                            )
+                            .await,
+                        );
                     }
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(
                         &call.params,
@@ -1795,24 +1789,23 @@ impl Extension for TerminalExtension {
                     }
                     // Upstream `registerFile` is awaited: the file branch proves its target
                     // with no manager/registry lock held across the await.
-                    let file_result = if crate::tools::monitor_schema::is_file_create_input(
-                        &call.params,
-                    ) && call.params.get("action").and_then(Value::as_str)
-                        != Some("rearm")
-                    {
-                        Some(
-                            crate::tools::monitor::create_file_monitor(
-                                &manager,
-                                &monitors,
-                                &call.params,
-                                &cwd,
-                                approved_parent.as_deref(),
+                    let file_result =
+                        if crate::tools::monitor_schema::is_file_create_input(&call.params)
+                            && call.params.get("action").and_then(Value::as_str) != Some("rearm")
+                        {
+                            Some(
+                                crate::tools::monitor::create_file_monitor(
+                                    &manager,
+                                    &monitors,
+                                    &call.params,
+                                    &cwd,
+                                    approved_parent.as_deref(),
+                                )
+                                .await,
                             )
-                            .await,
-                        )
-                    } else {
-                        None
-                    };
+                        } else {
+                            None
+                        };
                     let (result, recorded) = {
                         let mut manager = manager
                             .lock()
@@ -1868,9 +1861,7 @@ impl Extension for TerminalExtension {
                                 .flatten();
                             let deadline_ms =
                                 crate::tools::monitor::registration_deadline_ms(&monitors, &id);
-                            let runtime = manager
-                                .get(&id)
-                                .and_then(|runtime| runtime.identity());
+                            let runtime = manager.get(&id).and_then(|runtime| runtime.identity());
                             (
                                 registration
                                     .with_deadline_ms(deadline_ms)
