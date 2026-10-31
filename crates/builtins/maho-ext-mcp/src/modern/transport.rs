@@ -44,6 +44,19 @@ fn transport_failed() -> McpError {
 fn invalid_result() -> McpError {
     McpMrtrError::new(McpMrtrErrorCode::InvalidResult).into()
 }
+/// Upstream `JSONRPCMessageSchema.parse`: a request or notification (string `method`), a result response (`id` and
+/// object `result`), or an error response (object `error`, `id` optional).
+fn jsonrpc_message(value: Value) -> Result<Value, McpError> {
+    let valid = value.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && (value.get("method").is_some_and(Value::is_string)
+            || (value.get("id").is_some() && value.get("result").is_some_and(Value::is_object))
+            || value.get("error").is_some_and(Value::is_object));
+    if valid {
+        Ok(value)
+    } else {
+        Err(transport_failed())
+    }
+}
 
 /// Stateless POST transport; discovery and era selection belong to the connection factory.
 pub struct ModernHttpTransport {
@@ -207,9 +220,7 @@ impl ModernHttpTransport {
                         .json::<Value>()
                         .await
                         .map_err(|_| transport_failed())?;
-                    if !incoming.is_object() {
-                        return Err(transport_failed());
-                    }
+                    let incoming = jsonrpc_message(incoming)?;
                     // Protocol errors (including modern negotiation errors on HTTP 400) stay on the RPC channel.
                     if !ok && incoming.get("error").is_none() {
                         return Err(transport_failed());
@@ -316,7 +327,8 @@ impl ModernHttpTransport {
                 if line.is_empty() {
                     if !data.is_empty() && (event.is_empty() || event == "message") {
                         let incoming = serde_json::from_str::<Value>(&data.join("\n"))
-                            .map_err(|_| transport_failed())?;
+                            .map_err(|_| transport_failed())
+                            .and_then(jsonrpc_message)?;
                         if let Some(reply) =
                             self.deliver(incoming, request_id, tool_list_first_page, on_message)?
                             && Some(&reply["id"]) == request_id

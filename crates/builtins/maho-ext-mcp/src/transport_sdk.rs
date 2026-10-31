@@ -1507,6 +1507,10 @@ impl McpClient {
         })
     }
     pub async fn close(&self) -> Result<(), McpError> {
+        // sdk-bridge.ts close(): dispose the subscriptions (aborting listen streams) before closing the transport.
+        if let Some(route) = self.modern.get() {
+            route.subscriptions.dispose();
+        }
         if let Some(task) = self
             .http_stream
             .lock()
