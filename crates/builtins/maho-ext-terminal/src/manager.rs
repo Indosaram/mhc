@@ -239,6 +239,13 @@ impl TerminalManager {
         self.monitor_ids
             .insert(monitor_id.to_owned(), session_id.to_owned());
     }
+    /// registry.ts `monitorIdOf`: the stable `mon_` id bound to a runtime session, if any.
+    pub fn monitor_id_of(&self, session_id: &str) -> Option<String> {
+        self.monitor_ids
+            .iter()
+            .find(|(_, runtime_id)| runtime_id.as_str() == session_id)
+            .map(|(monitor_id, _)| monitor_id.clone())
+    }
     pub fn resolve_id(&self, id: &str) -> Option<String> {
         if id.starts_with("mon_") {
             self.monitor_ids.get(id).cloned()

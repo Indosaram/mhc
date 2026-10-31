@@ -4,7 +4,6 @@ use crate::tools::{
     bash_output::execute_bash_output_view,
     bash_resize::execute_bash_resize,
     context::TerminalToolResult,
-    kill_bash::execute_kill_bash_shared,
 };
 use maho_ext_api::types::{EventKind, EventResult, Extension, ExtensionApi, ExtensionFailure};
 use maho_tools::definition::{ToolContent, ToolDefinition, ToolError, ToolResult};
@@ -822,6 +821,7 @@ impl Extension for TerminalExtension {
             Arc::new(Mutex::new(None));
         let event_notifier = notifier.clone();
         let ended_bus = api.events.clone();
+        let ended_ctx = session_ctx.clone();
         let monitors = Arc::new(Mutex::new(
             crate::monitor_registry::MonitorRegistry::new_with_ended(
                 move |event| {
@@ -839,7 +839,7 @@ impl Extension for TerminalExtension {
                         "senpi:extension-rpc-event",
                         &json!({"name":crate::shared::TERMINAL_MONITOR_ENDED_EVENT,"data":payload}),
                     );
-                    let ctx = session_ctx
+                    let ctx = ended_ctx
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .clone();
@@ -1657,6 +1657,7 @@ impl Extension for TerminalExtension {
         ] {
             let manager = Arc::clone(&manager);
             let monitors = monitors.clone();
+            let kill_session_ctx = session_ctx.clone();
             let mut tool = ToolDefinition::new(
                 name,
                 description,
@@ -1664,6 +1665,7 @@ impl Extension for TerminalExtension {
                 Arc::new(move |call| {
                     let manager = Arc::clone(&manager);
                     let monitors = monitors.clone();
+                    let kill_ctx = kill_session_ctx.clone();
                     Box::pin(async move {
                         let id = call.params.get("bash_id").and_then(Value::as_str);
                         if name == "kill_bash" {
@@ -1674,51 +1676,22 @@ impl Extension for TerminalExtension {
                                 .get("all")
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false);
-                            if all {
-                                // stop_file runs the monitor-ended callbacks, so the manager lock is not held across it.
-                                let count = {
-                                    let mut count = manager
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                        .size();
-                                    let mut monitors = monitors
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    for id in monitors
-                                        .snapshot()
-                                        .into_iter()
-                                        .filter(|record| record.id.starts_with("watch_"))
-                                        .map(|record| record.id)
-                                    {
-                                        count += usize::from(monitors.stop_file(&id));
-                                    }
-                                    count
-                                };
-                                crate::manager::teardown_shared(&manager)
-                                    .await
-                                    .map_err(|error| ToolError::Message(error.to_string()))?;
-                                return tool_result(crate::tools::context::text_result(format!(
-                                    "Killed {count} session(s)."
-                                )));
-                            }
-                            if let Some(id) = id {
-                                let resolved = crate::tools::context::resolve_terminal_id(
-                                    &manager
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                                    id,
-                                );
-                                let stopped = monitors
+                            let terminal_dir = crate::monitor_state_dir::terminal_state_dir(
+                                kill_ctx
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .stop_file(&resolved);
-                                if stopped {
-                                    return tool_result(crate::tools::context::text_result(
-                                        format!("Killed {id}."),
-                                    ));
-                                }
-                            }
-                            return tool_result(execute_kill_bash_shared(&manager, id, all).await);
+                                    .as_ref(),
+                            );
+                            return tool_result(
+                                crate::tools::kill_bash::execute_kill_bash_with_monitors(
+                                    &manager,
+                                    &monitors,
+                                    terminal_dir.as_deref(),
+                                    id,
+                                    all,
+                                )
+                                .await,
+                            );
                         }
                         let mut manager = manager
                             .lock()
