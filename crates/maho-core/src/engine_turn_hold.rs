@@ -69,6 +69,9 @@ impl HoldReleaseCause {
     }
 }
 
+/// The `session_hold` key an interrupted run installs on open: a human wait, not a user Stop (senpi#4204).
+pub const INTERRUPTED_RUN_HOLD_KEY: &str = "interrupted-run";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionHold {
     pub kind: HoldKind,

@@ -350,6 +350,21 @@ pub fn session_event_record(
             optional!(record, "errorMessage", error_message);
             record
         }
+        E::ModelConfigError {
+            model,
+            provider,
+            error_excerpt,
+        } => {
+            json!({"type":"model_config_error","model":model,"provider":provider,"errorExcerpt":error_excerpt})
+        }
+        E::SessionRecovered {
+            cause,
+            backup_path,
+            dropped_bytes,
+            notice,
+        } => {
+            json!({"type":"session_recovered","cause":cause,"backupPath":backup_path,"droppedBytes":dropped_bytes,"notice":notice})
+        }
         E::BashExecutionUpdate { id, delta } => {
             let mut record = json!({"type":"bash_execution_update","delta":delta});
             optional!(record, "id", id);
