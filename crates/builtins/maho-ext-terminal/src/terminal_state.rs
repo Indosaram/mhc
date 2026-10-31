@@ -26,12 +26,19 @@ impl TerminalStateLifecycle {
         pid: f64,
         started_at_ms: f64,
     ) -> std::io::Result<TerminalStateAdoption> {
-        match crate::manifest_lease::acquire_terminal_lease(
+        // Upstream `acquireTerminalLease` probes the holder's start instant, so a lease whose pid
+        // now belongs to an unrelated, later-started process is reclaimed at once.
+        let mut is_process_alive = crate::manifest_lease::probe_alive;
+        let mut read_process_start_ms = crate::manifest_lease::read_process_start_ms;
+        match crate::manifest_lease::acquire_terminal_lease_with(
             dir,
             encoded_session_id,
             pid,
             started_at_ms,
-            crate::manifest_lease::probe_alive,
+            &mut crate::manifest_lease::LeaseProbes {
+                is_process_alive: &mut is_process_alive,
+                read_process_start_ms: &mut read_process_start_ms,
+            },
         )? {
             crate::manifest_lease::AcquireTerminalLeaseResult::Acquired { path, pid } => {
                 self.lease = Some((path, pid));
@@ -41,6 +48,11 @@ impl TerminalStateLifecycle {
                 Ok(TerminalStateAdoption::AttachedElsewhere { pid: holder.pid })
             }
         }
+    }
+    /// Binds a lease the lease keeper acquired on this generation's behalf (upstream keeper
+    /// `onTakeover` -> `own(lease)`).
+    pub fn adopt_lease(&mut self, path: PathBuf, pid: f64) {
+        self.lease = Some((path, pid));
     }
     pub async fn restore(
         &mut self,
@@ -144,9 +156,13 @@ mod tests {
             .await;
         writer.record_shutdown(2.0).await;
 
+        // The acquisition instant is real: the start probe compares it with this process's start.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
         let mut owner = TerminalStateLifecycle::new(dir.path(), "s");
         assert_eq!(
-            owner.acquire(dir.path(), "s", f64::from(std::process::id()), 10.0)?,
+            owner.acquire(dir.path(), "s", f64::from(std::process::id()), now)?,
             TerminalStateAdoption::Acquired
         );
         assert!(owner.is_owner());
@@ -164,7 +180,7 @@ mod tests {
 
         let mut other = TerminalStateLifecycle::new(dir.path(), "s");
         assert_eq!(
-            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, 40.0)?,
+            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, now)?,
             TerminalStateAdoption::AttachedElsewhere {
                 pid: f64::from(std::process::id())
             }
@@ -177,12 +193,56 @@ mod tests {
 
         owner.release()?;
         assert_eq!(
-            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, 50.0)?,
+            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, now)?,
             TerminalStateAdoption::Acquired
         );
         other.release()?;
         registry.dispose();
         manager.teardown().unwrap();
+        Ok(())
+    }
+
+    /// terminal-restore-session.test.ts (e): two acquirers racing for one session - released at the
+    /// same instant by a barrier - leave exactly one owner. Both record this live process, so the
+    /// loser sees a live holder and never reclaims the winner's fresh lease.
+    #[test]
+    fn two_racing_acquirers_leave_exactly_one_owner() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let terminal_dir = dir.path().join("extensions/terminal");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
+        let barrier = &std::sync::Barrier::new(2);
+        let (session_dir, terminal_dir) = (dir.path(), &terminal_dir);
+        let outcomes = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let mut lifecycle = TerminalStateLifecycle::new(session_dir, "s");
+                        barrier.wait();
+                        lifecycle
+                            .acquire(terminal_dir, "s", f64::from(std::process::id()), now)
+                            .map(|adoption| (adoption, lifecycle.is_owner()))
+                    })
+                })
+                .collect();
+            racers
+                .into_iter()
+                .map(|racer| racer.join().expect("racer thread"))
+                .collect::<std::io::Result<Vec<_>>>()
+        })?;
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|(adoption, owner)| *adoption == TerminalStateAdoption::Acquired && *owner)
+                .count(),
+            1,
+            "exactly one acquirer owns the lease: {outcomes:?}"
+        );
+        assert!(outcomes.iter().any(|(adoption, owner)| matches!(
+            adoption,
+            TerminalStateAdoption::AttachedElsewhere { .. }
+        ) && !owner));
         Ok(())
     }
 }
