@@ -1003,8 +1003,8 @@ pub struct AgentSessionInner {
     /// Bumped each time a runner is installed, so a renderer snapshot keyed on it (with the
     /// runtime's tool generation) is rebuilt only when the bound runner or its tools change.
     extension_runner_epoch: AtomicU64,
-    /// senpi `_handlerTurnScope`: bumped per admitted run, so the turn deadline releases only the held
-    /// extension handler waits its own turn started (senpi#3650).
+    /// senpi `_handlerTurnScope`: bumped per admitted prompt turn (`_promptAgent`), so the turn deadline
+    /// releases only the held extension handler waits its own turn started (senpi#3650).
     handler_turn_scope: Arc<AtomicU64>,
     event_bus: EventBus,
     event_listeners: SharedEventListeners,
@@ -3803,6 +3803,55 @@ impl std::ops::Deref for AgentSession {
     }
 }
 
+/// senpi AgentSession's deadline owner adapters (`_recordDeadlineStop`, `abortTurnForDeadline`,
+/// `releaseHeldExtensionHandlers`, `isRetryInFlight`, `isIdle`, `_warnDeadline`).
+impl crate::turn_deadline::DeadlineSessionOwner for AgentSession {
+    fn record_deadline_stop(
+        &self,
+        deadline: &crate::turn_deadline::TurnDeadline,
+    ) -> Result<(), String> {
+        let data = json!({
+            "kind": deadline.kind,
+            "limitMs": deadline.limit_ms,
+            "elapsedMs": deadline.elapsed_ms,
+            "at": chrono::Utc::now().timestamp_millis(),
+        });
+        let entry = self.with_session_manager_mut(|manager| {
+            manager.append_custom(crate::turn_deadline::TURN_DEADLINE_ENTRY_TYPE, Some(data))
+        });
+        if let Some(id) = entry.get("id").and_then(Value::as_str) {
+            self.emit_entry_appended(id);
+        }
+        Ok(())
+    }
+
+    fn abort_turn_for_deadline(&self) -> crate::turn_deadline::DeadlineAbort {
+        let session = self.clone();
+        Box::pin(async move {
+            session.abort_for_deadline().await;
+            Ok(())
+        })
+    }
+
+    fn release_held_extension_handlers(&self) -> usize {
+        self.release_held_extension_handlers_now()
+    }
+
+    fn is_retry_in_flight(&self) -> bool {
+        self.is_retrying()
+    }
+
+    fn is_idle(&self) -> bool {
+        !self.agent_run_active.load(Ordering::SeqCst)
+    }
+
+    fn warn_deadline(&self, event: crate::turn_deadline::TurnDeadlineWarning, detail: &str) {
+        let mut data = Map::new();
+        data.insert("detail".to_owned(), Value::from(detail));
+        self.session_logger.warn(event.as_str(), Some(&data));
+    }
+}
+
 /// Resolved provider auth for one request.
 #[derive(Clone, Debug)]
 pub struct RequestAuth {
@@ -4526,7 +4575,6 @@ impl AgentSession {
                     state.abort_provenance.close_agent_end_boundary();
                     *lock(&self.custody_run_id) = uuid::Uuid::new_v4().to_string();
                     state.queued_input_ages.note_run_started();
-                    self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
                     *lock(&self.stop_interrupt) = None;
                     *lock(&self.lifecycle_turn_facts) = None;
                     self.external_admission.begin_turn();
@@ -7186,6 +7234,8 @@ impl AgentSession {
             }
             return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
         }
+        // senpi `_promptAgent`: a new turn admitted owns the held handler waits it starts.
+        self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         lock(&self.transcript_write_failures).start_run();
         if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
         {
@@ -7619,9 +7669,100 @@ impl AgentSession {
             .map_or(0, |runner| runner.release_held_handlers(scope))
     }
 
+    /// senpi `releaseHeldExtensionHandlers` for a caller that cannot await: the bound runner snapshot
+    /// shares its held-wait registry with the installed runner.
+    fn release_held_extension_handlers_now(&self) -> usize {
+        let scope = self.handler_turn_scope.load(Ordering::SeqCst);
+        self.extension_runner_snapshot()
+            .map_or(0, |runner| runner.release_held_handlers(scope))
+    }
+
+    /// senpi `_waitForIdleAfterAbort`: an abort (Esc, or the turn deadline) the run does not honour within
+    /// the grace is held by an extension handler no abort signal reaches, so the turn's held handler waits
+    /// are released and the run can settle (senpi#3650). The run's agent listeners (the extension event
+    /// handlers) are part of its settlement, so the agent's idle is the run's. Holds the session weakly:
+    /// the in-flight abort wait is stored on the session.
+    fn wait_for_idle_after_abort(
+        &self,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static + use<> {
+        let agent = self.agent.clone();
+        let session = Arc::downgrade(&self.inner);
+        async move {
+            let idle = agent.wait_for_idle();
+            tokio::pin!(idle);
+            let grace =
+                std::time::Duration::from_millis(crate::turn_deadline::TURN_DEADLINE_GRACE_MS);
+            if tokio::time::timeout(grace, &mut idle).await.is_err() {
+                if let Some(inner) = session.upgrade() {
+                    AgentSession { inner }.release_held_extension_handlers_now();
+                }
+                idle.await;
+            }
+        }
+    }
+
     pub async fn abort(&self) {
         if let Some(pending) = self.begin_user_abort() {
             self.finish_user_abort(pending).await;
+        } else if self.agent_run_active.load(Ordering::SeqCst) {
+            // senpi abort(): an Esc that joined an open agent_end boundary returns at once; a boundary
+            // handler that holds the run is still released after the grace, without abort() waiting for it.
+            tokio::spawn(self.wait_for_idle_after_abort());
+        }
+    }
+
+    /// senpi `abortTurnForDeadline`: end the turn through the normal system abort, then wait out the
+    /// grace, releasing the turn's held extension handlers when the run does not settle in it.
+    async fn abort_for_deadline(&self) {
+        use maho_ext_api::AbortSource;
+        self.state().abort_source = Some(AbortSource::System);
+        // senpi `_abortActiveAgentAndRetry("system")`.
+        self.abort_retry();
+        self.abort_branch_summary();
+        let wait = {
+            let mut in_flight = lock(&self.user_abort_wait);
+            let streaming = self.is_streaming();
+            if let Some(wait) = in_flight.clone() {
+                let joined = self
+                    .state()
+                    .abort_provenance
+                    .join(AbortSource::System, streaming);
+                if joined.abort_current_agent {
+                    self.agent.abort(None);
+                }
+                Some(wait)
+            } else if self
+                .state()
+                .abort_provenance
+                .join_open_boundary(AbortSource::System)
+                .is_some()
+            {
+                None
+            } else {
+                if streaming {
+                    let _recorded = self.state().abort_provenance.begin(AbortSource::System);
+                }
+                self.agent.abort(None);
+                let wait = futures::FutureExt::shared(Box::pin(self.wait_for_idle_after_abort())
+                    as futures::future::BoxFuture<'static, ()>);
+                *in_flight = Some(wait.clone());
+                Some(wait)
+            }
+        };
+        if let Some(wait) = wait {
+            wait.clone().await;
+            let mut in_flight = lock(&self.user_abort_wait);
+            if in_flight
+                .as_ref()
+                .is_some_and(|current| current.ptr_eq(&wait))
+            {
+                *in_flight = None;
+            }
+        }
+        // An abort that joined an open agent_end boundary returns at once; the run is still held until it
+        // settles.
+        if self.agent_run_active.load(Ordering::SeqCst) {
+            self.wait_for_idle_after_abort().await;
         }
     }
 
@@ -7683,10 +7824,10 @@ impl AgentSession {
         }
         self.agent.suppress_queued_message_drain();
         self.agent.abort(None);
-        let agent = self.agent.clone();
-        let wait: futures::future::BoxFuture<'static, ()> = Box::pin(async move {
-            agent.wait_for_idle().await;
-        });
+        // senpi `_abortActiveAgentAndRetry`: the abort waits for idle through `_waitForIdleAfterAbort`, so a
+        // run held by an extension handler is released after the grace.
+        let wait: futures::future::BoxFuture<'static, ()> =
+            Box::pin(self.wait_for_idle_after_abort());
         *in_flight = Some(futures::FutureExt::shared(wait));
         Some(should_emit_abort)
     }
@@ -13003,6 +13144,22 @@ impl AgentSession {
         if veto.cancelled {
             return Ok(veto);
         }
+        self.rebuild_runtime_for_reload().await
+    }
+
+    /// senpi `applyProjectTrustChange` (senpi#3420): loads or unloads the project's code after the
+    /// session's project trust changed (Full access left or re-entered). It rebuilds the runtime exactly
+    /// like [`Self::reload`], but nothing can cancel it: no `session_before_reload` handler runs, so a
+    /// project extension cannot keep itself loaded. A reload already in flight holds the reload
+    /// admission; this one waits for it and then rebuilds under the new trust.
+    pub async fn apply_project_trust_change(&self) -> Result<(), String> {
+        let _reload = self.reload_admission.lock().await;
+        self.rebuild_runtime_for_reload().await.map(|_| ())
+    }
+
+    async fn rebuild_runtime_for_reload(
+        &self,
+    ) -> Result<maho_ext_api::ReloadVetoDecision, String> {
         self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous_flag_values = self
@@ -13012,16 +13169,29 @@ impl AgentSession {
             .as_ref()
             .map(|runner| runner.runtime.flag_values())
             .unwrap_or_default();
+        let session_flag_values = self.state().flag_values.clone();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload)
             .await;
         self.invalidate_extension_runtime().await;
-        self.with_settings_manager_mut(|manager| manager.reload());
+        let mut trust_epoch = self.with_settings_manager_mut(|manager| {
+            manager.reload();
+            manager.trust_epoch()
+        });
         self.sync_queue_modes_from_settings();
         // `modelRuntime.reloadConfig()`: the registry's runtime shares its config/provider state, so
         // reloading a clone re-reads models.json for the session's live catalog.
         self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
         self.load_resources_with_refresh(true).await?;
+        // senpi#3420 trust epoch: a trust change that landed while the resources loaded must not leave
+        // the session with what the previous trust allowed; load again until the trust stops moving.
+        while self.with_settings_manager(|manager| manager.trust_epoch()) != trust_epoch {
+            trust_epoch = self.with_settings_manager_mut(|manager| {
+                manager.reload();
+                manager.trust_epoch()
+            });
+            self.load_resources_with_refresh(true).await?;
+        }
         self.refresh_eval_only_tool_names();
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
@@ -13034,6 +13204,14 @@ impl AgentSession {
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {
             for (name, value) in previous_flag_values {
                 runner.runtime.set_flag(&name, value);
+            }
+            // A flag set while this reload ran (a permission preset change) reached only the session
+            // and the retired runner; it carries over to the fresh one (senpi#2842, #3420).
+            let current = self.state().flag_values.clone();
+            for (name, value) in current {
+                if session_flag_values.get(&name) != Some(&value) {
+                    runner.runtime.set_flag(&name, value);
+                }
             }
         }
         // Scopes resolve after the runner renewal re-registered extension-native providers.
@@ -14280,7 +14458,12 @@ impl AgentSession {
     /// senpi `extensionRunner.setFlagValue(name, value)`: the bound runner's extensions read it from
     /// their next call, and the session keeps it for a runner that binds later.
     pub async fn set_extension_flag_value(&self, name: &str, value: FlagValue) {
-        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+        // A runner a reload or dispose invalidated panics on writes; the session keeps the value, and a
+        // rebuild carries the session's flags to its fresh runner (senpi#3420: a preset change can land
+        // while a reload or replacement is in flight).
+        if let Some(runner) = self.extension_runner.lock().await.as_ref()
+            && runner.runtime.assert_active().is_ok()
+        {
             runner.runtime.set_flag(name, value.clone());
         }
         self.state().flag_values.insert(name.to_owned(), value);
@@ -18610,6 +18793,8 @@ impl AgentSession {
         if crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine {
             self.record_engine_turn_start(&message.custom_type);
         }
+        // senpi `_promptAgent`: a new turn admitted owns the held handler waits it starts.
+        self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.hydrate_runtime_messages_for_run();
         self.agent
@@ -26608,17 +26793,11 @@ mod tests {
         session.dispose().await;
     }
 
-    // senpi#3650: the session binds the runner's lifecycle handler budget, and its turn deadline / abort
-    // path releases the current run's held handler waits.
-    #[tokio::test]
-    async fn a_held_lifecycle_handler_is_released_through_the_session() {
-        let session = test_session();
-        session.with_settings_manager_mut(|manager| {
-            manager.apply_overrides(&Map::from_iter([(
-                "extensionEventHandlerWarnMs".to_owned(),
-                json!(0),
-            )]))
-        });
+    /// A `turn_start` handler that tells `started` when it begins and never settles.
+    fn held_turn_start_extension(
+        session: &AgentSession,
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+    ) -> maho_ext_api::LoadedExtension {
         let mut extension = maho_ext_api::LoadedExtension::new(
             "<inline:held>",
             session.cwd().into(),
@@ -26626,12 +26805,98 @@ mod tests {
         );
         extension.handlers.insert(
             maho_ext_api::EventKind::TurnStart,
-            vec![Arc::new(|_, _| {
-                Box::pin(std::future::pending::<
-                    Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
-                >())
+            vec![Arc::new(move |_, _| {
+                let started = started.clone();
+                Box::pin(async move {
+                    let _ = started.send(());
+                    std::future::pending::<
+                        Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>,
+                    >()
+                    .await
+                })
             })],
         );
+        extension
+    }
+
+    /// A session whose session.log lands in `agent_dir`.
+    fn test_session_in_agent_dir(agent_dir: &Path) -> AgentSession {
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        })
+        .expect("valid model runtime");
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory("/tmp", None, None),
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: Some(agent_dir.to_string_lossy().into_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        })
+        .expect("session")
+    }
+
+    fn handler_budget_settings(session: &AgentSession, warn_ms: u64, timeout_ms: u64) {
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([
+                ("extensionEventHandlerWarnMs".to_owned(), json!(warn_ms)),
+                (
+                    "extensionEventHandlerTimeoutMs".to_owned(),
+                    json!(timeout_ms),
+                ),
+            ]))
+        });
+    }
+
+    fn collect_extension_errors(session: &AgentSession) -> Arc<Mutex<Vec<ExtensionError>>> {
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let observed = errors.clone();
+        session.state().extension_error_listener = Some(Arc::new(move |error: &ExtensionError| {
+            lock(&observed).push(error.clone())
+        }));
+        errors
+    }
+
+    fn stalled_log_stages(agent_dir: &Path, handler_event: &str) -> Vec<String> {
+        std::fs::read_to_string(agent_dir.join("logs").join("session.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|line| {
+                line["event"] == "extension_handler_stalled"
+                    && line["handlerEvent"] == handler_event
+            })
+            .filter_map(|line| line["stage"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    // senpi#3650: the session's turn deadline / abort path releases the current run's held handler waits.
+    #[tokio::test]
+    async fn a_held_lifecycle_handler_is_released_through_the_session() {
+        let session = test_session();
+        handler_budget_settings(&session, 0, 0);
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let extension = held_turn_start_extension(&session, started);
         session
             .set_extension_runner(maho_ext_host::ExtensionRunner::new(
                 vec![extension],
@@ -26642,22 +26907,125 @@ mod tests {
             .await;
         assert_eq!(session.release_held_extension_handlers().await, 0);
         let release = async {
-            // The emission registers its held wait on its first poll; release once it is held.
-            let mut released = 0;
-            while released == 0 {
-                tokio::task::yield_now().await;
-                released = session.release_held_extension_handlers().await;
-            }
-            released
+            // The emission registers its held wait before the handler first runs.
+            starts.recv().await.expect("held handler started");
+            session.release_held_extension_handlers().await
         };
-        let ((), released) = tokio::join!(
+        let ((), released) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                session.dispatch_extension_event(maho_ext_api::ExtensionEvent::TurnStart {
+                    turn_index: 0,
+                    timestamp: 0,
+                }),
+                release
+            )
+        })
+        .await
+        .expect("the release ends the held emission");
+        assert_eq!(released, 1);
+    }
+
+    // senpi#3650: the settings budget is bound to the runner: a handler past extensionEventHandlerTimeoutMs is
+    // stopped with an extension error, and the stall is logged to session.log.
+    #[tokio::test(start_paused = true)]
+    async fn the_settings_handler_timeout_stops_a_held_handler_and_logs_the_stall() {
+        let agent_dir = tempfile::tempdir().expect("agent dir");
+        let session = test_session_in_agent_dir(agent_dir.path());
+        handler_budget_settings(&session, 0, 50);
+        let errors = collect_extension_errors(&session);
+        let (started, _starts) = tokio::sync::mpsc::unbounded_channel();
+        let extension = held_turn_start_extension(&session, started);
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+
+        // Without the bound budget the held handler is never stopped and this times out.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
             session.dispatch_extension_event(maho_ext_api::ExtensionEvent::TurnStart {
                 turn_index: 0,
                 timestamp: 0,
             }),
-            release
+        )
+        .await
+        .expect("the handler budget stops the held handler");
+
+        let errors = lock(&errors).clone();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].event, "turn_start");
+        assert_eq!(errors[0].error, "handler timed out after 50ms");
+        assert_eq!(
+            stalled_log_stages(agent_dir.path(), "turn_start"),
+            ["timeout"]
         );
-        assert_eq!(released, 1);
+    }
+
+    // senpi#3650 "lets Esc release a held handler when the budget and the deadline are both disabled": the
+    // abort grace runs out on a run held by an extension handler, so the turn's held waits are released.
+    #[tokio::test(start_paused = true)]
+    async fn esc_releases_a_held_turn_start_handler_after_the_abort_grace() {
+        use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_streams};
+        let agent_dir = tempfile::tempdir().expect("agent dir");
+        let session = test_session_in_agent_dir(agent_dir.path());
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(vec![
+            maho_ai::providers::faux::faux_assistant_message("unreached", Default::default())
+                .into(),
+        ]);
+        let streams = faux_streams(provider.core.clone());
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        session
+            .agent
+            .set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session
+            .agent
+            .set_stream_function(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            }));
+        handler_budget_settings(&session, 0, 0);
+        let errors = collect_extension_errors(&session);
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let extension = held_turn_start_extension(&session, started);
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+
+        let esc = async {
+            starts.recv().await.expect("held handler started");
+            session.abort().await;
+        };
+        // Without the release after the abort grace, the held turn_start never settles and this times out.
+        let (_prompted, ()) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(session.prompt("start", Default::default()), esc)
+        })
+        .await
+        .expect("the abort grace releases the held handler and the run settles");
+
+        assert!(!session.is_streaming());
+        let errors = lock(&errors).clone();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].event, "turn_start");
+        assert_eq!(errors[0].error, "handler released by the turn deadline");
+        assert_eq!(
+            stalled_log_stages(agent_dir.path(), "turn_start"),
+            ["released"]
+        );
+        session.dispose().await;
     }
 
     #[tokio::test]

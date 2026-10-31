@@ -408,23 +408,20 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
                 }
             }
         });
-    let (project_trusted, project_trust_warnings) = indicator
-        .during_prompt(
-            super::host_runtime::resolve_runtime_project_trust_with_warnings(
-                &trust_config,
-                &session_cwd,
-                trust_mode,
-                trust_mode == AppMode::Interactive,
-                selector,
-            ),
-        )
+    // senpi main.ts `createServices`: a `--permission-preset full-access` (or global `permissionPreset`)
+    // session trusts its project without asking, and leaving Full access withdraws it (senpi#3414).
+    let launch_trust = indicator
+        .during_prompt(super::host_runtime::resolve_launch_project_trust(
+            &trust_config,
+            &session_cwd,
+            trust_mode,
+            trust_mode == AppMode::Interactive,
+            selector,
+            None,
+        ))
         .await;
-    let mut settings = maho_core::settings_manager::SettingsManager::create(
-        &session_cwd,
-        &agent_dir,
-        &maho_core::config::home_dir(),
-        project_trusted,
-    );
+    let mut settings = launch_trust.settings_manager(&session_cwd, &agent_dir);
+    let project_trust_warnings = launch_trust.warnings;
     // senpi main.ts:769-775 `projectTrustDiagnostics`, then `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
     let mut runtime_diagnostics: Vec<_> = project_trust_warnings
         .into_iter()

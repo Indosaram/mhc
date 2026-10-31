@@ -757,12 +757,12 @@ mod tests {
     #[test]
     fn an_invalid_frontmatter_document_is_skipped_with_a_warning() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_skill(dir.path(), "bad/SKILL.md", "---\ndescription: [unclosed\n---\nbody");
+        write_skill(dir.path(), "bad/SKILL.md", "---\nname: invalid-yaml\ndescription: [unclosed bracket\n---\n\n# Invalid YAML Skill\n");
         let result = load_skills_from_dir(&LoadSkillsFromDirOptions { dir: dir.path().to_string_lossy().into_owned(), source: "path".to_string(), ..Default::default() });
         assert!(result.skills.is_empty());
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].diagnostic_type, ResourceDiagnosticType::Warning);
-        assert!(!result.diagnostics[0].message.is_empty());
+        assert!(result.diagnostics[0].message.contains("at line"), "{}", result.diagnostics[0].message);
         assert_eq!(result.diagnostics[0].path.as_deref(), Some(dir.path().join("bad").join("SKILL.md").to_string_lossy().as_ref()));
     }
 

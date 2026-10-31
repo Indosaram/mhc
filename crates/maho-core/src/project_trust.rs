@@ -63,6 +63,18 @@ pub fn format_project_trust_prompt(cwd: &str) -> String {
     )
 }
 
+/// senpi `presetTrustsProject` (senpi#3414): a session whose permission preset is explicitly
+/// `full-access` trusts its project for that session. Explicit means the session's `permission-preset`
+/// flag (CLI, or `open_session.permissionPreset` through the launch profile), else the user's global
+/// setting. Project settings never count: they are what trust gates. The implicit default never
+/// counts either, so a plain launch keeps asking.
+pub fn preset_trusts_project(preset_flag: Option<&maho_ext_api::FlagValue>, global_preset: Option<&serde_json::Value>) -> bool {
+    match preset_flag {
+        Some(maho_ext_api::FlagValue::String(preset)) => preset == "full-access",
+        Some(maho_ext_api::FlagValue::Boolean(_)) | None => global_preset.and_then(serde_json::Value::as_str) == Some("full-access"),
+    }
+}
+
 /// Result of asking the extension runner for a trust decision.
 pub type EmitProjectTrust = dyn Fn(&str) -> Result<Option<ProjectTrustEventResult>, ExtensionFailure> + Send + Sync;
 
@@ -169,6 +181,23 @@ mod tests {
     fn store() -> ProjectTrustStore {
         let dir = tempfile::tempdir().expect("tempdir");
         ProjectTrustStore::new(&dir.path().to_string_lossy())
+    }
+
+    /// senpi project-trust.ts `presetTrustsProject` (senpi#3414).
+    #[test]
+    fn only_an_explicit_full_access_preset_trusts_the_project() {
+        let full = serde_json::json!("full-access");
+        let ask = serde_json::json!("ask");
+        let flag = |value: &str| maho_ext_api::FlagValue::String(value.to_owned());
+        assert!(preset_trusts_project(Some(&flag("full-access")), None));
+        // The session's own flag wins over the global setting, both ways.
+        assert!(!preset_trusts_project(Some(&flag("ask")), Some(&full)));
+        assert!(preset_trusts_project(Some(&flag("full-access")), Some(&ask)));
+        assert!(preset_trusts_project(None, Some(&full)));
+        assert!(!preset_trusts_project(None, Some(&ask)));
+        // The implicit default never counts.
+        assert!(!preset_trusts_project(None, None));
+        assert!(!preset_trusts_project(Some(&maho_ext_api::FlagValue::Boolean(true)), None));
     }
 
     #[test]

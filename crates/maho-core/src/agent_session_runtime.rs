@@ -317,6 +317,12 @@ pub struct AgentSessionRuntime {
     /// senpi `sessionReplaceListeners`.
     session_replace_listeners: std::sync::Mutex<Vec<(u64, SessionReplaceListener)>>,
     next_replace_listener: std::sync::atomic::AtomicU64,
+    /// senpi `_disposedSession`: the live session was disposed by a replacement that has not installed
+    /// (or failed to install) its successor; nothing may rebuild it.
+    session_disposed: bool,
+    /// Test seam: the next replacement fails right after the outgoing session was disposed.
+    #[cfg(test)]
+    fail_replacement_after_teardown: bool,
 }
 
 impl AgentSessionRuntime {
@@ -344,12 +350,16 @@ impl AgentSessionRuntime {
             retry_fallback: None,
             session_replace_listeners: std::sync::Mutex::new(Vec::new()),
             next_replace_listener: std::sync::atomic::AtomicU64::new(0),
+            session_disposed: false,
+            #[cfg(test)]
+            fail_replacement_after_teardown: false,
         }
     }
 
     /// senpi `setPermissionPreset`: the permission extension enforces it from the next tool call, and
-    /// later replacements (switch, new, fork) keep it. The Full-access project-trust sync
-    /// (senpi#3414/#3420) needs SettingsManager `trustFromFullAccess`, which maho-core does not carry yet.
+    /// later replacements (switch, new, fork) keep it. A Full-access-only project trust follows the
+    /// preset (senpi#3414, #3420); the rebuild that change needs has finished when this returns
+    /// (senpi `projectTrustChange`).
     pub async fn set_permission_preset(&mut self, preset: String) {
         self.launch_profile
             .get_or_insert_with(|| AgentSessionLaunchProfile {
@@ -358,8 +368,51 @@ impl AgentSessionRuntime {
             })
             .permission_preset = Some(preset.clone());
         self.session
-            .set_extension_flag_value("permission-preset", maho_ext_api::FlagValue::String(preset))
+            .set_extension_flag_value("permission-preset", maho_ext_api::FlagValue::String(preset.clone()))
             .await;
+        // After a replacement failed the live session is the disposed one: nothing may rebuild it. The
+        // preset is recorded above, and the next replacement syncs to it before it goes live.
+        if !self.session_disposed {
+            let session = self.session.clone();
+            self.sync_full_access_trust(&session, &preset).await;
+        }
+    }
+
+    /// senpi `syncFullAccessTrust`: keeps a Full-access-only project trust in step with the preset
+    /// (senpi#3414, #3420). Leaving Full access withdraws it, unless the user has since saved "trust";
+    /// going back restores it, unless the user saved "do not trust". Either way the session's runtime is
+    /// rebuilt so project extensions, skills, hooks and MCP servers load or unload, and nothing can
+    /// cancel that rebuild. The trust is never saved. A failed rebuild is kept as a runtime diagnostic.
+    async fn sync_full_access_trust(&mut self, session: &AgentSession, preset: &str) {
+        // The session's own project: a replacement can belong to another project than the retired one.
+        let cwd = session.with_session_manager(|manager| manager.cwd().to_owned());
+        let saved = crate::trust_manager::ProjectTrustStore::new(&self.services.agent_dir)
+            .get(&cwd)
+            .ok()
+            .flatten();
+        let changed = session.with_settings_manager_mut(|settings| {
+            if preset != "full-access" && settings.is_trust_from_full_access() && saved != Some(true) {
+                settings.set_project_trusted(false);
+                true
+            } else if preset == "full-access"
+                && settings.can_restore_full_access_trust()
+                && saved != Some(false)
+            {
+                settings.set_project_trusted(true);
+                true
+            } else {
+                false
+            }
+        });
+        if !changed {
+            return;
+        }
+        if let Err(error) = session.apply_project_trust_change().await {
+            self.diagnostics.push(AgentSessionRuntimeDiagnostic {
+                kind: crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error,
+                message: format!("Updating project code after a Full access change failed: {error}"),
+            });
+        }
     }
 
     /// senpi `onBeforeSessionReplace`: runs while the current session is REPLACED (new, switch, fork,
@@ -779,16 +832,24 @@ impl AgentSessionRuntime {
         cwd: String,
         reason: maho_ext_api::SessionReason,
     ) -> Result<(), String> {
+        let (project_trusted, trust_from_full_access) = {
+            let current = self
+                .services
+                .settings_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                current.is_project_trusted(),
+                current.is_trust_from_full_access() || current.can_restore_full_access_trust(),
+            )
+        };
         let mut settings = crate::settings_manager::SettingsManager::create(
             &cwd,
             &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(),
-            self.services
-                .settings_manager
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_project_trusted(),
+            project_trusted,
         );
+        settings.set_trust_from_full_access(trust_from_full_access);
         if let Some(profile) = &self.retry_fallback {
             apply_retry_fallback_profile(&mut settings, profile);
         }
@@ -896,6 +957,11 @@ impl AgentSessionRuntime {
             before();
         }
         self.session.dispose().await;
+        self.session_disposed = true;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_replacement_after_teardown) {
+            return Err("replacement build failed".to_owned());
+        }
         let created = crate::sdk::create_agent_session(options).await?;
         // senpi `apply`: the launch profile's surface and engine follow the session replacement.
         if let Some(surface) = self.prompt_surface {
@@ -939,10 +1005,17 @@ impl AgentSessionRuntime {
         if let Some(preset) = preset {
             created
                 .session
-                .set_extension_flag_value("permission-preset", maho_ext_api::FlagValue::String(preset))
+                .set_extension_flag_value(
+                    "permission-preset",
+                    maho_ext_api::FlagValue::String(preset.clone()),
+                )
                 .await;
+            // senpi#3420: the replacement's project trust follows the CURRENT preset and its own
+            // project's saved decision before it goes live.
+            self.sync_full_access_trust(&created.session, &preset).await;
         }
         self.session = created.session;
+        self.session_disposed = false;
         *self.lock_hold() = next_hold;
         self.services.cwd = cwd;
         self.services.settings_manager = self.session.shared_settings_manager();
@@ -1916,6 +1989,355 @@ mod tests {
             Some(path.as_str())
         );
         assert_eq!(runtime.session().cwd(), cwd);
+    }
+
+    /// senpi test/suite/regressions/issue-3414-full-access-project-trust.test.ts, over the runtime
+    /// fixture: a project skill is the probe for the project's code, and the session's trust starts as
+    /// a Full-access-only trust (senpi main.ts `trustFromFullAccess`).
+    async fn full_access_fixture(saved: Option<bool>) -> (tempfile::TempDir, AgentSessionRuntime) {
+        let (dir, mut runtime) = runtime_fixture().await;
+        let skill = dir
+            .path()
+            .join(crate::config::config_dir_name())
+            .join("skills")
+            .join("project-skill");
+        std::fs::create_dir_all(&skill).expect("skill dir");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: project-skill\ndescription: probe\n---\nbody\n",
+        )
+        .expect("skill");
+        if let Some(decision) = saved {
+            trust_store(&runtime)
+                .set(runtime.cwd(), Some(decision))
+                .expect("save trust");
+        }
+        runtime
+            .session()
+            .with_settings_manager_mut(|settings| settings.set_trust_from_full_access(true));
+        runtime.session().reload().await.expect("load project code");
+        runtime.set_permission_preset("full-access".to_owned()).await;
+        (dir, runtime)
+    }
+
+    fn trust_store(runtime: &AgentSessionRuntime) -> crate::trust_manager::ProjectTrustStore {
+        crate::trust_manager::ProjectTrustStore::new(&runtime.services().agent_dir)
+    }
+
+    fn project_trusted(runtime: &AgentSessionRuntime) -> bool {
+        runtime
+            .session()
+            .with_settings_manager(|settings| settings.is_project_trusted())
+    }
+
+    fn has_project_skill(runtime: &AgentSessionRuntime) -> bool {
+        runtime
+            .session()
+            .loaded_skills()
+            .is_some_and(|loaded| loaded.skills.iter().any(|skill| skill.name == "project-skill"))
+    }
+
+    #[tokio::test]
+    async fn moving_a_session_off_full_access_stops_trusting_its_project_at_once() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        assert_eq!(trust_store(&runtime).get(runtime.cwd()), Ok(None));
+    }
+
+    #[tokio::test]
+    async fn going_back_to_full_access_trusts_the_project_again_and_reloads_its_code() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        runtime.set_permission_preset("ask".to_owned()).await;
+        assert!(!project_trusted(&runtime));
+
+        runtime.set_permission_preset("full-access".to_owned()).await;
+
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+        assert_eq!(trust_store(&runtime).get(runtime.cwd()), Ok(None));
+    }
+
+    #[tokio::test]
+    async fn a_saved_do_not_trust_still_wins_when_full_access_comes_back() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        runtime.set_permission_preset("ask".to_owned()).await;
+        trust_store(&runtime)
+            .set(runtime.cwd(), Some(false))
+            .expect("save");
+
+        runtime.set_permission_preset("full-access".to_owned()).await;
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+    }
+
+    #[tokio::test]
+    async fn a_trust_the_user_saved_during_the_session_survives_leaving_full_access() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        trust_store(&runtime)
+            .set(runtime.cwd(), Some(true))
+            .expect("save");
+
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_trust_does_not_follow_the_preset() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        assert!(project_trusted(&runtime));
+        runtime.set_permission_preset("ask".to_owned()).await;
+        assert!(project_trusted(&runtime));
+    }
+
+    #[tokio::test]
+    async fn leaving_full_access_unloads_project_code_even_when_an_extension_cancels_reloads() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        let mut veto = maho_ext_api::LoadedExtension::new(
+            "<inline:veto>",
+            runtime.session().cwd().into(),
+            Default::default(),
+        );
+        veto.handlers.insert(
+            maho_ext_api::EventKind::SessionBeforeReload,
+            vec![std::sync::Arc::new(|_, _| {
+                Box::pin(async {
+                    Ok(maho_ext_api::EventResult::SessionBefore(
+                        maho_ext_api::SessionBeforeEventResult {
+                            cancel: Some(true),
+                            reason: Some("kept by the project".to_owned()),
+                            ..Default::default()
+                        },
+                    ))
+                })
+            })],
+        );
+        let context = crate::sdk::extension_context::create(runtime.session());
+        let mut runner = maho_ext_host::ExtensionRunner::new(
+            vec![veto],
+            Default::default(),
+            Default::default(),
+            context,
+        );
+        // The untrusted rebuild no longer loads the project's vetoing extension.
+        runner.set_runtime_factory(std::sync::Arc::new(|context| {
+            Box::pin(async move {
+                Ok(maho_ext_host::ExtensionRunner::new(
+                    Vec::new(),
+                    Default::default(),
+                    Default::default(),
+                    context,
+                ))
+            })
+        }));
+        runtime.session().set_extension_runner(runner).await;
+        assert!(
+            runtime
+                .session()
+                .check_reload_veto()
+                .await
+                .expect("veto")
+                .cancelled
+        );
+
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        assert!(
+            !runtime
+                .session()
+                .check_reload_veto()
+                .await
+                .expect("veto")
+                .cancelled
+        );
+        assert!(
+            runtime
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.kind
+                    != crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error),
+        );
+    }
+
+    /// A runner whose recreation, the first time, reports that it is loading (with the trust it read)
+    /// and waits for its release: a reload stalls inside the project's code (#3420 races).
+    struct ReloadGate {
+        loading: tokio::sync::oneshot::Receiver<()>,
+        release: tokio::sync::oneshot::Sender<()>,
+        trust_seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    }
+
+    async fn install_reload_gate(session: &AgentSession) -> ReloadGate {
+        let (loaded, loading) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(Some((loaded, released))));
+        let trust_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = trust_seen.clone();
+        let mut runner = maho_ext_host::ExtensionRunner::new(
+            Vec::new(),
+            Default::default(),
+            Default::default(),
+            crate::sdk::extension_context::create(session),
+        );
+        runner.set_runtime_factory(std::sync::Arc::new(move |context| {
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((context.is_project_trusted_fn)());
+            let armed = gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            Box::pin(async move {
+                if let Some((loaded, released)) = armed {
+                    loaded.send(()).expect("the test waits for the load");
+                    released.await.expect("the test releases the load");
+                }
+                Ok(maho_ext_host::ExtensionRunner::new(
+                    Vec::new(),
+                    Default::default(),
+                    Default::default(),
+                    context,
+                ))
+            })
+        }));
+        session.set_extension_runner(runner).await;
+        ReloadGate {
+            loading,
+            release,
+            trust_seen,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reload_already_in_flight_does_not_put_project_code_back_after_the_trust_is_withdrawn() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        let gate = install_reload_gate(runtime.session()).await;
+        // A user reload that stalls inside the project's code, after it read the trust.
+        let reloading = runtime.session().clone();
+        let user_reload = tokio::spawn(async move { reloading.reload().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.loading)
+            .await
+            .expect("bounded load")
+            .expect("the reload reaches the project's code");
+
+        {
+            let change = runtime.set_permission_preset("ask".to_owned());
+            tokio::pin!(change);
+            // The trust is withdrawn at once; its rebuild waits for the reload in flight.
+            assert!(futures::poll!(&mut change).is_pending());
+            gate.release.send(()).expect("release the stalled load");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                assert!(
+                    !user_reload
+                        .await
+                        .expect("reload task")
+                        .expect("reload")
+                        .cancelled
+                );
+                change.await;
+            })
+            .await
+            .expect("bounded reload and trust change");
+        }
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        // The stalled reload built under the trust it read; the runtime that stays was built without it.
+        assert_eq!(
+            *gate
+                .trust_seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [true, false]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replacement_built_under_full_access_does_not_go_live_trusted_after_a_downgrade() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        // A downgrade that reached only the launch profile while the replacement was being built
+        // (senpi: the preset moved while the live session was the disposed one).
+        runtime
+            .launch_profile
+            .as_mut()
+            .expect("launch profile")
+            .permission_preset = Some("ask".to_owned());
+        assert!(project_trusted(&runtime));
+
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("ask".to_owned()))
+        );
+        // Still a Full-access-only trust: going back restores it.
+        runtime.set_permission_preset("full-access".to_owned()).await;
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+    }
+
+    #[tokio::test]
+    async fn a_replacement_that_fails_after_teardown_does_not_rebuild_the_disposed_session() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        runtime.fail_replacement_after_teardown = true;
+        assert!(runtime.new_session(Default::default()).await.is_err());
+
+        // The live session is the disposed one now: the change is recorded and nothing rebuilds it.
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert_eq!(
+            runtime
+                .launch_profile()
+                .and_then(|profile| profile.permission_preset.as_deref()),
+            Some("ask")
+        );
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("ask".to_owned()))
+        );
+        assert!(project_trusted(&runtime));
+        assert!(
+            runtime
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.kind
+                    != crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replacement_keeps_a_full_access_only_trust_tied_to_the_preset() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+        // The replacement carries the Full-access-only trust: leaving Full access still withdraws it.
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+        runtime.set_permission_preset("ask".to_owned()).await;
+        assert!(!project_trusted(&runtime));
+
+        // A replacement built after the downgrade goes live untrusted, and Full access restores it.
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        runtime.set_permission_preset("full-access".to_owned()).await;
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("full-access".to_owned()))
+        );
     }
 
     #[test]

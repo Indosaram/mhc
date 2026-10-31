@@ -746,6 +746,11 @@ pub struct SettingsManager {
     project_settings: Settings,
     settings: Settings,
     project_trusted: bool,
+    /// senpi `trustFromFullAccess`: the project trust exists only because the session runs Full access
+    /// (senpi#3414); leaving it withdraws the trust, and going back restores it (#3420).
+    trust_from_full_access: bool,
+    /// senpi `trustEpoch`: counts project-trust changes; a reload compares it before installing what it loaded (#3420).
+    trust_epoch: u64,
     global_settings_load_error: Option<String>,
     project_settings_load_error: Option<String>,
     errors: Vec<SettingsError>,
@@ -799,6 +804,8 @@ impl SettingsManager {
             project_settings: project_load.0,
             settings,
             project_trusted,
+            trust_from_full_access: false,
+            trust_epoch: 0,
             global_settings_load_error: global_load.1,
             project_settings_load_error: project_load.1,
             errors,
@@ -897,6 +904,28 @@ impl SettingsManager {
         self.project_trusted
     }
 
+    /// senpi `SettingsManagerCreateOptions.trustFromFullAccess`: marks the project trust as coming only
+    /// from the session's Full access preset (never asked, never saved).
+    pub fn set_trust_from_full_access(&mut self, from_full_access: bool) {
+        self.trust_from_full_access = from_full_access;
+    }
+
+    /// senpi `isTrustFromFullAccess`: the project is trusted, and only because of Full access.
+    pub fn is_trust_from_full_access(&self) -> bool {
+        self.trust_from_full_access && self.project_trusted
+    }
+
+    /// senpi `canRestoreFullAccessTrust`: a Full-access-only trust was withdrawn in this session and
+    /// Full access may restore it.
+    pub fn can_restore_full_access_trust(&self) -> bool {
+        self.trust_from_full_access && !self.project_trusted
+    }
+
+    /// senpi `getTrustEpoch`.
+    pub fn trust_epoch(&self) -> u64 {
+        self.trust_epoch
+    }
+
     /// senpi `getTodoFirstTurnPlan`: `remind` and `off` are honored; anything else is `force`.
     pub fn get_todo_first_turn_plan(&self) -> &'static str {
         match self.settings.get("todo").and_then(|todo| todo.get("firstTurnPlan")).and_then(Value::as_str) {
@@ -924,6 +953,7 @@ impl SettingsManager {
             return;
         }
         self.project_trusted = trusted;
+        self.trust_epoch += 1;
         if !trusted {
             self.project_settings = Settings::new();
             self.project_settings_load_error = None;
@@ -3109,6 +3139,42 @@ mod tests {
         manager.set_project_trusted(false);
         assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
         assert!(manager.get_project().is_empty());
+    }
+
+    #[test]
+    fn a_full_access_only_trust_is_withdrawn_and_restored_and_counted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let agent = home.join(".omo").join("agent");
+        let project = tmp.path().join("proj");
+        std::fs::create_dir_all(&agent).expect("mkdir");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let mut manager = SettingsManager::create(
+            &project.to_string_lossy(),
+            &agent.to_string_lossy(),
+            &home.to_string_lossy(),
+            true,
+        );
+        // An ordinary trust is neither withdrawn nor restored by the preset (senpi#3414).
+        assert!(!manager.is_trust_from_full_access());
+        assert!(!manager.can_restore_full_access_trust());
+        assert_eq!(manager.trust_epoch(), 0);
+
+        manager.set_trust_from_full_access(true);
+        assert!(manager.is_trust_from_full_access());
+        assert!(!manager.can_restore_full_access_trust());
+
+        manager.set_project_trusted(false);
+        assert!(!manager.is_trust_from_full_access());
+        assert!(manager.can_restore_full_access_trust());
+        assert_eq!(manager.trust_epoch(), 1);
+
+        // An unchanged trust is not a change: the epoch stays (#3420).
+        manager.set_project_trusted(false);
+        assert_eq!(manager.trust_epoch(), 1);
+        manager.set_project_trusted(true);
+        assert!(manager.is_trust_from_full_access());
+        assert_eq!(manager.trust_epoch(), 2);
     }
 
     #[test]
