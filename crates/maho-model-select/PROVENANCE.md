@@ -41,3 +41,7 @@
   gains `kimi-k3.1-pro` → `k3.1-pro` and `kimi-k3.1-pro-highspeed` → `k3.1-pro-highspeed`.
 - Tests (`tests/delta_5152_d6.rs`) were written from D6 tests 1-5; test 2 checks the
   non-empty-providers invariant for every built-in rung in both launch-gate states.
+- D7 (spec copied at 0c0e537): the launch gate applies to the delegated-task choice on a cold
+  cache with known connected providers (`resolve_delegate_model_gated`; `resolve_delegate_model`
+  uses the release flag of `maho-ext-recommended-models`). Tests (`tests/delta_5152_d7.rs`)
+  were written from D7 tests 1-5, plus the "flag on changes nothing" statement.
