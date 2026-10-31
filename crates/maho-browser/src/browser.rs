@@ -30,7 +30,9 @@ pub enum TransportKind {
 /// How to start a browser.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LaunchOptions {
-    /// Executable; found with [`launch::find_executable`] when `None`.
+    /// Executable; resolved at launch when `None` (oh-my-pi `ensureChromiumExecutable`: an
+    /// executable variable, else a system browser, else Chrome for Testing downloaded once into
+    /// the cache; macOS prefers Chrome for Testing).
     pub executable: Option<PathBuf>,
     pub headless: bool,
     pub viewport: (u32, u32),
@@ -84,16 +86,18 @@ fn env_var(key: &str) -> Option<String> {
 impl Browser {
     /// Launches a browser this process owns.
     pub fn launch(options: &LaunchOptions) -> Result<Self, String> {
-        let executable = options
-            .executable
-            .clone()
-            .or_else(|| launch::find_executable(&env_var))
-            .ok_or_else(|| {
-                format!(
-                    "No Chrome/Chromium browser found. Install Chrome or Chromium, or set {} to a Chromium-based browser executable.",
-                    launch::EXECUTABLE_ENV.join(" or ")
-                )
-            })?;
+        let executable = match options.executable.clone() {
+            Some(executable) => Some(executable),
+            None => launch::chrome_for_testing::ensure_chromium_executable_from_env(
+                launch::chrome_for_testing::Purpose::Browser,
+            )?,
+        };
+        let executable = executable.ok_or_else(|| {
+            format!(
+                "No Chrome/Chromium browser found. Install Chrome or Chromium, or set {} to a Chromium-based browser executable.",
+                launch::EXECUTABLE_ENV.join(" or ")
+            )
+        })?;
         let (profile, owned_profile) = match &options.user_data_dir {
             Some(dir) => (dir.clone(), None),
             None => {

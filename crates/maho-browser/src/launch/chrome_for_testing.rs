@@ -18,6 +18,26 @@
 use super::{EXECUTABLE_ENV, find_system_executable, stealth::is_microsoft_edge_executable};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, PoisonError};
+
+/// The managed browser once installed (`chromiumExecutablePromise`): one download per process.
+static MANAGED_EXECUTABLE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Runs `install` at most once successfully per `slot`: concurrent callers wait on the lock
+/// while the first one downloads, then reuse its path. A failure is not cached, so the next
+/// call retries (oh-my-pi clears its promise on failure).
+fn memoised(
+    slot: &Mutex<Option<PathBuf>>,
+    install: impl FnOnce() -> Result<Option<PathBuf>, String>,
+) -> Result<Option<PathBuf>, String> {
+    let mut cached = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(path) = cached.as_ref() {
+        return Ok(Some(path.clone()));
+    }
+    let installed = install()?;
+    cached.clone_from(&installed);
+    Ok(installed)
+}
 
 /// puppeteer-core 25.3.0 `PUPPETEER_REVISIONS.chrome`.
 pub const CHROME_BUILD_ID: &str = "150.0.7871.24";
@@ -346,27 +366,7 @@ pub fn ensure_chromium_executable_from_env(purpose: Purpose) -> Result<Option<Pa
     let env = |key: &str| std::env::var(key).ok();
     let os = current_os();
     let system = || find_system_executable(&env);
-    let managed = || -> Result<Option<PathBuf>, String> {
-        let Some(platform) = detect_browser_platform(os, std::env::consts::ARCH) else {
-            return Ok(None);
-        };
-        let cache = cache_dir(&env).ok_or("cannot determine the browser cache directory")?;
-        let installer = Installer {
-            cache_dir: cache,
-            platform,
-            build_id: CHROME_BUILD_ID.to_owned(),
-            fetch: &curl_fetch,
-            unpack: &system_unzip,
-        };
-        if !installer.executable_path().exists() {
-            eprintln!(
-                "Downloading Chrome for Testing {CHROME_BUILD_ID} ({}) into {} (first browser use)",
-                platform.as_str(),
-                installer.cache_dir.display()
-            );
-        }
-        installer.install().map(Some)
-    };
+    let managed = || memoised(&MANAGED_EXECUTABLE, install_managed);
     ensure_chromium_executable(
         &Resolve {
             env: &env,
@@ -376,6 +376,30 @@ pub fn ensure_chromium_executable_from_env(purpose: Purpose) -> Result<Option<Pa
         },
         purpose,
     )
+}
+
+/// `ensureManagedChromium`: Chrome for Testing in [`cache_dir`], downloaded when missing.
+fn install_managed() -> Result<Option<PathBuf>, String> {
+    let env = |key: &str| std::env::var(key).ok();
+    let Some(platform) = detect_browser_platform(current_os(), std::env::consts::ARCH) else {
+        return Ok(None);
+    };
+    let cache = cache_dir(&env).ok_or("cannot determine the browser cache directory")?;
+    let installer = Installer {
+        cache_dir: cache,
+        platform,
+        build_id: CHROME_BUILD_ID.to_owned(),
+        fetch: &curl_fetch,
+        unpack: &system_unzip,
+    };
+    if !installer.executable_path().exists() {
+        eprintln!(
+            "Downloading Chrome for Testing {CHROME_BUILD_ID} ({}) into {} (first browser use)",
+            platform.as_str(),
+            installer.cache_dir.display()
+        );
+    }
+    installer.install().map(Some)
 }
 
 #[cfg(test)]
@@ -604,6 +628,38 @@ mod tests {
                 .err()
                 .is_some_and(|error| error.contains("cannot use Microsoft Edge"))
         );
+    }
+
+    #[test]
+    fn the_managed_install_runs_once_and_failures_are_retried() {
+        let slot = Mutex::new(None);
+        let installs = std::sync::atomic::AtomicUsize::new(0);
+        assert_eq!(
+            memoised(&slot, || Err("offline".into())),
+            Err("offline".to_owned())
+        );
+        let start = std::sync::Barrier::new(4);
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        memoised(&slot, || {
+                            installs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            Ok(Some(PathBuf::from("/cache/chrome")))
+                        })
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().ok())
+                .collect()
+        });
+        assert_eq!(installs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for result in results {
+            assert_eq!(result, Some(Ok(Some(PathBuf::from("/cache/chrome")))));
+        }
     }
 
     /// Downloads the real Chrome for Testing build when `MAHO_BROWSER_DOWNLOAD_TEST` is set.
