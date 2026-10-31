@@ -156,4 +156,63 @@ mod tests {
         };
         assert!(arm_lifetime_binding(&binding, "win32").is_none());
     }
+
+    fn mkfifo(path: &Path, mode: &str) {
+        let made = std::process::Command::new("mkfifo")
+            .args(["-m", mode])
+            .arg(path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success());
+    }
+
+    /// senpi rpc-internal-lifetime-binding: the binding is this user's 0600 FIFO in the private hop directory.
+    #[test]
+    fn prepares_a_private_fifo_in_the_hop_directory() {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let prepared = prepare_lifetime_binding(temp.path(), "linux").expect("mkfifo is available");
+        assert_eq!(prepared.lifetime_fifo, temp.path().join("lifetime.fifo"));
+        let metadata = std::fs::metadata(&prepared.lifetime_fifo).unwrap();
+        assert!(metadata.file_type().is_fifo());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    }
+
+    /// senpi rpc-internal-lifetime-fifo-open (#3816 review L5): a symlink to a FIFO and a FIFO with a foreign mode are
+    /// refused; this user's 0600 FIFO is accepted.
+    #[test]
+    fn only_this_users_0600_fifo_opens_and_never_through_a_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real.fifo");
+        mkfifo(&real, "600");
+        let link = temp.path().join("link.fifo");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(open_fifo_read_end(&link).is_none());
+        let open = temp.path().join("open.fifo");
+        mkfifo(&open, "644");
+        assert!(open_fifo_read_end(&open).is_none());
+        assert!(open_fifo_read_end(&real).is_some());
+    }
+
+    /// The macOS binding: the reopened stdin descriptor the internal bootstrap hands over ends in `Gone` at EOF.
+    #[tokio::test]
+    async fn the_reopened_stdin_descriptor_is_the_binding_off_linux() {
+        use std::os::fd::AsRawFd;
+        let (read_end, write_end) = rustix::pipe::pipe().unwrap();
+        let binding = LifetimeBinding {
+            lifetime_fifo: None,
+            lifetime_fd: Some(read_end.as_raw_fd()),
+        };
+        let event = arm_lifetime_binding(&binding, "darwin").expect("the descriptor arms");
+        drop(write_end);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), event)
+            .await
+            .expect("EOF arrives")
+            .unwrap();
+        assert_eq!(
+            event,
+            LifetimeEvent::Gone("supervisor stdin lifetime closed".into())
+        );
+        drop(read_end);
+    }
 }
