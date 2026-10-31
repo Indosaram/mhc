@@ -366,6 +366,42 @@ struct TakeoverContext {
     restore_grace_ms: Option<u64>,
     /// Upstream `own` ends with `flushRestoreDigest`: deliver the decided digest once a model is bound.
     flush: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Upstream `state.restoreInFlight`, awaited by shutdown.
+    restore_tasks: RestoreTasks,
+    /// Set by shutdown: the grace window ends at once.
+    grace_stop: Arc<tokio::sync::watch::Sender<bool>>,
+}
+/// Upstream `restoreInFlight`: the detached restore tasks (a takeover's `own`, the grace-window
+/// `decide`) that shutdown awaits before it records the manifest.
+type RestoreTasks = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
+/// Awaits every restore task in flight, including one a task spawned while it was awaited.
+async fn await_restores(tasks: &RestoreTasks) {
+    loop {
+        let next = tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
+        let Some(task) = next else {
+            return;
+        };
+        let _ = task.await;
+    }
+}
+/// Upstream `stopPersistence` (restore half): the generation is over, so a restore still in its
+/// grace window ends it at once (a watch still running counts as restored and stays in the
+/// manifest), decides nothing for the slot, and is awaited before the manifest is recorded. Native
+/// divergence: upstream awaits the whole grace window instead of cutting it short.
+async fn stop_restores(
+    digests: &Digests,
+    grace_stop: &tokio::sync::watch::Sender<bool>,
+    tasks: &RestoreTasks,
+) {
+    digests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .generation += 1;
+    grace_stop.send_replace(true);
+    await_restores(tasks).await;
 }
 type ExitWatch = tokio::sync::watch::Receiver<Option<Result<maho_pty::PtyExit, String>>>;
 impl TakeoverContext {
@@ -402,19 +438,24 @@ impl TakeoverContext {
             return settled_ids;
         }
         let started = std::time::Instant::now();
+        let mut stopped = self.grace_stop.subscribe();
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(
                 self.restore_grace_ms
                     .unwrap_or(crate::shared::RESTORE_GRACE_MS),
             );
         for (index, id, mut exit) in watches {
-            let code = match tokio::time::timeout_at(deadline, exit.wait_for(Option::is_some)).await
-            {
-                Ok(Ok(settled)) => settled
-                    .as_ref()
-                    .and_then(|result| result.as_ref().ok())
-                    .and_then(|exit| exit.exit_code),
-                _ => continue,
+            let code = tokio::select! {
+                biased;
+                settled = tokio::time::timeout_at(deadline, exit.wait_for(Option::is_some)) => match settled {
+                    Ok(Ok(settled)) => settled
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok())
+                        .and_then(|exit| exit.exit_code),
+                    _ => continue,
+                },
+                // Shutdown: every watch not yet seen exiting counts as restored.
+                _ = stopped.wait_for(|stop| *stop) => break,
             };
             let result = &mut digest.results[index];
             match result.outcome {
@@ -503,9 +544,13 @@ impl TakeoverContext {
         drop(slot);
         // Upstream restores on a detached promise: session_start never waits on a grace window.
         let this = self.clone();
-        drop(tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             this.decide(digest, downtime, readable_manifest).await;
-        }));
+        });
+        self.restore_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(task);
     }
 
     /// The rest of upstream `own(lease)` once the restore ran: settle the grace window, rewrite a
@@ -618,9 +663,14 @@ fn wait_for_lease(
             let mut lifecycle =
                 crate::terminal_state::TerminalStateLifecycle::new(&session_dir, &session_id);
             lifecycle.adopt_lease(lease);
-            tokio::spawn(async move {
+            let tasks = takeover.restore_tasks.clone();
+            let task = tokio::spawn(async move {
                 takeover.own(lifecycle, terminal_now_ms()).await;
             });
+            tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(task);
         }),
         on_error: Some(Box::new(move |error| {
             error_ui.notify(
@@ -1045,7 +1095,13 @@ impl Extension for TerminalExtension {
         let lifecycle_digests = digests.clone();
         let lifecycle_keeper = lease_keeper.clone();
         let lifecycle_decided = Arc::new(tokio::sync::watch::channel(0u64).0);
-        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();Box::pin(async move {
+        let restore_tasks: RestoreTasks = Arc::default();
+        // The current generation's grace-window stop signal; each SessionStart installs a fresh one.
+        let grace_stop: Arc<Mutex<Arc<tokio::sync::watch::Sender<bool>>>> =
+            Arc::new(Mutex::new(Arc::new(tokio::sync::watch::channel(false).0)));
+        let start_restore_tasks = restore_tasks.clone();
+        let start_grace_stop = grace_stop.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();Box::pin(async move {
             let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
             let session_id=ctx.session_manager.session_id().to_owned();
             let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
@@ -1068,7 +1124,7 @@ impl Extension for TerminalExtension {
             let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
-            let context=TakeoverContext {state:state.clone(),manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
+            let context=TakeoverContext {state:state.clone(),manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
             acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
             flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
@@ -1076,12 +1132,14 @@ impl Extension for TerminalExtension {
         let shutdown_lifecycle = state_lifecycle.clone();
         let shutdown_monitors = monitors.clone();
         let shutdown_keeper = lease_keeper.clone();
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();Box::pin(async move {
+        let shutdown_digests = digests.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                 // Upstream `detachPersistence`: the recorder detaches without writing and the
                 // session unbinds, so specs created until the next generation binds are queued for
                 // it. The lease is deliberately kept: the same pid holds it across the reload.
                 stop_waiting(&keeper).await;
+                stop_restores(&digests,&grace_stop,&restore_tasks).await;
                 let mut slot=state.lock().await;
                 if let Some(lifecycle)=slot.take() {crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());}
                 return Ok(EventResult::None);
@@ -1089,6 +1147,9 @@ impl Extension for TerminalExtension {
             // Upstream `stopPersistence`: stop waiting; a tick in flight either releases what it
             // acquired or finishes its takeover before the manifest is flushed.
             stop_waiting(&keeper).await;
+            // Upstream `await state.restoreInFlight`: the restore (a takeover's `own` and its grace
+            // window) finishes before the final sync, the shutdown record and the release.
+            stop_restores(&digests,&grace_stop,&restore_tasks).await;
             // Unbound under the state lock, like the bind: a monitor call never sees the session
             // bound with no lifecycle installed.
             let mut slot=state.lock().await;
@@ -2625,6 +2686,8 @@ mod persistence_tests {
             keeper_interval_ms,
             restore_grace_ms: None,
             flush: None,
+            restore_tasks: Arc::default(),
+            grace_stop: Arc::new(tokio::sync::watch::channel(false).0),
         };
         Fixture {
             dir,
@@ -2822,6 +2885,71 @@ mod persistence_tests {
             "the bound lifecycle's entries are untouched"
         );
         teardown(&fixture);
+    }
+
+    /// restore-session `stopPersistence`: a shutdown inside the grace window awaits the restore in
+    /// flight before the shutdown record. The still-running persistent watch stays in the recorded
+    /// manifest with its state dir, and no digest (let alone a `lost` one) is sent afterwards.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_inside_the_grace_window_keeps_the_watch_and_sends_no_digest() {
+        let mut fixture = fixture(1, None);
+        persisted_watch(&fixture, "mon_GRACESHUTDOWN01").await;
+        fixture.context.restore_grace_ms = Some(600_000);
+        let flushes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = flushes.clone();
+        fixture.context.flush = Some(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
+            &fixture.session_dir,
+            "terminal-persistence",
+        );
+        lifecycle
+            .acquire(
+                &fixture.terminal_dir,
+                &fixture.encoded,
+                f64::from(std::process::id()),
+                terminal_now_ms(),
+            )
+            .unwrap();
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        let state_dir = crate::monitor_state_dir::monitor_state_dir(
+            &fixture.terminal_dir,
+            "mon_GRACESHUTDOWN01",
+        );
+        assert!(state_dir.is_dir(), "the restored watch has its state dir");
+        // The SessionShutdown order: stop the restore in flight, then sync, record, release.
+        stop_restores(
+            &fixture.context.digests,
+            &fixture.context.grace_stop,
+            &fixture.context.restore_tasks,
+        )
+        .await;
+        assert!(fixture.context.restore_tasks.lock().unwrap().is_empty());
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        let snapshot = fixture.context.monitors.lock().unwrap().snapshot();
+        lifecycle
+            .writer
+            .observe_monitor_state(&snapshot, terminal_now_ms())
+            .await
+            .unwrap();
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        // The manager goes down after the record (the bundle shutdown); the restore is already over,
+        // so the dying watch is never judged.
+        teardown(&fixture);
+        assert_eq!(manifest_ids(&fixture), ["mon_GRACESHUTDOWN01"]);
+        assert!(
+            state_dir.is_dir(),
+            "the watch's baseline survives the shutdown"
+        );
+        assert!(
+            pending_monitors(&fixture).is_empty(),
+            "no digest is decided for a generation that shut down"
+        );
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(*fixture.decided.borrow_and_update(), 0);
     }
 
     /// The post-takeover sweep removes other sessions' stale leases and empty manifests and keeps
