@@ -263,7 +263,12 @@ impl ToolSearchService {
                 )
             })
             .collect();
-        let restored = rehydrate(messages, &docs);
+        // senpi#3518: serialize only the messages that can hold a marker (`activationMarkerCandidates`).
+        let candidates = crate::engine::marker_candidates::activation_marker_candidates(messages)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let restored = rehydrate(&candidates, &docs);
         if !restored.is_empty() {
             self.activate_names(&restored, &catalog)?;
         }

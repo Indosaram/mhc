@@ -294,7 +294,8 @@ pub fn register_session_hooks(
             Ok(maho_ext_api::EventResult::None)
         })
     }));
-    api.on(
+    // `{ mutatesMessages: false }`: the replay only reads the context, so the host may skip the copy.
+    api.on_with_options(
         maho_ext_api::EventKind::Context,
         std::sync::Arc::new(move |event, _ctx| {
             let service = service.clone();
@@ -315,6 +316,10 @@ pub fn register_session_hooks(
                 Ok(maho_ext_api::EventResult::None)
             })
         }),
+        maho_ext_api::ExtensionHandlerOptions {
+            mutates_messages: Some(false),
+            ..Default::default()
+        },
     );
 }
 pub fn native_search_enabled(
@@ -405,6 +410,10 @@ mod tests {
         ] {
             assert_eq!(api.registered.handlers[&kind].len(), 1);
         }
+        assert_eq!(
+            api.registered.handler_options[&maho_ext_api::EventKind::Context][0].mutates_messages,
+            Some(false)
+        );
     }
     fn document(source: ToolSearchSource) -> ToolSearchDocument {
         ToolSearchDocument {
