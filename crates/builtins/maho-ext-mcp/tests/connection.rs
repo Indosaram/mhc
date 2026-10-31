@@ -44,7 +44,10 @@ async fn concurrent_connects_share_one_client_and_transitions() {
         ServerConnectionState::Connected
     );
     assert!(states.try_recv().is_err());
-    assert_eq!(tools.recv().await.unwrap().generation, 0);
+    let connected = tools.recv().await.unwrap();
+    assert_eq!(connected.generation, 0);
+    // connection-types.ts: a connect's tools signal carries cause "connect".
+    assert_eq!(connected.cause, ServerConnectionToolsChangedCause::Connect);
     assert_eq!(
         first
             .request("tools/list", serde_json::json!({}), Duration::from_secs(3))
@@ -150,10 +153,15 @@ async fn list_changed_after_call_reaches_connection() {
         )
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), changes.recv())
+    let changed = tokio::time::timeout(Duration::from_secs(3), changes.recv())
         .await
         .unwrap()
         .unwrap();
+    // A server notification is a reported change, never a connect.
+    assert_eq!(
+        changed.cause,
+        ServerConnectionToolsChangedCause::Notification
+    );
     connection.dispose().await.unwrap();
 }
 
