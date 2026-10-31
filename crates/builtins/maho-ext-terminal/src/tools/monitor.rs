@@ -78,6 +78,31 @@ pub fn execute_configured_monitor(
     shell: Option<&str>,
     settings: &crate::settings::ResolvedTerminalSettings,
 ) -> TerminalToolResult {
+    execute_configured_monitor_in(
+        manager,
+        registry,
+        input,
+        cwd,
+        approved_parent,
+        shell,
+        settings,
+        None,
+    )
+}
+/// `execute_configured_monitor` with the session's terminal state dir (upstream
+/// `terminalStateDir(ctx.getSessionContext())`): a persistent command watch gets its own
+/// `SENPI_MONITOR_STATE_DIR` under it, created before the spawn.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_configured_monitor_in(
+    manager: &mut TerminalManager,
+    registry: &mut MonitorRegistry,
+    input: &Value,
+    cwd: &std::path::Path,
+    approved_parent: Option<&std::path::Path>,
+    shell: Option<&str>,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    terminal_dir: Option<&std::path::Path>,
+) -> TerminalToolResult {
     if input.get("action").and_then(Value::as_str) == Some("rearm") {
         let id = input
             .get("bash_id")
@@ -244,10 +269,20 @@ pub fn execute_configured_monitor(
     if !persistent {
         options = options.timeout(std::time::Duration::from_millis(timeout));
     }
+    // The stable id is allocated BEFORE the spawn so the command can see it in its environment.
     let monitor_id = match allocate_monitor_id() {
         Ok(id) => id,
         Err(error) => return error_result(error.to_string()),
     };
+    options = options.env(MONITOR_ENV_ID, monitor_id.as_str());
+    if persistent && let Some(terminal_dir) = terminal_dir {
+        match crate::monitor_state_dir::ensure_monitor_state_dir_sync(terminal_dir, &monitor_id) {
+            Ok(dir) => {
+                options = options.env(MONITOR_ENV_STATE_DIR, dir.to_string_lossy().into_owned());
+            }
+            Err(error) => return error_result(error.to_string()),
+        }
+    }
     let id = match manager.create(command, options) {
         Ok(id) => id,
         Err(error) => return error_result(error.to_string()),
@@ -665,6 +700,49 @@ pub(crate) mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="33 91"));assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();
         registry.dispose();
         manager.teardown().unwrap();
+    }
+    /// monitor.ts `createMonitor`: the stable id is allocated before the spawn and reaches the
+    /// command as SENPI_MONITOR_ID; a persistent watch also gets its own SENPI_MONITOR_STATE_DIR.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_watch_sees_its_monitor_id_and_persistent_state_dir() {
+        let terminal_dir = tempfile::tempdir().unwrap();
+        let tmp = std::env::temp_dir();
+        for persistent in [true, false] {
+            let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let mut registry = MonitorRegistry::new(move |event| {
+                sender.send(event).unwrap();
+            });
+            let mut manager = TerminalManager::default();
+            let result = execute_configured_monitor_in(
+                &mut manager,
+                &mut registry,
+                &json!({"description":"env","command":"printf 'env:%s:%s\\n' \"$SENPI_MONITOR_ID\" \"$SENPI_MONITOR_STATE_DIR\"","filter":"^env:","persistent":persistent}),
+                &tmp,
+                None,
+                None,
+                &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+                Some(terminal_dir.path()),
+            );
+            assert!(result.is_error.is_none(), "{:?}", result.content);
+            let details = result.details.unwrap();
+            let monitor_id = details["monitor_id"].as_str().unwrap().to_owned();
+            let state_dir =
+                crate::monitor_state_dir::monitor_state_dir(terminal_dir.path(), &monitor_id);
+            assert_eq!(state_dir.is_dir(), persistent);
+            let expected = if persistent {
+                format!("env:{monitor_id}:{}", state_dir.display())
+            } else {
+                format!("env:{monitor_id}:")
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line==expected));
+            })
+            .await
+            .unwrap();
+            registry.dispose();
+            manager.teardown().unwrap();
+        }
     }
     #[tokio::test]
     async fn durable_admission_rejects_before_file_registration() {

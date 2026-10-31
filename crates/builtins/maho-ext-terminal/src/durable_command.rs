@@ -28,6 +28,65 @@ pub fn restore_configured_command(
     manager: &mut TerminalManager,
     shell: Option<&str>,
     settings: &crate::settings::ResolvedTerminalSettings,
+    register: impl FnMut(
+        &str,
+        &crate::runtime_session::TerminalRuntimeSession,
+        CommandMonitor,
+    ) -> Result<(), crate::runtime_session::RuntimeError>,
+) -> RestoreOutcome {
+    restore_configured_command_in(
+        monitor,
+        manager,
+        shell,
+        settings,
+        &RestoreEnvironment::default(),
+        register,
+    )
+}
+/// Upstream `restoreEnvironment` inputs: the downtime bound handed to the command and the session's
+/// terminal state dir, under which a persistent watch gets its `SENPI_MONITOR_STATE_DIR`.
+#[derive(Clone, Debug, Default)]
+pub struct RestoreEnvironment {
+    pub downtime_ms: f64,
+    pub terminal_dir: Option<std::path::PathBuf>,
+}
+/// Upstream `restoreEnvironment`: stable id, restored flag and downtime bound on every re-spawn, plus
+/// the per-monitor state dir (created here) for a persistent watch of a session with a state dir.
+pub fn restore_environment(
+    monitor: &ManifestMonitor,
+    context: &RestoreEnvironment,
+) -> std::io::Result<Vec<(String, String)>> {
+    use crate::shared::{
+        MONITOR_ENV_DOWNTIME_MS, MONITOR_ENV_ID, MONITOR_ENV_RESTORED, MONITOR_ENV_STATE_DIR,
+    };
+    let mut env = vec![
+        (MONITOR_ENV_ID.to_owned(), monitor.monitor_id.clone()),
+        (MONITOR_ENV_RESTORED.to_owned(), "1".to_owned()),
+        (
+            MONITOR_ENV_DOWNTIME_MS.to_owned(),
+            format!("{}", context.downtime_ms.max(0.0).trunc() as u64),
+        ),
+    ];
+    if monitor.persistent
+        && let Some(terminal_dir) = &context.terminal_dir
+    {
+        let dir = crate::monitor_state_dir::ensure_monitor_state_dir_sync(
+            terminal_dir,
+            &monitor.monitor_id,
+        )?;
+        env.push((
+            MONITOR_ENV_STATE_DIR.to_owned(),
+            dir.to_string_lossy().into_owned(),
+        ));
+    }
+    Ok(env)
+}
+pub fn restore_configured_command_in(
+    monitor: &ManifestMonitor,
+    manager: &mut TerminalManager,
+    shell: Option<&str>,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    context: &RestoreEnvironment,
     mut register: impl FnMut(
         &str,
         &crate::runtime_session::TerminalRuntimeSession,
@@ -56,7 +115,13 @@ pub fn restore_configured_command(
     else {
         return RestoreOutcome::Lost;
     };
-    let options = options.size(settings.default_cols as u16, settings.default_rows as u16);
+    let Ok(env) = restore_environment(monitor, context) else {
+        return RestoreOutcome::Lost;
+    };
+    let mut options = options.size(settings.default_cols as u16, settings.default_rows as u16);
+    for (key, value) in env {
+        options = options.env(key, value);
+    }
     let Ok(id) = manager.create(command, options) else {
         return RestoreOutcome::Lost;
     };
@@ -185,6 +250,66 @@ mod tests {
         runtime.wait(std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(runtime.full_output().unwrap(), "restored\r\n");
         manager.teardown().unwrap();
+    }
+    /// durable-command.ts `restoreEnvironment`: a re-spawned persistent watch sees its stable id, the
+    /// restored flag, the downtime bound and its own state dir (created before the spawn).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_hands_the_command_its_restore_environment() {
+        let terminal_dir = tempfile::tempdir().unwrap();
+        let mut saved = monitor();
+        saved.command = Some(
+            "printf '%s|%s|%s|%s\\n' \"$SENPI_MONITOR_ID\" \"$SENPI_MONITOR_RESTORED\" \"$SENPI_MONITOR_DOWNTIME_MS\" \"$SENPI_MONITOR_STATE_DIR\"".to_owned(),
+        );
+        let mut manager = TerminalManager::default();
+        let context = RestoreEnvironment {
+            downtime_ms: 1234.7,
+            terminal_dir: Some(terminal_dir.path().to_path_buf()),
+        };
+        assert_eq!(
+            restore_configured_command_in(
+                &saved,
+                &mut manager,
+                None,
+                &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+                &context,
+                |_, _, _| Ok(())
+            ),
+            RestoreOutcome::Muted
+        );
+        let state_dir =
+            crate::monitor_state_dir::monitor_state_dir(terminal_dir.path(), "mon_saved");
+        assert!(state_dir.is_dir());
+        let expected = format!("mon_saved|1|1234|{}\r\n", state_dir.display());
+        await_shell_marker(&mut manager, &expected).await;
+        manager.teardown().unwrap();
+    }
+    #[test]
+    fn restore_environment_omits_the_state_dir_without_a_terminal_dir_or_persistence() {
+        let mut saved = monitor();
+        let keys =
+            |env: Vec<(String, String)>| env.into_iter().map(|(key, _)| key).collect::<Vec<_>>();
+        assert_eq!(
+            keys(restore_environment(&saved, &RestoreEnvironment::default()).unwrap()),
+            [
+                crate::shared::MONITOR_ENV_ID,
+                crate::shared::MONITOR_ENV_RESTORED,
+                crate::shared::MONITOR_ENV_DOWNTIME_MS
+            ]
+        );
+        let terminal_dir = tempfile::tempdir().unwrap();
+        saved.persistent = false;
+        let context = RestoreEnvironment {
+            downtime_ms: 0.0,
+            terminal_dir: Some(terminal_dir.path().to_path_buf()),
+        };
+        assert!(
+            !keys(restore_environment(&saved, &context).unwrap())
+                .contains(&crate::shared::MONITOR_ENV_STATE_DIR.to_owned())
+        );
+        assert!(
+            !crate::monitor_state_dir::monitor_state_dir(terminal_dir.path(), "mon_saved").exists()
+        );
     }
     #[test]
     fn invalid_targets_do_not_spawn() {

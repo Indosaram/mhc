@@ -20,6 +20,13 @@ pub const DEFAULT_SCROLLBACK: usize = 10_000;
 pub const DEFAULT_MAX_SESSIONS: usize = 32;
 pub const MAX_SESSION_OUTPUT_CHARS: usize = 1_000_000;
 pub const BACKGROUND_START_GRACE_MS: u64 = 250;
+/// Restore-context environment handed to monitor commands. `ID` and `STATE_DIR` are set on every
+/// spawn of a persistent watch (ID alone for ephemeral ones); `RESTORED` and `DOWNTIME_MS` only on
+/// the re-spawn after a restart, where the downtime is an upper bound, never an exact gap.
+pub const MONITOR_ENV_ID: &str = "SENPI_MONITOR_ID";
+pub const MONITOR_ENV_STATE_DIR: &str = "SENPI_MONITOR_STATE_DIR";
+pub const MONITOR_ENV_RESTORED: &str = "SENPI_MONITOR_RESTORED";
+pub const MONITOR_ENV_DOWNTIME_MS: &str = "SENPI_MONITOR_DOWNTIME_MS";
 pub const KILLED_SESSION_EXIT_GRACE_MS: u64 = 5000;
 pub const MAX_DURABLE_MONITORS: usize = 5;
 pub const DURABLE_MONITOR_EXPIRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
