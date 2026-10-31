@@ -122,6 +122,32 @@ pub fn monitor_state_payload(snapshot: &[crate::monitor_registry::MonitorSnapsho
     }).collect::<Vec<_>>();
     json!({"activeCount":snapshot.len(),"monitors":monitors})
 }
+/// Upstream extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended in this process
+/// (its command exited, it was killed or expired) never runs again, so its restore baseline goes.
+/// Disposal is a shutdown or reload: the watch is suspended, not ended, and a later restore still
+/// needs the dir.
+fn remove_ended_monitor_state_dir(
+    event: &crate::monitor_registry::MonitorEndedEvent,
+    ctx: Option<&maho_ext_api::types::ExtensionContext>,
+) {
+    if event.reason == crate::monitor_registry::MonitorEndedReason::Disposed {
+        return;
+    }
+    let (Some(dir), Some(monitor_id)) = (
+        crate::monitor_state_dir::terminal_state_dir(ctx),
+        event.monitor_id.as_deref(),
+    ) else {
+        return;
+    };
+    if let Err(error) = crate::monitor_state_dir::remove_monitor_state_dir_sync(&dir, monitor_id)
+        && let Some(ctx) = ctx
+    {
+        ctx.ui.notify(
+            &format!("Could not remove the state dir of {monitor_id}: {error}"),
+            maho_ext_api::types::NotificationType::Warning,
+        );
+    }
+}
 fn monitor_ended_payload(event: &crate::monitor_registry::MonitorEndedEvent) -> Value {
     json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
 }
@@ -229,14 +255,14 @@ fn spill_monitor_overflow(
         }
     }
 }
+/// Upstream `terminalStateDir`: no durable terminal state for a context without an absolute session
+/// dir, or for a one-shot `print`/`json` turn, which has no later generation to restore into.
 fn terminal_state_dir(
     ctx: &maho_ext_api::types::ExtensionContext,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let terminal_dir = crate::monitor_state_dir::terminal_state_dir(Some(ctx))?;
     let session_dir = ctx.session_manager.get_session_dir()?;
-    if session_dir.as_os_str().is_empty() || !session_dir.is_absolute() {
-        return None;
-    }
-    Some((session_dir.clone(), session_dir.join("extensions/terminal")))
+    Some((session_dir, terminal_dir))
 }
 /// The per-generation restore digest slot (upstream `PersistenceState.digestSlot`/`generation`):
 /// one decided digest per generation, held until a model is bound to hear it.
@@ -528,8 +554,20 @@ impl TakeoverContext {
                 &self.settings,
             )
         };
-        // Bound before the grace window: monitors created meanwhile reach this recorder.
-        *self.state.lock().await = Some(lifecycle);
+        // Bound before the grace window: monitors created meanwhile reach this recorder. Upstream
+        // `bindTerminalManifestWriter` drains the specs queued while unbound; the state lock is
+        // held across bind and install, so no monitor call sees the session bound with no
+        // lifecycle installed (which would drop its spec).
+        let mut slot = self.state.lock().await;
+        let session_id = lifecycle.writer.session_id().to_owned();
+        crate::tools::monitor_manifest_binding::bind_and_drain(
+            &session_id,
+            &mut lifecycle.writer,
+            terminal_now_ms(),
+        )
+        .await;
+        *slot = Some(lifecycle);
+        drop(slot);
         // Upstream restores on a detached promise: session_start never waits on a grace window.
         let this = self.clone();
         let task = tokio::spawn(async move {
@@ -645,12 +683,12 @@ fn wait_for_lease(
     let next = crate::lease_keeper::create_lease_keeper(crate::lease_keeper::LeaseKeeperOptions {
         dir: context.terminal_dir.clone(),
         encoded_session_id: context.encoded.clone(),
-        on_takeover: Box::new(move |path, pid| {
+        on_takeover: Box::new(move |lease| {
             ui.set_status(RESTORE_STATUS_KEY, None);
             let takeover = takeover.clone();
             let mut lifecycle =
                 crate::terminal_state::TerminalStateLifecycle::new(&session_dir, &session_id);
-            lifecycle.adopt_lease(path, pid);
+            lifecycle.adopt_lease(lease);
             let tasks = takeover.restore_tasks.clone();
             let task = tokio::spawn(async move {
                 takeover.own(lifecycle, terminal_now_ms()).await;
@@ -707,10 +745,7 @@ async fn acquire_or_wait(
                 ctx,
                 context,
                 keeper,
-                Some(crate::manifest_lease::LeaseRecord {
-                    pid,
-                    started_at_ms: 0.0,
-                }),
+                Some(crate::manifest_lease::LeaseRecord::v1(pid, 0.0)),
                 session_dir,
                 session_id,
             );
@@ -751,17 +786,24 @@ impl Extension for TerminalExtension {
         let start_configuration = configuration.clone();
         let configuration_manager = manager.clone();
         let start_cwd = session_cwd.clone();
+        // Upstream `state.ctx`, read by the monitor-ended sink at call time.
+        let session_ctx: Arc<Mutex<Option<maho_ext_api::types::ExtensionContext>>> = Arc::default();
+        let start_ctx = session_ctx.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let configuration = start_configuration.clone();
                 let manager = configuration_manager.clone();
                 let context_cwd = start_cwd.clone();
+                let session_ctx = start_ctx.clone();
                 Box::pin(async move {
                     *context_cwd
                         .lock()
                         .map_err(|_| ExtensionFailure::new("terminal context cwd poisoned"))? =
                         Some(ctx.cwd.clone());
+                    *session_ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
                     let loaded = crate::settings::load_session_settings(ctx)?;
                     manager
                         .lock()
@@ -797,6 +839,11 @@ impl Extension for TerminalExtension {
                         "senpi:extension-rpc-event",
                         &json!({"name":crate::shared::TERMINAL_MONITOR_ENDED_EVENT,"data":payload}),
                     );
+                    let ctx = session_ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    remove_ended_monitor_state_dir(&event, ctx.as_ref());
                 },
             ),
         ));
@@ -1011,7 +1058,7 @@ impl Extension for TerminalExtension {
                             && !notice_shown.swap(true, std::sync::atomic::Ordering::SeqCst)
                         {
                             ctx.ui.notify(
-                                "native Anthropic bash active — monitor sessions remain available",
+                                "native Anthropic bash active: monitor sessions remain available",
                                 maho_ext_api::types::NotificationType::Info,
                             );
                         }
@@ -1100,9 +1147,19 @@ impl Extension for TerminalExtension {
             let now=terminal_now_ms();
             // A reload generation inherits the lease (same pid) and only rebinds the recorder so
             // manifest coverage continues; a fresh generation acquires the lease and restores.
-            let lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
-            if reload {
-                *state.lock().await=Some(lifecycle);
+            let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
+            // Upstream `holdsLease`: only a reload whose process still holds this session's lease
+            // token keeps it; any other reload acquires (or waits) like a fresh start.
+            if reload && crate::manifest_lease::current_lease_token(&encoded).is_some() {
+                // Bound at once: the specs queued before this generation's writer drain into it.
+                // The state lock is held across bind and install, so a monitor call cannot see the
+                // session bound while no lifecycle is installed (its spec would be dropped).
+                // SF-2: seeded from disk first, so the first post-reload write keeps the pre-reload
+                // entries instead of rewriting the manifest from an empty writer.
+                lifecycle.writer.seed_from_disk().await;
+                let mut slot=state.lock().await;
+                crate::tools::monitor_manifest_binding::bind_and_drain(&session_id,&mut lifecycle.writer,now).await;
+                *slot=Some(lifecycle);
                 return Ok(EventResult::None);
             }
             let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
@@ -1118,14 +1175,34 @@ impl Extension for TerminalExtension {
         let shutdown_keeper = lease_keeper.clone();
         let shutdown_digests = digests.clone();
         api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
-            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
+            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
+                // Upstream `detachPersistence`: the recorder detaches without writing and the
+                // session unbinds, so specs created until the next generation binds are queued for
+                // it. The lease is deliberately kept: the same pid holds it across the reload.
+                stop_waiting(&keeper).await;
+                stop_restores(&digests,&grace_stop,&restore_tasks).await;
+                let mut slot=state.lock().await;
+                if let Some(lifecycle)=slot.take() {crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());}
+                return Ok(EventResult::None);
+            }
             // Upstream `stopPersistence`: stop waiting; a tick in flight either releases what it
             // acquired or finishes its takeover before the manifest is flushed.
             stop_waiting(&keeper).await;
+            // Upstream `retireLeaseToken(lease.token)` runs BEFORE `await state.restoreInFlight`:
+            // this process's token for the session (acquired, taken over, or inherited across a
+            // reload) stops counting as a live same-pid holder before the shutdown waits.
+            if let Some(token)=crate::manifest_lease::current_lease_token(&maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id())) {crate::manifest_lease::retire_lease_token(&token);}
             // Upstream `await state.restoreInFlight`: the restore (a takeover's `own` and its grace
             // window) finishes before the final sync, the shutdown record and the release.
             stop_restores(&digests,&grace_stop,&restore_tasks).await;
-            let Some(mut lifecycle)=state.lock().await.take() else {return Ok(EventResult::None);};
+            // Unbound under the state lock, like the bind: a monitor call never sees the session
+            // bound with no lifecycle installed.
+            let mut slot=state.lock().await;
+            let Some(mut lifecycle)=slot.take() else {return Ok(EventResult::None);};
+            crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());
+            drop(slot);
+            // Idempotent: the lease this lifecycle holds is the token retired above.
+            lifecycle.retire_token();
             // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
             // carries each watch's burned fire window and mute state.
             let snapshot=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
@@ -1454,7 +1531,7 @@ impl Extension for TerminalExtension {
         }
         let mut bash = ToolDefinition::new(
             "bash",
-            r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops — subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
+            r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops: subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
             crate::tools::bash::pty_bash_schema(),
             Arc::new(move |call| {
                 let manager = Arc::clone(&bash_manager);
@@ -1568,7 +1645,7 @@ impl Extension for TerminalExtension {
             ),
             (
                 "bash_input",
-                "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session — e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
+                "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session: e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
                 "Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",
                 crate::tools::bash_input::bash_input_schema(),
             ),
@@ -1775,8 +1852,12 @@ impl Extension for TerminalExtension {
                     // and :207-217 caps durable creates before any spawn. The writer lock is async; the
                     // manager/registry locks are held only across the synchronous registration.
                     let mut lifecycle = lifecycle.lock().await;
+                    let session_key =
+                        crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(
                         &call.params,
+                        settings.max_durable_monitors,
+                        session_key.as_deref(),
                         lifecycle.as_ref().map(|lifecycle| &lifecycle.writer),
                     ) {
                         return tool_result(refused);
@@ -1788,7 +1869,7 @@ impl Extension for TerminalExtension {
                         let mut monitors = monitors
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let result = crate::tools::monitor::execute_configured_monitor(
+                        let result = crate::tools::monitor::execute_configured_monitor_in(
                             &mut manager,
                             &mut monitors,
                             &call.params,
@@ -1796,6 +1877,9 @@ impl Extension for TerminalExtension {
                             approved_parent.as_deref(),
                             shell.as_deref(),
                             &settings,
+                            lifecycle
+                                .as_ref()
+                                .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
                         );
                         if call.params.get("action").and_then(Value::as_str) == Some("rearm")
                             && let Some(notifier) = notifier
@@ -1828,22 +1912,37 @@ impl Extension for TerminalExtension {
                                     == Some(true))
                                 .then(|| monitors.file_checkpoint(&id))
                                 .flatten();
-                            (registration, checkpoint)
+                            let deadline_ms =
+                                crate::tools::monitor::registration_deadline_ms(&monitors, &id);
+                            (registration.with_deadline_ms(deadline_ms), checkpoint)
                         });
                         (result, recorded)
                     };
                     if let Some(lifecycle) = lifecycle.as_mut()
                         && let Some((registration, checkpoint)) = recorded
                     {
-                        let monitor_id = registration.monitor_id.clone();
+                        let monitor_id = registration.registration.monitor_id.clone();
                         lifecycle
                             .writer
-                            .record_register(registration, manifest_now_ms())
+                            .record_register_with(registration, manifest_now_ms())
                             .await;
                         if let Some(checkpoint) = checkpoint {
                             lifecycle
                                 .writer
                                 .schedule_checkpoint(&monitor_id, checkpoint);
+                        }
+                    } else if let Some((registration, _)) = recorded {
+                        // Upstream `handMonitorSpec`: no writer is bound yet (the lease is held
+                        // elsewhere), so the spec waits, bounded, for the writer that binds next.
+                        if crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                            session_key.as_deref(),
+                            registration.registration,
+                        )
+                        .is_some()
+                        {
+                            maho_ext_api::diagnostic(
+                                "terminal manifest: a writer is bound for this session but not held by this generation; the monitor spec was not recorded",
+                            );
                         }
                     }
                     drop(lifecycle);
@@ -1854,7 +1953,7 @@ impl Extension for TerminalExtension {
         monitor_tool.prompt_snippet=Some("Subscribe to a command's output or a file's create/modify event as injected events instead of polling".to_owned());
         monitor_tool.prompt_guidelines=Some(vec![
             "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
-            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already — when the run creates that directory too, use the `command` branch instead."#.to_owned(),
+            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already; when the run creates that directory too, use the `command` branch instead."#.to_owned(),
             r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
             "A non-persistent command watch is a watcher with a deadline: timeout_ms KILLS the watched command when it fires (the summary says killed at deadline). Put long jobs in a run_in_background session and only watch them.".to_owned(),
             "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
@@ -2649,10 +2748,16 @@ mod persistence_tests {
         persisted_command(fixture, monitor_id, "cat").await;
     }
     async fn persisted_command(fixture: &Fixture, monitor_id: &str, command: &str) {
-        let mut writer = crate::terminal_manifest::TerminalManifestWriter::new(
-            &fixture.session_dir,
-            "terminal-persistence",
-        );
+        persisted_command_for(fixture, "terminal-persistence", monitor_id, command).await;
+    }
+    async fn persisted_command_for(
+        fixture: &Fixture,
+        session_id: &str,
+        monitor_id: &str,
+        command: &str,
+    ) {
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(&fixture.session_dir, session_id);
         writer
             .record_register(
                 crate::terminal_manifest_model::MonitorRegistration {
@@ -2661,6 +2766,7 @@ mod persistence_tests {
                         description: format!("watch {monitor_id}"),
                         command: command.into(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some(fixture.session_dir.to_string_lossy().into_owned()),
                         persistent: true,
@@ -2897,6 +3003,240 @@ mod persistence_tests {
         assert_eq!(*fixture.decided.borrow_and_update(), 0);
     }
 
+    /// terminal-restore-session.test.ts (g2): an unreadable manifest is left exactly as it was
+    /// (fail closed) and the decided digest says `corrupt`.
+    #[tokio::test]
+    async fn an_unreadable_manifest_is_left_exactly_as_it_was() {
+        let mut fixture = fixture(1, None);
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let manifest = fixture
+            .terminal_dir
+            .join(format!("{}.json", fixture.encoded));
+        std::fs::write(&manifest, "{not a manifest").unwrap();
+        own_once(&mut fixture).await;
+        let outcome = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| message.details.outcome);
+        assert_eq!(
+            outcome,
+            Some(crate::restore_digest::RestoreDigestOutcome::Corrupt)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            "{not a manifest"
+        );
+        teardown(&fixture);
+    }
+
+    /// terminal-restore-session.test.ts (i): a watch created while waiting on a foreign holder is
+    /// queued (upstream `handMonitorSpec`), drained into the takeover's writer and on disk with the
+    /// restored watch at shutdown.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_watch_created_while_waiting_is_on_disk_after_the_takeover() {
+        // Its own session id: the pending-spec binding map is process-wide, and the other tests'
+        // takeovers bind "terminal-persistence".
+        let session = "terminal-waiter";
+        let mut fixture = fixture(1, Some(10));
+        fixture.encoded = maho_core::session_sidecar_store::encoded_session_id(session);
+        fixture.context.encoded = fixture.encoded.clone();
+        persisted_command_for(&fixture, session, "mon_WAITERBASE0001", "cat").await;
+        std::fs::create_dir_all(&fixture.terminal_dir).unwrap();
+        let lease = fixture
+            .terminal_dir
+            .join(format!("{}.lease", fixture.encoded));
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
+        std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
+        let ctx = context(fixture.dir.path(), Arc::new(RecordingUi::default()), None);
+        let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();
+        wait_for_lease(
+            &ctx,
+            &fixture.context,
+            &keeper,
+            Some(holder),
+            fixture.session_dir.clone(),
+            session.into(),
+        );
+        // Created while held: no writer is bound, so the spec waits for the takeover's writer.
+        assert!(
+            crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                Some(session),
+                crate::terminal_manifest_model::MonitorRegistration {
+                    monitor_id: "mon_CREATEDWHILEHLD".into(),
+                    spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                        description: "created while held".into(),
+                        command: "cat".into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: None,
+                        persistent: true,
+                    },
+                },
+            )
+            .is_none()
+        );
+        std::fs::remove_file(&lease).unwrap();
+        decided(&mut fixture).await;
+        stop_waiting(&keeper).await;
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(session);
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        let mut ids = manifest_ids(&fixture);
+        ids.sort();
+        assert_eq!(ids, ["mon_CREATEDWHILEHLD", "mon_WAITERBASE0001"]);
+        teardown(&fixture);
+    }
+
+    /// 02a7938a0: `own` binds the writer and installs the lifecycle under one hold of the state
+    /// lock. A monitor call that lands between the bind and the install (interleaved through the
+    /// after-bind seam) must wait for the lifecycle and record through it; with the lock free at
+    /// that instant it would see the session bound with no lifecycle and drop its spec.
+    #[tokio::test]
+    async fn a_monitor_call_between_bind_and_install_records_its_spec() {
+        // Its own session id: the binding map and the after-bind seam are process-wide.
+        let session = "terminal-bind-race";
+        let mut fixture = fixture(1, None);
+        fixture.encoded = maho_core::session_sidecar_store::encoded_session_id(session);
+        fixture.context.encoded = fixture.encoded.clone();
+        let mut lifecycle =
+            crate::terminal_state::TerminalStateLifecycle::new(&fixture.session_dir, session);
+        assert_eq!(
+            lifecycle
+                .acquire(
+                    &fixture.terminal_dir,
+                    &fixture.encoded,
+                    f64::from(std::process::id()),
+                    terminal_now_ms()
+                )
+                .unwrap(),
+            crate::terminal_state::TerminalStateAdoption::Acquired
+        );
+        let registration = || crate::terminal_manifest_model::MonitorRegistration {
+            monitor_id: "mon_BINDRACE00000001".into(),
+            spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                description: "between bind and install".into(),
+                command: "cat".into(),
+                filter: None,
+                human_input: None,
+                wakes_per_hour: None,
+                cwd: None,
+                persistent: true,
+            },
+        };
+        let handed: Arc<Mutex<Option<tokio::task::JoinHandle<bool>>>> = Arc::default();
+        let hook_handed = handed.clone();
+        let state = fixture.context.state.clone();
+        crate::tools::monitor_manifest_binding::set_after_bind_hook(
+            session,
+            Box::new(move || {
+                // The registered monitor tool's protocol: take the state lock, record through the
+                // installed lifecycle, else hand the spec to the binding (dropped when bound).
+                let task = match state.clone().try_lock_owned() {
+                    Ok(slot) => {
+                        let kept = slot.is_none()
+                            && crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                                Some(session),
+                                registration(),
+                            )
+                            .is_none();
+                        tokio::spawn(async move { kept })
+                    }
+                    Err(_) => tokio::spawn(async move {
+                        let mut slot = state.lock().await;
+                        match slot.as_mut() {
+                            Some(lifecycle) => {
+                                lifecycle
+                                    .writer
+                                    .record_register(registration(), terminal_now_ms())
+                                    .await;
+                                true
+                            }
+                            None => crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                                Some(session),
+                                registration(),
+                            )
+                            .is_none(),
+                        }
+                    }),
+                };
+                *hook_handed.lock().unwrap() = Some(task);
+            }),
+        );
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        let task = handed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the monitor call ran between bind and install");
+        assert!(
+            task.await.unwrap(),
+            "a spec handed off between bind and install is recorded, not dropped"
+        );
+        decided(&mut fixture).await;
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(session);
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        assert_eq!(manifest_ids(&fixture), ["mon_BINDRACE00000001"]);
+        teardown(&fixture);
+    }
+
+    /// extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended (exit, timeout, kill)
+    /// loses its restore baseline dir; a disposed one (shutdown or reload) keeps it, and an event
+    /// with no stable id or no durable state dir removes nothing.
+    #[test]
+    fn an_ended_watch_loses_its_state_dir_and_a_disposed_one_keeps_it() {
+        use crate::monitor_registry::{MonitorEndedEvent, MonitorEndedReason};
+        let dir = tempfile::tempdir().unwrap();
+        let ui = Arc::new(RecordingUi::default());
+        let ctx = context(dir.path(), ui.clone(), None);
+        let terminal_dir = crate::monitor_state_dir::terminal_state_dir(Some(&ctx)).unwrap();
+        let ended = |monitor_id: Option<&str>, reason| MonitorEndedEvent {
+            id: "bash_1".into(),
+            monitor_id: monitor_id.map(str::to_owned),
+            description: "watch".into(),
+            started_at_ms: 0.0,
+            ended_at_ms: 1.0,
+            reason,
+            exit_code: None,
+            fire_count: 0,
+        };
+        for (monitor_id, reason, kept) in [
+            ("mon_DISPOSEDWATCH01", MonitorEndedReason::Disposed, true),
+            ("mon_EXITEDWATCH001", MonitorEndedReason::Exit, false),
+            ("mon_TIMEDOUTWATCH1", MonitorEndedReason::Timeout, false),
+            ("mon_KILLEDWATCH001", MonitorEndedReason::Killed, false),
+        ] {
+            let state =
+                crate::monitor_state_dir::ensure_monitor_state_dir_sync(&terminal_dir, monitor_id)
+                    .unwrap();
+            remove_ended_monitor_state_dir(&ended(Some(monitor_id), reason.clone()), Some(&ctx));
+            assert_eq!(state.is_dir(), kept, "{reason:?}");
+        }
+        let unnamed = crate::monitor_state_dir::ensure_monitor_state_dir_sync(
+            &terminal_dir,
+            "mon_UNNAMED00001",
+        )
+        .unwrap();
+        remove_ended_monitor_state_dir(&ended(None, MonitorEndedReason::Exit), Some(&ctx));
+        remove_ended_monitor_state_dir(
+            &ended(Some("mon_UNNAMED00001"), MonitorEndedReason::Exit),
+            None,
+        );
+        assert!(unnamed.is_dir());
+        assert!(ui.notes.lock().unwrap().is_empty());
+    }
+
     /// The post-takeover sweep removes other sessions' stale leases and empty manifests and keeps
     /// this session's own lease and manifest.
     #[tokio::test]
@@ -2957,10 +3297,10 @@ mod persistence_tests {
             .terminal_dir
             .join(format!("{}.lease", fixture.encoded));
         // A live foreign holder: our parent process stands in for it.
-        let holder = crate::manifest_lease::LeaseRecord {
-            pid: f64::from(std::os::unix::process::parent_id()),
-            started_at_ms: 0.0,
-        };
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
         std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
         let ui = Arc::new(RecordingUi::default());
         let ctx = context(fixture.dir.path(), ui.clone(), None);
@@ -3049,10 +3389,10 @@ mod persistence_tests {
         let lease = fixture
             .terminal_dir
             .join(format!("{}.lease", fixture.encoded));
-        let holder = crate::manifest_lease::LeaseRecord {
-            pid: f64::from(std::os::unix::process::parent_id()),
-            started_at_ms: 0.0,
-        };
+        let holder = crate::manifest_lease::LeaseRecord::v1(
+            f64::from(std::os::unix::process::parent_id()),
+            0.0,
+        );
         std::fs::write(&lease, serde_json::to_vec(&holder).unwrap()).unwrap();
         let ctx = context(fixture.dir.path(), Arc::new(RecordingUi::default()), None);
         let keeper: Arc<Mutex<Option<crate::lease_keeper::LeaseKeeper>>> = Arc::default();

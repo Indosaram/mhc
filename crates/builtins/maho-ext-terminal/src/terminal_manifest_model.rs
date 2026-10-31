@@ -54,6 +54,9 @@ pub struct ManifestMonitor {
     pub event: Option<FileEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// Command watch whose output lines are a person's words; absent on older entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub human_input: Option<bool>,
     /// Per-monitor wake-rate override of a persistent command watch; absent uses the setting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wakes_per_hour: Option<u32>,
@@ -68,6 +71,9 @@ pub struct ManifestMonitor {
     pub last_checkpoint: Option<TerminalManifestCheckpoint>,
     pub delivery_paused: bool,
     pub fire_window: ManifestFireWindow,
+    /// Absolute runtime deadline of an ephemeral watch, so a restore can hand back the time left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<f64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +98,8 @@ pub enum MonitorSpec {
         description: String,
         command: String,
         filter: Option<String>,
+        #[serde(rename = "humanInput")]
+        human_input: Option<bool>,
         #[serde(rename = "wakesPerHour")]
         wakes_per_hour: Option<u32>,
         cwd: Option<String>,
@@ -109,7 +117,34 @@ pub enum MonitorSpec {
         persistent: bool,
     },
 }
+impl MonitorSpec {
+    pub fn persistent(&self) -> bool {
+        match self {
+            Self::Command { persistent, .. } | Self::File { persistent, .. } => *persistent,
+        }
+    }
+}
 pub struct MonitorRegistration {
     pub monitor_id: String,
     pub spec: MonitorSpec,
+}
+impl MonitorRegistration {
+    /// `MonitorRegistration.deadlineMs`: the live runtime deadline of an ephemeral watch, recorded so
+    /// a restore can hand back exactly the time it had left. Ignored for a persistent spec.
+    pub fn with_deadline_ms(self, deadline_ms: Option<f64>) -> RecordedRegistration {
+        RecordedRegistration {
+            registration: self,
+            deadline_ms,
+        }
+    }
+}
+/// A registration plus its optional ephemeral deadline (upstream `MonitorRegistration.deadlineMs`).
+pub struct RecordedRegistration {
+    pub registration: MonitorRegistration,
+    pub deadline_ms: Option<f64>,
+}
+impl From<MonitorRegistration> for RecordedRegistration {
+    fn from(registration: MonitorRegistration) -> Self {
+        registration.with_deadline_ms(None)
+    }
 }

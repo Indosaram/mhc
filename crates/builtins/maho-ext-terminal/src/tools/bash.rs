@@ -522,7 +522,7 @@ pub async fn execute_configured_bash_with_launch(
         );
     let guidance = if let Some(wait) = &sleep_wait {
         format!(
-            "This command is a wait ({}s sleep), so it detached immediately; the wait continues in the background. Do nothing and end your turn — completion will be reported automatically with exit status and output tail. Do NOT poll bash_output({{ bash_id: \"{id}\" }}) for it. When you are waiting for a pattern in a command's output, launch it with monitor({{ command, filter }}) instead so matching lines arrive as events. Use kill_bash({{ bash_id: \"{id}\" }}) to stop this session.",
+            "This command is a wait ({}s sleep), so it detached immediately; the wait continues in the background. Do nothing and end your turn: completion will be reported automatically with exit status and output tail. Do NOT poll bash_output({{ bash_id: \"{id}\" }}) for it. When you are waiting for a pattern in a command's output, launch it with monitor({{ command, filter }}) instead so matching lines arrive as events. Use kill_bash({{ bash_id: \"{id}\" }}) to stop this session.",
             wait.seconds
         )
     } else {

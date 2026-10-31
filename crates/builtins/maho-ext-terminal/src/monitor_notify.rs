@@ -162,7 +162,7 @@ pub fn monitor_details(
         let own=events.iter().filter(|event|identity(event).0==id).collect::<Vec<_>>();let overflow=book.get(id);
         let mut kinds:Vec<EventKind>=vec![];
         for kind in own.iter().map(|event|EventKind::of(event)).chain(overflow.into_iter().flat_map(|entry|entry.kinds.iter().copied())) {if !kinds.contains(&kind) {kinds.push(kind);}}
-        let human_input=overflow.is_some_and(|entry|entry.human_input);
+        let human_input=own.iter().any(|event|matches!(event,MonitorEvent::Line {human_input:true,..}))||overflow.is_some_and(|entry|entry.human_input);
         let mut detail=serde_json::json!({"id":id,"description":own.first().map(|event|identity(event).1).or_else(||overflow.map(|entry|entry.description.as_str())).unwrap_or(id),"eventCount":own.len()+overflow.map_or(0,|entry|entry.count),"kinds":kinds.iter().map(|kind|kind.as_str()).collect::<Vec<_>>()});
         if human_input {detail["humanInput"]=serde_json::json!(true);}
         detail
@@ -224,7 +224,14 @@ impl MonitorDeliveryQueue {
                 || self.overflow.count(&id) > 0)
         {
             let body = event_body(&event);
-            self.overflow.record(&event, &body, false);
+            let human_input = matches!(
+                &event,
+                MonitorEvent::Line {
+                    human_input: true,
+                    ..
+                }
+            );
+            self.overflow.record(&event, &body, human_input);
         } else {
             self.events.push(event);
         }
@@ -509,7 +516,34 @@ mod tests {
             id: "b1".to_owned(),
             description: "watch".to_owned(),
             line: text.to_owned(),
+            human_input: false,
         }
+    }
+    /// monitor-notify-details.ts: a wake carrying a human-input line (inline or overflowed) is
+    /// tagged `humanInput`; machine lines are not.
+    #[test]
+    fn human_input_lines_tag_the_wake_details_inline_and_through_overflow() {
+        let human = |text: &str| MonitorEvent::Line {
+            id: "b1".to_owned(),
+            description: "watch".to_owned(),
+            line: text.to_owned(),
+            human_input: true,
+        };
+        let settings = crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;
+        let mut queue = MonitorDeliveryQueue::default();
+        queue.notify(human("hello"), 0.0, &settings);
+        let injection = queue.flush(0.0, &settings).unwrap();
+        assert_eq!(injection.details["monitors"][0]["humanInput"], true);
+        let mut machine = MonitorDeliveryQueue::default();
+        machine.notify(line("status"), 0.0, &settings);
+        let injection = machine.flush(0.0, &settings).unwrap();
+        assert!(injection.details["monitors"][0].get("humanInput").is_none());
+        let mut tight = settings;
+        tight.max_lines_per_injection = 1.0;
+        let mut overflowing = MonitorDeliveryQueue::default();
+        overflowing.notify(line("first"), 0.0, &tight);
+        overflowing.notify(human("second"), 0.0, &tight);
+        assert!(overflowing.overflow.get("b1").unwrap().human_input);
     }
     #[test]
     fn rate_limit_and_duplicate_batches_do_not_consume_wake_budget() {

@@ -85,7 +85,7 @@ pub fn with_monitor_state(
     if paused && let Some(part) = result.content.first_mut() {
         let note = if dropped > 0 {
             format!(
-                "monitor muted — {dropped} line(s) dropped while muted; run monitor({{ action: \"rearm\", bash_id: \"{id}\" }}) to resume."
+                "monitor muted - {dropped} line(s) dropped while muted; run monitor({{ action: \"rearm\", bash_id: \"{id}\" }}) to resume."
             )
         } else {
             format!(

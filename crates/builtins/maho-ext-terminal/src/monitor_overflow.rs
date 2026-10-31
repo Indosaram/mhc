@@ -171,6 +171,7 @@ mod tests {
             id: "b1".to_owned(),
             description: "watch".to_owned(),
             line: text.to_owned(),
+            human_input: false,
         }
     }
 

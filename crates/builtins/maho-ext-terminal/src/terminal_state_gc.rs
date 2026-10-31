@@ -1,25 +1,23 @@
 //! Port of senpi `terminal/terminal-state-gc.ts`: bounded GC of stale leases and empty manifests in
 //! the shared per-cwd terminal state dir.
 //!
-//! Native lease shape: `manifest_lease` records `{pid, startedAtMs}` without the upstream token or
-//! boot identity, so a lease is stale when it is unparseable or its pid is dead; a recycled pid
-//! (upstream `reused`) is a process that `read_process_start_ms` says started after the recorded
-//! acquisition instant (upstream's one-sided v1 rule). Without a `read_process_start_ms` option
+//! A lease is judged by `manifest_lease::classify_lease` like an acquire: stale when unparseable,
+//! dead, or reused (v2: the recorded process start does not match; v1: the process now wearing the
+//! pid started after the recorded acquisition instant). Without a `read_process_start_ms` option
 //! the sweep reads start instants through `manifest_lease::read_process_start_ms`, as upstream
 //! defaults to `defaultReadProcessStartMs`.
 //! A stale lease is removed only through `manifest_lease::reclaim_inspected`, the same locked,
 //! inspected-bytes reclaim an acquire uses, so a lease another process published while the sweep
 //! probed is never deleted. A `<lease>.lock` goes only once `reclaim_lock_state` calls it stale.
 use crate::manifest_lease::{
-    LeaseProbes, LockState, ReclaimOutcome, break_stale_lock, reclaim_inspected, reclaim_lock_state,
+    LeaseClassification, LeaseProbes, LockState, ReclaimOutcome, break_stale_lock,
+    reclaim_inspected, reclaim_lock_state,
 };
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::SystemTime;
 
 const ABANDONED_TEMP_MS: u128 = 30_000;
-/// `utils/process-identity.ts` `PROCESS_START_TOLERANCE_MS`.
-const START_TOLERANCE_MS: f64 = 3_000.0;
 
 pub type AliveProbe<'a> = &'a dyn Fn(f64) -> bool;
 pub type StartProbe<'a> = &'a dyn Fn(f64) -> Option<f64>;
@@ -54,27 +52,20 @@ fn unlink_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn lease_is_stale(raw: &[u8], options: &SweepOptions<'_>) -> bool {
-    let Ok(record) = serde_json::from_slice::<crate::manifest_lease::LeaseRecord>(raw) else {
-        return true;
+/// Upstream: `readLeaseRecord` then `classifyLease(record, options.self, probes)`; an unparseable
+/// record is dead, and only a dead or reused holder is stale (our own pid never is).
+fn lease_is_stale(
+    raw: &[u8],
+    self_pid: f64,
+    probes: &mut LeaseProbes<'_>,
+) -> std::io::Result<bool> {
+    let Some(record) = crate::manifest_lease::read_lease_record(raw) else {
+        return Ok(true);
     };
-    if !record.pid.is_finite() || !record.started_at_ms.is_finite() {
-        return true;
-    }
-    if record.pid == options.self_pid {
-        return false;
-    }
-    let alive = options.is_process_alive.map_or_else(
-        || crate::manifest_lease::probe_alive(record.pid).unwrap_or(true),
-        |probe| probe(record.pid),
-    );
-    if !alive {
-        return true;
-    }
-    // Upstream's v1 rule (`classifyLease`): the native `startedAtMs` is when the lease was taken, so
-    // its holder started no later than that; only a process that started afterwards is a reuse.
-    read_start(options, record.pid)
-        .is_some_and(|started| started > record.started_at_ms + START_TOLERANCE_MS)
+    Ok(matches!(
+        crate::manifest_lease::classify_lease(&record, self_pid, probes)?,
+        LeaseClassification::Dead | LeaseClassification::Reused
+    ))
 }
 
 fn sweep_entry(
@@ -118,7 +109,7 @@ fn sweep_entry(
         let raw = std::fs::read(path)?;
         // Removal goes through the same inspected-record reclaim as an acquire, so a lease another
         // process published while this sweep was probing is never deleted.
-        if lease_is_stale(&raw, options)
+        if lease_is_stale(&raw, options.self_pid, &mut probes)?
             && reclaim_inspected(path, &raw, &mut probes)? == ReclaimOutcome::Removed
         {
             result.removed_leases += 1;
