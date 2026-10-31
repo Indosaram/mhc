@@ -11,8 +11,18 @@ pub trait ReflectionRecoveryPort {
     fn pid_liveness(&self, pid: u32) -> memory_core::locks::ProcessLiveness;
     fn process_start(&self, pid: u32) -> Option<String>;
     fn classify(&self, pid: Option<u64>, start: Option<Option<&str>>) -> RunProcessVerdict;
-    fn wait_outcome<'a>(&'a self, path: &'a Path, deadline: f64) -> ReconcileFuture<'a>;
-    fn wait_until(&self, deadline: f64) -> ReconcileFuture<'_>;
+    /// Both waits take the observation signal; an aborted wait is NOT a timeout and resolves `Err`.
+    fn wait_outcome<'a>(
+        &'a self,
+        path: &'a Path,
+        deadline: f64,
+        signal: Option<&'a maho_ext_api::AbortSignal>,
+    ) -> ReconcileFuture<'a>;
+    fn wait_until<'a>(
+        &'a self,
+        deadline: f64,
+        signal: Option<&'a maho_ext_api::AbortSignal>,
+    ) -> ReconcileFuture<'a>;
     fn signal_group(&self, pid: u64, signal: &str) -> Result<(), String>;
     fn fail(
         &self,
@@ -53,22 +63,35 @@ impl ReflectionRecoveryPort for NativeReflectionRecovery<'_> {
             start,
         )
     }
-    fn wait_outcome<'a>(&'a self, path: &'a Path, deadline: f64) -> ReconcileFuture<'a> {
+    fn wait_outcome<'a>(
+        &'a self,
+        path: &'a Path,
+        deadline: f64,
+        signal: Option<&'a maho_ext_api::AbortSignal>,
+    ) -> ReconcileFuture<'a> {
         Box::pin(async move {
             super::run_sentinel::wait_for_run_sentinel(
                 path,
                 deadline,
                 || (self.context.now_ms)() as f64,
-                None,
+                signal,
             )
             .await;
             Ok(())
         })
     }
-    fn wait_until(&self, deadline: f64) -> ReconcileFuture<'_> {
+    fn wait_until<'a>(
+        &'a self,
+        deadline: f64,
+        signal: Option<&'a maho_ext_api::AbortSignal>,
+    ) -> ReconcileFuture<'a> {
         Box::pin(async move {
-            super::run_liveness::wait_until(deadline, || (self.context.now_ms)() as f64).await;
-            Ok(())
+            super::run_liveness::wait_until_signal(
+                deadline,
+                || (self.context.now_ms)() as f64,
+                signal,
+            )
+            .await
         })
     }
     fn signal_group(&self, pid: u64, signal: &str) -> Result<(), String> {
@@ -127,8 +150,22 @@ pub async fn reconcile_run(
     ledger: ReservationRunLedger,
     recovery: &dyn ReflectionRecoveryPort,
 ) -> Result<Option<ReservationRunResult>, String> {
+    reconcile_run_with_signal(context, dir, ledger, recovery, None).await
+}
+/// [`reconcile_run`] observable-abortable: the signal cancels observation only and never turns a live
+/// run into a terminal outcome (it is checked before every terminal claim).
+pub async fn reconcile_run_with_signal(
+    context: &RunFinalizationContext<'_>,
+    dir: &Path,
+    ledger: ReservationRunLedger,
+    recovery: &dyn ReflectionRecoveryPort,
+    signal: Option<&maho_ext_api::AbortSignal>,
+) -> Result<Option<ReservationRunResult>, String> {
+    use super::run_liveness::throw_if_aborted;
     let outcome = dir.join("outcome.json");
-    if matching(&outcome, &ledger)? {
+    let is_matching = matching(&outcome, &ledger)?;
+    throw_if_aborted(signal)?;
+    if is_matching {
         return super::run_finalization::finalize_recorded_outcome(context, dir, &ledger);
     }
     let launching = |ledger: &ReservationRunLedger| {
@@ -149,6 +186,7 @@ pub async fn reconcile_run(
     };
     let queued = |ledger: &ReservationRunLedger| ledger.value()["queued"] == true;
     let supervisor = classify(&ledger, "pid", "processStart");
+    throw_if_aborted(signal)?;
     // A supervisor that is still waiting for machine admission is not late: its deadlines only start once admitted.
     if queued(&ledger)
         && matches!(
@@ -168,19 +206,26 @@ pub async fn reconcile_run(
                 ledger.value()["deadlineAt"]
                     .as_f64()
                     .ok_or("Missing deadlineAt")?,
+                signal,
             )
             .await?;
+        // The sentinel's abort result is also "timeout". It is NOT evidence the run timed out: leave
+        // its artifacts and reservation intact for the next observer before any terminal claim.
+        throw_if_aborted(signal)?;
         let refreshed = parse_reservation_run_ledger(
             read_run_json(&dir.join("ledger.json")).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        if matching(&outcome, &refreshed)? {
+        let refreshed_matching = matching(&outcome, &refreshed)?;
+        throw_if_aborted(signal)?;
+        if refreshed_matching {
             return super::run_finalization::finalize_recorded_outcome(context, dir, &refreshed);
         }
         if launching(&refreshed) {
             return Ok(None);
         }
         let fresh_supervisor = classify(&refreshed, "pid", "processStart");
+        throw_if_aborted(signal)?;
         if queued(&refreshed)
             && matches!(
                 fresh_supervisor,
@@ -200,6 +245,7 @@ pub async fn reconcile_run(
         ledger
     };
     let mut child = classify(&ledger, "childPid", "childProcessStart");
+    throw_if_aborted(signal)?;
     match child {
         RunProcessVerdict::Unknown => return recovery.abandon(dir, &ledger),
         RunProcessVerdict::Dead | RunProcessVerdict::Absent => {
@@ -212,9 +258,12 @@ pub async fn reconcile_run(
             ledger.value()["hardDeadlineAt"]
                 .as_f64()
                 .ok_or("Missing hardDeadlineAt")?,
+            signal,
         )
         .await?;
+    throw_if_aborted(signal)?;
     child = classify(&ledger, "childPid", "childProcessStart");
+    throw_if_aborted(signal)?;
     if child == RunProcessVerdict::Dead {
         return recovery.fail(dir, &ledger, false, true);
     }
@@ -229,9 +278,12 @@ pub async fn reconcile_run(
             ledger.value()["deadlineAt"]
                 .as_f64()
                 .ok_or("Missing deadlineAt")?,
+            signal,
         )
         .await?;
+    throw_if_aborted(signal)?;
     child = classify(&ledger, "childPid", "childProcessStart");
+    throw_if_aborted(signal)?;
     if child == RunProcessVerdict::Unknown {
         return recovery.abandon(dir, &ledger);
     }
@@ -240,6 +292,7 @@ pub async fn reconcile_run(
     {
         recovery.signal_group(pid, "SIGKILL")?;
         child = classify(&ledger, "childPid", "childProcessStart");
+        throw_if_aborted(signal)?;
     }
     if child == RunProcessVerdict::Dead {
         recovery.fail(dir, &ledger, true, false)
@@ -266,6 +319,25 @@ pub async fn reconcile_reflection_runs_with_options(
     logger: Option<&(dyn super::run_reconciliation_sweep::ReflectionSweepLogger + Sync)>,
     defer_on_scheduler_contention: bool,
 ) -> Result<Vec<(String, String)>, String> {
+    reconcile_reflection_runs_with_signal(
+        context,
+        recovery,
+        logger,
+        defer_on_scheduler_contention,
+        None,
+    )
+    .await
+}
+/// Reconciliation whose observation `signal` cancels waiting only; it never settles a live run.
+pub async fn reconcile_reflection_runs_with_signal(
+    context: &RunFinalizationContext<'_>,
+    recovery: &dyn ReflectionRecoveryPort,
+    logger: Option<&(dyn super::run_reconciliation_sweep::ReflectionSweepLogger + Sync)>,
+    defer_on_scheduler_contention: bool,
+    signal: Option<&maho_ext_api::AbortSignal>,
+) -> Result<Vec<(String, String)>, String> {
+    use super::run_liveness::throw_if_aborted;
+    throw_if_aborted(signal)?;
     let mut results = vec![];
     if defer_on_scheduler_contention {
         match context.reservation.read_state_with_wait(Some(0)) {
@@ -274,7 +346,9 @@ pub async fn reconcile_reflection_runs_with_options(
             Err(error) => return Err(error.to_string()),
         }
     }
-    if let Some(result) = reconcile_prelaunch(context, recovery)? {
+    let prelaunch = reconcile_prelaunch_with_signal(context, recovery, signal)?;
+    throw_if_aborted(signal)?;
+    if let Some(result) = prelaunch {
         results.push(result);
     }
     let dir = context.identity.paths.reflection.join("runs");
@@ -304,11 +378,13 @@ pub async fn reconcile_reflection_runs_with_options(
     }
     paths.sort();
     for path in paths {
+        throw_if_aborted(signal)?;
         super::run_temporaries::sweep_stranded_run_temporaries(
             &path,
             (context.now_ms)() as f64,
             &liveness,
         )?;
+        throw_if_aborted(signal)?;
         if path.join("final.json").exists()
             || path.join("abandoned.json").exists()
             || path.join("quarantined.json").exists()
@@ -328,10 +404,14 @@ pub async fn reconcile_reflection_runs_with_options(
             read_run_json(&path.join("ledger.json")).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        if let Some(result) = reconcile_run(context, &path, ledger, recovery).await? {
+        throw_if_aborted(signal)?;
+        if let Some(result) =
+            reconcile_run_with_signal(context, &path, ledger, recovery, signal).await?
+        {
             results.push((result.run_id, result.outcome));
         }
     }
+    throw_if_aborted(signal)?;
     super::run_reconciliation_sweep::sweep_reflection_run_orphans(
         &super::run_reconciliation_sweep::ReflectionOrphanSweepContext {
             identity: context.identity,
@@ -341,6 +421,7 @@ pub async fn reconcile_reflection_runs_with_options(
                 logger as &dyn super::run_reconciliation_sweep::ReflectionSweepLogger
             }),
             defer_on_scheduler_contention,
+            signal,
         },
     )?;
     Ok(results)
@@ -349,7 +430,18 @@ pub fn reconcile_prelaunch(
     context: &RunFinalizationContext<'_>,
     recovery: &dyn ReflectionRecoveryPort,
 ) -> Result<Option<(String, String)>, String> {
-    let Some(active) = context.reservation.read_state()?.active else {
+    reconcile_prelaunch_with_signal(context, recovery, None)
+}
+pub fn reconcile_prelaunch_with_signal(
+    context: &RunFinalizationContext<'_>,
+    recovery: &dyn ReflectionRecoveryPort,
+    signal: Option<&maho_ext_api::AbortSignal>,
+) -> Result<Option<(String, String)>, String> {
+    use super::run_liveness::throw_if_aborted;
+    throw_if_aborted(signal)?;
+    let active = context.reservation.read_state()?.active;
+    throw_if_aborted(signal)?;
+    let Some(active) = active else {
         return Ok(None);
     };
     let (Some(reserved), Some(pid), Some(host)) = (
@@ -377,17 +469,12 @@ pub fn reconcile_prelaunch(
     if within_grace || host != &recovery.hostname() {
         return Ok(None);
     }
-    let liveness = recovery.pid_liveness(pid);
-    let dead = liveness == memory_core::locks::ProcessLiveness::Dead
-        || (liveness == memory_core::locks::ProcessLiveness::Alive
-            && active
-                .launcher_process_start
-                .as_ref()
-                .is_some_and(|recorded| {
-                    recovery
-                        .process_start(pid)
-                        .is_some_and(|actual| recorded != &actual)
-                }));
+    let dead = super::run_liveness::is_launcher_dead_with(
+        pid,
+        active.launcher_process_start.as_deref(),
+        |pid| recovery.pid_liveness(pid),
+        |pid| recovery.process_start(pid),
+    );
     if !dead {
         return Ok(None);
     }
@@ -396,6 +483,7 @@ pub fn reconcile_prelaunch(
             read_run_json(&prelaunch).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
+        throw_if_aborted(signal)?;
         if value.run_id != active.run_id {
             return Err("Reflection prelaunch run id does not match reservation".into());
         }
@@ -416,6 +504,7 @@ pub fn reconcile_prelaunch(
         }
         std::fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
     }
+    throw_if_aborted(signal)?;
     let transition = context.reservation.complete(
         &active.run_id,
         memory_core::reflection::ReflectionOutcome::Failed,
@@ -647,11 +736,20 @@ mod tests {
                 .pop_front()
                 .expect("scripted liveness")
         }
-        fn wait_outcome<'a>(&'a self, _: &'a Path, deadline: f64) -> ReconcileFuture<'a> {
+        fn wait_outcome<'a>(
+            &'a self,
+            _: &'a Path,
+            deadline: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> ReconcileFuture<'a> {
             self.calls.borrow_mut().push(format!("outcome:{deadline}"));
             Box::pin(async { Ok(()) })
         }
-        fn wait_until(&self, deadline: f64) -> ReconcileFuture<'_> {
+        fn wait_until<'a>(
+            &'a self,
+            deadline: f64,
+            _: Option<&'a maho_ext_api::AbortSignal>,
+        ) -> ReconcileFuture<'a> {
             self.calls.borrow_mut().push(format!("wait:{deadline}"));
             Box::pin(async { Ok(()) })
         }
