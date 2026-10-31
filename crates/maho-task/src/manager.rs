@@ -522,7 +522,7 @@ impl TaskManager {
         };
         let pid_slot: Arc<Mutex<Option<u32>>> = Arc::default();
         let pid_writer = Arc::clone(&pid_slot);
-        let running = record.clone();
+        let task_id = record.id.clone();
         let outcome = self
             .options
             .runner
@@ -531,9 +531,7 @@ impl TaskManager {
                 cancel,
                 Box::new(move |pid| {
                     *lock(&pid_writer) = pid;
-                    let mut running = running;
-                    running.pid = pid;
-                    self.persist(&running);
+                    let _ = self.update(&task_id, |r| r.pid = pid);
                 }),
             )
             .await;
@@ -961,5 +959,54 @@ mod tests {
             .map(str::to_owned)
             .into();
         assert_eq!(changed_files(&before, &after), ["b.rs", "d.rs"]);
+    }
+
+    struct CancelBeforeStartRunner {
+        state: StateDir,
+    }
+
+    impl TaskRunner for CancelBeforeStartRunner {
+        fn run<'a>(
+            &'a self,
+            spec: &'a RunSpec,
+            _cancel: CancelToken,
+            on_start: Box<dyn FnOnce(Option<u32>) + Send + 'a>,
+        ) -> BoxFuture<'a, RunOutcome> {
+            Box::pin(async move {
+                if let Some(mut record) = self.state.load(&spec.task_id) {
+                    record.status = TaskStatus::Cancelled;
+                    let _ = self.state.save(&record);
+                }
+                on_start(Some(42));
+                std::fs::write(&spec.output_path, "echo:done").expect("out");
+                RunOutcome {
+                    exit_code: Some(0),
+                    ..RunOutcome::default()
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn on_start_does_not_overwrite_cancelled_status() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let state = StateDir::new(dir.path().join("state"));
+        let runner = Arc::new(CancelBeforeStartRunner {
+            state: state.clone(),
+        });
+        let manager = TaskManager::new(TaskManagerOptions {
+            state,
+            settings: TaskSettings::default(),
+            runner: runner as Arc<dyn TaskRunner>,
+            isolation: None,
+            observers: Vec::new(),
+            hooks: HookChain::default(),
+            depth: 0,
+        });
+        let req = request(dir.path(), "test task", false);
+        let _ = manager.run(req, &CancelToken::default()).await;
+        let record = manager.get("Job").expect("record");
+        assert_eq!(record.status, TaskStatus::Cancelled);
+        assert_eq!(record.pid, Some(42));
     }
 }
