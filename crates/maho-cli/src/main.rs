@@ -239,7 +239,9 @@ fn run() -> Result<(), String> {
         return output(maho_cli::cli::auth_command::auth_command_help());
     }
     if argv.first().is_some_and(|arg| arg == "import-omo") {
-        let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or("HOME or USERPROFILE must be set")?;
         let mut from = PathBuf::from(&home).join(".omo/agent");
         let mut from_given = false;
         let to = PathBuf::from(maho_core::config::get_agent_dir());
