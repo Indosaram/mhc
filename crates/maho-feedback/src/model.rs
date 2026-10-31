@@ -251,27 +251,65 @@ impl ReportKind {
 }
 
 /// Why a submit did not go through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
     SecretDetected,
     TooLarge,
     RateLimited,
+    /// The service wants the user signed in (again).
+    SignInRequired,
+    /// The service answered and did not accept the report.
+    ServiceRejected {
+        /// A contract error code, or `unknown`.
+        code: String,
+        request_id: Option<String>,
+    },
+    /// The service answered that it cannot take reports right now.
+    ServiceUnavailable {
+        /// A contract error code, or `unknown`.
+        code: String,
+        request_id: Option<String>,
+    },
+    /// No answer (network failure, 2xx without an id, unknown draft, local write failure).
     Unavailable,
 }
 
 impl Refusal {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::SecretDetected => "secret-detected",
             Self::TooLarge => "too-large",
             Self::RateLimited => "rate-limited",
+            Self::SignInRequired => "sign-in-required",
+            Self::ServiceRejected { .. } => "service-rejected",
+            Self::ServiceUnavailable { .. } => "service-unavailable",
             Self::Unavailable => "unavailable",
         }
     }
 
-    /// Whether the draft stays stored so it can be submitted again.
-    pub fn keeps_draft(self) -> bool {
-        matches!(self, Self::RateLimited | Self::Unavailable)
+    /// The error code carried by `service-rejected` / `service-unavailable`.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::ServiceRejected { code, .. } | Self::ServiceUnavailable { code, .. } => {
+                Some(code)
+            }
+            _ => None,
+        }
+    }
+
+    /// The request id carried by `service-rejected` / `service-unavailable`, when kept.
+    pub fn request_id(&self) -> Option<&str> {
+        match self {
+            Self::ServiceRejected { request_id, .. }
+            | Self::ServiceUnavailable { request_id, .. } => request_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether the draft stays stored so it can be submitted again: every refusal except a
+    /// found secret or an oversized report (those need a new draft).
+    pub fn keeps_draft(&self) -> bool {
+        !matches!(self, Self::SecretDetected | Self::TooLarge)
     }
 }
 
@@ -290,7 +328,18 @@ impl SubmitResult {
             Self::Sent { report_id } => json!({"kind": "sent", "reportId": report_id}),
             Self::Saved { path } => json!({"kind": "saved", "path": path}),
             Self::AlreadySent => json!({"kind": "already-sent"}),
-            Self::Refused(reason) => json!({"kind": "refused", "reason": reason.as_str()}),
+            Self::Refused(reason) => {
+                let mut out = json!({"kind": "refused", "reason": reason.as_str()});
+                if let Some(object) = out.as_object_mut() {
+                    if let Some(code) = reason.code() {
+                        object.insert("code".into(), Value::String(code.to_owned()));
+                    }
+                    if let Some(id) = reason.request_id() {
+                        object.insert("requestId".into(), Value::String(id.to_owned()));
+                    }
+                }
+                out
+            }
         }
     }
 

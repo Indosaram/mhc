@@ -82,14 +82,108 @@ fn label_for(family: &str, tier: &str) -> String {
     format!("{family} ({tier})")
 }
 
+/// The launch-gated model id (compared after `.` -> `-` and without a `provider/` prefix).
+pub const LAUNCH_GATED_MODEL: &str = "claude-fable-5-5";
+/// Reasoning levels a launch-gated rung may carry once its release flag is on.
+pub const GATED_ACCEPTED_LEVELS: &[&str] = &["xhigh", "max"];
+
+/// Whether `model` is the launch-gated model.
+pub fn is_launch_gated(model: &str) -> bool {
+    let bare = model.rsplit_once('/').map_or(model, |(_, id)| id);
+    bare.trim().to_ascii_lowercase().replace('.', "-") == LAUNCH_GATED_MODEL
+}
+
+/// A built-in rung removed by the launch gate while its release flag was on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DroppedRung {
+    pub profile: String,
+    pub label: String,
+    pub reasoning: Option<String>,
+}
+
+/// Applies the launch gate to one built-in chain: with the flag off every gated rung is removed
+/// silently; with it on a gated rung survives only at an accepted level, otherwise it is recorded
+/// in `dropped` and one warning naming the level goes to `warn`.
+pub fn gate_rungs(
+    profile: &str,
+    rungs: Vec<ProfileRung>,
+    released: bool,
+    dropped: &mut Vec<DroppedRung>,
+    warn: &mut dyn FnMut(&str),
+) -> Vec<ProfileRung> {
+    rungs
+        .into_iter()
+        .filter(|rung| {
+            if !is_launch_gated(&rung.model) {
+                return true;
+            }
+            if !released {
+                return false;
+            }
+            let level = rung.reasoning.as_deref().map(str::to_ascii_lowercase);
+            if level
+                .as_deref()
+                .is_some_and(|l| GATED_ACCEPTED_LEVELS.contains(&l))
+            {
+                return true;
+            }
+            warn(&format!(
+                "model profile {profile}: dropped built-in rung {} (reasoning level {} is not one of {})",
+                rung.label(),
+                level.as_deref().unwrap_or("<none>"),
+                GATED_ACCEPTED_LEVELS.join(", ")
+            ));
+            dropped.push(DroppedRung {
+                profile: profile.to_owned(),
+                label: rung.label(),
+                reasoning: rung.reasoning.clone(),
+            });
+            false
+        })
+        .collect()
+}
+
+/// The released top model of the gated model's family, from the MIT recommended-model data.
+fn same_family_top_model() -> &'static str {
+    use maho_ext_recommended_models::{
+        FABLE55_PROMOTE_DEFAULTS, FABLE55_RELEASED, recommended_fable_model,
+    };
+    let current = recommended_fable_model(FABLE55_RELEASED, FABLE55_PROMOTE_DEFAULTS);
+    if is_launch_gated(current) {
+        recommended_fable_model(false, false)
+    } else {
+        current
+    }
+}
+
+/// Built-in profiles plus the rungs the launch gate dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltProfiles {
+    pub profiles: Vec<ModelProfile>,
+    pub dropped: Vec<DroppedRung>,
+}
+
 /// The built-in profiles, sourced from the MIT recommended-model list
 /// (`maho-ext-recommended-models`): model ids, provider rankings and default thinking levels.
 ///
 /// Composition (suggested in the spec, to be confirmed by the maintainer): `daily-normal` is the
 /// first recommended general model at medium effort with the non-GPT alternates after it;
-/// `daily-heavy` is the recommended top model at high effort; the `geeky-*` lanes use the
-/// recommended GPT-family models.
+/// `daily-heavy` stages the launch-gated model at xhigh, then the released top model of the same
+/// family at xhigh, then the recommended top general model at high effort; the `geeky-*` lanes
+/// use the recommended GPT-family models. Gated rungs pass through [`gate_rungs`] with the
+/// release flag of `maho-ext-recommended-models`.
 pub fn builtin_profiles() -> Vec<ModelProfile> {
+    build_builtin_profiles(
+        maho_ext_recommended_models::FABLE55_RELEASED,
+        &mut |message: &str| {
+            maho_support::log(message, None);
+        },
+    )
+    .profiles
+}
+
+/// [`builtin_profiles`] with an explicit release flag and warning sink. Never fails.
+pub fn build_builtin_profiles(released: bool, warn: &mut dyn FnMut(&str)) -> BuiltProfiles {
     let lanes: [(&str, &str, &str, Vec<ProfileRung>); 4] = [
         (
             "daily-normal",
@@ -97,7 +191,7 @@ pub fn builtin_profiles() -> Vec<ModelProfile> {
             "normal",
             vec![
                 recommended_rung("claude-opus-5-5", Some("medium")),
-                recommended_rung("kimi-k3", None),
+                recommended_rung("kimi-k3.1-pro", None),
                 recommended_rung("glm-5.3", None),
             ],
         ),
@@ -106,7 +200,8 @@ pub fn builtin_profiles() -> Vec<ModelProfile> {
             "daily",
             "heavy",
             vec![
-                recommended_rung("claude-fable-5-1", Some("high")),
+                recommended_rung(LAUNCH_GATED_MODEL, Some("xhigh")),
+                recommended_rung(same_family_top_model(), Some("xhigh")),
                 recommended_rung("claude-opus-5-5", Some("high")),
             ],
         ),
@@ -129,17 +224,19 @@ pub fn builtin_profiles() -> Vec<ModelProfile> {
             ],
         ),
     ];
-    lanes
+    let mut dropped = Vec::new();
+    let profiles = lanes
         .into_iter()
         .map(|(id, family, tier, rungs)| ModelProfile {
             id: id.into(),
             display_name: label_for(family, tier),
             family: Some(family.into()),
             tier: Some(tier.into()),
-            rungs,
+            rungs: gate_rungs(id, rungs, released, &mut dropped, &mut *warn),
             user_defined: false,
         })
-        .collect()
+        .collect();
+    BuiltProfiles { profiles, dropped }
 }
 
 /// Parses one user rung: `provider/model[:level]`, a bare `model[:level]` (any provider), or an

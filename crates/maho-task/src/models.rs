@@ -37,6 +37,64 @@ pub struct ModelChoice {
     pub disabled_tools: Vec<String>,
     /// How the model was chosen (`explicit`, `category:<name>`, `agent`, `fallback`, `parent`).
     pub source: String,
+    /// The candidates a first run may be re-routed to when its provider cannot authenticate
+    /// (task.md Delta D4); `None` for an explicit or parent-only choice.
+    pub fallback: Option<FallbackPlan>,
+}
+
+/// The inputs of a category's or agent's model choice, kept so a first run that fails with a
+/// credential failure can be resolved again without the failing provider (task.md Delta D4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FallbackPlan {
+    /// The category's or agent's model references, in order.
+    pub models: Vec<String>,
+    /// The parent session's model (the last candidate).
+    pub parent_model: Option<String>,
+    /// `provider/id` of every model with usable credentials.
+    pub available: Vec<String>,
+    /// Reasoning level configured for the choice.
+    pub reasoning: Option<String>,
+}
+
+/// The provider part of `provider/id` (`None` for a bare id).
+fn provider_part(model: &str) -> Option<&str> {
+    crate::credentials::split_model(model).map(|(provider, _)| provider)
+}
+
+/// Resolves `plan` again without the candidates on a `dropped` provider (same rules as
+/// [`choose_model`]); `(model, thinking)` or `None` when no candidate remains.
+pub fn resolve_without(plan: &FallbackPlan, dropped: &[String]) -> Option<(String, Option<String>)> {
+    let keep = |model: &String| provider_part(model).is_none_or(|p| !dropped.iter().any(|d| d == p));
+    let mut models: Vec<String> = plan.models.iter().filter(|m| keep(m)).cloned().collect();
+    let parent = plan.parent_model.clone().filter(|m| keep(m));
+    if models.is_empty() && parent.is_none() {
+        return None;
+    }
+    if let Some(parent) = &parent
+        && !models.is_empty()
+        && !models.contains(parent)
+    {
+        models.push(parent.clone());
+    }
+    let mut models = models.into_iter();
+    let input = DelegateInput {
+        user_model: models.next(),
+        user_fallbacks: models.collect(),
+        available: plan.available.clone(),
+        system_default: parent.clone(),
+        has_model_cache: !plan.available.is_empty(),
+        ..DelegateInput::default()
+    };
+    match resolve_delegate_model(&input) {
+        DelegateChoice::Resolved(resolved) if keep(&resolved.model) => {
+            let thinking = thinking_of(resolved.variant.as_deref()).or(thinking_of(plan.reasoning.as_deref()));
+            Some((resolved.model, thinking))
+        }
+        DelegateChoice::Resolved(_) => None,
+        DelegateChoice::Deferred | DelegateChoice::None => {
+            parent.map(|model| (model, thinking_of(plan.reasoning.as_deref())))
+        }
+    }
 }
 
 /// Names of the configured, enabled categories.
@@ -198,6 +256,23 @@ pub fn choose_model(
     if reasoning.is_none() {
         reasoning.clone_from(&agent.thinking_level);
     }
+    let rerouted = choice.source != "explicit" && input.user_model.is_some();
+    if rerouted {
+        let models: Vec<String> = input.user_model.iter().chain(&input.user_fallbacks).cloned().collect();
+        // The parent session's model is the last candidate of a category or agent choice.
+        if let Some(parent) = context.parent_model.filter(|p| !p.trim().is_empty())
+            && input.user_model.as_deref() != Some(parent)
+            && !input.user_fallbacks.iter().any(|m| m == parent)
+        {
+            input.user_fallbacks.push(parent.to_owned());
+        }
+        choice.fallback = Some(FallbackPlan {
+            models,
+            parent_model: context.parent_model.map(str::to_owned),
+            available: context.available.to_vec(),
+            reasoning: reasoning.clone(),
+        });
+    }
     let resolved = resolve_delegate_model(&input);
     match resolved {
         DelegateChoice::Resolved(resolved) => {
@@ -211,6 +286,7 @@ pub fn choose_model(
             choice.model = context.parent_model.map(str::to_owned);
             choice.thinking = thinking_of(reasoning.as_deref());
             choice.source = "parent".into();
+            choice.fallback = None;
         }
     }
     Ok(choice)
@@ -296,6 +372,73 @@ mod tests {
         .expect_err("disabled");
         assert!(error.contains("Configured categories: fast"), "{error}");
         assert_eq!(category_names(Some(&view)), ["fast"]);
+    }
+
+    /// workflow-dag.md Delta D1 test 1 / task.md Delta D4: the parent model is the last candidate.
+    #[test]
+    fn parent_model_is_the_last_candidate() {
+        let view = json!({"categories": {"c": {"models": ["x/unavailable"]}}});
+        let available = vec!["p/main".to_owned()];
+        let choice = choose_model(
+            &task_agent(),
+            &ModelRequest {
+                category: Some("c"),
+                ..ModelRequest::default()
+            },
+            &ModelContext {
+                view: Some(&view),
+                available: &available,
+                parent_model: Some("p/main"),
+            },
+        )
+        .expect("choice");
+        assert_eq!(choice.model.as_deref(), Some("p/main"));
+        let plan = choice.fallback.expect("plan");
+        assert_eq!(plan.models, ["x/unavailable"]);
+        assert_eq!(plan.parent_model.as_deref(), Some("p/main"));
+        let explicit = choose_model(
+            &task_agent(),
+            &ModelRequest {
+                explicit_model: Some("m/x"),
+                ..ModelRequest::default()
+            },
+            &ModelContext {
+                view: Some(&view),
+                available: &available,
+                parent_model: Some("p/main"),
+            },
+        )
+        .expect("choice");
+        assert_eq!(explicit.model.as_deref(), Some("m/x"));
+        assert_eq!(explicit.fallback, None);
+    }
+
+    /// task.md Delta D4: candidates on a dropped provider are skipped.
+    #[test]
+    fn resolve_without_dropped_providers() {
+        let plan = FallbackPlan {
+            models: vec!["a/one".into(), "b/two".into(), "c/three".into()],
+            parent_model: None,
+            available: vec!["a/one".into(), "b/two".into(), "c/three".into()],
+            reasoning: None,
+        };
+        assert_eq!(resolve_without(&plan, &["a".into()]).map(|c| c.0).as_deref(), Some("b/two"));
+        assert_eq!(
+            resolve_without(&plan, &["a".into(), "b".into()]).map(|c| c.0).as_deref(),
+            Some("c/three")
+        );
+        assert_eq!(resolve_without(&plan, &["a".into(), "b".into(), "c".into()]), None);
+        let same = FallbackPlan {
+            models: vec!["a/one".into(), "a/two".into()],
+            ..plan.clone()
+        };
+        assert_eq!(resolve_without(&same, &["a".into()]), None);
+        let with_parent = FallbackPlan {
+            parent_model: Some("p/main".into()),
+            available: vec!["p/main".into()],
+            ..same
+        };
+        assert_eq!(resolve_without(&with_parent, &["a".into()]).map(|c| c.0).as_deref(), Some("p/main"));
     }
 
     #[test]

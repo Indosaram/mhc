@@ -9,9 +9,7 @@ use crate::manager::{SettledCallback, SpawnRequest, TaskManager, TaskManagerOpti
 use crate::models::{ModelContext, ModelRequest, category_description, category_names, choose_model};
 use crate::record::{StateDir, default_state_root};
 use crate::runner::{CancelToken, TaskRunner};
-use crate::settings::{
-    TASK_ID_ENV, TaskSettings, can_spawn_at_depth, current_depth, current_root_session,
-};
+use crate::settings::{Lineage, TASK_ID_ENV, TaskSettings, can_spawn_at_depth};
 use crate::summary::status_line;
 use maho_ext_api::{
     CustomMessage, DeliverAs, Extension, ExtensionApi, NotificationType, SendMessageOptions,
@@ -77,11 +75,22 @@ impl TaskScope {
     }
     /// The calling session as seen by the task controls.
     pub fn caller(&self) -> Caller {
-        caller(&self.info)
+        caller(&self.shared, &self.info)
     }
     /// A scope outside a live session (embedding, tests): `session_id` calls from `cwd` with the
     /// configuration `view`. Background results are not delivered anywhere.
     pub fn detached(config: TaskExtension, cwd: PathBuf, session_id: &str, view: Value) -> Self {
+        Self::detached_in(config, cwd, session_id, view, Lineage::current())
+    }
+    /// [`TaskScope::detached`] for a process at `lineage` (depth and root session) instead of
+    /// the one read from this process's environment.
+    pub fn detached_in(
+        config: TaskExtension,
+        cwd: PathBuf,
+        session_id: &str,
+        view: Value,
+        lineage: Lineage,
+    ) -> Self {
         let settings = TaskSettings::from_view(Some(&view));
         let discovery = discover(&cwd, config.agent_dir.as_deref(), view.get("agents"));
         let steer = steer_channel(config.agent_dir.as_deref(), &view);
@@ -91,7 +100,7 @@ impl TaskScope {
             view,
             settings,
             discovery,
-            depth: current_depth(),
+            lineage,
             available: OnceLock::new(),
             sender: None,
             steer,
@@ -103,6 +112,25 @@ impl TaskScope {
                 session_id: session_id.to_owned(),
                 parent_model: None,
             }),
+        }
+    }
+    /// The calling session's model (`provider/id`), when known.
+    pub fn parent_model(&self) -> Option<&str> {
+        self.info.parent_model.as_deref()
+    }
+    /// This scope with `model` as the calling session's model: requests built from it use
+    /// `model` as the last model candidate (workflow-dag.md Delta D1). `None` keeps the current
+    /// one.
+    #[must_use]
+    pub fn with_parent_model(&self, model: Option<String>) -> Self {
+        let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
+            return self.clone();
+        };
+        let mut info = (*self.info).clone();
+        info.parent_model = Some(model);
+        Self {
+            shared: Arc::clone(&self.shared),
+            info: Arc::new(info),
         }
     }
     /// `task_send` (task-control.md §1) from this scope.
@@ -206,7 +234,8 @@ struct Shared {
     view: Value,
     settings: TaskSettings,
     discovery: Discovery,
-    depth: u32,
+    /// Depth and root session of this process.
+    lineage: Lineage,
     available: OnceLock<Vec<String>>,
     sender: Option<Arc<ExtensionApi>>,
     /// Steering channel into running children (task-control.md §1.1).
@@ -243,7 +272,7 @@ impl Shared {
                     isolation: self.config.isolation.clone(),
                     observers: self.config.observers.clone(),
                     hooks: self.config.hooks.clone(),
-                    depth: self.depth,
+                    depth: self.lineage.depth,
                 })
             }))
         };
@@ -357,7 +386,7 @@ fn spawn_request(
         pane: bool_param(item, "pane"),
         quiet: false,
         owner_session: Some(info.session_id.clone()),
-        root_session: Some(current_root_session(&info.session_id)),
+        root_session: Some(shared.lineage.root_of(&info.session_id)),
     })
 }
 
@@ -371,10 +400,10 @@ fn steer_channel(agent_dir: Option<&Path>, view: &Value) -> Option<Arc<dyn Steer
     }))
 }
 
-fn caller(info: &CallInfo) -> Caller {
+fn caller(shared: &Shared, info: &CallInfo) -> Caller {
     Caller {
         session_id: info.session_id.clone(),
-        root_session: current_root_session(&info.session_id),
+        root_session: shared.lineage.root_of(&info.session_id),
     }
 }
 
@@ -414,7 +443,7 @@ async fn run_send_tool(shared: Arc<Shared>, params: Value, info: CallInfo) -> Re
         }
     }
     let manager = shared.manager(&info.session_id);
-    Ok(outcome_result(control::send(&manager, &caller(&info), &to, &message, all_sessions)))
+    Ok(outcome_result(control::send(&manager, &caller(&shared, &info), &to, &message, all_sessions)))
 }
 
 async fn run_task_tool(shared: Arc<Shared>, params: Value, info: CallInfo, cancel: CancelToken) -> Result<ToolResult, ToolError> {
@@ -575,8 +604,8 @@ impl TaskExtension {
     fn shared(&self, api: &ExtensionApi) -> Option<Arc<Shared>> {
         let loaded = maho_config::load_native(&api.cwd, &maho_config::process_env());
         let settings = TaskSettings::from_view(Some(&loaded.view));
-        let depth = current_depth();
-        if !can_spawn_at_depth(settings.max_depth, depth) {
+        let lineage = Lineage::current();
+        if !can_spawn_at_depth(settings.max_depth, lineage.depth) {
             return None;
         }
         let discovery = discover(&api.cwd, self.agent_dir.as_deref(), loaded.view.get("agents"));
@@ -587,7 +616,7 @@ impl TaskExtension {
             view: loaded.view,
             settings,
             discovery,
-            depth,
+            lineage,
             available: OnceLock::new(),
             steer,
             sender: Some(Arc::new(ExtensionApi::new(
@@ -655,7 +684,7 @@ fn definitions(shared: &Arc<Shared>) -> Vec<ToolDefinition> {
             Arc::new(|shared, params, info, _| Box::pin(async move {
                 let manager = shared.manager(&info.session_id);
                 let id = str_param(&params, "id").ok_or_else(|| ToolError::Message("Missing required parameter: id".into()))?;
-                let outcome = control::cancel(&manager, &caller(&info), id, str_param(&params, "reason")).await;
+                let outcome = control::cancel(&manager, &caller(&shared, &info), id, str_param(&params, "reason")).await;
                 Ok(outcome_result(outcome))
             }))),
         define(shared, "task_send", "Task Send",
@@ -780,9 +809,10 @@ impl Extension for TaskExtension {
             Arc::new(move |_raw, ctx| {
                 let manager = kill_shared.manager(ctx.session_manager.session_id());
                 let session_id = ctx.session_manager.session_id().to_owned();
+                let root_session = kill_shared.lineage.root_of(&session_id);
                 Box::pin(async move {
                     let caller = Caller {
-                        root_session: current_root_session(&session_id),
+                        root_session,
                         session_id,
                     };
                     control::task_kill(&manager, &caller, &ContextUi(ctx)).await;
