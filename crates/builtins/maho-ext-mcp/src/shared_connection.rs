@@ -1,7 +1,5 @@
 use crate::{
-    catalog_cache::{
-        McpCachedServerCatalog, write_mcp_cached_server,
-    },
+    catalog_cache::{McpCachedServerCatalog, write_mcp_cached_server},
     connection::ServerConnection,
     errors::{McpError, McpErrorKind},
     transport_sdk::McpClient,
@@ -29,8 +27,31 @@ pub struct SharedMcpConnection {
     request_timeout: Duration,
     subscription: Mutex<Option<tokio::task::JoinHandle<()>>>,
     idle_timeout: Duration,
+    /// Each owner's re-key, called when a renewal finds the reference snapshot changed (upstream lease
+    /// `options.onGenerationChanged`): one owner's renewal re-keys every lease, not only the one that admitted it.
+    generation_listeners: Mutex<BTreeMap<u64, Arc<dyn Fn() + Send + Sync>>>,
 }
 impl SharedMcpConnection {
+    /// Registers `owner`'s re-key for a changed reference snapshot; it lives until the owner's last release.
+    pub fn on_generation_changed(&self, owner: u64, rekey: Arc<dyn Fn() + Send + Sync>) {
+        self.generation_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner, rekey);
+    }
+    /// Upstream `#renewedConfig` on `McpConfigGenerationChangedError`: every current lease re-keys.
+    pub fn notify_generation_changed(&self) {
+        let listeners = self
+            .generation_listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for rekey in listeners {
+            rekey();
+        }
+    }
     pub fn new(
         connection: Arc<ServerConnection>,
         agent_dir: PathBuf,
@@ -69,6 +90,7 @@ impl SharedMcpConnection {
             request_timeout,
             subscription: Mutex::new(None),
             idle_timeout,
+            generation_listeners: Mutex::new(BTreeMap::new()),
         });
         let weak = Arc::downgrade(&shared);
         let task = tokio::spawn(async move {
@@ -124,6 +146,10 @@ impl SharedMcpConnection {
             *count -= 1;
             if *count == 0 {
                 state.leases.remove(&owner);
+                self.generation_listeners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&owner);
             }
         }
         drop(state);

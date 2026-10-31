@@ -569,6 +569,27 @@ impl McpService {
                 // re-keys the whole sync (service.ts generationChanged), never reusing the stale identity.
                 if let Some(declared) = &server.config {
                     let weak = self.self_weak.clone();
+                    let own_rekey: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                        let Some(service) = weak.as_ref().and_then(std::sync::Weak::upgrade) else {
+                            return;
+                        };
+                        tokio::spawn(async move {
+                            let _ = service.lock().await.resync_current_config().await;
+                        });
+                    });
+                    // shared-connection.ts: a pooled connection's changed snapshot re-keys every lease.
+                    let rekey = match &connection.shared {
+                        Some(lease) => {
+                            lease.shared.on_generation_changed(self.owner, own_rekey);
+                            let shared = Arc::downgrade(&lease.shared);
+                            Arc::new(move || {
+                                if let Some(shared) = shared.upgrade() {
+                                    shared.notify_generation_changed();
+                                }
+                            }) as Arc<dyn Fn() + Send + Sync>
+                        }
+                        None => own_rekey,
+                    };
                     entry.connection.set_resolve_config(
                         crate::config_generation::mcp_generation_renewal(
                             crate::config_generation::McpGenerationScope {
@@ -578,16 +599,7 @@ impl McpService {
                                 agent_dir: Some(agent_dir.to_path_buf()),
                             },
                             &generation.config_hash,
-                            Arc::new(move || {
-                                let Some(service) =
-                                    weak.as_ref().and_then(std::sync::Weak::upgrade)
-                                else {
-                                    return;
-                                };
-                                tokio::spawn(async move {
-                                    let _ = service.lock().await.resync_current_config().await;
-                                });
-                            }),
+                            rekey,
                         ),
                     );
                 }
