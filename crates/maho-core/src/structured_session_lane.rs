@@ -83,7 +83,9 @@ fn assistant_message(event: &AgentEvent) -> Option<&maho_ai::types::AssistantMes
     match event {
         AgentEvent::MessageStart { message, .. } | AgentEvent::MessageEnd { message } => {
             match message {
-                AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => Some(message),
+                AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => {
+                    Some(message.as_ref())
+                }
                 _ => None,
             }
         }
@@ -124,7 +126,7 @@ impl StructuredSessionLane {
         if state.release_channel.is_none() {
             let lane = Arc::downgrade(&self.state);
             state.release_channel = Some(channel.subscribe(Arc::new(
-                move |record: OrderedAgentRecord| {
+                move |record: OrderedAgentRecord| -> maho_ai::types::BoxFuture<'static, ()> {
                     if let Some(state) = lane.upgrade() {
                         let lane = StructuredSessionLane {
                             channel: None,
