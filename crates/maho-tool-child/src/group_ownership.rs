@@ -303,16 +303,41 @@ fn process_is_zombie(pid: u32) -> bool {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn process_is_zombie(pid: u32) -> bool {
-    match std::process::Command::new("ps")
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    // Upstream runs the probe with a 2 s timeout; a probe that times out is a failure, which answers running.
+    let Ok(mut child) = Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-    {
-        Ok(output) if output.status.code() == Some(1) => true,
-        Ok(output) => String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .starts_with('Z'),
-        Err(_) => false,
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    };
+    if status.code() == Some(1) {
+        return true;
     }
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .is_some_and(|mut pipe| pipe.read_to_string(&mut stdout).is_ok())
+        && stdout.trim().starts_with('Z')
 }
 
 #[cfg(not(unix))]
