@@ -653,6 +653,11 @@ struct AgentSessionState {
     hint_deadline_ms: Option<f64>,
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
+    /// senpi `_compactionModelFallbackNotice`: the last `compaction_model_fallback` logged, so it logs once.
+    compaction_model_fallback_notice: Option<String>,
+    /// The retry controller's spent accounts, copied wherever it notes or clears one, so the synchronous
+    /// compaction-model resolver reads them without contending for the controller's async lock.
+    spent_accounts: crate::retry_fallback::unusable::SpentAccounts,
     compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
     /// senpi `_autoCompactionAbortController`: the active controller belongs to post-turn auto compaction.
     auto_compaction_owned: bool,
@@ -2142,34 +2147,15 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     }
     fn get_compaction_model(&self) -> Option<Model> {
         let session = self.session().ok()?;
-        let model = session.model();
-        let selector = session.with_settings_manager(|manager| {
-            manager
-                .get_value("compaction")
-                .and_then(|settings| settings.get("model"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-        let Some(selector) = selector else {
-            return Some(model);
-        };
-        let runtime = session.model_runtime();
-        let configured = selector
-            .split_once('/')
-            .filter(|(provider, _)| !provider.is_empty())
-            .and_then(|(provider, id)| runtime.get_model(provider, id));
-        // senpi `_resolveCompactionModel` (healthy session): an unknown or credential-less override
-        // keeps the session model; "no credentials" is only decided from a fresh availability snapshot.
-        // Spent-account rerouting is not ported (the Rust retry controller has no spent-provider query).
-        Some(match configured {
-            Some(configured)
-                if !runtime.has_fresh_availability_snapshot()
-                    || runtime.has_configured_auth(&configured.provider) =>
-            {
-                configured
-            }
-            _ => model,
-        })
+        // senpi `getCompactionModel: () => this._resolveCompactionModel(this.model)`: a spent account with no
+        // usable alternate throws the AccountUsageLimitError to the extension, which fails its compaction.
+        Some(
+            session
+                .resolve_compaction_model(&session.model())
+                .unwrap_or_else(|error| {
+                    std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error))
+                }),
+        )
     }
     fn get_resolved_compaction_settings(&self) -> Option<maho_ext_api::ResolvedCompactionSettings> {
         let session = self
@@ -4175,6 +4161,8 @@ impl AgentSession {
             hint_deadline_ms: None,
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
+            compaction_model_fallback_notice: None,
+            spent_accounts: Default::default(),
             compaction_abort_controller: None,
             auto_compaction_owned: false,
             compaction_signal_bridge: None,
@@ -4659,6 +4647,26 @@ impl AgentSession {
             && let Some(assistant) = message.as_assistant()
         {
             self.emit_server_fallback_aborted(assistant);
+            // senpi agent-session.ts:4086: billing/quota exhaustion and account limits make the entry (or the
+            // whole account) unusable for this session, whether or not the chain has a candidate left.
+            let error_message = assistant.error_message.as_deref();
+            if assistant.stop_reason == StopReason::Error
+                && !Self::is_local_failure(assistant)
+                && (crate::retry_fallback::circuit_probes::is_health_exhaustion_failure(
+                    error_message,
+                ) || crate::retry_fallback::usage_limit::usage_limit_scope_text(error_message)
+                    == Some(maho_ai::types::UsageLimitScope::Account))
+                && let Some(controller) = self.retry_fallback.lock().await.as_mut()
+            {
+                controller.note_unusable(
+                    &self.model(),
+                    crate::retry_fallback::cooldown::SelectorFailure {
+                        retry_after_ms: None,
+                        error_message,
+                    },
+                );
+                self.state().spent_accounts = controller.spent_accounts();
+            }
         }
         if let AgentEvent::MessageStart { message, .. } = &event
             && message.role() == "user"
@@ -8038,6 +8046,9 @@ impl AgentSession {
         let mut rejection_reason = None;
         let mut accepted_entry = None;
         let execution = async {
+            // senpi agent-session.ts:10160: resolved before session_before_compact, so a spent account with
+            // no usable alternate fails compaction before any hook or summary request.
+            let compaction_model = self.resolve_compaction_model(&self.model())?;
             let messages_before_extension = self.messages();
             let before = {
                 let runner = self.extension_runner.lock().await.clone();
@@ -8183,20 +8194,7 @@ impl AgentSession {
                     true,
                 ),
                 _ => {
-                    let model = self.model();
-                    let override_model = self.with_settings_manager(|manager| {
-                        manager
-                            .get_value("compaction")
-                            .and_then(|settings| settings.get("model"))
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    });
-                    let model = override_model
-                        .as_deref()
-                        .and_then(|selector| selector.split_once('/'))
-                        .filter(|(provider, id)| !provider.is_empty() && !id.is_empty())
-                        .and_then(|(provider, id)| self.model_runtime().get_model(provider, id))
-                        .unwrap_or(model);
+                    let model = compaction_model;
                     signal
                         .throw_if_aborted()
                         .map_err(|error| error.to_string())?;
@@ -10807,6 +10805,7 @@ impl AgentSession {
         {
             let had_active_fallback = controller.state.is_some();
             controller.clear_for_manual_model_change(&model);
+            self.state().spent_accounts = controller.spent_accounts();
             if had_active_fallback {
                 self.abort_retry();
             }
@@ -19963,6 +19962,109 @@ impl AgentSession {
             resolved.enabled = enabled;
         }
         Ok(resolved)
+    }
+
+    /// senpi `_resolveCompactionModel`: the model used for compaction summarization. A `compaction.model`
+    /// override ("provider/model") serves healthy sessions; unset, malformed, unknown, spent, or
+    /// credential-less overrides keep a usable session model, and a set override that cannot serve logs why.
+    /// A spent account instead uses the held target, the override, or another authenticated model whose
+    /// window fits the live context, and otherwise fails with the account usage-limit advice.
+    fn resolve_compaction_model(&self, session_model: &Model) -> Result<Model, String> {
+        // senpi `!override`: an empty `compaction.model` is unset, not a malformed override.
+        let override_selector = self.with_settings_manager(|manager| {
+            manager
+                .get_value("compaction")
+                .and_then(|settings| settings.get("model"))
+                .and_then(Value::as_str)
+                .filter(|selector| !selector.is_empty())
+                .map(str::to_owned)
+        });
+        let runtime = self.model_runtime();
+        let split = override_selector
+            .as_deref()
+            .and_then(|selector| selector.split_once('/'))
+            .filter(|(provider, _)| !provider.is_empty());
+        let configured = split.and_then(|(provider, id)| runtime.get_model(provider, id));
+        let has_provider = split.is_some();
+        // The snapshot the controller's writers publish: unlike a `try_lock` on the controller, it cannot
+        // read a spent provider as usable while another task holds the lock.
+        let spent = self.state().spent_accounts.clone();
+        let now = self.fallback_now();
+        let usable = |model: &Model| !spent.is_spent(&model.provider, now);
+        // Preserve the explicit override and original-model geometry on healthy sessions.
+        // A held downswitch uses its target only when the original account cannot serve.
+        if usable(session_model) {
+            let Some(selector) = override_selector else {
+                return Ok(session_model.clone());
+            };
+            let fallback_reason = match &configured {
+                None if has_provider => Some("unknown_model"),
+                None => Some("malformed"),
+                Some(configured) if !usable(configured) => Some("provider_spent"),
+                // Only a published availability pass can say "no credentials": before it (or after a busy
+                // store read) the answer is unknown, the override is kept, and request-time auth decides.
+                Some(configured)
+                    if runtime.has_fresh_availability_snapshot()
+                        && !runtime.has_configured_auth(&configured.provider) =>
+                {
+                    Some("no_credentials")
+                }
+                Some(_) => None,
+            };
+            let Some(reason) = fallback_reason else {
+                self.state().compaction_model_fallback_notice = None;
+                return Ok(configured.expect("usable override"));
+            };
+            let notice = format!("{selector}\u{0}{reason}");
+            if self.state().compaction_model_fallback_notice.as_deref() != Some(notice.as_str()) {
+                self.state().compaction_model_fallback_notice = Some(notice);
+                self.session_logger.warn(
+                    "compaction_model_fallback",
+                    Some(&Map::from_iter([
+                        ("model".to_owned(), json!(selector)),
+                        ("reason".to_owned(), json!(reason)),
+                        (
+                            "to".to_owned(),
+                            json!(format!("{}/{}", session_model.provider, session_model.id)),
+                        ),
+                    ])),
+                );
+            }
+            return Ok(session_model.clone());
+        }
+        if let Some(pending) = self.pending_model_switch().map(|pending| pending.model)
+            && usable(&pending)
+        {
+            return Ok(pending);
+        }
+        if let Some(configured) = configured.filter(|configured| usable(configured)) {
+            return Ok(configured);
+        }
+        let reserve_tokens = self
+            .get_compaction_settings(Some(session_model))?
+            .reserve_tokens
+            .max(0) as u64;
+        let live = self
+            .runtime_messages()
+            .iter()
+            .map(session_message_to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let required_context_window = estimate_messages_tokens(
+            &crate::messages::filter_context_excluded_messages(live),
+        ) + reserve_tokens;
+        if let Some(available) = runtime.get_models(None).into_iter().find(|model| {
+            model.context_window >= required_context_window
+                && runtime.has_configured_auth(&model.provider)
+                && usable(model)
+        }) {
+            return Ok(available);
+        }
+        let raw = spent.account_error(&session_model.provider, now);
+        Err(crate::retry_fallback::usage_limit::account_usage_limit_error(
+            &session_model.provider,
+            raw.as_deref(),
+        ))
     }
 
     fn emit_session_settings_changed(&self) {
@@ -29336,6 +29438,421 @@ mod tests {
             }),
             "compaction"
         );
+    }
+
+    // A relative reset keeps the account cooldown off the wall clock the test session runs on.
+    const SPENT_ACCOUNT_LIMIT: &str =
+        r#"429 {"error":{"type":"rate_limit_error","message":"You have hit your session limit; resets in 5 hours"}}"#;
+
+    /// senpi test/suite/regressions/3131-spent-account.test.ts fixture: a keyed faux session whose primary
+    /// account was spent by a real account-limited turn, plus authenticated alternates on other providers.
+    async fn spent_account_session(
+        alternates: &[(&str, u64)],
+        compaction: Value,
+    ) -> (AgentSession, maho_ai::providers::faux::FauxProviderHandle) {
+        use maho_ai::providers::faux::{
+            FauxAssistantMessageOptions, FauxModelDefinition, RegisterFauxProviderOptions,
+            faux_assistant_message, faux_provider,
+        };
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            models: Some(vec![FauxModelDefinition {
+                id: "primary".to_owned(),
+                context_window: Some(1_000_000),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(vec![
+            faux_assistant_message(
+                "",
+                FauxAssistantMessageOptions {
+                    stop_reason: Some(StopReason::Error),
+                    error_message: Some(SPENT_ACCOUNT_LIMIT.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .into(),
+        ]);
+        let session = test_session_with_stream_function(false);
+        route_agent_stream_to_model_runtime(&session);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        for (name, context_window) in alternates {
+            let alternate = faux_provider(RegisterFauxProviderOptions {
+                provider: Some((*name).to_owned()),
+                tokens_per_second: Some(0.0),
+                models: Some(vec![FauxModelDefinition {
+                    id: (*name).to_owned(),
+                    context_window: Some(*context_window),
+                    max_tokens: Some(*context_window / 10),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            })
+            .expect("valid alternate provider");
+            alternate.set_responses(vec![
+                faux_assistant_message(format!("{name} summary"), Default::default()).into(),
+                faux_assistant_message(format!("{name} prefix"), Default::default()).into(),
+            ]);
+            runtime.register_native_provider(alternate.provider.clone());
+        }
+        for name in std::iter::once("faux").chain(alternates.iter().map(|(name, _)| *name)) {
+            runtime
+                .register_provider(
+                    name,
+                    crate::provider_composer::ProviderConfigInput {
+                        config: crate::model_config_schema::ModelsJsonProvider {
+                            api_key: Some("faux-test".into()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )
+                .expect("auth");
+        }
+        session
+            .agent
+            .set_model(provider.get_model(Some("primary")).expect("model"));
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([
+                ("compaction".to_owned(), compaction),
+                (
+                    "retry".to_owned(),
+                    serde_json::json!({"enabled":false}),
+                ),
+            ]))
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.prompt("hit the account limit", Default::default()),
+        )
+        .await
+        .expect("bounded account-limited turn")
+        .ok();
+        for text in ["older turn", "recent turn"] {
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(
+                    serde_json::json!({"role":"user","content":text.repeat(100),"timestamp":1}),
+                )
+            });
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(
+                    serde_json::to_value(maho_ai::providers::faux::faux_assistant_message(
+                        "prior answer".repeat(100),
+                        Default::default(),
+                    ))
+                    .expect("assistant"),
+                )
+            });
+        }
+        session.rebuild_session_context().expect("context");
+        (session, provider)
+    }
+
+    fn spent_primary_calls(provider: &maho_ai::providers::faux::FauxProviderHandle) -> usize {
+        provider.get_call_log().len()
+    }
+
+    /// senpi 3131-spent-account.test.ts "reports the account limit without a summary request when no usable
+    /// model exists": the spent account fails compaction with the account advice and makes no request.
+    #[tokio::test]
+    async fn spent_account_without_usable_model_fails_compaction_without_a_summary_request() {
+        let (session, provider) =
+            spent_account_session(&[], serde_json::json!({"keepRecentTokens":1})).await;
+        assert!(
+            session
+                .retry_fallback
+                .lock()
+                .await
+                .as_mut()
+                .expect("controller")
+                .is_provider_spent("faux")
+        );
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let observed = ends.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::CompactionEnd { error_message, .. } = event {
+                lock(&observed).push(error_message.clone());
+            }
+        }));
+        let calls_before = spent_primary_calls(&provider);
+        let error = session.compact(None).await.expect_err("spent account");
+        assert_eq!(
+            error,
+            "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model, or configure another provider in retry.fallbackChains."
+        );
+        assert_eq!(spent_primary_calls(&provider), calls_before);
+        let last_end = lock(&ends).last().cloned().flatten().expect("compaction_end error");
+        assert!(
+            last_end.contains(
+                "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model"
+            ),
+            "compaction_end errorMessage: {last_end}"
+        );
+    }
+
+    /// The resolver reads the spent accounts the controller publishes, so a task holding the controller lock
+    /// cannot make a spent provider look usable.
+    #[tokio::test]
+    async fn spent_account_stays_spent_while_the_controller_lock_is_held() {
+        let (session, _provider) =
+            spent_account_session(&[], serde_json::json!({"keepRecentTokens":1})).await;
+        let held = session.retry_fallback.lock().await;
+        let error = session
+            .resolve_compaction_model(&session.model())
+            .expect_err("spent account under contention");
+        drop(held);
+        assert_eq!(
+            error,
+            "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model, or configure another provider in retry.fallbackChains."
+        );
+    }
+
+    /// senpi 3131-spent-account.test.ts "skips an authenticated summary alternate whose context window cannot
+    /// fit the input": a spent account summarizes on the first authenticated model that fits.
+    #[tokio::test]
+    async fn spent_account_compacts_on_an_authenticated_alternate_that_fits() {
+        let (session, provider) = spent_account_session(
+            &[("tiny", 1_000), ("roomy", 128_000)],
+            serde_json::json!({"keepRecentTokens":1}),
+        )
+        .await;
+        let calls_before = spent_primary_calls(&provider);
+        let resolved = session
+            .resolve_compaction_model(&session.model())
+            .expect("usable alternate");
+        assert_eq!(
+            (resolved.provider.as_str(), resolved.id.as_str()),
+            ("roomy", "roomy")
+        );
+        let result = session.compact(None).await.expect("compaction");
+        assert!(result.summary.starts_with("roomy summary"));
+        assert_eq!(spent_primary_calls(&provider), calls_before);
+        assert_eq!(session.model().id, "primary");
+    }
+
+    /// senpi `_resolveCompactionModel`: a spent account uses a usable configured override before any other
+    /// authenticated model, and a deliberate manual selection clears the spent account (3131 "allows a
+    /// deliberate manual model selection to probe an account again").
+    #[tokio::test]
+    async fn spent_account_prefers_the_override_and_a_manual_selection_clears_it() {
+        let (session, _provider) = spent_account_session(
+            &[("roomy", 128_000), ("other", 128_000)],
+            serde_json::json!({"keepRecentTokens":1,"model":"other/other"}),
+        )
+        .await;
+        let resolved = session
+            .resolve_compaction_model(&session.model())
+            .expect("override");
+        assert_eq!(resolved.provider, "other");
+        let primary = session.model();
+        session
+            .set_session_model(primary.clone())
+            .await
+            .expect("manual selection");
+        assert!(
+            !session
+                .retry_fallback
+                .lock()
+                .await
+                .as_mut()
+                .expect("controller")
+                .is_provider_spent("faux")
+        );
+        assert_eq!(
+            session
+                .resolve_compaction_model(&primary)
+                .expect("healthy override")
+                .provider,
+            "other"
+        );
+    }
+
+    /// senpi 3131-spent-account.test.ts "uses the held target for %s compaction without calling the spent
+    /// provider" (manual and pre-prompt): a spent account whose transcript holds a downswitch summarizes on
+    /// the held target, and the spent primary is never called.
+    async fn held_target_compacts_without_calling_the_spent_provider(pre_prompt: bool) {
+        use maho_ai::providers::faux::{
+            FauxModelDefinition, FauxResponseStep, RegisterFauxProviderOptions,
+            faux_assistant_message, faux_provider,
+        };
+        let (session, primary_provider) =
+            spent_account_session(&[], serde_json::json!({"keepRecentTokens":1})).await;
+        let target_provider = faux_provider(RegisterFauxProviderOptions {
+            provider: Some("usable".to_owned()),
+            tokens_per_second: Some(0.0),
+            models: Some(vec![FauxModelDefinition {
+                id: "target".to_owned(),
+                context_window: Some(372_000),
+                max_tokens: Some(32_000),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        })
+        .expect("valid target provider");
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(target_provider.provider.clone());
+        runtime
+            .register_provider(
+                "usable",
+                crate::provider_composer::ProviderConfigInput {
+                    config: crate::model_config_schema::ModelsJsonProvider {
+                        api_key: Some("faux-key".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .expect("auth");
+        let target = session
+            .model_runtime()
+            .get_model("usable", "target")
+            .expect("missing target fixture");
+        let primary = session.model();
+        for text in ["large live context ".repeat(30_000), "continue".to_owned()] {
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(
+                    serde_json::json!({"role":"user","content":[{"type":"text","text":text}],"timestamp":1}),
+                )
+            });
+            let mut response = faux_assistant_message("earlier response", Default::default());
+            response.provider = primary.provider.clone();
+            response.model = primary.id.clone();
+            response.usage.input = 320_000;
+            response.usage.total_tokens = 321_000;
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(serde_json::to_value(response).expect("assistant"))
+            });
+        }
+        session.rebuild_session_context().expect("context");
+        session
+            .set_model(target.clone())
+            .await
+            .expect("held switch");
+        assert_eq!(
+            session.pending_model_switch().expect("pending").model.id,
+            "target"
+        );
+        let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let step = || {
+            let requests = requests.clone();
+            FauxResponseStep::Factory(Arc::new(move |_context, _options, _state, model| {
+                lock(&requests).push(format!("{}/{}", model.provider, model.id));
+                Box::pin(std::future::ready(faux_assistant_message(
+                    "a usable model summary",
+                    Default::default(),
+                )))
+            }))
+        };
+        target_provider.set_responses(vec![step(), step(), step()]);
+        let reduced = Arc::new(Mutex::new(0usize));
+        let observed = reduced.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::ResumeContextReduced { .. }) {
+                *lock(&observed) += 1;
+            }
+        }));
+        let primary_calls_before = spent_primary_calls(&primary_provider);
+
+        if pre_prompt {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                session.prompt("continue after switching", Default::default()),
+            )
+            .await
+            .expect("bounded pre-prompt turn")
+            .expect("pre-prompt turn");
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(10), session.compact(None))
+                .await
+                .expect("bounded manual compaction")
+                .expect("manual compaction");
+        }
+
+        let requests = lock(&requests).clone();
+        assert_eq!(requests.first().map(String::as_str), Some("usable/target"));
+        assert!(!requests.iter().any(|request| request == "faux/primary"));
+        assert_eq!(spent_primary_calls(&primary_provider), primary_calls_before);
+        let compaction = session
+            .with_session_manager(|manager| manager.entries())
+            .into_iter()
+            .rev()
+            .find(|entry| entry["type"] == "compaction")
+            .expect("compaction entry");
+        assert!(
+            compaction["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("a usable model summary"))
+        );
+        assert_eq!(*lock(&reduced), 0);
+        if pre_prompt {
+            assert_eq!(session.model().provider, "usable");
+            assert!(session.pending_model_switch().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn held_target_serves_manual_compaction_without_calling_the_spent_provider() {
+        held_target_compacts_without_calling_the_spent_provider(false).await;
+    }
+
+    #[tokio::test]
+    async fn held_target_serves_pre_prompt_compaction_without_calling_the_spent_provider() {
+        held_target_compacts_without_calling_the_spent_provider(true).await;
+    }
+
+    /// senpi `_resolveCompactionModel` (healthy session): an empty `compaction.model` is unset (`!override`),
+    /// so the session model serves and no `compaction_model_fallback` notice is recorded.
+    #[test]
+    fn empty_compaction_model_override_is_unset() {
+        let session = keyed_test_session();
+        session.agent.set_model(test_model());
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "compaction".to_owned(),
+                serde_json::json!({"model":""}),
+            )]))
+        });
+        let resolved = session
+            .resolve_compaction_model(&session.model())
+            .expect("session model");
+        assert_eq!(resolved.id, test_model().id);
+        assert_eq!(session.state().compaction_model_fallback_notice, None);
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "compaction".to_owned(),
+                serde_json::json!({"model":"no-slash"}),
+            )]))
+        });
+        session
+            .resolve_compaction_model(&session.model())
+            .expect("session model");
+        assert_eq!(
+            session.state().compaction_model_fallback_notice.as_deref(),
+            Some("no-slash\u{0}malformed")
+        );
+    }
+
+    /// senpi `_resolveCompactionModel` (healthy session): an override on a spent provider keeps the session
+    /// model.
+    #[tokio::test]
+    async fn healthy_session_keeps_its_model_when_the_override_provider_is_spent() {
+        let (session, _provider) = spent_account_session(
+            &[("other", 128_000)],
+            serde_json::json!({"keepRecentTokens":1,"model":"faux/primary"}),
+        )
+        .await;
+        let other = session
+            .model_runtime()
+            .get_model("other", "other")
+            .expect("other");
+        session.agent.set_model(other.clone());
+        let resolved = session
+            .resolve_compaction_model(&other)
+            .expect("session model");
+        assert_eq!(resolved.provider, "other");
     }
 
     #[tokio::test]
