@@ -52,6 +52,40 @@ pub type AgentHarnessSystemPromptFn<TContext> = Arc<
     dyn Fn(Option<TContext>, &Context) -> maho_ai::types::BoxFuture<'static, String> + Send + Sync,
 >;
 
+/// Pinned `systemPrompt?: string | ((toolContext, context) => string | Promise<string>)`. A plain
+/// string is returned as is: pinned `resolveSystemPrompt` never resolves `toolContext` for it.
+pub enum AgentHarnessSystemPrompt<TContext> {
+    Text(String),
+    Resolve(AgentHarnessSystemPromptFn<TContext>),
+}
+
+impl<TContext> Clone for AgentHarnessSystemPrompt<TContext> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Text(text) => Self::Text(text.clone()),
+            Self::Resolve(resolve) => Self::Resolve(resolve.clone()),
+        }
+    }
+}
+
+impl<TContext> From<AgentHarnessSystemPromptFn<TContext>> for AgentHarnessSystemPrompt<TContext> {
+    fn from(resolve: AgentHarnessSystemPromptFn<TContext>) -> Self {
+        Self::Resolve(resolve)
+    }
+}
+
+impl<TContext> From<String> for AgentHarnessSystemPrompt<TContext> {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl<TContext> From<&str> for AgentHarnessSystemPrompt<TContext> {
+    fn from(text: &str) -> Self {
+        Self::Text(text.to_owned())
+    }
+}
+
 pub type Resources = crate::harness::types::AgentHarnessResources;
 
 /// Pinned `OperationRequest`: the tagged admission request accepted by `AgentLane.accept`.
@@ -181,8 +215,8 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     /// Pinned `toolContext?: TContext | ((context) => TContext | Promise<TContext>)`; `None` is
     /// the pinned `undefined`.
     pub tool_context: Option<ToolContextSource<TContext>>,
-    /// Pinned `systemPrompt?: (toolContext, context) => string | Promise<string>`.
-    pub system_prompt: Option<AgentHarnessSystemPromptFn<TContext>>,
+    /// Pinned `systemPrompt?: string | ((toolContext, context) => string | Promise<string>)`.
+    pub system_prompt: Option<AgentHarnessSystemPrompt<TContext>>,
     pub resources: Option<Resources>,
     pub stream_options: Option<AgentHarnessStreamOptions>,
     pub retry: Option<maho_ai::utils::retry::RetryPolicy>,
