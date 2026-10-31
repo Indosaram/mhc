@@ -178,6 +178,7 @@ pub fn built_in_tools_options(
         // under in-process, and the tool child's `user.bash` job under child (senpi#3566 todo 9), while truncation
         // and rendering stay on the server.
         bash: maho_tools::bash::BashToolOptions {
+            redact_secrets_in_output: settings.get_bash_redact_secrets_in_output(),
             command_prefix: settings.get_string("shellCommandPrefix"),
             shell_path: settings.get_shell_path(),
             shell_env: Some(shell_env.clone()),

@@ -4,6 +4,7 @@ use crate::work_custody_record::{
     read_work_custody,
 };
 use serde_json::Value;
+pub use maho_ext_api::{ENGINE_CUSTODY_KEY_PREFIXES, ENGINE_DELIVERY_KEY_PREFIX, WAKE_SOURCE_KEY_PREFIX};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +91,7 @@ impl SessionWorkObligations {
         ObligationToken { id }
     }
     pub fn sync_source(&mut self, source: &str, kind: ObligationKind, active_count: f64) {
-        let key = format!("wake-source:{source}");
+        let key = format!("{WAKE_SOURCE_KEY_PREFIX}{source}");
         self.published_sources.insert(key.clone());
         let current = self.active().into_iter().find(|r| r.key == key).cloned();
         if active_count <= 0. {
@@ -118,7 +119,8 @@ impl SessionWorkObligations {
             .active()
             .into_iter()
             .filter(|r| {
-                r.key.starts_with("wake-source:") && !self.published_sources.contains(&r.key)
+                r.key.starts_with(WAKE_SOURCE_KEY_PREFIX)
+                    && !self.published_sources.contains(&r.key)
             })
             .map(|r| r.id.clone())
             .collect();

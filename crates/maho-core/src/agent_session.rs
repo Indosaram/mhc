@@ -2646,6 +2646,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 .map(|file| maho_ext_api::ContextFile {
                     path: file.path,
                     content: file.content,
+                    scope: file.scope,
                 })
                 .collect(),
         }
@@ -6620,9 +6621,10 @@ impl AgentSession {
         );
         let mut messages = self.engine_turn_input_messages();
         messages.extend(options.held_messages.clone());
+        let prompt_index = messages.len();
         messages.push(user_message);
         messages.extend(consumed.clone());
-        self.apply_before_agent_start_result(&mut messages, before)?;
+        self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
         if let Err(error) = self.enforce_final_provider_admission(&messages).await {
             self.state()
                 .pending_next_turn_messages
@@ -6748,8 +6750,21 @@ impl AgentSession {
         &self,
         messages: &mut Vec<AgentMessage>,
         result: Option<maho_ext_api::BeforeAgentStartCombinedResult>,
+        prompt_index: usize,
     ) -> Result<(), String> {
         if let Some(before) = result {
+            // `placement: "before-prompt"` messages land just before the triggering prompt, in handler order.
+            for (offset, message) in before.before_prompt_messages.into_iter().enumerate() {
+                messages.insert(
+                    prompt_index + offset,
+                    session_message_from_value(
+                        serde_json::json!({"role":"custom", "customType":message.custom_type,
+                    "content":message.content, "display":message.display, "details":message.details,
+                    "timestamp":maho_ai::utils::diagnostics::now_ms()}),
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+            }
             for message in before.messages {
                 messages.push(
                     session_message_from_value(
@@ -12065,6 +12080,8 @@ impl AgentSession {
                 })),
                 on_chunk_async: None,
                 env: Some(crate::utils::shell::get_shell_env()),
+                redact_secrets_in_output: self
+                    .with_settings_manager(|manager| manager.get_bash_redact_secrets_in_output()),
             },
         )
         .await
@@ -12306,6 +12323,7 @@ impl AgentSession {
                 .map(|file| maho_ext_api::ContextFile {
                     path: file.path,
                     content: file.content,
+                    scope: file.scope,
                 })
                 .collect(),
             cwd: self.cwd().into(),
@@ -13513,8 +13531,27 @@ impl AgentSession {
         if let Some(files) = self.state().loaded_context_files.clone() {
             return files;
         }
-        let files =
-            crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir());
+        let agent_dir = self.agent_dir();
+        let mut files = crate::resource_loader::load_project_context_files(&self.cwd(), &agent_dir);
+        // senpi `loadProjectContextFiles`: the agent-dir file and a file in the home directory are the user's
+        // own standing instructions (`scope: "user"`). The loader lives in resource_loader.rs, which another
+        // lane owns, so the scope is applied here until it produces it itself.
+        let directory_key = |path: &std::path::Path| {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        };
+        let user_dirs = [
+            directory_key(std::path::Path::new(&agent_dir)),
+            directory_key(&crate::config::home_dir_path()),
+        ];
+        for file in &mut files {
+            if file.scope.is_none()
+                && std::path::Path::new(&file.path)
+                    .parent()
+                    .is_some_and(|dir| user_dirs.contains(&directory_key(dir)))
+            {
+                file.scope = Some(crate::system_prompt::ContextFileScope::User);
+            }
+        }
         self.state().loaded_context_files = Some(files.clone());
         files
     }
@@ -17737,6 +17774,7 @@ impl AgentSession {
         }
         self.state().user_aborted = false;
         let mut messages = held_messages;
+        let prompt_index = messages.len();
         messages.push(app_message.clone());
         self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
         let admitted: Result<bool, String> = async {
@@ -17788,7 +17826,7 @@ impl AgentSession {
             if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) {
                 return Ok(false);
             }
-            self.apply_before_agent_start_result(&mut messages, before)?;
+            self.apply_before_agent_start_result(&mut messages, before, prompt_index)?;
             self.enforce_final_provider_admission(&messages).await?;
             Ok::<bool, String>(
                 user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst),
@@ -22112,6 +22150,49 @@ mod tests {
         assert_eq!(session.held_inputs().len(), 2);
         session.consume_held_inputs(&ids).expect("settle");
         assert!(session.held_inputs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn before_prompt_messages_land_before_the_prompt_and_others_append() {
+        let session = test_session();
+        let custom = |custom_type: &str| {
+            session_message_from_value(json!({"role":"custom","customType":custom_type,"content":custom_type,"display":false,"timestamp":0}))
+                .expect("custom message")
+        };
+        let ext = |custom_type: &str| maho_ext_api::CustomMessage {
+            custom_type: custom_type.into(),
+            content: vec![maho_tools::definition::ToolContent::text(custom_type)],
+            display: false,
+            details: None,
+        };
+        // Layout built by `prompt`: held inputs, then the prompt, then consumed next-turn messages.
+        let mut messages = vec![
+            custom("held"),
+            make_user_message("prompt", None),
+            custom("consumed"),
+        ];
+        session
+            .apply_before_agent_start_result(
+                &mut messages,
+                Some(maho_ext_api::BeforeAgentStartCombinedResult {
+                    before_prompt_messages: vec![ext("A")],
+                    messages: vec![ext("B")],
+                    ..Default::default()
+                }),
+                1,
+            )
+            .expect("apply");
+        let order = messages
+            .iter()
+            .map(|message| {
+                let value = session_message_to_value(message).expect("value");
+                value["customType"]
+                    .as_str()
+                    .unwrap_or_else(|| value["role"].as_str().expect("role"))
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["held", "A", "user", "consumed", "B"]);
     }
 
     #[tokio::test]

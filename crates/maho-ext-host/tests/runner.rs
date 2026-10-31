@@ -186,6 +186,43 @@ async fn lifecycle_ui_emits_prompt_pair_and_rejects_stale_prompts() {
     );
 }
 
+#[tokio::test]
+async fn lifecycle_ui_emits_prompt_pair_for_ephemeral_dialogs() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let ui = maho_ext_host::ui::LifecycleUi::new(
+        Arc::new(TestUi),
+        ExtensionRuntime::default(),
+        Arc::new(move |event| {
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(event)
+        }),
+    );
+    let dialog = || ExtensionUiDialogOptions {
+        ephemeral: true,
+        ..Default::default()
+    };
+    assert!(!ui.confirm("Confirm", "message", dialog()).await);
+    let _ = ui.select("Select", &["a".to_owned()], dialog()).await;
+    let _ = ui.input("Input", None, dialog()).await;
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 6);
+    for (pair, expected) in events.chunks(2).zip([
+        (UiPromptKind::Confirm, "Confirm"),
+        (UiPromptKind::Select, "Select"),
+        (UiPromptKind::Input, "Input"),
+    ]) {
+        assert!(
+            matches!(&pair[0], ExtensionEvent::UiPromptStart { kind, title: Some(title) } if *kind == expected.0 && title == expected.1)
+        );
+        assert!(
+            matches!(&pair[1], ExtensionEvent::UiPromptEnd { kind, title: Some(title) } if *kind == expected.0 && title == expected.1)
+        );
+    }
+}
+
 #[test]
 fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
     let runtime = ExtensionRuntime::default();
@@ -411,6 +448,54 @@ async fn before_agent_start_chains_in_senpi_order() {
         runner.errors.len()
     );
 }
+#[tokio::test]
+async fn before_agent_start_routes_before_prompt_messages_separately() {
+    fn message(
+        custom_type: &'static str,
+        placement: Option<BeforeAgentStartPlacement>,
+    ) -> ExtensionHandler {
+        Arc::new(move |_, _| {
+            Box::pin(async move {
+                let result = BeforeAgentStartEventResult {
+                    system_prompt_parts: None,
+                    system_prompt: None,
+                    message: Some(CustomMessage {
+                        custom_type: custom_type.into(),
+                        content: vec![ToolContent::text(custom_type)],
+                        display: false,
+                        details: None,
+                    }),
+                };
+                Ok(match placement {
+                    Some(placement) => EventResult::BeforeAgentStartPlaced(result, placement),
+                    None => EventResult::BeforeAgentStart(result),
+                })
+            })
+        })
+    }
+    let mut runner = runner(vec![
+        extension(
+            "placed",
+            EventKind::BeforeAgentStart,
+            message("A", Some(BeforeAgentStartPlacement::BeforePrompt)),
+        ),
+        extension("appended", EventKind::BeforeAgentStart, message("B", None)),
+    ]);
+    let merged = runner
+        .emit_before_agent_start(before())
+        .await
+        .unwrap()
+        .unwrap();
+    let types = |messages: &[CustomMessage]| {
+        messages
+            .iter()
+            .map(|message| message.custom_type.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(types(&merged.before_prompt_messages), ["A"]);
+    assert_eq!(types(&merged.messages), ["B"]);
+}
+
 #[tokio::test]
 async fn failing_handler_is_isolated_and_reported() {
     let mut runner = runner(vec![
