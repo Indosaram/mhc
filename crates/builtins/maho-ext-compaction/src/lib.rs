@@ -384,6 +384,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 emergency_prune::EmergencyPruneLatch::default(),
             ));
             let tools_api = std::sync::Arc::clone(&live_api);
+            let request_tools_api = std::sync::Arc::clone(&live_api);
             let replay_boundary = std::sync::Arc::new(std::sync::Mutex::new(
                 None::<openai_remote::OpenAiRemoteReplayBoundary>,
             ));
@@ -478,6 +479,9 @@ impl maho_ext_api::Extension for CompactionExtension {
                     emergency_instructions: EMERGENCY_COMPACTION_INSTRUCTIONS.into(),
                     get_tools: std::sync::Arc::new(move || {
                         extension_wiring::summarization_tools(&tools_api)
+                    }),
+                    get_request_tools: std::sync::Arc::new(move || {
+                        extension_wiring::request_tools(&request_tools_api)
                     }),
                     get_policy: std::sync::Arc::new(move |context| {
                         let lane_owns_compaction =
