@@ -92,6 +92,9 @@ impl PipeFallbackSession {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for key in &options.env_remove {
+            command.env_remove(key);
+        }
         if let Some(cwd) = &options.cwd {
             command.current_dir(cwd);
         }
