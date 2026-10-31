@@ -24,3 +24,14 @@ fn upstream_renderer_keeps_parent_across_unscoped_span() {
     let theme = HighlightTheme::from([("string".to_owned(), Box::new(|text: &str| format!("[string:{text}]")) as HighlightFormatter)]);
     assert_eq!(render_highlighted_html("<span class=\"hljs-string\">a<span class=\"language-xml\">b</span>c</span>", &theme), "[string:a][string:b][string:c]");
 }
+// senpi syntax-highlight.test.ts "loads the twenty most common languages at startup and defers the rest".
+#[test]
+fn upstream_eager_languages_answer_and_uncommon_ones_do_not() {
+    for language in EAGER_HIGHLIGHT_LANGUAGES {
+        assert!(supports_language(language), "{language}");
+    }
+    for alias in ["TS", "py", "sh", "rs", "c#", "jsonc", "JSON5"] {
+        assert!(supports_language(alias), "{alias}");
+    }
+    assert!(!supports_language("ada"));
+}

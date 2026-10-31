@@ -151,3 +151,30 @@ async fn task_component_registers_session_start_handler_for_non_member() {
     assert!(!host_start_handlers.is_empty());
 }
 
+
+#[test]
+fn the_resolved_isolation_block_reaches_the_task_tool_config() {
+    use maho_cli::cli::default_extensions::task_omo_isolation_config;
+    use senpi_task::{state::IsolationMergeMode, tools::task::execute_spec::TaskOmoIsolationConfig};
+    let resolved = serde_json::json!({"task": {"isolation": {
+        "enabled": true, "backend": "reflink", "apply": false, "merge": "branch", "commits": "generic",
+    }}});
+    assert_eq!(
+        task_omo_isolation_config(&resolved),
+        Some(TaskOmoIsolationConfig {
+            enabled: Some(true),
+            backend: Some("reflink".to_owned()),
+            merge: Some(IsolationMergeMode::Branch),
+            apply: Some(false),
+        })
+    );
+    let defaults = serde_json::json!({"task": {"isolation": {
+        "enabled": false, "backend": "auto", "apply": true, "merge": "patch",
+    }}});
+    let mapped = task_omo_isolation_config(&defaults).expect("isolation block");
+    assert_eq!(mapped.merge, Some(IsolationMergeMode::Patch));
+    assert_eq!(mapped.enabled, Some(false));
+    assert_eq!(mapped.apply, Some(true));
+    assert_eq!(task_omo_isolation_config(&serde_json::json!({"task": {}})), None);
+    assert_eq!(task_omo_isolation_config(&serde_json::json!({})), None);
+}
