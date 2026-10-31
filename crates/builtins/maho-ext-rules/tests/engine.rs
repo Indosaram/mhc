@@ -88,3 +88,9 @@ fn relative_paths_cross_siblings_and_normalize_dot_segments() {
     assert_eq!(relative_path(Path::new("/tmp/project"), Path::new("/tmp/project/dir/../file.rs")), "file.rs");
     assert_eq!(relative_path(Path::new("/tmp/project"), Path::new("/tmp/project")), "");
 }
+#[test]
+fn relative_path_different_drives_returns_target_verbatim() {
+    use std::path::Path;
+    use maho_ext_rules::rules::engine::relative_path;
+    assert_eq!(relative_path(Path::new("C:/a/b"), Path::new("D:/x/y")), "D:/x/y");
+}
