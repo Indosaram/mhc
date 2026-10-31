@@ -120,10 +120,13 @@ fn never_sends_a_skill_remote_servers_bearer_token_env() {
     assert_eq!(config.auth, Some(Auth::Disabled(false)));
     let spec = maho_ext_mcp::transport::create_mcp_transport_spec("fxr", &config, Some(&env))
         .expect("transport spec");
+    let maho_ext_mcp::transport_sdk::McpTransportSpec::Http { headers, .. } = spec else {
+        panic!("remote skill server is an HTTP transport");
+    };
     assert!(
-        !format!("{spec:?}")
-            .to_ascii_lowercase()
-            .contains("authorization")
+        !headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
     );
     let warning = warning.expect("bearer warning");
     assert!(warning.contains("bearerTokenEnv 'SENPI_2345_TOKEN' is ignored"));
