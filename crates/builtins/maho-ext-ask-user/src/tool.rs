@@ -343,6 +343,8 @@ pub(crate) async fn start_question(
     let cancel = cancel_signal.clone();
     let deadline = timer.clone();
     let attachment = attached.subscribe();
+    // senpi rebinds `notify` to each new owner's ctx; the first ctx's UI is kept only while detached.
+    let loss_owner = owner.subscribe();
     let loss_ui = ctx.ui.clone();
     register_pending_question(
         &session,
@@ -376,7 +378,11 @@ pub(crate) async fn start_question(
                 });
                 cancel.abort();
                 if lost {
-                    loss_ui.notify(
+                    let ui = loss_owner
+                        .borrow()
+                        .as_ref()
+                        .map_or_else(|| loss_ui.clone(), |owner| owner.context.ui.clone());
+                    ui.notify(
                         message
                             .as_deref()
                             .unwrap_or("The pending question could not be restored."),
