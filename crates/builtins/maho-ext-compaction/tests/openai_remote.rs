@@ -11,8 +11,10 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
         input_item_count: 2,
         tokens_before: 123,
     };
+    let hooks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = std::sync::Arc::clone(&hooks);
     let runner: maho_ext_compaction::openai_remote_dependencies::OpenAiResponsesStreamRunner =
-        std::sync::Arc::new(|model, context, options| {
+        std::sync::Arc::new(move |model, context, options| {
             assert!(context.messages.is_empty());
             if options.stream.transport == Some(maho_ai::types::Transport::Sse) {
                 let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
@@ -26,11 +28,10 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
                 options.stream.transport,
                 Some(maho_ai::types::Transport::Websocket)
             );
-            let payload = options.stream.request.on_payload.as_ref().unwrap()(&json!({"model":"wrong","input":[{"role":"system","content":"instructions"},{"role":"user","content":"discard"}]}),model,None).unwrap();
-            assert_eq!(payload["model"], "m");
-            assert_eq!(payload["input"][0]["role"], "system");
-            assert_eq!(payload["input"][3]["type"], "context_compaction");
-            assert_eq!(payload["service_tier"], "priority");
+            captured.lock().unwrap().push((
+                model.clone(),
+                options.stream.request.async_on_payload.clone().unwrap(),
+            ));
             let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
             let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
             response.stop_reason = maho_ai::types::StopReason::Stop;
@@ -56,6 +57,7 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
             extra_body: None,
             signal: controller.signal(),
             runner: &runner,
+            provider_request: None,
         },
         42,
     )
@@ -68,6 +70,12 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
     assert_eq!(details["replacementInput"][0]["role"], "user");
     assert_eq!(details["replacementInput"][1]["type"], "context_compaction");
     assert_eq!(details["responseId"], "response-42");
+    let (hook_model, hook) = hooks.lock().unwrap().remove(0);
+    let payload = hook(json!({"model":"wrong","input":[{"role":"system","content":"instructions"},{"role":"user","content":"discard"}]}), hook_model, None).await.unwrap().unwrap();
+    assert_eq!(payload["model"], "m");
+    assert_eq!(payload["input"][0]["role"], "system");
+    assert_eq!(payload["input"][3]["type"], "context_compaction");
+    assert_eq!(payload["service_tier"], "priority");
     let events = std::sync::Mutex::new(Vec::new());
     let result = run_remote_compaction(
         RemoteCompactionOptions {
