@@ -32,7 +32,7 @@ pub fn refuse_agreements_violation(
 
 /// Rolls index and worktree back to HEAD for `paths`: tracked paths are restored on both sides,
 /// paths new at HEAD are unstaged and removed.
-fn restore_paths(repo: &GitMemoryRepo, paths: &[String]) -> Result<(), GitError> {
+pub(crate) fn restore_paths(repo: &GitMemoryRepo, paths: &[String]) -> Result<(), GitError> {
     let normalized = normalize_pathspecs(paths);
     if normalized.is_empty() {
         return Ok(());
