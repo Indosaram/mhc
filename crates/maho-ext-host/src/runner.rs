@@ -2260,11 +2260,24 @@ impl ExtensionRunner {
                 _ => String::new(),
             };
             let mut parts = None;
-            match handler(&mut event, &context).await {
-                Ok(EventResult::BeforeAgentStart(next)) => {
+            let mut placed = None;
+            let outcome = handler(&mut event, &context).await;
+            if let Ok(EventResult::BeforeAgentStartPlaced(_, placement)) = &outcome {
+                placed = Some(*placement);
+            }
+            match outcome {
+                Ok(
+                    EventResult::BeforeAgentStart(next)
+                    | EventResult::BeforeAgentStartPlaced(next, _),
+                ) => {
+                    let placement = placed.take();
                     parts = next.system_prompt_parts;
                     if let Some(message) = next.message {
-                        combined.messages.push(message);
+                        if placement == Some(BeforeAgentStartPlacement::BeforePrompt) {
+                            combined.before_prompt_messages.push(message);
+                        } else {
+                            combined.messages.push(message);
+                        }
                     }
                     if let Some(prompt) = next.system_prompt {
                         if let ExtensionEvent::BeforeAgentStart(current) = &mut event {
@@ -2286,7 +2299,10 @@ impl ExtensionRunner {
             self.runtime.assert_active()?;
         }
         Ok(
-            if combined.messages.is_empty() && combined.system_prompt.is_none() {
+            if combined.messages.is_empty()
+                && combined.before_prompt_messages.is_empty()
+                && combined.system_prompt.is_none()
+            {
                 None
             } else {
                 Some(combined)
