@@ -51,18 +51,18 @@ const REJECTED: &[&str] = &[
     "oauth refresh failed",
     "invalid_grant",
     "authentication failed for",
-    "session expired",
-    "session has expired",
     "token was rejected",
     "token has been revoked",
     "token was revoked",
-    "token has expired",
-    "token expired",
     "subscription required",
     "subscription is required",
     "requires a subscription",
     "requires an active subscription",
 ];
+
+/// Session expiry texts; `rejected` only together with a `/login` mention (the engine's meta
+/// "session expired ... /login" text), so a stray log line is not evidence.
+const SESSION_EXPIRED: &[&str] = &["session expired", "session has expired"];
 
 /// Words that tie a 403 to the account or its credentials.
 const ACCOUNT_WORDS: &[&str] = &[
@@ -86,6 +86,16 @@ fn has_status(text: &str, code: &str) -> bool {
     })
 }
 
+/// Whether `text` (lower case) contains `word` with no letter or digit on either side.
+fn has_word(text: &str, word: &str) -> bool {
+    let bytes = text.as_bytes();
+    let boundary = |byte: u8| !byte.is_ascii_alphanumeric();
+    text.match_indices(word).any(|(start, _)| {
+        let end = start + word.len();
+        (start == 0 || boundary(bytes[start - 1])) && (end == bytes.len() || boundary(bytes[end]))
+    })
+}
+
 /// Whether `text` (lower case) names a model: the word model/models or the failed model id.
 fn names_model(text: &str, model_id: Option<&str>) -> bool {
     text.contains("model")
@@ -103,7 +113,8 @@ pub fn classify(text: &str, model_id: Option<&str>) -> CredentialFailure {
     let forbidden = has_status(&text, "403") || text.contains("forbidden");
     let rejected = has_status(&text, "401")
         || REJECTED.iter().any(|needle| text.contains(needle))
-        || (forbidden && !names_model && ACCOUNT_WORDS.iter().any(|word| text.contains(word)));
+        || (text.contains("/login") && SESSION_EXPIRED.iter().any(|needle| text.contains(needle)))
+        || (forbidden && !names_model && ACCOUNT_WORDS.iter().any(|word| has_word(&text, word)));
     if rejected {
         return CredentialFailure::Rejected;
     }
@@ -236,6 +247,34 @@ mod tests {
             NoFailure
         );
         assert_eq!(classify("403 access denied", None), NoFailure);
+        // Account words count on word boundaries only.
+        assert_eq!(
+            classify("403: keyword filter blocked the request", None),
+            NoFailure
+        );
+        assert_eq!(classify("forbidden: monkey business", None), NoFailure);
+        assert_eq!(classify("403 forbidden: invalid token", None), Rejected);
+        assert_eq!(classify("403: api_key disabled", None), Rejected);
+        assert_eq!(classify("403 (key revoked)", None), Rejected);
+    }
+
+    #[test]
+    fn expiry_needs_the_engine_texts() {
+        assert_eq!(
+            classify("cache session expired, reconnecting", None),
+            NoFailure
+        );
+        assert_eq!(classify("upstream session has expired", None), NoFailure);
+        assert_eq!(
+            classify("Your session has expired. Run /login meta.", None),
+            Rejected
+        );
+        assert_eq!(
+            classify("refresh: token expired, retrying", None),
+            NoFailure
+        );
+        assert_eq!(classify("csrf token has expired", None), NoFailure);
+        assert_eq!(classify("OAuth token was rejected by zeta", None), Rejected);
     }
 
     #[test]

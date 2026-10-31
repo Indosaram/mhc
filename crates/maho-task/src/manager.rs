@@ -3,14 +3,16 @@
 //! its own session. Design ported from the oh-my-pi task model (executor + async job delivery +
 //! `parallel.ts` semaphore + `restore.ts` follow-up turns), adapted to process children.
 use crate::agents::AgentDefinition;
+use crate::credentials::{CredentialFailure, annotate, classify, split_model};
 use crate::ids::{IdAllocator, name_from_task};
 use crate::isolation::{TaskObserver, WorkspaceIsolation};
-use crate::credentials::{CredentialFailure, annotate, classify, split_model};
 use crate::models::{FallbackPlan, ModelChoice, resolve_without};
-use crate::record::{PendingMessage, StateDir, TaskRecord, TaskStatus, is_task_child, now_ms, reconcile};
-use crate::steering::{ACT_ON_RECEIVED, Admission, Transcript, read_transcript};
+use crate::record::{
+    PendingMessage, StateDir, TaskRecord, TaskStatus, is_task_child, now_ms, reconcile,
+};
 use crate::runner::{CancelToken, RunOutcome, RunSpec, TaskRunner};
 use crate::settings::TaskSettings;
+use crate::steering::{ACT_ON_RECEIVED, Admission, Transcript, read_transcript};
 use crate::summary::format_result;
 use maho_lsp::hooks::{HookChain, Mutation};
 use std::collections::{BTreeSet, HashMap};
@@ -320,7 +322,14 @@ impl TaskManager {
         let record = TaskRecord {
             id: id.clone(),
             agent: request.agent.name.clone(),
-            description: request.task.lines().next().unwrap_or_default().chars().take(120).collect(),
+            description: request
+                .task
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect(),
             status: TaskStatus::Queued,
             model: request.choice.model.clone(),
             thinking: request.choice.thinking.clone(),
@@ -377,7 +386,9 @@ impl TaskManager {
             ));
         }
         if record.isolated && self.options.isolation.is_none() {
-            return Err(format!("Task \"{id}\" ran isolated and cannot be resumed here"));
+            return Err(format!(
+                "Task \"{id}\" ran isolated and cannot be resumed here"
+            ));
         }
         let prompt = prompt
             .map(str::trim)
@@ -409,13 +420,22 @@ impl TaskManager {
     /// task.md Delta D4: after a failed **first** run whose text says the provider cannot
     /// authenticate, moves the task to a model of another provider (fresh session, same first
     /// prompt). Returns the re-queued record and the note to keep about the failed attempt.
-    fn reroute(&self, settled: &TaskRecord, plan: Option<&FallbackPlan>) -> Option<(TaskRecord, String)> {
+    fn reroute(
+        &self,
+        settled: &TaskRecord,
+        plan: Option<&FallbackPlan>,
+    ) -> Option<(TaskRecord, String)> {
         let plan = plan?;
         if settled.status != TaskStatus::Failed
             || settled.runs != 1
             || settled.model_source.starts_with("explicit")
             || lock(&self.cancelling).contains_key(&settled.id)
-            || !self.options.state.read_output(&settled.id).trim().is_empty()
+            || !self
+                .options
+                .state
+                .read_output(&settled.id)
+                .trim()
+                .is_empty()
         {
             return None;
         }
@@ -446,7 +466,11 @@ impl TaskManager {
         let note = format!(
             "First attempt on {} failed ({reason}); retried on {model}: {}",
             settled.model.as_deref().unwrap_or_default(),
-            settled.error.as_deref().unwrap_or("credential failure").trim()
+            settled
+                .error
+                .as_deref()
+                .unwrap_or("credential failure")
+                .trim()
         );
         let base = settled
             .model_source
@@ -490,33 +514,36 @@ impl TaskManager {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let id = record.id.clone();
-            let first_prompt = prompt.clone();
             let mut next = (record, prompt);
             let mut notes = Vec::new();
             let settled = loop {
-                let settled = manager
+                let (mut settled, ran) = manager
                     .execute(next.0, next.1, cancel.clone(), std::mem::take(&mut notes))
                     .await;
                 if let Some((record, note)) = manager.reroute(&settled, plan.as_ref()) {
-                    // Not a new task and not a new delivery: the same first prompt again.
+                    // Not a new task and not a new delivery: the same first prompt again,
+                    // including the messages queued before the first run.
                     notes.push(note);
-                    next = (record, first_prompt.clone());
+                    next = (record, ran);
                     continue;
                 }
-                match manager.follow_up(settled) {
-                    Ok((settled, follow_up)) => {
+                match manager.follow_up(&mut settled) {
+                    Some(follow_up) => {
                         // Each settled run of a background task is reported, also when queued
                         // messages start another run right away.
                         manager.deliver(&settled);
                         next = follow_up;
                     }
-                    Err(settled) => break settled,
+                    None => break settled,
                 }
             };
             lock(&manager.cancelling).remove(&id);
             {
                 let mut live = lock(&manager.live);
-                if live.get(&id).is_some_and(|entry| entry.generation == generation) {
+                if live
+                    .get(&id)
+                    .is_some_and(|entry| entry.generation == generation)
+                {
                     live.remove(&id);
                 }
             }
@@ -541,7 +568,7 @@ impl TaskManager {
         prompt: String,
         cancel: CancelToken,
         mut notes: Vec<String>,
-    ) -> TaskRecord {
+    ) -> (TaskRecord, String) {
         let state = &self.options.state;
         let permit = match &self.slots {
             Some(slots) => {
@@ -554,7 +581,15 @@ impl TaskManager {
             None => None,
         };
         if cancel.is_cancelled() {
-            return self.finish(record, &RunOutcome { cancelled: true, ..RunOutcome::default() }, notes);
+            let settled = self.finish(
+                record,
+                &RunOutcome {
+                    cancelled: true,
+                    ..RunOutcome::default()
+                },
+                notes,
+            );
+            return (settled, prompt);
         }
         let mut prompt = prompt;
         {
@@ -593,18 +628,22 @@ impl TaskManager {
                         ..RunOutcome::default()
                     };
                     drop(permit);
-                    return self.finish(record, &outcome, notes);
+                    return (self.finish(record, &outcome, notes), prompt);
                 }
             }
         }
         let track_changes = !self.options.hooks.is_empty();
-        let before = if track_changes { git_status(&cwd).await } else { None };
+        let before = if track_changes {
+            git_status(&cwd).await
+        } else {
+            None
+        };
         let prompt_file = state.prompt_path(&record.id);
         let spec = RunSpec {
             task_id: record.id.clone(),
             session_id: record.session_id.clone(),
             cwd: cwd.clone(),
-            prompt,
+            prompt: prompt.clone(),
             system_prompt_file: prompt_file.is_file().then_some(prompt_file),
             model: record.model.clone(),
             thinking: record.thinking.clone(),
@@ -647,7 +686,14 @@ impl TaskManager {
                 Err(error) => notes.push(format!("{} isolation: {error}", isolation.name())),
             }
         }
-        if let (Some(before), Some(after)) = (before, if track_changes { git_status(&cwd).await } else { None }) {
+        if let (Some(before), Some(after)) = (
+            before,
+            if track_changes {
+                git_status(&cwd).await
+            } else {
+                None
+            },
+        ) {
             record.changed_files = changed_files(&before, &after);
             if !record.changed_files.is_empty() {
                 let mutation = Mutation {
@@ -659,10 +705,15 @@ impl TaskManager {
                 notes.extend(self.options.hooks.run(&mutation).await);
             }
         }
-        self.finish(record, &outcome, notes)
+        (self.finish(record, &outcome, notes), prompt)
     }
 
-    fn finish(&self, mut record: TaskRecord, outcome: &RunOutcome, notes: Vec<String>) -> TaskRecord {
+    fn finish(
+        &self,
+        mut record: TaskRecord,
+        outcome: &RunOutcome,
+        notes: Vec<String>,
+    ) -> TaskRecord {
         record.exit_code = outcome.exit_code;
         record.error.clone_from(&outcome.error);
         let cancel_reason = lock(&self.cancelling).get(&record.id).cloned();
@@ -675,13 +726,14 @@ impl TaskManager {
         if let Some(stored) = &cancelled_elsewhere {
             record.error.clone_from(&stored.error);
         }
-        record.status = if outcome.cancelled || cancel_reason.is_some() || cancelled_elsewhere.is_some() {
-            TaskStatus::Cancelled
-        } else if outcome.succeeded() {
-            TaskStatus::Completed
-        } else {
-            TaskStatus::Failed
-        };
+        record.status =
+            if outcome.cancelled || cancel_reason.is_some() || cancelled_elsewhere.is_some() {
+                TaskStatus::Cancelled
+            } else if outcome.succeeded() {
+                TaskStatus::Completed
+            } else {
+                TaskStatus::Failed
+            };
         if let Some(Some(reason)) = cancel_reason {
             record.error = Some(reason);
         }
@@ -713,9 +765,9 @@ impl TaskManager {
 
     /// After a run settled: decides each steering delivery written during the run from the
     /// child's transcript (task.md Delta D7), then starts the pending messages as one follow-up run
-    /// (task-control.md §1, §1.1). `Ok((settled, next run))` or `Err(settled)` when none follows;
-    /// `settled` carries a note for each steer whose fate is uncertain.
-    fn follow_up(&self, mut settled: TaskRecord) -> Result<(TaskRecord, (TaskRecord, String)), TaskRecord> {
+    /// (task-control.md §1, §1.1). Returns the next run, `None` when none follows; `settled` gets
+    /// a note for each steer whose fate is uncertain.
+    fn follow_up(&self, settled: &mut TaskRecord) -> Option<(TaskRecord, String)> {
         let written = lock(&self.steers).remove(&settled.id).unwrap_or_default();
         let transcript = self.transcript(&settled);
         let mut reclaimed: Vec<PendingMessage> = Vec::new();
@@ -742,8 +794,10 @@ impl TaskManager {
                 }
             }
         }
-        if settled.status == TaskStatus::Cancelled || lock(&self.cancelling).contains_key(&settled.id) {
-            return Err(settled);
+        if settled.status == TaskStatus::Cancelled
+            || lock(&self.cancelling).contains_key(&settled.id)
+        {
+            return None;
         }
         let notes: Vec<String> = uncertain
             .iter()
@@ -756,14 +810,18 @@ impl TaskManager {
         let result = self.update(&settled.id, |record| {
             record.hook_notes.extend(notes.iter().cloned());
             let notes_now = record.hook_notes.clone();
-            record.pending_messages.retain(|message| !settled_ids.contains(&message.id));
+            record
+                .pending_messages
+                .retain(|message| !settled_ids.contains(&message.id));
             for message in reclaimed {
                 if !record.pending_messages.iter().any(|m| m.id == message.id) {
                     record.pending_messages.push(message);
                 }
             }
             drop_admitted(&mut record.pending_messages, transcript.as_ref());
-            record.pending_messages.sort_by_key(|message| message.created_at);
+            record
+                .pending_messages
+                .sort_by_key(|message| message.created_at);
             let mut texts: Vec<String> = std::mem::take(&mut record.pending_messages)
                 .into_iter()
                 .map(|message| message.text)
@@ -778,17 +836,9 @@ impl TaskManager {
             prepare_next_run(record, background);
             (notes_now, texts)
         });
-        match result {
-            Ok((record, (notes_now, texts))) => {
-                settled.hook_notes = notes_now;
-                if texts.is_empty() {
-                    Err(settled)
-                } else {
-                    Ok((settled, (record, texts.join("\n\n"))))
-                }
-            }
-            Err(_) => Err(settled),
-        }
+        let (record, (notes_now, texts)) = result.ok()?;
+        settled.hook_notes = notes_now;
+        (!texts.is_empty()).then(|| (record, texts.join("\n\n")))
     }
 
     /// Waits until `id` settles or `timeout` passes (`None` = no limit); returns the current
@@ -813,7 +863,11 @@ impl TaskManager {
     ///
     /// # Errors
     /// See [`TaskManager::start`].
-    pub async fn run(self: &Arc<Self>, request: SpawnRequest, cancel: &CancelToken) -> Result<String, String> {
+    pub async fn run(
+        self: &Arc<Self>,
+        request: SpawnRequest,
+        cancel: &CancelToken,
+    ) -> Result<String, String> {
         let record = self.start(request)?;
         tokio::select! {
             _ = self.wait(&record.id, None) => {}
@@ -928,12 +982,23 @@ mod tests {
                 self.peak.fetch_max(now, Ordering::SeqCst);
                 let outcome = if spec.prompt.starts_with("wait") {
                     cancel.cancelled().await;
-                    RunOutcome { cancelled: true, ..RunOutcome::default() }
+                    RunOutcome {
+                        cancelled: true,
+                        ..RunOutcome::default()
+                    }
                 } else {
                     tokio::time::sleep(Duration::from_millis(50)).await;
-                    std::fs::write(&spec.output_path, format!("echo:{}", spec.prompt)).expect("out");
-                    let code = if spec.prompt.starts_with("fail") { 3 } else { 0 };
-                    RunOutcome { exit_code: Some(code), ..RunOutcome::default() }
+                    std::fs::write(&spec.output_path, format!("echo:{}", spec.prompt))
+                        .expect("out");
+                    let code = if spec.prompt.starts_with("fail") {
+                        3
+                    } else {
+                        0
+                    };
+                    RunOutcome {
+                        exit_code: Some(code),
+                        ..RunOutcome::default()
+                    }
                 };
                 self.running.fetch_sub(1, Ordering::SeqCst);
                 outcome
@@ -986,9 +1051,15 @@ mod tests {
         let (manager, runner) = manager(dir.path(), 2);
         let mut req = request(dir.path(), "do the thing", false);
         req.context = Some("shared".into());
-        let text = manager.run(req, &CancelToken::default()).await.expect("run");
+        let text = manager
+            .run(req, &CancelToken::default())
+            .await
+            .expect("run");
         assert!(text.contains("status=\"completed\""), "{text}");
-        assert!(text.contains("echo:# Context\nshared\n\n# Task\ndo the thing"), "{text}");
+        assert!(
+            text.contains("echo:# Context\nshared\n\n# Task\ndo the thing"),
+            "{text}"
+        );
         let spec = lock(&runner.specs)[0].clone();
         assert_eq!(spec.depth, 1);
         assert_eq!(spec.model.as_deref(), Some("p/m"));
@@ -1018,7 +1089,10 @@ mod tests {
             .collect();
         assert_eq!(ids, ["Job", "Job-2", "Job-3", "Job-4"]);
         for id in &ids {
-            let record = manager.wait(id, Some(Duration::from_secs(5))).await.expect("record");
+            let record = manager
+                .wait(id, Some(Duration::from_secs(5)))
+                .await
+                .expect("record");
             assert_eq!(record.status, TaskStatus::Completed);
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1028,7 +1102,10 @@ mod tests {
         let session = manager.get("Job").expect("record").session_id;
         let resumed = manager.resume("Job", Some("more"), false).expect("resume");
         assert_eq!(resumed.runs, 2);
-        let record = manager.wait("Job", Some(Duration::from_secs(5))).await.expect("record");
+        let record = manager
+            .wait("Job", Some(Duration::from_secs(5)))
+            .await
+            .expect("record");
         assert_eq!(record.status, TaskStatus::Completed);
         assert_eq!(record.session_id, session);
         assert_eq!(manager.state().read_output("Job"), "echo:more");
@@ -1042,16 +1119,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let (manager, _runner) = manager(dir.path(), 0);
         let text = manager
-            .run(request(dir.path(), "fail now", false), &CancelToken::default())
+            .run(
+                request(dir.path(), "fail now", false),
+                &CancelToken::default(),
+            )
             .await
             .expect("run");
         assert!(text.contains("failed (exit 3)"), "{text}");
 
-        let record = manager.start(request(dir.path(), "wait forever", true)).expect("start");
+        let record = manager
+            .start(request(dir.path(), "wait forever", true))
+            .expect("start");
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(manager.resume(&record.id, None, false).is_err());
         assert!(manager.cancel(&record.id).starts_with("Cancelling"));
-        let record = manager.wait(&record.id, Some(Duration::from_secs(5))).await.expect("record");
+        let record = manager
+            .wait(&record.id, Some(Duration::from_secs(5)))
+            .await
+            .expect("record");
         assert_eq!(record.status, TaskStatus::Cancelled);
         assert!(manager.cancel(&record.id).contains("already cancelled"));
         assert!(manager.cancel("nope").starts_with("Unknown"));
@@ -1068,7 +1153,10 @@ mod tests {
         let mut record = crate::record::sample("Old");
         record.pid = None;
         manager.state().save(&record).expect("save");
-        assert_eq!(manager.get("Old").expect("record").status, TaskStatus::Interrupted);
+        assert_eq!(
+            manager.get("Old").expect("record").status,
+            TaskStatus::Interrupted
+        );
         let text = manager.result_text("Old").expect("text");
         assert!(text.contains("status=\"interrupted\""));
     }
@@ -1079,7 +1167,13 @@ mod tests {
     impl TaskObserver for Seen {
         fn started_in(&self, record: &TaskRecord, state: &StateDir) {
             let log = state.log_path(&record.id);
-            lock(&self.0).push(format!("start {} {}", record.id, log.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+            lock(&self.0).push(format!(
+                "start {} {}",
+                record.id,
+                log.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
         }
         fn finished(&self, record: &TaskRecord) {
             lock(&self.0).push(format!("finish {} {}", record.id, record.status.as_str()));
@@ -1101,7 +1195,9 @@ mod tests {
         });
         let delivered: Arc<Mutex<Vec<String>>> = Arc::default();
         let sink = Arc::clone(&delivered);
-        manager.set_on_settled(Some(Arc::new(move |record, _| lock(&sink).push(record.id.clone()))));
+        manager.set_on_settled(Some(Arc::new(move |record, _| {
+            lock(&sink).push(record.id.clone())
+        })));
         let mut quiet = request(dir.path(), "q", true);
         quiet.name = Some("Quiet".into());
         quiet.group = Some("crew".into());
@@ -1110,7 +1206,10 @@ mod tests {
         manager.start(quiet).expect("start");
         manager.start(loud).expect("start");
         for id in ["Quiet", "Job"] {
-            manager.wait(id, Some(Duration::from_secs(5))).await.expect("record");
+            manager
+                .wait(id, Some(Duration::from_secs(5)))
+                .await
+                .expect("record");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(*lock(&delivered), ["Job"]);
@@ -1118,10 +1217,19 @@ mod tests {
         assert_eq!(record.group.as_deref(), Some("crew"));
         assert!(record.quiet);
         let events = lock(&seen.0).clone();
-        assert!(events.contains(&"start Quiet Quiet.log".to_owned()), "{events:?}");
-        assert!(events.contains(&"finish Job completed".to_owned()), "{events:?}");
+        assert!(
+            events.contains(&"start Quiet Quiet.log".to_owned()),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(&"finish Job completed".to_owned()),
+            "{events:?}"
+        );
         let stored = std::fs::read_to_string(manager.state().record_path("Job")).expect("json");
-        assert!(!stored.contains("\"quiet\"") && !stored.contains("\"group\""), "{stored}");
+        assert!(
+            !stored.contains("\"quiet\"") && !stored.contains("\"group\""),
+            "{stored}"
+        );
     }
 
     #[test]

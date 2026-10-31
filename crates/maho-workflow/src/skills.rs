@@ -43,7 +43,10 @@ pub fn skill_roots(
     resolver: &maho_skills::RootResolver,
     notices: &maho_skills::NoticeContext<'_>,
 ) -> Vec<PathBuf> {
-    let mut roots = vec![cwd.join(".omo").join("skills"), cwd.join(".agents").join("skills")];
+    let mut roots = vec![
+        cwd.join(".omo").join("skills"),
+        cwd.join(".agents").join("skills"),
+    ];
     roots.extend(extra.iter().cloned());
     roots.extend(resolver.resolve(None, notices));
     let mut seen = std::collections::HashSet::new();
@@ -52,7 +55,11 @@ pub fn skill_roots(
 }
 
 /// The prefix built from `skills` (in order, each once) and the diagnostics for missing ones.
-pub fn skill_prefix(resolver: &dyn SkillResolver, node_id: &str, skills: &[String]) -> (String, Vec<String>) {
+pub fn skill_prefix(
+    resolver: &dyn SkillResolver,
+    node_id: &str,
+    skills: &[String],
+) -> (String, Vec<String>) {
     let mut prefix = String::new();
     let mut diagnostics = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -103,7 +110,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tmp");
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(bin.join("skills/s")).expect("mkdir");
-        std::fs::write(bin.join("skills/s/SKILL.md"), "---\nname: s\n---\nBundled body").expect("write");
+        std::fs::write(
+            bin.join("skills/s/SKILL.md"),
+            "---\nname: s\n---\nBundled body",
+        )
+        .expect("write");
         let resolver = maho_skills::RootResolver {
             env: std::sync::Arc::new(|key: &str| {
                 (key == maho_skills::SKILLS_ROOT_ENV).then(|| "relative/skills".to_owned())
@@ -113,12 +124,22 @@ mod tests {
         };
         let logged = std::sync::Mutex::new(Vec::<String>::new());
         let log = |message: &str| logged.lock().expect("log").push(message.to_owned());
-        let notices = maho_skills::NoticeContext { log: &log, ui: None };
+        let notices = maho_skills::NoticeContext {
+            log: &log,
+            ui: None,
+        };
         let cwd = dir.path().join("work");
         for _ in 0..2 {
-            let roots = skill_roots(&cwd, &[bin.join("skills")], &resolver, &notices);
-            assert_eq!(roots.last(), Some(&bin.join("skills")));
-            assert_eq!(roots.iter().filter(|root| **root == bin.join("skills")).count(), 1);
+            // No extra roots: the bundled root can only come from the resolver.
+            let roots = skill_roots(&cwd, &[], &resolver, &notices);
+            assert_eq!(roots.last(), Some(&bin.join("skills")), "{roots:?}");
+            assert_eq!(
+                roots
+                    .iter()
+                    .filter(|root| **root == bin.join("skills"))
+                    .count(),
+                1
+            );
             let (prefix, missing) = skill_prefix(&DirSkillResolver { roots }, "n", &["s".into()]);
             assert!(missing.is_empty());
             assert!(prefix.contains("Bundled body"), "{prefix}");
