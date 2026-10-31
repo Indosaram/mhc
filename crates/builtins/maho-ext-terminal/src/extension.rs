@@ -560,7 +560,7 @@ impl Extension for TerminalExtension {
                             && !notice_shown.swap(true, std::sync::atomic::Ordering::SeqCst)
                         {
                             ctx.ui.notify(
-                                "native Anthropic bash active — monitor sessions remain available",
+                                "native Anthropic bash active: monitor sessions remain available",
                                 maho_ext_api::types::NotificationType::Info,
                             );
                         }
@@ -985,7 +985,7 @@ impl Extension for TerminalExtension {
         }
         let mut bash = ToolDefinition::new(
             "bash",
-            r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops — subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
+            r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops: subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,
             crate::tools::bash::pty_bash_schema(),
             Arc::new(move |call| {
                 let manager = Arc::clone(&bash_manager);
@@ -1099,7 +1099,7 @@ impl Extension for TerminalExtension {
             ),
             (
                 "bash_input",
-                "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session — e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
+                "Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session: e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.",
                 "Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",
                 crate::tools::bash_input::bash_input_schema(),
             ),
@@ -1407,7 +1407,7 @@ impl Extension for TerminalExtension {
         monitor_tool.prompt_snippet=Some("Subscribe to a command's output or a file's create/modify event as injected events instead of polling".to_owned());
         monitor_tool.prompt_guidelines=Some(vec![
             "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
-            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already — when the run creates that directory too, use the `command` branch instead."#.to_owned(),
+            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already; when the run creates that directory too, use the `command` branch instead."#.to_owned(),
             r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
             "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
         ]);
