@@ -1016,23 +1016,25 @@ async fn cancels_an_admitted_retry_timer_only_after_the_abort_marker_commits() {
     )
     .await;
     let drive = fixture.install_drive(Some(true), None);
-    // Pinned `vi.waitFor(setTimeoutSpy)`: `before_drive` is the drive's last hook before the
-    // retry timer; on the current-thread test runtime the drive runs from the hook straight to
-    // the timer's first yield before this task observes the handshake.
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
-    let entered_tx = Arc::new(Mutex::new(Some(entered_tx)));
-    fixture.on_hook(HookName::BeforeDrive, move |_| {
-        if let Some(entered) = entered_tx.lock().expect("entered").take() {
-            let _ = entered.send(());
-        }
-        HookResult::None
+    // Pinned `vi.waitFor(setTimeoutSpy)`: the retry wait reads the drive clock once to compare
+    // the deadline and once more in `wait_until`, immediately before it parks on the timer. The
+    // drive task cannot yield between that second read and the park, so once this task observes
+    // the second read the drive is waiting on the timer.
+    let (reads_tx, mut reads_rx) = tokio::sync::watch::channel(0usize);
+    let clock: DriveClock = Arc::new(move || {
+        reads_tx.send_modify(|reads| *reads += 1);
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as i64)
     });
     let lane = fixture.lane.clone();
     let running_drive = drive.clone();
-    let running =
-        tokio::spawn(async move { drive_operation(lane.as_ref(), running_drive.as_ref()).await });
-    bounded(entered_rx).await.expect("drive admitted");
-    tokio::task::yield_now().await;
+    let running = tokio::spawn(with_drive_clock(clock, async move {
+        drive_operation(lane.as_ref(), running_drive.as_ref()).await
+    }));
+    bounded(reads_rx.wait_for(|reads| *reads >= 2))
+        .await
+        .expect("drive parked on the retry timer");
     let requested = fixture
         .lane
         .request_operation_abort(OPERATION_ID.into(), &BACKGROUND_CONTEXT)
