@@ -273,6 +273,11 @@ pub async fn run_socket_proxy(
  */
 #[cfg(any(unix, windows))]
 pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()> {
+    // The inherited owner read end is adopted close-on-exec before anything is spawned, so neither the host child
+    // nor its descendants inherit it.
+    let owner_pipe = launch
+        .owner_fd
+        .and_then(crate::host_lifecycle_activity::adopt_owner_pipe_fd);
     // senpi `reapOrphanedInternalHostDirs`: scratch dirs of supervisors that died without cleanup.
     crate::host_internal_dir_reaper::reap_orphaned_internal_host_dirs();
     let platform = if cfg!(windows) {
@@ -780,7 +785,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         (launch.owner_fd.is_some() || generation_files.settings_file.exists()).then(|| {
             let mut owner =
                 crate::host_lifecycle_activity::SupervisorOwner::new(generation_files.dir.clone());
-            owner.start(launch.owner_fd, owner_clock_ms());
+            owner.start(owner_pipe, owner_clock_ms());
             crate::host_lifecycle_activity::OwnerCheck::new(owner, activity.clone())
         });
     let on_activity: crate::host_lifecycle_activity::OnActivity = match &owner {

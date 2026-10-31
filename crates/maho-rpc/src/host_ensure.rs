@@ -16,6 +16,8 @@ pub struct HostStartOptions {
     pub settings: crate::host_daemon_state::HostDaemonSettings,
     pub launch_profile_id: String,
     pub timeout: std::time::Duration,
+    /// senpi `EnsureHostOptions.owner: "caller"`: bind the started generation to this process's lifetime.
+    pub owner: bool,
 }
 pub enum EnsuredHost {
     Reused { pid: u32 },
@@ -58,6 +60,13 @@ pub async fn ensure_prepared_host(
         ) == Some(true)
     {
         return Ok(EnsuredHost::Refused("host_stalled"));
+    }
+    match prepared.decision {
+        HostDecision::Reuse { .. } | HostDecision::Handoff { .. } if start.owner => {
+            let generation_dir = prepared_owner_dir(&prepared, socket)?;
+            crate::host_lifecycle_activity::claim_host_owner(&generation_dir).await?;
+        }
+        _ => {}
     }
     match prepared.decision {
         HostDecision::Reuse { .. } => return Ok(EnsuredHost::Reused { pid: attached_pid }),
@@ -265,10 +274,25 @@ pub fn start_host(
         settings,
         launch_profile_id,
         timeout,
+        owner,
     } = options;
     let socket = normalize_socket_path(socket);
+    let lifetime_owner = owner
+        .then(crate::host_lifecycle_activity::caller_host_owner)
+        .transpose()?;
     crate::host_daemon_state::write_host_settings(&paths, &settings)
         .map_err(|error| error.source)?;
+    crate::host_lifecycle_activity::write_host_owner(
+        &crate::host_daemon_paths::generation_paths(&paths, &settings.instance_id).dir,
+        lifetime_owner.as_ref(),
+    )?;
+    // senpi `keepOwnerPipe`: the caller-lifetime pipe; win32 binds the owner by its recorded identity instead.
+    #[cfg(unix)]
+    let owner_pipe = owner
+        .then(crate::host_lifecycle_activity::OwnerPipe::new)
+        .transpose()?;
+    #[cfg(not(unix))]
+    let owner_pipe = None::<crate::host_lifecycle_activity::OwnerPipe>;
     let mut stderr_options = std::fs::OpenOptions::new();
     stderr_options
         .create(true)
@@ -287,6 +311,7 @@ pub fn start_host(
         .args
         .iter()
         .cloned()
+        .chain(owner_pipe.iter().flat_map(|pipe| pipe.args()))
         .chain(crate::mcp_presenter_bootstrap::presenter_launch_args(
             bootstrap.is_some(),
             crate::mcp_presenter_bootstrap::presenter_enforcement(),
@@ -325,6 +350,9 @@ pub fn start_host(
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("RPC socket host has no process identity"))?;
+    if let Some(pipe) = owner_pipe {
+        pipe.keep(pid);
+    }
     let result = async {
         let registration = crate::host_daemon_registration::HostRegistration {
             pid,
@@ -392,6 +420,34 @@ pub fn start_host(
         }
     }
     }
+}
+/// senpi `ensureHost`'s owner claim on a reused or handed-off host: only the generation registered for this socket
+/// and answering on it may be claimed, inside the ensure lock. Resolved synchronously, so no borrow of the lock is
+/// held across the claim's await.
+fn prepared_owner_dir(
+    prepared: &LockedHostEnsure,
+    socket: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let registered = prepared
+        .registration
+        .as_ref()
+        .filter(|owner| {
+            owner
+                .socket
+                .as_deref()
+                .is_none_or(|registered| registered == socket)
+        })
+        .filter(|owner| {
+            prepared
+                .protocol
+                .as_ref()
+                .and_then(|protocol| protocol.instance_id.as_deref())
+                == Some(owner.instance_id.as_str())
+        })
+        .ok_or_else(|| {
+            std::io::Error::other("RPC host has no matching registered owner-lifetime generation")
+        })?;
+    Ok(crate::host_daemon_paths::generation_paths(&prepared.paths, &registered.instance_id).dir)
 }
 pub fn start_refusal(
     prepared: &LockedHostEnsure,
@@ -700,6 +756,7 @@ async fn ensure_host_in_key_root(
         settings,
         launch_profile_id: launch_profile_id.clone(),
         timeout: std::time::Duration::from_millis(options.readiness_ms),
+        owner: options.owner,
     };
     let handoff = crate::host_handoff::HandoffOptions {
         host_args: supervisor_args,

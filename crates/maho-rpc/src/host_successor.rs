@@ -1,6 +1,8 @@
 use crate::{host_protocol_info::HostProtocolInfo,socket_ownership::{SocketFileIdentity,stat_socket_identity}};
 pub const DEFAULT_HANDOFF_READINESS_MS:u64=30_000;
-pub struct SuccessorLaunchOptions{pub launch:crate::host_launch::HostLaunch,pub env:std::collections::HashMap<String,String>,pub instance_id:String,pub generation:u64,pub launch_profile_id:String,pub readiness_ms:u64}
+pub struct SuccessorLaunchOptions{pub launch:crate::host_launch::HostLaunch,pub env:std::collections::HashMap<String,String>,pub instance_id:String,pub generation:u64,pub launch_profile_id:String,pub readiness_ms:u64,
+    /// senpi `inheritOwnerPipe`: the predecessor's owner is this process, so the successor watches its pipe too.
+    pub owner_pipe:Option<crate::host_lifecycle_activity::OwnerPipe>}
 pub struct RunningSuccessor{pub child:tokio::process::Child,pub protocol:HostProtocolInfo}
 /// Asked once the successor owns the socket: the drain request is sent only when it answers true (senpi `drainGate`).
 pub type DrainGate=std::pin::Pin<Box<dyn std::future::Future<Output=bool>+Send>>;
@@ -22,7 +24,8 @@ pub async fn start_successor_gated(context:&crate::host_handoff::HandoffContext,
     // replacement against the host it replaces.
     let bootstrap=crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
     let enforce=crate::mcp_presenter_bootstrap::presenter_enforcement()||context.host.capabilities.iter().any(|capability|capability==crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY);
-    let args:Vec<String>=options.launch.args.iter().cloned().chain(crate::mcp_presenter_bootstrap::presenter_launch_args(bootstrap.is_some(),enforce)).collect();
+    let owner_pipe=options.owner_pipe;
+    let args:Vec<String>=options.launch.args.iter().cloned().chain(owner_pipe.iter().flat_map(|pipe|pipe.args())).chain(crate::mcp_presenter_bootstrap::presenter_launch_args(bootstrap.is_some(),enforce)).collect();
     let env=options.env;
     let configure=|command:&mut tokio::process::Command|{command.env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr);#[cfg(unix)] command.process_group(0);};
     #[cfg(unix)]
@@ -35,6 +38,7 @@ pub async fn start_successor_gated(context:&crate::host_handoff::HandoffContext,
     };
     let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
     let launch_profile_id=options.launch_profile_id;
+    if let Some(pipe)=owner_pipe{pipe.keep(pid);}
     let result:std::io::Result<Option<HostProtocolInfo>>=async{
         let process_start_time=wait_for_start_time(pid,SUCCESSOR_START_TIME_WAIT_MS,read_start_time_off_runtime,crate::host_reservations::process_is_live).await.ok().flatten();
         // No build yet: until the successor answers, its record claims no engine version rather than this process's.
