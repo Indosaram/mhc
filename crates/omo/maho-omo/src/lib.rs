@@ -12,6 +12,7 @@ pub mod onboarding_memory_applier;
 pub mod provisioning;
 pub mod runtime;
 pub mod scheduler;
+pub mod settle_observers;
 pub mod startup_deferral;
 pub mod task_coordinator;
 pub mod tool_hook_status;

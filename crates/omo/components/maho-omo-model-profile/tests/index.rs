@@ -17,8 +17,8 @@ use support::{PRIVATE_MARKER, TestRegistry, model};
 const OPUS: (&str, &str) = ("anthropic", "claude-opus-5-5");
 const FABLE: (&str, &str) = ("anthropic", "claude-fable-5-1");
 const SUBSCRIPTION_OPUS: (&str, &str) = ("anthropic-subscription", "claude-opus-5-5");
-const KIMI: (&str, &str) = ("moonshotai", "kimi-k3");
-const CODING_KIMI: (&str, &str) = ("kimi-coding", "kimi-k3");
+const KIMI: (&str, &str) = ("moonshotai", "kimi-k3.1-pro");
+const CODING_KIMI: (&str, &str) = ("kimi-coding", "kimi-k3.1-pro");
 const GLM: (&str, &str) = ("zai", "glm-5.3");
 const GATEWAY_OPUS: (&str, &str) = ("opengateway", "anthropic/claude-opus-5-5");
 const SOL: (&str, &str) = ("github-copilot", "gpt-6-sol");
@@ -171,6 +171,28 @@ async fn an_unset_model_profile_applies_daily_normal() {
     assert_eq!(harness.first_details()["reasoning"], json!("medium"));
 }
 
+// index.test.ts (#11365 review): the resolver saw the model as available, but the registry lookup
+// that sets it returns nothing; the session keeps its model and the user is warned.
+#[tokio::test]
+async fn a_resolved_model_the_registry_no_longer_finds_keeps_the_session_model_and_warns_the_user() {
+    let registry = TestRegistry::new(fixture(&[OPUS, FABLE, KIMI]))
+        .dropped_from_find("anthropic", "claude-opus-5-5")
+        .dropped_from_find("anthropic-subscription", "claude-opus-5-5");
+    let harness = start(
+        json!({}),
+        Arc::new(registry),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert!(harness.session_models().is_empty());
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
+    let kinds: Vec<_> = harness.notices().into_iter().map(|(_, kind)| kind).collect();
+    assert_eq!(kinds, [maho_ext_api::NotificationType::Warning]);
+}
+
 #[tokio::test]
 async fn a_blank_model_profile_applies_daily_normal() {
     let harness = start(
@@ -197,9 +219,9 @@ async fn a_gateway_only_opus_is_skipped_for_the_next_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["kimi-coding/kimi-k3"]);
+    assert_eq!(selectors(&harness.session_models()), ["kimi-coding/kimi-k3.1-pro"]);
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
-    assert_eq!(harness.first_details()["model"], json!("kimi-coding/kimi-k3"));
+    assert_eq!(harness.first_details()["model"], json!("kimi-coding/kimi-k3.1-pro"));
 }
 
 #[tokio::test]
@@ -256,7 +278,7 @@ async fn daily_normal_skips_a_gateway_for_its_next_listed_rung() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["kimi-coding/kimi-k3"]);
+    assert_eq!(selectors(&harness.session_models()), ["kimi-coding/kimi-k3.1-pro"]);
 }
 
 #[tokio::test]
@@ -287,7 +309,7 @@ async fn daily_normal_with_only_the_third_rung_applies_kimi_max_and_names_the_sk
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["moonshotai/kimi-k3"]);
+    assert_eq!(selectors(&harness.session_models()), ["moonshotai/kimi-k3.1-pro"]);
     assert_eq!(harness.session_thinking_levels(), [ModelThinkingLevel::Max]);
     assert_eq!(harness.first_details()["skipped"], json!(["anthropic-subscription/claude-opus-5-5"]));
     assert!(!harness.agent_dir.join("settings.json").exists());
@@ -458,7 +480,7 @@ async fn a_custom_user_profile_chain_is_applied() {
     let harness = start(
         json!({
             "model_profile": "night-shift",
-            "model_profiles": {"night-shift": {"display_name": "Night shift", "models": ["moonshotai/kimi-k3"]}}
+            "model_profiles": {"night-shift": {"display_name": "Night shift", "models": ["moonshotai/kimi-k3.1-pro"]}}
         }),
         Arc::new(TestRegistry::new(fixture(&[KIMI]))),
         "session-1",
@@ -467,7 +489,7 @@ async fn a_custom_user_profile_chain_is_applied() {
         Some("settings"),
     )
     .await;
-    assert_eq!(selectors(&harness.session_models()), ["moonshotai/kimi-k3"]);
+    assert_eq!(selectors(&harness.session_models()), ["moonshotai/kimi-k3.1-pro"]);
     assert_eq!(harness.first_details()["profile"], json!("night-shift"));
 }
 
@@ -611,7 +633,7 @@ async fn two_distinct_rejected_providers_are_skipped_before_a_healthy_one() {
         harness.first_details()["authFailed"],
         json!([
             {"provider": "anthropic", "model": "claude-opus-5-5", "reason": "refresh"},
-            {"provider": "moonshotai", "model": "kimi-k3", "reason": "refresh"}
+            {"provider": "moonshotai", "model": "kimi-k3.1-pro", "reason": "refresh"}
         ])
     );
 }
@@ -753,7 +775,7 @@ async fn the_applied_notice_carries_the_profile_model_and_skipped_selector_detai
     .await;
     let details = harness.first_details();
     assert_eq!(details["profile"], json!("daily-normal"));
-    assert_eq!(details["model"], json!("moonshotai/kimi-k3"));
+    assert_eq!(details["model"], json!("moonshotai/kimi-k3.1-pro"));
     assert_eq!(details["reasoning"], json!("max"));
     assert_eq!(details["skipped"], json!(["anthropic-subscription/claude-opus-5-5"]));
 }

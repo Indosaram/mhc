@@ -28,7 +28,8 @@ fn rung(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallb
 }
 
 /// Mirrors model-core `category-model-requirements.ts`; senpi's kimi rungs carry both the
-/// `kimi-coding` registry id and the `kimi-for-coding` models.dev id.
+/// `kimi-coding` registry id and the `kimi-for-coding` models.dev id. Kimi rungs name the latest
+/// Kimi (`LATEST_MODEL_BY_FAMILY.kimi`, kimi-k3.1-pro since omo v5.1.52).
 pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallbackEntry>)>> =
     LazyLock::new(|| {
         vec![
@@ -36,7 +37,7 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
                 "visual-engineering",
                 vec![
                     rung(ANTHROPIC, "claude-opus-5", Some("max")),
-                    rung(KIMI, "kimi-k3", Some("max")),
+                    rung(KIMI, "kimi-k3.1-pro", Some("max")),
                     rung(
                         &["zai-coding-plan", "opencode-go", "vercel"],
                         "glm-5.2",
@@ -71,7 +72,7 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
                 vec![
                     rung(ANTHROPIC, "claude-fable-5-1", Some("max")),
                     rung(ANTHROPIC, "claude-opus-5-5", Some("max")),
-                    rung(KIMI, "kimi-k3", Some("max")),
+                    rung(KIMI, "kimi-k3.1-pro", Some("max")),
                 ],
             ),
             (
@@ -139,7 +140,7 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
             (
                 "unspecified-high",
                 vec![
-                    rung(KIMI, "kimi-k3", Some("max")),
+                    rung(KIMI, "kimi-k3.1-pro", Some("max")),
                     rung(ANTHROPIC, "claude-opus-5", Some("xhigh")),
                     rung(OPENAI, "gpt-5.6-sol", Some("high")),
                 ],
@@ -147,7 +148,7 @@ pub static CATEGORY_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFal
             (
                 "writing",
                 vec![
-                    rung(KIMI, "kimi-k3", Some("low")),
+                    rung(KIMI, "kimi-k3.1-pro", Some("low")),
                     rung(ANTHROPIC, "claude-opus-5", Some("low")),
                     rung(
                         &["google", "github-copilot", "opencode", "vercel"],

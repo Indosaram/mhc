@@ -150,6 +150,7 @@ impl ManagedRunner for RaceRunner {
                     task_id: spec.task_id.clone(),
                     heartbeat_interval_ms: 60_000,
                     now: Arc::new(|| 1),
+                    input_store: None,
                 });
                 client.emit(&json!({
                     "type": "message_end",

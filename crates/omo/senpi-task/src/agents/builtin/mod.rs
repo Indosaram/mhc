@@ -126,7 +126,9 @@ pub static AGENT_FALLBACK_CHAINS: LazyLock<Vec<(&'static str, Vec<DelegateFallba
                 vec![
                     entry(&claude, "claude-fable-5-1", Some("max")),
                     entry(&claude, "claude-opus-5-5", Some("max")),
-                    entry(&["opencode-go", "kimi-for-coding", "moonshotai", "opencode"], "kimi-k3", Some("max")),
+                    entry(&["opencode-go", "kimi-for-coding", "moonshotai"], "kimi-k3.1-pro", Some("max")),
+                    // OpenCode Zen does not serve K3.1, so its lane keeps the previous Kimi (`kimiK3`).
+                    entry(&["opencode"], "kimi-k3", Some("max")),
                 ],
             ),
             (

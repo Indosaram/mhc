@@ -88,6 +88,9 @@ struct HandleState {
     abort_calls: usize,
     dispose_calls: usize,
     durable_listeners: DurableListenersCallback,
+    /// `Some` makes this a host-session handle with liveness.
+    liveness: Option<crate::state::host_liveness::HostLivenessStatus>,
+    liveness_listeners: Vec<Arc<dyn Fn(crate::state::host_liveness::HostLivenessStatus) + Send + Sync>>,
 }
 
 pub(crate) struct FakeHandle {
@@ -134,10 +137,7 @@ impl FakeHandle {
 
     pub fn fail(&self, kind: RunnerFailureKind, message: &str) {
         self.settle(RunnerOutcome::Error {
-            failure: RunnerFailure {
-                kind,
-                message: message.to_string(),
-            },
+            failure: RunnerFailure::new(kind, message),
             killed: false,
         });
     }
@@ -183,6 +183,18 @@ impl FakeHandle {
             detach_done: Arc::clone(&self.detach_done),
             task_id: self.task_id.clone(),
             baseline: lock(&self.state).unsubscribe_calls,
+        }
+    }
+
+    /// Publishes a liveness change to the manager's subscription (`onLiveness`).
+    pub fn publish_liveness(&self, status: crate::state::host_liveness::HostLivenessStatus) {
+        let listeners = {
+            let mut state = lock(&self.state);
+            state.liveness = Some(status);
+            state.liveness_listeners.clone()
+        };
+        for listener in listeners {
+            listener(status);
         }
     }
 
@@ -259,6 +271,18 @@ impl ManagedChildHandle for FakeHandle {
     }
     fn task_id(&self) -> &str {
         &self.task_id
+    }
+
+    fn liveness(&self) -> Option<crate::state::host_liveness::HostLivenessStatus> {
+        lock(&self.state).liveness
+    }
+
+    fn on_liveness(
+        &self,
+        listener: Arc<dyn Fn(crate::state::host_liveness::HostLivenessStatus) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        lock(&self.state).liveness_listeners.push(listener);
+        Some(Box::new(|| {}))
     }
 
     fn session_id(&self) -> Option<String> {

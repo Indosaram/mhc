@@ -327,11 +327,18 @@ impl RunPauseController {
         credential: Option<ResumeCredential>,
         current: impl Fn() -> Result<bool, PauseError>,
     ) -> Result<ResumeOne, PauseError> {
+        // An acknowledged child's durable cutoff also survives a failed restore: there may be no
+        // live engine to observe yet. Never let one unavailable child prevent the parent's Resume.
         let outside = matches!(
             participant.state,
             ParticipantState::Lost | ParticipantState::Pending
         );
-        if outside && participant.kind != ParticipantKind::HeldAdmission {
+        let acknowledged =
+            participant.ack_seq == Some(seq) && participant.observed_child_seq.is_some();
+        if cutoff.is_none() && acknowledged {
+            cutoff = participant.observed_child_seq;
+        }
+        if outside && !acknowledged && participant.kind != ParticipantKind::HeldAdmission {
             let observed = self.observe(parent, participant).await;
             if !current()? {
                 return Ok(ResumeOne::Superseded);
@@ -375,7 +382,7 @@ impl RunPauseController {
         };
         let result = match self.effects.resume(participant, request, credential).await {
             Ok(result) => result,
-            Err(error) if outside => {
+            Err(error) => {
                 let reason = format!("resume failed: {error}");
                 eprintln!(
                     "[senpi-task] run resume failed for a lost participant: {parent} {}: {reason}",
@@ -394,7 +401,6 @@ impl RunPauseController {
                     ResumeOne::Superseded
                 });
             }
-            Err(error) => return Err(error),
         };
         if !current()? {
             return Ok(ResumeOne::Superseded);

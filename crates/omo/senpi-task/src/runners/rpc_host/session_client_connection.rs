@@ -96,6 +96,20 @@ impl super::handle_port::HostSessionPort for SessionClientConnection {
     fn detach(&self) -> Result<(), HostError> {
         self.client.detach(&self.routing_id)
     }
+    fn get_pending_inputs(
+        &self,
+        known_client_message_ids: &[String],
+    ) -> Result<Option<serde_json::Value>, HostError> {
+        self.client.get_pending_inputs(known_client_message_ids)
+    }
+    /// `closeConfirmed`: only a live post-close host listing releases ownership.
+    fn close_confirmed(&self) -> Option<Result<(), HostError>> {
+        Some(super::session_close_proof::confirm_host_session_absent(
+            self.client.as_ref(),
+            &self.routing_id,
+            &|| true,
+        ))
+    }
 }
 
 impl crate::pause::native_child_pause::NativeRunPause for SessionClientConnection {

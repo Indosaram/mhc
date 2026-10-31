@@ -167,7 +167,7 @@ fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
 
 #[test]
 fn orders_daily_normal_opus_medium_then_kimi_max_then_glm_max() {
-    assert_eq!(chain_of("daily-normal"), ["claude-opus-5-5 medium", "kimi-k3 max", "glm-5.3 max"]);
+    assert_eq!(chain_of("daily-normal"), ["claude-opus-5-5 medium", "kimi-k3.1-pro max", "glm-5.3 max"]);
 }
 
 #[test]

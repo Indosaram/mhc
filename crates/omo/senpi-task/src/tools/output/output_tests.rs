@@ -408,3 +408,24 @@ fn given_a_resident_record_when_read_in_status_mode_then_no_suspended_text_appea
     // then
     assert!(!first_text(&result).contains("suspended"));
 }
+
+#[test]
+fn given_an_unresponsive_host_session_when_read_then_status_says_so_and_running_says_nothing() {
+    use crate::state::host_liveness::HostLivenessStatus;
+    let mut record = make_record(RecordOverrides {
+        task_id: Some("st_quiet".to_string()),
+        status: Some(status("running")),
+        ..RecordOverrides::default()
+    });
+    record.host_liveness = Some(HostLivenessStatus::Unresponsive { since: 0 });
+    let mut running = record.clone();
+    running.task_id = "st_alive".to_string();
+    running.host_liveness = Some(HostLivenessStatus::Running);
+    let deps = deps_from(vec![record, running], None);
+
+    let quiet = first_text(&run_task_output(&deps, &by_id("st_quiet", None), Some("session-parent")).expect("read"));
+    let alive = first_text(&run_task_output(&deps, &by_id("st_alive", None), Some("session-parent")).expect("read"));
+
+    assert!(quiet.contains("unresponsive since 1970-01-01T00:00:00.000Z, retrying; the session may still be running"));
+    assert!(!alive.contains("unresponsive"));
+}

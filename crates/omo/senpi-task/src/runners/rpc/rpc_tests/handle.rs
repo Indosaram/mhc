@@ -19,6 +19,7 @@ use crate::runners::{RunnerFailureKind, RunnerOutcome};
 struct FakeClient {
     listeners: Mutex<Vec<RpcEventListener>>,
     exit_listeners: Mutex<Vec<RpcExitListener>>,
+    commands: Mutex<Vec<Value>>,
 }
 
 impl FakeClient {
@@ -43,7 +44,8 @@ impl RpcClientPort for FakeClient {
         Some(4242)
     }
 
-    fn send(&self, _command: Value) -> Result<Value, RpcClientError> {
+    fn send(&self, command: Value) -> Result<Value, RpcClientError> {
+        self.commands.lock().expect("commands").push(command);
         Ok(json!({ "success": true }))
     }
 
@@ -80,6 +82,7 @@ fn harness(task_id: &str) -> (Arc<RpcChildHandle>, Arc<FakeClient>) {
         task_id: task_id.to_string(),
         heartbeat_interval_ms: 60_000,
         now: Arc::new(|| 1),
+        input_store: None,
     });
     (handle, client)
 }
@@ -325,4 +328,69 @@ fn self_resumed_agent_start_rearms_the_settled_turn_and_notifies_after_reset() {
     );
     subscription();
     handle.dispose_handle();
+}
+
+/// `runners/rpc-input-identity.test.ts`: initial, steer and follow-up inputs share the durable
+/// sequence; a caller's own id (a queued steer's entry id) travels as it is.
+#[test]
+fn stdio_inputs_carry_the_durable_identity_sequence() {
+    use crate::manager::child_handle::InputIdentity;
+    use crate::store::{StateDirConfig, TaskRecordStore};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = TaskRecordStore::new(&StateDirConfig {
+        project_dir: dir.path().to_path_buf(),
+        task_state_dir: None,
+    });
+    let task_id = "st_0000abcd";
+    store
+        .save(&crate::test_support::base_record(task_id, "parent"))
+        .expect("save");
+    let client = Arc::new(FakeClient::default());
+    let handle = RpcChildHandle::new(RpcChildHandleOptions {
+        client: Arc::clone(&client) as Arc<dyn RpcClientPort>,
+        task_id: task_id.to_string(),
+        heartbeat_interval_ms: 60_000,
+        now: Arc::new(|| 1),
+        input_store: Some(store.clone()),
+    });
+    handle.start_initial_prompt("hold").expect("prompt");
+    ManagedChildHandle::steer(handle.as_ref(), "first").expect("steer");
+    ManagedChildHandle::follow_up(handle.as_ref(), "second").expect("follow up");
+    let identity = InputIdentity {
+        client_message_id: "ps-1-entry".to_string(),
+    };
+    handle
+        .steer_with_identity("queued", &identity)
+        .expect("identified steer");
+    let ids: Vec<String> = client
+        .commands
+        .lock()
+        .expect("commands")
+        .iter()
+        .filter(|command| {
+            matches!(
+                command["type"].as_str(),
+                Some("prompt" | "steer" | "follow_up")
+            )
+        })
+        .map(|command| {
+            command["clientMessageId"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            format!("{task_id}:0:1"),
+            format!("{task_id}:0:2"),
+            format!("{task_id}:0:3"),
+            "ps-1-entry".to_string(),
+        ]
+    );
+    let record = store.load(task_id).expect("load").expect("record");
+    assert_eq!(record.effect_seq, Some(3));
+    assert_eq!(record.last_effect_id.as_deref(), Some("ps-1-entry"));
 }

@@ -11,7 +11,10 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 serde_json.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-tokio = { workspace = true, features = ["sync", "time"] }
+maho-ai = { version = "=0.0.0", path = "../../../maho-ai" }
+reqwest.workspace = true
+tokio = { workspace = true, features = ["fs", "rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "net", "io-util"] }

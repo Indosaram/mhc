@@ -4,7 +4,7 @@ use maho_omo_model_profile::describe::{
 };
 use serde_json::json;
 
-const KIMI: &str = "moonshotai/kimi-k3";
+const KIMI: &str = "moonshotai/kimi-k3.1-pro";
 const GLM: &str = "zai/glm-5.3";
 
 fn available(selectors: &[&str]) -> Vec<String> {

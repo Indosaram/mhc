@@ -32,8 +32,7 @@ use maho_ai::model::Model;
 use maho_ai::types::ModelThinkingLevel;
 use maho_ext_api::{
     ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, ExtensionMode,
-    ExtensionRuntime, JsonValue, ModelRegistry, SendMessageOptions, SessionReason, ToolContent,
-    CustomMessage,
+    ExtensionRuntime, JsonValue, ModelRegistry, NotificationType, SessionReason,
 };
 use omo_config_core::{LoadOmoConfigOptions, is_excluded_model};
 use maho_omo_config_resolution::{SenpiOmoConfigResult, load_senpi_omo_config};
@@ -43,7 +42,9 @@ use crate::credential_policy::credential_rotation_policy;
 use crate::custom_providers::custom_model_providers;
 use crate::default_profile::{ProbeState, new_probe_state, resolve_default_model_profile};
 use crate::notice::{auth_failed_details, notice_content};
-use crate::request_auth::{AuthFailure, probe_request_auth, sanitized_auth_error_detail};
+use crate::request_auth::{
+    AuthFailure, RefreshUnavailableKeep, probe_request_auth_with_keep, sanitized_auth_error_detail,
+};
 use crate::resolve::{
     ModelProfileResolution, ModelProfileSource, ResolveModelProfileInput, resolve_model_profile,
 };
@@ -190,6 +191,30 @@ fn log_skipped_candidate(logger: Option<&Arc<dyn ComponentLogger>>, failure: &Au
     }
 }
 
+/// A kept candidate whose login refresh failed transiently may still fail on the first turn; this
+/// line (class/code fingerprints only) is what makes that failure diagnosable afterwards.
+fn log_kept_on_transient_refresh(logger: Option<&Arc<dyn ComponentLogger>>, keep: &RefreshUnavailableKeep) {
+    if let Some(logger) = logger {
+        let details = JsonValue::Object(
+            [
+                ("provider".to_owned(), JsonValue::String(keep.provider.clone())),
+                ("model".to_owned(), JsonValue::String(keep.model.clone())),
+                ("errorKind".to_owned(), JsonValue::String(keep.error_kind.clone())),
+                ("causeKind".to_owned(), JsonValue::String(keep.cause_kind.clone())),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        logger.warn(
+            &format!(
+                "omo-senpi: model profile kept {}/{}: its login refresh failed transiently at session start ({}, {}); the first turn retries it",
+                keep.provider, keep.model, keep.error_kind, keep.cause_kind
+            ),
+            Some(&details),
+        );
+    }
+}
+
 struct ProbedResolution {
     resolution: ModelProfileResolution,
     model: Option<Model>,
@@ -249,12 +274,13 @@ async fn resolve_with_request_auth(
         if is_pin {
             break;
         }
-        let failure = probe_request_auth(
+        let failure = probe_request_auth_with_keep(
             registry,
             policy.may_rotate(provider),
             provider,
             model_id,
             &current,
+            &mut |keep| log_kept_on_transient_refresh(logger, &keep),
         )
         .await;
         let Some(failure) = failure else {
@@ -293,7 +319,11 @@ fn log_retired_profile_once(
     }
 }
 
-fn send_notice(
+/// A profile outcome is for the person running the session, never for the model: senpi hands every
+/// custom message to the model as user text in the next request, and one sent while the first prompt
+/// streams is delivered as a steer that costs a request of its own. The outcome is kept as a session
+/// entry, which no request carries.
+fn record_outcome(
     runtime: &ExtensionRuntime,
     custom_type: &str,
     content: String,
@@ -303,17 +333,24 @@ fn send_notice(
     let Ok(actions) = runtime.message_actions() else {
         return;
     };
-    let message = CustomMessage {
-        custom_type: custom_type.to_owned(),
-        content: vec![ToolContent::text(content)],
-        display: true,
-        details,
-    };
-    if let Err(error) = actions.send_message(message, SendMessageOptions::default())
+    let mut data = serde_json::Map::new();
+    data.insert("content".to_owned(), JsonValue::String(content));
+    if let Some(details) = details {
+        data.insert("details".to_owned(), details);
+    }
+    if let Err(error) = actions.append_entry(custom_type, Some(JsonValue::Object(data)))
         && let Some(logger) = logger
     {
-        logger.error("omo-senpi: model profile notice could not be sent", Some(&JsonValue::String(error.message)));
+        logger.error("omo-senpi: model profile notice could not be recorded", Some(&JsonValue::String(error.message)));
     }
+}
+
+/// The notice reaches the person through `ui.notify` (the desktop shows it as a timeline row).
+fn notify(ctx: &maho_ext_api::ExtensionContext, message: &str, warning: bool) {
+    ctx.ui.notify(
+        message,
+        if warning { NotificationType::Warning } else { NotificationType::Info },
+    );
 }
 
 impl Extension for ModelProfileComponent {
@@ -414,10 +451,11 @@ impl Extension for ModelProfileComponent {
                     {
                         let Some(model) = probed.model.clone() else {
                             let message = format!(
-                                "OmO Native: model profile \"{}\" resolved {provider}/{model_id} but the registry no longer lists it",
+                                "OmO Native: model profile \"{}\" resolved {provider}/{model_id} but the registry no longer lists it; the session keeps its current model. Choose another model for this profile in Settings",
                                 profile.id
                             );
-                            send_notice(&runtime, MODEL_PROFILE_UNAVAILABLE_TYPE, message.clone(), None, logger.as_ref());
+                            record_outcome(&runtime, MODEL_PROFILE_UNAVAILABLE_TYPE, message.clone(), None, logger.as_ref());
+                            notify(ctx, &message, true);
                             if let Some(logger) = logger.as_ref() {
                                 logger.warn(&message, None);
                             }
@@ -452,13 +490,17 @@ impl Extension for ModelProfileComponent {
                         {
                             details.extend(auth_failed);
                         }
-                        send_notice(
+                        record_outcome(
                             &runtime,
                             MODEL_PROFILE_APPLIED_TYPE,
                             content.clone(),
                             Some(JsonValue::Object(details)),
                             logger.as_ref(),
                         );
+                        // A stored login that failed is the one step the user can take: it reaches them.
+                        if !probes.failures.is_empty() {
+                            notify(ctx, &content, true);
+                        }
                         if let Some(logger) = logger.as_ref() {
                             let log_details = JsonValue::Object(
                                 [
@@ -492,7 +534,10 @@ impl Extension for ModelProfileComponent {
                         }
                         _ => None,
                     };
-                    send_notice(&runtime, custom_type, content.clone(), details, logger.as_ref());
+                    record_outcome(&runtime, custom_type, content.clone(), details, logger.as_ref());
+                    // The unset default falling back to the session's own model is quiet detail; a
+                    // profile the user chose, or a stored login that failed, warns.
+                    notify(ctx, &content, explicit.is_some() || !probes.failures.is_empty());
                     if let Some(logger) = logger.as_ref() {
                         logger.warn(&content, None);
                     }

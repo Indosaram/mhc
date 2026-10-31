@@ -211,6 +211,11 @@ pub struct DagRunRecordV1 {
     pub name: String,
     pub parent_session_id: String,
     pub root_session_id: String,
+    /// `provider/model` the parent session ran when the run started: every category node's last
+    /// fallback rung (#10783). Captured once, so a recovered or retried node keeps the rung its run
+    /// started with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_model: Option<String>,
     pub definition_fingerprint: String,
     pub definition: DagPersistedDefinition,
     pub status: DagRunStatus,
@@ -357,6 +362,7 @@ pub struct DagStartParams {
     pub definition: DagDefinition,
     pub parent_session_id: String,
     pub root_session_id: String,
+    pub parent_model: Option<String>,
 }
 
 pub struct DagAmendParams {
@@ -683,6 +689,7 @@ fn start_run(
             start_run_locked(
                 &params.parent_session_id,
                 &params.root_session_id,
+                params.parent_model.as_deref(),
                 &definition,
                 &definition_fingerprint,
                 &at,
@@ -697,6 +704,7 @@ fn start_run(
 fn start_run_locked(
     parent_session_id: &str,
     root_session_id: &str,
+    parent_model: Option<&str>,
     definition: &DagDefinition,
     definition_fingerprint: &str,
     at: &str,
@@ -776,6 +784,7 @@ fn start_run_locked(
         name: definition.name.clone(),
         parent_session_id: parent_session_id.to_string(),
         root_session_id: root_session_id.to_string(),
+        parent_model: parent_model.map(str::to_string),
         definition_fingerprint: definition_fingerprint.to_string(),
         definition: DagPersistedDefinition {
             key: definition.key.clone(),
