@@ -171,6 +171,28 @@ async fn an_unset_model_profile_applies_daily_normal() {
     assert_eq!(harness.first_details()["reasoning"], json!("medium"));
 }
 
+// index.test.ts (#11365 review): the resolver saw the model as available, but the registry lookup
+// that sets it returns nothing; the session keeps its model and the user is warned.
+#[tokio::test]
+async fn a_resolved_model_the_registry_no_longer_finds_keeps_the_session_model_and_warns_the_user() {
+    let registry = TestRegistry::new(fixture(&[OPUS, FABLE, KIMI]))
+        .dropped_from_find("anthropic", "claude-opus-5-5")
+        .dropped_from_find("anthropic-subscription", "claude-opus-5-5");
+    let harness = start(
+        json!({}),
+        Arc::new(registry),
+        "session-1",
+        ExtensionMode::Rpc,
+        STARTUP,
+        Some("settings"),
+    )
+    .await;
+    assert!(harness.session_models().is_empty());
+    assert_eq!(harness.first_custom_type(), MODEL_PROFILE_UNAVAILABLE_TYPE);
+    let kinds: Vec<_> = harness.notices().into_iter().map(|(_, kind)| kind).collect();
+    assert_eq!(kinds, [maho_ext_api::NotificationType::Warning]);
+}
+
 #[tokio::test]
 async fn a_blank_model_profile_applies_daily_normal() {
     let harness = start(
