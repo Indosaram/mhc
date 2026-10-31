@@ -365,6 +365,7 @@ async fn restored_keepalive_waits_for_first_activity_after_every_session_start_r
             .expect("bind context actions");
         let start = |reason| {
             ExtensionEvent::SessionStart(SessionStartEvent {
+                sizes_only: false,
                 reason,
                 initial_model_provenance: None,
                 previous_session_file: None,
@@ -400,4 +401,64 @@ async fn restored_keepalive_waits_for_first_activity_after_every_session_start_r
             "{reason:?}: one warm per activity"
         );
     }
+}
+
+/// index.ts `if (event.sizesOnly) return;`: a sizes-only `session_start` neither starts the
+/// session prewarm nor arms the keep-alive, so nothing subscribes to user activity and activity
+/// cannot trigger a warm. A normal start on the same runner then subscribes, proving the probe.
+#[tokio::test]
+async fn sizes_only_session_start_neither_prewarms_nor_arms() {
+    let model = model();
+    let host = Arc::new(Host {
+        entries: restored_entries(&model),
+        model,
+        activity: Arc::default(),
+        next_listener: Default::default(),
+    });
+    let (warmed, mut warms) = tokio::sync::mpsc::unbounded_channel();
+    let keepalive = CacheKeepalive {
+        warm: Arc::new(move |_, messages, _, _| {
+            let warmed = warmed.clone();
+            Box::pin(async move {
+                let _receiver_alive = warmed.send(messages.len());
+                Ok::<_, ExtensionFailure>(
+                    maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Unsupported,
+                )
+            })
+        }),
+        prewarm: Arc::new(|_, _, _| Box::pin(async { panic!("sizes-only startup prewarmed") })),
+    };
+    let mut runner =
+        maho_ext_host::ExtensionRunner::from_static(vec![Box::new(keepalive)], context(&host));
+    runner.bind_core(host.clone(), context(&host));
+    runner
+        .bind_context_actions(host.clone())
+        .expect("bind context actions");
+    let start = |sizes_only| {
+        ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only,
+            reason: SessionReason::Startup,
+            initial_model_provenance: None,
+            previous_session_file: None,
+            attended: None,
+        })
+    };
+    runner.emit(start(true)).await.expect("sizes-only startup");
+    assert!(runner.errors.is_empty(), "{:?}", runner.errors);
+    assert!(
+        host.activity.lock().expect("activity listeners").is_empty(),
+        "sizes-only startup subscribed the prewarm or the startup gate"
+    );
+    host.record_user_activity(UserActivityKind::Draft);
+    assert!(
+        warms.try_recv().is_err(),
+        "sizes-only startup armed the keep-alive"
+    );
+
+    runner.emit(start(false)).await.expect("startup");
+    assert!(runner.errors.is_empty(), "{:?}", runner.errors);
+    assert!(
+        !host.activity.lock().expect("activity listeners").is_empty(),
+        "a normal startup subscribes to user activity"
+    );
 }

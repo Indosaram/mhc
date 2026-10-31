@@ -52,6 +52,7 @@ pub fn build_opening_entry(input: OpeningInput<'_>) -> OpeningEntry {
     // unreachable from the RPC restart path. A session created by this open stays "startup".
     let unattended = profile.attended == Some(false);
     let session_start_event = (is_resume || unattended).then(|| maho_ext_api::SessionStartEvent {
+        sizes_only: false,
         reason: if is_resume {
             maho_ext_api::SessionReason::Resume
         } else {
