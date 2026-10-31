@@ -265,12 +265,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = crate::host_daemon_paths::create_host_daemon_paths("socket", temp.path());
         crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
-        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
-        rustix::process::waitid(
-            rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child)),
-            rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
-        )
-        .unwrap();
+        let child = crate::host_reservations::ZombieChild::spawn();
         let pid = child.id();
         std::fs::write(
             &paths.legacy_pid_file,
@@ -278,9 +273,7 @@ mod tests {
                 .to_string(),
         )
         .unwrap();
-        let live = legacy_host_is_live(&paths);
-        child.wait().unwrap();
-        assert!(!live);
+        assert!(!legacy_host_is_live(&paths));
     }
     #[test]
     fn registration_requires_guard_shape_and_owner_matches_live_process() {

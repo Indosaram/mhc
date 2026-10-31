@@ -3399,7 +3399,7 @@ mod handoff_tests {
         serde_json::from_str(&line).unwrap()
     }
     /// A host whose in-process sessions run one faux turn held at its first chunk until `gate` opens; `disposed`
-    /// fires when a runtime is torn down.
+    /// fires when a runtime is torn down. An open naming a `sessionPath` persists the session at that path.
     fn gated_core(
         dir: &std::path::Path,
     ) -> (
@@ -3414,8 +3414,9 @@ mod handoff_tests {
         let cwd = dir.to_string_lossy().into_owned();
         let factory_cwd = cwd.clone();
         let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
-            move |_profile: crate::session_registry::RpcSessionLaunchProfile| {
+            move |profile: crate::session_registry::RpcSessionLaunchProfile| {
                 let cwd = factory_cwd.clone();
+                let session_path = profile.session_path;
                 let gate_rx = gate_rx.clone();
                 let calls_tx = calls_tx.clone();
                 let disposed_tx = disposed_tx.clone();
@@ -3485,11 +3486,19 @@ mod handoff_tests {
                             agent_dir: Some(cwd.clone()),
                             model_runtime: Some(models),
                             model: Some(model),
-                            session_manager: Some(
-                                maho_core::session_manager::SessionManager::in_memory(
+                            // A profile naming a path gets a persisted manager there, so the registry entry
+                            // keeps its sessionPath (as the CLI factory does); otherwise the session stays in memory.
+                            session_manager: Some(match session_path.as_deref() {
+                                Some(path) => maho_core::session_manager::SessionManager::open(
+                                    path,
+                                    None,
+                                    Some(cwd.as_str()),
+                                    None,
+                                )?,
+                                None => maho_core::session_manager::SessionManager::in_memory(
                                     &cwd, None, None,
                                 ),
-                            ),
+                            }),
                             settings_manager: Some(SettingsManager::from_storage(
                                 Box::new(InMemorySettingsStorage::default()),
                                 false,
