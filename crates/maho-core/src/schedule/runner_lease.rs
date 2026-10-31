@@ -26,7 +26,7 @@ pub trait ProcessProbes: Sync {
 pub fn same_process_start(left: u64, right: u64) -> bool {
     left.abs_diff(right) <= 3_000
 }
-fn same_boot(left: u64, right: u64) -> bool {
+pub(crate) fn same_boot(left: u64, right: u64) -> bool {
     left.abs_diff(right) <= 120_000
 }
 
