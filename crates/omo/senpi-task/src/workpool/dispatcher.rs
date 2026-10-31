@@ -215,7 +215,8 @@ fn pump(store: &WorkpoolStore, admission: &Arc<dyn WorkpoolAdmission + Send + Sy
 
 fn spawn_pump(store: WorkpoolStore, admission: Arc<dyn WorkpoolAdmission + Send + Sync>, emit: Emit, authorize: Authorize,
     state: Arc<Mutex<DispatcherState>>, pool_id: PoolId) {
-    tokio::spawn(async move {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    handle.spawn(async move {
         {
             let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.scheduled.remove(&pool_id);
@@ -367,7 +368,8 @@ fn observe_completion(pool: &WorkpoolRecord, (task_id, epoch): (String, u32), st
     }
     // Only the id and generation outlive this call; cloning the whole record would copy every item.
     let pool_id = pool.pool_id.clone(); let generation = pool.generation; let store = store.clone(); let state = Arc::clone(state);
-    tokio::spawn(async move {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else { return; };
+    handle.spawn(async move {
         let result = admission.wait_for(&task_id, &mut cancel_rx).await;
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).completions.remove(&identity);
         let record = match result { Ok(record) => record, Err(error) => {
@@ -518,5 +520,15 @@ mod tests {
         assert!(dispatcher.state.lock().expect("dispatcher state").completions.contains_key(&identity));
         dispatcher.stop_scheduling();
         assert!(*cancel_rx.borrow());
+    }
+
+    #[test]
+    fn schedule_without_tokio_reactor_does_not_panic() {
+        let dispatcher = dispatcher();
+        std::thread::spawn(move || {
+            dispatcher.schedule("wp_spawn");
+        })
+        .join()
+        .expect("thread joins without panic");
     }
 }
