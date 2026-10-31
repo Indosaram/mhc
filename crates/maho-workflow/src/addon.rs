@@ -3,16 +3,20 @@
 //! the `workflow` tool and `/dag` to the task extension, so both share its depth gate, state
 //! directory and concurrency limit.
 use crate::dag;
-use crate::executor::{BoxFuture, ChildOutcome, ChildProbe, NodeExecutor, NodeRequest, SendOutcome, StartError};
+use crate::executor::{
+    BoxFuture, ChildOutcome, ChildProbe, NodeExecutor, NodeRequest, SendOutcome, StartError,
+};
+use crate::lock;
 use crate::scheduler::{SchedulerOptions, WorkflowScheduler};
 use crate::settings::DagSettings;
 use crate::skills::{DirSkillResolver, skill_roots};
 use crate::state::codes;
 use crate::store::WorkflowStore;
 use crate::tool::{self, Caller, TOOL_NAME};
-use crate::lock;
 use maho_ext_api::{ToolContent, ToolResult};
-use maho_task::{AddonCommand, AddonTool, TaskAddon, TaskManager, TaskRecord, TaskScope, TaskStatus};
+use maho_task::{
+    AddonCommand, AddonTool, TaskAddon, TaskManager, TaskRecord, TaskScope, TaskStatus,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,8 +54,14 @@ pub fn outcome_of(record: &TaskRecord, output: String) -> ChildOutcome {
         // code failed on its own, also when its error carries a credential remedy line
         // (task.md Delta D3), which another automatic attempt would not fix.
         TaskStatus::Failed => match (&record.error, record.exit_code) {
-            (Some(error), None) => ChildOutcome::Failed { message: error.clone(), infrastructure: true },
-            (Some(error), Some(_)) => ChildOutcome::Failed { message: error.clone(), infrastructure: false },
+            (Some(error), None) => ChildOutcome::Failed {
+                message: error.clone(),
+                infrastructure: true,
+            },
+            (Some(error), Some(_)) => ChildOutcome::Failed {
+                message: error.clone(),
+                infrastructure: false,
+            },
             (None, code) => ChildOutcome::Failed {
                 message: match code {
                     Some(code) => format!("the child exited with code {code}"),
@@ -86,13 +96,19 @@ impl NodeExecutor for TaskExecutor {
             .scope
             .with_parent_model(request.parent_model.clone())
             .request(&Value::Object(item), None)
-            .map_err(|message| StartError { code: codes::PLAN_UNRESOLVED.to_owned(), message })?;
+            .map_err(|message| StartError {
+                code: codes::PLAN_UNRESOLVED.to_owned(),
+                message,
+            })?;
         spawn.quiet = true;
         spawn.group = Some(request.run_id.clone());
         self.manager()
             .start(spawn)
             .map(|record| record.id)
-            .map_err(|message| StartError { code: codes::START_FAILED.to_owned(), message })
+            .map_err(|message| StartError {
+                code: codes::START_FAILED.to_owned(),
+                message,
+            })
     }
 
     fn wait(&self, task_id: &str) -> BoxFuture<'static, ChildOutcome> {
@@ -139,7 +155,9 @@ impl NodeExecutor for TaskExecutor {
             None => ChildProbe::Missing,
             Some(record) if record.status.is_active() => ChildProbe::Running,
             Some(record) if record.status == TaskStatus::Interrupted => ChildProbe::Lost,
-            Some(record) => ChildProbe::Settled(outcome_of(&record, manager.state().read_output(task_id))),
+            Some(record) => {
+                ChildProbe::Settled(outcome_of(&record, manager.state().read_output(task_id)))
+            }
         }
     }
 
@@ -166,7 +184,9 @@ pub struct WorkflowAddon {
 }
 
 fn spawn_heartbeat(scheduler: &Arc<WorkflowScheduler>) {
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
     let weak: Weak<WorkflowScheduler> = Arc::downgrade(scheduler);
     let every = Duration::from_millis(scheduler.settings().heartbeat_ms.max(1));
     runtime.spawn(async move {
@@ -174,7 +194,9 @@ fn spawn_heartbeat(scheduler: &Arc<WorkflowScheduler>) {
         interval.tick().await;
         loop {
             interval.tick().await;
-            let Some(scheduler) = weak.upgrade() else { return };
+            let Some(scheduler) = weak.upgrade() else {
+                return;
+            };
             if scheduler.is_stopped() {
                 return;
             }
@@ -220,7 +242,9 @@ impl WorkflowAddon {
             // Fire and forget: dropping the handle detaches the sweep.
             drop(runtime.spawn_blocking(sweep));
         } else {
-            let _ = std::thread::Builder::new().name("workflow-retention".into()).spawn(sweep);
+            let _ = std::thread::Builder::new()
+                .name("workflow-retention".into())
+                .spawn(sweep);
         }
         scheduler
     }
@@ -233,11 +257,13 @@ fn caller(scope: &TaskScope) -> Caller {
 impl TaskAddon for WorkflowAddon {
     fn tools(&self) -> Vec<AddonTool> {
         let addon = self.clone();
-        let handler: maho_task::AddonHandler = Arc::new(move |scope: TaskScope, params: Value, _cancel| {
+        let handler: maho_task::AddonHandler =
+            Arc::new(move |scope: TaskScope, params: Value, _cancel| {
                 let addon = addon.clone();
                 Box::pin(async move {
                     let scheduler = addon.scheduler(&scope);
-                    let outcome = tool::run(&scheduler, &caller(&scope), &params, scope.notifier()).await;
+                    let outcome =
+                        tool::run(&scheduler, &caller(&scope), &params, scope.notifier()).await;
                     Ok::<ToolResult, maho_ext_api::ToolError>(ToolResult {
                         content: vec![ToolContent::text(outcome.text)],
                         details: Some(outcome.details),
@@ -245,7 +271,7 @@ impl TaskAddon for WorkflowAddon {
                         is_error: outcome.is_error.then_some(true),
                     })
                 })
-        });
+            });
         vec![AddonTool {
             name: TOOL_NAME.to_owned(),
             label: "Workflow".to_owned(),
@@ -259,12 +285,66 @@ impl TaskAddon for WorkflowAddon {
         let addon = self.clone();
         vec![AddonCommand {
             name: "dag".to_owned(),
-            description: "Show this session's workflow runs, or one run's waves (/dag <run id>)".to_owned(),
+            description: "Show this session's workflow runs, or one run's waves (/dag <run id>)"
+                .to_owned(),
             handler: Arc::new(move |scope, raw| {
                 let scheduler = addon.scheduler(&scope);
                 let output = dag::render(&scheduler, &caller(&scope), &raw);
-                if output.warning { format!("Warning: {}", output.text) } else { output.text }
+                if output.warning {
+                    format!("Warning: {}", output.text)
+                } else {
+                    output.text
+                }
             }),
         }]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed(error: Option<&str>, exit_code: Option<i32>) -> TaskRecord {
+        serde_json::from_value(json!({
+            "id": "t", "agent": "task", "description": "d", "status": "failed",
+            "model_source": "parent", "session_id": "s", "cwd": "/", "background": true,
+            "error": error, "exit_code": exit_code, "runs": 1, "started_at_ms": 1,
+        }))
+        .expect("record")
+    }
+
+    #[test]
+    fn outcome_of_failed_runs() {
+        // An error with an exit code (e.g. a credential remedy line) is the child's own failure.
+        assert_eq!(
+            outcome_of(&failed(Some("Credentials missing"), Some(1)), String::new()),
+            ChildOutcome::Failed {
+                message: "Credentials missing".into(),
+                infrastructure: false
+            }
+        );
+        // An error without one (spawn or wait error) is the host's problem.
+        assert_eq!(
+            outcome_of(&failed(Some("spawn failed"), None), String::new()),
+            ChildOutcome::Failed {
+                message: "spawn failed".into(),
+                infrastructure: true
+            }
+        );
+        assert_eq!(
+            outcome_of(&failed(None, Some(3)), String::new()),
+            ChildOutcome::Failed {
+                message: "the child exited with code 3".into(),
+                infrastructure: false
+            }
+        );
+        let mut done = failed(None, Some(0));
+        done.status = TaskStatus::Completed;
+        assert_eq!(
+            outcome_of(&done, "out".into()),
+            ChildOutcome::Completed {
+                output: "out".into()
+            }
+        );
     }
 }

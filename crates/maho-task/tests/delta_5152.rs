@@ -122,10 +122,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_concurrency(0)
+    }
+
+    fn with_concurrency(concurrency: usize) -> Self {
         let dir = tempfile::tempdir().expect("tmp");
         let root = dir.path().to_path_buf();
         let (runner, started) = FakeRunner::new();
-        let manager = manager_at(&root, &runner);
+        let manager = manager_at(&root, &runner, concurrency);
         let delivered: Arc<Mutex<Vec<String>>> = Arc::default();
         let sink = Arc::clone(&delivered);
         manager.set_on_settled(Some(Arc::new(move |record: &TaskRecord, _: &str| {
@@ -182,11 +186,11 @@ impl Fixture {
     }
 }
 
-fn manager_at(root: &Path, runner: &Arc<FakeRunner>) -> Arc<TaskManager> {
+fn manager_at(root: &Path, runner: &Arc<FakeRunner>, concurrency: usize) -> Arc<TaskManager> {
     TaskManager::new(TaskManagerOptions {
         state: StateDir::new(root.join("state")),
         settings: TaskSettings {
-            concurrency: 0,
+            concurrency,
             ..TaskSettings::default()
         },
         runner: Arc::clone(runner) as Arc<dyn TaskRunner>,
@@ -351,6 +355,45 @@ async fn d4_first_run_moves_to_another_provider() {
     );
     let envelope = fx.manager.result_text(&record.id).expect("envelope");
     assert!(envelope.contains("No API key found for a."), "{envelope}");
+}
+
+/// D4: messages sent while the task waited for a slot ride the retried first run too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d4_retry_keeps_messages_queued_before_the_first_run() {
+    let mut fx = Fixture::with_concurrency(1);
+    fx.runner.fail("a", signed_out("a"));
+    let blocker = fx
+        .manager
+        .start(request(
+            &fx.root,
+            "Blocker",
+            "hold the slot",
+            ModelChoice::default(),
+        ))
+        .expect("start");
+    assert_eq!(fx.next_start().await.prompt, "hold the slot");
+    let choice = category_choice(&["a/one", "b/two"], &["a/one", "b/two"], None);
+    let record = fx
+        .manager
+        .start(request(&fx.root, "Job", "do it", choice))
+        .expect("start");
+    assert_eq!(
+        fx.manager.get(&record.id).expect("record").status,
+        TaskStatus::Queued
+    );
+    let sent = control::send(&fx.manager, &caller(), &record.id, "message one", false);
+    assert_eq!(sent.kind, "queued", "{sent:?}");
+    fx.runner.release.add_permits(1);
+    fx.settle(&blocker.id).await;
+    let failed = fx.next_start().await;
+    let retried = fx.next_start().await;
+    assert_eq!(failed.prompt, "do it\n\nmessage one");
+    assert_eq!(retried.model.as_deref(), Some("b/two"));
+    assert_eq!(retried.prompt, failed.prompt, "queued message kept");
+    let settled = fx.settle(&record.id).await;
+    assert_eq!(settled.status, TaskStatus::Completed);
+    assert_eq!(settled.runs, 1);
+    assert!(settled.pending_messages.is_empty());
 }
 
 /// D4 test 2 and D3 test 1: no other provider -> failed with the remedy line.
