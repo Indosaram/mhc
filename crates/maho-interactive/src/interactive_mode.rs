@@ -5047,8 +5047,6 @@ impl InteractiveMode {
         }
     }
 
-    /// Releases the control endpoint before the process exits (senpi `shutdown` ->
-    /// `sessionControlHost.disposeActive()`).
     /// The `host` dependency of core's `create_session_control_actions` for this terminal.
     pub fn control_endpoint_host_provider(
         &self,
@@ -5056,6 +5054,8 @@ impl InteractiveMode {
         self.session_control_host.provider()
     }
 
+    /// Releases the control endpoint before the process exits (senpi `shutdown` ->
+    /// `sessionControlHost.disposeActive()`).
     pub async fn dispose_session_control(&self) {
         self.session_control_host.dispose_active().await;
     }
