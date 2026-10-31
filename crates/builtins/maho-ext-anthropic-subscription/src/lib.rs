@@ -1,4 +1,5 @@
 pub mod account_command;
+pub mod account_context;
 pub mod account_events;
 pub mod account_management;
 pub mod accounts;
@@ -39,7 +40,9 @@ pub mod session_binding;
 pub mod session_binding_store;
 pub mod session_checkpoint_recovery;
 pub mod session_commit_boundary;
+pub mod session_commit_divergence;
 pub mod session_continuity;
+pub mod session_cwd;
 pub mod session_entry_annotations;
 pub mod session_input;
 pub mod session_observability;
