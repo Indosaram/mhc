@@ -1,3 +1,4 @@
+pub mod command_monitor_source;
 pub mod durable_command;
 pub mod durable_file;
 pub mod extension;
