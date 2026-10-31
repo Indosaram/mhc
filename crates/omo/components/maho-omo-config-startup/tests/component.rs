@@ -360,6 +360,7 @@ async fn config_diagnostics_without_ui_log_one_fallback_warning() -> Result<(), 
     ctx.logger = Some(logger.clone());
     for _ in 0..2 {
         let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

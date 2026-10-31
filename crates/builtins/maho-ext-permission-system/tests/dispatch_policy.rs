@@ -215,6 +215,7 @@ async fn extension_serves_live_dispatch_policy_until_shutdown() {
     emit(
         EventKind::SessionStart,
         ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason: maho_ext_api::SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

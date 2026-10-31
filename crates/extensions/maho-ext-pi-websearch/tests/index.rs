@@ -212,6 +212,7 @@ fn session_api(cwd: &Path) -> ExtensionApi {
 }
 async fn start_session(api: &ExtensionApi, ctx: &ExtensionContext) {
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

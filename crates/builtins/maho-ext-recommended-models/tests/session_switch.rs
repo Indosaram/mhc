@@ -259,6 +259,7 @@ impl Harness {
     }
     async fn start(&self, provenance: &str) {
         self.emit(ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: Some(provenance.into()),
             previous_session_file: None,
