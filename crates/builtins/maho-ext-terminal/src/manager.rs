@@ -109,14 +109,32 @@ fn signal_detached_child(
         Err(error) => Err(RuntimeError::Pty(error.into())),
     }
 }
-/// A session's tracked detached children and whether they were cleaned up (registry.ts memoizes
-/// `detachedCleanupPromise`), shared with the task that observes the session's exit.
+/// A session's tracked detached children and whether they were cleaned up, shared with the task
+/// that observes the session's exit. registry.ts memoizes `detachedCleanupPromise`: `done` is that
+/// promise, held open by whoever claimed the cleanup until its SIGKILL step finished (the sender is
+/// dropped then, so a closed channel reads as settled).
 #[derive(Default)]
 struct DetachedChildren {
     children: Vec<TrackedDetachedChild>,
     cleaned: bool,
+    done: Option<tokio::sync::watch::Receiver<()>>,
 }
 type SharedDetached = Arc<Mutex<DetachedChildren>>;
+/// The cleanups one call claimed (held until its escalation ends) and the in-flight ones another
+/// caller claimed first (awaited by the shared paths).
+#[derive(Default)]
+struct CleanupClaims {
+    held: Vec<tokio::sync::watch::Sender<()>>,
+    pending: Vec<tokio::sync::watch::Receiver<()>>,
+}
+impl CleanupClaims {
+    /// Upstream `await detachedCleanupPromise` for a cleanup another caller already started.
+    async fn settle_pending(&mut self) {
+        for mut done in std::mem::take(&mut self.pending) {
+            let _ = done.wait_for(|_| false).await;
+        }
+    }
+}
 /// registry-detached.ts `cleanupDetachedChildren`, first half: SIGTERM every live tracked child
 /// once, and hand back the ones the signal reached.
 fn signal_tracked_children(
@@ -124,6 +142,7 @@ fn signal_tracked_children(
     kill_process: &KillProcess,
     signalled: &mut Vec<TrackedDetachedChild>,
     first_error: &mut Option<RuntimeError>,
+    claims: &mut CleanupClaims,
 ) {
     // The children are cloned out and the lock released before any probe or kill callback runs.
     let children = {
@@ -131,9 +150,13 @@ fn signal_tracked_children(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if detached.cleaned {
+            claims.pending.extend(detached.done.clone());
             return;
         }
         detached.cleaned = true;
+        let (sender, done) = tokio::sync::watch::channel(());
+        detached.done = Some(done);
+        claims.held.push(sender);
         detached.children.clone()
     };
     for child in &children {
@@ -150,6 +173,7 @@ fn signal_tracked_children(
     }
 }
 /// Second half off the caller: await the grace, then SIGKILL the survivors; failures are reported.
+/// The caller keeps its claims alive until this returns.
 async fn escalate_after_grace(
     kill_process: KillProcess,
     signalled: Vec<TrackedDetachedChild>,
@@ -404,9 +428,14 @@ impl TerminalManager {
     fn signal_detached_children(
         &mut self,
         ids: &[String],
-    ) -> (Vec<TrackedDetachedChild>, Option<RuntimeError>) {
+    ) -> (
+        Vec<TrackedDetachedChild>,
+        Option<RuntimeError>,
+        CleanupClaims,
+    ) {
         let mut signalled = Vec::new();
         let mut first_error = None;
+        let mut claims = CleanupClaims::default();
         for id in ids {
             if let Some(entry) = self.entries.get(id) {
                 signal_tracked_children(
@@ -414,10 +443,11 @@ impl TerminalManager {
                     &self.kill_process,
                     &mut signalled,
                     &mut first_error,
+                    &mut claims,
                 );
             }
         }
-        (signalled, first_error)
+        (signalled, first_error, claims)
     }
     /// Second half: SIGKILL every signalled child that has not exited after the grace.
     fn escalate_detached_children(
@@ -438,20 +468,22 @@ impl TerminalManager {
     /// Without the escalation a child that ignores SIGTERM is abandoned the moment the registry
     /// forgets its session. With a nonzero grace on an async runtime the grace-then-SIGKILL step is
     /// spawned, so no runtime thread (nor the caller's manager lock) is held for the grace; only
-    /// without a runtime does the synchronous path block for it.
+    /// without a runtime does the synchronous path block for it. This path never waits on a
+    /// cleanup already in flight (nor, on a runtime, on its own spawned SIGKILL step): only
+    /// `stop_shared` / `teardown_shared` guarantee the SIGKILL step finished before they return.
     fn cleanup_detached_children(&mut self, ids: &[String]) -> Result<(), RuntimeError> {
-        let (signalled, first_error) = self.signal_detached_children(ids);
+        let (signalled, first_error, claims) = self.signal_detached_children(ids);
         if signalled.is_empty() {
             return first_error.map_or(Ok(()), Err);
         }
         let grace = self.graces.detached;
         if !grace.is_zero() {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(escalate_after_grace(
-                    self.kill_process.clone(),
-                    signalled,
-                    grace,
-                ));
+                let kill_process = self.kill_process.clone();
+                handle.spawn(async move {
+                    escalate_after_grace(kill_process, signalled, grace).await;
+                    drop(claims);
+                });
                 return first_error.map_or(Ok(()), Err);
             }
             std::thread::sleep(grace);
@@ -587,7 +619,14 @@ impl TerminalManager {
                 return;
             }
             let (mut signalled, mut first_error) = (Vec::new(), None);
-            signal_tracked_children(&detached, &kill_process, &mut signalled, &mut first_error);
+            let mut claims = CleanupClaims::default();
+            signal_tracked_children(
+                &detached,
+                &kill_process,
+                &mut signalled,
+                &mut first_error,
+                &mut claims,
+            );
             if let Some(error) = first_error {
                 maho_ext_api::diagnostic(&format!(
                     "terminal detached child cleanup failed: {error}"
@@ -596,6 +635,7 @@ impl TerminalManager {
             if !signalled.is_empty() {
                 escalate_after_grace(kill_process, signalled, grace).await;
             }
+            drop(claims);
         });
     }
     /// registry.ts `allocateId`: per-prefix counters, skipping any id still held by an entry.
@@ -830,28 +870,33 @@ fn lock_manager(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 /// registry-detached.ts `cleanupDetachedChildren` for a shared manager: the grace is awaited with
-/// the manager lock released.
+/// the manager lock released, and a cleanup another caller already started (the session-exit
+/// watch, a sync stop) is awaited until its SIGKILL step finished (`await detachedCleanupPromise`).
 async fn cleanup_detached_children_shared(
     manager: &Arc<Mutex<TerminalManager>>,
     ids: &[String],
 ) -> Result<(), RuntimeError> {
-    let (signalled, first_error, grace, kill_process) = {
+    let (signalled, first_error, mut claims, grace, kill_process) = {
         let mut locked = lock_manager(manager);
-        let (signalled, error) = locked.signal_detached_children(ids);
+        let (signalled, error, claims) = locked.signal_detached_children(ids);
         (
             signalled,
             error,
+            claims,
             locked.graces.detached,
             locked.kill_process.clone(),
         )
     };
-    if signalled.is_empty() {
-        return first_error.map_or(Ok(()), Err);
-    }
-    if !grace.is_zero() {
-        tokio::time::sleep(grace).await;
-    }
-    let escalated = TerminalManager::escalate_detached_children(&kill_process, &signalled);
+    let escalated = if signalled.is_empty() {
+        Ok(())
+    } else {
+        if !grace.is_zero() {
+            tokio::time::sleep(grace).await;
+        }
+        TerminalManager::escalate_detached_children(&kill_process, &signalled)
+    };
+    claims.held.clear();
+    claims.settle_pending().await;
     match (first_error, escalated) {
         (Some(error), _) | (None, Err(error)) => Err(error),
         (None, Ok(())) => Ok(()),
@@ -1297,7 +1342,13 @@ mod tests {
             },
         ];
         let (mut signalled, mut first_error) = (Vec::new(), None);
-        signal_tracked_children(&detached, &kill_process, &mut signalled, &mut first_error);
+        signal_tracked_children(
+            &detached,
+            &kill_process,
+            &mut signalled,
+            &mut first_error,
+            &mut CleanupClaims::default(),
+        );
         assert!(first_error.is_none());
         escalate_after_grace(kill_process, signalled, Duration::from_millis(1000)).await;
         assert_eq!(
@@ -1378,6 +1429,58 @@ mod tests {
         assert_eq!(manager.sweep_exited(true)?, [id]);
         assert!(received.try_recv().is_err());
         Ok(())
+    }
+    /// registry.ts memoized `detachedCleanupPromise`: when the session-exit watch claimed the
+    /// cleanup first, `teardown_shared` awaits that cleanup's SIGKILL step instead of returning
+    /// mid-grace. Time is paused once the SIGTERM is seen, so the grace only elapses while
+    /// teardown waits on it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn teardown_shared_awaits_a_cleanup_the_exit_watch_started() {
+        let killed: Killed = Arc::default();
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let kill_process: KillProcess = {
+            let killed = killed.clone();
+            Arc::new(move |target: i32, signal: DetachedSignal| {
+                killed
+                    .lock()
+                    .unwrap()
+                    .push(format!("{target}:{}", signal.as_str()));
+                let _ = sender.send(());
+                Ok(())
+            })
+        };
+        let manager = Arc::new(Mutex::new(
+            TerminalManager::new(1)
+                .with_stop_graces(StopGraces {
+                    detached_exit_ms: Some(1000.0),
+                    ..StopGraces::default()
+                })
+                .with_kill_process(kill_process),
+        ));
+        {
+            let mut locked = manager.lock().unwrap();
+            let id = locked
+                .create("read", crate::shared::test_sh_options("read value"))
+                .unwrap();
+            locked.track_detached_child(
+                &id,
+                TrackedDetachedChild {
+                    process_group_id: Some(901),
+                    exited: Some(Arc::new(|| false)),
+                    ..TrackedDetachedChild::default()
+                },
+            );
+            locked.get(&id).unwrap().write(b"done\n").unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*killed.lock().unwrap(), ["-901:SIGTERM"]);
+        tokio::time::pause();
+        teardown_shared(&manager).await.unwrap();
+        assert_eq!(*killed.lock().unwrap(), ["-901:SIGTERM", "-901:SIGKILL"]);
     }
     /// The shared (async) stop and teardown run the same once-only detached cleanup.
     #[cfg(unix)]
