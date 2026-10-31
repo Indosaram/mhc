@@ -141,6 +141,7 @@ pub async fn register_tui_endpoint(
                 instance_id: instance_id.to_owned(),
                 generation: 0.0,
                 launch_profile_id: "tui".into(),
+                build: Some(maho_rpc::host_daemon_registration::RegisteredBuild::this_engine()),
             },
         )
         .map_err(|error| error.to_string())?;

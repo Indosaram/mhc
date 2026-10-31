@@ -34,14 +34,19 @@ pub async fn start_successor_gated(context:&crate::host_handoff::HandoffContext,
         Err(error)=>{restore_boot_settings(&context.paths,boot_settings.as_ref());let _=std::fs::remove_dir_all(crate::host_daemon_paths::generation_paths(&context.paths,&options.instance_id).dir);return Err(error);}
     };
     let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
-    let registration=crate::host_daemon_registration::HostRegistration{pid,process_start_time:crate::host_reservations::read_process_start_time(pid),socket:socket.into(),instance_id:options.instance_id.clone(),generation:options.generation as f64,launch_profile_id:options.launch_profile_id};
+    let launch_profile_id=options.launch_profile_id;
     let result:std::io::Result<Option<HostProtocolInfo>>=async{
+        let process_start_time=wait_for_start_time(pid,SUCCESSOR_START_TIME_WAIT_MS,crate::host_reservations::read_process_start_time,crate::host_reservations::process_is_live).await.ok().flatten();
+        // No build yet: until the successor answers, its record claims no engine version rather than this process's.
+        let mut registration=crate::host_daemon_registration::HostRegistration{pid,process_start_time,socket:socket.into(),instance_id:options.instance_id.clone(),generation:options.generation as f64,launch_profile_id,build:None};
         // The successor is running from this instant: its own record says so, so `host gc` never judges the
         // endpoint by a predecessor that died meanwhile. The pointer moves only once the rename landed.
         crate::host_daemon_registration::write_generation_record(&context.paths,&registration).map_err(|error|error.source)?;
         let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(options.readiness_ms);
         loop{
             if let Some(answer)=crate::host_probe::probe_protocol_info(socket,2000).await&&successor_answered(&context.host,&answer){
+                // The successor's build as the successor itself reported it on the socket; never this process's.
+                registration.build=crate::host_daemon_registration::RegisteredBuild::answered(&answer);
                 crate::host_daemon_registration::write_host_registration(&context.paths,&registration).map_err(|error|error.source)?;
                 return Ok(Some(answer));
             }
@@ -69,6 +74,20 @@ pub async fn start_successor_gated(context:&crate::host_handoff::HandoffContext,
             Ok(Err(crate::host_handoff::HandoffRefusal{reason,upgradeable:true,detail}))
         }
     }
+}
+/// How long a spawned successor's start time is waited for before it is recorded as unknown.
+const SUCCESSOR_START_TIME_WAIT_MS:u64=10_000;
+/// senpi `waitForStartTime`: the process start time once it is readable; `None` when the process is live but its
+/// start time never became readable in `timeout_ms`; an error when the process is gone without one.
+pub async fn wait_for_start_time(pid:u32,timeout_ms:u64,read_start_time:impl Fn(u32)->Option<String>,is_live:impl Fn(u32)->bool)->std::io::Result<Option<String>>{
+    let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(timeout_ms);
+    loop{
+        if let Some(start)=read_start_time(pid).filter(|start|!start.is_empty()){return Ok(Some(start));}
+        if tokio::time::Instant::now()>=deadline{break;}
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    if is_live(pid){return Ok(None);}
+    Err(std::io::Error::other(format!("spawned daemon pid {pid} had no process start time")))
 }
 fn restore_boot_settings(paths:&crate::host_daemon_paths::HostDaemonPaths,boot_settings:Option<&Option<String>>)->Option<String>{
     let result=match boot_settings{
@@ -124,4 +143,17 @@ pub fn successor_env(mut env:std::collections::HashMap<String,String>,generation
 #[cfg(test)]mod env_tests{use super::*;use std::collections::HashMap;#[test]fn successor_identity_replaces_parent_and_nullable_overrides_apply_last(){let parent=HashMap::from([(crate::protocol_identity::HOST_INSTANCE_ID_ENV.into(),"old".into()),("DROP".into(),"old".into())]);let env=successor_env(parent,2,"new","/daemon",None,&HashMap::from([("DROP".into(),None),("X".into(),Some("y".into()))]));assert_eq!(env[crate::protocol_identity::HOST_INSTANCE_ID_ENV],"new");assert_eq!(env[crate::protocol_identity::HOST_GENERATION_ENV],"2");assert_eq!(env[crate::custom_capability::RPC_CLIENT_CAPABILITIES_ENV],"extension_events,custom_unsupported");assert!(!env.contains_key("DROP"));assert_eq!(env["X"],"y");}}
 pub fn successor_answered(previous:&HostProtocolInfo,answer:&HostProtocolInfo)->bool{answer.instance_id.as_ref().is_some_and(|id|Some(id)!=previous.instance_id.as_ref())}
 pub fn abort_reason(socket:&std::path::Path,replaced:SocketFileIdentity)->&'static str{if stat_socket_identity(socket).ok().flatten()==Some(replaced){"successor_unavailable"}else{"socket_replaced"}}
+#[cfg(test)]mod start_time_tests{
+    use super::*;
+    #[tokio::test(start_paused=true)]
+    async fn start_time_is_waited_for_and_a_gone_process_without_one_is_an_error(){
+        let reads=std::cell::Cell::new(0);
+        let read=|_pid:u32|{reads.set(reads.get()+1);(reads.get()>=3).then(||"t".to_owned())};
+        assert_eq!(wait_for_start_time(1,10_000,read,|_|true).await.unwrap().as_deref(),Some("t"));
+        assert_eq!(reads.get(),3);
+        assert_eq!(wait_for_start_time(1,100,|_|None,|_|true).await.unwrap(),None);
+        let error=wait_for_start_time(7,100,|_|None,|_|false).await.unwrap_err();
+        assert_eq!(error.to_string(),"spawned daemon pid 7 had no process start time");
+    }
+}
 #[cfg(test)]mod tests{use super::*;#[test]fn public_answer_must_name_different_instance(){let previous=crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[],"instanceId":"old"})).unwrap();let mut answer=previous.clone();assert!(!successor_answered(&previous,&answer));answer.instance_id=None;assert!(!successor_answered(&previous,&answer));answer.instance_id=Some("new".into());assert!(successor_answered(&previous,&answer));}#[cfg(unix)] #[test]fn abort_reason_observes_real_socket_entry(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("s");let socket=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=stat_socket_identity(&path).unwrap().unwrap();assert_eq!(abort_reason(&path,identity),"successor_unavailable");drop(socket);std::fs::remove_file(&path).unwrap();assert_eq!(abort_reason(&path,identity),"socket_replaced");}}
