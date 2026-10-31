@@ -454,3 +454,177 @@ async fn rotation_consent_gates_anthropic_subscription_stream() {
     assert_eq!(output3.stop_reason, StopReason::Error);
     assert!(output3.error_message.as_deref().unwrap_or_default().contains("Automatic rotation across 2 accounts is off. Enable it with `mhc auth consent anthropic-subscription --rotation`."));
 }
+
+async fn managed_turn(
+    script_body: &str,
+    settings: serde_json::Value,
+    consent: bool,
+) -> (maho_ai::types::AssistantMessage, String, String) {
+    use maho_ext_anthropic_subscription::accounts::{
+        AccountSlot, AccountSource, add_account, empty_credential,
+    };
+    let directory = tempfile::tempdir().expect("directory");
+    let executable = directory.path().join("claude");
+    let attempts = directory.path().join("attempts");
+    let prompts = directory.path().join("prompts");
+    let script = format!(
+        "#!/usr/bin/python3\nimport json,sys,os\nf=json.loads(sys.stdin.readline())\nprint(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\nf=json.loads(sys.stdin.readline())\nslot=os.environ['CLAUDE_CODE_OAUTH_TOKEN']\nwith open({},'a') as log: log.write(slot+'\\n')\nwith open({},'a') as log: log.write(json.dumps(f['message']['content'])+'\\n')\n{script_body}\nfor line in sys.stdin: pass\n",
+        serde_json::to_string(attempts.to_str().expect("path")).expect("literal"),
+        serde_json::to_string(prompts.to_str().expect("path")).expect("literal"),
+    );
+    std::fs::write(&executable, script).expect("script");
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+        .expect("permissions");
+    let store = Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
+    let mut credential = empty_credential();
+    for name in ["a", "b"] {
+        credential = add_account(
+            &credential,
+            AccountSlot {
+                name: name.into(),
+                refresh: "fixture".into(),
+                access: format!("fixture-{name}"),
+                expires: 9_000_000_000_000_000.0,
+                source: AccountSource::Login,
+                ..Default::default()
+            },
+        )
+        .expect("slot");
+    }
+    credential
+        .extra
+        .insert("pinned".into(), serde_json::json!("a"));
+    store
+        .modify(
+            "anthropic-subscription",
+            Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })),
+            None,
+        )
+        .await
+        .expect("seed");
+    let settings = Arc::new(move || {
+        maho_ext_anthropic_subscription::settings::load(
+            &settings,
+            &serde_json::Value::Null,
+            &Default::default(),
+        )
+    });
+    let oauth = Arc::new(AnthropicSubscriptionOAuth {
+        store: store.clone(),
+        flow: Arc::new(Flow),
+        settings,
+        ambient: maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(
+            Arc::new(|| Box::pin(async { Ok(false) })),
+            Arc::new(|| 1),
+            30000,
+        ),
+    });
+    let agent_dir = directory.path().join("agent");
+    if consent {
+        let mut settings_manager = maho_core::settings_manager::SettingsManager::create(
+            &agent_dir.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            &agent_dir.to_string_lossy(),
+            false,
+        );
+        maho_core::provider_consent::record_rotation_consent(
+            &mut settings_manager,
+            "anthropic-subscription",
+        )
+        .expect("record rotation consent");
+    }
+    let extension = AnthropicSubscriptionExtension::native(
+        oauth,
+        executable,
+        None,
+        directory.path().into(),
+        agent_dir,
+        Default::default(),
+    );
+    let model = maho_ai::models_generated::MODELS["anthropic"]
+        .values()
+        .next()
+        .expect("model")
+        .clone();
+    let stream = (extension.stream)(
+        &model,
+        &Context {
+            messages: vec![
+                Message::User(UserMessage {
+                    content: UserContent::Text("earlier".into()),
+                    timestamp: 1,
+                }),
+                Message::User(UserMessage {
+                    content: UserContent::Text("hello".into()),
+                    timestamp: 2,
+                }),
+            ],
+            ..Default::default()
+        },
+        None,
+    );
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), stream.result())
+        .await
+        .expect("bounded turn")
+        .expect("output");
+    (
+        output,
+        std::fs::read_to_string(&attempts).unwrap_or_default(),
+        std::fs::read_to_string(&prompts).unwrap_or_default(),
+    )
+}
+
+const RATE_LIMIT_ON_A: &str = "if slot=='fixture-a':\n print(json.dumps({'type':'result','subtype':'error_during_execution','errors':['rate_limit'],'is_error':True}),flush=True)\nelse:\n print(json.dumps({'type':'result','subtype':'success','result':'rotated','usage':{},'stop_reason':'end_turn'}),flush=True)";
+
+#[tokio::test]
+async fn account_fallback_off_keeps_the_turn_on_the_selected_account() {
+    let (output, attempts, _) = managed_turn(
+        RATE_LIMIT_ON_A,
+        serde_json::json!({"anthropicSubscriptionProvider":{"accountFallback":false}}),
+        true,
+    )
+    .await;
+    assert_eq!(attempts, "fixture-a\n");
+    assert_eq!(output.stop_reason, StopReason::Error);
+    let (output, attempts, _) = managed_turn(RATE_LIMIT_ON_A, serde_json::json!({}), true).await;
+    assert_eq!(attempts, "fixture-a\nfixture-b\n");
+    assert_eq!(output.stop_reason, StopReason::Stop);
+}
+
+#[tokio::test]
+async fn a_native_compaction_while_senpi_owns_compaction_stops_the_turn() {
+    let body = "print(json.dumps({'type':'system','subtype':'compact_boundary','compact_metadata':{'trigger':'auto','pre_tokens':10}}),flush=True)\nprint(json.dumps({'type':'result','subtype':'success','result':'compacted','usage':{},'stop_reason':'end_turn'}),flush=True)";
+    let (output, attempts, _) = managed_turn(body, serde_json::json!({}), true).await;
+    assert_eq!(attempts, "fixture-a\n");
+    assert_eq!(output.stop_reason, StopReason::Error);
+    assert!(
+        output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("compactionOwner: \"senpi\""))
+    );
+    let (output, _, _) = managed_turn(
+        body,
+        serde_json::json!({"anthropicSubscriptionProvider":{"compactionOwner":"sdk"}}),
+        true,
+    )
+    .await;
+    assert_eq!(output.stop_reason, StopReason::Stop);
+}
+
+#[tokio::test]
+async fn a_managed_one_shot_prompt_marks_its_history_for_the_one_hour_cache() {
+    let body = "print(json.dumps({'type':'result','subtype':'success','result':'ok','usage':{},'stop_reason':'end_turn'}),flush=True)";
+    let (output, _, prompts) = managed_turn(body, serde_json::json!({}), true).await;
+    assert_eq!(output.stop_reason, StopReason::Stop);
+    let blocks: Vec<serde_json::Value> =
+        serde_json::from_str(prompts.lines().next().expect("prompt")).expect("blocks");
+    let marked: Vec<_> = blocks
+        .iter()
+        .filter_map(|block| block.get("cache_control"))
+        .collect();
+    assert_eq!(
+        marked,
+        [&serde_json::json!({"type":"ephemeral","ttl":"1h"})]
+    );
+}
