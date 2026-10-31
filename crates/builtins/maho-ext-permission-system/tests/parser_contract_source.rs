@@ -1,3 +1,5 @@
+//! Port of senpi test/permission/parser-contracts.test.ts: the real tool schemas still name the
+//! fields the builtin parsers read, and schema-shaped inputs produce the expected requests.
 use maho_ext_permission_system::parsers::{PermissionRequest, create_builtin_parser_registry};
 use serde_json::json;
 use std::path::Path;
@@ -170,6 +172,27 @@ fn schema_shaped_inputs_produce_complete_permission_requests() {
                 ..PermissionRequest::default()
             }],
             "{tool} {input}"
+        );
+    }
+}
+
+/// "schema drift detection": the field each parser keys on is still a string in the real schema.
+#[test]
+fn schema_drift_detection_keeps_parser_key_fields() {
+    let tools = maho_tools::index::create_all_tool_definitions(
+        Path::new("/workspace/project"),
+        Default::default(),
+    );
+    for (tool, field) in [
+        ("bash", "command"),
+        ("edit", "path"),
+        ("read", "path"),
+        ("grep", "pattern"),
+        ("find", "pattern"),
+    ] {
+        assert_eq!(
+            tools[tool].parameters["properties"][field]["type"], "string",
+            "{tool}.{field} changed upstream"
         );
     }
 }
