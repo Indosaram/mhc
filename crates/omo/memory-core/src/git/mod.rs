@@ -22,6 +22,7 @@ pub mod repo_maintenance;
 pub mod repo_status;
 pub mod repo_tree;
 pub mod repo_types;
+pub mod secret;
 pub mod worktree_mutation_queue;
 
 pub use config_lock::*;
@@ -36,6 +37,7 @@ pub use repo_maintenance::*;
 pub use repo_status::*;
 pub use repo_tree::*;
 pub use repo_types::*;
+pub use secret::*;
 
 #[cfg(test)]
 #[path = "exec_tests.rs"]

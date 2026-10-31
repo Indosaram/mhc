@@ -12,15 +12,17 @@ use crate::git::repo_types::GitCommitAuthor;
 use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
-use super::agreements_write_guard::refuse_agreements_violation;
+use crate::memfs::describe_description_violation;
+
+use super::agreements_write_guard::{refuse_agreements_violation, restore_paths};
 use super::claim_frontmatter::{ClaimReceipt, has_legacy_user_header, restamp_content};
 use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
 };
 use super::memory::{
-    MemoryToolCommit, MemoryToolLock, MemoryToolProvenanceInput, MemoryWriter,
-    memory_commit_message,
+    MemoryToolCommit, MemoryToolLock, MemoryToolProvenance, MemoryToolProvenanceInput,
+    MemoryToolResult, MemoryWriter, memory_commit_message,
 };
 use super::patch_parser::{PatchOperation, apply_memory_patch_hunk, parse_memory_patch};
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
@@ -48,21 +50,60 @@ fn err(msg: impl Into<String>) -> MemoryToolError {
 }
 
 /// Applies a multi-file patch atomically, committing the changed files to the repository.
+///
+/// Validation happens before the lock; everything from the clean check through the commit runs
+/// inside the `memory-write` lock domain (pin `memory-apply-patch.ts:58-112`).
 pub fn run_memory_apply_patch(
     repo: &GitMemoryRepo,
     params: &MemoryApplyPatchParams,
-    _lock: Option<&dyn MemoryToolLock>,
+    lock: Option<&dyn MemoryToolLock>,
 ) -> Result<MemoryApplyPatchResult, MemoryToolError> {
-    if params.reason.trim().is_empty() {
+    let reason = params.reason.trim();
+    if reason.is_empty() {
         return Err(err("'reason' must be a non-empty string"));
     }
     if params.input.trim().is_empty() {
         return Err(err("'input' must be a non-empty string"));
     }
 
+    let Some(lock) = lock else {
+        return apply_and_commit(repo, params, reason);
+    };
+    // The lock seam carries the memory tool's result type; the patch result rides out beside it.
+    let mut outcome = None;
+    lock.with_lock(MEMORY_WRITE_LOCK_DOMAIN, &mut || {
+        let result = apply_and_commit(repo, params, reason)?;
+        let provenance = MemoryToolProvenance {
+            agent_id: params.author.agent_id.clone(),
+            author_name: params.author.author_name.clone(),
+            timestamp: now_iso(),
+            commit_sha: result.commit.as_ref().map(|commit| commit.sha.clone()),
+            lock_domain: MEMORY_WRITE_LOCK_DOMAIN.to_string(),
+        };
+        let carried = MemoryToolResult {
+            result: result.message.clone(),
+            commit: result.commit.clone(),
+            provenance,
+        };
+        outcome = Some(result);
+        Ok(carried)
+    })?;
+    outcome.ok_or_else(|| err("the memory-write lock did not run the patch"))
+}
+
+const MEMORY_WRITE_LOCK_DOMAIN: &str = "memory-write";
+
+fn apply_and_commit(
+    repo: &GitMemoryRepo,
+    params: &MemoryApplyPatchParams,
+    reason: &str,
+) -> Result<MemoryApplyPatchResult, MemoryToolError> {
     repo.clean_check().map_err(|e| err(e.to_string()))?;
 
-    let operations = parse_memory_patch(&params.input).map_err(|e| err(e.message))?;
+    // Parse and hunk errors already carry their own `memory apply_patch:` prefix (pin
+    // `memory-apply-patch.ts:105-110`): they pass through unchanged.
+    let operations =
+        parse_memory_patch(&params.input).map_err(|e| MemoryToolError::new(e.message))?;
     let (affected_paths, stripped_paths) = apply_operations(
         &repo.dir,
         &operations,
@@ -77,7 +118,7 @@ pub fn run_memory_apply_patch(
     let commit_res = repo.commit_write(
         &affected_paths,
         &memory_commit_message(
-            &params.reason,
+            reason,
             params.provenance.as_ref(),
             MemoryWriter::MemoryTool,
             &stripped_paths,
@@ -91,6 +132,10 @@ pub fn run_memory_apply_patch(
             return Err(err(
                 "made no effective changes; nothing was committed. The patched content matched what was already on disk.",
             ));
+        }
+        Err(GitError::Secret(secret)) => {
+            restore_paths(repo, &affected_paths).map_err(|e| err(e.to_string()))?;
+            return Err(err(secret.to_string()));
         }
         Err(err_val) => return Err(err(err_val.to_string())),
     };
@@ -120,6 +165,8 @@ pub fn run_memory_apply_patch(
         commit: Some(MemoryToolCommit {
             sha: commit_info.sha,
             committed_at: now_iso(),
+            subject: commit_subject(reason),
+            affected_paths,
         }),
     })
 }
@@ -185,7 +232,8 @@ fn apply_operations(
                     )));
                 }
                 let raw_content = content_lines.join("\n");
-                let normalized = normalize_added_content(&target_rel, &raw_content);
+                let label = target_rel.strip_suffix(".md").unwrap_or(&target_rel);
+                let normalized = normalize_added_content(label, &raw_content)?;
                 let written = restamp_content(None, &normalized, claim).map_err(|e| err(e.0))?;
                 pending_writes.insert(target_abs.clone(), written);
                 pending_deletes.remove(&target_abs);
@@ -219,14 +267,18 @@ fn apply_operations(
                         .map_err(|e| MemoryToolError::new(e.message))?;
                 }
 
-                if parse_for_tool(&next)?.frontmatter.read_only.as_deref() == Some("true") {
+                let patched = parse_for_tool(&next)?;
+                if patched.frontmatter.read_only.as_deref() == Some("true") {
                     return Err(err(format!(
                         "{target_rel} cannot be written with read_only=true"
                     )));
                 }
+                assert_description_acceptable(&patched.frontmatter.description, &target_rel)?;
 
+                let rendered = render_memory_file(&patched.frontmatter, &patched.body)
+                    .map_err(|e| err(e.0.strip_prefix("frontmatter: ").unwrap_or(&e.0)))?;
                 let written =
-                    restamp_content(Some(&current), &next, claim).map_err(|e| err(e.0))?;
+                    restamp_content(Some(&current), &rendered, claim).map_err(|e| err(e.0))?;
                 if has_legacy_user_header(Some(&current)) && !has_legacy_user_header(Some(&written))
                 {
                     stripped_paths.push(source_rel.clone());
@@ -268,9 +320,13 @@ fn apply_operations(
         fs::write(&path, content).map_err(|e| err(e.to_string()))?;
     }
 
+    // A delete of a path this patch never saw on disk (a chained move's intermediate) is not a
+    // real change: it leaves the affected set so the commit only names paths git knows about.
     for path in pending_deletes {
         if path.exists() {
             fs::remove_file(&path).map_err(|e| err(e.to_string()))?;
+        } else {
+            affected_paths.remove(&to_relative(root, &path));
         }
     }
 
@@ -289,21 +345,41 @@ fn parse_for_tool(content: &str) -> Result<super::memfs::ParsedMemoryFile, Memor
     })
 }
 
-fn normalize_added_content(rel_path: &str, raw_content: &str) -> String {
-    if let Ok(parsed) = parse_memory_file(raw_content) {
-        render_memory_file(&parsed.frontmatter, &parsed.body)
-            .unwrap_or_else(|_| raw_content.to_string())
-    } else {
-        let label = rel_path.strip_suffix(".md").unwrap_or(rel_path);
-        let frontmatter = MemoryFrontmatter {
-            description: format!("Memory block {label}"),
-            read_only: None,
-            kind: None,
-            aliases: None,
-            extra: Default::default(),
-        };
-        render_memory_file(&frontmatter, raw_content).unwrap_or_else(|_| raw_content.to_string())
+fn normalize_added_content(label: &str, raw_content: &str) -> Result<String, MemoryToolError> {
+    let rendered = match parse_memory_file(raw_content) {
+        Ok(parsed) => {
+            assert_description_acceptable(&parsed.frontmatter.description, label)?;
+            render_memory_file(&parsed.frontmatter, &parsed.body)
+        }
+        Err(_) => {
+            let frontmatter = MemoryFrontmatter {
+                description: format!("Memory block {label}"),
+                read_only: None,
+                kind: None,
+                aliases: None,
+                extra: Default::default(),
+            };
+            render_memory_file(&frontmatter, raw_content)
+        }
+    };
+    rendered.map_err(|e| err(e.0.strip_prefix("frontmatter: ").unwrap_or(&e.0)))
+}
+
+fn assert_description_acceptable(description: &str, path: &str) -> Result<(), MemoryToolError> {
+    match describe_description_violation(description) {
+        Some(violation) => Err(err(format!("{path}: {violation}"))),
+        None => Ok(()),
     }
+}
+
+/// First line of the reason (pin `memory-apply-patch.ts:101`).
+fn commit_subject(reason: &str) -> String {
+    reason
+        .split('\n')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('\r')
+        .to_string()
 }
 
 /// Pin `hasConfiguredRemote`: any `[remote "<name>"]` section in the repository's git config.

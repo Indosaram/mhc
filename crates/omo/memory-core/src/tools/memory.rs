@@ -88,6 +88,12 @@ pub struct MemoryToolProvenanceInput {
 pub struct MemoryToolCommit {
     pub sha: String,
     pub committed_at: String,
+    /// First line of the commit reason (pin `memory.ts:48-53`).
+    #[serde(default)]
+    pub subject: String,
+    /// Repository-relative paths the commit touched.
+    #[serde(default)]
+    pub affected_paths: Vec<String>,
 }
 
 /// Provenance metadata tracking author attribution and transaction details.
@@ -504,6 +510,11 @@ fn run_memory_tool_inner(
         Err(GitError::NoEffectiveChanges { .. }) => {
             return Err(err(format!("{command_str} made no effective changes")));
         }
+        Err(GitError::Secret(secret)) => {
+            super::agreements_write_guard::restore_paths(repo, &affected_relative_paths)
+                .map_err(|e| err(e.to_string()))?;
+            return Err(err(secret.to_string()));
+        }
         Err(err_val) => return Err(err(err_val.to_string())),
     };
 
@@ -533,6 +544,15 @@ fn run_memory_tool_inner(
         commit: Some(MemoryToolCommit {
             sha: commit_info.sha.clone(),
             committed_at: timestamp.clone(),
+            subject: params
+                .reason
+                .trim()
+                .split('\n')
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('\r')
+                .to_string(),
+            affected_paths: affected_relative_paths.clone(),
         }),
         provenance: MemoryToolProvenance {
             agent_id: author.agent_id.clone(),
