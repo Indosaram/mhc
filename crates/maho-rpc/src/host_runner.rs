@@ -63,6 +63,35 @@ pub enum HostRequest {
         root: std::path::PathBuf,
     },
 }
+/// What `run_host_request_with` runs a request under (senpi `runHostRequest`'s options): the explicit key root,
+/// and the presenter enrollment channel plus deployment enforcement an ensure or handoff carries.
+#[derive(Default)]
+pub struct RunHostRequestOptions {
+    /// `--rpc-key-root`: credential lookup only; the profile is unchanged.
+    pub key_root: Option<std::path::PathBuf>,
+    /// `--mcp-presenter-fd 4`: consumed by the one spawn it enrolls; never enrolls on reuse.
+    pub presenter_bootstrap: Option<crate::mcp_presenter_wire::BoxedPrivateStream>,
+    /// `--mcp-presenter-enforcement`: deployment opt-in, default off for a new host.
+    pub mcp_presenter_enforcement: bool,
+}
+/// senpi `runHostRequest(request, options)`: the request runs inside its key root (`host_request_key_root`) and,
+/// for ensure/handoff, with its presenter options in scope.
+pub async fn run_host_request_with(
+    request: HostRequest,
+    options: RunHostRequestOptions,
+) -> std::io::Result<HostOutcome> {
+    let root =
+        crate::host_request_key_root::host_request_key_root(&request, options.key_root.as_deref());
+    let presenter = crate::mcp_presenter_bootstrap::PresenterLaunchOptions {
+        bootstrap: std::sync::Mutex::new(options.presenter_bootstrap),
+        enforcement: options.mcp_presenter_enforcement,
+    };
+    crate::host_probe::with_rpc_key_root(
+        root,
+        crate::mcp_presenter_bootstrap::with_presenter_launch(presenter, run_host_request(request)),
+    )
+    .await
+}
 pub async fn run_host_request(request: HostRequest) -> std::io::Result<HostOutcome> {
     // A terminal control endpoint belongs to its terminal: ensure, handoff and stop refuse from disk alone.
     let guarded = match &request {
@@ -227,6 +256,10 @@ pub async fn ensure_outcome(
             (host.child.id().unwrap_or_default(), false)
         }
     };
+    // The CLI ensure gets the same background pass as `ensure_host`: only once it has its host.
+    crate::host_gc_pass::schedule_opportunistic_host_gc(
+        crate::host_gc_pass::OpportunisticGcOptions::new(agent_dir, socket),
+    );
     let host = crate::host_probe::probe_protocol_info(socket, 10000).await;
     if !reused {
         let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);

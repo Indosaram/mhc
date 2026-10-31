@@ -106,6 +106,37 @@ pub struct HostRegistration {
     pub instance_id: String,
     pub generation: f64,
     pub launch_profile_id: String,
+    /// The build of the process this record names. `None` while it is not known yet (a handoff's successor before
+    /// it answers): the record then claims no engine version rather than the writer's (senpi `HostRegistration.build`).
+    pub build: Option<RegisteredBuild>,
+}
+/// An engine build as a record states it: `engineVersion` and its five-part `engineOrdinal`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisteredBuild {
+    pub text: String,
+    pub ordinal: [Value; 5],
+}
+impl RegisteredBuild {
+    /// THIS process's build: for a record naming a process this binary started itself.
+    pub fn this_engine() -> Self {
+        let build = maho_core::engine_build_identity::engine_build_identity();
+        Self {
+            text: build.text.clone(),
+            ordinal: build.ordinal.map(Value::from),
+        }
+    }
+    /// The build a host reported about itself on its socket (senpi `successorBuild`); `None` when it named none.
+    pub fn answered(host: &crate::host_protocol_info::HostProtocolInfo) -> Option<Self> {
+        let text = host.engine_version.clone()?;
+        let ordinal = host.engine_ordinal?.map(|part| {
+            if part.fract() == 0.0 && part.abs() <= 9_007_199_254_740_991.0 {
+                Value::from(part as i64)
+            } else {
+                Value::from(part)
+            }
+        });
+        Some(Self { text, ordinal })
+    }
 }
 /// The process that wrote a pidfile record (senpi `HostPidFileWriter`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,11 +161,12 @@ pub fn write_generation_record(
         pid: std::process::id(),
         start_time: read_process_start_time(std::process::id()),
     };
-    let build = maho_core::engine_build_identity::engine_build_identity();
-    crate::host_daemon_state::write_state_file(
-        &generation.pid_file,
-        &serde_json::json!({"pid":registration.pid,"processStartTime":registration.process_start_time,"instance_id":registration.instance_id,"generation":registration.generation,"engineVersion":build.text,"engineOrdinal":build.ordinal,"launchProfileId":registration.launch_profile_id,"socket":registration.socket,"writer":{"pid":writer.pid,"startTime":writer.start_time}}),
-    )?;
+    let mut record = serde_json::json!({"pid":registration.pid,"processStartTime":registration.process_start_time,"instance_id":registration.instance_id,"generation":registration.generation,"launchProfileId":registration.launch_profile_id,"socket":registration.socket,"writer":{"pid":writer.pid,"startTime":writer.start_time}});
+    if let Some(build) = &registration.build {
+        record["engineVersion"] = build.text.clone().into();
+        record["engineOrdinal"] = Value::Array(build.ordinal.to_vec());
+    }
+    crate::host_daemon_state::write_state_file(&generation.pid_file, &record)?;
     Ok((generation, writer))
 }
 /// Drops the pointer and settings when they still name `instance_id` (senpi `releaseRegistrationPointer`). The
@@ -278,6 +310,44 @@ pub fn clear_host_registration(paths: &HostDaemonPaths) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // senpi host-successor.ts `successorBuild`: a successor's record claims the build it answered with, and no
+    // build at all before it answered - never the writing process's.
+    #[test]
+    fn a_record_states_the_named_build_or_none() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = crate::host_daemon_paths::create_host_daemon_paths("s", temp.path());
+        crate::host_daemon_paths::create_daemon_directories(&paths).expect("dirs");
+        let answer = crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[],"instanceId":"next","engineVersion":"2099.1.2-3","engineOrdinal":[2099,1,2,3,4]})).expect("answer");
+        let mut registration = HostRegistration {
+            pid: 7,
+            process_start_time: None,
+            socket: "s".into(),
+            instance_id: "next".into(),
+            generation: 1.0,
+            launch_profile_id: String::new(),
+            build: None,
+        };
+        let (generation, _) = write_generation_record(&paths, &registration).expect("record");
+        let read = || -> Value {
+            serde_json::from_str(&std::fs::read_to_string(&generation.pid_file).expect("read"))
+                .expect("json")
+        };
+        let unknown = read();
+        assert!(unknown.get("engineVersion").is_none() && unknown.get("engineOrdinal").is_none());
+        registration.build = RegisteredBuild::answered(&answer);
+        write_generation_record(&paths, &registration).expect("record");
+        let answered = read();
+        assert_eq!(answered["engineVersion"], "2099.1.2-3");
+        assert_eq!(
+            answered["engineOrdinal"],
+            serde_json::json!([2099, 1, 2, 3, 4])
+        );
+        let unnamed = crate::host_protocol_info::parse_host_protocol_info(
+            &serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[]}),
+        )
+        .expect("answer");
+        assert_eq!(RegisteredBuild::answered(&unnamed), None);
+    }
     #[test]
     fn generation_records_and_pointer_release() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -290,6 +360,7 @@ mod tests {
             instance_id: "g1".into(),
             generation: 3.0,
             launch_profile_id: "p".into(),
+            build: None,
         };
         let (generation, writer) = write_generation_record(&paths, &registration).expect("record");
         assert_eq!(writer.pid, std::process::id());

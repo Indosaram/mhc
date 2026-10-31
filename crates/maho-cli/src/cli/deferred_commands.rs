@@ -8,6 +8,6 @@ pub fn is_host_session_command_argv(args: &[String]) -> bool { host_subcommand(a
 /// senpi `dispatchHostCommand`: the daemon command answers with an exit code; `None` means this argv is not a host command. `host session ...` goes to `host_session_command`, every other host subcommand to `host_command`.
 pub async fn dispatch_host_command(args: &[String]) -> Option<Result<i32, String>> {
     if args.first().map(String::as_str) != Some(HOST_COMMAND_ARGV) { return None; }
-    if is_host_session_command_argv(args) { return Some(Ok(super::host_session_command::run_host_session_command(&args[2..]).await)); }
+    if is_host_session_command_argv(args) { return Some(super::host_session_command::run_host_session_command(&args[2..]).await); }
     Some(super::host_command::run_host_command(&args[1..]).await)
 }

@@ -37,11 +37,13 @@ fn rpc_key_root_resolves_to_an_absolute_path_on_every_subcommand() {
     assert!(parse_host_args(&["status", "--rpc-key-root", "--json"].map(str::to_owned)).is_err());
     assert!(parse_host_args(&["status".to_owned()]).unwrap().key_root.is_none());
 }
-// Until maho-rpc's host runner takes request options, a request naming them is refused, never run without them.
+// senpi `runHostCommand`: request options ride the runner instead of being refused.
 #[test]
-fn request_options_the_runner_cannot_carry_are_refused_by_name() {
+fn request_options_carry_the_key_root_and_enforcement_to_the_runner() {
     let plain = parse_host_args(&["ensure".to_owned()]).unwrap();
-    assert!(maho_cli::cli::host_request::unsupported_request_options(&plain).is_none());
+    let options = maho_cli::cli::host_request::request_options(&plain);
+    assert!(options.key_root.is_none() && !options.mcp_presenter_enforcement);
+    assert!(options.presenter_bootstrap.is_none());
     let named = parse_host_args(
         &[
             "ensure",
@@ -52,14 +54,8 @@ fn request_options_the_runner_cannot_carry_are_refused_by_name() {
         .map(str::to_owned),
     )
     .unwrap();
-    let refused =
-        maho_cli::cli::host_request::unsupported_request_options(&named).expect("refused");
-    assert_eq!(refused.exit_code(), 1);
-    let detail = refused.payload()["detail"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
-    assert!(detail.contains("--rpc-key-root"));
-    assert!(detail.contains("--mcp-presenter-enforcement"));
-    assert!(!detail.contains("--mcp-presenter-fd"));
+    let options = maho_cli::cli::host_request::request_options(&named);
+    assert!(options.mcp_presenter_enforcement);
+    let root = options.key_root.expect("key root");
+    assert!(root.is_absolute() && root.ends_with("keys"));
 }
