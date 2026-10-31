@@ -662,18 +662,17 @@ mod tests {
         }
     }
 
-    /// Downloads the real Chrome for Testing build when `MAHO_BROWSER_DOWNLOAD_TEST` is set.
+    /// Downloads the real Chrome for Testing build (needs network, curl and unzip). Run it with
+    /// `MAHO_BROWSER_DOWNLOAD_TEST=1` and `--run-ignored ignored-only`.
     #[test]
+    #[ignore = "needs MAHO_BROWSER_DOWNLOAD_TEST"]
     fn real_download_installs_a_runnable_browser() {
-        if std::env::var_os("MAHO_BROWSER_DOWNLOAD_TEST").is_none() {
-            eprintln!(
-                "skipped: MAHO_BROWSER_DOWNLOAD_TEST is not set (needs network, curl, unzip)"
-            );
-            return;
-        }
+        assert!(
+            std::env::var_os("MAHO_BROWSER_DOWNLOAD_TEST").is_some(),
+            "MAHO_BROWSER_DOWNLOAD_TEST is not set"
+        );
         let Some(platform) = detect_browser_platform(current_os(), std::env::consts::ARCH) else {
-            eprintln!("skipped: no Chrome for Testing build for this platform");
-            return;
+            panic!("no Chrome for Testing build for this platform");
         };
         let Ok(dir) = tempfile::tempdir() else {
             panic!("no tempdir")
