@@ -122,6 +122,32 @@ pub fn monitor_state_payload(snapshot: &[crate::monitor_registry::MonitorSnapsho
     }).collect::<Vec<_>>();
     json!({"activeCount":snapshot.len(),"monitors":monitors})
 }
+/// Upstream extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended in this process
+/// (its command exited, it was killed or expired) never runs again, so its restore baseline goes.
+/// Disposal is a shutdown or reload: the watch is suspended, not ended, and a later restore still
+/// needs the dir.
+fn remove_ended_monitor_state_dir(
+    event: &crate::monitor_registry::MonitorEndedEvent,
+    ctx: Option<&maho_ext_api::types::ExtensionContext>,
+) {
+    if event.reason == crate::monitor_registry::MonitorEndedReason::Disposed {
+        return;
+    }
+    let (Some(dir), Some(monitor_id)) = (
+        crate::monitor_state_dir::terminal_state_dir(ctx),
+        event.monitor_id.as_deref(),
+    ) else {
+        return;
+    };
+    if let Err(error) = crate::monitor_state_dir::remove_monitor_state_dir_sync(&dir, monitor_id)
+        && let Some(ctx) = ctx
+    {
+        ctx.ui.notify(
+            &format!("Could not remove the state dir of {monitor_id}: {error}"),
+            maho_ext_api::types::NotificationType::Warning,
+        );
+    }
+}
 fn monitor_ended_payload(event: &crate::monitor_registry::MonitorEndedEvent) -> Value {
     json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
 }
@@ -760,17 +786,24 @@ impl Extension for TerminalExtension {
         let start_configuration = configuration.clone();
         let configuration_manager = manager.clone();
         let start_cwd = session_cwd.clone();
+        // Upstream `state.ctx`, read by the monitor-ended sink at call time.
+        let session_ctx: Arc<Mutex<Option<maho_ext_api::types::ExtensionContext>>> = Arc::default();
+        let start_ctx = session_ctx.clone();
         api.on(
             EventKind::SessionStart,
             Arc::new(move |_, ctx| {
                 let configuration = start_configuration.clone();
                 let manager = configuration_manager.clone();
                 let context_cwd = start_cwd.clone();
+                let session_ctx = start_ctx.clone();
                 Box::pin(async move {
                     *context_cwd
                         .lock()
                         .map_err(|_| ExtensionFailure::new("terminal context cwd poisoned"))? =
                         Some(ctx.cwd.clone());
+                    *session_ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
                     let loaded = crate::settings::load_session_settings(ctx)?;
                     manager
                         .lock()
@@ -806,6 +839,11 @@ impl Extension for TerminalExtension {
                         "senpi:extension-rpc-event",
                         &json!({"name":crate::shared::TERMINAL_MONITOR_ENDED_EVENT,"data":payload}),
                     );
+                    let ctx = session_ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    remove_ended_monitor_state_dir(&event, ctx.as_ref());
                 },
             ),
         ));
@@ -3050,6 +3088,52 @@ mod persistence_tests {
         ids.sort();
         assert_eq!(ids, ["mon_CREATEDWHILEHLD", "mon_WAITERBASE0001"]);
         teardown(&fixture);
+    }
+
+    /// extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended (exit, timeout, kill)
+    /// loses its restore baseline dir; a disposed one (shutdown or reload) keeps it, and an event
+    /// with no stable id or no durable state dir removes nothing.
+    #[test]
+    fn an_ended_watch_loses_its_state_dir_and_a_disposed_one_keeps_it() {
+        use crate::monitor_registry::{MonitorEndedEvent, MonitorEndedReason};
+        let dir = tempfile::tempdir().unwrap();
+        let ui = Arc::new(RecordingUi::default());
+        let ctx = context(dir.path(), ui.clone(), None);
+        let terminal_dir = crate::monitor_state_dir::terminal_state_dir(Some(&ctx)).unwrap();
+        let ended = |monitor_id: Option<&str>, reason| MonitorEndedEvent {
+            id: "bash_1".into(),
+            monitor_id: monitor_id.map(str::to_owned),
+            description: "watch".into(),
+            started_at_ms: 0.0,
+            ended_at_ms: 1.0,
+            reason,
+            exit_code: None,
+            fire_count: 0,
+        };
+        for (monitor_id, reason, kept) in [
+            ("mon_DISPOSEDWATCH01", MonitorEndedReason::Disposed, true),
+            ("mon_EXITEDWATCH001", MonitorEndedReason::Exit, false),
+            ("mon_TIMEDOUTWATCH1", MonitorEndedReason::Timeout, false),
+            ("mon_KILLEDWATCH001", MonitorEndedReason::Killed, false),
+        ] {
+            let state =
+                crate::monitor_state_dir::ensure_monitor_state_dir_sync(&terminal_dir, monitor_id)
+                    .unwrap();
+            remove_ended_monitor_state_dir(&ended(Some(monitor_id), reason.clone()), Some(&ctx));
+            assert_eq!(state.is_dir(), kept, "{reason:?}");
+        }
+        let unnamed = crate::monitor_state_dir::ensure_monitor_state_dir_sync(
+            &terminal_dir,
+            "mon_UNNAMED00001",
+        )
+        .unwrap();
+        remove_ended_monitor_state_dir(&ended(None, MonitorEndedReason::Exit), Some(&ctx));
+        remove_ended_monitor_state_dir(
+            &ended(Some("mon_UNNAMED00001"), MonitorEndedReason::Exit),
+            None,
+        );
+        assert!(unnamed.is_dir());
+        assert!(ui.notes.lock().unwrap().is_empty());
     }
 
     /// The post-takeover sweep removes other sessions' stale leases and empty manifests and keeps

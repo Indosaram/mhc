@@ -57,6 +57,12 @@ pub async fn remove_monitor_state_dir(
     terminal_dir: &Path,
     monitor_id: &str,
 ) -> std::io::Result<()> {
+    remove_monitor_state_dir_sync(terminal_dir, monitor_id)
+}
+
+/// The synchronous body of `remove_monitor_state_dir`, for the monitor-ended sink, which runs
+/// inside the registry's settle path.
+pub fn remove_monitor_state_dir_sync(terminal_dir: &Path, monitor_id: &str) -> std::io::Result<()> {
     match std::fs::remove_dir_all(monitor_state_dir(terminal_dir, monitor_id)) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         result => result,
