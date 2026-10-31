@@ -58,6 +58,8 @@ impl MonitorEndedReason {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorEndedEvent {
     pub id: String,
+    /// The stable `mon_` id (upstream `manager.monitorIdOf(event.id)`), when the watch has one.
+    pub monitor_id: Option<String>,
     pub description: String,
     pub started_at_ms: f64,
     pub ended_at_ms: f64,
@@ -75,6 +77,7 @@ fn emit_ended(
 ) {
     sink(MonitorEndedEvent {
         id: snapshot.id.clone(),
+        monitor_id: snapshot.monitor_id.clone(),
         description: snapshot.description.clone(),
         started_at_ms: snapshot.started_at_ms,
         ended_at_ms: now,
