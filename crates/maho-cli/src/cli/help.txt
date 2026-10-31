@@ -41,6 +41,8 @@ Options:
   --resume, -r                   Select a session to resume
   --session <path|id>            Use specific session file or partial UUID
   --session-id <id>              Use exact project session ID, creating it if missing
+  --spawned-by <json>            Fresh session ancestry: parentSessionId, rootSessionId, taskId
+                                 Ignored with a warning when resuming or forking
   --fork <path|id>               Fork specific session file or partial UUID into a new session
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
