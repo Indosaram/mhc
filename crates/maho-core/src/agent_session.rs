@@ -7279,6 +7279,18 @@ impl AgentSession {
             session: self,
             controller: pending.clone(),
         };
+        // senpi `_abortActiveAgentAndRetry("system")`: the cut-off turn is owned by the system, so it
+        // renders as "System operation aborted" instead of a provider failure.
+        let streaming = self.is_streaming();
+        if lock(&self.user_abort_wait).is_some() {
+            self.state()
+                .abort_provenance
+                .join(maho_ext_api::AbortSource::System, streaming);
+        } else if streaming {
+            self.state()
+                .abort_provenance
+                .begin(maho_ext_api::AbortSource::System);
+        }
         self.agent.abort(None);
         self.abort_retry();
         let signal = pending.signal();
