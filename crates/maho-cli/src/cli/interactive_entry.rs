@@ -192,6 +192,7 @@ pub async fn run(
             auth_notices,
             auto_trust_on_reload_cwd,
             initial_title_prompt: initial.initial_title_prompt.clone(),
+            mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
         },
     );
     *mode
@@ -634,6 +635,9 @@ pub async fn run(
         }
         Ok(())
     }.await;
+    // senpi `shutdown`: `sessionControlHost.disposeActive()` before the runtime is disposed, so the
+    // endpoint's header-only rule and unregistration run while the session is still live.
+    mode.dispose_session_control().await;
     // senpi `shutdown`: drain in-flight Kitty key release events before stopping, so escape
     // sequences cannot leak to the parent shell over slow SSH (signal and interactive quit alike).
     terminal.drain_input(1000, 50);

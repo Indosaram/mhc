@@ -293,6 +293,7 @@ pub async fn run_passes(
         delivery: &delivery,
         concurrency: options.concurrency,
         delivery_timeout_ms: options.timeout_seconds * 1000,
+        session_id: None,
     };
     let heartbeat = async {
         let mut timer = tokio::time::interval_at(
