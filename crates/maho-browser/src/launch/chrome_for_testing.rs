@@ -23,6 +23,10 @@ use std::sync::{Mutex, PoisonError};
 /// The managed browser once installed (`chromiumExecutablePromise`): one download per process.
 static MANAGED_EXECUTABLE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// The executable chosen after the managed install was tried (`chromiumExecutablePromise`):
+/// the managed path or, on macOS after a failed install, the system Chrome fallback.
+static RESOLVED_EXECUTABLE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// Runs `install` at most once successfully per `slot`: concurrent callers wait on the lock
 /// while the first one downloads, then reuse its path. A failure is not cached, so the next
 /// call retries (oh-my-pi clears its promise on failure).
@@ -296,6 +300,10 @@ pub struct Resolve<'a> {
     /// Installs the managed browser (`ensureManagedChromium`); `Ok(None)` when the platform is
     /// unknown.
     pub managed: &'a dyn Fn() -> Result<Option<PathBuf>, String>,
+    /// Caches the result of the managed install or its macOS system fallback
+    /// (`chromiumExecutablePromise`), so a failed download is not retried once a fallback
+    /// was chosen. Errors are not cached.
+    pub resolved: &'a Mutex<Option<PathBuf>>,
 }
 
 fn env_override(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
@@ -333,7 +341,7 @@ fn resolve_executable(resolve: &Resolve<'_>) -> Result<Option<PathBuf>, String> 
     if !prefer_managed && let Some(system) = (resolve.system)() {
         return Ok(Some(system));
     }
-    match (resolve.managed)() {
+    memoised(resolve.resolved, || match (resolve.managed)() {
         Ok(path) => Ok(path),
         Err(error) => {
             if prefer_managed && let Some(system) = (resolve.system)() {
@@ -347,7 +355,7 @@ fn resolve_executable(resolve: &Resolve<'_>) -> Result<Option<PathBuf>, String> 
                 "Failed to install Chromium: {error}. Set PUPPETEER_EXECUTABLE_PATH to use an existing Chrome/Chromium binary, or install one manually."
             ))
         }
-    }
+    })
 }
 
 fn current_os() -> &'static str {
@@ -373,6 +381,7 @@ pub fn ensure_chromium_executable_from_env(purpose: Purpose) -> Result<Option<Pa
             os,
             system: &system,
             managed: &managed,
+            resolved: &RESOLVED_EXECUTABLE,
         },
         purpose,
     )
@@ -548,6 +557,7 @@ mod tests {
                 os,
                 system: &|| system_path.clone(),
                 managed: &|| managed_result.clone(),
+                resolved: &Mutex::new(None),
             },
             purpose,
         )
@@ -609,6 +619,48 @@ mod tests {
                 .err()
                 .is_some_and(|error| error.starts_with("Failed to install Chromium: offline"))
         );
+    }
+
+    #[test]
+    fn the_macos_system_fallback_is_cached_after_a_failed_install() {
+        let none = |_: &str| -> Option<String> { None };
+        let system = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        let installs = std::sync::atomic::AtomicUsize::new(0);
+        let managed = || -> Result<Option<PathBuf>, String> {
+            installs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("offline".into())
+        };
+        let fallback = Mutex::new(None);
+        let mac = |system: Option<&str>, slot: &Mutex<Option<PathBuf>>| {
+            let system_path = system.map(PathBuf::from);
+            ensure_chromium_executable(
+                &Resolve {
+                    env: &none,
+                    os: "macos",
+                    system: &|| system_path.clone(),
+                    managed: &managed,
+                    resolved: slot,
+                },
+                Purpose::Browser,
+            )
+        };
+        for _ in 0..3 {
+            assert_eq!(
+                mac(Some(system), &fallback),
+                Ok(Some(PathBuf::from(system)))
+            );
+        }
+        assert_eq!(
+            installs.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the fallback is reused, the download is not retried"
+        );
+        // Without a fallback the failure is not cached: each call retries the install.
+        let failing = Mutex::new(None);
+        for _ in 0..2 {
+            assert!(mac(None, &failing).is_err());
+        }
+        assert_eq!(installs.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[test]
