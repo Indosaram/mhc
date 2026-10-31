@@ -59,6 +59,11 @@ pub async fn run_host_monitors(
     tokio::join!(stall, pressure);
     unsubscribe();
 }
+/// The Windows presenter control pipe (senpi `presenterPipePath`). Its name comes from its own random value, never
+/// the host's public protocol instanceId, so nothing can learn it before the host listens and squat it.
+pub fn presenter_pipe_path() -> String {
+    format!(r"\\.\pipe\senpi-presenter-{}", uuid::Uuid::new_v4())
+}
 pub fn resolve_host_idle_policy(
     env: &HashMap<String, String>,
     idle_eviction_ms: Option<f64>,
@@ -840,29 +845,7 @@ impl HostCore {
     }
     /// `subscribe_sessions` (senpi `answerSubscribeSessions` + the router's two-hop activation): the answer carrying
     /// the `seq 0` snapshot is on the connection's FIFO before the subscription goes live.
-    fn subscribe_sessions(
-        &self,
-        connection: Option<&str>,
-        id: Option<String>,
-        request: &serde_json::Value,
-    ) {
-        let refuse = |code: &str, reason: &str, action: &str| {
-            self.refuse(
-                connection,
-                id.clone(),
-                "subscribe_sessions",
-                code,
-                serde_json::json!({"reason":reason,"action":action}),
-                None,
-            );
-        };
-        let Some(connection) = connection else {
-            return refuse(
-                crate::rpc_types::RPC_ERROR_UNSUPPORTED_TRANSPORT,
-                "stdio has no per-connection identity to deliver a subscription to",
-                "connect to the host socket (senpi --mode rpc --listen) and subscribe there",
-            );
-        };
+    fn subscribe_sessions(&self, connection: Option<&str>, request: &serde_json::Value) {
         let fanout = self
             .fanout
             .lock()
@@ -872,97 +855,45 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let hub = &mut *guard;
-        let limit = crate::session_status_stream::MAX_SUBSCRIPTIONS_PER_CONNECTION;
-        if hub.stream.connection_size(connection) >= limit {
+        let answered = crate::session_status_commands::answer_subscribe_sessions(
+            request,
+            connection,
+            &mut hub.stream,
+            &hub.source,
+            &*fanout,
+        );
+        let (Some(connection), Some(subscription)) = (connection, answered.activate) else {
             drop(guard);
             drop(fanout);
-            return refuse(
-                crate::rpc_types::RPC_ERROR_SUBSCRIPTION_LIMIT,
-                &format!("this connection already holds {limit} subscriptions"),
-                "unsubscribe_sessions the ones you no longer read, then subscribe again",
-            );
-        }
-        let options = match crate::session_status_subscriptions::parse_subscription(request) {
-            Ok(options) => options,
-            Err(refused) => {
-                drop(guard);
-                drop(fanout);
-                return refuse(
-                    crate::rpc_types::RPC_ERROR_INVALID_SUBSCRIPTION,
-                    &refused.reason,
-                    &refused.action,
-                );
-            }
+            return self.respond_value(connection, "", answered.answer);
         };
-        let subscribed = hub
-            .stream
-            .subscribe(&hub.source, &*fanout, connection, options);
-        let mut answer = serde_json::json!({
-            "type": "response",
-            "command": "subscribe_sessions",
-            "success": true,
-            "data": {
-                "subscriptionId": subscribed.subscription_id,
-                "snapshot": subscribed.snapshot,
-                "seq": subscribed.seq,
-                "hostGeneration": crate::protocol_identity::host_generation(&std::env::vars().collect()).to_string(),
-                "hostInstanceId": crate::protocol_identity::host_instance_id(),
-            },
-        });
-        if let Some(id) = &id {
-            answer["id"] = id.clone().into();
-        }
         // Both locks are held across the answer and the activation, so no delta can land between them.
-        match fanout.enqueue_control(connection, &answer) {
-            Ok(true) => hub.stream.activate(&*fanout, &subscribed.subscription_id),
+        match fanout.enqueue_control(connection, &answered.answer) {
+            Ok(true) => hub.stream.activate(&*fanout, &subscription),
             Ok(false) | Err(_) => {
-                hub.stream
-                    .unsubscribe(connection, &subscribed.subscription_id);
+                hub.stream.unsubscribe(connection, &subscription);
                 eprintln!("senpi rpc subscribe answer could not be delivered to {connection}");
             }
         }
     }
     /// `unsubscribe_sessions` (senpi `answerUnsubscribeSessions`).
-    fn unsubscribe_sessions(
-        &self,
-        connection: Option<&str>,
-        id: Option<String>,
-        request: &serde_json::Value,
-    ) {
-        let Some(connection) = connection else {
-            return self.refuse(
+    fn unsubscribe_sessions(&self, connection: Option<&str>, request: &serde_json::Value) {
+        let answer = {
+            let fanout = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut status = fanout
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            crate::session_status_commands::answer_unsubscribe_sessions(
+                request,
                 connection,
-                id,
-                "unsubscribe_sessions",
-                crate::rpc_types::RPC_ERROR_UNSUPPORTED_TRANSPORT,
-                serde_json::json!({"reason":"stdio has no per-connection identity holding any subscription","action":"connect to the host socket (senpi --mode rpc --listen) and manage subscriptions there"}),
-                None,
-            );
+                &mut status.stream,
+            )
         };
-        let removed = request["subscriptionId"]
-            .as_str()
-            .is_some_and(|subscription| {
-                self.fanout
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .status
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .stream
-                    .unsubscribe(connection, subscription)
-            });
-        if removed {
-            self.success(Some(connection), id, "unsubscribe_sessions", None, None);
-        } else {
-            self.refuse(
-                Some(connection),
-                id,
-                "unsubscribe_sessions",
-                crate::rpc_types::RPC_ERROR_UNKNOWN_SUBSCRIPTION,
-                serde_json::json!({"reason":"this connection holds no subscription with that id","action":"send the subscriptionId your subscribe_sessions answer returned, on the same connection"}),
-                None,
-            );
-        }
+        self.respond_value(connection, "", answer);
     }
     /// Drops every per-connection record of a handle the host ended (senpi `forgetSessionOwnership`).
     fn forget_session(&self, session_id: &str) {
@@ -1820,10 +1751,10 @@ impl HostCore {
                 self.respond_value(connection, &session_id, response);
             }
             crate::rpc_types::RpcCommandBody::SubscribeSessions => {
-                self.subscribe_sessions(connection, command.id.clone(), &value);
+                self.subscribe_sessions(connection, &value);
             }
             crate::rpc_types::RpcCommandBody::UnsubscribeSessions => {
-                self.unsubscribe_sessions(connection, command.id.clone(), &value);
+                self.unsubscribe_sessions(connection, &value);
             }
             crate::rpc_types::RpcCommandBody::SetSessionContext { patch } => {
                 let Some(session_id) = command.session_id.clone() else {
@@ -4078,6 +4009,14 @@ fn route_session_record(
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
+    #[test]
+    fn presenter_pipe_paths_are_private_random_pipe_names() {
+        let first = presenter_pipe_path();
+        assert!(first.starts_with(r"\\.\pipe\senpi-presenter-"));
+        assert_eq!(first.len(), r"\\.\pipe\senpi-presenter-".len() + 36);
+        assert_ne!(first, presenter_pipe_path());
+        assert!(!first.contains(crate::protocol_identity::host_instance_id()));
+    }
     fn idle_core() -> std::sync::Arc<HostCore> {
         let create_runtime: HostRuntimeFactory = std::sync::Arc::new(
             |_profile: crate::session_registry::RpcSessionLaunchProfile| -> std::pin::Pin<
