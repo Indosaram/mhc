@@ -1,8 +1,9 @@
 //! Scoped revival of this session's children (`lifecycle/reconcile-revival.ts`).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use super::context::{LifecycleContext, is_terminal};
+use super::context::{LifecycleContext, is_terminal, reconciliation_active};
 use super::errors::LifecycleError;
 use super::host_session::host_session_resume_path;
 use super::reconcile_reclamation::{
@@ -28,7 +29,7 @@ pub fn reconcile_scoped_revival(
     records: &[TaskRecord],
     session_path_for: &SessionPathResolver<'_>,
 ) -> Result<Vec<ReconcileOutcome>, LifecycleError> {
-    if !context.config.resume_children {
+    if !reconciliation_active(context) || !context.config.resume_children {
         return Ok(Vec::new());
     }
     let mut outcomes = Vec::new();
@@ -36,9 +37,46 @@ pub fn reconcile_scoped_revival(
         .iter()
         .filter(|record| record.parent_session_id == parent_session_id)
         .collect();
+    // Only the snapshot this pass observed may be claimed: a claim installed meanwhile (same
+    // host pid included) changes residency_claim, run epoch or residency and is left alone.
+    let expected: Arc<Mutex<HashMap<String, TaskRecord>>> = Arc::new(Mutex::new(
+        session_records
+            .iter()
+            .filter(|record| is_suspended_residency(record.residency_state))
+            .map(|record| (record.task_id.clone(), (*record).clone()))
+            .collect(),
+    ));
+    let outer = context.reconcile_admission.clone();
+    let snapshot = Arc::clone(&expected);
+    let can_claim: super::residency::CanClaimFn = Arc::new(move |fresh: &TaskRecord| {
+        let expected = snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        expected.get(&fresh.task_id).is_some_and(|observed| {
+            outer.allows(fresh)
+                && fresh.host_pid == observed.host_pid
+                && fresh.residency_claim == observed.residency_claim
+                && fresh.notification.run_epoch == observed.notification.run_epoch
+                && fresh.residency_state == observed.residency_state
+        })
+    });
     for observed in &session_records {
         if observed.residency_state == ResidencyState::Resident && is_orphan(context, observed) {
-            outcomes.push(reclaim_resident(context, observed, session_path_for)?);
+            let reclaimed = reclaim_resident(context, observed, session_path_for)?;
+            let resumed = reclaimed.kind == ReconcileOutcomeKind::Resumed;
+            outcomes.push(reclaimed);
+            if !reconciliation_active(context) {
+                return Ok(outcomes);
+            }
+            // Our terminal reclamation can detach a transcript-bearing resident for admission
+            // below. A lost ownership race never authorizes a fresh claim on the winner's record.
+            if resumed
+                && let Some(fresh) = context.store.load(&observed.task_id)?
+                && is_suspended_residency(fresh.residency_state)
+            {
+                expected
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(fresh.task_id.clone(), fresh);
+            }
         }
     }
 
@@ -66,7 +104,7 @@ pub fn reconcile_scoped_revival(
 
     let candidates: Vec<TaskRecord> = suspended_candidates(context, parent_session_id)?
         .into_iter()
-        .filter(|record| !excluded.contains(&record.task_id))
+        .filter(|record| !excluded.contains(&record.task_id) && can_claim.as_ref()(record))
         .collect();
     if context.config.reattach_on_reconcile == Some(false) {
         outcomes.extend(
@@ -74,21 +112,7 @@ pub fn reconcile_scoped_revival(
                 .iter()
                 .map(|record| deferred(&record.task_id, "reattach_disabled")),
         );
-        for outcome in &outcomes {
-            if outcome.kind == ReconcileOutcomeKind::Deferred
-                && let Some(reason) = &outcome.reason
-                && let Err(error) = super::host_session_record::mark_revival_deferred(
-                    context,
-                    &outcome.task_id,
-                    reason,
-                )
-            {
-                eprintln!(
-                    "senpi-task revival deferral not recorded: {}: {error}",
-                    outcome.task_id
-                );
-            }
-        }
+        record_deferrals(context, &outcomes);
         return Ok(outcomes);
     }
     let prior: HashMap<&str, ResidencyState> = candidates
@@ -97,6 +121,7 @@ pub fn reconcile_scoped_revival(
         .collect();
     let options = BatchAdmissionOptions {
         exclude_task_ids: excluded,
+        can_claim: Some(can_claim),
         ..context.reconcile_admission.clone()
     };
     let admission = admit_suspended_batch(context, parent_session_id, &options)?;
@@ -140,11 +165,29 @@ pub fn reconcile_scoped_revival(
             outcomes.push(deferred(&candidate.task_id, "foreign_live_owner"));
         }
     }
-    for outcome in &outcomes {
-        if outcome.kind == ReconcileOutcomeKind::Deferred
-            && let Some(reason) = &outcome.reason
-            && let Err(error) =
-                super::host_session_record::mark_revival_deferred(context, &outcome.task_id, reason)
+    record_deferrals(context, &outcomes);
+    Ok(outcomes)
+}
+
+/// The session is resumed now, so a child this pass deferred carries the deferral on its record.
+/// A stale pass writes nothing, and a record the pass may not claim is not annotated.
+fn record_deferrals(context: &LifecycleContext, outcomes: &[ReconcileOutcome]) {
+    if !reconciliation_active(context) {
+        return;
+    }
+    for outcome in outcomes {
+        if outcome.kind != ReconcileOutcomeKind::Deferred {
+            continue;
+        }
+        let Some(reason) = &outcome.reason else {
+            continue;
+        };
+        match context.store.load(&outcome.task_id) {
+            Ok(Some(fresh)) if context.reconcile_admission.allows(&fresh) => {}
+            _ => continue,
+        }
+        if let Err(error) =
+            super::host_session_record::mark_revival_deferred(context, &outcome.task_id, reason)
         {
             eprintln!(
                 "senpi-task revival deferral not recorded: {}: {error}",
@@ -152,7 +195,6 @@ pub fn reconcile_scoped_revival(
             );
         }
     }
-    Ok(outcomes)
 }
 
 /// A daemon-hosted child NAMES its transcript on the record; the disk scan only knows the child's
@@ -174,6 +216,13 @@ fn dispose_suspended_terminal_without_transcript(
     let mut applied = false;
     let timestamp = context.now_iso();
     let result = context.store.mutate(&observed.task_id, &mut |fresh| {
+        if !reconciliation_active(context)
+            || fresh.residency_claim != observed.residency_claim
+            || fresh.host_pid != observed.host_pid
+            || fresh.notification.run_epoch != observed.notification.run_epoch
+        {
+            return fresh.clone();
+        }
         if !is_suspended_residency(fresh.residency_state) || !is_terminal(fresh.status) {
             return fresh.clone();
         }

@@ -7,7 +7,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::host::HostError;
-use crate::manager::child_handle::{ManagedChildHandle, ManagedChildListener, Unsubscribe};
+use crate::manager::child_handle::{
+    InputIdentity, ManagedChildHandle, ManagedChildListener, Unsubscribe,
+};
 use crate::runners::rpc::handle::managed_event;
 use crate::runners::rpc::turn_outcome::extract_assistant_text;
 
@@ -27,6 +29,10 @@ pub enum RunnerFailureKind {
     ToolsUnavailable,
     #[serde(rename = "session_unavailable")]
     SessionUnavailable,
+    /// The child stopped answering its heartbeat (stdio) or its host confirmed the unresponsive
+    /// session closed (`child-unresponsive`).
+    #[serde(rename = "child-unresponsive")]
+    ChildUnresponsive,
 }
 
 impl RunnerFailureKind {
@@ -39,6 +45,7 @@ impl RunnerFailureKind {
             Self::ModelUnavailable => "model_unavailable",
             Self::ToolsUnavailable => "tools_unavailable",
             Self::SessionUnavailable => "session_unavailable",
+            Self::ChildUnresponsive => "child-unresponsive",
         }
     }
 }
@@ -47,6 +54,8 @@ impl RunnerFailureKind {
 pub struct RunnerFailure {
     pub kind: RunnerFailureKind,
     pub message: String,
+    /// The classified `failure.cause` (`classifyStartCause`); only typed facts, never the raw error.
+    pub cause: Option<crate::manager::start_failure_cause::StartCause>,
 }
 
 impl RunnerFailure {
@@ -54,7 +63,16 @@ impl RunnerFailure {
         Self {
             kind,
             message: message.into(),
+            cause: None,
         }
+    }
+
+    pub fn with_cause(
+        mut self,
+        cause: Option<crate::manager::start_failure_cause::StartCause>,
+    ) -> Self {
+        self.cause = cause;
+        self
     }
 }
 
@@ -126,6 +144,24 @@ pub trait ChildSession: Send + Sync {
     fn prompt(&self, text: &str) -> Result<(), HostError>;
     fn steer(&self, text: &str) -> Result<(), HostError>;
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
+    /// `prompt(text, identity)`: the engine holds the input under the caller's id (#2838). A
+    /// session without input identity sends it plain.
+    fn prompt_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        let _ = identity;
+        self.prompt(text)
+    }
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        let _ = identity;
+        self.steer(text)
+    }
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
+        let _ = identity;
+        self.follow_up(text)
+    }
     fn rebind_workpool_identity(
         &self,
         _identity: WorkpoolChildIdentity,
@@ -404,6 +440,14 @@ impl InProcessChildHandle {
     }
 
     pub(crate) fn begin_turn(&self, text: &str) -> crate::pause::ports::ResumedChildTurn {
+        self.begin_turn_as(text, None)
+    }
+
+    fn begin_turn_as(
+        &self,
+        text: &str,
+        identity: Option<InputIdentity>,
+    ) -> crate::pause::ports::ResumedChildTurn {
         // The host snapshots its transcript to answer this, so read it before taking the lock the
         // session event observer also needs; no turn is active here, so no event can race it.
         let baseline =
@@ -434,7 +478,10 @@ impl InProcessChildHandle {
         let text = text.to_string();
         let exact_tracked = Arc::clone(&tracked);
         thread::spawn(move || {
-            let prompted = session.prompt(&text);
+            let prompted = match &identity {
+                Some(identity) => session.prompt_with_identity(&text, identity),
+                None => session.prompt(&text),
+            };
             let outcome = {
                 let mut state = tracked.lock();
                 if state.turn != turn {
@@ -515,6 +562,16 @@ impl InProcessChildHandle {
         Ok(())
     }
 
+    /// While a turn runs a follow-up is queued under its id; once idle it REVIVES the child with
+    /// a fresh turn whose prompt carries the id.
+    pub fn follow_up_turn_as(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        if self.turn_active() {
+            return self.session.follow_up_with_identity(text, identity);
+        }
+        self.begin_turn_as(text, Some(identity.clone()));
+        Ok(())
+    }
+
     pub fn abort_turn(&self) -> Result<(), HostError> {
         self.tracked.lock().aborted = true;
         self.session.abort()
@@ -572,6 +629,18 @@ impl ManagedChildHandle for InProcessChildHandle {
 
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.follow_up_turn(text)
+    }
+
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.session.steer_with_identity(text, identity)
+    }
+
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
+        self.follow_up_turn_as(text, identity)
     }
 
     fn rebind_workpool_identity(

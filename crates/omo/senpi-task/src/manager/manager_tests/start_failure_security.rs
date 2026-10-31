@@ -161,6 +161,7 @@ fn given_non_runner_error_with_secrets_when_team_member_spawn_fails_then_only_st
         team_run_id: "team-run-secret-test",
         manager: &manager,
         lead_session_id: "lead-session",
+        root_session_id: None,
         spawn_depth: 1,
         max_parallel: 1,
         deadline_at: 1_000,

@@ -95,6 +95,7 @@ fn given_a_member_task_moved_to_completed_when_refreshed_then_the_runtime_member
             state_dir: state_dir.clone(),
             team_bounds: settings,
             lead_session_id: "lead-session".to_string(),
+            root_session_id: None,
             spawn_depth: 1,
             now: None,
             member_extension: None,

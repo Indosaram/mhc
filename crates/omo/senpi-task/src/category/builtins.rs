@@ -168,6 +168,7 @@ fn transform_chain_model_id<'a>(provider: &str, model: &'a str) -> &'a str {
     match (provider, model) {
         ("kimi-coding" | "kimi-for-coding", "kimi-k3") => "k3",
         ("kimi-coding" | "kimi-for-coding", "kimi-k3-256k") => "k3-256k",
+        ("kimi-coding" | "kimi-for-coding", "kimi-k3.1-pro") => "k3.1-pro",
         _ => model,
     }
 }

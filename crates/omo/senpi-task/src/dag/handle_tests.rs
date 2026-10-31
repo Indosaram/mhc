@@ -85,6 +85,7 @@ fn record(nodes: Vec<DagNode>, status: DagRunStatus) -> DagRunRecordV1 {
         name: "release plan".to_string(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
+        parent_model: None,
         definition_fingerprint: "fp-1".to_string(),
         definition: DagPersistedDefinition {
             key: "release-plan".to_string(),
