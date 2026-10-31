@@ -423,11 +423,28 @@ pub async fn create_agent_session(
             .expect("SDK session retained during tool execution");
             Arc::new(extension_context::create(&session))
         });
+    // senpi `wrapRegisteredTools(..., this._toolDispatcher)`: built-in calls run through the session's dispatcher,
+    // so its `tool_dispatched` observers see them.
+    let dispatch_accessor = session_accessor.clone();
+    let dispatcher: maho_tools::tool_definition_wrapper::ToolRunDispatcher =
+        Arc::new(move |definition, call| {
+            let session = dispatch_accessor
+                .get()
+                .expect("SDK session initialized before tool execution")(
+            )
+            .expect("SDK session retained during tool execution");
+            crate::tool_dispatch::tool_dispatcher::dispatch_tool_call(
+                session.tool_dispatcher(),
+                definition,
+                call,
+            )
+        });
     let mut base_tools = BTreeMap::new();
     for (name, definition) in definitions {
         let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(
             definition,
             Some(context_factory.clone()),
+            Some(dispatcher.clone()),
         );
         base_tools.insert(name, tool);
     }

@@ -61,7 +61,9 @@ fn from_agent_result(result: AgentToolResult) -> Result<ToolResult, ToolError> {
 pub fn wrap_tool_definition(
     definition: ToolDefinition,
     context_factory: Option<ContextFactory>,
+    dispatcher: Option<ToolRunDispatcher>,
 ) -> AgentTool {
+    let dispatched = dispatcher.map(|dispatcher| (dispatcher, Arc::new(definition.clone())));
     let prepare = definition.prepare_arguments.clone().map(|prepare| {
         Arc::new(move |args| prepare(args).map_err(|error| error.to_string()))
             as maho_agent::ToolArgumentShim
@@ -85,6 +87,7 @@ pub fn wrap_tool_definition(
         },
         execute: Arc::new(move |id, params, signal, on_update| {
             let execute = Arc::clone(&execute);
+            let dispatched = dispatched.clone();
             let context = context_factory
                 .as_ref()
                 .map(|factory| factory(id.as_str(), signal.as_ref()));
@@ -104,14 +107,17 @@ pub fn wrap_tool_definition(
                         Ok(())
                     }) as ToolUpdateCallback
                 });
-                let result = execute(ToolCall {
+                let call = ToolCall {
                     id: &id,
                     params,
                     signal: local_signal,
                     on_update,
                     context: context.as_deref(),
-                })
-                .await;
+                };
+                let result = match &dispatched {
+                    Some((dispatcher, definition)) => dispatcher(definition.as_ref(), call).await,
+                    None => execute(call).await,
+                };
                 if let (Some(signal), Some(listener)) = (signal, listener) {
                     signal.remove_abort_listener(listener);
                 }
@@ -130,10 +136,13 @@ pub fn wrap_tool_definition(
 pub fn wrap_tool_definitions(
     definitions: Vec<ToolDefinition>,
     context_factory: Option<ContextFactory>,
+    dispatcher: Option<ToolRunDispatcher>,
 ) -> Vec<AgentTool> {
     definitions
         .into_iter()
-        .map(|definition| wrap_tool_definition(definition, context_factory.clone()))
+        .map(|definition| {
+            wrap_tool_definition(definition, context_factory.clone(), dispatcher.clone())
+        })
         .collect()
 }
 pub fn create_tool_definition_from_agent_tool(tool: AgentTool) -> ToolDefinition {
@@ -231,7 +240,7 @@ mod tests {
         definition.prepare_arguments = Some(Arc::new(|_| {
             Err(ToolError::Message("prepare-sentinel".into()))
         }));
-        let tool = wrap_tool_definition(definition, None);
+        let tool = wrap_tool_definition(definition, None, None);
         // When: a real agent pipeline prepares and attempts to run the wrapped tool.
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -266,6 +275,41 @@ mod tests {
         assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    #[tokio::test]
+    async fn dispatcher_runs_the_wrapped_call_with_its_definition_and_context() {
+        // Given: a definition whose own body must not run, wrapped with a recording dispatcher.
+        let definition = ToolDefinition::new(
+            "probe",
+            "probe",
+            serde_json::json!({}),
+            Arc::new(|_| Box::pin(async { Ok(ToolResult::text("direct")) })),
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let dispatcher: ToolRunDispatcher = Arc::new(move |definition, call| {
+            capture.lock().expect("dispatch lock").push((
+                definition.name.clone(),
+                call.id.to_owned(),
+                call.params.clone(),
+                call.context.is_some(),
+            ));
+            Box::pin(async { Ok(ToolResult::text("dispatched")) })
+        });
+        let factory: ContextFactory = Arc::new(|_, _| Arc::new(Context { session: Session }));
+        let wrapped = wrap_tool_definition(definition, Some(factory), Some(dispatcher));
+        // When: the agent runtime executes the wrapped tool.
+        let result = (wrapped.execute)("call-7".into(), serde_json::json!({"n": 1}), None, None).await;
+        // Then: the dispatcher ran it, with the definition, call id, params and context.
+        assert_eq!(
+            maho_ai::utils::text::content_text(&result.content, ""),
+            "dispatched"
+        );
+        assert_eq!(
+            *seen.lock().expect("dispatch lock"),
+            vec![("probe".to_owned(), "call-7".to_owned(), serde_json::json!({"n": 1}), true)]
+        );
+    }
+
     #[test]
     fn reverse_wrapper_preserves_preparation_failure() {
         // Given: a failing preparation hook on an agent tool.
@@ -277,7 +321,7 @@ mod tests {
         );
         definition.prepare_arguments = Some(Arc::new(|_| Err(ToolError::Aborted)));
         let restored =
-            create_tool_definition_from_agent_tool(wrap_tool_definition(definition, None));
+            create_tool_definition_from_agent_tool(wrap_tool_definition(definition, None, None));
         // When: the reverse-wrapped hook prepares arguments.
         let result = restored.prepare_arguments.expect("preparation hook")(serde_json::json!({}));
         // Then: it returns failure rather than executable arguments.
@@ -327,7 +371,7 @@ mod tests {
             serde_json::json!({}),
             Arc::new(|_| Box::pin(async { Ok(ToolResult::default()) })),
         );
-        let wrapped = wrap_tool_definition(definition, Some(factory));
+        let wrapped = wrap_tool_definition(definition, Some(factory), None);
         let runtime_signal = maho_ai::utils::abort::AbortController::new();
         let future = (wrapped.execute)(
             "call-1".into(),

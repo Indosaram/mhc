@@ -840,7 +840,7 @@ mod shell_lifecycle_tests {
             },
         );
         // When: the shell definition executes through the agent wrapper.
-        let wrapped = crate::tool_definition_wrapper::wrap_tool_definition(tool, None);
+        let wrapped = crate::tool_definition_wrapper::wrap_tool_definition(tool, None, None);
         let result = tokio::time::timeout(
             Duration::from_secs(1),
             (wrapped.execute)("nonzero".into(), json!({"command":"ignored"}), None, None),

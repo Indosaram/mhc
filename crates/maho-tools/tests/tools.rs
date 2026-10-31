@@ -115,7 +115,7 @@ async fn bash_exposes_structured_result_for_nonzero_exit() {
 fn output_schema_survives_definition_wrapper() {
     let definition = create_bash_tool_definition(std::path::PathBuf::from("."),BashToolOptions::default());
     assert!(definition.output_schema.is_some());
-    let wrapped = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition,None);
+    let wrapped = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition,None,None);
     assert!(wrapped.tool.output_schema.is_some());
 }
 #[test]

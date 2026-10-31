@@ -73,7 +73,7 @@ async fn wrapped_definition_executes_agent_contract() {
         call.signal.check()?;
         Ok(ToolResult::text(call.params["value"].as_str().unwrap_or_default()))
     })));
-    let agent = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition, None);
+    let agent = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition, None, None);
     let result = (agent.execute)("id".into(), json!({"value":"hello"}), None, None).await;
     assert_eq!(serde_json::to_value(result.content).unwrap()[0]["text"], "hello");
 }

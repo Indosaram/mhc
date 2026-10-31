@@ -11322,6 +11322,9 @@ impl AgentSession {
             let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(
                 definition.clone(),
                 Some(context.clone()),
+                Some(crate::tool_dispatch::tool_dispatcher::tool_run_dispatcher(
+                    self.tool_dispatcher(),
+                )),
             );
             let mut state = self.state();
             if state.custom_tools.iter().any(|custom| custom.name == name) {
@@ -14798,6 +14801,9 @@ impl AgentSession {
         let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(
             definition.clone(),
             Some(context),
+            Some(crate::tool_dispatch::tool_dispatcher::tool_run_dispatcher(
+                self.tool_dispatcher(),
+            )),
         );
         let name = definition.name.clone();
         {
