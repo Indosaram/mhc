@@ -49,17 +49,32 @@ pub fn current_arch() -> &'static str {
 pub fn current_platform_key() -> String {
     format!("{}-{}", current_platform(), current_arch())
 }
+/// Reads one environment variable. The command handler takes this instead of `std::env` so a
+/// test can inject `PI_OFFLINE`, `PATH` and the cache variables without mutating the process env.
+pub type EnvReader = std::sync::Arc<dyn Fn(&str) -> Option<std::ffi::OsString> + Send + Sync>;
+/// The process environment, read at call time.
+pub fn process_env() -> EnvReader {
+    std::sync::Arc::new(|key: &str| std::env::var_os(key))
+}
 /// Upstream `PI_OFFLINE === "1" || PI_OFFLINE === "true"`, read at call time.
 pub fn is_offline() -> bool {
+    is_offline_in(&*process_env())
+}
+pub fn is_offline_in(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> bool {
     matches!(
-        std::env::var("PI_OFFLINE").ok().as_deref(),
+        env("PI_OFFLINE")
+            .as_deref()
+            .and_then(std::ffi::OsStr::to_str),
         Some("1" | "true")
     )
 }
 /// Upstream `getCacheDir()`: `LOCALAPPDATA`/`APPDATA` on win32, `XDG_CACHE_HOME` elsewhere, else the home default.
 pub fn get_cache_dir() -> PathBuf {
+    get_cache_dir_in(&*process_env())
+}
+pub fn get_cache_dir_in(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
     let platform = current_platform();
-    let home = std::env::var_os(if platform == "win32" {
+    let home = env(if platform == "win32" {
         "USERPROFILE"
     } else {
         "HOME"
@@ -67,9 +82,9 @@ pub fn get_cache_dir() -> PathBuf {
     .map(PathBuf::from)
     .unwrap_or_default();
     let override_path = if platform == "win32" {
-        std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA"))
+        env("LOCALAPPDATA").or_else(|| env("APPDATA"))
     } else {
-        std::env::var_os("XDG_CACHE_HOME")
+        env("XDG_CACHE_HOME")
     }
     .map(PathBuf::from);
     cache_dir(&home, platform, override_path.as_deref())

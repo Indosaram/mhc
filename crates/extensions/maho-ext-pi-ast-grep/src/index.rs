@@ -13,15 +13,22 @@ pub struct AstGrep {
 }
 impl Extension for AstGrep {
     fn register(&self, api: &mut ExtensionApi) {
+        self.register_with_env(api, crate::downloader::process_env());
+    }
+}
+impl AstGrep {
+    /// `register` with the environment read through `env`: `PATH`, `PI_OFFLINE` and the cache
+    /// variables, at registration and on every `/ast-grep` call.
+    pub fn register_with_env(&self, api: &mut ExtensionApi, env: crate::downloader::EnvReader) {
         let platform = crate::downloader::current_platform();
         let platform_key = crate::downloader::current_platform_key();
-        let cache = crate::downloader::get_cache_dir();
+        let cache = crate::downloader::get_cache_dir_in(&*env);
         let source = self
             .package_entry
             .clone()
             .unwrap_or_else(|| api.cwd.join("extension.rs"));
-        let path = std::env::var_os("PATH");
-        let offline = crate::downloader::is_offline();
+        let path = env("PATH");
+        let offline = crate::downloader::is_offline_in(&*env);
         let resolver = Arc::new(BinaryResolver::new(
             source.clone(),
             cache,
@@ -40,18 +47,19 @@ impl Extension for AstGrep {
         }
         api.register_command("ast-grep", Some("Show ast-grep binary path, version, and cache directory".into()), None, Arc::new(move |args, ctx| {
             // Upstream calls getCacheDir() per invocation, so cache env changes apply.
-            let cache = crate::downloader::get_cache_dir();
+            let cache = crate::downloader::get_cache_dir_in(&*env);
             let platform_key = platform_key.clone();
             let source = source.clone();
             // Upstream findSgCliPathSync() reads PATH per invocation.
-            let path = std::env::var_os("PATH");
+            let path = env("PATH");
             let version = version.clone();
+            let env = Arc::clone(&env);
             Box::pin(async move {
                 let cached = cached_binary_path(&cache, platform);
                 let local = find_sg_cli_path(&source, cached.as_deref(), path.as_deref());
                 if matches!(args.trim(), "install" | "download") {
                     ctx.ui.set_status("pi-ast-grep", Some("Downloading sg binary..."));
-                    let offline = crate::downloader::is_offline();
+                    let offline = crate::downloader::is_offline_in(&*env);
                     let binary = ensure_ast_grep_binary(&cache, &platform_key, &version, offline).await;
                     ctx.ui.set_status("pi-ast-grep", None);
                     if let Some(binary) = binary { ctx.ui.notify(&format!("ast-grep ready: {}", binary.display()), NotificationType::Info); }
