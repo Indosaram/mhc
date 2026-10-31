@@ -5,14 +5,19 @@
 //! are fetched with `Network.getResponseBody` unless oversized; `pop`/`peek`/`popJson`/`waitFor`/
 //! `summary`/`dispose` keep their meaning.
 //!
-//! PORT-DIVERGENCE: the JS snoop subscribes listeners on the CDP emitter. Here it holds a
-//! [`Subscription`] to the session's `Network.*` events (an unbounded queue, so nothing is lost
-//! between reads) and folds them in whenever it is read ([`NetworkSnoop::poll`], called by every
-//! accessor). `Network.enable` is sent on creation because the Rust page does not enable the
-//! domain itself.
+//! PORT-DIVERGENCE: the JS snoop subscribes listeners on the CDP emitter for the four request
+//! lifecycle events. Here a [`Subscription`] filter for the same four events folds each one into
+//! the snoop as it arrives (on the client's reader thread) and queues nothing, so memory stays
+//! bounded by `maxEntries` whether or not the snoop is read. The instance `match` runs there too,
+//! so it must not call the client. Response bodies cannot be fetched on the reader thread:
+//! finished entries wait (counted against `maxEntries`) until the next read
+//! ([`NetworkSnoop::poll`], called by every accessor) fetches their bodies and commits them, so a
+//! body may have expired by then. `Network.enable` is sent on creation because the Rust page does
+//! not enable the domain itself.
 use crate::cdp::{CdpClient, Event, Subscription};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// omowright `DEFAULT_TIMEOUT_MS` for `waitFor`.
@@ -227,78 +232,52 @@ fn object_at(value: &Value, pointer: &str) -> Option<Map<String, Value>> {
     value.pointer(pointer).and_then(Value::as_object).cloned()
 }
 
-/// A network snoop over one CDP session.
-pub struct NetworkSnoop {
-    client: CdpClient,
-    session_id: String,
-    options: SnoopOptions,
-    events: Option<Subscription>,
+/// The four events `poll` folds in (upstream `subscribe` calls).
+const HANDLED_METHODS: [&str; 4] = [
+    "Network.requestWillBeSent",
+    "Network.responseReceived",
+    "Network.loadingFinished",
+    "Network.loadingFailed",
+];
+
+/// Snoop state folded on arrival by the subscription filter (on the client's reader thread).
+struct Core {
+    matcher: EntryMatch,
+    max_entries: usize,
     inflight: HashMap<String, NetworkEntry>,
+    /// Finished entries waiting for their body fetch, with the seq of their finishing event.
+    pending: VecDeque<(u64, NetworkEntry)>,
     buffer: VecDeque<NetworkEntry>,
-    disposed: bool,
 }
 
-impl NetworkSnoop {
-    /// Starts buffering traffic of `session_id` from now on.
-    pub fn new(client: CdpClient, session_id: &str, options: SnoopOptions) -> Self {
-        let session = session_id.to_owned();
-        let events = client.subscribe(move |event| {
-            event.session_id.as_deref() == Some(session.as_str())
-                && event.method.starts_with("Network.")
-        });
-        // Without the Network domain the page sends no request events.
-        let _ = client.send("Network.enable", json!({}), Some(session_id));
-        Self {
-            client,
-            session_id: session_id.to_owned(),
-            options,
-            events: Some(events),
-            inflight: HashMap::new(),
-            buffer: VecDeque::new(),
-            disposed: false,
-        }
-    }
-
-    fn load_body(&self, entry: &mut NetworkEntry) {
-        if entry.encoded_data_length > self.options.max_body_bytes {
-            entry.body_skipped = true;
+impl Core {
+    /// Queues a finished entry, keeping `buffer` + `pending` within `max_entries`: the oldest
+    /// entries go first, as they would leave upstream's buffer once committed.
+    fn finish(&mut self, seq: u64, entry: NetworkEntry) {
+        if !self.matcher.test(&entry) {
             return;
         }
-        match self.client.send(
-            "Network.getResponseBody",
-            json!({"requestId": entry.request_id}),
-            Some(&self.session_id),
-        ) {
-            Ok(result) => {
-                entry.body = result
-                    .get("body")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                entry.base64_encoded = result
-                    .get("base64Encoded")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+        self.pending.push_back((seq, entry));
+        while self.buffer.len() + self.pending.len() > self.max_entries {
+            if self.buffer.pop_front().is_none() {
+                self.pending.pop_front();
             }
-            // Bodies expire with the network cache; keep the entry, drop the body.
-            Err(_) => entry.body = None,
         }
     }
 
-    fn commit(&mut self, entry: NetworkEntry) -> Option<NetworkEntry> {
-        self.buffer.push_back(entry.clone());
-        while self.buffer.len() > self.options.max_entries {
+    fn commit(&mut self, entry: NetworkEntry) {
+        self.buffer.push_back(entry);
+        while self.buffer.len() > self.max_entries {
             self.buffer.pop_front();
         }
-        Some(entry)
     }
 
-    /// Folds one event in; returns the entry it committed, if any.
-    fn handle(&mut self, event: &Event) -> Option<NetworkEntry> {
-        if event.session_id.as_deref() != Some(self.session_id.as_str()) {
-            return None;
-        }
+    /// Folds one of the [`HANDLED_METHODS`] events of the snooped session in.
+    fn fold(&mut self, event: &Event) {
         let params = &event.params;
-        let request_id = params.get("requestId").and_then(Value::as_str)?;
+        let Some(request_id) = params.get("requestId").and_then(Value::as_str) else {
+            return;
+        };
         match event.method.as_str() {
             "Network.requestWillBeSent" => {
                 let entry = NetworkEntry {
@@ -325,10 +304,11 @@ impl NetworkSnoop {
                     finished_at: None,
                 };
                 self.inflight.insert(request_id.to_owned(), entry);
-                None
             }
             "Network.responseReceived" => {
-                let entry = self.inflight.get_mut(request_id)?;
+                let Some(entry) = self.inflight.get_mut(request_id) else {
+                    return;
+                };
                 entry.status = params.pointer("/response/status").and_then(Value::as_i64);
                 entry.status_text =
                     Some(string_at(params, "/response/statusText").unwrap_or_default());
@@ -339,65 +319,142 @@ impl NetworkSnoop {
                 if let Some(kind) = string_at(params, "/type") {
                     entry.resource_type = Some(kind);
                 }
-                None
             }
             "Network.loadingFinished" => {
-                let mut entry = self.inflight.remove(request_id)?;
+                let Some(mut entry) = self.inflight.remove(request_id) else {
+                    return;
+                };
                 entry.encoded_data_length = params
                     .get("encodedDataLength")
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0) as u64;
                 entry.finished_at = Some(now_ms());
-                if !self.options.matcher.test(&entry) {
-                    return None;
-                }
-                if self.options.bodies {
-                    self.load_body(&mut entry);
-                }
-                self.commit(entry)
+                self.finish(event.seq, entry);
             }
             "Network.loadingFailed" => {
-                let mut entry = self.inflight.remove(request_id)?;
+                let Some(mut entry) = self.inflight.remove(request_id) else {
+                    return;
+                };
                 entry.failed = true;
                 entry.error_text = Some(string_at(params, "/errorText").unwrap_or_default());
                 if let Some(length) = params.get("encodedDataLength").and_then(Value::as_f64) {
                     entry.encoded_data_length = length as u64;
                 }
                 entry.finished_at = Some(now_ms());
-                if !self.options.matcher.test(&entry) {
-                    return None;
-                }
-                self.commit(entry)
+                self.finish(event.seq, entry);
             }
-            _ => None,
+            _ => {}
+        }
+    }
+}
+
+fn lock(core: &Mutex<Core>) -> MutexGuard<'_, Core> {
+    core.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A network snoop over one CDP session.
+pub struct NetworkSnoop {
+    client: CdpClient,
+    session_id: String,
+    bodies: bool,
+    max_body_bytes: u64,
+    core: Arc<Mutex<Core>>,
+    events: Option<Subscription>,
+    disposed: bool,
+}
+
+impl NetworkSnoop {
+    /// Starts buffering traffic of `session_id` from now on.
+    pub fn new(client: CdpClient, session_id: &str, options: SnoopOptions) -> Self {
+        let core = Arc::new(Mutex::new(Core {
+            matcher: options.matcher,
+            max_entries: options.max_entries,
+            inflight: HashMap::new(),
+            pending: VecDeque::new(),
+            buffer: VecDeque::new(),
+        }));
+        let session = session_id.to_owned();
+        let folded = Arc::clone(&core);
+        // The filter folds each event in as it arrives and queues nothing.
+        let events = client.subscribe(move |event| {
+            if event.session_id.as_deref() == Some(session.as_str())
+                && HANDLED_METHODS.contains(&event.method.as_str())
+            {
+                lock(&folded).fold(event);
+            }
+            false
+        });
+        // Without the Network domain the page sends no request events.
+        let _ = client.send("Network.enable", json!({}), Some(session_id));
+        Self {
+            client,
+            session_id: session_id.to_owned(),
+            bodies: options.bodies,
+            max_body_bytes: options.max_body_bytes,
+            core,
+            events: Some(events),
+            disposed: false,
         }
     }
 
-    /// Folds every event received since the last read into the buffer; returns the entries it
-    /// committed.
-    pub fn poll(&mut self) -> Vec<NetworkEntry> {
-        let events = self
-            .events
-            .as_ref()
-            .map(Subscription::drain)
-            .unwrap_or_default();
-        let mut committed = Vec::new();
-        for event in events {
-            committed.extend(self.handle(&event));
+    fn load_body(&self, entry: &mut NetworkEntry) {
+        if entry.encoded_data_length > self.max_body_bytes {
+            entry.body_skipped = true;
+            return;
+        }
+        match self.client.send(
+            "Network.getResponseBody",
+            json!({"requestId": entry.request_id}),
+            Some(&self.session_id),
+        ) {
+            Ok(result) => {
+                entry.body = result
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                entry.base64_encoded = result
+                    .get("base64Encoded")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            }
+            // Bodies expire with the network cache; keep the entry, drop the body.
+            Err(_) => entry.body = None,
+        }
+    }
+
+    /// Fetches the bodies of entries finished since the last read and commits them to the
+    /// buffer; returns them with the seq of their finishing event.
+    fn commit_pending(&mut self) -> Vec<(u64, NetworkEntry)> {
+        let pending: Vec<_> = lock(&self.core).pending.drain(..).collect();
+        let mut committed = Vec::with_capacity(pending.len());
+        for (seq, mut entry) in pending {
+            if self.bodies && !entry.failed {
+                self.load_body(&mut entry);
+            }
+            lock(&self.core).commit(entry.clone());
+            committed.push((seq, entry));
         }
         committed
+    }
+
+    /// Commits every entry finished since the last read; returns the entries it committed.
+    pub fn poll(&mut self) -> Vec<NetworkEntry> {
+        self.commit_pending()
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect()
     }
 
     /// Takes every buffered entry.
     pub fn pop(&mut self) -> Vec<NetworkEntry> {
         self.poll();
-        self.buffer.drain(..).collect()
+        lock(&self.core).buffer.drain(..).collect()
     }
 
     /// The buffered entries, left in place.
     pub fn peek(&mut self) -> Vec<NetworkEntry> {
         self.poll();
-        self.buffer.iter().cloned().collect()
+        lock(&self.core).buffer.iter().cloned().collect()
     }
 
     /// Takes every buffered entry and returns the parsed bodies of the JSON ones; unparsable or
@@ -440,16 +497,8 @@ impl NetworkSnoop {
         }
         let deadline = Instant::now() + timeout;
         loop {
-            let events = self
-                .events
-                .as_ref()
-                .map(Subscription::drain)
-                .unwrap_or_default();
-            for event in events {
-                if let Some(entry) = self.handle(&event)
-                    && event.seq >= mark
-                    && matcher.test(&entry)
-                {
+            for (seq, entry) in self.commit_pending() {
+                if seq >= mark && matcher.test(&entry) {
                     return Ok(entry);
                 }
             }
@@ -464,7 +513,8 @@ impl NetworkSnoop {
                 ));
             }
             if let Some(events) = &self.events {
-                events.wait(deadline - now);
+                let core = Arc::clone(&self.core);
+                events.wait_until(deadline - now, move || !lock(&core).pending.is_empty());
             }
         }
     }
@@ -472,7 +522,8 @@ impl NetworkSnoop {
     /// One line per entry, oldest first: `METHOD STATUS MIME SIZEB URL`, at most `max` lines.
     pub fn summary(&mut self, max: usize) -> String {
         self.poll();
-        let mut lines: Vec<String> = self
+        let core = lock(&self.core);
+        let mut lines: Vec<String> = core
             .buffer
             .iter()
             .take(max)
@@ -492,7 +543,7 @@ impl NetworkSnoop {
                 )
             })
             .collect();
-        let hidden = self.buffer.len().saturating_sub(max);
+        let hidden = core.buffer.len().saturating_sub(max);
         if hidden > 0 {
             lines.push(format!("... +{hidden} more"));
         }
@@ -503,7 +554,9 @@ impl NetworkSnoop {
     pub fn dispose(&mut self) {
         self.disposed = true;
         self.events = None;
-        self.inflight.clear();
+        let mut core = lock(&self.core);
+        core.inflight.clear();
+        core.pending.clear();
     }
 
     pub fn is_disposed(&self) -> bool {
@@ -685,6 +738,43 @@ mod tests {
             .map(|entry| entry.request_id)
             .collect();
         assert_eq!(ids, ["early", "late"]);
+    }
+
+    #[test]
+    fn an_unread_snoop_stays_within_max_entries_and_queues_no_raw_events() {
+        let (cdp, _) = fake();
+        let mut snoop = snoop(&cdp, SnoopOptions::default());
+        for index in 0..600 {
+            let id = format!("r{index}");
+            round_trip(&cdp, &id, Req::default());
+            for method in [
+                "Network.dataReceived",
+                "Network.requestWillBeSentExtraInfo",
+                "Network.responseReceivedExtraInfo",
+                "Network.webSocketFrameReceived",
+            ] {
+                cdp.emit(method, json!({"requestId": id}), Some("s1"));
+            }
+        }
+        cdp.flush();
+        let events = snoop
+            .events
+            .as_ref()
+            .map_or(usize::MAX, Subscription::queued);
+        assert_eq!(events, 0, "events are folded on arrival, not queued");
+        {
+            let core = lock(&snoop.core);
+            assert_eq!(core.buffer.len() + core.pending.len(), 500);
+            assert!(core.inflight.is_empty());
+        }
+        assert!(
+            cdp.calls_of("Network.getResponseBody").is_empty(),
+            "nothing read yet"
+        );
+        let ids: Vec<String> = snoop.pop().into_iter().map(|e| e.request_id).collect();
+        let expected: Vec<String> = (100..600).map(|index| format!("r{index}")).collect();
+        assert_eq!(ids, expected, "the oldest 100 entries were evicted");
+        assert_eq!(cdp.calls_of("Network.getResponseBody").len(), 500);
     }
 
     #[test]
