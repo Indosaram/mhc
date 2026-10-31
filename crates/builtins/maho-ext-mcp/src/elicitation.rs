@@ -75,6 +75,42 @@ fn response(action: ElicitationAction) -> ElicitationResponse {
     }
 }
 
+/// The readiness half of upstream `McpElicitationUiProvider` (`enforced`, `eligible`, `subscribe`). A pooled
+/// connection installs an aggregate over its leases (shared-connection.ts); otherwise readiness is read from
+/// the connection's own UI.
+#[derive(Clone)]
+pub struct McpFormReadiness {
+    pub enforced: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub eligible: Arc<dyn Fn() -> bool + Send + Sync>,
+    pub subscribe: Arc<
+        dyn Fn(Arc<dyn Fn() + Send + Sync>) -> crate::form_types::McpFormUnsubscribe + Send + Sync,
+    >,
+}
+/// Upstream `uiProvider?.enforced?.()`, falling back to the UI's own private binding.
+pub fn mcp_forms_enforced(
+    readiness: Option<&McpFormReadiness>,
+    ui: Option<&Arc<dyn ExtensionUi>>,
+) -> bool {
+    match readiness {
+        Some(readiness) => (readiness.enforced)(),
+        None => ui.is_some_and(|ui| private_mcp_forms(ui).is_some()),
+    }
+}
+/// Upstream `legacyMcpFormEligible(provider, enabled)`: a provider's `eligible` wins over the UI's binding.
+pub fn legacy_mcp_form_eligible_with(
+    readiness: Option<&McpFormReadiness>,
+    ui: Option<&Arc<dyn ExtensionUi>>,
+    enabled: bool,
+) -> bool {
+    if !enabled {
+        return false;
+    }
+    match readiness {
+        Some(readiness) => (readiness.eligible)(),
+        None => legacy_mcp_form_eligible(ui, enabled),
+    }
+}
+
 /// Whether legacy forms may be advertised: a host-enforced private binding must have a ready presenter.
 pub fn legacy_mcp_form_eligible(ui: Option<&Arc<dyn ExtensionUi>>, enabled: bool) -> bool {
     if !enabled {

@@ -683,6 +683,7 @@ pub fn harness_in(
 impl Harness {
     pub async fn start(&self, reason: SessionReason, provenance: Option<&str>) -> EventResult {
         let mut event = ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason,
             initial_model_provenance: provenance.map(str::to_owned),
             previous_session_file: None,

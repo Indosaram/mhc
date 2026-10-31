@@ -1057,6 +1057,7 @@ pub fn host_runtime_factory_with_mcp_registry(
                 )
                 .await?;
                 let session_start_event = initial.provenance.map(|provenance| SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: Some(provenance.to_owned()),
                     previous_session_file: None,

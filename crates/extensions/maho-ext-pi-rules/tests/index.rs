@@ -268,6 +268,7 @@ async fn session_scan_entries_follow_current_runtime_binding_and_disabled_start(
     let first = Arc::new(ScanActions::default());
     api.runtime.bind(first.clone());
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -285,6 +286,7 @@ async fn session_scan_entries_follow_current_runtime_binding_and_disabled_start(
     let second = Arc::new(ScanActions::default());
     api.runtime.bind(second.clone());
     event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Fork,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -440,6 +442,7 @@ async fn static_hook_is_immutable_deduplicated_and_session_resettable() {
         EventResult::None
     ));
     let mut reset = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -572,6 +575,7 @@ async fn dynamic_hook_reinjects_changed_rule_without_cross_session_state() {
     assert!(text.contains("changed body with different length"));
     assert!(!text.contains("first body"));
     let mut reset = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

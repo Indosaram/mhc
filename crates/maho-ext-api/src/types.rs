@@ -3017,6 +3017,9 @@ pub enum SessionReason {
 }
 #[derive(Clone, Debug)]
 pub struct SessionStartEvent {
+    /// Diagnostic startup: built-in MCP attach and cache prewarm are skipped; every other handler runs; no
+    /// turn starts.
+    pub sizes_only: bool,
     pub reason: SessionReason,
     pub initial_model_provenance: Option<String>,
     pub previous_session_file: Option<String>,

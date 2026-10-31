@@ -1,6 +1,7 @@
 //! Port of senpi mcp/modern/client.ts: configure a fresh client's form policy before its first request.
 use crate::{
-    elicitation::legacy_mcp_form_eligible, form_types::private_mcp_forms, transport_sdk::McpClient,
+    elicitation::{McpFormReadiness, legacy_mcp_form_eligible_with, mcp_forms_enforced},
+    transport_sdk::McpClient,
 };
 use maho_ext_api::ExtensionUi;
 use std::sync::Arc;
@@ -11,11 +12,11 @@ use std::sync::Arc;
 pub fn create_mcp_request_client(
     client: &McpClient,
     ui: Option<&Arc<dyn ExtensionUi>>,
+    readiness: Option<&McpFormReadiness>,
     elicitation_enabled: bool,
 ) {
-    let private_forms = ui.is_some_and(|ui| private_mcp_forms(ui).is_some());
     client.configure_requests(
-        private_forms,
-        legacy_mcp_form_eligible(ui, elicitation_enabled),
+        mcp_forms_enforced(readiness, ui),
+        legacy_mcp_form_eligible_with(readiness, ui, elicitation_enabled),
     );
 }

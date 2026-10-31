@@ -128,6 +128,8 @@ pub struct McpTransportConnection {
     pub auth: Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
     pub auth_challenge_handler: Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>,
     pub elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// Upstream `elicitationUiProvider` readiness (`enforced`/`eligible`), when the connection installs one.
+    pub form_readiness: Option<crate::elicitation::McpFormReadiness>,
     /// Upstream `elicitationEnabled`: false withholds the elicitation capability entirely.
     pub elicitation_enabled: bool,
     server_requests: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -152,6 +154,7 @@ pub fn create_mcp_transport(
         auth: None,
         auth_challenge_handler: None,
         elicitation_ui: None,
+        form_readiness: None,
         elicitation_enabled: true,
         server_requests: Mutex::new(None),
         shutdown: tokio::sync::Mutex::new(false),
@@ -214,6 +217,7 @@ impl McpTransportConnection {
                         logger: self.logger.clone(),
                         auth: self.auth.clone(),
                         ui: self.elicitation_ui.clone(),
+                        readiness: self.form_readiness.clone(),
                         elicitation_enabled: self.elicitation_enabled,
                     },
                     &self.server_name,
