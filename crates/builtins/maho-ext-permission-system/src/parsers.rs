@@ -601,7 +601,7 @@ fn parse_read_permission(
     let requests = crate::read_permission::parse_read_permission(
         file_path,
         location,
-        &crate::read_permission::bundled_resource_roots(),
+        &crate::read_permission::bundled_resource_roots(agent_dir),
     );
     credential(
         requests,

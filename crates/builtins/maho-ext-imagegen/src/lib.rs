@@ -35,26 +35,51 @@ fn default_skill_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skill/SKILL.md")
 }
 
-/// The binary carries the skill text, so a run away from the build tree materializes it once
-/// under the temp dir (the shipped-asset path upstream's compiled bundle resolves to).
-pub fn embedded_skill_path() -> Option<PathBuf> {
-    let path = std::env::temp_dir()
-        .join(format!("maho-imagegen-{}", env!("CARGO_PKG_VERSION")))
+/// The per-user folder the embedded skill is materialized in: `<agent_dir>/cache/imagegen-<version>/skill`.
+/// The permission system treats it as a bundled resource root (`read_permission::bundled_resource_roots`
+/// computes the same path), so it must never sit in a directory other users can write, such as `/tmp`.
+pub fn embedded_skill_dir(agent_dir: &Path) -> PathBuf {
+    agent_dir
+        .join("cache")
+        .join(format!("imagegen-{}", env!("CARGO_PKG_VERSION")))
         .join("skill")
-        .join("SKILL.md");
+}
+
+/// Create `dir` (owner-only on unix) unless it already exists as a real directory; a symlink or any
+/// other non-directory in its place refuses materialization.
+fn create_private_dir(dir: &Path) -> Option<()> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata.file_type().is_dir().then_some(()),
+        Err(_) => {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder.create(dir).ok()
+        }
+    }
+}
+
+/// The binary carries the skill text, so a run away from the build tree materializes it once in the
+/// per-user [`embedded_skill_dir`] (the shipped-asset path upstream's compiled bundle resolves to).
+pub fn embedded_skill_path(agent_dir: &Path) -> Option<PathBuf> {
+    let skill_dir = embedded_skill_dir(agent_dir);
+    let version_dir = skill_dir.parent()?;
+    let path = skill_dir.join("SKILL.md");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(EMBEDDED_SKILL) {
-        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::create_dir_all(version_dir.parent()?).ok()?;
+        create_private_dir(version_dir)?;
+        create_private_dir(&skill_dir)?;
         std::fs::write(&path, EMBEDDED_SKILL).ok()?;
     }
     Some(path)
 }
 
-fn bundled_skill_path(skill: &Path) -> Option<PathBuf> {
+fn bundled_skill_path(skill: &Path, agent_dir: &Path) -> Option<PathBuf> {
     if skill.is_file() {
         return Some(skill.to_owned());
     }
     if skill == default_skill_path().as_path()
-        && let Some(embedded) = embedded_skill_path()
+        && let Some(embedded) = embedded_skill_path(agent_dir)
         && embedded.is_file()
     {
         return Some(embedded);
@@ -111,7 +136,7 @@ impl Extension for ImageGen {
                     if matches!(
                         auth::resolve_context_image_gen_auth(ctx).await?,
                         auth::ImageGenAuthResolution::Configured { .. }
-                    ) && let Some(skill) = bundled_skill_path(&skill)
+                    ) && let Some(skill) = bundled_skill_path(&skill, &ctx.agent_dir)
                     {
                         return Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult {
                             skill_paths: vec![skill.to_string_lossy().into_owned().into()],
@@ -132,7 +157,8 @@ impl Extension for ImageGen {
                             auth::ImageGenAuthResolution::Configured { .. }
                         )
                     {
-                        return Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt_parts: None,
+                        return Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {
+                            system_prompt_parts: None,
                             message: None,
                             system_prompt: Some(format!(
                                 "{}\n{}",

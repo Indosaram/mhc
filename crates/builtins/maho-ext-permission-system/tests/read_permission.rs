@@ -124,7 +124,8 @@ fn files_outside_bundled_roots_keep_read_and_external_directory_requests() {
 
 #[test]
 fn bundled_roots_name_shipped_payloads_but_not_the_binary_or_package_directory() {
-    let roots = bundled_resource_roots();
+    let agent_dir = tempfile::tempdir().expect("agent dir");
+    let roots = bundled_resource_roots(agent_dir.path());
     let package = Path::new(&maho_core::config::get_package_dir()).to_path_buf();
     for shipped in ["theme", "export-html", "assets", "docs", "examples"] {
         assert!(
@@ -132,7 +133,17 @@ fn bundled_roots_name_shipped_payloads_but_not_the_binary_or_package_directory()
             "{shipped} missing from {roots:?}"
         );
     }
-    assert!(roots.iter().any(|root| root.ends_with("skill")));
+    // The imagegen skill root is the per-user folder imagegen materializes, not a shared temp dir.
+    let skill = maho_ext_imagegen::embedded_skill_dir(agent_dir.path());
+    assert!(roots.contains(&skill), "{skill:?} missing from {roots:?}");
+    assert!(skill.starts_with(agent_dir.path()));
+    assert!(
+        !roots
+            .iter()
+            .any(|root| root.starts_with(std::env::temp_dir())
+                && !root.starts_with(agent_dir.path())),
+        "a root sits in the shared temp dir: {roots:?}"
+    );
     let binary_dir = std::env::current_exe()
         .expect("exe")
         .parent()
@@ -165,4 +176,34 @@ fn bundled_roots_name_shipped_payloads_but_not_the_binary_or_package_directory()
         ["read", "external_directory"]
     );
     assert!(requests.iter().all(|request| !request.auto_approve_ask));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_root_does_not_auto_approve_reads_through_it() {
+    // Another user pre-creates the configured root as a link to the victim's files: a read through
+    // it must keep the read prompt and the external_directory request.
+    let root = tempfile::tempdir().expect("root");
+    let base = root.path().canonicalize().expect("real root");
+    let (cwd, outside, home) = (base.join("project"), base.join("victim"), base.join("home"));
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(outside.join("secret.txt"), "secret").expect("secret");
+    let link = base.join("bundle-skill");
+    std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+    let through = link.join("secret.txt").to_string_lossy().into_owned();
+
+    let requests = parse_read_permission(&through, (&cwd, &home), &[link.clone()]);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.permission.as_str())
+            .collect::<Vec<_>>(),
+        ["read", "external_directory"]
+    );
+    assert!(requests.iter().all(|request| !request.auto_approve_ask));
+    assert_eq!(
+        requests[1].patterns,
+        [outside.join("secret.txt").to_string_lossy()]
+    );
 }
