@@ -253,7 +253,11 @@ pub async fn connect_mcp_transport(
     let connect = async {
         let client = connection.materialize().await?;
         client.initialize(connection.connect_timeout).await?;
-        crate::modern::dispatch::log_negotiated_version(&client, &connection.logger, &connection.server_name);
+        crate::modern::dispatch::log_negotiated_version(
+            &client,
+            &connection.logger,
+            &connection.server_name,
+        );
         Ok::<_, McpError>(client)
     };
     match tokio::time::timeout(connection.connect_timeout, connect).await {
@@ -261,6 +265,10 @@ pub async fn connect_mcp_transport(
         result => {
             let _ = shutdown_mcp_transport(connection).await;
             let mut error = match result {
+                // transport.ts: modern discovery failures keep their own phase and message.
+                Ok(Err(error)) if error.phase.as_deref() == Some("modern-stdio") => {
+                    return Err(error);
+                }
                 Ok(Err(error)) if error.kind == McpErrorKind::Auth => error,
                 Ok(Err(error)) if error.kind != McpErrorKind::Timeout => McpError::new(
                     McpErrorKind::Connect,

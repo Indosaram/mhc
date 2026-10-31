@@ -13,6 +13,19 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+/// Upstream `getAuthTarget` result.
+pub struct McpAuthTarget {
+    pub config: crate::config_schema::McpServerConfig,
+    pub agent_dir: PathBuf,
+    pub callback_url: Option<String>,
+}
+/// A failed `/mcp test`, with the elapsed time the failure message reports.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct McpTestFailure {
+    pub elapsed_ms: f64,
+    pub error: McpServiceError,
+}
 #[derive(Debug, thiserror::Error)]
 pub enum McpServiceError {
     #[error(transparent)]
@@ -86,7 +99,9 @@ pub struct McpService {
     session_env: BTreeMap<String, String>,
     project_trusted: bool,
     deferred: Arc<crate::startup_race::McpDeferredAttach>,
-    pending_auth: BTreeMap<String, crate::auth::oauth_provider::McpOAuthProvider>,
+    pending_auth:
+        Arc<std::sync::Mutex<BTreeMap<String, crate::auth::oauth_provider::McpOAuthProvider>>>,
+    interactive_auth_servers: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     policy_notices: Arc<crate::policy_notices::PolicyNotices>,
     policy_notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
@@ -298,7 +313,8 @@ impl McpService {
             session_env: BTreeMap::new(),
             project_trusted: false,
             deferred: Default::default(),
-            pending_auth: BTreeMap::new(),
+            pending_auth: Arc::default(),
+            interactive_auth_servers: Arc::default(),
             policy_notices: Default::default(),
             policy_notice_event: None,
             elicitation_ui: None,
@@ -951,8 +967,9 @@ impl McpService {
         );
         if let Some(inputs) = self.registration_inputs.clone() {
             for removed in &diff.removed {
-                let _ = inputs.registrar.register_tool(
+                let _ = inputs.registrar.register_tool_with_renderers(
                     crate::notifications::build_mcp_tombstone_definition(removed, name),
+                    crate::notifications::mcp_tombstone_renderers(removed),
                 );
             }
         }
@@ -1059,126 +1076,40 @@ impl McpService {
         }
         Ok(())
     }
-    fn auth_provider(
+    /// Upstream `getAuthTarget`: what `/mcp auth*` needs for a configured server.
+    pub fn auth_target(&self, name: &str) -> Option<McpAuthTarget> {
+        let config = self.config.as_ref()?;
+        let server = config.servers.get(name)?.config.clone()?;
+        Some(McpAuthTarget {
+            config: server,
+            agent_dir: self.agent_dir.clone()?,
+            callback_url: config.settings.oauth_callback_url.clone(),
+        })
+    }
+    /// Upstream `getPendingAuth`.
+    pub fn pending_auth(
         &self,
-        name: &str,
-    ) -> Result<crate::auth::oauth_provider::McpOAuthProvider, McpServiceError> {
-        let config = self
-            .config
-            .as_ref()
-            .and_then(|config| config.servers.get(name))
-            .and_then(|server| server.config.as_ref())
-            .ok_or_else(|| {
-                crate::errors::McpError::new(
-                    crate::errors::McpErrorKind::Auth,
-                    format!("Unknown MCP server: {name}"),
-                )
-            })?;
-        let agent_dir = self.agent_dir.as_ref().ok_or_else(|| {
-            crate::errors::McpError::new(
-                crate::errors::McpErrorKind::Auth,
-                "MCP session is not attached",
-            )
-        })?;
-        Ok(crate::auth::commands_auth::build_provider(
-            name,
-            config,
-            agent_dir,
-            self.config
-                .as_ref()
-                .and_then(|config| config.settings.oauth_callback_url.as_deref()),
-        )?)
-    }
-    pub async fn auth_start(&mut self, name: &str) -> Result<String, McpServiceError> {
-        let provider = self.auth_provider(name)?;
-        Ok(crate::auth::commands_auth::run_auth_start(
-            name,
-            provider,
-            &mut self.pending_auth,
-            &reqwest::Client::new(),
-        )
-        .await?)
-    }
-    pub async fn auth<F, Fut>(
-        &mut self,
-        name: &str,
-        has_ui: bool,
-        on_authorization: F,
-    ) -> Result<Option<String>, McpServiceError>
-    where
-        F: FnOnce(url::Url) -> Fut,
-        Fut: std::future::Future<Output = Result<(), crate::auth::oauth::OAuthRequestError>>,
+    ) -> Arc<std::sync::Mutex<BTreeMap<String, crate::auth::oauth_provider::McpOAuthProvider>>>
     {
-        let provider = self.auth_provider(name)?;
-        let config = self
-            .config
-            .as_ref()
-            .and_then(|config| config.servers.get(name))
-            .and_then(|server| server.config.as_ref());
-        let oauth = config.and_then(|config| config.oauth.as_ref());
-        if oauth.is_some_and(|oauth| {
-            oauth.flow == Some(crate::config_schema::OAuthFlow::ClientCredentials)
-        }) {
-            crate::auth::commands_auth::run_client_credentials_auth(
-                &provider,
-                &reqwest::Client::new(),
-            )
-            .await?;
-            self.reconnect_server(name).await?;
-            return Ok(None);
-        }
-        if !has_ui {
-            return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,format!("MCP server {name} needs interactive OAuth. Run senpi in a terminal, then: /mcp auth-start {name} and /mcp auth-complete {name} <redirect-url>")).into());
-        }
-        if self
-            .config
-            .as_ref()
-            .and_then(|config| config.settings.oauth_callback_url.as_ref())
-            .is_some()
-        {
-            return self.auth_start(name).await.map(Some);
-        }
-        let port = oauth
-            .filter(|oauth| oauth.client_id.is_some() && oauth.client_metadata_url.is_none())
-            .and_then(|oauth| oauth.callback_port);
-        crate::auth::commands_auth::run_loopback_auth(
-            provider,
-            port,
-            &reqwest::Client::new(),
-            on_authorization,
-        )
-        .await?;
-        self.reconnect_server(name).await?;
-        Ok(None)
+        self.pending_auth.clone()
     }
-    pub async fn auth_complete(
-        &mut self,
-        name: &str,
-        redirect: &str,
-    ) -> Result<(), McpServiceError> {
-        crate::auth::commands_auth::run_auth_complete(
-            name,
-            redirect,
-            &mut self.pending_auth,
-            &reqwest::Client::new(),
-        )
-        .await?;
-        self.reconnect_server(name).await
-    }
-    pub async fn logout(&mut self, name: &str) -> Result<(), McpServiceError> {
-        let provider = self.auth_provider(name)?;
-        crate::auth::commands_auth::run_logout(name, &provider, &mut self.pending_auth)?;
-        if let Some(connection) = self.connections.get(name) {
-            let entry = connection.entry.lock().await;
-            entry.connection.mark_failure(
-                crate::connection::ServerConnectionState::NeedsAuth,
-                Some(crate::errors::McpError::new(
-                    crate::errors::McpErrorKind::Auth,
-                    "MCP credentials cleared",
-                )),
-            );
+    /// Upstream `beginInteractiveAuth`/`endInteractiveAuth`: one browser flow per server per service.
+    pub fn interactive_auth_guard(&self) -> crate::auth::commands_auth::McpInteractiveAuthGuard {
+        let begin = self.interactive_auth_servers.clone();
+        let end = self.interactive_auth_servers.clone();
+        crate::auth::commands_auth::McpInteractiveAuthGuard {
+            begin: Arc::new(move |name| {
+                begin
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(name.to_owned())
+            }),
+            end: Arc::new(move |name| {
+                end.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(name);
+            }),
         }
-        Ok(())
     }
     /// Cheap handle to the deferred-attach tracker so callers can wait without holding the service lock.
     pub fn deferred_attach(&self) -> Arc<crate::startup_race::McpDeferredAttach> {
@@ -1343,38 +1274,71 @@ impl McpService {
         }
         snapshot
     }
-    pub async fn test_server(&self, name: &str) -> Result<(f64, usize), McpServiceError> {
+    /// commands.ts `testServer`: connect, list tools, and record the call either way.
+    pub async fn test_server(&self, name: &str) -> Result<(f64, usize), McpTestFailure> {
         let started = tokio::time::Instant::now();
-        self.connect_server(name).await?;
-        let connection = self.connections.get(name).ok_or_else(|| {
-            crate::errors::McpError::new(
-                crate::errors::McpErrorKind::Connect,
-                format!("Unknown MCP server: {name}"),
+        let result = async {
+            self.connect_server(name).await?;
+            let connection = self.connections.get(name).ok_or_else(|| {
+                crate::errors::McpError::new(
+                    crate::errors::McpErrorKind::Connect,
+                    format!("Unknown MCP server: {name}"),
+                )
+            })?;
+            let client = connection.entry.lock().await.connection.client()?;
+            Ok::<_, McpServiceError>(
+                client
+                    .request(
+                        "tools/list",
+                        serde_json::json!({}),
+                        std::time::Duration::from_secs(2),
+                    )
+                    .await?
+                    .get("tools")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len),
             )
-        })?;
+        }
+        .await;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        self.record_call(name, elapsed_ms, result.is_err()).await;
+        result
+            .map(|tools| (elapsed_ms, tools))
+            .map_err(|error| McpTestFailure { elapsed_ms, error })
+    }
+    /// Upstream `recordCall`.
+    pub async fn record_call(&self, name: &str, elapsed_ms: f64, failed: bool) {
+        let Some(connection) = self.connections.get(name) else {
+            return;
+        };
         let mut entry = connection.entry.lock().await;
-        let result = entry
-            .connection
-            .client()?
-            .request(
-                "tools/list",
-                serde_json::json!({}),
-                std::time::Duration::from_secs(2),
-            )
-            .await;
-        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         entry.counters.call_count += 1;
-        entry.counters.total_latency_ms += elapsed;
-        if result.is_err() {
+        entry.counters.total_latency_ms += elapsed_ms;
+        if failed {
             entry.counters.error_count += 1;
         }
-        Ok((
-            elapsed,
-            result?
-                .get("tools")
-                .and_then(serde_json::Value::as_array)
-                .map_or(0, Vec::len),
-        ))
+    }
+    /// Upstream `getLogLines`: the last `max_lines` lines of a server's log ring buffer.
+    pub async fn log_lines(&self, name: &str, max_lines: usize) -> Vec<String> {
+        let Some(connection) = self.connections.get(name) else {
+            return Vec::new();
+        };
+        let lines = connection
+            .entry
+            .lock()
+            .await
+            .logger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_ring_buffer();
+        lines[lines.len().saturating_sub(max_lines)..].to_vec()
+    }
+    /// The names `getServerSnapshots` reports, in snapshot order.
+    pub fn server_names(&self) -> Vec<String> {
+        self.config
+            .as_ref()
+            .map(|config| config.servers.keys().cloned().collect())
+            .unwrap_or_default()
     }
     pub async fn dispose(&mut self) -> Result<(), McpServiceError> {
         self.binding.release();
@@ -1394,7 +1358,14 @@ impl McpService {
         self.session_cwd = None;
         self.session_env.clear();
         self.deferred.clear();
-        self.pending_auth.clear();
+        self.pending_auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.interactive_auth_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         self.registration = None;
         self.tier_b_registry = Default::default();
         self.native_tool_search_gate.publish(None);

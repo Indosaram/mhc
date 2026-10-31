@@ -122,3 +122,19 @@ async fn transient_auth_refresh_does_not_trigger_failed_send_reconnect() {
     let state=connection.state();let generation=connection.generation();lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
     assert!(result.is_err());assert_eq!(state,ServerConnectionState::Idle);assert_eq!(generation,0);
 }
+#[test]
+fn direct_tool_renderers_match_upstream_call_and_result_lines() {
+    use crate::support::{padded,render_call_lines,render_result_lines};
+    let call=render_call_lines(mcp_tool_renderers("mcp_fx_echo"),json!({"value":"hi","n":2}),60).unwrap();
+    let visible="mcp_fx_echo {\"value\":\"hi\",\"n\":2}";
+    assert_eq!(call,vec![padded(&format!("\x1b[38;2;1;2;3m\x1b[1m{visible}\x1b[22m\x1b[39m"),visible,60)]);
+    // JSON.stringify preview truncates past 120 UTF-16 units to 117 plus "...".
+    let long=render_call_lines(mcp_tool_renderers("t"),json!({"v":"x".repeat(200)}),200).unwrap();
+    let expected=format!("t {}...",&format!("{{\"v\":\"{}",&"x".repeat(200))[..117]);
+    assert_eq!(long,vec![padded(&format!("\x1b[38;2;1;2;3m\x1b[1m{expected}\x1b[22m\x1b[39m"),&expected,200)]);
+    let mut done=maho_ext_api::AgentToolResult::text("ok");done.details=json!({"preview":"value=hi","server":"fx","tool":"echo"});
+    assert_eq!(render_result_lines(mcp_tool_renderers("mcp_fx_echo"),&done,true,40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_echo: running\x1b[39m","mcp_fx_echo: running",40)]);
+    assert_eq!(render_result_lines(mcp_tool_renderers("mcp_fx_echo"),&done,false,40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_echo: value=hi\x1b[39m","mcp_fx_echo: value=hi",40)]);
+    done.details=serde_json::Value::Null;
+    assert_eq!(render_result_lines(mcp_tool_renderers("mcp_fx_echo"),&done,false,40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_echo: (empty result)\x1b[39m","mcp_fx_echo: (empty result)",40)]);
+}
