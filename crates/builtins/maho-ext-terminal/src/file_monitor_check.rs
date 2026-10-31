@@ -24,7 +24,7 @@ pub fn check_file_once(record: &mut FileMonitorRecord) -> std::io::Result<FileCh
     let raw_parent = record.path.parent().expect("registered file parent");
     if realpath_without_open(raw_parent) != record.parent {
         return Err(std::io::Error::other(format!(
-            "watcher error: monitored parent changed: {}",
+            "monitored parent changed: {}",
             raw_parent.display()
         )));
     }
