@@ -3,6 +3,7 @@ pub mod durable_command;
 pub mod durable_file;
 pub mod extension;
 pub mod file_monitor;
+pub mod file_monitor_check;
 pub mod file_monitor_record;
 pub mod index;
 pub mod lease_keeper;
