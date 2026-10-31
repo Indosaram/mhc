@@ -1,6 +1,6 @@
 use crate::{
     catalog_cache::{
-        McpCachedServerCatalog, collect_server_catalog_for_cache, write_mcp_cached_server,
+        McpCachedServerCatalog, write_mcp_cached_server,
     },
     connection::ServerConnection,
     errors::{McpError, McpErrorKind},
@@ -307,10 +307,11 @@ impl SharedMcpConnection {
         {
             return Ok(catalog.clone());
         }
-        let catalog = collect_server_catalog_for_cache(
+        let catalog = crate::catalog_cache::collect_server_catalog_for_cache_in(
             &self.connection,
             self.request_timeout,
             &self.config_hash,
+            Some(&self.agent_dir),
         )
         .await?;
         if self.connection.generation() == generation {

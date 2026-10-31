@@ -12,7 +12,7 @@ pub struct CallbackServerOptions {
     pub timeout:Option<Duration>,pub validate_state:StateValidator,
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
-pub struct CallbackResult {pub code:String,pub state:Option<String>}
+pub struct CallbackResult {pub code:String,pub state:Option<String>,pub iss:Option<String>}
 type Completion=Option<Result<CallbackResult,OAuthFlowError>>;
 #[derive(Clone)]
 struct HandlerState {name:String,path:String,validate:StateValidator,result:watch::Sender<Completion>}
@@ -71,10 +71,10 @@ pub async fn open_callback_channel(options:CallbackServerOptions,override_url:Op
 async fn handle(State(state):State<HandlerState>,uri:Uri)->(StatusCode,Html<&'static str>) {
     if uri.path()!=state.path {return (StatusCode::NOT_FOUND,Html(""));}
     let query=url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes());
-    let mut code=None;let mut csrf=None;let mut error=None;
-    for (key,value) in query {match key.as_ref(){"code" if code.is_none()=>code=Some(value.into_owned()),"state" if csrf.is_none()=>csrf=Some(value.into_owned()),"error" if error.is_none()=>error=Some(value.into_owned()),_=>()}}
+    let mut code=None;let mut csrf=None;let mut error=None;let mut iss=None;
+    for (key,value) in query {match key.as_ref(){"code" if code.is_none()=>code=Some(value.into_owned()),"state" if csrf.is_none()=>csrf=Some(value.into_owned()),"error" if error.is_none()=>error=Some(value.into_owned()),"iss" if iss.is_none()=>iss=Some(value.into_owned()),_=>()}}
     let valid=error.is_none() && code.is_some() && csrf.is_some() && (state.validate)(csrf.as_deref());
-    let result=if valid {Ok(CallbackResult {code:code.unwrap_or_default(),state:csrf})}else{Err(OAuthFlowError::new(OAuthFailureKind::StateMismatch,format!("MCP server {} authorization state did not match (possible CSRF or a stale/replayed link); restart the auth flow.",state.name)))};
+    let result=if valid {Ok(CallbackResult {code:code.unwrap_or_default(),state:csrf,iss})}else{Err(OAuthFlowError::new(OAuthFailureKind::StateMismatch,format!("MCP server {} authorization state did not match (possible CSRF or a stale/replayed link); restart the auth flow.",state.name)))};
     state.result.send_if_modified(|current|{if current.is_some(){false}else{*current=Some(result);true}});
     if valid{(StatusCode::OK,Html(SUCCESS_HTML))}else{(StatusCode::BAD_REQUEST,Html(FAILURE_HTML))}
 }

@@ -339,10 +339,9 @@ impl ProjectMcpAuthority {
         }
         let wire = serde_json::from_value(policy.declaration)
             .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
-        let mut server =
-            crate::config::resolve_skill_mcp_server(&self.name, wire, &self.source_path)
-                .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
-        let mut config = server.config.take().expect("normalized server");
+        // plainMcpServerConfig: the declaration was refused references at preparation, so it normalizes to a
+        // resolved snapshot directly (no identity is needed for the materialization itself).
+        let mut config = crate::config::normalize_server(wire);
         config.direct_tools = Some(crate::config_schema::DirectTools::Patterns(Vec::new()));
         config.exposure = Some(crate::config_schema::Exposure::Search);
         config.env = Some(BTreeMap::new());
@@ -426,6 +425,10 @@ pub async fn prepare_project_skill_server_with_notices(
 ) -> Result<ResolvedMcpServer, McpError> {
     let (ui, notices, notice_event) = presentation;
     let original = &current_registration(name, original)?;
+    // plainMcpDeclaration: a project skill server refuses references before any grant I/O.
+    if let Some(refusal) = crate::config_references::reference_refusal(name, &original.raw, &format!("Skill '{}' MCP server '{name}'", original.skill_name)) {
+        return Err(McpError::new(McpErrorKind::Connect, refusal));
+    }
     let project_root = original
         .provenance
         .as_ref()
@@ -564,7 +567,7 @@ pub async fn prepare_project_skill_server_with_notices(
     };
     authority.initial = authority.materialize(&names)?;
     let mut config = authority.initial.config.clone();
-    let hash = crate::config::hash_config(&config)
+    let hash = crate::config::hash_config(&config, Some(agent_dir))
         .map_err(|error| McpError::new(McpErrorKind::Connect, error.to_string()))?;
     let server = ResolvedMcpServer {
         name: name.into(),

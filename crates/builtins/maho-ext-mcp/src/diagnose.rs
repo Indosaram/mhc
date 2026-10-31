@@ -16,7 +16,7 @@ fn captured(logger:&McpLogger)->Vec<String> {
 fn connect_error(server:&str,cause:&McpError,diagnostic:Option<String>)->McpError {
     let mut message=format!("MCP server {server} failed during connect: {}",cause.message);
     if let Some(diagnostic)=diagnostic.filter(|text|!text.is_empty()){message.push('\n');message.push_str(&diagnostic);}
-    let mut error=McpError::new(McpErrorKind::Connect,message);error.server_name=Some(server.into());error.phase=Some("connect".into());error.retriable=true;
+    let mut error=McpError::new(McpErrorKind::Connect,maho_core::config_reference_redaction::redact_resolved_reference_values(&message,"<redacted>"));error.server_name=Some(server.into());error.phase=Some("connect".into());error.retriable=true;
     error.cause=Some(Box::new(json!({"message":cause.message,"cause":cause.cause})));error
 }
 pub fn diagnose_captured_mcp_connect_failure(server:&str,config:&McpServerConfig,cause:&McpError,logger:&McpLogger)->Option<McpError> {

@@ -80,7 +80,7 @@ async fn cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts() 
     let root=tempfile::tempdir().unwrap();let artifact_root=tempfile::tempdir().unwrap();
     let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=maho_ext_mcp::connection::ServerConnection::new("cached",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("cached",root.path(),None).unwrap())));let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    let catalog=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let catalog=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
     let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});let connect=connection.clone();
     let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("cached",&catalog,runtime,Duration::from_secs(3),Arc::new(move ||{let connection=connect.clone();Box::pin(async move {connection.connect().await?;Ok(())})}));
     let artifacts=Arc::new(McpOutputArtifacts::default());entries[0].agent_dir=Some(artifact_root.path().into());entries[0].artifacts=Some(artifacts.clone());entries[0].output_guard=Some(maho_ext_mcp::config_schema::OutputGuardSettings {max_bytes:Some(1.0),max_lines:None,max_tokens:None});
@@ -96,7 +96,7 @@ async fn terminal_auth_refresh_blocks_cached_connect_and_marks_needs_auth() {
     let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
     let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
     let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
     let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
     let connected=Arc::new(std::sync::atomic::AtomicBool::new(false));let observed=connected.clone();
     let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(move ||{observed.store(true,std::sync::atomic::Ordering::SeqCst);Box::pin(async {Ok(())})}));
@@ -113,7 +113,7 @@ async fn transient_auth_refresh_does_not_trigger_failed_send_reconnect() {
     let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
     let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
     let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
-    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
     let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
     let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(||Box::pin(async {Ok(())})));
     entries[0].ensure_fresh=Some(Arc::new(||Box::pin(async {let mut error=McpError::new(McpErrorKind::Connect,"fixture network auth refresh failure");error.retriable=true;Err(error)})));
