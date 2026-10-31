@@ -154,6 +154,24 @@ pub trait CredentialStore: Send + Sync {
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>>;
 
+    /// Whether `read_slot` is implemented (TS `readSlot !== undefined`).
+    fn has_read_slot(&self) -> bool {
+        false
+    }
+
+    /// Read one pooled slot already projected onto the flat credential shape, as
+    /// `project_slot(read(...), slot_name)` would. Optional: a store that keeps configuration
+    /// references in pooled keys implements it (and `has_read_slot`) so a slot-scoped request
+    /// resolves only the selected slot, never the flat key or a sibling.
+    async fn read_slot(
+        &self,
+        provider_id: &str,
+        _slot_name: &str,
+        _options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        anyhow::bail!("Credential store for {provider_id} does not implement readSlot")
+    }
+
     /// List stored credential metadata without resolving or exposing secrets.
     async fn list(
         &self,
@@ -198,6 +216,12 @@ pub trait AuthContext: Send + Sync {
     async fn env(&self, name: &str) -> Option<String>;
     /// Check whether a file exists. Supports a leading `~`.
     async fn file_exists(&self, path: &str) -> bool;
+    /// senpi `storedProviderEnv(providerId)`: read-only env of another provider's stored
+    /// credential, for ambient auth. Routing metadata only, never keys. `None` when the context
+    /// has no credential store or that provider stores no api-key env.
+    async fn stored_provider_env(&self, _provider_id: &str) -> Option<ProviderEnv> {
+        None
+    }
 }
 
 /// Result of resolving auth for a model.

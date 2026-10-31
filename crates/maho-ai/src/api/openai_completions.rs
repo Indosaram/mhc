@@ -2305,10 +2305,13 @@ impl StreamState {
             match self.blocks.get(index) {
                 Some(StreamBlock::Text(_)) => {
                     self.sync(output);
-                    stream.push(AssistantMessageEvent::TextStart {
-                        content_index: index,
-                        partial: output.clone(),
-                    });
+                    stream.push_with_hint(
+                        AssistantMessageEvent::TextStart {
+                            content_index: index,
+                            partial: output.clone(),
+                        },
+                        crate::utils::assistant_capture::CaptureHint::offset(0),
+                    );
                     for delta in &text_deltas {
                         stream.push(AssistantMessageEvent::TextDelta {
                             content_index: index,
@@ -2319,10 +2322,13 @@ impl StreamState {
                 }
                 Some(StreamBlock::Thinking(_)) => {
                     self.sync(output);
-                    stream.push(AssistantMessageEvent::ThinkingStart {
-                        content_index: index,
-                        partial: output.clone(),
-                    });
+                    stream.push_with_hint(
+                        AssistantMessageEvent::ThinkingStart {
+                            content_index: index,
+                            partial: output.clone(),
+                        },
+                        crate::utils::assistant_capture::CaptureHint::offset(0),
+                    );
                     for delta in &thinking_deltas {
                         stream.push(AssistantMessageEvent::ThinkingDelta {
                             content_index: index,
@@ -2333,10 +2339,24 @@ impl StreamState {
                 }
                 Some(StreamBlock::ToolCall(_)) => {
                     self.sync(output);
-                    stream.push(AssistantMessageEvent::ToolcallStart {
-                        content_index: index,
-                        partial: output.clone(),
-                    });
+                    let raw_argument_prefix = tool_call_deltas
+                        .get(&index)
+                        .map(|deltas| deltas.concat())
+                        .unwrap_or_default();
+                    stream.push_with_hint(
+                        AssistantMessageEvent::ToolcallStart {
+                            content_index: index,
+                            partial: output.clone(),
+                        },
+                        crate::utils::assistant_capture::CaptureHint {
+                            parsed_through: Some(crate::utils::assistant_capture::utf16_len(
+                                &raw_argument_prefix,
+                            )),
+                            raw_argument_prefix: Some(raw_argument_prefix),
+                            offset: Some(0),
+                            ..Default::default()
+                        },
+                    );
                     for delta in tool_call_deltas.get(&index).cloned().unwrap_or_default() {
                         stream.push(AssistantMessageEvent::ToolcallDelta {
                             content_index: index,
@@ -2384,9 +2404,10 @@ pub fn stream_with_transport(
         get_compat(model).supports_mid_convo_system_messages,
     );
     let context = &resolved_context;
-    let stream = AssistantMessageEventStream::assistant();
+    let stream = AssistantMessageEventStream::with_capture_blocks(true);
     let output = AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
@@ -3026,8 +3047,17 @@ pub fn stream_simple_with_transport(
         None if model.id.contains("gpt-6-astra") => Some(ModelThinkingLevel::Off),
         None => None,
     };
+    // An explicitly mapped off value (for example an endpoint-advertised "none", senpi#2196) is how the
+    // model turns reasoning off, so only a map without one keeps the Astra off -> low fallback.
+    let has_mapped_off = matches!(
+        thinking_model
+            .thinking_level_map
+            .as_ref()
+            .and_then(|map| map.get(&ModelThinkingLevel::Off)),
+        Some(Some(_))
+    );
     let normalized_reasoning = match clamped_reasoning {
-        Some(ModelThinkingLevel::Off) if model.id.contains("gpt-6-astra") => {
+        Some(ModelThinkingLevel::Off) if model.id.contains("gpt-6-astra") && !has_mapped_off => {
             Some(ModelThinkingLevel::Low)
         }
         other => other,

@@ -65,6 +65,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

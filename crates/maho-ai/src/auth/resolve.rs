@@ -1,9 +1,10 @@
 //! Port of senpi packages/ai/src/auth/resolve.ts.
 
+use crate::auth::credential_read::{read_credential, read_slot_credential};
 use crate::auth::oauth_refresh::{
     OAuthRefreshRequest, RefreshError, project_oauth_slot, refresh_oauth_credential,
 };
-use crate::auth::pool::slots::{PooledCredential, project_slot};
+use crate::auth::pool::slots::PooledCredential;
 use crate::auth::types::{
     ApiKeyAuth, ApiKeyCredential, AuthContext, AuthResult, Credential, CredentialStore, OAuthAuth,
     OAuthCredential, ProviderAuth,
@@ -124,11 +125,9 @@ pub async fn resolve_provider_auth_with_signal(
         return resolve_api_key(request_ctx, api_key, provider_id, Some(&credential), signal).await;
     }
 
-    let stored = read_credential(credentials, provider_id, signal).await?;
     if let Some(slot_name) = overrides.and_then(|overrides| overrides.slot_name.as_deref()) {
-        let projected = stored
-            .map(PooledCredential::from)
-            .and_then(|pooled| project_slot(Some(&pooled), slot_name));
+        let projected =
+            read_slot_credential(credentials.as_ref(), provider_id, slot_name, signal).await?;
         return match projected {
             Some(Credential::OAuth(projected)) => match &provider_auth.oauth {
                 Some(oauth) => {
@@ -158,6 +157,7 @@ pub async fn resolve_provider_auth_with_signal(
             None => Ok(None),
         };
     }
+    let stored = read_credential(credentials.as_ref(), provider_id, signal).await?;
     if let Some(stored) = stored {
         return match stored {
             Credential::OAuth(stored) => match &provider_auth.oauth {
@@ -256,6 +256,10 @@ impl AuthContext for OverlayEnvAuthContext<'_> {
 
     async fn file_exists(&self, path: &str) -> bool {
         self.base.file_exists(path).await
+    }
+
+    async fn stored_provider_env(&self, provider_id: &str) -> Option<ProviderEnv> {
+        self.base.stored_provider_env(provider_id).await
     }
 }
 
@@ -422,30 +426,6 @@ pub async fn resolve_api_key(
             ),
         )
     })
-}
-
-async fn read_credential(
-    credentials: &Arc<dyn CredentialStore>,
-    provider_id: &str,
-    signal: &AbortSignal,
-) -> Result<Option<Credential>, ModelsError> {
-    credentials
-        .read(
-            provider_id,
-            Some(crate::auth::types::AuthOperationOptions {
-                signal: Some(signal.clone()),
-            }),
-        )
-        .await
-        .map_err(|e| {
-            ModelsError::new(
-                "auth",
-                with_cause_detail(
-                    &format!("Credential store read failed for {provider_id}"),
-                    Some(&e.to_string()),
-                ),
-            )
-        })
 }
 
 /// Provider-scoped environment values from a stored credential (any type).
@@ -748,9 +728,12 @@ mod tests {
                 {"name": "work", "key": "work-key", "env": {"REGION": "work"}}
             ],
             "pinned": "work"
-        })).unwrap();
+        }))
+        .unwrap();
         let credentials = seeded(credential).await;
-        let ctx = FauxCtx { env: HashMap::new() };
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
         let overrides = AuthResolutionOverrides {
             slot_name: Some("work".into()),
             env: Some([("REQUEST".into(), "value".into())].into()),
@@ -759,9 +742,16 @@ mod tests {
 
         // When
         let result = resolve_provider_auth(
-            "p", &api_key_provider("MY_KEY"), &credentials, &ctx,
-            Some(&overrides), &signal(),
-        ).await.unwrap().unwrap();
+            "p",
+            &api_key_provider("MY_KEY"),
+            &credentials,
+            &ctx,
+            Some(&overrides),
+            &signal(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
 
         // Then
         assert_eq!(result.auth.api_key.as_deref(), Some("work-key"));
@@ -771,6 +761,45 @@ mod tests {
         assert!(!result.ambient);
         let stored = credentials.read("p", None).await.unwrap().unwrap();
         assert_eq!(stored.as_api_key().unwrap().extra["pinned"], "work");
+    }
+
+    // credential-pool-resolve-slot.test.ts (#3858 security contract): a store without readSlot
+    // never hands a provider an unresolved reference.
+    #[tokio::test]
+    async fn a_pooled_key_the_store_left_as_an_object_is_refused_instead_of_reaching_the_provider()
+    {
+        let credential: Credential = serde_json::from_value(serde_json::json!({
+            "type": "api_key", "key": "primary-key",
+            "accounts": [{ "name": "work", "key": { "$file": "/unread" } }]
+        }))
+        .unwrap();
+        let credentials = seeded(credential).await;
+        let ctx = FauxCtx {
+            env: HashMap::new(),
+        };
+        let overrides = AuthResolutionOverrides {
+            slot_name: Some("work".into()),
+            ..Default::default()
+        };
+        let error = resolve_provider_auth(
+            "p",
+            &api_key_provider("MY_KEY"),
+            &credentials,
+            &ctx,
+            Some(&overrides),
+            &signal(),
+        )
+        .await
+        .expect_err("unresolved reference refused");
+        assert_eq!(error.code, "auth");
+        assert!(
+            error
+                .message
+                .contains("p.accounts.work.key: configuration reference forbidden"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("primary-key"));
     }
 
     #[tokio::test]
