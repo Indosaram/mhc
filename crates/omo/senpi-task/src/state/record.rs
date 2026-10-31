@@ -112,5 +112,9 @@ pub fn create_task_record(
         revival_deferred_reason: None,
         recovery_deadline_at: None,
         residency_claim: None,
+        effect_seq: None,
+        last_effect_id: None,
+        uncertain_inputs: None,
+        host_liveness: None,
     })
 }

@@ -318,9 +318,13 @@ fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInp
     }
     ports.release_slot(&input.task_id, &input.model, input.epoch);
     settle_isolation_for(ports, &input.task_id, false);
+    let owned = ports.try_load(&input.task_id);
     let transition = TaskTransition::Fail {
         timestamp: input.timestamp.clone(),
-        error_message: input.failure.message.clone(),
+        error_message: crate::manager::credential_failure::terminal_failure_message(
+            owned.as_ref(),
+            &input.failure.message,
+        ),
         killed: input.killed,
         run_stats: input.run_stats.clone(),
     };

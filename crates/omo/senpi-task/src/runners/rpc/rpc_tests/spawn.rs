@@ -566,3 +566,97 @@ fn delegating_trace_replaces_inherited_trace_and_missing_trace_strips_it() {
         spec.traceparent.as_ref()
     );
 }
+
+// ---- runners/rpc/spawn-ancestry.test.ts (#10782) ----
+
+const PINNED: &str = "2026.10.25-2";
+const OLDER: &str = "2026.10.24-3";
+
+fn ancestry_spec() -> RpcRunnerSpec {
+    RpcRunnerSpec {
+        task_id: "worker-task".into(),
+        cwd: "/synthetic/work".into(),
+        state_dir: "/synthetic/state".into(),
+        prompt: "work".into(),
+        parent_session_id: Some("nested-parent".into()),
+        root_session_id: Some("tree-root".into()),
+        ..RpcRunnerSpec::default()
+    }
+}
+
+/// A SENPI_BIN target: the CLI inside an installed package whose manifest carries `version`, or a
+/// bare file when `version` is `None`.
+fn senpi_bin(root: &Path, version: Option<&str>) -> String {
+    match version {
+        None => {
+            let bare = root.join("senpi");
+            std::fs::write(&bare, "").expect("bare bin");
+            canonical(&bare)
+        }
+        Some(version) => {
+            let pkg = root
+                .join("node_modules")
+                .join("@code-yeongyu")
+                .join("senpi");
+            std::fs::create_dir_all(pkg.join("dist")).expect("pkg dir");
+            std::fs::write(
+                pkg.join("package.json"),
+                serde_json::json!({"name": "@code-yeongyu/senpi", "version": version}).to_string(),
+            )
+            .expect("manifest");
+            std::fs::write(pkg.join("dist").join("cli.js"), "").expect("cli");
+            canonical(&pkg.join("dist").join("cli.js"))
+        }
+    }
+}
+
+#[test]
+fn cli_spawn_sends_spawned_by_only_when_the_launched_engine_accepts_it() {
+    use crate::runners::rpc::spawn::build_rpc_spawn_for_engine;
+    // (running engine version, SENPI_BIN manifest: None = no bin, Some(None) = bare file, accepts)
+    let rows: [(Option<&str>, Option<Option<&str>>, bool); 6] = [
+        (Some(PINNED), None, true),
+        (Some(OLDER), None, false),
+        (Some(PINNED), Some(Some(OLDER)), false),
+        (Some(OLDER), Some(Some(PINNED)), true),
+        (None, None, false),
+        (Some(PINNED), Some(None), false),
+    ];
+    for (running, bin, accepts) in rows {
+        let dir = tempfile::tempdir().expect("scratch");
+        let bin = bin.map(|version| senpi_bin(dir.path(), version));
+        let parent_env = match &bin {
+            Some(bin) => env(&[("SENPI_BIN", bin), ("PATH", "")]),
+            None => env(&[("PATH", "")]),
+        };
+        let mut runtime = runtime(parent_env);
+        runtime.resolve_rpc_entry = Arc::new(|| "/synthetic/rpc-entry.js".to_string());
+        if bin.is_none() {
+            runtime = no_executable(runtime);
+        }
+        let descriptor = build_rpc_spawn_for_engine(&ancestry_spec(), &runtime, running);
+        match &bin {
+            None => assert_eq!(descriptor.args[0], "/synthetic/rpc-entry.js"),
+            Some(bin) => assert_eq!(&descriptor.command, bin),
+        }
+        let flags = descriptor
+            .args
+            .iter()
+            .filter(|arg| *arg == "--spawned-by")
+            .count();
+        assert_eq!(flags, usize::from(accepts), "{running:?} {bin:?}");
+        if accepts {
+            let index = descriptor
+                .args
+                .iter()
+                .position(|arg| arg == "--spawned-by")
+                .expect("flag");
+            let encoded: serde_json::Value =
+                serde_json::from_str(&descriptor.args[index + 1]).expect("ancestry JSON");
+            assert_eq!(
+                encoded,
+                serde_json::json!({"parentSessionId": "nested-parent", "rootSessionId": "tree-root", "taskId": "worker-task"})
+            );
+        }
+    }
+}

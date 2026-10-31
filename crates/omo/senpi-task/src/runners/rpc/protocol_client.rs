@@ -516,7 +516,7 @@ fn command_error(response: &Value, expected_command: &str) -> RpcCommandError {
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        return RpcCommandError::new(expected_command, detail);
+        return RpcCommandError::with_refusal(expected_command, detail, response);
     }
     let actual = response
         .get("command")

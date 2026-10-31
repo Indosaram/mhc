@@ -143,6 +143,8 @@ pub struct TaskSnapshot {
     pub pid: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_liveness: Option<crate::state::host_liveness::HostLivenessStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_response: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

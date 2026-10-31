@@ -527,7 +527,102 @@ fn an_open_root_admission_dispatches_and_leaves_no_ticket() {
     assert!(handle.held.is_none());
     h.manager
         .release_reserved_slot("st_00000001", "test/model", 0);
-    finished.recv_timeout(std::time::Duration::from_secs(30)).expect("admission dispatch finished");
+    finished
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("admission dispatch finished");
     assert!(!h.runner.specs().is_empty());
     assert!(h.admission.barrier().in_flight("root").is_empty());
+}
+
+/// `manager/workpool-admission.ts` `refusal()`: an unresponsive worker session is refused with
+/// `admission_refused`, nothing is delivered, and the turn's reserved slot is released.
+#[test]
+fn an_unresponsive_worker_is_refused_and_its_slot_released() {
+    let h = harness(2);
+    let start = ManagerStartSpec {
+        parent_session_id: "parent".into(),
+        root_session_id: Some("root".into()),
+        depth: 1,
+        category: Some("quick".into()),
+        model: Some("test/model".into()),
+        ..ManagerStartSpec::default()
+    };
+    let started = match h.manager.start(&start) {
+        crate::manager::types::StartResult::Started(task) => task,
+        _ => panic!("real manager task start"),
+    };
+    let fake = h.runner.wait_handle(&started.task_id);
+    fake.enable_workpool_rebinding();
+    fake.publish_liveness(
+        crate::state::host_liveness::HostLivenessStatus::Unresponsive { since: 1 },
+    );
+    let current = h
+        .store
+        .load(&started.task_id)
+        .expect("load running worker")
+        .expect("record");
+    h.store
+        .replace(&TaskRecord {
+            status: TaskStatus::Completed,
+            final_response: Some("done".into()),
+            ..current
+        })
+        .expect("terminalize reusable worker");
+    let worker = WorkpoolWorker {
+        task_id: started.task_id.clone(),
+        run_epoch: 0,
+        status: WorkpoolWorkerStatus::Idle,
+        completed_turns: 0,
+        idle_since: 0,
+    };
+    let (mut pool, _item) = pool(&h, &started.task_id, Some(worker.clone()));
+    pool.items[0].status = WorkpoolItemStatus::Assigned;
+    pool.items[0].binding = Some(crate::workpool::types::WorkpoolBinding {
+        task_id: started.task_id.clone(),
+        run_epoch: 1,
+        generation: 1,
+    });
+    pool.items[0].delivery = Some(WorkpoolDelivery {
+        phase: WorkpoolDeliveryPhase::Queued,
+        message_sha256: None,
+        entry_ids: None,
+    });
+    save_pool(&h, &mut pool);
+    let item = pool.items[0].clone();
+    let (request, _current, events, _binds, _finished) = request(&h, pool, item, Some(worker));
+    let _handle = h.admission.request(request);
+    wait_until("unresponsive refusal", || {
+        events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|event| event.kind == crate::workpool::types::WorkpoolEventKind::AdmissionFailed)
+    });
+
+    let events = events
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let failed = events
+        .iter()
+        .find(|event| event.kind == crate::workpool::types::WorkpoolEventKind::AdmissionFailed)
+        .and_then(|event| event.error.clone())
+        .expect("refusal error");
+    assert_eq!(
+        failed.code,
+        crate::workpool::types::WorkpoolErrorCode::AdmissionRefused
+    );
+    assert!(
+        failed.message.contains("unresponsive"),
+        "{}",
+        failed.message
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == crate::workpool::types::WorkpoolEventKind::Dispatched)
+    );
+    assert!(fake.follow_up_calls().is_empty());
+    // The worker still holds its own launch slot; the refused turn's slot came back.
+    assert!(h.manager.has_free_slot("test/model"));
 }

@@ -70,6 +70,12 @@ impl SendInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendOutcome {
+    /// Nothing was sent: the child's session is unresponsive; retry when it returns to running.
+    Unresponsive {
+        task_id: String,
+        retryable: bool,
+        reason: String,
+    },
     Stale {
         task_id: String,
         run_epoch: i64,

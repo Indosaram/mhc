@@ -34,6 +34,18 @@ pub trait HostRpcClient: Send + Sync {
             message: "host detach unsupported".into(),
         })
     }
+    /// `getPendingInputs?`: absent on an engine before senpi#3549 (`Ok(None)`).
+    fn get_pending_inputs(
+        &self,
+        _known_client_message_ids: &[String],
+    ) -> Result<Option<Value>, HostError> {
+        Ok(None)
+    }
+    /// `listSessions?({include_workers: true})`: the host's live session ids; `Ok(None)` when
+    /// the engine client has no listing.
+    fn list_sessions(&self) -> Result<Option<Vec<String>>, HostError> {
+        Ok(None)
+    }
 }
 pub fn dispatch_host_command(
     client: &dyn HostRpcClient,
