@@ -320,6 +320,9 @@ pub struct AgentSessionRuntime {
     /// senpi `_disposedSession`: the live session was disposed by a replacement that has not installed
     /// (or failed to install) its successor; nothing may rebuild it.
     session_disposed: bool,
+    /// Test seam: the next replacement fails right after the outgoing session was disposed.
+    #[cfg(test)]
+    fail_replacement_after_teardown: bool,
 }
 
 impl AgentSessionRuntime {
@@ -348,6 +351,8 @@ impl AgentSessionRuntime {
             session_replace_listeners: std::sync::Mutex::new(Vec::new()),
             next_replace_listener: std::sync::atomic::AtomicU64::new(0),
             session_disposed: false,
+            #[cfg(test)]
+            fail_replacement_after_teardown: false,
         }
     }
 
@@ -952,6 +957,10 @@ impl AgentSessionRuntime {
         }
         self.session.dispose().await;
         self.session_disposed = true;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_replacement_after_teardown) {
+            return Err("replacement build failed".to_owned());
+        }
         let created = crate::sdk::create_agent_session(options).await?;
         // senpi `apply`: the launch profile's surface and engine follow the session replacement.
         if let Some(surface) = self.prompt_surface {
@@ -2150,6 +2159,154 @@ mod tests {
                 .expect("veto")
                 .cancelled
         );
+        assert!(
+            runtime
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.kind
+                    != crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error),
+        );
+    }
+
+    /// A runner whose recreation, the first time, reports that it is loading (with the trust it read)
+    /// and waits for its release: a reload stalls inside the project's code (#3420 races).
+    struct ReloadGate {
+        loading: tokio::sync::oneshot::Receiver<()>,
+        release: tokio::sync::oneshot::Sender<()>,
+        trust_seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+    }
+
+    async fn install_reload_gate(session: &AgentSession) -> ReloadGate {
+        let (loaded, loading) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let gate = std::sync::Arc::new(std::sync::Mutex::new(Some((loaded, released))));
+        let trust_seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = trust_seen.clone();
+        let mut runner = maho_ext_host::ExtensionRunner::new(
+            Vec::new(),
+            Default::default(),
+            Default::default(),
+            crate::sdk::extension_context::create(session),
+        );
+        runner.set_runtime_factory(std::sync::Arc::new(move |context| {
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((context.is_project_trusted_fn)());
+            let armed = gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            Box::pin(async move {
+                if let Some((loaded, released)) = armed {
+                    loaded.send(()).expect("the test waits for the load");
+                    released.await.expect("the test releases the load");
+                }
+                Ok(maho_ext_host::ExtensionRunner::new(
+                    Vec::new(),
+                    Default::default(),
+                    Default::default(),
+                    context,
+                ))
+            })
+        }));
+        session.set_extension_runner(runner).await;
+        ReloadGate {
+            loading,
+            release,
+            trust_seen,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reload_already_in_flight_does_not_put_project_code_back_after_the_trust_is_withdrawn() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        let gate = install_reload_gate(runtime.session()).await;
+        // A user reload that stalls inside the project's code, after it read the trust.
+        let reloading = runtime.session().clone();
+        let user_reload = tokio::spawn(async move { reloading.reload().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate.loading)
+            .await
+            .expect("bounded load")
+            .expect("the reload reaches the project's code");
+
+        {
+            let change = runtime.set_permission_preset("ask".to_owned());
+            tokio::pin!(change);
+            // The trust is withdrawn at once; its rebuild waits for the reload in flight.
+            assert!(futures::poll!(&mut change).is_pending());
+            gate.release.send(()).expect("release the stalled load");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                assert!(
+                    !user_reload
+                        .await
+                        .expect("reload task")
+                        .expect("reload")
+                        .cancelled
+                );
+                change.await;
+            })
+            .await
+            .expect("bounded reload and trust change");
+        }
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        // The stalled reload built under the trust it read; the runtime that stays was built without it.
+        assert_eq!(
+            *gate
+                .trust_seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [true, false]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replacement_built_under_full_access_does_not_go_live_trusted_after_a_downgrade() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        // A downgrade that reached only the launch profile while the replacement was being built
+        // (senpi: the preset moved while the live session was the disposed one).
+        runtime
+            .launch_profile
+            .as_mut()
+            .expect("launch profile")
+            .permission_preset = Some("ask".to_owned());
+        assert!(project_trusted(&runtime));
+
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("ask".to_owned()))
+        );
+        // Still a Full-access-only trust: going back restores it.
+        runtime.set_permission_preset("full-access".to_owned()).await;
+        assert!(project_trusted(&runtime));
+        assert!(has_project_skill(&runtime));
+    }
+
+    #[tokio::test]
+    async fn a_replacement_that_fails_after_teardown_does_not_rebuild_the_disposed_session() {
+        let (_dir, mut runtime) = full_access_fixture(None).await;
+        runtime.fail_replacement_after_teardown = true;
+        assert!(runtime.new_session(Default::default()).await.is_err());
+
+        // The live session is the disposed one now: the change is recorded and nothing rebuilds it.
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert_eq!(
+            runtime
+                .launch_profile()
+                .and_then(|profile| profile.permission_preset.as_deref()),
+            Some("ask")
+        );
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("ask".to_owned()))
+        );
+        assert!(project_trusted(&runtime));
         assert!(
             runtime
                 .diagnostics()

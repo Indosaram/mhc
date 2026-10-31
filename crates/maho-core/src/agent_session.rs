@@ -12903,6 +12903,7 @@ impl AgentSession {
             .as_ref()
             .map(|runner| runner.runtime.flag_values())
             .unwrap_or_default();
+        let session_flag_values = self.state().flag_values.clone();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload)
             .await;
         self.invalidate_extension_runtime().await;
@@ -12937,6 +12938,14 @@ impl AgentSession {
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {
             for (name, value) in previous_flag_values {
                 runner.runtime.set_flag(&name, value);
+            }
+            // A flag set while this reload ran (a permission preset change) reached only the session
+            // and the retired runner; it carries over to the fresh one (senpi#2842, #3420).
+            let current = self.state().flag_values.clone();
+            for (name, value) in current {
+                if session_flag_values.get(&name) != Some(&value) {
+                    runner.runtime.set_flag(&name, value);
+                }
             }
         }
         // Scopes resolve after the runner renewal re-registered extension-native providers.
@@ -14181,7 +14190,12 @@ impl AgentSession {
     /// senpi `extensionRunner.setFlagValue(name, value)`: the bound runner's extensions read it from
     /// their next call, and the session keeps it for a runner that binds later.
     pub async fn set_extension_flag_value(&self, name: &str, value: FlagValue) {
-        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+        // A runner a reload or dispose invalidated panics on writes; the session keeps the value, and a
+        // rebuild carries the session's flags to its fresh runner (senpi#3420: a preset change can land
+        // while a reload or replacement is in flight).
+        if let Some(runner) = self.extension_runner.lock().await.as_ref()
+            && runner.runtime.assert_active().is_ok()
+        {
             runner.runtime.set_flag(name, value.clone());
         }
         self.state().flag_values.insert(name.to_owned(), value);
