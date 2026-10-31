@@ -1,5 +1,5 @@
 use std::path::{Path,PathBuf};
-use crate::{terminal_manifest_model::{FileEvent,TerminalManifestCheckpoint},monitor_registry::MonitorEvent};
+use crate::{terminal_manifest_model::FileEvent,monitor_registry::MonitorEvent};
 
 /// Symlink hop budget for `realpath_without_open` (upstream `MAX_SYMLINK_HOPS`).
 #[cfg(unix)]
@@ -87,18 +87,9 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     path
 }
 
-pub struct FileMonitor {
-    pub id:String,
-    pub description:String,
-    path:PathBuf,
-    parent:PathBuf,
-    event:FileEvent,
-    identity:(f64,f64),
-    pub checkpoint:TerminalManifestCheckpoint,
-    pub paused:bool,
-    pub settled:bool,
-    reservation:Option<crate::manager::CapacityReservation>,
-}
+/// Upstream `FileMonitorRecord` (file-monitor-record.ts); registration, the check pass and settle
+/// are its methods here.
+pub type FileMonitor=crate::file_monitor_record::FileMonitorRecord;
 impl FileMonitor {
     pub fn register(id:String,description:String,path:&Path,event:FileEvent,approved_parent:Option<&Path>)->std::io::Result<Self> {
         let path=if path.is_absolute() {path.to_path_buf()} else {std::env::current_dir()?.join(path)};
@@ -121,7 +112,7 @@ impl FileMonitor {
         let expected_parent=approved_parent.as_deref().unwrap_or(&parent);
         if resolved_target!=expected_parent.join(path.file_name().unwrap_or_default()) {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
         let checkpoint=crate::durable_file::file_checkpoint(&path)?;
-        Ok(Self {id,description,path,parent,event,identity:(checkpoint.dev,checkpoint.ino),checkpoint,paused:false,settled:false,reservation:None})
+        Ok(crate::file_monitor_record::new_file_record(crate::file_monitor_record::NewFileRecordInput {id,description,path,parent,event,initial:checkpoint}))
     }
     pub fn reserve_capacity(&mut self,reservation:crate::manager::CapacityReservation) {if !self.settled {self.reservation=Some(reservation);}}
     pub fn check(&mut self)->std::io::Result<Vec<MonitorEvent>> {
