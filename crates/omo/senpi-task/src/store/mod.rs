@@ -5,6 +5,7 @@ mod parent_model_fallback_parse;
 mod claim;
 mod event_log;
 pub(crate) mod input_effects_parse;
+mod provisional_exit_parse;
 mod record_lock;
 mod record_parse;
 mod record_store;

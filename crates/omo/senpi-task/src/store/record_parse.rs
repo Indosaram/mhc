@@ -133,6 +133,7 @@ pub fn parse_task_record(
         child_session_id,
         final_response,
         error_message,
+        provisional_exit: super::provisional_exit_parse::parse_optional_provisional_exit(record)?,
         killed,
         run_stats,
         isolation,

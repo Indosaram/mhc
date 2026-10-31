@@ -55,6 +55,7 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         child_session_id: None,
         final_response: Some("done".to_string()),
         error_message: None,
+        provisional_exit: None,
         killed: None,
         run_stats: None,
         isolation: None,
