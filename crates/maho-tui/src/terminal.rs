@@ -486,6 +486,10 @@ impl TerminalIo for ProcessIo {
     fn size(&self) -> Option<(u16, u16)> {
         #[cfg(unix)]
         {
+            // While fd 1 is redirected to the log, read the size from the saved terminal duplicate.
+            if let Some(size) = crate::fd_redirect::redirected_terminal_size() {
+                return Some(size);
+            }
             let size = rustix::termios::tcgetwinsize(rustix::stdio::stdout()).ok()?;
             Some((size.ws_col, size.ws_row))
         }
