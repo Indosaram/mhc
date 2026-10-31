@@ -1188,6 +1188,10 @@ impl Extension for TerminalExtension {
             // Upstream `stopPersistence`: stop waiting; a tick in flight either releases what it
             // acquired or finishes its takeover before the manifest is flushed.
             stop_waiting(&keeper).await;
+            // Upstream `retireLeaseToken(lease.token)` runs BEFORE `await state.restoreInFlight`:
+            // this process's token for the session (acquired, taken over, or inherited across a
+            // reload) stops counting as a live same-pid holder before the shutdown waits.
+            if let Some(token)=crate::manifest_lease::current_lease_token(&maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id())) {crate::manifest_lease::retire_lease_token(&token);}
             // Upstream `await state.restoreInFlight`: the restore (a takeover's `own` and its grace
             // window) finishes before the final sync, the shutdown record and the release.
             stop_restores(&digests,&grace_stop,&restore_tasks).await;
@@ -1197,7 +1201,7 @@ impl Extension for TerminalExtension {
             let Some(mut lifecycle)=slot.take() else {return Ok(EventResult::None);};
             crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());
             drop(slot);
-            // Upstream `retireLeaseToken(lease.token)`: dead before the slow flush below.
+            // Idempotent: the lease this lifecycle holds is the token retired above.
             lifecycle.retire_token();
             // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
             // carries each watch's burned fire window and mute state.
