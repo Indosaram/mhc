@@ -131,7 +131,7 @@ pub fn create_mcp_proxy_tool(
     );
     let tool_count = entries.len();
     let description = format!(
-        "Gateway to the '{server}' MCP server ({tool_count} tools). Use op:\"search\" with a query to find tools, op:\"describe\" with a tool name for its schema, then op:\"call\" with tool + args (args is a JSON object STRING - no strict validation, so match the described schema exactly)."
+        "Gateway to the '{server}' MCP server ({tool_count} tools). Use op:\"search\" with a query to find tools, op:\"describe\" with a tool name for its schema, then op:\"call\" with tool + args (args is a JSON object STRING: no strict validation, so match the described schema exactly)."
     );
     let server = server.to_owned();
     let closure_server = server.clone();
