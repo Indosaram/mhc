@@ -18390,6 +18390,12 @@ impl AgentSession {
                 return Err(error);
             }
         }
+        // senpi `_promptAgent` refuses before `onTurnAdmitted`: a refused turn never claims a released wake.
+        if self.requires_human_continuation() {
+            lock(&self.delivered_held_inputs)
+                .extend(held_ids.into_iter().map(|id| (id, user_abort_generation)));
+            return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
+        }
         if let Some(claim) = &released
             && !claim()
         {
@@ -18397,9 +18403,6 @@ impl AgentSession {
         }
         lock(&self.delivered_held_inputs)
             .extend(held_ids.into_iter().map(|id| (id, user_abort_generation)));
-        if self.requires_human_continuation() {
-            return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
-        }
         if crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine {
             self.record_engine_turn_start(&message.custom_type);
         }
@@ -35809,6 +35812,43 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(session.tool_barrier.id().is_none());
         assert!(!session.release_tool_barrier("turn-1"));
+    }
+
+    /// senpi `_promptAgent` refuses an interrupted run before `onTurnAdmitted`: a refused custom-message turn never
+    /// claims the released wake it carries, so the wake stays in custody.
+    #[tokio::test]
+    async fn a_refused_custom_turn_does_not_claim_its_released_wake() {
+        let session = interrupted_test_session();
+        let claims = Arc::new(AtomicU64::new(0));
+        let counted = claims.clone();
+        let admit: ReleasedWakeAdmit = Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        let generation = session.user_abort_generation.load(Ordering::SeqCst);
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.trigger_custom_message_turn_with(
+                maho_agent::harness::messages::CustomMessage {
+                    role: "custom".to_owned(),
+                    custom_type: "wake".to_owned(),
+                    content: maho_agent::harness::messages::CustomMessageContent::Text(
+                        "task done".to_owned(),
+                    ),
+                    display: false,
+                    details: None,
+                    timestamp: 0,
+                },
+                None,
+                generation,
+                Some(admit),
+            ),
+        )
+        .await
+        .expect("bounded refusal")
+        .expect_err("refused");
+        assert_eq!(refused, INTERRUPTED_RUN_REFUSAL);
+        assert_eq!(claims.load(Ordering::SeqCst), 0);
     }
 
     fn lifecycle_record_count(session: &AgentSession) -> usize {
