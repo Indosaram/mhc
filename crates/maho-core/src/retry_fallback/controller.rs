@@ -161,6 +161,8 @@ impl<D:RetryFallbackDeps> RetryFallbackController<D> {
     pub fn is_provider_spent(&mut self,provider:&str)->bool {self.unusable().is_provider_spent(provider)}
     /// senpi `accountError`: the raw error that spent a still-spent provider.
     pub fn account_error(&mut self,provider:&str)->Option<String> {self.unusable().account_error(provider)}
+    /// The spent accounts as of now, for readers that cannot await this controller.
+    pub fn spent_accounts(&mut self)->super::unusable::SpentAccounts {self.unusable().spent_accounts()}
     pub fn note_manual_thinking_level(&mut self){if let Some(state)=&mut self.state{state.last_applied_thinking_level=None;}}
     pub fn notify_compaction_applied(&mut self)->bool {
         let Some(state)=&mut self.state else{return false;};let was=state.pinned;state.pinned_by_refusal=false;state.pinned=state.pinned_by_billing;
