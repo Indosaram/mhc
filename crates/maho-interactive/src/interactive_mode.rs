@@ -3559,17 +3559,7 @@ impl InteractiveMode {
                     .iter()
                     .filter(|model| model.provider == provider_id)
                     .collect::<Vec<_>>();
-                if provider_id == "llama.cpp" {
-                    selection_error = Some(if provider_models.is_empty() {
-                        format!(
-                            "{action}. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it."
-                        )
-                    } else {
-                        format!(
-                            "{action}. Use /model to select a loaded llama.cpp model, or /llama to manage models."
-                        )
-                    });
-                } else if !maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER
+                if !maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER
                     .iter()
                     .any(|(provider, _)| *provider == provider_id)
                 {

@@ -39,7 +39,6 @@ pub mod google_vertex;
 pub mod google_vertex_env;
 pub mod google_vertex_lazy;
 pub mod lazy;
-pub mod llama_cpp_classify_lazy;
 pub mod mistral_conversations;
 pub mod mistral_conversations_lazy;
 #[cfg(test)]
