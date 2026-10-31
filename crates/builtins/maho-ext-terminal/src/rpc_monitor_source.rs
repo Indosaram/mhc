@@ -252,6 +252,21 @@ impl RpcMonitorSource {
         &self,
         options: RegisterRpcMonitorOptions,
     ) -> std::io::Result<(String, String, Vec<String>)> {
+        let (id, monitor_id, start) = self.arm(options)?;
+        Ok((id, monitor_id, start.await))
+    }
+
+    /// The synchronous half of `register`: the record is live (snapshot, pause, settle) at once;
+    /// the returned future joins the endpoints, injects a restore's detached-change lines and
+    /// resolves to the arm-time rows. A restore applied under the registry lock spawns it.
+    pub fn arm(
+        &self,
+        options: RegisterRpcMonitorOptions,
+    ) -> std::io::Result<(
+        String,
+        String,
+        impl std::future::Future<Output = Vec<String>> + Send + 'static,
+    )> {
         let Some(host) = self.inner.host() else {
             return Err(std::io::Error::other(
                 "Cannot create rpc monitor: monitor registry is disposed.",
@@ -326,13 +341,17 @@ impl RpcMonitorSource {
             },
         );
         (host.changed)();
-        let rows = watch.start().await;
-        if let Some(saved) = &options.restored_from {
-            for line in watch.diff_since(saved) {
-                self.inner.line(&id, line);
+        let (source, start_id, restored_from) = (weak, id.clone(), options.restored_from);
+        let start = async move {
+            let rows = watch.start().await;
+            if let (Some(saved), Some(source)) = (&restored_from, source.upgrade()) {
+                for line in watch.diff_since(saved) {
+                    source.line(&start_id, line);
+                }
             }
-        }
-        Ok((id, monitor_id, rows))
+            rows
+        };
+        Ok((id, monitor_id, start))
     }
 
     /// Ends one watch; false when the id is not a live rpc watch.

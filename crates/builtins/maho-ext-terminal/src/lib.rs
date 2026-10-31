@@ -1,6 +1,7 @@
 pub mod command_monitor_source;
 pub mod durable_command;
 pub mod durable_file;
+pub mod durable_rpc;
 pub mod extension;
 pub mod file_monitor;
 pub mod file_monitor_check;
