@@ -4840,6 +4840,13 @@ pub struct ExtensionRuntime {
     registration_pending: Arc<Mutex<Option<RegistrationPending>>>,
     registration_classifiers: Arc<Mutex<Vec<u64>>>,
     person_answer_pending: Arc<std::sync::atomic::AtomicBool>,
+    subscriptions: Arc<Mutex<TrackedSubscriptions>>,
+}
+/// senpi `eventBusUnsubscribers`: host subscriptions released when the runtime retires.
+#[derive(Default)]
+struct TrackedSubscriptions {
+    next_id: u64,
+    open: BTreeMap<u64, UserActivityUnsubscribe>,
 }
 #[derive(Default)]
 struct RegistrationPending {
@@ -4865,7 +4872,45 @@ impl ExtensionRuntime {
             registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))),
             registration_classifiers: Arc::default(),
             person_answer_pending: self.person_answer_pending.clone(),
+            subscriptions: self.subscriptions.clone(),
         }
+    }
+    /// senpi `trackEventBusSubscription`: ties a host subscription to this runtime's lifetime.
+    /// [`Self::invalidate`] runs every tracked unsubscribe once; the returned hook runs it early
+    /// and is a no-op afterwards. A runtime that already retired releases the subscription now.
+    pub fn track_subscription(
+        &self,
+        unsubscribe: UserActivityUnsubscribe,
+    ) -> UserActivityUnsubscribe {
+        let id = {
+            let mut tracked = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Checked under the lock: `invalidate` marks the runtime stale before it drains.
+            if self.assert_active().is_err() {
+                drop(tracked);
+                unsubscribe();
+                return Box::new(|| {});
+            }
+            let id = tracked.next_id;
+            tracked.next_id += 1;
+            tracked.open.insert(id, unsubscribe);
+            id
+        };
+        let subscriptions = Arc::downgrade(&self.subscriptions);
+        Box::new(move || {
+            let unsubscribe = subscriptions.upgrade().and_then(|subscriptions| {
+                subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .open
+                    .remove(&id)
+            });
+            if let Some(unsubscribe) = unsubscribe {
+                unsubscribe();
+            }
+        })
     }
     /// Marks that a question answer is being delivered: the `send_user_message` that follows
     /// synchronously is a person's input. The mark also lapses on the next scheduler turn.
@@ -5132,6 +5177,19 @@ impl ExtensionRuntime {
         Ok(())
     }
     pub fn invalidate(&self, message: &str) {
+        self.invalidate_state(message);
+        let released = std::mem::take(
+            &mut self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open,
+        );
+        for unsubscribe in released.into_values() {
+            unsubscribe();
+        }
+    }
+    fn invalidate_state(&self, message: &str) {
         let mut state = self
             .state
             .lock()
