@@ -27,9 +27,10 @@ mod upstream {
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
     ];
     type Script = Box<dyn Fn(&str, &[&str]) -> Option<Vec<u8>> + Send + Sync>;
+    type Native = Box<dyn Fn() -> Result<Option<Vec<u8>>, String> + Send + Sync>;
     struct FakeIo {
         script: Script,
-        native: Option<Box<dyn Fn() -> Result<Option<Vec<u8>>, String> + Send + Sync>>,
+        native: Option<Native>,
         calls: Mutex<Vec<(String, Vec<String>)>>,
         native_reads: Mutex<usize>,
         wsl: bool,
@@ -58,13 +59,13 @@ mod upstream {
         fn names(&self) -> Vec<String> {
             self.calls
                 .lock()
-                .unwrap()
+                .expect("calls")
                 .iter()
                 .map(|(name, _)| name.clone())
                 .collect()
         }
         fn reads(&self) -> usize {
-            *self.native_reads.lock().unwrap()
+            *self.native_reads.lock().expect("native reads")
         }
     }
     impl ClipboardIo for FakeIo {
@@ -75,7 +76,7 @@ mod upstream {
             _timeout_ms: Option<u64>,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<u8>>> + Send + 'a>>
         {
-            self.calls.lock().unwrap().push((
+            self.calls.lock().expect("calls").push((
                 command.to_owned(),
                 args.iter().map(|arg| (*arg).to_owned()).collect(),
             ));
@@ -84,7 +85,7 @@ mod upstream {
         }
         fn native_image(&self) -> Option<Result<Option<Vec<u8>>, String>> {
             let native = self.native.as_ref()?;
-            *self.native_reads.lock().unwrap() += 1;
+            *self.native_reads.lock().expect("native reads") += 1;
             Some(native())
         }
         fn is_wsl(&self, _env: &BTreeMap<String, String>) -> bool {
@@ -316,5 +317,44 @@ mod upstream {
                 .is_none()
         );
         assert_eq!(io.reads(), 0);
+    }
+
+    // senpi clipboard-image-bmp-conversion.test.ts: a BMP from wl-paste (linux) or the native
+    // clipboard (win32) comes back as PNG.
+    fn tiny_bmp_1x1_red_24bpp() -> Vec<u8> {
+        let mut buffer = vec![0u8; 58];
+        buffer[0..2].copy_from_slice(b"BM");
+        buffer[2..6].copy_from_slice(&58u32.to_le_bytes());
+        buffer[10..14].copy_from_slice(&54u32.to_le_bytes());
+        buffer[14..18].copy_from_slice(&40u32.to_le_bytes());
+        buffer[18..22].copy_from_slice(&1i32.to_le_bytes());
+        buffer[22..26].copy_from_slice(&1i32.to_le_bytes());
+        buffer[26..28].copy_from_slice(&1u16.to_le_bytes());
+        buffer[28..30].copy_from_slice(&24u16.to_le_bytes());
+        buffer[34..38].copy_from_slice(&4u32.to_le_bytes());
+        buffer[56] = 0xff;
+        buffer
+    }
+    #[tokio::test]
+    async fn command_and_native_bmp_images_are_converted_to_png() {
+        for platform in ["linux", "win32"] {
+            let io = FakeIo::new(|name, args| {
+                if name == "wl-paste" && args.contains(&"--list-types") {
+                    Some(b"image/bmp\n".to_vec())
+                } else if name == "wl-paste" && args.contains(&"image/bmp") {
+                    Some(tiny_bmp_1x1_red_24bpp())
+                } else {
+                    None
+                }
+            })
+            .native(|| Ok(Some(tiny_bmp_1x1_red_24bpp())));
+            let image =
+                read_clipboard_image_with(&env(&[("WAYLAND_DISPLAY", "wayland-0")]), platform, &io)
+                    .await
+                    .unwrap()
+                    .expect("converted image");
+            assert_eq!(image.mime_type, "image/png", "{platform}");
+            assert_eq!(image.bytes[..4], [0x89, 0x50, 0x4e, 0x47], "{platform}");
+        }
     }
 }
