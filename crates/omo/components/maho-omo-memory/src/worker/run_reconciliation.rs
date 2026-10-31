@@ -469,17 +469,12 @@ pub fn reconcile_prelaunch_with_signal(
     if within_grace || host != &recovery.hostname() {
         return Ok(None);
     }
-    let liveness = recovery.pid_liveness(pid);
-    let dead = liveness == memory_core::locks::ProcessLiveness::Dead
-        || (liveness == memory_core::locks::ProcessLiveness::Alive
-            && active
-                .launcher_process_start
-                .as_ref()
-                .is_some_and(|recorded| {
-                    recovery
-                        .process_start(pid)
-                        .is_some_and(|actual| recorded != &actual)
-                }));
+    let dead = super::run_liveness::is_launcher_dead_with(
+        pid,
+        active.launcher_process_start.as_deref(),
+        |pid| recovery.pid_liveness(pid),
+        |pid| recovery.process_start(pid),
+    );
     if !dead {
         return Ok(None);
     }
