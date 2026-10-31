@@ -4386,6 +4386,7 @@ dependencies = [
  "maho-ext-host",
  "maho-ext-tool-search",
  "maho-test-support",
+ "maho-tui",
  "notify",
  "rcgen",
  "regex",
