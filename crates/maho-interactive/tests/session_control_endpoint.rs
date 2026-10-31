@@ -108,15 +108,15 @@ async fn start_endpoint(
     let seen = wakes.clone();
     let drain = drain.unwrap_or_else(|| {
         Arc::new(
-            |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
-                Box::pin(async { None })
+            |_event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
+                Box::pin(async { Ok(None) })
             },
         )
     });
     let options = RegisterControlEndpointOptions {
         inbox_dir: inbox_dir.to_string_lossy().into_owned(),
         drain: Arc::new(
-            move |event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+            move |event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
                 lock(&seen).push(event.clone());
                 drain(event)
             },
@@ -320,12 +320,13 @@ async fn serves_one_session_row_and_the_extended_state() {
 #[tokio::test]
 async fn wake_runs_the_drain_and_answers_its_admissions() {
     let fixture = start_endpoint(Some(Arc::new(
-        |event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+        |event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
             let admitted = event["delivery_ids"]
                 .as_array()
                 .is_some_and(|ids| ids.contains(&json!("d2")));
             Box::pin(async move {
-                admitted.then(|| json!({"admitted": [{"delivery_id": "d2", "kind": "started"}]}))
+                Ok(admitted
+                    .then(|| json!({"admitted": [{"delivery_id": "d2", "kind": "started"}]})))
             })
         },
     )))
@@ -356,7 +357,7 @@ async fn wakes_the_drain_with_reason_inbox_when_an_entry_is_created() {
     let marker_slot: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::default();
     let watched = marker_slot.clone();
     let fixture = start_endpoint(Some(Arc::new(
-        move |event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+        move |event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
             let written = lock(&watched)
                 .as_ref()
                 .is_some_and(|marker| marker.exists());
@@ -367,7 +368,7 @@ async fn wakes_the_drain_with_reason_inbox_when_an_entry_is_created() {
             {
                 drop(sender.send(event));
             }
-            Box::pin(async { None })
+            Box::pin(async { Ok(None) })
         },
     )))
     .await;
@@ -394,11 +395,13 @@ async fn a_drain_that_keeps_failing_reports_once_until_a_pass_succeeds() {
     let failing = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let drain_failing = failing.clone();
     let fixture = start_endpoint(Some(Arc::new(
-        move |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+        move |_event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
             let failing = drain_failing.load(std::sync::atomic::Ordering::SeqCst);
             Box::pin(async move {
-                assert!(!failing, "inbox store unreadable");
-                None
+                if failing {
+                    return Err("inbox store unreadable".to_owned());
+                }
+                Ok(None)
             })
         },
     )))
@@ -621,8 +624,8 @@ async fn pi_session_registers_through_the_terminal_host_once_extensions_are_boun
             .to_string_lossy()
             .into_owned(),
         drain: Arc::new(
-            |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
-                Box::pin(async { None })
+            |_event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
+                Box::pin(async { Ok(None) })
             },
         ),
         is_session_referenced: None,

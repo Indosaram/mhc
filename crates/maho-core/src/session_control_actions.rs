@@ -92,13 +92,15 @@ impl GenerationSessionControlActions {
         let drain = Arc::clone(&options.drain);
         let registration = host
             .register(RegisterControlEndpointOptions {
-                drain: Arc::new(move |event: Value| -> BoxFuture<'static, Option<Value>> {
-                    if retired.load(Ordering::SeqCst) {
-                        Box::pin(async { None })
-                    } else {
-                        drain(event)
-                    }
-                }),
+                drain: Arc::new(
+                    move |event: Value| -> BoxFuture<'static, Result<Option<Value>, String>> {
+                        if retired.load(Ordering::SeqCst) {
+                            Box::pin(async { Ok(None) })
+                        } else {
+                            drain(event)
+                        }
+                    },
+                ),
                 ..options
             })
             .await;
@@ -272,10 +274,12 @@ mod tests {
     fn options(drained: Arc<AtomicUsize>) -> RegisterControlEndpointOptions {
         RegisterControlEndpointOptions {
             inbox_dir: "/tmp/inbox".into(),
-            drain: Arc::new(move |_event: Value| -> BoxFuture<'static, Option<Value>> {
-                drained.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { None })
-            }),
+            drain: Arc::new(
+                move |_event: Value| -> BoxFuture<'static, Result<Option<Value>, String>> {
+                    drained.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Ok(None) })
+                },
+            ),
             is_session_referenced: None,
         }
     }
@@ -312,11 +316,15 @@ mod tests {
             SessionControlRegistration::Registered { .. }
         ));
         let drain = Arc::clone(&lock(&host.drains)[0]);
-        drain(json!({"type":"session_control_wake"})).await;
+        drain(json!({"type":"session_control_wake"}))
+            .await
+            .expect("drain");
         assert_eq!(drained.load(Ordering::SeqCst), 1);
         actions.retire().await.expect("retire");
         assert_eq!(host.disposed.load(Ordering::SeqCst), 1);
-        drain(json!({"type":"session_control_wake"})).await;
+        drain(json!({"type":"session_control_wake"}))
+            .await
+            .expect("drain");
         assert_eq!(
             drained.load(Ordering::SeqCst),
             1,
