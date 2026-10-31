@@ -134,6 +134,22 @@ pub fn hand_file_checkpoint(
     }
 }
 
+/// `handRpcCheckpoint`: persist an rpc watch's view (host generations, session statuses) through
+/// the session's bound writer. Without a bound writer the checkpoint is dropped, as upstream.
+pub fn hand_rpc_checkpoint(
+    writer: Option<&crate::rpc_monitor_source::RpcCheckpointSink>,
+    session_key: Option<&str>,
+    monitor_id: &str,
+    checkpoint: crate::terminal_manifest_model::TerminalManifestRpcCheckpoint,
+) {
+    let (Some(writer), Some(session_key)) = (writer, session_key) else {
+        return;
+    };
+    if is_terminal_manifest_writer_bound(session_key) {
+        writer(monitor_id, checkpoint);
+    }
+}
+
 /// `durableAdmissionError`: no cap unless `terminal.maxDurableMonitors` sets one; then refuse once
 /// the session already holds that many restart-surviving monitors, counting the bound writer's
 /// entries and the specs still queued for a writer. Checked before any spawn or registration. A
@@ -198,6 +214,23 @@ mod tests {
         assert_eq!(bind_terminal_manifest_writer(key).len(), 1);
         unbind_terminal_manifest_writer(key);
         assert!(hand_monitor_spec(None, spec("mon_5", true)).is_none());
+    }
+
+    #[test]
+    fn an_rpc_checkpoint_reaches_only_a_bound_writer() {
+        let key = "binding-rpc-checkpoint";
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink: crate::rpc_monitor_source::RpcCheckpointSink = {
+            let seen = seen.clone();
+            std::sync::Arc::new(move |id, _| seen.lock().unwrap().push(id.to_owned()))
+        };
+        hand_rpc_checkpoint(Some(&sink), Some(key), "mon_unbound", Default::default());
+        bind_terminal_manifest_writer(key);
+        hand_rpc_checkpoint(Some(&sink), Some(key), "mon_bound", Default::default());
+        hand_rpc_checkpoint(Some(&sink), None, "mon_nokey", Default::default());
+        hand_rpc_checkpoint(None, Some(key), "mon_nowriter", Default::default());
+        unbind_terminal_manifest_writer(key);
+        assert_eq!(*seen.lock().unwrap(), ["mon_bound"]);
     }
 
     #[test]
