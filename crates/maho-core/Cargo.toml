@@ -46,6 +46,7 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Secu
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 flate2 = { workspace = true }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }

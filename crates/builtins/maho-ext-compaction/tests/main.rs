@@ -71,6 +71,8 @@ mod speculative_summary;
 mod structural_yield;
 #[path = "task_intent.rs"]
 mod task_intent;
+#[path = "threshold_regressions.rs"]
+mod threshold_regressions;
 #[path = "todo_bridge.rs"]
 mod todo_bridge;
 #[path = "token_budget_reminder.rs"]
