@@ -220,6 +220,15 @@ pub fn schedule_opportunistic_host_gc(options: OpportunisticGcOptions) {
     });
 }
 
+/// Whether a pass this process scheduled for `agent_dir` has not finished yet.
+#[cfg(test)]
+pub(crate) fn opportunistic_host_gc_pending(agent_dir: &Path) -> bool {
+    passes_running()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(agent_dir)
+}
+
 /// Resolves once the pass this process scheduled for `agent_dir` (if any) has finished; it never fails.
 pub async fn settled_opportunistic_host_gc(agent_dir: &Path) {
     let settled = passes_running()
