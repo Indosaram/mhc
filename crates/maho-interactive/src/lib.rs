@@ -31,6 +31,7 @@ pub mod pause_footer;
 pub mod provider_error_presentation;
 pub mod question_registry;
 pub mod replay_assistant_tools;
+pub mod mcp_local_presenter;
 pub mod resume_rebind;
 pub mod risky_main_model_warning;
 pub mod session_control_attach;

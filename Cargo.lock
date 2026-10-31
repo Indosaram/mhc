@@ -5000,6 +5000,7 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-ask-user",
  "maho-ext-host",
+ "maho-ext-mcp",
  "maho-rpc",
  "maho-test-support",
  "maho-tools",

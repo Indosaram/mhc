@@ -109,15 +109,6 @@ pub fn spawned_by_ignored_warning(args: &Args) -> Option<&'static str> {
     .then_some("--spawned-by is ignored when resuming or forking a session.")
 }
 
-/// senpi v2026.10.27-2 hands `mcpPresenterEnforcement` to the interactive mode's local presenter
-/// authority. OPEN: maho-interactive has no `McpPresenterAuthority` (senpi-interactive-21), so the
-/// TUI refuses to start with the flag instead of running without enforcement.
-pub fn tui_presenter_enforcement_refusal(args: &Args) -> Option<&'static str> {
-    args.mcp_presenter_enforcement.then_some(
-        "--mcp-presenter-enforcement is not supported by this build's interactive mode yet",
-    )
-}
-
 pub fn is_valid_thinking_level(value: &str) -> bool {
     matches!(
         value,
