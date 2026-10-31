@@ -153,6 +153,9 @@ fn deps(
     deps.orphan_kill_delay_ms = Some(0);
     deps.signaller = Some(FakeSignaller::alive([]));
     deps.host_session_probe = Some(probe);
+    // The 5 s live-parent scan is unfenced; it must not race the gated passes below.
+    deps.live_parent_recovery =
+        Some(crate::lifecycle::live_parent_recovery::RecoverySchedule::Disabled);
     let log = Arc::clone(respawned);
     deps.respawn = Some(Arc::new(move |record: &TaskRecord, _| {
         log.lock()

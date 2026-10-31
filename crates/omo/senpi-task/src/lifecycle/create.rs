@@ -22,9 +22,11 @@ pub struct TaskLifecycle {
     generations: Generations,
 }
 
-pub fn create_task_lifecycle(deps: LifecycleDeps) -> TaskLifecycle {
+pub fn create_task_lifecycle(mut deps: LifecycleDeps) -> TaskLifecycle {
+    let schedule = deps.live_parent_recovery.take().unwrap_or_default();
     let context = resolve_context(deps);
-    let recovery = super::live_parent_recovery::start_live_parent_recovery(context.clone());
+    let recovery =
+        super::live_parent_recovery::start_live_parent_recovery_with(context.clone(), schedule);
     TaskLifecycle {
         context,
         _recovery: recovery,
