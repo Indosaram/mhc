@@ -19,6 +19,8 @@ pub struct RpcObserverHandlers {
     pub record: Box<dyn Fn(RpcRecord) + Send + Sync>,
     /// The connection ended (host gone, refused, closed by `close()`); called once.
     pub closed: Box<dyn Fn(String) + Send + Sync>,
+    /// One read's records were all delivered (upstream's microtask boundary after a `data` event).
+    pub batch_end: Box<dyn Fn() + Send + Sync>,
 }
 
 /// Upstream `RpcObserver`.
@@ -26,21 +28,36 @@ pub struct RpcObserver {
     /// The subscribe answer (`snapshot`, `seq`, `hostGeneration`, `hostInstanceId`), or the
     /// rejection `rpc monitor: <socket>: <reason>`.
     pub subscribed: tokio::sync::oneshot::Receiver<Result<RpcRecord, String>>,
-    stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    close: Box<dyn Fn() + Send + Sync>,
 }
 
 impl RpcObserver {
+    /// An observer from its answer and its close action (what `observe_stream` builds; a test
+    /// double builds its own).
+    pub fn new(
+        subscribed: tokio::sync::oneshot::Receiver<Result<RpcRecord, String>>,
+        close: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            subscribed,
+            close: Box::new(close),
+        }
+    }
+
     /// Upstream `close()` (`socket.destroy()`): the reader ends and `closed("connection closed")`
     /// fires unless the connection had already ended.
     pub fn close(&self) {
-        if let Some(stop) = self
-            .stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            let _ = stop.send(());
-        }
+        (self.close)();
+    }
+
+    /// The close action alone, for a caller that awaits `subscribed` separately.
+    pub fn into_parts(
+        self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<Result<RpcRecord, String>>,
+        Box<dyn Fn() + Send + Sync>,
+    ) {
+        (self.subscribed, self.close)
     }
 }
 
@@ -75,7 +92,7 @@ pub async fn open_rpc_observer(
     let (stream, secret) = if needs_handshake {
         let secret = read_socket_secret(std::path::Path::new(&socket_secret_path(socket_path)?))
             .map_err(|error| error.to_string())?;
-        let address = resolve_socket_transport_address(socket_path, "linux", Some(&secret))?;
+        let address = resolve_socket_transport_address(socket_path, "linux", Some(secret.as_slice()))?;
         let stream = tokio::net::UnixStream::connect(address)
             .await
             .map_err(|error| error.to_string())?;
@@ -153,7 +170,7 @@ where
         let mut reader =
             JsonlLineReader::new(MAX_RPC_LINE_CHARACTERS).expect("nonzero RPC line limit");
         let mut chunk = vec![0u8; 8192];
-        let mut deliver = |records: Vec<LineRecord>| -> bool {
+        let deliver = |records: Vec<LineRecord>| -> bool {
             for line in records {
                 let LineRecord::Line(line) = line else {
                     continue;
@@ -200,7 +217,9 @@ where
                     }
                     Ok(count) => {
                         let records = reader.push(&chunk[..count]);
-                        if !deliver(records) {
+                        let open = deliver(records);
+                        (handlers.batch_end)();
+                        if !open {
                             break;
                         }
                     }
@@ -213,10 +232,16 @@ where
         }
         end(&mut ended, "connection closed".to_owned());
     });
-    RpcObserver {
-        subscribed: answer_rx,
-        stop: Mutex::new(Some(stop_tx)),
-    }
+    let stop = Mutex::new(Some(stop_tx));
+    RpcObserver::new(answer_rx, move || {
+        if let Some(stop) = stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = stop.send(());
+        }
+    })
 }
 
 #[cfg(test)]
@@ -247,6 +272,7 @@ mod tests {
                     c.lock().unwrap().push(reason);
                     let _ = closed_tx.send(());
                 }),
+                batch_end: Box::new(|| {}),
             },
             records,
             closed,
