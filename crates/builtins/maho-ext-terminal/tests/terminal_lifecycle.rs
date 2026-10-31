@@ -480,3 +480,71 @@ async fn a_print_or_json_start_takes_no_lease_and_records_no_manifest() {
         );
     }
 }
+
+/// The token the lease file records for `id`.
+fn lease_token(dir: &Path, id: &str) -> Option<String> {
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
+    let raw = std::fs::read(state_dir(dir).join(format!("{encoded}.lease"))).ok()?;
+    maho_ext_terminal::manifest_lease::read_lease_record(&raw)?.token
+}
+
+/// A context for session `id` whose session dir is `dir`.
+fn context_for(dir: &Path, id: &'static str) -> ExtensionContext {
+    let mut ctx = context(dir);
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.into(),
+        id,
+    });
+    ctx
+}
+
+/// The resumed generation owns the lease under a new token: it acquired (or re-entered) and did
+/// not wait on a "held by" holder, which would leave the lease file on the first token.
+fn assert_owned_under_a_new_token(dir: &Path, id: &str, first: &str) {
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
+    let current = maho_ext_terminal::manifest_lease::current_lease_token(&encoded)
+        .expect("the resumed generation holds a token");
+    assert_ne!(current, first, "the token rotates");
+    assert_eq!(lease_token(dir, id).as_deref(), Some(current.as_str()));
+}
+
+/// terminal-restore-session.test.ts (h): an in-process /resume rotates the token and owns the
+/// lease, never "held by".
+#[tokio::test]
+async fn an_in_process_resume_rotates_the_token_and_is_never_held_by() {
+    let id = "terminal-lifecycle-resume";
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), id);
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    let first = lease_token(dir.path(), id).expect("the fresh start holds a v2 lease");
+    shutdown(&api, &ctx, SessionReason::Resume).await;
+    start(&api, &ctx, SessionReason::Resume).await;
+    assert_owned_under_a_new_token(dir.path(), id, &first);
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    assert_eq!(lease_token(dir.path(), id), None, "quit releases the lease");
+}
+
+/// terminal-restore-session.test.ts (h2): a lease this process never released (its shutdown cut
+/// short, so the stale same-pid record is back on disk) is re-entered, not "held by".
+#[tokio::test]
+async fn a_same_pid_lease_left_by_a_cut_short_shutdown_is_re_entered() {
+    let id = "terminal-lifecycle-reentry";
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), id);
+    let lease = state_dir(dir.path()).join(format!(
+        "{}.lease",
+        maho_core::session_sidecar_store::encoded_session_id(id)
+    ));
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    let stale = std::fs::read(&lease).unwrap();
+    let first = lease_token(dir.path(), id).expect("the fresh start holds a v2 lease");
+    shutdown(&api, &ctx, SessionReason::Resume).await;
+    assert!(!lease.exists(), "the resume shutdown released the lease");
+    std::fs::write(&lease, stale).unwrap();
+    start(&api, &ctx, SessionReason::Resume).await;
+    assert_owned_under_a_new_token(dir.path(), id, &first);
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    assert!(!lease.exists(), "quit releases the re-entered lease");
+}
