@@ -401,3 +401,81 @@ async fn client_close_observers_fire_independently() {
         .expect("late observer");
     drop((first, second, late));
 }
+
+/// Row 08 (host-registry.ts `attachShared` via service-connection.ts): pooled connections are keyed by
+/// legacy-form policy. A session without private forms keys by eligibility; an enforced private-form session
+/// keys as `private:` regardless of the presenter's current readiness, so readiness changes never fork a pool.
+#[test]
+fn shared_pools_key_by_legacy_form_policy() {
+    use maho_ai::utils::abort::AbortController;
+    use maho_core::mcp_form_types::{
+        McpFormBinding, McpFormOutcome, McpFormOutcomeKind, McpFormOutcomeSource,
+        McpFormPresentation,
+    };
+    use maho_core::mcp_mrtr_presentations::register_mcp_mrtr_presentation;
+    use maho_ext_mcp::service_connection::mcp_legacy_form_policy_key;
+
+    let plain: Arc<dyn maho_ext_api::ExtensionUi> =
+        Arc::new(crate::command_notify_redaction::RecordingUi::default());
+    assert_eq!(mcp_legacy_form_policy_key(None, true), "true:false");
+    assert_eq!(mcp_legacy_form_policy_key(Some(&plain), true), "true:false");
+    assert_eq!(
+        mcp_legacy_form_policy_key(Some(&plain), false),
+        "false:false"
+    );
+
+    let ready = Arc::new(AtomicBool::new(false));
+    let host = AbortController::new();
+    let presentation = {
+        let ready = ready.clone();
+        let signal = host.signal();
+        McpFormPresentation {
+            signal,
+            ready: Arc::new(move || ready.load(Ordering::SeqCst)),
+            present: Arc::new(|_| {
+                futures::FutureExt::boxed(async {
+                    McpFormOutcome {
+                        kind: McpFormOutcomeKind::ProcessingFailure,
+                        source: McpFormOutcomeSource::HostTermination,
+                    }
+                })
+            }),
+            synchronize: None,
+        }
+    };
+    let binding = McpFormBinding {
+        epoch: "epoch".into(),
+        signal: host.signal(),
+        capture: Arc::new(move || Some(presentation.clone())),
+        dispose: Arc::new(|| {}),
+        version: None,
+        subscribe: None,
+    };
+    let enforced: Arc<dyn maho_ext_api::ExtensionUi> =
+        Arc::new(crate::command_notify_redaction::RecordingUi::default());
+    register_mcp_mrtr_presentation(enforced.clone(), host.signal(), None, Some(binding));
+    assert_eq!(
+        mcp_legacy_form_policy_key(Some(&enforced), true),
+        "private:true"
+    );
+    ready.store(true, Ordering::SeqCst);
+    assert_eq!(
+        mcp_legacy_form_policy_key(Some(&enforced), true),
+        "private:true",
+        "readiness never re-keys an enforced pool"
+    );
+    // An enforced binding advertises legacy forms only while its presenter is ready.
+    assert!(maho_ext_mcp::elicitation::legacy_mcp_form_eligible(
+        Some(&enforced),
+        true
+    ));
+    ready.store(false, Ordering::SeqCst);
+    assert!(!maho_ext_mcp::elicitation::legacy_mcp_form_eligible(
+        Some(&enforced),
+        true
+    ));
+    assert!(maho_ext_mcp::elicitation::legacy_mcp_form_eligible(
+        Some(&plain),
+        true
+    ));
+}
