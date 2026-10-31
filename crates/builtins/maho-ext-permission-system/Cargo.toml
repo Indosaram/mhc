@@ -16,10 +16,11 @@ maho-core = { path = "../../maho-core" }
 maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
 maho-tools = { path = "../../maho-tools" }
 unicode-normalization = "=0.1.25"
+regex.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-maho-tools = { path = "../../maho-tools" }
 maho-ext-host = { path = "../../maho-ext-host" }
 maho-ai = { path = "../../maho-ai" }
 maho-agent = { path = "../../maho-agent" }

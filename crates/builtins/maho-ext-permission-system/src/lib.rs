@@ -1,3 +1,12 @@
+pub mod always_scope;
+pub mod auto_credentials;
+pub mod auto_paths;
+pub mod auto_policy;
+pub mod auto_program_rules;
+pub mod auto_shell_grammar;
+pub mod auto_shell_segments;
+pub mod internal_tools;
+pub mod preset_registry;
 pub mod types;
 pub mod wildcard;
 pub mod evaluate;
