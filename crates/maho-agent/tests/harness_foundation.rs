@@ -647,6 +647,13 @@ fn parses_simple_frontmatter_and_body() {
 }
 
 #[test]
+fn parse_frontmatter_empty_frontmatter_does_not_panic() {
+    let parsed = parse_frontmatter("---\n---\nHello world").expect("parsed");
+    assert!(parsed.frontmatter.is_empty());
+    assert_eq!(parsed.body, "Hello world");
+}
+
+#[test]
 fn normalizes_timestamps_like_the_ts_helpers() {
     let message = maho_agent::harness::messages::create_branch_summary_message(
         "summary",
