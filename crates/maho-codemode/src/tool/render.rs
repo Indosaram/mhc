@@ -193,12 +193,14 @@ struct EvalCard {
     ticker: std::rc::Rc<LiveTicker>,
 }
 
-const LIVE_ELAPSED_TICK_MS: u64 = 1_000;
-// A live row repaints on every tick, so this many ticks without a render means the row is gone.
-const LIVE_TICKER_MAX_IDLE_TICKS: u32 = 60;
+// Divergence from senpi (1s): the host never passes an eval row a spinner frame, so the live
+// ticker repaints at the host spinner rate and the header glyph spins instead of sitting on ⠋.
+const LIVE_ELAPSED_TICK_MS: u64 = 80;
+// A live row repaints on every tick, so this many ticks (one minute) without a render means the row is gone.
+const LIVE_TICKER_MAX_IDLE_TICKS: u32 = 750;
 
 /// senpi `PlainTextComponent.syncLiveTicker`: the host animates no eval row, so while a cell is
-/// non-terminal the card repaints itself once a second to advance the header's elapsed time.
+/// non-terminal the card repaints itself on every spinner tick to advance the header's glyph and elapsed time.
 struct LiveTicker {
     ticker: std::cell::Cell<Option<maho_tui::ui_intervals::UiIntervalId>>,
     live: std::cell::Cell<bool>,
@@ -248,8 +250,11 @@ impl maho_tui::tui::Component for EvalCard {
     fn dispose(&mut self) {self.ticker.stop_live_ticker();}
     fn render(&mut self, width: usize) -> Vec<String> {
         self.ticker.rendered();
-        let context=EvalRenderContext {expanded:self.expanded,has_result:self.has_result,is_partial:self.is_partial,is_error:self.is_error,show_images:self.show_images,image_protocol:self.image_protocol.clone(),spinner_frame:self.spinner_frame,
-            now:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0),theme:self.theme.clone(),cwd:self.cwd.clone()};
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0);
+        // Clock-derived so the frame keeps advancing when a partial update rebuilds the card.
+        let spinner_frame=self.spinner_frame.or_else(||self.ticker.live.get().then(||(now as u64/LIVE_ELAPSED_TICK_MS) as usize));
+        let context=EvalRenderContext {expanded:self.expanded,has_result:self.has_result,is_partial:self.is_partial,is_error:self.is_error,show_images:self.show_images,image_protocol:self.image_protocol.clone(),spinner_frame,
+            now,theme:self.theme.clone(),cwd:self.cwd.clone()};
         let request=super::eval_request::parse_eval_request(&self.args);
         match (&self.result,request) {
             (Some(result),Ok(request))=>render_eval_result(result,&request,&context,width),
