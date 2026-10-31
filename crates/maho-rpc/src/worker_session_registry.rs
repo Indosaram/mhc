@@ -569,6 +569,8 @@ impl WorkerSessionRegistry {
             .entries
             .get_mut(handle)
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
+        entry.close.writing =
+            crate::session_teardown::session_is_writing(Some(entry.worker.busy()), None);
         let claim = crate::session_teardown::begin_session_close(&mut entry.close, detach)?;
         let next = entry.close.state;
         state.ownership.states.insert(handle.to_owned(), next);

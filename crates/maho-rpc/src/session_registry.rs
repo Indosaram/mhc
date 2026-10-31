@@ -373,6 +373,9 @@ impl RpcSessionRegistry {
             .entries
             .get_mut(handle)
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
+        // A session mid-turn keeps its claim until it parks: reclaiming it would put two writers on one transcript.
+        entry.close.writing =
+            crate::session_teardown::session_is_writing(None, entry.runtime.as_deref());
         crate::session_teardown::begin_session_close(&mut entry.close, detach)
     }
     pub async fn close_marked(
