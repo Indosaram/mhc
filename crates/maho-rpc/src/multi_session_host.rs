@@ -220,6 +220,9 @@ pub struct HostCore {
     /// The public endpoint clients dial (senpi `hostSessionContext(...).host_socket`), set once a socket host knows it:
     /// a hosted session's control endpoint is this socket.
     public_socket: std::sync::OnceLock<String>,
+    /// senpi `HostCoreHooks.runtimeBuildId`: the runtime this host loaded at startup, reported by `get_protocol_info`
+    /// on every platform (the idle handover that also reads it is POSIX-only).
+    runtime_build_id: std::sync::OnceLock<String>,
     /// Requests in flight that carry no session (an open being admitted): the idle judgement waits for them.
     sessionless_requests: std::sync::atomic::AtomicUsize,
     /// senpi `HostCoreGate.answering`: `begin_handover` requests whose answer has not been delivered yet.
@@ -373,6 +376,7 @@ impl HostCore {
             presenter_control: std::sync::Mutex::new(None),
             handover: std::sync::OnceLock::new(),
             public_socket: std::sync::OnceLock::new(),
+            runtime_build_id: std::sync::OnceLock::new(),
             sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
             handover_answering: std::sync::atomic::AtomicUsize::new(0),
             handover_answered: tokio::sync::Notify::new(),
@@ -427,7 +431,15 @@ impl HostCore {
             runtime_build_id: Some(runtime_build_id),
         });
     }
+    /// senpi `HostCoreHooks.runtimeBuildId`: reported by `get_protocol_info`; the first call wins.
+    pub fn set_runtime_build_id(&self, runtime_build_id: String) {
+        let _ = self.runtime_build_id.set(runtime_build_id);
+    }
     /// senpi `isHostIdle` over this core: no sessionless request in flight and every session settled.
+    ///
+    /// ADAPTATION: senpi's registry is synchronous; the in-process registry here is an async lock, and a judgement
+    /// made while another task holds it (an open, a close, a sweep) answers "not idle". That is the same answer the
+    /// work in progress would give, and the idle handover re-judges on its next poll and after every request.
     fn is_host_idle(&self) -> bool {
         let sessionless = self
             .sessionless_requests
@@ -1714,13 +1726,15 @@ impl HostCore {
                     .into();
                 data["capabilities"] = serde_json::json!(self.advertised_capabilities());
                 data["mode"] = "multi".into();
-                if let Some(gate) = self.handover.get() {
-                    crate::host_handover_wire::with_host_identity(
-                        &mut data,
-                        gate.runtime_build_id.as_deref(),
-                        gate.handover.view().as_ref(),
-                    );
-                }
+                let gate = self.handover.get();
+                crate::host_handover_wire::with_host_identity(
+                    &mut data,
+                    self.runtime_build_id
+                        .get()
+                        .map(String::as_str)
+                        .or_else(|| gate.and_then(|gate| gate.runtime_build_id.as_deref())),
+                    gate.and_then(|gate| gate.handover.view()).as_ref(),
+                );
                 self.success(
                     connection,
                     command.id.clone(),
@@ -4531,6 +4545,34 @@ mod handoff_tests {
         // An idle host with no sessions and nothing in flight is at its safe idle point.
         assert!(core.is_host_idle());
     }
+    /// senpi `withHostIdentity(response, runtimeBuildId, ...)`: the loaded runtime is reported with no idle handover
+    /// installed (a Windows host has none).
+    #[tokio::test]
+    async fn protocol_info_reports_the_runtime_build_id_without_a_handover_gate() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        core.set_runtime_build_id("sha256:loaded".into());
+        core.handle(Some("c"), r#"{"id":"p","type":"get_protocol_info"}"#)
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(answer["command"], "get_protocol_info");
+        assert_eq!(answer["data"]["runtimeBuildId"], "sha256:loaded");
+        assert!(answer["data"].get("handover").is_none());
+    }
     #[tokio::test]
     async fn protocol_info_advertises_host_capabilities_the_decision_requires() {
         let capabilities = idle_core().advertised_capabilities();
@@ -6157,6 +6199,9 @@ async fn run_socket_host(
             runtime_build_id.as_deref().unwrap_or("unreadable")
         );
         std::process::exit(1);
+    }
+    if let Some(runtime_build_id) = &runtime_build_id {
+        core.set_runtime_build_id(runtime_build_id.clone());
     }
     #[cfg(unix)]
     if let Some(runtime_build_id) = runtime_build_id {
