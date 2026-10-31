@@ -129,6 +129,8 @@ pub struct HostCore {
     memory_pressure: std::sync::atomic::AtomicBool,
     /// `set_client_info` capabilities a connection sent before it attached (senpi `pendingCapabilities`).
     pending_capabilities: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Each connection's opens still in flight (senpi `opensByConnection`): an open's barrier settles when it answers.
+    opens_by_connection: std::sync::Mutex<OpensByConnection>,
     bindings: tokio::sync::Mutex<
         std::collections::BTreeMap<
             String,
@@ -255,6 +257,7 @@ impl HostCore {
             activity: Default::default(),
             memory_pressure: std::sync::atomic::AtomicBool::new(false),
             pending_capabilities: Default::default(),
+            opens_by_connection: Default::default(),
             bindings: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
             options,
             tool_runtime: crate::host_capabilities::ToolRuntimeKind::InProcess,
@@ -1576,6 +1579,8 @@ impl HostCore {
                     );
                     return Ok(());
                 }
+                // Settles once the open answered (dropped at the end of this arm).
+                let _barrier = self.open_barrier(connection, command.id.as_deref());
                 match self
                     .open_session_inner(connection, &command.body, None)
                     .await
@@ -2689,6 +2694,11 @@ impl HostCore {
     /// still holds keeps running, a retained one stays open at zero attachments, and only the last
     /// owner tears it down. A turn in flight runs to settlement first; a drain owns teardown itself.
     pub async fn release_connection(self: &std::sync::Arc<Self>, connection: &str) {
+        self.release_connection_attachments(connection).await;
+        // senpi `releaseConnection`: the release settles only after the connection's opens did.
+        self.opens_settled(connection).await;
+    }
+    async fn release_connection_attachments(self: &std::sync::Arc<Self>, connection: &str) {
         let owned = self
             .attachments
             .lock()
@@ -2752,6 +2762,61 @@ impl HostCore {
                 }
                 self.release_owned_session(&session_id).await;
             }
+        }
+    }
+    /// senpi `openWithBarrier`: registers the open under its connection and, for an open with an id, tells the
+    /// connection where it was queued before the open runs - every open accepted anywhere on this host counts,
+    /// since one runtime serves them all (senpi#1844). A stdio open has no connection and no barrier.
+    fn open_barrier(
+        &self,
+        connection: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Option<OpenBarrier<'_>> {
+        let owner = connection?;
+        let (settle, settled) = tokio::sync::watch::channel(false);
+        let in_flight = {
+            let mut opens = self
+                .opens_by_connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let in_flight = opens.values().map(Vec::len).sum::<usize>();
+            opens.entry(owner.to_owned()).or_default().push(settled);
+            in_flight
+        };
+        if let Some(request_id) = request_id {
+            let queued = crate::rpc_types::RpcOpenQueuedEvent {
+                record_type: crate::rpc_types::OpenQueuedType::Queued,
+                for_request: request_id.to_owned(),
+                position: (in_flight + 1) as f64,
+                in_flight: in_flight as f64,
+            };
+            if let Ok(value) = serde_json::to_value(&queued)
+                && let Err(error) = self
+                    .fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .enqueue_control(owner, &value)
+            {
+                eprintln!("senpi rpc connection {owner} failed: {error}");
+            }
+        }
+        Some(OpenBarrier {
+            host: self,
+            owner: owner.to_owned(),
+            settle,
+        })
+    }
+    /// Resolves once every open `connection` had in flight has answered.
+    async fn opens_settled(&self, connection: &str) {
+        let pending = self
+            .opens_by_connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(connection)
+            .cloned()
+            .unwrap_or_default();
+        for mut settled in pending {
+            let _ = settled.wait_for(|done| *done).await;
         }
     }
     /// senpi `releaseDisconnectAttachment`'s deferral: subscribes to the turn's settlement and releases the handle
@@ -3528,6 +3593,31 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .detach(owner, session_id);
+    }
+}
+type OpensByConnection =
+    std::collections::BTreeMap<String, Vec<tokio::sync::watch::Receiver<bool>>>;
+/// One open's barrier (senpi `openWithBarrier`'s `finally`): dropping it settles the open and forgets it.
+struct OpenBarrier<'a> {
+    host: &'a HostCore,
+    owner: String,
+    settle: tokio::sync::watch::Sender<bool>,
+}
+impl Drop for OpenBarrier<'_> {
+    fn drop(&mut self) {
+        let _ = self.settle.send(true);
+        let mut opens = self
+            .host
+            .opens_by_connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let own = self.settle.subscribe();
+        if let Some(pending) = opens.get_mut(&self.owner) {
+            pending.retain(|settled| !settled.same_channel(&own));
+            if pending.is_empty() {
+                opens.remove(&self.owner);
+            }
+        }
     }
 }
 /// The writer's side of the worker grant bridge (senpi `SessionEventWriter`'s `settleGrantDialog` /
@@ -4481,6 +4571,55 @@ mod handoff_tests {
             .expect("the request ends when its connection leaves")
             .unwrap();
         assert_eq!(answer["reason"], "app_disconnected");
+    }
+    // senpi rpc-queued-open-record.test.ts: "tells the opener its queue position before the open completes".
+    #[tokio::test]
+    async fn tells_the_opener_its_queue_position_before_the_open_completes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c1");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c1"),
+            &serde_json::json!({"id":"open-1","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        // The queued record precedes the open's reply and never wears the response-id field.
+        let queued = next(&mut client).await;
+        assert_eq!(queued["type"], "queued");
+        assert_eq!(queued["for_request"], "open-1");
+        assert_eq!(queued["position"], 1.0);
+        assert_eq!(queued["in_flight"], 0.0);
+        assert!(queued.get("id").is_none());
+        assert_eq!(reply_to(&mut client, "open-1").await["success"], true);
+        assert!(core.opens_by_connection.lock().unwrap().is_empty());
+    }
+    // senpi `openWithBarrier`: an open already accepted anywhere on the host counts toward the position, and a
+    // connection's release settles only after its opens did.
+    #[tokio::test]
+    async fn a_concurrent_open_counts_every_open_in_flight_and_release_waits_for_it() {
+        let core = idle_core();
+        let mut second = peer(&core, "c2");
+        let first = core.open_barrier(Some("c1"), Some("open-1")).unwrap();
+        let barrier = core.open_barrier(Some("c2"), Some("open-2")).unwrap();
+        let queued = next(&mut second).await;
+        assert_eq!(
+            (queued["position"].as_f64(), queued["in_flight"].as_f64()),
+            (Some(2.0), Some(1.0))
+        );
+        // A stdio open has no connection and no barrier.
+        assert!(core.open_barrier(None, Some("open-3")).is_none());
+        let mut released = Box::pin(core.release_connection("c2"));
+        assert!(
+            futures::poll!(&mut released).is_pending(),
+            "the release waits for the open in flight"
+        );
+        drop(barrier);
+        released.await;
+        assert!(!core.opens_by_connection.lock().unwrap().contains_key("c2"));
+        drop(first);
+        assert!(core.opens_by_connection.lock().unwrap().is_empty());
     }
     #[tokio::test]
     async fn reclaim_seals_session_closed_to_attached_connections_only() {
