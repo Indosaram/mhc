@@ -43,6 +43,8 @@ pub mod log;
 pub mod modern_era;
 #[path = "modern_mrtr_privacy.rs"]
 pub mod modern_mrtr_privacy;
+#[path = "modern_transport.rs"]
+pub mod modern_transport;
 #[path = "modern_wire.rs"]
 pub mod modern_wire;
 #[path = "notifications.rs"]
