@@ -17,9 +17,11 @@ pub async fn handoff_host(socket:&str,agent_dir:&std::path::Path,options:Handoff
             Err(crate::host_successor::PrepareSuccessorError::SocketReplaced)=>return Ok(Err(HandoffRefusal{reason:"socket_replaced",upgradeable:true,detail:None})),
             Err(error)=>return Err(std::io::Error::other(error)),
         };
+        // senpi `startSuccessor`: the successor inherits the predecessor's lifetime owner (and its pipe when that owner is this process).
+        let owner_pipe=crate::host_lifecycle_activity::inherit_host_owner(context.host.instance_id.as_deref().map(|id|crate::host_daemon_paths::generation_paths(&context.paths,id).dir).as_deref(),&crate::host_daemon_paths::generation_paths(&context.paths,&instance_id).dir)?;
         let launch=crate::host_launch::default_host_launch(&prepared.argv)?;
         let env=crate::host_successor::successor_env(std::env::vars().collect(),generation,&instance_id,&context.paths.dir.to_string_lossy(),Some(&agent_dir.to_string_lossy()),&options.env);
-        crate::host_successor::start_successor(&context,socket,prepared.replaced,crate::host_successor::SuccessorLaunchOptions{launch,env,instance_id,generation,launch_profile_id:options.launch_profile_id,readiness_ms:options.readiness_ms}).await
+        crate::host_successor::start_successor(&context,socket,prepared.replaced,crate::host_successor::SuccessorLaunchOptions{launch,env,instance_id,generation,launch_profile_id:options.launch_profile_id,readiness_ms:options.readiness_ms,owner_pipe}).await
     }.await;
     lock.release().map_err(std::io::Error::other)?;result
 }
