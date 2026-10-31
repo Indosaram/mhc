@@ -33,6 +33,8 @@ pub mod harness_drive_retry;
 pub mod harness_drive_structural;
 #[path = "harness_drive_terminal.rs"]
 pub mod harness_drive_terminal;
+#[path = "harness_drive_tool_batch.rs"]
+pub mod harness_drive_tool_batch;
 #[path = "harness_drive_tools.rs"]
 pub mod harness_drive_tools;
 #[path = "harness_drive_watch.rs"]
