@@ -86,12 +86,16 @@ fn has_status(text: &str, code: &str) -> bool {
     })
 }
 
-/// Whether `text` (lower case) contains `word` with no letter or digit on either side.
+/// Whether `text` (lower case) contains `word`, or its plural with a trailing `s`, with no letter
+/// or digit on either side.
 fn has_word(text: &str, word: &str) -> bool {
     let bytes = text.as_bytes();
     let boundary = |byte: u8| !byte.is_ascii_alphanumeric();
     text.match_indices(word).any(|(start, _)| {
-        let end = start + word.len();
+        let mut end = start + word.len();
+        if bytes.get(end) == Some(&b's') {
+            end += 1;
+        }
         (start == 0 || boundary(bytes[start - 1])) && (end == bytes.len() || boundary(bytes[end]))
     })
 }
@@ -256,6 +260,14 @@ mod tests {
         assert_eq!(classify("403 forbidden: invalid token", None), Rejected);
         assert_eq!(classify("403: api_key disabled", None), Rejected);
         assert_eq!(classify("403 (key revoked)", None), Rejected);
+        // Plurals count too.
+        assert_eq!(
+            classify("403 forbidden: invalid credentials", None),
+            Rejected
+        );
+        assert_eq!(classify("403 forbidden: tokens revoked", None), Rejected);
+        assert_eq!(classify("403: accounts are suspended", None), Rejected);
+        assert_eq!(classify("forbidden: keys disabled", None), Rejected);
     }
 
     #[test]

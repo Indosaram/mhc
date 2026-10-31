@@ -769,7 +769,7 @@ impl TaskManager {
     /// a note for each steer whose fate is uncertain.
     fn follow_up(&self, settled: &mut TaskRecord) -> Option<(TaskRecord, String)> {
         let written = lock(&self.steers).remove(&settled.id).unwrap_or_default();
-        let transcript = self.transcript(&settled);
+        let transcript = self.transcript(settled);
         let mut reclaimed: Vec<PendingMessage> = Vec::new();
         let mut settled_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut act_on_received = false;
