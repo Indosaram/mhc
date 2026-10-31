@@ -43,6 +43,8 @@ pub mod modern_era;
 pub mod modern_mrtr_privacy;
 #[path = "modern_wire.rs"]
 pub mod modern_wire;
+#[path = "modern_subscriptions.rs"]
+pub mod modern_subscriptions;
 #[path = "notifications.rs"]
 pub mod notifications;
 #[path = "oauth.rs"]
