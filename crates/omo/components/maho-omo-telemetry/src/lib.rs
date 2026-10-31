@@ -3,6 +3,7 @@ pub mod category_config_schema;
 pub mod crash_schema;
 pub mod delegation_projection;
 pub mod delegation_schema;
+pub mod dual_transport;
 pub mod eval_cell_correlation;
 pub mod eval_classifier;
 pub mod event_schemas;
@@ -12,6 +13,8 @@ pub mod model_vocabulary;
 mod omo_native_category_config;
 pub mod omo_native_component;
 mod omo_native_consent;
+// Automatic crash reporting is retired (omo v5.1.52): only the schema projection and its tests remain.
+#[allow(dead_code)]
 mod omo_native_crash;
 pub mod omo_native_delegation;
 pub mod omo_native_eval;
@@ -30,7 +33,13 @@ pub mod omo_native_summary_wiring;
 pub mod omo_native_tools;
 pub mod omo_native_turn_span;
 pub mod omo_native_turns;
+pub mod otlp;
+pub mod otlp_events;
+pub mod otlp_projection;
+mod otlp_runtime;
 pub mod parallelism_schema;
+pub mod pinned_model_ids;
+#[allow(dead_code)]
 mod process_crash_records;
 pub mod product_identity;
 pub mod savings_math;
@@ -60,3 +69,6 @@ pub mod wave_assembler;
 pub use index::SenpiTelemetryComponent;
 #[cfg(test)]
 mod telemetry_parity_tests;
+#[cfg(test)]
+#[path = "telemetry_sync_5152_tests.rs"]
+mod telemetry_sync_5152_tests;

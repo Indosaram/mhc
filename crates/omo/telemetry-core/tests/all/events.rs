@@ -31,7 +31,6 @@ fn product() -> TelemetryProductConfig {
         default_api_key: "default-key".into(),
         default_host: "https://posthog.test".into(),
         event_name: "legacy_event".into(),
-        machine_id_prefix: "omo-native:".into(),
         package_name: "@oh-my-opencode/omo-native".into(),
         package_version: "5.0.0".into(),
         platform: "omo-senpi".into(),

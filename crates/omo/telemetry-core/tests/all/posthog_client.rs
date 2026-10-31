@@ -8,6 +8,7 @@ use telemetry_core::CreateTelemetryClientInput;
 use telemetry_core::DEFAULT_POSTHOG_API_KEY;
 use telemetry_core::DEFAULT_POSTHOG_HOST;
 use telemetry_core::RecordDailyActiveInput;
+use telemetry_core::TELEMETRY_INSTALL_ID_FILE_NAME;
 use telemetry_core::TELEMETRY_RUNTIME;
 use telemetry_core::TelemetryClientEnabledInput;
 use telemetry_core::TelemetryEnv;
@@ -16,9 +17,10 @@ use telemetry_core::TrackActiveInput;
 use telemetry_core::UNCONFIGURED_POSTHOG_API_KEY;
 use telemetry_core::create_telemetry_client;
 use telemetry_core::get_telemetry_activity_state_file_path;
-use telemetry_core::get_telemetry_distinct_id;
+use telemetry_core::get_telemetry_install_distinct_id;
 use telemetry_core::is_telemetry_client_enabled;
 use telemetry_core::record_daily_active;
+use telemetry_core::to_telemetry_terminal_program;
 
 use crate::common::FakeOs;
 use crate::common::Recorder;
@@ -30,7 +32,6 @@ fn product() -> TelemetryProductConfig {
         default_api_key: DEFAULT_POSTHOG_API_KEY.into(),
         default_host: DEFAULT_POSTHOG_HOST.into(),
         event_name: "omo_codex_daily_active".into(),
-        machine_id_prefix: "omo-codex:".into(),
         package_name: "@oh-my-opencode/omo-codex".into(),
         package_version: "4.9.2".into(),
         platform: "omo-codex".into(),
@@ -125,6 +126,8 @@ async fn codex_daily_active_payload_matches_current_contract() {
         ("POSTHOG_HOST", "https://posthog.test"),
     ]);
     let product = product();
+    let state_dir = tempfile::tempdir().unwrap();
+    let distinct_id = get_telemetry_install_distinct_id(state_dir.path());
     let client = create_telemetry_client(&CreateTelemetryClientInput {
         diagnostics: None,
         env: Some(&env),
@@ -136,7 +139,7 @@ async fn codex_daily_active_payload_matches_current_contract() {
 
     client.track_active(&TrackActiveInput {
         day_utc: "2026-05-25".into(),
-        distinct_id: get_telemetry_distinct_id(&product.machine_id_prefix, &FakeOs),
+        distinct_id: distinct_id.clone(),
         reason: "cli_run".into(),
     });
     client.flush().await.unwrap();
@@ -144,10 +147,8 @@ async fn codex_daily_active_payload_matches_current_contract() {
 
     let messages = recorder.messages();
     assert_eq!(messages.len(), 1);
-    assert_eq!(
-        messages[0].distinct_id,
-        hex::encode(sha2::Sha256::digest("omo-codex:test-host"))
-    );
+    assert_eq!(messages[0].distinct_id, distinct_id);
+    assert_eq!(distinct_id.len(), 64);
     assert_eq!(messages[0].event, "omo_codex_daily_active");
     let mut expected = json!({
         "platform": "omo-codex",
@@ -172,8 +173,18 @@ async fn codex_daily_active_payload_matches_current_contract() {
     let optional = [
         ("locale", sys_locale::get_locale()),
         ("timezone", iana_time_zone::get_timezone().ok()),
-        ("shell", std::env::var("SHELL").ok()),
-        ("terminal", std::env::var("TERM_PROGRAM").ok()),
+        (
+            "shell",
+            std::env::var("SHELL")
+                .ok()
+                .and_then(|path| path.rsplit(['/', '\\']).next().map(str::to_owned))
+                .filter(|name| !name.is_empty()),
+        ),
+        (
+            "terminal",
+            to_telemetry_terminal_program(std::env::var("TERM_PROGRAM").ok().as_deref())
+                .map(str::to_owned),
+        ),
     ];
     for (key, value) in optional {
         if let Some(value) = value {
@@ -254,4 +265,53 @@ async fn blank_api_key_does_not_write_dedup_state() {
 
     assert_eq!(recorder.messages().len(), 0);
     assert!(!get_telemetry_activity_state_file_path(state_dir.path()).exists());
+}
+
+#[tokio::test]
+async fn daily_active_distinct_id_is_the_hash_of_the_state_dir_install_id() {
+    let recorder = Recorder::new();
+    let state_dir = tempfile::tempdir().unwrap();
+    let env = env(&[("POSTHOG_API_KEY", "test-key")]);
+    let product = product();
+
+    record_daily_active(&record_input(&env, &product, state_dir.path(), &recorder))
+        .await
+        .unwrap();
+
+    let install_id =
+        std::fs::read_to_string(state_dir.path().join(TELEMETRY_INSTALL_ID_FILE_NAME)).unwrap();
+    let expected = hex::encode(sha2::Sha256::digest(install_id.trim().as_bytes()));
+    let messages = recorder.messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].distinct_id, expected);
+}
+
+#[tokio::test]
+async fn disabled_or_keyless_daily_active_creates_no_install_id() {
+    for pairs in [
+        &[
+            ("OMO_CODEX_DISABLE_POSTHOG", "1"),
+            ("POSTHOG_API_KEY", "test-key"),
+        ][..],
+        &[("DO_NOT_TRACK", "1"), ("POSTHOG_API_KEY", "test-key")][..],
+        &[("POSTHOG_API_KEY", " ")][..],
+    ] {
+        let recorder = Recorder::new();
+        let state_dir = tempfile::tempdir().unwrap();
+        let env = env(pairs);
+        let product = product();
+
+        record_daily_active(&record_input(&env, &product, state_dir.path(), &recorder))
+            .await
+            .unwrap();
+
+        assert_eq!(recorder.messages().len(), 0, "{pairs:?}");
+        assert!(
+            !state_dir
+                .path()
+                .join(TELEMETRY_INSTALL_ID_FILE_NAME)
+                .exists(),
+            "{pairs:?}"
+        );
+    }
 }

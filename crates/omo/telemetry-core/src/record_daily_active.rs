@@ -5,8 +5,7 @@ use chrono::Utc;
 
 use crate::activity_state::DailyActiveCaptureStateInput;
 use crate::activity_state::get_daily_active_capture_state;
-use crate::machine_id::get_default_telemetry_os_provider;
-use crate::machine_id::get_telemetry_distinct_id;
+use crate::install_id::get_telemetry_install_distinct_id;
 use crate::posthog_client::CreateTelemetryClientInput;
 use crate::posthog_client::TelemetryClientEnabledInput;
 use crate::posthog_client::create_telemetry_client;
@@ -71,12 +70,9 @@ pub async fn record_daily_active(input: &RecordDailyActiveInput<'_>) -> Result<(
         return Ok(());
     }
 
-    let os_provider = input
-        .os_provider
-        .unwrap_or(get_default_telemetry_os_provider());
     client.track_active(&TrackActiveInput {
         day_utc: activity_state.day_utc,
-        distinct_id: get_telemetry_distinct_id(&input.product.machine_id_prefix, os_provider),
+        distinct_id: get_telemetry_install_distinct_id(input.state_dir),
         reason: input.reason.to_string(),
     });
     client.flush().await?;
