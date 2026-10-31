@@ -1807,12 +1807,10 @@ mod tests {
         let mut api = api();
         component.register(&mut api);
         let ctx = context(t.path(), "zoned");
-        let resume = ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
-            reason: SessionReason::Resume,
-            initial_model_provenance: None,
-            previous_session_file: None,
-            attended: None,
-        });
+        let mut resume = start();
+        if let ExtensionEvent::SessionStart(event) = &mut resume {
+            event.reason = SessionReason::Resume;
+        }
         dispatch(&api, resume, &ctx).await;
         let started = session_started(&messages);
         assert_eq!(started["timezone"], "Asia/Seoul");
