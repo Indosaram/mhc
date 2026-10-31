@@ -785,6 +785,8 @@ impl Extension for TerminalExtension {
         let state_lifecycle: Lifecycle = Arc::new(tokio::sync::Mutex::new(None));
         let recorded_background_ids: crate::extension_state::RecordedBackgroundIds =
             Arc::default();
+        // Upstream `state.ensurePersistence`: set by a start with nothing to restore.
+        let ensure_persistence: crate::extension_state::EnsurePersistence = Arc::default();
         // Upstream `TerminalExtensionState`: the sinks and the tool context read it at call time.
         let terminal_state = crate::extension_state::TerminalExtensionState {
             sender: sender.clone(),
@@ -797,6 +799,7 @@ impl Extension for TerminalExtension {
             notifier: terminal_notifier.clone(),
             delivery: completion_delivery.clone(),
             recorded_background_ids: recorded_background_ids.clone(),
+            ensure_persistence: ensure_persistence.clone(),
         };
         let sinks = crate::extension_state::bundle_sinks(&terminal_state);
         let (on_monitor_event, on_monitor_ended) = (
@@ -1095,7 +1098,9 @@ impl Extension for TerminalExtension {
             Arc::new(Mutex::new(Arc::new(tokio::sync::watch::channel(false).0)));
         let start_restore_tasks = restore_tasks.clone();
         let start_grace_stop = grace_stop.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();let recorded=start_recorded.clone();Box::pin(async move {
+        let start_ensure = ensure_persistence.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let ensure=start_ensure.clone();let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();let digests=lifecycle_digests.clone();let keeper=lifecycle_keeper.clone();let decided=lifecycle_decided.clone();let restore_tasks=start_restore_tasks.clone();let grace_stop=start_grace_stop.clone();let recorded=start_recorded.clone();Box::pin(async move {
+            *ensure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;
             let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
             let session_id=ctx.session_manager.session_id().to_owned();
             let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
@@ -1122,6 +1127,21 @@ impl Extension for TerminalExtension {
             // Upstream `startPersistence`: a new generation gets a fresh digest slot.
             let generation={let mut digests=digests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);digests.generation+=1;digests.slot=crate::restore_digest::create_digest_slot();digests.notify_off=settings.notify==crate::settings::NotifyMode::Off;digests.generation};
             let context=TakeoverContext {state:state.clone(),recorded,manager:manager.clone(),monitors:monitors.clone(),digests:digests.clone(),terminal_dir:terminal_dir.clone(),encoded:encoded.clone(),shell,settings,generation,decided,keeper_interval_ms:None,restore_grace_ms:None,restore_tasks,grace_stop:{let fresh=Arc::new(tokio::sync::watch::channel(false).0);*grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=fresh.clone();fresh},flush:Some({let digests=digests.clone();let sender=sender.clone();let ctx=ctx.clone();Arc::new(move ||flush_restore_digest(&digests,&sender,&ctx,ctx.model.is_some()))})};
+            // Upstream `startPersistence`: nothing on disk to restore means the lease and the
+            // recorder wait for the first durable need (`ensurePersistence`); the restore is
+            // decided at once.
+            if !std::path::Path::new(lifecycle.writer.store.file_path()).exists() {
+                context.decided.send_replace(generation);
+                let (ctx,keeper)=(ctx.clone(),keeper.clone());
+                *ensure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(crate::extension_state::LazyPersistence::new(move || {
+                    let (ctx,context,keeper,session_dir,session_id)=(ctx.clone(),context.clone(),keeper.clone(),session_dir.clone(),session_id.clone());
+                    Box::pin(async move {
+                        let lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
+                        acquire_or_wait(&ctx,&context,&keeper,lifecycle,session_dir,session_id,terminal_now_ms()).await;
+                    })
+                }));
+                return Ok(EventResult::None);
+            }
             acquire_or_wait(ctx,&context,&keeper,lifecycle,session_dir,session_id,now).await;
             flush_restore_digest(&digests,&sender,ctx,ctx.model.is_some());
             Ok(EventResult::None)
@@ -1131,7 +1151,8 @@ impl Extension for TerminalExtension {
         let shutdown_keeper = lease_keeper.clone();
         let shutdown_digests = digests.clone();
         let shutdown_recorded = recorded_background_ids.clone();
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let recorded=shutdown_recorded.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
+        let shutdown_ensure = ensure_persistence.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {*shutdown_ensure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;let state=shutdown_lifecycle.clone();let recorded=shutdown_recorded.clone();let monitors=shutdown_monitors.clone();let keeper=shutdown_keeper.clone();let digests=shutdown_digests.clone();let restore_tasks=restore_tasks.clone();let grace_stop=grace_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                 // Upstream `detachPersistence`: the recorder detaches without writing and the
                 // session unbinds, so specs created until the next generation binds are queued for
@@ -1403,6 +1424,7 @@ impl Extension for TerminalExtension {
         );
         let bash_backgrounds = backgrounds.clone();
         let bash_lifecycle = state_lifecycle.clone();
+        let bash_ensure = ensure_persistence.clone();
         // The tool context the child placement reads (upstream `buildToolContext`): the live configuration, the
         // session cwd, the shell environment, and the hooks a background session that lives on the child reports to.
         let terminal_context = crate::extension_state::build_tool_context(&terminal_state);
@@ -1419,6 +1441,7 @@ impl Extension for TerminalExtension {
                 let bash_configuration = bash_configuration.clone();
                 let backgrounds = bash_backgrounds.clone();
                 let lifecycle = bash_lifecycle.clone();
+                let ensure = bash_ensure.clone();
                 Box::pin(async move {
                     let (settings, shell) = bash_configuration
                         .lock()
@@ -1466,6 +1489,9 @@ impl Extension for TerminalExtension {
                                 },
                             );
                         publish_backgrounds(&backgrounds, &sender);
+                        // Upstream `onBackgroundState`: a live background session with no
+                        // recorder bound yet binds persistence first.
+                        crate::extension_state::ensure_persistence(&ensure).await;
                         if let Some(lifecycle) = lifecycle.lock().await.as_mut() {
                             lifecycle
                                 .writer
@@ -1676,6 +1702,7 @@ impl Extension for TerminalExtension {
         let tool_notifier = notifier.clone();
         let tool_configuration = configuration.clone();
         let tool_lifecycle = state_lifecycle.clone();
+        let tool_ensure = ensure_persistence.clone();
         let mut monitor_tool = ToolDefinition::new(
             "monitor",
             "Subscribe to a change instead of polling. Pass one source: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected; target (type rpc) watches sessions' status, effects and content on every RPC host and terminal (\"children\", \"all\" or one session). Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",
@@ -1686,6 +1713,7 @@ impl Extension for TerminalExtension {
                 let notifier = tool_notifier.clone();
                 let configuration = tool_configuration.clone();
                 let lifecycle = tool_lifecycle.clone();
+                let ensure = tool_ensure.clone();
                 Box::pin(async move {
                     let cwd = call
                         .context
@@ -1701,6 +1729,12 @@ impl Extension for TerminalExtension {
                     // Upstream monitor.ts:164/:315 hand the captured spec to the session's manifest writer
                     // and :207-217 caps durable creates before any spawn. The writer lock is async; the
                     // manager/registry locks are held only across the synchronous registration.
+                    // Upstream monitor.ts: every create binds persistence first (lazy lease +
+                    // recorder), before durable admission and before the writer lock is taken
+                    // (the bind installs the lifecycle under that lock).
+                    if call.params.get("action").and_then(Value::as_str) != Some("rearm") {
+                        crate::extension_state::ensure_persistence(&ensure).await;
+                    }
                     let mut lifecycle = lifecycle.lock().await;
                     let session_key =
                         crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
