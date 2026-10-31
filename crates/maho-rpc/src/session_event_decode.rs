@@ -133,6 +133,9 @@ fn queued_input(value: &Value) -> Option<QueuedInput> {
         text: get(value, "text")?,
         mode: streaming_behavior(value.get("mode")?.as_str()?)?,
         enqueue_order: get(value, "enqueueOrder")?,
+        queued_id: get(value, "queuedId").unwrap_or_default(),
+        revision: get(value, "revision").unwrap_or(1),
+        client_message_id: get(value, "clientMessageId"),
     })
 }
 
@@ -545,6 +548,9 @@ mod tests {
                     text: "t".into(),
                     mode: StreamingBehavior::Steer,
                     enqueue_order: 7,
+                    queued_id: "q_3".into(),
+                    revision: 2,
+                    client_message_id: Some("c-1".into()),
                 }],
             },
             AgentSessionEvent::SessionToolChild {
