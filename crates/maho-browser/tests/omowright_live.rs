@@ -1,5 +1,7 @@
-//! omowright frames, network snoop, trace and stealth against a real Chromium, when
-//! `$MAHO_BROWSER_TEST_PATH` names one (each test prints why it skipped otherwise).
+//! omowright frames, network snoop, trace and stealth against a real Chromium. The tests are
+//! `#[ignore]`d: run them with `$MAHO_BROWSER_TEST_PATH` naming a browser and
+//! `cargo nextest run --run-ignored ignored-only` (or `cargo test -- --ignored`); without the
+//! variable an ignored run fails instead of passing silently.
 use maho_browser::browser::{Browser, LaunchOptions};
 use maho_browser::page::network_snoop::{EntryMatch, SnoopOptions};
 use maho_browser::page::trace::TraceOptions;
@@ -11,22 +13,19 @@ fn browser_path() -> Option<PathBuf> {
     std::env::var_os("MAHO_BROWSER_TEST_PATH").map(PathBuf::from)
 }
 
-fn launch() -> Option<Browser> {
+fn launch() -> Browser {
     let Some(executable) = browser_path() else {
-        eprintln!("skipped: MAHO_BROWSER_TEST_PATH is not set");
-        return None;
+        panic!("MAHO_BROWSER_TEST_PATH is not set; it must name a Chromium for these tests");
     };
-    Some(
-        Browser::launch(&LaunchOptions {
-            executable: Some(executable),
-            features: maho_browser::launch::LaunchFeatures {
-                allow_file_access: true,
-                ..Default::default()
-            },
-            ..LaunchOptions::default()
-        })
-        .unwrap_or_else(|error| panic!("launch failed: {error}")),
-    )
+    Browser::launch(&LaunchOptions {
+        executable: Some(executable),
+        features: maho_browser::launch::LaunchFeatures {
+            allow_file_access: true,
+            ..Default::default()
+        },
+        ..LaunchOptions::default()
+    })
+    .unwrap_or_else(|error| panic!("launch failed: {error}"))
 }
 
 fn write(dir: &Path, name: &str, html: &str) -> String {
@@ -36,8 +35,9 @@ fn write(dir: &Path, name: &str, html: &str) -> String {
 }
 
 #[test]
+#[ignore = "needs MAHO_BROWSER_TEST_PATH"]
 fn frames_are_stitched_into_one_snapshot() {
-    let Some(mut browser) = launch() else { return };
+    let mut browser = launch();
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     write(dir.path(), "child.html", "<button>Inner</button>");
     let url = write(
@@ -74,8 +74,9 @@ fn frames_are_stitched_into_one_snapshot() {
 }
 
 #[test]
+#[ignore = "needs MAHO_BROWSER_TEST_PATH"]
 fn snoop_and_trace_record_a_navigation() {
-    let Some(mut browser) = launch() else { return };
+    let mut browser = launch();
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let url = write(
         dir.path(),
@@ -112,8 +113,9 @@ fn snoop_and_trace_record_a_navigation() {
 }
 
 #[test]
+#[ignore = "needs MAHO_BROWSER_TEST_PATH"]
 fn stealth_hides_webdriver_and_headless_markers() {
-    let Some(mut browser) = launch() else { return };
+    let mut browser = launch();
     assert_eq!(browser.open("main", None, WaitUntil::Load), Ok(true));
     // A launched headless browser patches every tab it opens.
     let page = browser.tab("main").unwrap_or_else(|| panic!("no tab"));
