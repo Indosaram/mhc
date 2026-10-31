@@ -22,6 +22,66 @@ pub const SESSION_WORKER_LIMITS: SessionWorkerLimits = SessionWorkerLimits {
     open_ms: 30000,
     control_ms: 5000,
 };
+/// The isolate's transcript journal up to bootstrap (senpi `SessionBootstrap` on the worker wire). Upstream's
+/// `epochSignal` SharedArrayBuffer has no Rust counterpart: the replacement nonce is the host's, and the host
+/// sets it when it bootstraps the lane from this frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerBootstrap {
+    pub transcript: Vec<maho_core::session_transcript_journal::TranscriptTransition>,
+}
+/// `RecoveryCarrier` on the worker wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerRecoveryCarrier {
+    pub message_id: String,
+    pub epoch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_entry_id: Option<String>,
+}
+impl From<WorkerRecoveryCarrier> for maho_core::session_recovery_identity::RecoveryCarrier {
+    fn from(carrier: WorkerRecoveryCarrier) -> Self {
+        Self {
+            message_id: carrier.message_id,
+            epoch: carrier.epoch,
+            durable_entry_id: carrier.durable_entry_id,
+        }
+    }
+}
+impl From<maho_core::session_recovery_identity::RecoveryCarrier> for WorkerRecoveryCarrier {
+    fn from(carrier: maho_core::session_recovery_identity::RecoveryCarrier) -> Self {
+        Self {
+            message_id: carrier.message_id,
+            epoch: carrier.epoch,
+            durable_entry_id: carrier.durable_entry_id,
+        }
+    }
+}
+/// senpi `withinFrameLimit`: a transition whose entry cannot fit one worker frame is marked unavailable.
+pub fn within_frame_limit(
+    transitions: Vec<maho_core::session_transcript_journal::TranscriptTransition>,
+) -> Vec<maho_core::session_transcript_journal::TranscriptTransition> {
+    use maho_core::session_transcript_journal::{
+        TranscriptTransition, TranscriptUnavailableReason,
+    };
+    // Reserve fixed metadata space; content is charged in the same raw UTF-8 bytes as the accepted tail.
+    const ENTRY_OVERHEAD: usize = 1024;
+    transitions
+        .into_iter()
+        .map(|transition| {
+            let content = match &transition {
+                TranscriptTransition::Append { entry, .. } => entry.as_ref().map_or(0, String::len),
+                _ => 0,
+            };
+            if content + ENTRY_OVERHEAD > SESSION_WORKER_LIMITS.output_bytes {
+                TranscriptTransition::Unavailable {
+                    reason: TranscriptUnavailableReason::TransitionOverWorkerFrameLimit,
+                }
+            } else {
+                transition
+            }
+        })
+        .collect()
+}
 /// Whether an open step failed only because its worker died: the worker's request channel rejects what is pending
 /// with a plain `session_closing` / `session_worker_exited`, and the claims and grants it held report a typed
 /// `session_closing` (senpi#4037).
@@ -99,8 +159,13 @@ pub enum HostToSessionWorker {
         #[serde(default)]
         subscription_limits: Vec<serde_json::Value>,
     },
+    /// `acceptance`: the host owns an acceptance lane, so the isolate sends a bootstrap and ordered output frames.
     Commit {
         request: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acceptance: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery_epoch: Option<String>,
     },
     Bind {
         request: u64,
@@ -166,6 +231,8 @@ pub enum SessionWorkerWire {
     Ready {
         request: u64,
         snapshot: WorkerSnapshot,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap: Option<WorkerBootstrap>,
     },
     Result {
         request: u64,
@@ -193,6 +260,17 @@ pub enum SessionWorkerWire {
         activity: WorkerActivity,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot: Option<WorkerSnapshot>,
+        /// One per output frame of this worker incarnation, from 0; continuity only, never the accepted sequence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ordinal: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery: Option<WorkerRecoveryCarrier>,
+        /// Transcript transitions the isolate's manager committed before this record, accepted just before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transitions: Option<Vec<maho_core::session_transcript_journal::TranscriptTransition>>,
+        /// The next incarnation's baseline, on the `session_replaced` record that starts it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bootstrap: Option<WorkerBootstrap>,
     },
     Width {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,5 +676,51 @@ mod tests {
         };
         assert_eq!(profile_from_wire(&profile_to_wire(&bare)).unwrap(), bare);
         assert!(profile_from_wire(&serde_json::json!({})).is_err());
+    }
+    #[test]
+    fn oversized_transitions_become_unavailable_and_ordered_frames_round_trip() {
+        use maho_core::session_transcript_journal::{
+            TranscriptTransition, TranscriptUnavailableReason,
+        };
+        let big = TranscriptTransition::Append {
+            id: "e".into(),
+            entry: Some("x".repeat(SESSION_WORKER_LIMITS.output_bytes)),
+            persistence: None,
+            owning_message_id: None,
+            recovery_epoch: None,
+        };
+        let leaf = TranscriptTransition::Leaf { leaf_id: None };
+        assert_eq!(
+            within_frame_limit(vec![big, leaf.clone()]),
+            [
+                TranscriptTransition::Unavailable {
+                    reason: TranscriptUnavailableReason::TransitionOverWorkerFrameLimit
+                },
+                leaf
+            ]
+        );
+        let commit =
+            serde_json::json!({"type":"commit","request":2,"acceptance":true,"recoveryEpoch":"n"});
+        let parsed: HostToSessionWorker = serde_json::from_value(commit.clone()).expect("commit");
+        assert_eq!(serde_json::to_value(parsed).expect("json"), commit);
+        let output = serde_json::json!({"type":"output","record":{"type":"agent_start"},"signal":1,
+            "activity":{"busy":false,"streaming":false},"ordinal":0,
+            "recovery":{"messageId":"m","epoch":"n"},"transitions":[{"kind":"leaf","leafId":null}]});
+        let parsed: SessionWorkerWire = serde_json::from_value(output).expect("output");
+        let SessionWorkerWire::Output {
+            ordinal,
+            recovery,
+            transitions,
+            ..
+        } = parsed
+        else {
+            panic!("output frame");
+        };
+        assert_eq!(ordinal, Some(0));
+        assert_eq!(
+            recovery.map(|carrier| carrier.message_id).as_deref(),
+            Some("m")
+        );
+        assert_eq!(transitions.map(|t| t.len()), Some(1));
     }
 }

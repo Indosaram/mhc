@@ -48,6 +48,9 @@ struct WorkerPort {
         std::collections::HashMap<u64, crate::session_worker_signals::WorkerSignal>,
     >,
     next: std::sync::atomic::AtomicU64,
+    /// Set by `commit` when the host owns an acceptance lane; each output frame then carries the next ordinal.
+    ordered: std::sync::atomic::AtomicBool,
+    output_ordinal: std::sync::atomic::AtomicU64,
 }
 impl WorkerPort {
     fn send(&self, message: &crate::session_worker_protocol::SessionWorkerWire) {
@@ -219,6 +222,35 @@ fn publish_output(
         streaming: session.is_streaming(),
     };
     let connection = WORKER_CONNECTION.try_with(Clone::clone).ok().flatten();
+    // senpi `WorkerEventWriter.enqueue` ordered frames: ordinal, carrier, and the journal before the record.
+    let ordered = port.ordered.load(std::sync::atomic::Ordering::SeqCst);
+    let replaced = record["type"] == "session_replaced";
+    let (ordinal, recovery, transitions, bootstrap) = if ordered {
+        let ordinal = port
+            .output_ordinal
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let recovery = session.recovery_carrier(&record).map(Into::into);
+        let (transitions, bootstrap) = if replaced {
+            let transcript =
+                session.with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            (
+                None,
+                Some(crate::session_worker_protocol::WorkerBootstrap {
+                    transcript: crate::session_worker_protocol::within_frame_limit(transcript),
+                }),
+            )
+        } else {
+            let drained = session.with_session_manager_mut(|manager| manager.drain_transcript());
+            (
+                (!drained.is_empty())
+                    .then(|| crate::session_worker_protocol::within_frame_limit(drained)),
+                None,
+            )
+        };
+        (Some(ordinal), recovery, transitions, bootstrap)
+    } else {
+        (None, None, None, None)
+    };
     port.exchange(
         |signal| crate::session_worker_protocol::SessionWorkerWire::Output {
             record,
@@ -226,6 +258,10 @@ fn publish_output(
             signal,
             activity,
             snapshot: replacement,
+            ordinal,
+            recovery,
+            transitions,
+            bootstrap,
         },
         "session_worker_output_denied",
     );
@@ -320,14 +356,21 @@ impl WorkerState {
                     session_path,
                 }))
             }
-            H::Commit { request } => {
+            H::Commit {
+                request,
+                acceptance,
+                recovery_epoch,
+            } => {
                 let Some((configuration, profile)) = lock(&self.prepared).clone() else {
                     return Err("Invalid session commit".into());
                 };
                 if self.current().is_some() {
                     return Err("Invalid session commit".into());
                 }
-                let mut registry = crate::session_registry::RpcSessionRegistry::default();
+                let mut registry = crate::session_registry::RpcSessionRegistry {
+                    worker_isolate: true,
+                    ..Default::default()
+                };
                 let crate::session_registry::OpenAdmission::Create(handle) = registry
                     .admit_open(profile.clone(), false, crate::connection_handler::now_ms())
                     .map_err(|error| error.to_string())?
@@ -344,11 +387,27 @@ impl WorkerState {
                     runtime,
                     scope: entry.scope.clone(),
                 });
+                let ordered = acceptance == Some(true);
+                self.port
+                    .ordered
+                    .store(ordered, std::sync::atomic::Ordering::SeqCst);
+                if let Some(epoch) = &recovery_epoch {
+                    session.runtime.session().set_session_recovery_epoch(epoch);
+                }
+                let bootstrap = ordered.then(|| crate::session_worker_protocol::WorkerBootstrap {
+                    transcript: crate::session_worker_protocol::within_frame_limit(
+                        session
+                            .runtime
+                            .session()
+                            .with_session_manager_mut(|manager| manager.begin_transcript_journal()),
+                    ),
+                });
                 let value = snapshot(session.runtime.session());
                 *lock(&self.session) = Some(session);
                 Ok(Some(W::Ready {
                     request,
                     snapshot: value,
+                    bootstrap,
                 }))
             }
             H::Bind {
@@ -508,6 +567,8 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
         out: std::sync::Mutex::new(std::io::stdout()),
         pending: Default::default(),
         next: std::sync::atomic::AtomicU64::new(1),
+        ordered: std::sync::atomic::AtomicBool::new(false),
+        output_ordinal: std::sync::atomic::AtomicU64::new(0),
     });
     // senpi \`installWriteReservation(canonicalPath)\`: every session writer asks the host first.
     let reserve = std::sync::Arc::clone(&port);
@@ -579,7 +640,7 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
                 crate::session_worker_protocol::HostToSessionWorker::Prepare {
                     request, ..
                 }
-                | crate::session_worker_protocol::HostToSessionWorker::Commit { request }
+                | crate::session_worker_protocol::HostToSessionWorker::Commit { request, .. }
                 | crate::session_worker_protocol::HostToSessionWorker::Bind { request, .. }
                 | crate::session_worker_protocol::HostToSessionWorker::Command {
                     request, ..

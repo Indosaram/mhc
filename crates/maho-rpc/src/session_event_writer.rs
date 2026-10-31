@@ -65,6 +65,8 @@ impl RecordQueue{
 }
 #[derive(Default)]pub struct SessionRecordScheduler{queues:BTreeMap<(Option<String>,String),RecordQueue>,ready:VecDeque<(Option<String>,String)>,in_flight:Option<(Option<String>,String)>,in_flight_bytes:usize,reservations:CloseResponseReservations,sealed:BTreeSet<String>}
 pub struct SessionWriterActor{
+    /// Receivers of the internal structured lane (senpi `structuredLanes`); never a legacy destination.
+    pub structured_lanes:crate::session_structured_lanes::SessionStructuredLanes,
     scheduler:std::sync::Arc<std::sync::Mutex<SessionRecordScheduler>>,
     changed:std::sync::Arc<tokio::sync::Notify>,
     state:tokio::sync::watch::Sender<Result<bool,String>>,
@@ -99,7 +101,7 @@ impl SessionWriterActor{
                 pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acknowledge_write();
             }
         });
-        Self{scheduler,changed,state,task}
+        Self{structured_lanes:Default::default(),scheduler,changed,state,task}
     }
     pub fn enqueue(&self,session_id:&str,mut value:Value)->Result<(),String>{
         // Lifecycle copies are stamped where the host enqueues them (senpi `observeLifecycleDelivery`).
@@ -125,6 +127,12 @@ impl SessionWriterActor{
     pub fn release_close_response(&self,id:u64){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reservations.release(id);}
     /// senpi `isSessionSealed`: the writer accepts no further output for this session.
     pub fn is_session_sealed(&self,session_id:&str)->bool{self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed.contains(session_id)}
+    /// senpi `registerAcceptance`: a sealed session takes no new lane.
+    pub fn register_acceptance(&self,fanout:&std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>,session_id:&str,lane:crate::session_registry::SharedAcceptanceLane){
+        if self.is_session_sealed(session_id){return;}
+        let lanes=std::sync::Arc::clone(&fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acceptance);
+        lanes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_owned(),lane);
+    }
     pub fn forget_session(&self,session_id:&str){self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner).sealed.remove(session_id);}
     pub fn complete_close_response(&self,id:u64,session_id:&str,mut response:Value,terminal:bool,reason:Option<&str>)->Result<(),String>{
         let mut scheduler=self.scheduler.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

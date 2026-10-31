@@ -357,6 +357,52 @@ pub fn session_event_record(
         }
     })
 }
+/// The binding's acceptance step (senpi `createRpcSessionBinding.enqueueRecord`): accepted before the
+/// writer serializes or routes the record; a `session_replaced` is the next incarnation's bootstrap.
+///
+/// Rust records carry no object identity, so a record's recovery carrier is the one the session
+/// attached when it produced it (`AgentSession::recovery_carrier`, core-session lane).
+pub struct BindingAcceptance {
+    lane: crate::session_registry::SharedAcceptanceLane,
+    session: maho_core::agent_session::AgentSession,
+}
+impl BindingAcceptance {
+    pub fn new(
+        lane: crate::session_registry::SharedAcceptanceLane,
+        session: maho_core::agent_session::AgentSession,
+    ) -> Self {
+        session.set_session_recovery_epoch(
+            lane.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recovery_epoch(),
+        );
+        Self { lane, session }
+    }
+    pub fn accept(&self, record: &serde_json::Value) {
+        let mut lane = self
+            .lane
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if record.get("type").and_then(serde_json::Value::as_str) == Some("session_replaced") {
+            let transcript = self
+                .session
+                .with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            lane.bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap { transcript },
+                None,
+            );
+            self.session
+                .set_session_recovery_epoch(lane.recovery_epoch());
+            return;
+        }
+        let transitions = self
+            .session
+            .with_session_manager_mut(|manager| manager.drain_transcript());
+        lane.apply_transcript(&transitions);
+        let carrier = self.session.recovery_carrier(record);
+        lane.accept(record, carrier.as_ref());
+    }
+}
 pub struct BindingRecords {
     tools: ToolAttributionSpans,
 }

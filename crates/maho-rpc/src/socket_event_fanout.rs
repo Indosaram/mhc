@@ -465,6 +465,9 @@ impl SocketEventQueue {
     }
     pub fn close(&mut self) {
         self.closed = true;
+        if let Some(recovery) = &mut self.recovery {
+            recovery.release();
+        }
         self.queue.clear();
         self.raw
             .lock()
