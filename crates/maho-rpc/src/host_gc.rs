@@ -51,7 +51,8 @@ pub struct HostGcOptions {
     /// Only endpoints of these kinds; every kind when `None`.
     pub kinds: Option<Vec<EndpointKind>>,
 }
-enum Judged {
+/// One endpoint's verdict (senpi `gcEndpoint`'s outcome).
+pub enum Judged {
     Removed {
         reason: &'static str,
         skipped: Vec<PathBuf>,
@@ -120,7 +121,7 @@ pub async fn gc_host_endpoints(agent_dir: &Path, options: &HostGcOptions) -> Hos
     result
 }
 /// One endpoint, judged and removed exactly as a full run does.
-async fn gc_endpoint(socket: &str, dir: &Path) -> std::io::Result<Judged> {
+pub async fn gc_endpoint(socket: &str, dir: &Path) -> std::io::Result<Judged> {
     let paths = crate::host_daemon_paths::host_daemon_directory_paths(dir);
     let retries = crate::ownership_safe_lock::LockRetries {
         retries: u32::try_from(GC_LOCK_WAIT_MS / 100).unwrap_or(20),
