@@ -61,7 +61,8 @@ pub fn resolve_socket_transport_address(
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
         && matches!(bytes[2], b'\\' | b'/');
-    let unc = socket_path.starts_with("\\\\") && !socket_path.starts_with("\\\\/");
+    // senpi `/^\\\\[^/]/`: two backslashes and then a character that is not a slash.
+    let unc = bytes.len() >= 3 && bytes.starts_with(b"\\\\") && bytes[2] != b'/';
     if !drive_qualified && !unc {
         return Err(format!(
             "Windows RPC socket path must be drive-qualified or UNC: {socket_path}"
@@ -162,6 +163,13 @@ pub async fn send_socket_handshake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// senpi's UNC form needs a character after the two backslashes, and that character is not a slash.
+    #[test]
+    fn a_bare_or_slashed_unc_prefix_is_refused() {
+        assert!(resolve_socket_transport_address("\\\\", "win32", None).is_err());
+        assert!(resolve_socket_transport_address("\\\\/x", "win32", None).is_err());
+        assert!(resolve_socket_transport_address("\\\\server\\share\\s", "win32", None).is_ok());
+    }
     #[test]
     fn transport_address_passes_through_off_windows_and_validates_win32_paths() {
         assert_eq!(
