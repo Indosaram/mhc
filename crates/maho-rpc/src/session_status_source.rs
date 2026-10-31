@@ -88,18 +88,31 @@ pub fn worker_runtime_view(state: &Value) -> SessionStatusRuntimeView {
     }
 }
 
+/// The registry fields of one entry [`entry_view`] projects (senpi `RpcSessionEntry`).
+pub struct RegistryEntryFields<'a> {
+    pub state: crate::session_registry::RpcSessionState,
+    pub kind: maho_ext_api::SessionKind,
+    pub cwd: &'a str,
+    pub attachments: i64,
+    pub durable_session_id: Option<String>,
+    pub session_path: Option<String>,
+    pub context: &'a BTreeMap<String, String>,
+    pub overlay: Option<&'a crate::session_context_patch::SessionContextOverlay>,
+}
+
 /// The registry half of an entry (senpi `entryView`): the published context is the open-time context overlaid with
 /// every patch, and `open_context` is the frozen one `childrenOf` matching reads.
-pub fn entry_view(
-    state: crate::session_registry::RpcSessionState,
-    kind: maho_ext_api::SessionKind,
-    cwd: &str,
-    attachments: i64,
-    durable_session_id: Option<String>,
-    session_path: Option<String>,
-    context: &BTreeMap<String, String>,
-    overlay: Option<&crate::session_context_patch::SessionContextOverlay>,
-) -> SessionStatusEntryView {
+pub fn entry_view(fields: RegistryEntryFields<'_>) -> SessionStatusEntryView {
+    let RegistryEntryFields {
+        state,
+        kind,
+        cwd,
+        attachments,
+        durable_session_id,
+        session_path,
+        context,
+        overlay,
+    } = fields;
     let open_context: Map<String, Value> = context
         .iter()
         .map(|(key, value)| (key.clone(), Value::String(value.clone())))
@@ -184,16 +197,16 @@ mod tests {
         let mut source = HostStatusSource::default();
         source.upsert(
             "s1",
-            entry_view(
-                crate::session_registry::RpcSessionState::Opening,
-                maho_ext_api::SessionKind::Worker,
-                "/w",
-                0,
-                None,
-                None,
-                &context,
-                overlay.as_object(),
-            ),
+            entry_view(RegistryEntryFields {
+                state: crate::session_registry::RpcSessionState::Opening,
+                kind: maho_ext_api::SessionKind::Worker,
+                cwd: "/w",
+                attachments: 0,
+                durable_session_id: None,
+                session_path: None,
+                context: &context,
+                overlay: overlay.as_object(),
+            }),
             StatusRuntime::None,
         );
         let view = source.view("s1").unwrap();
