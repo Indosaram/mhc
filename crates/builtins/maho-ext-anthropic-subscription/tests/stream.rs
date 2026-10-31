@@ -30,12 +30,22 @@ impl OAuthAuth for Flow {
     }
 }
 
-async fn turn(mut frame: serde_json::Value, resident: bool) -> maho_ai::types::AssistantMessage {
+async fn turn(frame: serde_json::Value, resident: bool) -> maho_ai::types::AssistantMessage {
+    turn_after(&[], frame, resident).await
+}
+
+/// One native turn whose fixture prints `prelude` after the replay and before `frame`.
+async fn turn_after(
+    prelude: &[serde_json::Value],
+    mut frame: serde_json::Value,
+    resident: bool,
+) -> maho_ai::types::AssistantMessage {
     let directory = tempfile::tempdir().expect("directory");
     let executable = directory.path().join("claude");
     frame["user_message_uuid"] = serde_json::Value::Null;
     let script = format!(
-        "#!/usr/bin/python3\nimport json,sys\nf=json.loads(sys.stdin.readline())\nassert f['request']['subtype']=='initialize'\nprint(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\nf=json.loads(sys.stdin.readline())\nassert f['message']['content'][-1]['text']=='hello'\nif f.get('uuid'):\n print(json.dumps({{'type':'user','isReplay':True,'uuid':f['uuid']}}),flush=True)\nr=json.loads({})\nr['user_message_uuid']=f.get('uuid')\nprint(json.dumps(r),flush=True)\nfor line in sys.stdin: pass\n",
+        "#!/usr/bin/python3\nimport json,sys\nf=json.loads(sys.stdin.readline())\nassert f['request']['subtype']=='initialize'\nprint(json.dumps({{'type':'control_response','response':{{'subtype':'success','request_id':f['request_id'],'response':{{}}}}}}),flush=True)\nf=json.loads(sys.stdin.readline())\nassert f['message']['content'][-1]['text']=='hello'\nif f.get('uuid'):\n print(json.dumps({{'type':'user','isReplay':True,'uuid':f['uuid']}}),flush=True)\nfor p in json.loads({}): print(json.dumps(p),flush=True)\nr=json.loads({})\nr['user_message_uuid']=f.get('uuid')\nprint(json.dumps(r),flush=True)\nfor line in sys.stdin: pass\n",
+        serde_json::to_string(&serde_json::Value::from(prelude.to_vec()).to_string()).expect("literal"),
         serde_json::to_string(&frame.to_string()).expect("literal")
     );
     std::fs::write(&executable, script).expect("script");
@@ -95,6 +105,14 @@ async fn turn(mut frame: serde_json::Value, resident: bool) -> maho_ai::types::A
         .expect("output");
     if resident && output.stop_reason == StopReason::Error {
         assert!(registry.lock().await.entries.is_empty());
+    }
+    if resident
+        && output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("compactionOwner: \"senpi\""))
+    {
+        assert!(registry.lock().await.bindings.get("resident").is_none());
     }
     if resident && output.stop_reason == StopReason::Stop {
         assert_eq!(registry.lock().await.reapers.len(), 1);
@@ -609,6 +627,23 @@ async fn a_native_compaction_while_senpi_owns_compaction_stops_the_turn() {
         true,
     )
     .await;
+    assert_eq!(output.stop_reason, StopReason::Stop);
+}
+
+#[tokio::test]
+async fn a_native_compaction_on_the_resident_lane_stops_the_turn_and_drops_the_lineage() {
+    let boundary = serde_json::json!({"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":10}});
+    let result = serde_json::json!({"type":"result","subtype":"success","result":"compacted","usage":{},"stop_reason":"end_turn"});
+    let output = turn_after(std::slice::from_ref(&boundary), result.clone(), true).await;
+    assert_eq!(output.stop_reason, StopReason::Error);
+    assert!(
+        output
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("compactionOwner: \"senpi\""))
+    );
+    assert!(output.content.is_empty());
+    let output = turn_after(&[], result, true).await;
     assert_eq!(output.stop_reason, StopReason::Stop);
 }
 
