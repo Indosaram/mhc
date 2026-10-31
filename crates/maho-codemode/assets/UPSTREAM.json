@@ -196,9 +196,9 @@
     {
       "path": "skill/bun-1-4/SKILL.md",
       "status": "patched",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "74ce99000567fc14f8281cec7bf0f905523b12e1116d58f3b9eacde4d69a7864",
-      "change": "clarify eval-first skill loading"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "b41c6ca115e8ad3338f52ec63decc0efd8d6c2e1778bbead731ab7c5b27e62cc",
+      "change": "clarify eval-first skill loading; add rule 6"
     },
     {
       "path": "kernels/js/worker-global-sizes.js",
