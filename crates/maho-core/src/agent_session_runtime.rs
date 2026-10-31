@@ -2475,6 +2475,15 @@ mod tests {
                 .all(|diagnostic| diagnostic.kind
                     != crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Error),
         );
+
+        // senpi: the next replacement goes live under the recorded preset, untrusted.
+        assert!(runtime.new_session(Default::default()).await.expect("new"));
+        assert_eq!(
+            runtime.session().flag_value("permission-preset"),
+            Some(maho_ext_api::FlagValue::String("ask".to_owned()))
+        );
+        assert!(!project_trusted(&runtime));
+        assert!(!has_project_skill(&runtime));
     }
 
     #[tokio::test]
