@@ -126,3 +126,14 @@ pub mod auth_https;
 pub mod auth_challenge_parse;
 #[path = "auth_refresh_coalescing.rs"]
 pub mod auth_refresh_coalescing;
+// senpi#3858 configuration reference ports.
+#[path = "reference_support.rs"]
+pub mod reference_support;
+#[path = "reference_trust.rs"]
+pub mod reference_trust;
+#[path = "reference_generations.rs"]
+pub mod reference_generations;
+#[path = "reference_disclosure.rs"]
+pub mod reference_disclosure;
+#[path = "config_reference_admission.rs"]
+pub mod config_reference_admission;
