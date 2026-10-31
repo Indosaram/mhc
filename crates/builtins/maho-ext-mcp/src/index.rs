@@ -52,13 +52,13 @@ pub fn register_mcp_lifecycle_with_tool_search(
                         .map(|(elapsed, count)| {
                             format!("MCP test {name} ok ({elapsed:.0}ms): {count} tools")
                         })
-                        .map_err(|error| error.to_string()),
+                        .map_err(|error| format!("MCP test {name} failed: {error}")),
                     "reconnect" => {
                         let result = service
                             .reconnect_server(name)
                             .await
                             .map(|()| format!("MCP reconnect {name} connected"))
-                            .map_err(|error| error.to_string());
+                            .map_err(|error| format!("MCP reconnect {name} failed: {error}"));
                         let snapshot = service.wire_status_snapshot().await;
                         publish_wire_status(&events, &snapshot);
                         result
@@ -179,7 +179,14 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     Ok(message) => ctx
                         .ui
                         .notify(&message, maho_ext_api::NotificationType::Info),
-                    Err(error) => ctx.ui.notify(&error, maho_ext_api::NotificationType::Error),
+                    // commands.ts: a failure can quote a resolved reference value; redact before it leaves.
+                    Err(error) => ctx.ui.notify(
+                        &maho_core::config_reference_redaction::redact_resolved_reference_values(
+                            &error,
+                            "<redacted>",
+                        ),
+                        maho_ext_api::NotificationType::Error,
+                    ),
                 }
                 Ok(())
             })
@@ -189,9 +196,29 @@ pub fn register_mcp_lifecycle_with_tool_search(
     let start_registrar = registrar.clone();
     let start_search = tool_search.clone();
     let start_events = publish_events.clone();
+    // The live binding, so the input hook rebinds presentation without waiting on an attach in flight.
+    let binding: Arc<std::sync::Mutex<Option<Arc<crate::service::McpSessionBinding>>>> = Arc::default();
+    let input_binding = binding.clone();
+    api.on(
+        EventKind::Input,
+        Arc::new(move |_, ctx| {
+            let binding = input_binding
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                // Upstream `pi.on("input")`: `service.bindMcpMrtrPresentation(pi, ctx.ui)` on every input.
+                if let Some(binding) = binding {
+                    binding.bind_presentation(&ctx.ui);
+                }
+                Ok(EventResult::None)
+            })
+        }),
+    );
     api.on(
         EventKind::SessionStart,
         Arc::new(move |_, ctx| {
+            let start_binding = binding.clone();
             let service_handle = start.clone();
             let registrar = start_registrar.clone();
             let tool_search = start_search.clone();
@@ -224,6 +251,12 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     )
                     .await
                     .map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                // Upstream `bindMcpMrtrPresentation(pi, ctx.ui)` after attach: the binding's MRTR presentation.
+                service.bind_mcp_mrtr_presentation(&ctx.ui);
+                *start_binding
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(service.session_binding());
                 drop(service);
                 // Attach no longer completes inside session_start, so publish the session-owned snapshot on
                 // the bound runner bus once the deferred startup connect settles (pinned

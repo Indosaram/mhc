@@ -24,6 +24,8 @@ pub async fn with_mcp_session_expiry_retry<T,F,Fut>(connection:&Arc<ServerConnec
 where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<T,McpError>> {
     match operation().await {
         Ok(value)=>Ok(value),
+        // A local MRTR failure is final: never reconnect and replay it.
+        Err(error) if crate::modern::errors::as_mcp_mrtr_error(&error).is_some()=>Err(error),
         Err(error) if is_mcp_session_expired_error(&error_value(&error))=>{
             connection.mark_failure(ServerConnectionState::Degraded,Some(expired(connection,error,true)));
             connection.renew().await?;
@@ -41,6 +43,7 @@ pub async fn with_mcp_retriable_failed_send_retry<T,F,Fut>(connection:&Arc<Serve
 where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<T,McpError>> {
     match operation().await {
         Ok(value)=>Ok(value),
+        Err(error) if crate::modern::errors::as_mcp_mrtr_error(&error).is_some()=>Err(error),
         Err(error) if is_retriable_mcp_error(&error_value(&error)) && !is_mcp_session_expired_error(&error_value(&error))=>{
             connection.mark_failure(ServerConnectionState::Degraded,Some(failed_send(connection,&error,true)));
             connection.renew().await?;
@@ -52,6 +55,15 @@ where F:FnMut()->Fut,Fut:std::future::Future<Output=Result<T,McpError>> {
         }
         Err(error)=>Err(error),
     }
+}
+/// Upstream `ensureMcpToolCallConnection` for origin-bound prompt/resource requests: fresh auth first, then a
+/// lazy connect, so the request's origin is taken against the client it will actually use.
+pub async fn ensure_mcp_tool_call_connection(connection:&Arc<ServerConnection>,ensure_fresh:Option<&crate::catalog::McpCatalogCallback>)->Result<(),McpError> {
+    if let Some(ensure_fresh)=ensure_fresh && let Err(error)=ensure_fresh().await {
+        return Err(mark_mcp_connection_needs_auth(connection,&error).unwrap_or(error));
+    }
+    if matches!(connection.state(),ServerConnectionState::Idle|ServerConnectionState::Connecting){connection.connect().await?;}
+    Ok(())
 }
 #[derive(Default)]
 pub struct McpHealthState {validation:tokio::sync::Mutex<Option<tokio::time::Instant>>}

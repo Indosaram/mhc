@@ -47,12 +47,12 @@ pub fn resolve_auth_mode(config:&McpServerConfig)->ServerAuthMode {
     }
 }
 pub fn detect_literal_bearer_warnings(server:&str,config:&McpServerConfig)->Result<Vec<String>,regex::Error> {
-    use sha2::{Digest,Sha256};
     let matcher=regex::Regex::new(r"(?i)(?:bearer\s+\S|sk-[a-z0-9]|[a-z0-9]{24,})")?;
     let mut warnings=Vec::new();
     for (header,value) in config.headers.iter().flat_map(|h|h.iter()) {
-        if value.contains("${"){continue;}
-        if matcher.is_match(value){let hash=format!("{:x}",Sha256::digest(value));warnings.push(format!("MCP server {server} header '{header}' appears to contain a literal secret (fp {}); use ${{ENV_VAR}} so the token stays out of the config file.",&hash[..8]));}
+        // A reference slot holds no literal (upstream: `typeof value !== "string"`).
+        if config.references.contains_key(&format!("headers.{header}")) || value.contains("${"){continue;}
+        if matcher.is_match(value){warnings.push(format!("MCP server {server} header '{header}' appears to contain a literal secret (fp {}); use ${{ENV_VAR}} so the token stays out of the config file.",crate::log::fingerprint_secret(value)));}
     }
     Ok(warnings)
 }

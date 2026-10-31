@@ -6,7 +6,11 @@ use crate::config_schema::{McpServerConfig,Transport};
 fn has_session_values(config:&McpServerConfig,cwd:Option<&str>)->bool {
     let variables=regex::Regex::new(r"(?i)(?:cwd|session|^PWD$|^OLDPWD$)").unwrap_or_else(|error|panic!("constant regex: {error}"));
     let templates=regex::Regex::new(r"(?i)\$\{[^}]*(?:cwd|session|PWD)[^}]*\}").unwrap_or_else(|error|panic!("constant regex: {error}"));
-    let values=config.command.iter().chain(config.args.iter().flatten()).chain(config.env.iter().flat_map(|env|env.values()));
+    // A reference slot holds no string to inspect (upstream: `typeof value === "string"`).
+    let reference=|field:String|config.references.contains_key(&field);
+    let args=config.args.iter().flatten().enumerate().filter(|(index,_)|!reference(format!("args.{index}"))).map(|(_,value)|value);
+    let env_values=config.env.iter().flat_map(|env|env.iter()).filter(|(key,_)|!reference(format!("env.{key}"))).map(|(_,value)|value);
+    let values=config.command.iter().chain(args).chain(env_values);
     config.env.as_ref().is_some_and(|env|env.keys().any(|key|variables.is_match(key))) ||
         values.clone().chain(config.cwd.iter()).any(|value|templates.is_match(value)) ||
         cwd.is_some_and(|cwd|values.clone().any(|value|value.contains(cwd)))
