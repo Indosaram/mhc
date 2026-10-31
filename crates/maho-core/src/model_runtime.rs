@@ -3495,6 +3495,89 @@ mod tests {
         assert!(status.ambient);
     }
 
+    /// Ambient auth that needs another provider's stored routing metadata (senpi vertex-model-garden).
+    struct StoredEnvAmbientAuth;
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::ApiKeyAuth for StoredEnvAmbientAuth {
+        fn name(&self) -> &str {
+            "stored-env ambient"
+        }
+        async fn resolve(
+            &self,
+            ctx: &dyn maho_ai::auth::types::AuthContext,
+            _: Option<&ApiKeyCredential>,
+            _: &AbortSignal,
+        ) -> anyhow::Result<Option<maho_ai::auth::types::AuthResult>> {
+            let Some(project) = ctx
+                .stored_provider_env("google-vertex")
+                .await
+                .and_then(|env| env.get("GOOGLE_CLOUD_PROJECT").cloned())
+            else {
+                return Ok(None);
+            };
+            Ok(Some(maho_ai::auth::types::AuthResult {
+                ambient: true,
+                auth: Default::default(),
+                env: Some(maho_ai::types::ProviderEnv::from([
+                    ("GOOGLE_CLOUD_PROJECT".to_owned(), project),
+                    (
+                        "GOOGLE_CLOUD_LOCATION".to_owned(),
+                        "ambient-location".to_owned(),
+                    ),
+                ])),
+                source: Some("adc".into()),
+            }))
+        }
+    }
+
+    /// senpi test/suite/vertex-model-garden-extension.test.ts (senpi#4324): ambient auth reads another
+    /// provider's stored api-key `env` through the runtime's auth context, and the provider's own stored
+    /// env is merged over the ambient-resolved env.
+    #[tokio::test]
+    async fn ambient_auth_reads_stored_provider_env_and_own_stored_env_wins() {
+        let (_dir, mut runtime) = configured_runtime(
+            r#"{"providers":{"garden":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#,
+        );
+        runtime
+            .register_provider(
+                "garden",
+                ProviderConfigInput {
+                    ambient_auth: Some(Arc::new(StoredEnvAmbientAuth)),
+                    ..Default::default()
+                },
+            )
+            .expect("register ambient provider");
+        runtime.credentials.set(
+            "google-vertex",
+            Some(serde_json::json!({"type":"api_key","key":"vertex-key","env":{"GOOGLE_CLOUD_PROJECT":"stored-project"}})),
+        ).expect("seed sibling");
+        let auth = runtime
+            .get_auth("garden")
+            .await
+            .expect("resolve")
+            .expect("ambient auth");
+        let env = auth.env.expect("env");
+        assert_eq!(env["GOOGLE_CLOUD_PROJECT"], "stored-project");
+        assert_eq!(env["GOOGLE_CLOUD_LOCATION"], "ambient-location");
+        assert_eq!(
+            auth.auth.api_key, None,
+            "the sibling's key never crosses providers"
+        );
+        runtime.credentials.set(
+            "garden",
+            Some(serde_json::json!({"type":"api_key","env":{"GOOGLE_CLOUD_LOCATION":"stored-location"}})),
+        ).expect("seed own env");
+        let env = runtime
+            .get_auth("garden")
+            .await
+            .expect("resolve")
+            .expect("ambient auth")
+            .env
+            .expect("env");
+        assert_eq!(env["GOOGLE_CLOUD_LOCATION"], "stored-location");
+        assert_eq!(env["GOOGLE_CLOUD_PROJECT"], "stored-project");
+    }
+
     #[async_trait::async_trait]
     impl maho_ai::auth::types::OAuthAuth for AmbientOAuth {
         fn name(&self) -> &str {
