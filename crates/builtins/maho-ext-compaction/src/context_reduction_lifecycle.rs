@@ -37,6 +37,9 @@ pub struct ContextReductionLifecycleOptions {
     pub emergency_prune_latch: Arc<Mutex<EmergencyPruneLatch>>,
     pub emergency_instructions: String,
     pub get_tools: Arc<dyn Fn() -> Vec<maho_ai::types::Tool> + Send + Sync>,
+    /// The tool declarations the provider request carries, freeform and grammar formats included;
+    /// the OpenAI remote replay boundary converts its sealed baseline with them.
+    pub get_request_tools: Arc<dyn Fn() -> Vec<maho_ai::types::Tool> + Send + Sync>,
     pub get_policy: Arc<
         dyn Fn(&ExtensionContext) -> Result<ContextReductionPolicy, ExtensionFailure> + Send + Sync,
     >,
@@ -186,10 +189,13 @@ fn context_handler(
         .map_err(|error| ExtensionFailure::new(error.to_string()))?;
     let native = openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref());
     // Only the provider-native replay boundary reads the branch; skip the full branch copy otherwise.
-    let branch_entries = if native {
-        speculative::branch_values(context)
+    let (branch_entries, request_tools) = if native {
+        (
+            speculative::branch_values(context),
+            (options.get_request_tools)(),
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let mut live_latch = options
         .emergency_prune_latch
@@ -206,6 +212,7 @@ fn context_handler(
         entry_ids,
         model: context.model.as_ref(),
         branch_entries: &branch_entries,
+        tools: &request_tools,
         context_window: window,
         prompt_context_window: prompt_window as u64,
         usage_tokens: tokens,

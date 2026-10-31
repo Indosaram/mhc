@@ -12,13 +12,14 @@ use crate::{
 };
 use maho_ai::{
     api::{
+        constrained_sampling::create_grammar_tool_input_properties,
         openai_responses::OPENAI_TOOL_CALL_PROVIDERS,
         openai_responses_shared::{
             ConvertResponsesMessagesOptions, convert_responses_messages_with_provenance,
         },
     },
     context_provenance::{CONTEXT_PROVENANCE_FIELD, ContextProvenance, get_context_provenance},
-    types::{Context, InputModality, Message, Model},
+    types::{Context, InputModality, Message, Model, Tool},
 };
 use maho_core::{
     messages::convert_to_llm,
@@ -696,11 +697,17 @@ pub struct OpenAiRemoteReplayBoundary {
 /// context hooks run. `entry_ids` is the typed session-entry stamp aligned with `messages` (senpi's
 /// `SESSION_CONTEXT_ENTRY_ID`). The markers carry entry identity, not payload values; they are
 /// sealed by the Responses converter (`seal_context_provenance`), as upstream.
+///
+/// `tools` are the tool declarations the real request carries. The sealed items are compared with
+/// the final payload items, so the baseline must convert freeform and grammar tool calls the way the
+/// provider will (`custom_tool_call`, not `function_call`); senpi compares message fingerprints and
+/// does not need them.
 pub fn mark_openai_remote_replay_boundary(
     messages: Vec<Value>,
     entry_ids: &[Option<String>],
     model: Option<&Model>,
     branch_entries: &[Value],
+    tools: &[Tool],
 ) -> (Vec<Value>, Option<OpenAiRemoteReplayBoundary>) {
     let Some(model) = model.filter(|model| is_openai_remote_compaction_model(Some(*model))) else {
         return (messages, None);
@@ -760,7 +767,7 @@ pub fn mark_openai_remote_replay_boundary(
         &Context {
             system_prompt: None,
             messages: typed,
-            tools: None,
+            tools: (!tools.is_empty()).then(|| tools.to_vec()),
             active_tool_names: None,
         },
         &OPENAI_TOOL_CALL_PROVIDERS
@@ -769,6 +776,9 @@ pub fn mark_openai_remote_replay_boundary(
             .collect(),
         &ConvertResponsesMessagesOptions {
             seal_context_provenance: Some(true),
+            grammar_tool_input_properties: replay_boundary_grammar_tool_input_properties(
+                model, tools,
+            ),
             ..replay_boundary_conversion_options(model)
         },
         &provenance,
@@ -925,6 +935,24 @@ fn replay_boundary_conversion_options(model: &Model) -> ConvertResponsesMessages
     }
 }
 
+/// The grammar tool input properties the Responses providers derive from the declared tools
+/// (`createGrammarToolInputProperties` with the model's `supportsOpenAIGrammarTools` compat). A tool
+/// whose grammar the provider would reject contributes nothing; that request fails before any
+/// payload exists.
+fn replay_boundary_grammar_tool_input_properties(
+    model: &Model,
+    tools: &[Tool],
+) -> std::collections::BTreeMap<String, String> {
+    let supports_openai_grammar_tools = model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.0.get("supportsOpenAIGrammarTools"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    create_grammar_tool_input_properties(Some(tools), supports_openai_grammar_tools)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod replay_boundary_tests {
     use super::*;
@@ -959,7 +987,7 @@ mod replay_boundary_tests {
         let branch = branch();
         let (messages, entry_ids) = context(&branch);
         let (marked, boundary) =
-            mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch);
+            mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch, &[]);
         assert_eq!(
             boundary,
             Some(OpenAiRemoteReplayBoundary {
@@ -1017,7 +1045,7 @@ mod replay_boundary_tests {
     fn sealed_boundary() -> OpenAiRemoteReplayBoundary {
         let branch = branch();
         let (messages, entry_ids) = context(&branch);
-        mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch)
+        mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch, &[])
             .1
             .expect("sealed boundary")
     }
@@ -1077,6 +1105,119 @@ mod replay_boundary_tests {
         assert_eq!(events[0]["reason"], "remote-replay-origin-mismatch");
     }
 
+    fn apply_patch_tool() -> Tool {
+        Tool {
+            name: "apply_patch".into(),
+            description: "patch".into(),
+            parameters: json!({"type":"object"}),
+            output_schema: None,
+            freeform: Some(maho_ai::types::FreeformToolFormat {
+                kind: "grammar".into(),
+                syntax: "lark".into(),
+                definition: "start: /.+/".into(),
+            }),
+            constrained_sampling: None,
+        }
+    }
+
+    /// The checkpoint keeps an `apply_patch` call and its result after the summary.
+    fn apply_patch_branch() -> Vec<Value> {
+        let mut branch = branch();
+        let usage = json!({"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}});
+        branch.insert(
+            2,
+            json!({"type":"message","id":"b1","parentId":"b","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"apply_patch","arguments":{"input":"*** Begin Patch\n*** End Patch"}}],"api":"openai-responses","provider":"openai","model":"m","usage":usage,"stopReason":"toolUse","timestamp":0}}),
+        );
+        branch.insert(
+            3,
+            json!({"type":"message","id":"b2","parentId":"b1","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"apply_patch","content":[{"type":"text","text":"Done"}],"isError":false,"timestamp":0}}),
+        );
+        branch[4]["parentId"] = json!("b2");
+        branch
+    }
+
+    #[test]
+    fn a_kept_freeform_tool_call_is_sealed_as_the_request_converts_it() {
+        let branch = apply_patch_branch();
+        let tools = vec![apply_patch_tool()];
+        let (messages, entry_ids) = context(&branch);
+        // The provider request: the same messages, converted with the declared tools.
+        let typed: Vec<Message> = convert_to_llm(&messages)
+            .into_iter()
+            .map(|message| serde_json::from_value(message).expect("llm message"))
+            .collect();
+        let mut input = vec![json!({"role":"developer","content":"prompt"})];
+        input.extend(
+            maho_ai::api::openai_responses_shared::convert_responses_messages(
+                &model(),
+                &Context {
+                    system_prompt: None,
+                    messages: typed,
+                    tools: Some(tools.clone()),
+                    active_tool_names: None,
+                },
+                &OPENAI_TOOL_CALL_PROVIDERS
+                    .iter()
+                    .map(|provider| (*provider).to_owned())
+                    .collect(),
+                &ConvertResponsesMessagesOptions::default(),
+            ),
+        );
+        assert!(input.iter().any(|item| item["type"] == "custom_tool_call"));
+        let payload = json!({"model":"m","input":input,"stream":true});
+
+        let boundary = mark_openai_remote_replay_boundary(
+            messages.clone(),
+            &entry_ids,
+            Some(&model()),
+            &branch,
+            &tools,
+        )
+        .1
+        .expect("sealed boundary");
+        assert_eq!(boundary.expected_ordinals, vec![0, 1, 2, 3]);
+        let events = std::cell::RefCell::new(Vec::new());
+        let rewritten = rewrite_openai_payload_with_remote_compaction(
+            &payload,
+            Some(&model()),
+            &branch,
+            Some(&origin()),
+            Some(&boundary),
+            &|data| events.borrow_mut().push(data),
+        );
+        assert_eq!(
+            rewritten,
+            Some(json!({"model":"m","input":[
+                {"role":"developer","content":"prompt"},
+                {"type":"compaction","encrypted_content":"x"},
+                {"role":"user","content":[{"type":"input_text","text":"new"}]},
+            ],"stream":true}))
+        );
+        assert_eq!(events.into_inner()[0]["action"], "remote_payload_rewritten");
+
+        // A baseline converted without the declarations seals `function_call` and never matches.
+        let undeclared =
+            mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch, &[])
+                .1
+                .expect("sealed boundary");
+        let events = std::cell::RefCell::new(Vec::new());
+        assert_eq!(
+            rewrite_openai_payload_with_remote_compaction(
+                &payload,
+                Some(&model()),
+                &branch,
+                Some(&origin()),
+                Some(&undeclared),
+                &|data| events.borrow_mut().push(data),
+            ),
+            None
+        );
+        assert_eq!(
+            events.into_inner()[0]["reason"],
+            "unproven-remote-replay-boundary"
+        );
+    }
+
     #[test]
     fn misaligned_entry_ids_leave_messages_unmarked() {
         let branch = branch();
@@ -1087,7 +1228,8 @@ mod replay_boundary_tests {
                 messages.clone(),
                 &entry_ids,
                 Some(&model()),
-                &branch
+                &branch,
+                &[]
             ),
             (messages, None)
         );
