@@ -325,6 +325,73 @@ impl SupervisorOwner {
     }
 }
 
+/// Anything that holds the host between two ticks (senpi `onActivity` / the proxy's `onAdmit`).
+pub type OnActivity = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// Locks the shared activity; a poisoned lock still holds the last consistent snapshot.
+pub fn lock_activity(
+    activity: &std::sync::Mutex<SupervisorActivity>,
+) -> std::sync::MutexGuard<'_, SupervisorActivity> {
+    activity
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The supervisor's owner check over its shared activity (senpi `startSupervisorTicker`'s owner half): owner death
+/// ends the generation only while `SupervisorActivity::quiescent` holds - a healthy observer, no run, no attached and
+/// no unclassified client - and activity reported between ticks (a client admission, a lost observer) resets the
+/// owner grace even when it started and ended before the next tick. The activity lock is only taken in synchronous
+/// sections.
+pub struct OwnerCheck {
+    pub owner: SupervisorOwner,
+    pub activity: std::sync::Arc<std::sync::Mutex<SupervisorActivity>>,
+    held: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl OwnerCheck {
+    pub fn new(
+        owner: SupervisorOwner,
+        activity: std::sync::Arc<std::sync::Mutex<SupervisorActivity>>,
+    ) -> Self {
+        Self {
+            owner,
+            activity,
+            held: Default::default(),
+        }
+    }
+
+    /// senpi `onActivity`/`onAdmit`: callable from any task; the next tick resets the owner grace.
+    pub fn on_activity(&self) -> OnActivity {
+        let held = self.held.clone();
+        std::sync::Arc::new(move || held.store(true, std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Whether anything held the host since the last tick or holds it now (senpi `refresh` -> `onActivity`).
+    fn held(&self, now: f64) -> bool {
+        let between_ticks = self.held.swap(false, std::sync::atomic::Ordering::SeqCst);
+        let activity = lock_activity(&self.activity);
+        let current = activity.current(now);
+        between_ticks
+            || current.connections > 0
+            || current.active_turns > 0
+            || activity.unclassified_count() > 0
+    }
+
+    /// One ticker pass: activity resets the grace, then the owner decides with the activity's quiescence.
+    pub fn should_exit(
+        &mut self,
+        now: f64,
+        owner_gone: impl FnOnce(&HostLifetimeOwner) -> bool,
+    ) -> bool {
+        if self.held(now) {
+            self.owner.activity(now);
+        }
+        let activity = &self.activity;
+        self.owner
+            .should_exit(|| lock_activity(activity).quiescent(), now, owner_gone)
+    }
+}
+
 /// Reads the inherited owner pipe on its own detached thread: `true` at EOF, `false` on a read error. A descriptor
 /// that cannot be reopened leaves the owner on its recorded identity.
 fn watch_owner_pipe(fd: i32) -> Option<tokio::sync::oneshot::Receiver<bool>> {
@@ -483,6 +550,53 @@ mod activity_tests {
         owner_record(temp.path(), serde_json::Value::Null);
         assert!(!owner.should_exit(|| true, 20_000., |_| true));
         assert!(!owner.should_exit(|| true, 30_000., |_| true));
+    }
+
+    fn owner_check(dir: &std::path::Path) -> OwnerCheck {
+        owner_record(dir, this_owner());
+        let mut owner = SupervisorOwner::new(dir.into());
+        owner.start(None, 0.);
+        OwnerCheck::new(
+            owner,
+            std::sync::Arc::new(std::sync::Mutex::new(SupervisorActivity::new(1_000.))),
+        )
+    }
+
+    #[test]
+    fn owner_death_never_ends_a_generation_whose_observer_is_unhealthy_or_never_connected() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut check = owner_check(temp.path());
+        // No observer connection yet: zero turns, zero clients, still never quiescent.
+        for now in [0., 2_000., 4_000., 10_000.] {
+            assert!(!check.should_exit(now, |_| true));
+        }
+        lock_activity(&check.activity).observer_opened(1);
+        assert!(!check.should_exit(10_500., |_| true));
+        assert!(check.should_exit(12_500., |_| true));
+        // A lost observer withdraws quiescence again, past its unknown window too.
+        let mut check = owner_check(temp.path());
+        lock_activity(&check.activity).observer_opened(1);
+        assert!(lock_activity(&check.activity).observer_lost(1, false, 0.));
+        for now in [0., 2_000., 4_000., 10_000.] {
+            assert!(!check.should_exit(now, |_| true));
+        }
+    }
+
+    #[test]
+    fn an_unclassified_client_blocks_owner_exit_and_an_admission_between_ticks_resets_the_grace() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut check = owner_check(temp.path());
+        lock_activity(&check.activity).observer_opened(1);
+        lock_activity(&check.activity).set_clients(0, 1);
+        assert!(!check.should_exit(0., |_| true));
+        assert!(!check.should_exit(5_000., |_| true));
+        lock_activity(&check.activity).set_clients(0, 0);
+        assert!(!check.should_exit(5_100., |_| true));
+        // A client admitted and gone between two ticks still restarts the quiet window.
+        (check.on_activity())();
+        assert!(!check.should_exit(7_100., |_| true));
+        assert!(!check.should_exit(9_099., |_| true));
+        assert!(check.should_exit(9_100., |_| true));
     }
 
     #[cfg(unix)]
