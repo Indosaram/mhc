@@ -15,5 +15,8 @@ pub fn last_assistant_timestamp(messages:&[maho_agent::types::AgentMessage])->Op
     messages.iter().rev().find_map(|message|message.as_assistant().map(|message|message.timestamp))
 }
 pub mod extension;
+pub mod prewarm_entry;
+pub mod session_prewarm;
+pub mod startup_activity_gate;
 pub use extension::CacheKeepalive;
 
