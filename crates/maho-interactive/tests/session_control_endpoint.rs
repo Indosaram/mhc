@@ -596,3 +596,75 @@ async fn a_client_message_id_retry_replays_its_receipt_and_new_content_conflicts
     assert_eq!(unserved["errorCode"], "unsupported_field");
     fixture.endpoint.dispose().await;
 }
+
+/// senpi `bindCurrentSessionExtensions` -> `session.setControlEndpointHost(sessionControlHost)`: once
+/// the terminal binds extensions, `pi.session.registerControlEndpoint` (the generation's
+/// `create_session_control_actions`) serves a TUI endpoint through the terminal's host; before the
+/// binding no host is offered and the registration answers `unsupported_mode`.
+#[tokio::test]
+async fn pi_session_registers_through_the_terminal_host_once_extensions_are_bound() {
+    use maho_core::extensions::session_control_types::{
+        ControlEndpointUnsupported, SessionControlActions,
+    };
+    let (mut mode, directory, session) =
+        crate::runtime35_native::native_mode_with_session_and_provider_retaining_session(
+            None,
+            |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+            "faux",
+            "faux-1",
+            false,
+        );
+    let options = || RegisterControlEndpointOptions {
+        inbox_dir: directory
+            .path()
+            .join("inbox")
+            .to_string_lossy()
+            .into_owned(),
+        drain: Arc::new(
+            |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+                Box::pin(async { None })
+            },
+        ),
+        is_session_referenced: None,
+    };
+    // The first extension generation's `pi.session`, before the terminal offers its host.
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::from_static(
+            Vec::new(),
+            session.extension_context(mode.extension_ui.clone()),
+        ))
+        .await;
+    let unbound = session.session_control().expect("first generation");
+    assert!(matches!(
+        unbound.register_control_endpoint(options()).await,
+        SessionControlRegistration::Unsupported {
+            reason: ControlEndpointUnsupported::UnsupportedMode
+        }
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(10), mode.bind_extensions())
+        .await
+        .expect("bounded binding");
+    let actions = session
+        .session_control()
+        .expect("the bound generation's pi.session");
+    let SessionControlRegistration::Registered { socket, dispose } =
+        actions.register_control_endpoint(options()).await
+    else {
+        panic!("the terminal host serves the registration");
+    };
+    let name = std::path::Path::new(&socket)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        maho_rpc::host_endpoints::is_tui_control_socket(&name),
+        "{name}"
+    );
+    let listing = control_data(&socket, json!({"type": "list_sessions"})).await;
+    assert_eq!(listing["sessions"][0]["sessionId"], session.session_id());
+    assert_eq!(listing["sessions"][0]["surface"], "tui");
+    dispose().await.expect("dispose");
+    assert!(!std::path::Path::new(&socket).exists());
+    mode.dispose_session_control().await;
+}
