@@ -16,8 +16,28 @@ use crate::compose::OmoSenpiComponent;
 /// Upstream `getBuiltinSkillsRoot()`: the packaged `skills/` directory beside the extension.
 pub const SKILLS_ROOT_ENV: &str = "OMO_SENPI_SKILLS_ROOT";
 
+/// Upstream `getBuiltinSkillsRoot(env)` (omo v5.1.52 telemetry/product-identity.ts): a valid
+/// `OMO_BUNDLED_SKILLS_DIR` wins (an invalid one is reported once through the shared ledger), then
+/// the native `OMO_SENPI_SKILLS_ROOT` / packaged-root default.
 pub fn builtin_skills_root() -> PathBuf {
-    skills_root_from(std::env::var(SKILLS_ROOT_ENV).ok())
+    skills_root_with_override(
+        std::env::var(maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV).ok(),
+        std::env::var(SKILLS_ROOT_ENV).ok(),
+    )
+}
+
+fn skills_root_with_override(override_dir: Option<String>, env_root: Option<String>) -> PathBuf {
+    let env: BTreeMap<String, String> = override_dir
+        .map(|value| {
+            (
+                maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV.to_owned(),
+                value,
+            )
+        })
+        .into_iter()
+        .collect();
+    maho_omo_bundled_skills::resolve_bundled_skills_override(&env, None, None)
+        .unwrap_or_else(|| skills_root_from(env_root))
 }
 
 /// The `OMO_SENPI_SKILLS_ROOT` contract: a set, non-empty value wins; otherwise the packaged
@@ -439,6 +459,24 @@ mod tests {
         assert_eq!(
             skills_root_from(Some("/custom/omo/skills".to_owned())),
             PathBuf::from("/custom/omo/skills")
+        );
+    }
+
+    #[test]
+    fn a_valid_bundled_skills_override_wins_over_the_env_root() {
+        let dir = tempfile::tempdir().expect("override dir");
+        let override_dir = dir.path().to_string_lossy().into_owned();
+        assert_eq!(
+            skills_root_with_override(Some(override_dir), Some("/custom/omo/skills".to_owned())),
+            dir.path()
+        );
+        assert_eq!(
+            skills_root_with_override(
+                Some("relative/skills".to_owned()),
+                Some("/custom/omo/skills".to_owned())
+            ),
+            PathBuf::from("/custom/omo/skills"),
+            "an invalid override falls back to the env root"
         );
     }
 

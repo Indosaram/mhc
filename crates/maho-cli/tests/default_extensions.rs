@@ -119,7 +119,7 @@ async fn settings_allowlist_and_denylist_filter_builtin_ids_only() {
     let paths = factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>();
     assert!(!paths.contains(&"<builtin:redraws>") && !paths.contains(&"<builtin:cursor-cli-oauth>"), "{paths:?}");
     assert!(paths.contains(&"<builtin:tps>"), "{paths:?}");
-    assert!(paths.contains(&"<builtin:claude-sdk-oauth>") && paths.contains(&"<builtin:omo>") && paths.contains(&"<inline:llama.cpp>"), "{paths:?}");
+    assert!(paths.contains(&"<builtin:claude-sdk-oauth>") && paths.contains(&"<builtin:omo>") && !paths.contains(&"<inline:llama.cpp>"), "{paths:?}");
     let allow = maho_cli::cli::default_extensions::BuiltinExtensionSelection { enabled: Some(vec!["mcp".into()]), disabled: Vec::new() };
     assert!(allow.is_active("mcp") && !allow.is_active("help") && !allow.is_active("codemode") && allow.is_active("omo"));
 }

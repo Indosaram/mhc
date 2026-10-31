@@ -17,13 +17,12 @@ use std::sync::Arc;
 
 use maho_ext_api::{Extension, ExtensionSessionProfile, SourceInfo};
 use maho_ext_host::loader::{LoadExtensionsResult, NativeExtensionFactory, load_extensions};
-use maho_ext_llama::llama;
 
 /// senpi `globalDefaultExtensionIds` (`core/extensions/builtin/index.ts`).
 pub const GLOBAL_DEFAULT_EXTENSION_IDS: [&str; 4] = ["diff", "files", "prompt-url-widget", "tps"];
 
 /// Builtin order, with search fallback routing before provider payload injection.
-pub const BUILTIN_EXTENSION_IDS: [&str; 45] = [
+pub const BUILTIN_EXTENSION_IDS: [&str; 48] = [
     "loop-guard",
     "hooks",
     "permission-system",
@@ -57,15 +56,18 @@ pub const BUILTIN_EXTENSION_IDS: [&str; 45] = [
     "rules",
     "goal",
     "loop",
+    "schedule",
     "cache-keepalive",
     "handoff-hint",
     "relocate-session",
     "ttsr",
     "btw",
+    "html-render",
     "account",
     "gpt-account",
     "claude-sdk-oauth",
     "cursor-cli-oauth",
+    "vertex-model-garden",
     "config-reload",
     "tool-search",
     "mcp",
@@ -227,9 +229,18 @@ fn account() -> Box<dyn Extension> {
 fn config_reload() -> Box<dyn Extension> {
     Box::new(maho_ext_config_reload::ConfigReload::default())
 }
+fn schedule() -> Box<dyn Extension> {
+    Box::new(maho_ext_schedule::Schedule::default())
+}
+fn html_render() -> Box<dyn Extension> {
+    Box::new(maho_ext_html_render::HtmlRender)
+}
+fn vertex_model_garden() -> Box<dyn Extension> {
+    Box::new(maho_ext_vertex_model_garden::VertexModelGarden)
+}
 
 /// Linked builtin factories, in the pinned `builtinExtensions` relative order.
-static BUILTIN_FACTORIES: [NativeExtension; 27] = [
+static BUILTIN_FACTORIES: [NativeExtension; 30] = [
     NativeExtension {
         id: "loop-guard",
         crate_name: "maho-ext-loop-guard",
@@ -341,6 +352,11 @@ static BUILTIN_FACTORIES: [NativeExtension; 27] = [
         factory: loop_extension,
     },
     NativeExtension {
+        id: "schedule",
+        crate_name: "maho-ext-schedule",
+        factory: schedule,
+    },
+    NativeExtension {
         id: "relocate-session",
         crate_name: "maho-ext-relocate-session",
         factory: relocate_session,
@@ -356,9 +372,19 @@ static BUILTIN_FACTORIES: [NativeExtension; 27] = [
         factory: btw,
     },
     NativeExtension {
+        id: "html-render",
+        crate_name: "maho-ext-html-render",
+        factory: html_render,
+    },
+    NativeExtension {
         id: "account",
         crate_name: "maho-ext-account",
         factory: account,
+    },
+    NativeExtension {
+        id: "vertex-model-garden",
+        crate_name: "maho-ext-vertex-model-garden",
+        factory: vertex_model_garden,
     },
     NativeExtension {
         id: "config-reload",
@@ -471,23 +497,19 @@ pub fn deferred_builtin_extensions() -> &'static [DeferredExtension] {
     &DEFERRED_BUILTINS
 }
 
-/// senpi `src/extensions/index.ts` `builtInExtensions`: inline, hidden, registered beside the
-/// 43 builtin ids. The factory is the real llama.cpp provider registration.
-pub const INLINE_EXTENSION_IDS: [&str; 1] = ["llama.cpp"];
+/// senpi `src/extensions/index.ts` `builtInExtensions`: inline extensions registered beside the
+/// builtin ids. Empty since senpi 404d6b45f9 removed the llama.cpp integration, its only entry.
+pub const INLINE_EXTENSION_IDS: [&str; 0] = [];
 
-static INLINE_FACTORIES: [NativeExtension; 1] = [NativeExtension {
-    id: "llama.cpp",
-    crate_name: "maho-ext-llama",
-    factory: llama,
-}];
+static INLINE_FACTORIES: [NativeExtension; 0] = [];
 
 pub fn inline_extensions() -> &'static [NativeExtension] {
     &INLINE_FACTORIES
 }
 
-/// senpi `src/extensions/index.ts:4` (`{ name: "llama.cpp", ..., hidden: true }`): inline extensions
-/// omitted from the startup Extensions list.
-static HIDDEN_INLINE_EXTENSION_IDS: [&str; 1] = ["llama.cpp"];
+/// senpi `InlineExtension.hidden`: inline extensions omitted from the startup Extensions list. None
+/// remain after senpi 404d6b45f9 removed llama.cpp.
+static HIDDEN_INLINE_EXTENSION_IDS: [&str; 0] = [];
 
 /// senpi resource-loader.ts:1438 `extension.hidden = isNamed && input.hidden`: marks the loaded
 /// hidden inline extensions.

@@ -9,17 +9,19 @@ use maho_cli::cli::extension_registry::{
 
 #[test]
 fn pinned_builtin_order_matches_upstream() {
-    // senpi src/core/extensions/builtin/index.ts includes relocate-session in v5.1.47.
-    assert_eq!(BUILTIN_EXTENSION_IDS.len(), 45);
+    // senpi src/core/extensions/builtin/index.ts at v2026.10.27-2 adds schedule, html-render and
+    // vertex-model-garden.
+    assert_eq!(BUILTIN_EXTENSION_IDS.len(), 48);
     let unique: BTreeSet<&str> = BUILTIN_EXTENSION_IDS.iter().copied().collect();
-    assert_eq!(unique.len(), 45);
+    assert_eq!(unique.len(), 48);
     assert_eq!(BUILTIN_EXTENSION_IDS[0], "loop-guard");
-    assert_eq!(BUILTIN_EXTENSION_IDS[44], "mcp");
+    assert_eq!(BUILTIN_EXTENSION_IDS[47], "mcp");
     assert_eq!(
         GLOBAL_DEFAULT_EXTENSION_IDS,
         ["diff", "files", "prompt-url-widget", "tps"]
     );
-    assert_eq!(INLINE_EXTENSION_IDS, ["llama.cpp"]);
+    // senpi 404d6b45f9 removed llama.cpp, the only inline extension.
+    assert_eq!(INLINE_EXTENSION_IDS, [] as [&str; 0]);
 }
 
 #[test]
@@ -131,23 +133,27 @@ fn linked_factories_register_through_the_loader() {
         "<builtin:loop>",
         "<builtin:websearch>",
         "<builtin:webfetch>",
-        "<inline:llama.cpp>",
+        "<builtin:schedule>",
+        "<builtin:html-render>",
+        "<builtin:vertex-model-garden>",
     ] {
         assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
     }
 }
 
 #[test]
-fn inline_llama_factory_registers_the_llama_command() {
+fn no_inline_extension_is_linked_after_the_llama_removal() {
+    assert!(inline_extensions().is_empty());
     let dir = tempfile::tempdir().expect("isolated cwd");
     let result =
         load_native_extensions(dir.path(), maho_ext_api::ExtensionSessionProfile::default());
-    let llama = result
-        .extensions
-        .iter()
-        .find(|extension| extension.identity.path == "<inline:llama.cpp>")
-        .expect("llama.cpp inline extension loaded");
-    assert_eq!(llama.commands[0].name, "llama");
+    assert!(
+        result
+            .extensions
+            .iter()
+            .all(|extension| !extension.identity.path.starts_with("<inline:")),
+        "no inline extension loads"
+    );
 }
 
 #[test]
@@ -218,11 +224,7 @@ fn assemble_extensions_tags_builtin_and_user_kinds() {
             .iter()
             .any(|(id, kind, _)| *id == "pi-ast-grep" && *kind == "user")
     );
-    assert!(
-        assembled
-            .iter()
-            .any(|(id, kind, _)| *id == "llama.cpp" && *kind == "inline")
-    );
+    assert!(assembled.iter().all(|(_, kind, _)| *kind != "inline"));
 }
 
 #[test]
