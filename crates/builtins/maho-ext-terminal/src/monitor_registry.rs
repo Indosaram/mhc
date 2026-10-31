@@ -973,6 +973,43 @@ mod registry_tests {
         assert!(registry.snapshot().is_empty());
         registry.dispose();
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_parent_settles_with_a_single_watcher_error_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (first, second) = (root.join("first"), root.join("second"));
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("file"), b"first").unwrap();
+        std::fs::write(second.join("file"), b"second").unwrap();
+        let parent = root.join("parent");
+        std::os::unix::fs::symlink(&first, &parent).unwrap();
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let (id, _) = registry
+            .register_persistent_file(
+                "watch",
+                &parent.join("file"),
+                crate::terminal_manifest_model::FileEvent::Modify,
+            )
+            .unwrap();
+        registry.pause(std::slice::from_ref(&id));
+        std::fs::remove_file(&parent).unwrap();
+        std::os::unix::fs::symlink(&second, &parent).unwrap();
+        registry.resume(Some(std::slice::from_ref(&id)));
+        let expected = format!(
+            "watcher error: monitored parent changed: {}",
+            parent.display()
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(MonitorEvent::Summary { summary, .. }) if summary == expected
+        ));
+        registry.dispose();
+    }
     #[tokio::test]
     async fn state_subscription_observes_registration_pause_rearm_and_stop() {
         let dir = tempfile::tempdir().unwrap();
