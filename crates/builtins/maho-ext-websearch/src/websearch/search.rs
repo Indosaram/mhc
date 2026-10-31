@@ -126,7 +126,7 @@ pub async fn perform_provider_search(config:&SearchProviderEntry,request:&Search
     if let Some(challenge)=detect_search_challenge(config.config.provider,&page) {
         return Ok(failure(format!("{} served a bot challenge ({challenge}) that needs a browser to pass.",engine_name(config.config.provider)),Some(SearchBlockReason::Challenge),None));
     }
-    let payload=if config.config.provider==SearchProvider::DuckduckgoHtml { json!({"html":page.body,"url":page.url}) } else if page.body.is_empty() { json!({}) } else { serde_json::from_str(&page.body).unwrap_or_else(|_|json!({})) };
+    let payload=if let Some(parsed)=super::providers::parse_search_body(config.config.provider,&page.body) { parsed } else if config.config.provider==SearchProvider::DuckduckgoHtml { json!({"html":page.body,"url":page.url}) } else if page.body.is_empty() { json!({}) } else { serde_json::from_str(&page.body).unwrap_or_else(|_|json!({})) };
     if !status.is_success() {
         let detail=error_detail(&payload,&page.body);
         let message=if detail.is_empty() { format!("Search failed with HTTP {}",status.as_u16()) } else { format!("Search failed with HTTP {}: {detail}",status.as_u16()) };
