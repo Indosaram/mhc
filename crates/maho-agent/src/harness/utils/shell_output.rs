@@ -25,8 +25,14 @@ pub struct ShellCaptureProgress {
 }
 
 /// `ShellCaptureOptions.onChunk`.
-pub type ShellChunkHandler =
-    Arc<dyn Fn(String, ShellCaptureProgress, Context) -> BoxFuture<'static, ()> + Send + Sync>;
+///
+/// The returned future is awaited by the execution environment before the result settles; an
+/// `Err` fails the execution with a `callback_error` whose `cause` is the returned value.
+pub type ShellChunkHandler = Arc<
+    dyn Fn(String, ShellCaptureProgress, Context) -> BoxFuture<'static, Result<(), String>>
+        + Send
+        + Sync,
+>;
 
 /// `ShellCaptureOptions`.
 #[derive(Default)]
@@ -129,7 +135,7 @@ pub async fn execute_shell_with_capture(
                     // A metadata-only update and a post-cap replacement contain no new incremental
                     // chunk; the observer's settlement is awaited by the environment.
                     if let (Some(chunk), Some(on_chunk)) = (chunk, on_chunk) {
-                        on_chunk(chunk, progress, update_context).await;
+                        on_chunk(chunk, progress, update_context).await?;
                     }
                     Ok(())
                 })

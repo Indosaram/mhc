@@ -31,12 +31,14 @@ fn memory() -> Arc<dyn Storage> {
 /// Storage whose commits park until the test resolves them, mirroring `ControlledCommitStorage`.
 struct ControlledCommitStorage {
     pending: Mutex<Vec<tokio::sync::oneshot::Sender<Result<CommitResult, SessionError>>>>,
+    received: Mutex<Vec<Vec<Write>>>,
 }
 
 impl ControlledCommitStorage {
     fn new() -> Self {
         Self {
             pending: Mutex::new(Vec::new()),
+            received: Mutex::new(Vec::new()),
         }
     }
 
@@ -51,11 +53,18 @@ impl ControlledCommitStorage {
 }
 
 impl Storage for ControlledCommitStorage {
-    fn commit<'a>(&'a self, _writes: Vec<Write>, _context: &'a Context) -> maho_ai::types::BoxFuture<'a, SessionResult<CommitResult>> {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        _context: &'a Context,
+    ) -> maho_ai::types::BoxFuture<'a, SessionResult<CommitResult>> {
         Box::pin(async move {
+            self.received.lock().expect("received").push(writes);
             let (sender, receiver) = tokio::sync::oneshot::channel();
             self.pending.lock().expect("pending").push(sender);
-            receiver.await.unwrap_or_else(|_| Err(SessionError::io("commit cancelled")))
+            receiver
+                .await
+                .unwrap_or_else(|_| Err(SessionError::io("commit cancelled")))
         })
     }
 
@@ -71,7 +80,10 @@ impl Storage for ControlledCommitStorage {
         &'a self,
         _address: &'a maho_agent::harness::session::values::Value,
         _context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Option<maho_agent::harness::session::values::StoredValue>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Option<maho_agent::harness::session::values::StoredValue>>,
+    > {
         Box::pin(async move { Ok(None) })
     }
 
@@ -79,7 +91,10 @@ impl Storage for ControlledCommitStorage {
         &'a self,
         _prefix: &'a maho_agent::harness::session::values::Value,
         _context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::values::StoredValue>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::values::StoredValue>>,
+    > {
         Box::pin(async move { Ok(Vec::new()) })
     }
 
@@ -88,7 +103,10 @@ impl Storage for ControlledCommitStorage {
         _address: &'a maho_agent::harness::session::values::ValueList,
         _options: Option<maho_agent::harness::session::values::ListReadOptions>,
         _context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::values::ListElement>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::values::ListElement>>,
+    > {
         Box::pin(async move { Ok(Vec::new()) })
     }
 
@@ -104,7 +122,10 @@ impl Storage for ControlledCommitStorage {
         &'a self,
         _query: StorageBranchScan,
         _context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::types::EntryStructure>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::types::EntryStructure>>,
+    > {
         Box::pin(async move { Ok(Vec::new()) })
     }
 
@@ -120,11 +141,17 @@ impl Storage for ControlledCommitStorage {
         &'a self,
         _query: maho_agent::harness::session::types::UsageScan,
         _context: &'a Context,
-    ) -> maho_ai::types::BoxFuture<'a, SessionResult<Vec<maho_agent::harness::session::types::UsageRow>>> {
+    ) -> maho_ai::types::BoxFuture<
+        'a,
+        SessionResult<Vec<maho_agent::harness::session::types::UsageRow>>,
+    > {
         Box::pin(async move { Ok(Vec::new()) })
     }
 
-    fn get_stats<'a>(&'a self, _context: &'a Context) -> maho_ai::types::BoxFuture<'a, SessionResult<SessionStats>> {
+    fn get_stats<'a>(
+        &'a self,
+        _context: &'a Context,
+    ) -> maho_ai::types::BoxFuture<'a, SessionResult<SessionStats>> {
         Box::pin(async move { Ok(empty_stats()) })
     }
 
@@ -137,8 +164,14 @@ impl Storage for ControlledCommitStorage {
 async fn records_commit_attempts_synchronously_in_admission_order_before_settlement() {
     let delegate = Arc::new(ControlledCommitStorage::new());
     let storage = Arc::new(InstrumentedStorage::new(delegate.clone()));
-    let first_transaction = vec![Write::Value(set_value(&session_name(), serde_json::json!("first")))];
-    let second_transaction = vec![Write::Value(set_value(&session_name(), serde_json::json!("second")))];
+    let first_transaction = vec![Write::Value(set_value(
+        &session_name(),
+        serde_json::json!("first"),
+    ))];
+    let second_transaction = vec![Write::Value(set_value(
+        &session_name(),
+        serde_json::json!("second"),
+    ))];
 
     let first_commit = {
         let storage = storage.clone();
@@ -146,7 +179,10 @@ async fn records_commit_attempts_synchronously_in_admission_order_before_settlem
         tokio::spawn(async move { storage.commit(transaction, &BACKGROUND_CONTEXT).await })
     };
     tokio::task::yield_now().await;
-    assert_eq!(storage.get_commit_attempts(), vec![first_transaction.clone()]);
+    assert_eq!(
+        storage.get_commit_attempts(),
+        vec![first_transaction.clone()]
+    );
     assert_eq!(delegate.admission_count(), 1);
 
     let second_commit = {
@@ -167,7 +203,10 @@ async fn records_commit_attempts_synchronously_in_admission_order_before_settlem
         stats: empty_stats(),
     };
     delegate.resolve_next(first_result.clone());
-    assert_eq!(first_commit.await.expect("first task").expect("first"), first_result);
+    assert_eq!(
+        first_commit.await.expect("first task").expect("first"),
+        first_result
+    );
     assert_eq!(
         storage.get_commit_attempts(),
         vec![first_transaction, second_transaction.clone()]
@@ -179,7 +218,42 @@ async fn records_commit_attempts_synchronously_in_admission_order_before_settlem
         stats: empty_stats(),
     };
     delegate.resolve_next(second_result.clone());
-    assert_eq!(second_commit.await.expect("second task").expect("second"), second_result);
+    assert_eq!(
+        second_commit.await.expect("second task").expect("second"),
+        second_result
+    );
+    storage.close(&BACKGROUND_CONTEXT).await;
+}
+
+/// TS asserts reference identity (`toBe(transaction)`); a Rust transaction is moved, so the port
+/// asserts that the recorded attempt and the delegate's received transaction are the one passed in.
+#[tokio::test]
+async fn records_the_transaction_reference_passed_to_the_delegate() {
+    let delegate = Arc::new(ControlledCommitStorage::new());
+    let storage = Arc::new(InstrumentedStorage::new(delegate.clone()));
+    let transaction = vec![Write::Value(set_value(
+        &session_name(),
+        serde_json::json!("value"),
+    ))];
+
+    let commit = {
+        let storage = storage.clone();
+        let transaction = transaction.clone();
+        tokio::spawn(async move { storage.commit(transaction, &BACKGROUND_CONTEXT).await })
+    };
+    tokio::task::yield_now().await;
+    assert_eq!(storage.get_commit_attempts()[0], transaction);
+    assert_eq!(
+        delegate.received.lock().expect("received").clone(),
+        vec![transaction]
+    );
+    delegate.resolve_next(CommitResult {
+        first_seq: 1,
+        seqs: vec![1],
+        timestamp: 10,
+        stats: empty_stats(),
+    });
+    commit.await.expect("task").expect("commit");
     storage.close(&BACKGROUND_CONTEXT).await;
 }
 
@@ -189,7 +263,10 @@ async fn clears_recorded_attempts_between_phases_without_affecting_the_delegate(
     let storage = InstrumentedStorage::new(delegate.clone());
     storage
         .commit(
-            vec![Write::Value(set_value(&session_name(), serde_json::json!("first")))],
+            vec![Write::Value(set_value(
+                &session_name(),
+                serde_json::json!("first"),
+            ))],
             &BACKGROUND_CONTEXT,
         )
         .await
@@ -207,7 +284,10 @@ async fn clears_recorded_attempts_between_phases_without_affecting_the_delegate(
         serde_json::json!("first")
     );
 
-    let second_transaction = vec![Write::Value(set_value(&session_name(), serde_json::json!("second")))];
+    let second_transaction = vec![Write::Value(set_value(
+        &session_name(),
+        serde_json::json!("second"),
+    ))];
     storage
         .commit(second_transaction.clone(), &BACKGROUND_CONTEXT)
         .await
@@ -221,7 +301,8 @@ async fn delegates_every_read_and_query_without_recording_synthetic_writes() {
     let delegate = memory();
     let storage = InstrumentedStorage::new(delegate.clone());
     let events = list("test.events", "").expect("address");
-    let usage = Usage { context_usage: None,
+    let usage = Usage {
+        context_usage: None,
         input: 1,
         output: 2,
         total_tokens: 3,
@@ -247,20 +328,44 @@ async fn delegates_every_read_and_query_without_recording_synthetic_writes() {
         .expect("commit");
 
     assert_eq!(
-        storage.get_entries(vec!["root".to_owned()], &BACKGROUND_CONTEXT).await.expect("entries"),
-        delegate.get_entries(vec!["root".to_owned()], &BACKGROUND_CONTEXT).await.expect("entries")
+        storage
+            .get_entries(vec!["root".to_owned()], &BACKGROUND_CONTEXT)
+            .await
+            .expect("entries"),
+        delegate
+            .get_entries(vec!["root".to_owned()], &BACKGROUND_CONTEXT)
+            .await
+            .expect("entries")
     );
     assert_eq!(
-        storage.get_value(&session_name(), &BACKGROUND_CONTEXT).await.expect("value"),
-        delegate.get_value(&session_name(), &BACKGROUND_CONTEXT).await.expect("value")
+        storage
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("value"),
+        delegate
+            .get_value(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("value")
     );
     assert_eq!(
-        storage.scan_values(&session_name(), &BACKGROUND_CONTEXT).await.expect("values"),
-        delegate.scan_values(&session_name(), &BACKGROUND_CONTEXT).await.expect("values")
+        storage
+            .scan_values(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("values"),
+        delegate
+            .scan_values(&session_name(), &BACKGROUND_CONTEXT)
+            .await
+            .expect("values")
     );
     assert_eq!(
-        storage.read_list(&events, None, &BACKGROUND_CONTEXT).await.expect("list"),
-        delegate.read_list(&events, None, &BACKGROUND_CONTEXT).await.expect("list")
+        storage
+            .read_list(&events, None, &BACKGROUND_CONTEXT)
+            .await
+            .expect("list"),
+        delegate
+            .read_list(&events, None, &BACKGROUND_CONTEXT)
+            .await
+            .expect("list")
     );
     assert_eq!(
         storage
@@ -328,7 +433,10 @@ async fn delegates_every_read_and_query_without_recording_synthetic_writes() {
     );
     assert_eq!(
         storage.get_stats(&BACKGROUND_CONTEXT).await.expect("stats"),
-        delegate.get_stats(&BACKGROUND_CONTEXT).await.expect("stats")
+        delegate
+            .get_stats(&BACKGROUND_CONTEXT)
+            .await
+            .expect("stats")
     );
     assert_eq!(storage.get_commit_attempts().len(), 1);
     storage.close(&BACKGROUND_CONTEXT).await;
@@ -341,7 +449,10 @@ async fn records_list_appends_without_reading_the_target_list() {
 
     storage
         .commit(
-            vec![Write::List(append_list(&events, serde_json::json!("event")))],
+            vec![Write::List(append_list(
+                &events,
+                serde_json::json!("event"),
+            ))],
             &BACKGROUND_CONTEXT,
         )
         .await
@@ -369,7 +480,10 @@ async fn delegates_close_idempotence_and_admitted_commit_draining() {
         tokio::spawn(async move {
             storage
                 .commit(
-                    vec![Write::Value(set_value(&session_name(), serde_json::json!("admitted")))],
+                    vec![Write::Value(set_value(
+                        &session_name(),
+                        serde_json::json!("admitted"),
+                    ))],
                     &BACKGROUND_CONTEXT,
                 )
                 .await
