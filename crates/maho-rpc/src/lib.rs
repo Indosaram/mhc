@@ -81,6 +81,7 @@ pub mod host_generations;
 pub mod host_handoff;
 pub mod host_handoff_agent_dir;
 pub mod host_handoff_announcement;
+pub mod host_handoff_unregistered;
 pub mod host_handover_parked;
 pub mod host_handover_parked_open;
 pub mod host_handover_reopen;
