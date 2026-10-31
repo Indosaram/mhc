@@ -108,6 +108,8 @@ pub mod transport_step_up;
 pub mod transport_refresh_rejection;
 #[path = "transport_redaction.rs"]
 pub mod transport_redaction;
+#[path = "stderr_diagnostics.rs"]
+pub mod stderr_diagnostics;
 #[path = "stdio_env_filter.rs"]
 pub mod stdio_env_filter;
 #[path = "log_sink_retry.rs"]

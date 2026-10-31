@@ -159,6 +159,7 @@ where
     .await?
     {
         StdioProbeResult::Modern(version) => {
+            client.protocol.resolve_stdio_diagnostics(true);
             log_version(&inputs.logger, server_name, Some(&version), None);
             Ok(client)
         }
@@ -167,6 +168,7 @@ where
                 .protocol
                 .legacy
                 .store(true, std::sync::atomic::Ordering::Release);
+            client.protocol.resolve_stdio_diagnostics(false);
             Ok(client)
         }
         StdioProbeResult::Restart => {
@@ -190,6 +192,7 @@ where
                 .protocol
                 .legacy
                 .store(true, std::sync::atomic::Ordering::Release);
+            fresh.protocol.resolve_stdio_diagnostics(false);
             Ok(fresh)
         }
     }
