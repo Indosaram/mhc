@@ -253,21 +253,93 @@ fn state_dir(dir: &Path) -> PathBuf {
     dir.join("extensions/terminal")
 }
 
+/// A manifest on disk for session `id` with nothing in it: a start finds something to restore, so
+/// it acquires the lease at once instead of waiting for the first durable need.
+fn seed_manifest(dir: &Path, id: &str) {
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
+    std::fs::create_dir_all(state_dir(dir)).unwrap();
+    std::fs::write(
+        state_dir(dir).join(format!("{encoded}.json")),
+        serde_json::json!({"version":1,"sessionId":id,"monitors":[],"backgroundSessions":[],"updatedAt":0})
+            .to_string(),
+    )
+    .unwrap();
+}
+
+/// The registered monitor tool of `api`.
+fn monitor_tool(api: &ExtensionApi) -> &maho_tools::definition::ToolDefinition {
+    &api.registered
+        .tools
+        .iter()
+        .find(|tool| tool.definition.name == "monitor")
+        .expect("monitor tool")
+        .definition
+}
+
+/// terminal-lazy-persistence.test.ts: a session that never registers anything leaves no terminal
+/// state files at all.
+#[tokio::test]
+async fn a_session_that_registers_nothing_leaves_no_terminal_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), "terminal-lazy-nothing");
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    assert!(!state_dir(dir.path()).exists(), "no lease at start");
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    assert!(!state_dir(dir.path()).exists(), "nothing written at quit");
+}
+
+/// terminal-lazy-persistence.test.ts: the first persistent monitor creates the lease and the
+/// manifest together.
+#[tokio::test]
+async fn the_first_persistent_monitor_creates_the_lease_and_the_manifest_together() {
+    let id = "terminal-lazy-first";
+    let encoded = maho_core::session_sidecar_store::encoded_session_id(id);
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), id);
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    assert!(!state_dir(dir.path()).exists());
+    let result = (monitor_tool(&api).execute)(maho_tools::definition::ToolCall {
+        id: "first",
+        params: serde_json::json!({"description":"first watch","command":"cat","persistent":true}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect("persistent monitor starts");
+    assert!(result.details.is_some());
+    let mut files = std::fs::read_dir(state_dir(dir.path()))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(
+        files,
+        [format!("{encoded}.json"), format!("{encoded}.lease"), "state".to_owned()]
+    );
+    let saved: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(state_dir(dir.path()).join(format!("{encoded}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["monitors"][0]["description"], "first watch");
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+}
+
 #[tokio::test]
 async fn session_start_acquires_the_lease_and_shutdown_records_then_releases_it() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = context(dir.path());
     let lease = state_dir(dir.path()).join(format!("{}.lease", encoded()));
     let manifest = state_dir(dir.path()).join(format!("{}.json", encoded()));
+    seed_manifest(dir.path(), "terminal-lifecycle");
     let api = api(dir.path());
     start(&api, &ctx, SessionReason::Startup).await;
     assert!(
         lease.is_file(),
         "the lease must be acquired from the session dir"
-    );
-    assert!(
-        !manifest.exists(),
-        "an empty manifest is not written before shutdown"
     );
     shutdown(&api, &ctx, SessionReason::Quit).await;
     assert!(!lease.exists(), "shutdown releases the lease");
@@ -289,7 +361,6 @@ async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit
     let manifest = state_dir(dir.path()).join(format!("{encoded}.json"));
     let owner = api(dir.path());
     start(&owner, &ctx, SessionReason::Startup).await;
-    assert!(lease.is_file());
     // A pre-reload persistent watch: recorded at once, so the manifest exists before the reload.
     let monitor = owner
         .registered
@@ -313,6 +384,7 @@ async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit
         .expect("monitor id")
         .to_owned();
     assert!(manifest.is_file(), "the registration is recorded at once");
+    assert!(lease.is_file(), "the first durable monitor took the lease");
     shutdown(&owner, &ctx, SessionReason::Reload).await;
     assert!(lease.is_file(), "a reload keeps the lease");
     let reloaded = api(dir.path());
@@ -420,6 +492,7 @@ async fn queued_spec_is_recorded_after_session_start(
         "{}.json",
         maho_core::session_sidecar_store::encoded_session_id(id)
     ));
+    seed_manifest(dir.path(), id);
     assert!(
         maho_ext_terminal::tools::monitor_manifest_binding::hand_monitor_spec(
             Some(id),
@@ -482,6 +555,7 @@ async fn a_spec_queued_while_unbound_is_recorded_after_a_reload_session_start() 
         dir: dir.path().into(),
         id,
     });
+    seed_manifest(dir.path(), id);
     let owner = api(dir.path());
     start(&owner, &ctx, SessionReason::Startup).await;
     assert!(
@@ -551,6 +625,7 @@ async fn an_in_process_resume_rotates_the_token_and_is_never_held_by() {
     let id = "terminal-lifecycle-resume";
     let dir = tempfile::tempdir().unwrap();
     let ctx = context_for(dir.path(), id);
+    seed_manifest(dir.path(), id);
     let api = api(dir.path());
     start(&api, &ctx, SessionReason::Startup).await;
     let first = lease_token(dir.path(), id).expect("the fresh start holds a v2 lease");
@@ -572,6 +647,7 @@ async fn a_same_pid_lease_left_by_a_cut_short_shutdown_is_re_entered() {
         "{}.lease",
         maho_core::session_sidecar_store::encoded_session_id(id)
     ));
+    seed_manifest(dir.path(), id);
     let api = api(dir.path());
     start(&api, &ctx, SessionReason::Startup).await;
     let stale = std::fs::read(&lease).unwrap();
