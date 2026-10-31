@@ -98,6 +98,8 @@ pub struct McpService {
     session_cwd: Option<PathBuf>,
     session_env: BTreeMap<String, String>,
     project_trusted: bool,
+    /// Skill server warnings already reported (upstream `#skillServerWarnings`): each is shown once.
+    skill_server_warnings: std::collections::BTreeSet<String>,
     deferred: Arc<crate::startup_race::McpDeferredAttach>,
     pending_auth:
         Arc<std::sync::Mutex<BTreeMap<String, crate::auth::oauth_provider::McpOAuthProvider>>>,
@@ -105,6 +107,8 @@ pub struct McpService {
     policy_notices: Arc<crate::policy_notices::PolicyNotices>,
     policy_notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// service.ts: `declarer.context.mode !== "print" && declarer.context.mode !== "json"`.
+    elicitation_enabled: bool,
     output_artifacts: Arc<crate::guard::output_guard::McpOutputArtifacts>,
     registration: Option<crate::expose::session::McpSessionRegistration>,
     tier_b_registry: crate::expose::tier_b::McpTierBRegistry,
@@ -168,6 +172,30 @@ impl McpSessionBinding {
     }
     fn release(&self) {
         self.lifetime().abort();
+    }
+    /// The binding's config still declares `name` on exactly this connection (upstream `entry.isCurrent`).
+    fn declares_connection(
+        &self,
+        name: &str,
+        connection: &Arc<crate::connection::ServerConnection>,
+    ) -> bool {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .and_then(|server| server.connection.upgrade())
+            .is_some_and(|current| Arc::ptr_eq(&current, connection))
+    }
+    /// The credential check the binding's last sync admitted `name` under (upstream `entry.credentialsCurrent`).
+    fn credentials_current(&self, name: &str) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .map_or_else(
+                || Arc::new(|| true) as Arc<dyn Fn() -> bool + Send + Sync>,
+                |server| server.credentials_current.clone(),
+            )
     }
     /// The binding's config still declares `name` on exactly this connection, and its credentials are the ones
     /// the connection was keyed by (upstream request-origin `isCurrent`).
@@ -312,12 +340,14 @@ impl McpService {
             session_cwd: None,
             session_env: BTreeMap::new(),
             project_trusted: false,
+            skill_server_warnings: Default::default(),
             deferred: Default::default(),
             pending_auth: Arc::default(),
             interactive_auth_servers: Arc::default(),
             policy_notices: Default::default(),
             policy_notice_event: None,
             elicitation_ui: None,
+            elicitation_enabled: true,
             output_artifacts: Arc::new(Default::default()),
             registration: None,
             tier_b_registry: Default::default(),
@@ -349,6 +379,14 @@ impl McpService {
     }
     pub fn set_elicitation_ui(&mut self, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>) {
         self.elicitation_ui = ui;
+    }
+    /// Upstream `elicitationEnabled` from the declaring session's mode: print and json sessions withhold the
+    /// elicitation capability entirely.
+    pub fn set_session_mode(&mut self, mode: maho_ext_api::ExtensionMode) {
+        self.elicitation_enabled = !matches!(
+            mode,
+            maho_ext_api::ExtensionMode::Print | maho_ext_api::ExtensionMode::Json
+        );
     }
     /// Bind the service's own handle so a deferred startup-race connect can
     /// re-register tools after the attach deadline without holding the session lock.
@@ -454,6 +492,22 @@ impl McpService {
                     .map(|generation| generation.config_hash.as_str()),
             )
         };
+        // service.ts `credentialIdentities`: the credential each wanted server would connect with; it keys the
+        // shared transport, so a changed credential never reuses a connection admitted under the old one.
+        let credential_identity = |name: &str| {
+            config
+                .servers
+                .get(name)
+                .and_then(|server| server.config.as_ref())
+                .and_then(|declared| {
+                    crate::auth::catalog_identity::mcp_credential_identity(
+                        declared,
+                        name,
+                        Some(agent_dir),
+                        Some(env),
+                    )
+                })
+        };
         let existing = self.connections.keys().cloned().collect::<Vec<_>>();
         for name in existing {
             let entry = self.connections[&name].entry.lock().await;
@@ -471,6 +525,7 @@ impl McpService {
                                 &name,
                                 &generation.config,
                                 Some(env),
+                                credential_identity(&name).as_deref(),
                                 &agent_dir.to_string_lossy(),
                                 &cwd.to_string_lossy(),
                             )
@@ -497,6 +552,7 @@ impl McpService {
                 name,
                 server_config,
                 Some(env),
+                credential_identity(name).as_deref(),
                 &agent_dir.to_string_lossy(),
                 &cwd.to_string_lossy(),
             );
@@ -508,9 +564,11 @@ impl McpService {
                     name,
                     config_hash: hash,
                     config: server_config.clone(),
+                    declared: server.config.as_ref(),
                     agent_dir,
                     env: Some(env.clone()),
                     elicitation_ui: self.elicitation_ui.clone(),
+                    elicitation_enabled: self.elicitation_enabled,
                 },
                 &cwd.to_string_lossy(),
             )?;
@@ -539,6 +597,27 @@ impl McpService {
                 // re-keys the whole sync (service.ts generationChanged), never reusing the stale identity.
                 if let Some(declared) = &server.config {
                     let weak = self.self_weak.clone();
+                    let own_rekey: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                        let Some(service) = weak.as_ref().and_then(std::sync::Weak::upgrade) else {
+                            return;
+                        };
+                        tokio::spawn(async move {
+                            let _ = service.lock().await.resync_current_config().await;
+                        });
+                    });
+                    // shared-connection.ts: a pooled connection's changed snapshot re-keys every lease.
+                    let rekey = match &connection.shared {
+                        Some(lease) => {
+                            lease.shared.on_generation_changed(self.owner, own_rekey);
+                            let shared = Arc::downgrade(&lease.shared);
+                            Arc::new(move || {
+                                if let Some(shared) = shared.upgrade() {
+                                    shared.notify_generation_changed();
+                                }
+                            }) as Arc<dyn Fn() + Send + Sync>
+                        }
+                        None => own_rekey,
+                    };
                     entry.connection.set_resolve_config(
                         crate::config_generation::mcp_generation_renewal(
                             crate::config_generation::McpGenerationScope {
@@ -548,16 +627,7 @@ impl McpService {
                                 agent_dir: Some(agent_dir.to_path_buf()),
                             },
                             &generation.config_hash,
-                            Arc::new(move || {
-                                let Some(service) =
-                                    weak.as_ref().and_then(std::sync::Weak::upgrade)
-                                else {
-                                    return;
-                                };
-                                tokio::spawn(async move {
-                                    let _ = service.lock().await.resync_current_config().await;
-                                });
-                            }),
+                            rekey,
                         ),
                     );
                 }
@@ -802,26 +872,19 @@ impl McpService {
                 .map_or(decl.scope.as_deref() == Some("project"), |provenance| {
                     provenance.kind != "user"
                 });
-            // skill-server.ts: a project (untrusted) or remote skill server refuses references before any I/O;
-            // a trusted user skill's references resolve against its own declaration file.
-            let remote = decl
-                .raw
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(if decl.raw.get("url").is_some() {
-                    "http"
-                } else {
-                    "stdio"
-                })
-                != "stdio";
-            if (project_skill || remote)
+            // The project environment policy materializes plain strings only, so a project skill server that
+            // declares a reference object is refused before any I/O; skill-server.ts refuses the remote and
+            // untrusted ones itself (senpi#3858).
+            if project_skill
                 && let Some(warning) = crate::config_references::reference_refusal(
                     name,
                     &decl.raw,
                     &format!("Skill '{}' MCP server '{name}'", decl.skill_name),
                 )
             {
-                warnings.push(warning);
+                if self.skill_server_warnings.insert(warning.clone()) {
+                    warnings.push(warning);
+                }
                 continue;
             }
             let resolved = if project_skill {
@@ -840,24 +903,31 @@ impl McpService {
                 )
                 .await?
             } else {
-                let mut raw_value = decl.raw.clone();
-                let references = crate::config_references::extract_mcp_references(&mut raw_value);
-                let mut raw: crate::config_schema::ServerConfigWire =
-                    serde_json::from_value(raw_value)
-                        .map_err(|error| McpConfigValidationError(error.to_string()))?;
-                raw.references = references;
-                let mut servers = BTreeMap::from([(name.clone(), raw)]);
-                crate::config_references::remember_mcp_reference_origins(
-                    Some(&mut servers),
-                    &decl.source_path.to_string_lossy(),
-                );
-                let raw = servers.remove(name).expect("inserted above");
-                crate::config::resolve_skill_mcp_server(
+                // skill-server.ts trust: a skill without a user scope carries the project's trust.
+                let trusted = match decl.scope.as_deref() {
+                    None | Some("project") => self.project_trusted,
+                    Some(_) => true,
+                };
+                let result = crate::skill_server::resolve_skill_mcp_server(
                     name,
-                    raw,
+                    &decl.raw,
                     &decl.source_path,
+                    &crate::skill_server::SkillServerSource {
+                        skill_name: &decl.skill_name,
+                        trusted,
+                        env: &self.session_env,
+                    },
                     Some(&agent_dir),
-                )?
+                )?;
+                if let Some(warning) = result.warning
+                    && self.skill_server_warnings.insert(warning.clone())
+                {
+                    warnings.push(warning);
+                }
+                let Some(server) = result.server else {
+                    continue;
+                };
+                server
             };
             if existing.is_some_and(|existing| existing.config_hash == resolved.config_hash) {
                 continue;
@@ -884,100 +954,124 @@ impl McpService {
         self.register_session_tools(inputs.registrar.clone(), tool_search.as_deref_mut())
             .await
     }
-    /// Upstream `#wireListChanged`: coalesce the connection's tools-changed signal and
-    /// re-register through the bound seam. The tools subscription is driven by a task
-    /// that upgrades the service's `Weak` self-handle, so it never holds the session lock.
+    /// Upstream `#wireListChanged`: coalesce the connection's tools-changed signal and re-register through the
+    /// bound seam (service-tools-changed.ts `subscribeMcpToolsChanged`). The refresh upgrades the service's
+    /// `Weak` self-handle, so the subscription never holds the session lock.
     async fn wire_list_changed(&self, name: &str) {
         let Some(connection) = self.connections.get(name) else {
             return;
         };
         let entry_handle = connection.entry.clone();
-        let server_connection = entry_handle.lock().await.connection.clone();
-        let coalescer = Arc::new(crate::notifications::McpListChangeCoalescer::new(
-            None, None,
-        ));
-        let mut changes = server_connection.on_tools_changed();
-        let coalescer_tools = coalescer.clone();
+        let mut entry = entry_handle.lock().await;
         let weak = self.self_weak.clone();
         let name_owned = name.to_owned();
-        let task = tokio::spawn(async move {
-            loop {
-                match changes.recv().await {
-                    Ok(_) => {
-                        let weak = weak.clone();
-                        let name = name_owned.clone();
-                        coalescer_tools.notify(move || async move {
-                            if let Some(service) = weak.as_ref().and_then(|weak| weak.upgrade()) {
-                                let mut service = service.lock().await;
-                                let _ = service.handle_server_tools_changed(&name).await;
-                            }
-                        });
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(_) => return,
+        let sink = crate::wrap::McpAsyncErrorSink::from_logger(entry.logger.clone());
+        let (task, coalescer) = crate::service_tools_changed::subscribe_mcp_tools_changed(
+            &entry,
+            move |connect_only| {
+                let weak = weak.clone();
+                let name = name_owned.clone();
+                async move {
+                    let Some(service) = weak.as_ref().and_then(std::sync::Weak::upgrade) else {
+                        return Ok(());
+                    };
+                    let mut service = service.lock().await;
+                    service
+                        .handle_server_tools_changed_with(&name, connect_only)
+                        .await
+                        .map_err(|error| {
+                            crate::errors::McpError::new(
+                                crate::errors::McpErrorKind::ToolExec,
+                                error.to_string(),
+                            )
+                        })
                 }
-            }
-        });
-        let mut entry = entry_handle.lock().await;
+            },
+            sink,
+        );
         entry.list_changed_tasks.push(task);
         entry.list_changed_coalescer = Some(coalescer);
     }
-    /// Upstream `#handleServerToolsChanged`: re-list the server, tombstone removed tools
-    /// (added tools enter INACTIVE via `register_tools_preserving_active_set_with`), then
-    /// re-register. Public so the coalescer wiring and tests share one entry point.
+    /// Upstream `#handleServerToolsChanged` for a reported change. Public so tests drive the same entry point.
     pub async fn handle_server_tools_changed(&mut self, name: &str) -> Result<(), McpServiceError> {
+        self.handle_server_tools_changed_with(name, false).await
+    }
+    /// Upstream `#handleServerToolsChanged`: refresh the server's catalog (service-tools-changed.ts
+    /// `refreshMcpToolsOnListChanged`); a connect-only refresh leaves an unchanged registration in place.
+    pub async fn handle_server_tools_changed_with(
+        &mut self,
+        name: &str,
+        connect_only: bool,
+    ) -> Result<(), McpServiceError> {
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
         let Some(connection) = self.connections.get(name) else {
             return Ok(());
         };
-        let entry_handle = connection.entry.clone();
+        let entry = connection.entry.clone();
         let shared = connection.shared.clone();
-        let Some(server) = config
-            .servers
-            .get(name)
-            .and_then(|server| server.config.as_ref())
-            .cloned()
-        else {
-            return Ok(());
+        let server_connection = entry.lock().await.connection.clone();
+        let binding = self.binding.clone();
+        let is_current = {
+            let (binding, name, connection) =
+                (binding.clone(), name.to_owned(), server_connection.clone());
+            Arc::new(move || binding.declares_connection(&name, &connection))
+                as Arc<dyn Fn() -> bool + Send + Sync>
         };
-        if entry_handle.lock().await.connection.state()
-            != crate::connection::ServerConnectionState::Connected
-        {
-            return Ok(());
-        }
-        if let Some(shared) = &shared {
-            let catalog = shared.catalog().await?;
-            entry_handle.lock().await.cached_catalog = Some(catalog);
-        }
-        let client = entry_handle.lock().await.connection.client()?;
-        let timeout = std::time::Duration::from_secs_f64(
-            server.request_timeout_ms.unwrap_or(30000.0) / 1000.0,
-        );
-        let catalog = crate::catalog::collect_tool_catalog(name, client, timeout).await?;
-        let new_names: Vec<String> = crate::expose::register::map_mcp_catalog_names(&catalog)
+        let weak = self.self_weak.clone();
+        let scope = crate::service_tools_changed::McpToolsRefreshScope {
+            is_current,
+            credentials_current: binding.credentials_current(name),
+            // Re-key from the live state; the service lock is held here, so the resync runs after it.
+            on_credentials_changed: Some(Box::new(move || {
+                Box::pin(async move {
+                    if let Some(service) = weak.as_ref().and_then(std::sync::Weak::upgrade) {
+                        tokio::spawn(async move {
+                            let _ = service.lock().await.resync_current_config().await;
+                        });
+                    }
+                })
+            })),
+            startup_owns_registration: false,
+            shared,
+        };
+        let registered_identity = self
+            .registration
+            .as_ref()
+            .and_then(|registration| registration.registered_identities.get(name).cloned());
+        // No bound registrar means no session registered this catalog: nothing to re-register.
+        let registrar = self
+            .registration_inputs
+            .as_ref()
+            .map(|inputs| inputs.registrar.clone());
+        let targets = registrar
+            .map(
+                |registrar| crate::service_tools_changed::McpToolsRefreshTarget {
+                    registrar,
+                    registered_identity,
+                    register: Box::new(move || {
+                        Box::pin(async move {
+                            self.register_bound_session_tools().await.map_err(|error| {
+                                crate::errors::McpError::new(
+                                    crate::errors::McpErrorKind::ToolExec,
+                                    error.to_string(),
+                                )
+                            })
+                        })
+                    }),
+                },
+            )
             .into_iter()
-            .map(|named| named.name)
             .collect();
-        let previous = entry_handle.lock().await.known_tool_names.clone();
-        let diff = crate::notifications::diff_mcp_tool_names(
-            previous.as_deref().unwrap_or(&new_names),
-            &new_names,
-        );
-        if let Some(inputs) = self.registration_inputs.clone() {
-            for removed in &diff.removed {
-                let _ = inputs.registrar.register_tool_with_renderers(
-                    crate::notifications::build_mcp_tombstone_definition(removed, name),
-                    crate::notifications::mcp_tombstone_renderers(removed),
-                );
-            }
-        }
-        self.register_bound_session_tools().await?;
-        let mut entry = entry_handle.lock().await;
-        entry.known_tool_names = Some(new_names);
-        entry.last_list_changed_delta =
-            Some(crate::notifications::format_mcp_list_changed_delta(&diff));
+        crate::service_tools_changed::refresh_mcp_tools_on_list_changed(
+            &entry,
+            targets,
+            &config,
+            connect_only,
+            scope,
+        )
+        .await?;
         Ok(())
     }
     pub async fn register_session_tools(

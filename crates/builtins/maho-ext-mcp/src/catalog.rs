@@ -108,8 +108,13 @@ pub async fn collect_tool_catalog(
     }
     Ok(entries)
 }
-/// Upstream `mcpRegistrationIdentity`: what registering these tools with this catalog's resources and
-/// prompts exposes; equal identities register identical definitions.
+fn output_schema(tool: &Value) -> Option<Value> {
+    tool.get("outputSchema")
+        .filter(|schema| schema.is_object() || schema.is_boolean())
+        .cloned()
+}
+/// `mcpRegistrationIdentity`: what one session registered for a server, so a connect-only refresh can tell an
+/// unchanged catalog from a stale registration.
 pub fn mcp_registration_identity(
     tools: &[McpToolCatalogEntry],
     catalog: Option<&crate::catalog_cache::McpCachedServerCatalog>,
@@ -130,11 +135,6 @@ pub fn mcp_registration_identity(
         catalog.map_or(&[][..], |catalog| catalog.prompts.as_slice()),
     ])
     .to_string()
-}
-fn output_schema(tool: &Value) -> Option<Value> {
-    tool.get("outputSchema")
-        .filter(|schema| schema.is_object() || schema.is_boolean())
-        .cloned()
 }
 pub fn cached_tools_to_catalog_entries(
     server: &str,

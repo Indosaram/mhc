@@ -52,6 +52,8 @@ pub struct ModernProtocolState {
     legacy_form_eligible: Mutex<Option<bool>>,
     version: Mutex<Option<String>>,
     pub legacy: AtomicBool,
+    /// Upstream `resolveStdioDiagnostics`: the stdio child's stderr, held until the era is classified.
+    pub stdio_diagnostics: Mutex<Option<Arc<crate::transport_sdk::StderrDiagnostics>>>,
 }
 impl ModernProtocolState {
     pub fn version(&self) -> Option<String> {
@@ -78,6 +80,17 @@ impl ModernProtocolState {
             .legacy_form_eligible
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(eligible);
+    }
+    /// Upstream `protocol.resolveStdioDiagnostics(modern)`: release or discard held stdio stderr.
+    pub fn resolve_stdio_diagnostics(&self, modern: bool) {
+        let diagnostics = self
+            .stdio_diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.resolve(self, modern);
+        }
     }
     /// Default legacy clients retain the plain request and its original admission behavior; enforced legacy
     /// calls need private operation ownership before the first tools/call.
