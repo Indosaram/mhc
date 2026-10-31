@@ -1141,6 +1141,38 @@ mod tests {
         );
         assert_eq!(fixture.entries.lock().unwrap()[0]["schema"], "v2");
     }
+    /// senpi `...(ask ? { ask } : {})`: a native-mirror entry without a captured ask carries no
+    /// `ask` key at all (not `ask: null`).
+    #[tokio::test]
+    async fn native_mirror_message_end_without_ask_omits_ask_key() {
+        let fixture = std::sync::Arc::new(ExecutionFixture::default());
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("todotools", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        crate::index::register_state_hooks(&mut api, fixture.clone(), fixture.clone());
+        let ctx = command_context(
+            std::sync::Arc::new(CommandUi::default()),
+            Default::default(),
+        );
+        assert!(fixture.get_current_ask().is_none());
+        let message=serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"native","name":"todo","arguments":{"todos":[{"content":"Native task","status":"pending"}]}}],"api":"test","provider":"test","model":"test","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0})).unwrap();
+        let mut event = maho_ext_api::ExtensionEvent::MessageEnd { message };
+        (api.registered.handlers[&maho_ext_api::EventKind::MessageEnd][0])(&mut event, &ctx)
+            .await
+            .unwrap();
+        let entries = fixture.entries.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0].as_object().unwrap();
+        assert_eq!(entry["schema"], "v2");
+        assert!(entry.contains_key("phases"));
+        assert!(
+            !entry.contains_key("ask"),
+            "absent ask must be omitted: {entry:?}"
+        );
+    }
     #[tokio::test]
     async fn native_view_and_invalid_operations_do_not_mutate() {
         let fixture = std::sync::Arc::new(ExecutionFixture::default());
