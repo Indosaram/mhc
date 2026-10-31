@@ -59,6 +59,7 @@ pub mod host_attach_hold;
 pub mod host_capabilities;
 pub mod host_child_exit;
 pub mod host_cleanup_paths;
+pub mod host_client_occupancy;
 pub mod host_crash_record;
 pub mod host_daemon_env;
 pub mod host_daemon_paths;
