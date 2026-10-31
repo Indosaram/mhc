@@ -82,6 +82,14 @@ pub async fn register_session_control_endpoint(
     }
 }
 
+fn panic_reason(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|reason| (*reason).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "drain panicked".to_owned())
+}
+
 fn remove_file(path: String) -> Cleanup {
     Box::pin(async move {
         drop(std::fs::remove_file(path));
@@ -176,9 +184,14 @@ async fn open_endpoint(
                     // (`extensionRunner.emit(event)`). OPEN: `AgentSession` exposes no way to emit a
                     // `session_control_wake` extension event (the runner's `emit_session_control_wake`
                     // is unreachable from here), so only the registrant's drain runs.
-                    let result = drain(event)
-                        .await
-                        .unwrap_or_else(|| json!({"admitted": []}));
+                    // senpi's drain may throw; mhc's returns no error, so a panicking drain is the
+                    // failed pass (and must not take the scheduler's task down with it).
+                    let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+                        async move { drain(event).await },
+                    ))
+                    .await
+                    .map_err(|panic| panic_reason(panic.as_ref()))?
+                    .unwrap_or_else(|| json!({"admitted": []}));
                     *failing
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;

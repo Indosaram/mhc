@@ -386,6 +386,51 @@ async fn wakes_the_drain_with_reason_inbox_when_an_entry_is_created() {
     fixture.endpoint.dispose().await;
 }
 
+// senpi#3246 (3246-rpc-drain-notice-cap, the terminal half): a drain that keeps failing reports once,
+// not on every wake, until a pass succeeds again. Each wake answers only after its pass and its
+// failure report ran, so the counts are read without waiting.
+#[tokio::test]
+async fn a_drain_that_keeps_failing_reports_once_until_a_pass_succeeds() {
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let drain_failing = failing.clone();
+    let fixture = start_endpoint(Some(Arc::new(
+        move |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+            let failing = drain_failing.load(std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                assert!(!failing, "inbox store unreadable");
+                None
+            })
+        },
+    )))
+    .await;
+    let reports = |surface: &TestSurface| {
+        lock(&surface.notices)
+            .iter()
+            .filter(|line| line.contains("drain failed"))
+            .count()
+    };
+    for _ in 0..3 {
+        control_data(&fixture.socket, json!({"type": "wake"})).await;
+    }
+    let while_failing = reports(&fixture.surface);
+    failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    control_data(&fixture.socket, json!({"type": "wake"})).await;
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    control_data(&fixture.socket, json!({"type": "wake"})).await;
+    assert_eq!(
+        (while_failing, reports(&fixture.surface)),
+        (1, 2),
+        "{:?}",
+        lock(&fixture.surface.notices)
+    );
+    assert!(
+        lock(&fixture.surface.notices)
+            .iter()
+            .all(|line| !line.contains("drain failed") || line.contains("inbox store unreadable"))
+    );
+    fixture.endpoint.dispose().await;
+}
+
 #[tokio::test]
 async fn streams_state_events_to_a_subscriber_from_its_cursor() {
     let fixture = start_endpoint(None).await;
