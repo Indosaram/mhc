@@ -1302,9 +1302,30 @@ impl McpService {
                 }
                 _ => McpWireAuthStatus::Unsupported,
             };
+            // service.ts `#captureWireStatusServer`: the diagnostic snapshot's lastError, or the server's
+            // reference failure when it never got a connection.
+            let last_error = match entry.as_ref() {
+                Some(entry) => {
+                    crate::service_snapshot::build_mcp_server_snapshot(
+                        name,
+                        Some(server),
+                        Some(entry.connection.as_ref()),
+                        Some(entry),
+                        0.0,
+                    )
+                    .last_error
+                }
+                None => self.reference_errors.get(name).map(|error| {
+                    maho_core::config_reference_redaction::redact_resolved_reference_values(
+                        &error.to_string(),
+                        "<redacted>",
+                    )
+                }),
+            };
             let mut wire = McpWireStatusServer {
                 name: name.clone(),
                 server_info: None,
+                last_error,
                 tools: Vec::new(),
                 resources: Vec::new(),
                 resource_templates: Vec::new(),
