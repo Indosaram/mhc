@@ -226,10 +226,24 @@ fn run_memory_tool_inner(
                 provenance: params.provenance.clone(),
             },
             None,
-        )?;
+        )
+        .map_err(|error| {
+            // Pin `memory.ts` runMemoryTool: every failure surfaces as a `memory:` tool error
+            // (`MemoryToolError` only skips the prefix when the message already carries it).
+            if error.message.starts_with("memory:") {
+                error
+            } else {
+                err(error.message)
+            }
+        })?;
+        // Pin `memory.ts` successLabel `Memory ${command}`.
+        let message = match result.message.strip_prefix("memory_apply_patch committed") {
+            Some(rest) => format!("Memory apply_patch committed{rest}"),
+            None => result.message,
+        };
         let sha = result.commit.as_ref().map(|commit| commit.sha.clone());
         return Ok(MemoryToolResult {
-            result: result.message,
+            result: message,
             commit: result.commit,
             provenance: MemoryToolProvenance {
                 agent_id: author.agent_id.clone(),
