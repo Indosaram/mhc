@@ -1326,9 +1326,15 @@ mod registry_tests {
     #[tokio::test]
     async fn a_watch_killed_by_its_own_deadline_says_killed_at_deadline_without_exit_code() {
         let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let mut registry = MonitorRegistry::new(move |event| {
-            sender.send(event).unwrap();
-        });
+        let (ended_sender, mut ended) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new_with_ended(
+            move |event| {
+                sender.send(event).unwrap();
+            },
+            move |event| {
+                ended_sender.send(event).unwrap();
+            },
+        );
         let runtime = crate::runtime_session::TerminalRuntimeSession::start(
             "sleep",
             crate::shared::test_sh_options("stty -echo; sleep 30")
@@ -1358,7 +1364,22 @@ mod registry_tests {
         .await
         .unwrap();
         assert_eq!(summary, "watcher killed at deadline (timed_out)");
+        // Structural guard, not prose: the timed-out branch omits the "(exit code N)" suffix.
+        assert!(!summary.contains("exit code"));
+        // The machine-read outcome: a timed watch ends with reason "timeout" exactly once, and the
+        // ending is emitted before the registry is disposed.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), ended.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.reason, MonitorEndedReason::Timeout);
+        assert_eq!(first.id, "bash_1");
         registry.dispose();
+        let mut timeouts = 1;
+        while let Ok(event) = ended.try_recv() {
+            timeouts += usize::from(event.reason == MonitorEndedReason::Timeout);
+        }
+        assert_eq!(timeouts, 1);
         runtime.dispose().unwrap();
     }
     #[tokio::test]
