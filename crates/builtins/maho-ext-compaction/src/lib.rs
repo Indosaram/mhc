@@ -536,6 +536,12 @@ impl maho_ext_api::Extension for CompactionExtension {
                         if !openai_remote_model::is_openai_remote_compaction_model(Some(model)) {
                             return Ok(maho_ext_api::EventResult::None);
                         }
+                        // With no remote checkpoint on the branch the rewrite returns before it
+                        // reads the origin, so skip the auth lookup (an optimisation over senpi).
+                        let branch = speculative::branch_values(context);
+                        if !openai_remote::has_remote_compaction_checkpoint(&branch) {
+                            return Ok(maho_ext_api::EventResult::None);
+                        }
                         let Ok(auth) = context.model_registry.get_api_key_and_headers(model).await
                         else {
                             return Ok(maho_ext_api::EventResult::None);
@@ -571,7 +577,6 @@ impl maho_ext_api::Extension for CompactionExtension {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .clone();
-                        let branch = speculative::branch_values(context);
                         Ok(openai_remote::rewrite_openai_payload_with_remote_compaction(
                             payload,
                             Some(&effective),

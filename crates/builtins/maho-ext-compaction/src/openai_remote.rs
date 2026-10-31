@@ -657,6 +657,12 @@ fn latest_remote_compaction(entries: &[Value]) -> Option<RemoteCompactionCheckpo
     })
 }
 
+/// Whether the branch's latest compaction is an OpenAI remote checkpoint, the first thing
+/// [`rewrite_openai_payload_with_remote_compaction`] needs before it does anything else.
+pub fn has_remote_compaction_checkpoint(entries: &[Value]) -> bool {
+    latest_remote_compaction(entries).is_some()
+}
+
 fn checkpoint_context_entries(
     entries: &[Value],
     remote: &RemoteCompactionCheckpoint,
@@ -1257,6 +1263,15 @@ mod replay_boundary_tests {
             events.into_inner()[0]["reason"],
             "unproven-remote-replay-boundary"
         );
+    }
+
+    #[test]
+    fn only_a_remote_latest_compaction_is_a_checkpoint() {
+        let mut branch = branch();
+        assert!(has_remote_compaction_checkpoint(&branch));
+        branch.push(json!({"type":"compaction","id":"e","parentId":"d","timestamp":"1970-01-01T00:00:00.000Z","summary":"local","firstKeptEntryId":"d","tokensBefore":5}));
+        assert!(!has_remote_compaction_checkpoint(&branch));
+        assert!(!has_remote_compaction_checkpoint(&[]));
     }
 
     #[test]
