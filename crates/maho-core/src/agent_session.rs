@@ -11851,27 +11851,30 @@ impl AgentSession {
         if full_access_trust || !has_resources {
             return (true, full_access_trust && has_resources && saved != Some(true));
         }
-        if let Some(saved) = saved {
-            return (saved, false);
-        }
-        // The host's resolution: the extension `project_trust` event, the saved decision, `defaultProjectTrust`.
+        // senpi `shouldResolveProjectTrust` does not look at the saved decision: the resolution runs the extension
+        // `project_trust` event first, then reads the saved decision, then `defaultProjectTrust`.
         let decided_by_host = match &host.resolver {
             Some(resolver) => {
                 let preset = match &preset_flag {
                     Some(FlagValue::String(preset)) => Some(preset.clone()),
                     _ => None,
                 };
-                let resolved = resolver(cwd.clone(), preset).await;
+                // senpi interactive `projectTrustContextFactory`: the handlers get the session's UI and `hasUI: true`.
+                let ui = host
+                    .prompt
+                    .then(|| self.state().extension_ui_context.clone())
+                    .flatten();
+                let resolved = resolver(cwd.clone(), preset, ui).await;
                 for warning in &resolved.warnings {
                     self.notify_ui(warning, maho_ext_api::NotificationType::Warning);
                 }
                 resolved.decided.then_some(resolved.trusted)
             }
-            None => match default_trust {
+            None => saved.or(match default_trust {
                 Some(crate::project_trust::DefaultProjectTrust::Always) => Some(true),
                 Some(crate::project_trust::DefaultProjectTrust::Never) => Some(false),
                 _ => None,
-            },
+            }),
         };
         let asked = match decided_by_host {
             Some(trusted) => trusted,
@@ -23871,11 +23874,51 @@ mod tests {
         fixture.session.dispose().await;
     }
 
+    // senpi `shouldResolveProjectTrust` ignores the saved decision: the extension `project_trust` event runs first,
+    // so an extension that answers "no" beats a saved "trust". In the interactive mode the handlers get the
+    // session's UI (senpi `projectTrustContextFactory`, `hasUI: true`).
+    #[tokio::test]
+    async fn the_extension_event_runs_before_a_saved_trust_decision() {
+        let fixture = switch_trust_fixture().await;
+        fixture
+            .store()
+            .set(&fixture.other, Some(true))
+            .expect("save trust");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        let resolver: crate::agent_session_runtime::ProjectTrustResolver = Arc::new(
+            move |cwd: String, _: Option<String>, ui: Option<Arc<dyn ExtensionUi>>| {
+                lock(&seen).push((cwd, ui.is_some()));
+                Box::pin(async {
+                    crate::agent_session_runtime::ResolvedProjectTrust {
+                        trusted: false,
+                        decided: true,
+                        ..Default::default()
+                    }
+                }) as crate::agent_session_runtime::ProjectTrustResolution
+            },
+        );
+        fixture.session.set_switch_project_trust(Some(SwitchProjectTrust {
+            resolver: Some(resolver),
+            prompt: true,
+            ..Default::default()
+        }));
+        let asked = fixture.bind_ui(Some("Trust"));
+
+        fixture.switch_into_other().await;
+
+        assert_eq!(*lock(&calls), [(fixture.other.clone(), true)]);
+        assert!(lock(&asked).is_empty());
+        assert!(!fixture.trusted());
+        assert!(!fixture.has_other_skill());
+        fixture.session.dispose().await;
+    }
+
     #[tokio::test]
     async fn the_host_resolution_decides_before_the_prompt() {
         let fixture = switch_trust_fixture().await;
         let resolver: crate::agent_session_runtime::ProjectTrustResolver =
-            Arc::new(|_: String, _: Option<String>| {
+            Arc::new(|_: String, _: Option<String>, _| {
                 Box::pin(async {
                     crate::agent_session_runtime::ResolvedProjectTrust {
                         trusted: true,
