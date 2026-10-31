@@ -1245,6 +1245,44 @@ impl RpcClient {
         )
         .await
     }
+    /// senpi `orderProviderAccounts`: sets the provider's account order; `None` clears it.
+    pub async fn order_provider_accounts(
+        &self,
+        provider: &str,
+        names: Option<&[String]>,
+    ) -> RpcClientResult<()> {
+        self.fire_and_forget(
+            serde_json::json!({"type": "account_order", "provider": provider, "names": names}),
+            true,
+        )
+        .await
+    }
+    /// senpi `continueFromLeaf`: answered once the turn was admitted; a refusal carries its code.
+    pub async fn continue_from_leaf(&self) -> RpcClientResult<()> {
+        self.request_value(serde_json::json!({"type": "continue_from_leaf"}), true)
+            .await
+            .map(|_| ())
+    }
+    /// senpi `getModelThinkingLevel`: `{ level, source, availableLevels }`.
+    pub async fn get_model_thinking_level(
+        &self,
+        provider: &str,
+        model_id: &str,
+    ) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "get_model_thinking_level", "provider": provider, "modelId": model_id}),
+            true,
+        )
+        .await
+    }
+    /// senpi `resolvePath`: a `ResolvedMessagePath`.
+    pub async fn resolve_path(&self, path: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "resolve_path", "path": path}),
+            true,
+        )
+        .await
+    }
     pub async fn remove_provider_account(&self, provider: &str, name: &str) -> RpcClientResult<()> {
         self.fire_and_forget(
             serde_json::json!({"type": "account_remove", "provider": provider, "name": name}),
@@ -2195,6 +2233,47 @@ mod tests {
             classify_rpc_client_event(&seen.lock().unwrap()[0]),
             Some(RpcClientEventKind::AgentStart)
         );
+    }
+    /// senpi `getModelThinkingLevel`/`resolvePath`/`continueFromLeaf`: each sends its command and answers its data.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_session_reads_send_their_commands_and_answer_their_data() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let serve = async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                let request: Value =
+                    serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                let data = match request["type"].as_str() {
+                    Some("get_model_thinking_level") => serde_json::json!({"level":"low"}),
+                    Some("resolve_path") => serde_json::json!({"status":"not_found","tried":[]}),
+                    _ => Value::Null,
+                };
+                let response = serde_json::json!({"type":"response","id":request["id"],"success":true,"data":data});
+                write
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+                seen.push(request);
+            }
+            seen
+        };
+        let requests = async {
+            let level = client.get_model_thinking_level("p", "m").await.unwrap();
+            let path = client.resolve_path("/x").await.unwrap();
+            client.continue_from_leaf().await.unwrap();
+            (level, path)
+        };
+        let ((level, path), seen) = tokio::join!(requests, serve);
+        assert_eq!(level["level"], "low");
+        assert_eq!(path["status"], "not_found");
+        assert_eq!(seen[0]["modelId"], "m");
+        assert_eq!(seen[1]["path"], "/x");
+        assert_eq!(seen[2]["type"], "continue_from_leaf");
     }
     #[cfg(unix)]
     #[tokio::test]
