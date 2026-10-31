@@ -335,7 +335,11 @@ pub fn identity_payload(
         crate::host_decision::HostDecisionPolicy::Upgrade,
     ))
     .expect("decision has no failing serializer");
-    serde_json::json!({"socket":socket,"pid":pid,"instanceId":host.and_then(|host|host.instance_id.as_ref()),"generation":host.and_then(|host|host.generation),"engineVersion":host.and_then(|host|host.engine_version.as_ref()),"engineOrdinal":host.and_then(|host|host.engine_ordinal),"capabilities":host.map_or(&[][..],|host|host.capabilities.as_slice()),"launchProfileId":host.and_then(|host|host.launch_profile.as_ref()).map(|profile|&profile.profile_id),"upgradeable":decision["upgradeable"]})
+    let lifecycle = host.and_then(|host| host.lifecycle).map(|lifecycle| match lifecycle {
+        crate::host_protocol_info::HostLifecycle::Ready => "ready",
+        crate::host_protocol_info::HostLifecycle::Stopping => "stopping",
+    });
+    serde_json::json!({"socket":socket,"pid":pid,"lifecycle":lifecycle,"instanceId":host.and_then(|host|host.instance_id.as_ref()),"generation":host.and_then(|host|host.generation),"engineVersion":host.and_then(|host|host.engine_version.as_ref()),"engineOrdinal":host.and_then(|host|host.engine_ordinal),"capabilities":host.map_or(&[][..],|host|host.capabilities.as_slice()),"launchProfileId":host.and_then(|host|host.launch_profile.as_ref()).map(|profile|&profile.profile_id),"upgradeable":decision["upgradeable"]})
 }
 pub async fn status_outcome(
     socket: &str,
@@ -352,17 +356,26 @@ pub async fn status_outcome(
         payload,
     })
 }
-/// `status --all`: one row per endpoint under the agent directory; exit 0 whatever the rows say.
+/// `status --all`, with the exit vocabulary of one socket: 0 while anything answers, 3 when nothing does (or nothing
+/// is there). The rows are `{ endpoints }` (senpi `statusAllOutcome`).
 pub async fn status_all_outcome(
     agent_dir: &std::path::Path,
     include_workers: bool,
 ) -> std::io::Result<HostOutcome> {
     let rows =
         crate::host_status_all::read_all_host_status(agent_dir, include_workers, None).await?;
-    Ok(HostOutcome {
-        exit_code: HOST_EXIT_OK,
-        payload: serde_json::Value::Array(rows),
-    })
+    Ok(status_all_payload(rows))
+}
+fn status_all_payload(endpoints: Vec<serde_json::Value>) -> HostOutcome {
+    let reachable = endpoints.iter().any(|endpoint| endpoint["reachable"] == true);
+    HostOutcome {
+        exit_code: if reachable {
+            HOST_EXIT_OK
+        } else {
+            HOST_EXIT_REFUSED
+        },
+        payload: serde_json::json!({ "endpoints": endpoints }),
+    }
 }
 pub fn shard_path_outcome(
     kind: crate::host_endpoints::ShardKind,
@@ -550,6 +563,29 @@ mod tests {
         assert_eq!(outcome.exit_code, HOST_EXIT_REFUSED);
         assert_eq!(outcome.payload["reachable"], false);
         assert!(outcome.payload.get("action").is_none());
+    }
+    #[test]
+    fn status_all_answers_endpoints_and_refuses_when_nothing_answers() {
+        let none = status_all_payload(Vec::new());
+        assert_eq!(none.exit_code, HOST_EXIT_REFUSED);
+        assert_eq!(none.payload, serde_json::json!({"endpoints": []}));
+        let one = status_all_payload(vec![
+            serde_json::json!({"socket": "a", "reachable": false}),
+            serde_json::json!({"socket": "b", "reachable": true}),
+        ]);
+        assert_eq!(one.exit_code, HOST_EXIT_OK);
+        assert_eq!(one.payload["endpoints"].as_array().map(Vec::len), Some(2));
+    }
+    #[test]
+    fn identity_payload_names_the_host_lifecycle() {
+        let host = crate::host_protocol_info::parse_host_protocol_info(
+            &serde_json::json!({"serverVersion":"1","capabilities":[],"lifecycle":"stopping","instanceId":"i"}),
+        )
+        .unwrap();
+        let payload = identity_payload("s", 7, Some(&host));
+        assert_eq!(payload["lifecycle"], "stopping");
+        assert_eq!(payload["instanceId"], "i");
+        assert!(identity_payload("s", 7, None)["lifecycle"].is_null());
     }
     #[test]
     fn ensure_labels_distinguish_identity_replacement_from_start() {
