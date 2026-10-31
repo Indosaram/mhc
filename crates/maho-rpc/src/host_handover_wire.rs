@@ -237,7 +237,8 @@ const SUCCESSOR_PROBE_TIMEOUT_MS: u64 = 10_000;
 /// Runs the handover the host decided on (senpi `performIdleHandover`): the ordinary generation handoff, launched
 /// from the runtime of the CLI that asked, with that CLI's daemon environment. The successor is told the runtime
 /// it must report (`EXPECTED_RUNTIME_BUILD_ID_ENV`) and exits before it listens when it computes another one. The
-/// env is applied EXACTLY: every name this host has and the CLI did not send is removed. `presenter_bootstrap` is
+/// env is applied EXACTLY: every name this host has and the CLI did not send is removed; the successor's identity
+/// is forced after it (`host_handoff::successor_launch_env`). `presenter_bootstrap` is
 /// the running host's successor enrollment channel (`HostCore::presenter_successor_bootstrap`).
 pub async fn perform_idle_handover(
     request: IdleHandoverRequest,
@@ -250,10 +251,6 @@ pub async fn perform_idle_handover(
     for (name, value) in &request.env {
         env.insert(name.clone(), Some(value.clone()));
     }
-    env.insert(
-        crate::host_idle_handover::EXPECTED_RUNTIME_BUILD_ID_ENV.to_owned(),
-        Some(request.target_runtime_build_id.clone()),
-    );
     let policy = request
         .policy
         .as_ref()
@@ -271,6 +268,7 @@ pub async fn perform_idle_handover(
         host_args: request.host_args.clone(),
         policy,
         env,
+        expected_runtime_build_id: Some(request.target_runtime_build_id.clone()),
         launch_profile_id: String::new(),
         readiness_ms: crate::host_successor::DEFAULT_HANDOFF_READINESS_MS,
         launch: Some(crate::host_launch::HostLaunch {

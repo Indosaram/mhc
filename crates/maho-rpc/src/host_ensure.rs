@@ -702,6 +702,7 @@ async fn ensure_host_in_key_root(
         host_args: supervisor_args,
         policy: Some(host_policy),
         env: options.env.clone(),
+        expected_runtime_build_id: None,
         launch_profile_id,
         readiness_ms: options.readiness_ms,
         launch: None,
