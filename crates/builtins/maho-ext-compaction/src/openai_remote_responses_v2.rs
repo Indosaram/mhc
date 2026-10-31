@@ -140,6 +140,37 @@ pub struct ResponsesV2Options<'a> {
     pub extra_body: Option<serde_json::Map<String, Value>>,
     pub signal: maho_ai::utils::abort::AbortSignal,
     pub runner: &'a crate::openai_remote_dependencies::OpenAiResponsesStreamRunner,
+    /// senpi `providerRequest`: extension payload transforms applied after the compaction rewrite.
+    pub provider_request: Option<&'a maho_ext_api::ProviderRequestPreparation>,
+}
+
+/// The rewritten payload through the extension `transformPayload`, awaited inside the provider's
+/// async payload hook (senpi `onPayload: async`), then re-validated by `validate`.
+pub(crate) fn transformed_payload_hook(
+    provider_request: Option<&maho_ext_api::ProviderRequestPreparation>,
+    rewrite: impl Fn(&Value) -> Option<Value> + Send + Sync + 'static,
+    rewrite_error: &'static str,
+    validate: fn(&Value) -> bool,
+    invalid_error: &'static str,
+) -> maho_ai::types::AsyncOnPayload {
+    let transform =
+        provider_request.map(|prepared| std::sync::Arc::clone(&prepared.transform_payload));
+    std::sync::Arc::new(move |payload, _, _| {
+        let rewritten = rewrite(&payload);
+        let transform = transform.clone();
+        Box::pin(async move {
+            let rewritten = rewritten.ok_or_else(|| rewrite_error.to_owned())?;
+            let transformed = match transform {
+                Some(transform) => transform(rewritten).await.map_err(|error| error.message)?,
+                None => rewritten,
+            };
+            if validate(&transformed) {
+                Ok(Some(transformed))
+            } else {
+                Err(invalid_error.to_owned())
+            }
+        })
+    })
 }
 
 pub async fn run_openai_responses_v2_compaction(
@@ -161,9 +192,13 @@ pub async fn run_openai_responses_v2_compaction(
                         .map(|(key, value)| (key, Some(value)))
                         .collect(),
                 ),
-                on_payload: Some(std::sync::Arc::new(move |payload, _, _| {
-                    rewrite_v2_payload(payload, &input)
-                })),
+                async_on_payload: Some(transformed_payload_hook(
+                    options.provider_request,
+                    move |payload| rewrite_v2_payload(payload, &input),
+                    "Unable to read OpenAI Responses v2 compaction payload",
+                    has_v2_trigger,
+                    "Unable to build OpenAI Responses v2 compaction payload",
+                )),
                 ..Default::default()
             },
             cache_retention: Some(maho_ai::types::CacheRetention::Short),
@@ -379,6 +414,7 @@ mod timeout_tests {
                     extra_body: None,
                     signal: maho_ai::utils::abort::AbortController::new().signal(),
                     runner: &runner,
+                    provider_request: None,
                 };
                 if websocket {
                     crate::openai_remote::run_openai_responses_stream_compaction(options, 0).await

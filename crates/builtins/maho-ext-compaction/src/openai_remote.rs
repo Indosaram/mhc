@@ -79,6 +79,7 @@ pub async fn run_remote_compaction(
         extra_body: options.extra_body.clone(),
         signal,
         runner: options.runner,
+        provider_request: options.provider_request,
     };
     let compaction_timeout = v2::openai_remote_compaction_timeout(
         options.model,
@@ -123,7 +124,11 @@ pub async fn run_remote_compaction(
     let budget_exhausted = |transport: &str| {
         let exhausted = deadline.remaining().is_zero();
         if exhausted {
-            event("remote_fallback", transport, json!({"reason":"remote-compaction-budget-exhausted"}));
+            event(
+                "remote_fallback",
+                transport,
+                json!({"reason":"remote-compaction-budget-exhausted"}),
+            );
         }
         exhausted
     };
@@ -175,12 +180,7 @@ pub async fn run_remote_compaction(
             .map_err(|error| error.to_string())?,
         None => options.request.body.clone(),
     };
-    if !body.is_object()
-        || !body["model"].is_string()
-        || !body["input"]
-            .as_array()
-            .is_some_and(|input| input.iter().all(Value::is_object))
-    {
+    if !is_openai_compact_body(&body) {
         event(
             "remote_fallback",
             "compact-endpoint",
@@ -423,6 +423,15 @@ fn formatted_count(count: usize) -> String {
         })
 }
 
+/// senpi `isOpenAiCompactBody`.
+fn is_openai_compact_body(value: &Value) -> bool {
+    value.is_object()
+        && value["model"].is_string()
+        && value["input"]
+            .as_array()
+            .is_some_and(|input| input.iter().all(Value::is_object))
+}
+
 pub fn create_openai_responses_stream_compaction_payload(
     payload: &Value,
     request: &OpenAiRemoteCompactionRequest,
@@ -505,17 +514,25 @@ pub async fn run_openai_responses_stream_compaction(
                         .collect(),
                 ),
                 signal: Some(options.signal.clone()),
-                on_payload: Some(std::sync::Arc::new(move |payload, _, _| {
-                    create_openai_responses_stream_compaction_payload(
-                        payload,
-                        &OpenAiRemoteCompactionRequest {
-                            body: request_body.clone(),
-                            session_id: None,
-                            input_item_count: 0,
-                            tokens_before: 0,
+                async_on_payload: Some(
+                    crate::openai_remote_responses_v2::transformed_payload_hook(
+                        options.provider_request,
+                        move |payload| {
+                            create_openai_responses_stream_compaction_payload(
+                                payload,
+                                &OpenAiRemoteCompactionRequest {
+                                    body: request_body.clone(),
+                                    session_id: None,
+                                    input_item_count: 0,
+                                    tokens_before: 0,
+                                },
+                            )
                         },
-                    )
-                })),
+                        "Unable to build OpenAI Responses stream compaction payload",
+                        is_openai_compact_body,
+                        "invalid-compact-request-payload",
+                    ),
+                ),
                 ..Default::default()
             },
             cache_retention: Some(maho_ai::types::CacheRetention::Short),
@@ -832,7 +849,10 @@ mod timeout_tests {
         let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"openai","api":"openai-responses","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":10000})).expect("model fixture");
         assert_eq!(openai_remote_compaction_timeout_ms(&model, 1), 15_000);
         assert_eq!(openai_remote_compaction_timeout_ms(&model, 20_000), 40_000);
-        assert_eq!(openai_remote_compaction_timeout_ms(&model, 300_000), 600_000);
+        assert_eq!(
+            openai_remote_compaction_timeout_ms(&model, 300_000),
+            600_000
+        );
         assert_eq!(
             openai_remote_compaction_timeout_ms(&model, u64::MAX),
             900_000
