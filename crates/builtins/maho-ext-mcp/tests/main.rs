@@ -21,6 +21,8 @@ pub mod control_inventory;
 pub mod diagnose;
 #[path = "elicitation.rs"]
 pub mod elicitation;
+#[path = "expose_call.rs"]
+pub mod expose_call;
 #[path = "faux_session.rs"]
 pub mod faux_session;
 #[path = "health.rs"]
@@ -41,6 +43,8 @@ pub mod log;
 pub mod modern_era;
 #[path = "modern_mrtr_privacy.rs"]
 pub mod modern_mrtr_privacy;
+#[path = "modern_transport.rs"]
+pub mod modern_transport;
 #[path = "modern_wire.rs"]
 pub mod modern_wire;
 #[path = "notifications.rs"]
@@ -89,6 +93,8 @@ pub mod session_exposure;
 pub mod shared_connection;
 #[path = "sharing_policy.rs"]
 pub mod sharing_policy;
+#[path = "skill_server.rs"]
+pub mod skill_server;
 #[path = "skills.rs"]
 pub mod skills;
 #[path = "startup_race.rs"]
@@ -106,6 +112,8 @@ pub mod transport_step_up;
 pub mod transport_refresh_rejection;
 #[path = "transport_redaction.rs"]
 pub mod transport_redaction;
+#[path = "stderr_diagnostics.rs"]
+pub mod stderr_diagnostics;
 #[path = "stdio_env_filter.rs"]
 pub mod stdio_env_filter;
 #[path = "log_sink_retry.rs"]
