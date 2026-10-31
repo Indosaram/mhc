@@ -36,7 +36,7 @@ impl RpcSocketClient {
     pub fn from_stream(stream: tokio::net::UnixStream) -> Self {
         Self {
             stream,
-            frames: RpcClientFrames::default(),
+            frames: RpcClientFrames::for_socket(),
             reader: crate::jsonl::JsonlLineReader::default(),
             lines: VecDeque::new(),
         }
@@ -596,7 +596,7 @@ impl RpcMux {
             write: tokio::sync::Mutex::new(None),
             reader: std::sync::Mutex::new(None),
             pending: std::sync::Mutex::new(std::collections::HashMap::new()),
-            frames: std::sync::Mutex::new(RpcClientFrames::default()),
+            frames: std::sync::Mutex::new(RpcClientFrames::for_socket()),
             listeners: std::sync::Arc::default(),
             next_listener: std::sync::Mutex::new(0),
             dispatch_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -1924,8 +1924,17 @@ pub struct RpcClientFrames {
     pub pending_open_session: bool,
     events: VecDeque<(String, Value, usize)>,
     event_bytes: usize,
+    /// senpi rpc-client.ts `originHost`: the host generation this client runs in, stamped on every socket request.
+    pub origin_host: Option<String>,
 }
 impl RpcClientFrames {
+    /// Frames for a socket client of this process: requests carry its origin host generation.
+    pub fn for_socket() -> Self {
+        Self {
+            origin_host: crate::host_observe_request::process_origin_host_instance(),
+            ..Self::default()
+        }
+    }
     pub fn command(&mut self, mut command: Value, route: bool, expect_response: bool) -> Value {
         let own_id = matches!(
             command["type"].as_str(),
@@ -1945,6 +1954,10 @@ impl RpcClientFrames {
         }
         if own_id.is_none() {
             command["id"] = id.clone().into();
+        }
+        if let Some(origin) = &self.origin_host {
+            command[crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD] =
+                origin.clone().into();
         }
         if expect_response {
             self.pending.insert(id);
@@ -2012,10 +2025,28 @@ mod tests {
         let command = client.command(json!({"type":"abort","sessionId":"other"}), true, true);
         assert_eq!(command["id"], "req_1");
         assert_eq!(command["sessionId"], "other");
+        assert!(
+            command
+                .get(crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD)
+                .is_none()
+        );
         assert!(matches!(
             client.handle_line(r#"{"type":"response","id":"req_1","success":true}"#),
             ClientFrame::Response(_)
         ));
+    }
+    // senpi rpc-client.ts: a socket client stamps its origin host generation on every request it frames.
+    #[test]
+    fn a_socket_request_carries_the_origin_host_generation() {
+        let mut client = RpcClientFrames {
+            origin_host: Some("g1".into()),
+            ..Default::default()
+        };
+        let command = client.command(json!({"type":"get_state"}), false, true);
+        assert_eq!(
+            command[crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD],
+            "g1"
+        );
     }
     #[test]
     fn startup_events_replay_only_for_selected_lease() {

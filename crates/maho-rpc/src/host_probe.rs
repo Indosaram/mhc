@@ -404,7 +404,12 @@ pub async fn authenticated_host_socket(
     let mut command = if request["type"] == "get_protocol_info" {
         request.clone()
     } else {
-        serde_json::json!({"type":"get_protocol_info","observe":true})
+        // senpi rpc-auth-client.ts `connectAuthenticatedRpcSocket` default first frame.
+        let mut first = serde_json::json!({"type":"get_protocol_info","observe":true});
+        if let Some(origin) = crate::host_observe_request::process_origin_host_instance() {
+            first[crate::host_observe_request::ORIGIN_HOST_INSTANCE_FIELD] = origin.into();
+        }
+        first
     };
     command["auth"] = serde_json::json!({"client_nonce":nonce});
     let info = match socket.request(command).await {
