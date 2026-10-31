@@ -29150,6 +29150,13 @@ mod tests {
                 .expect("controller")
                 .is_provider_spent("faux")
         );
+        let ends = Arc::new(Mutex::new(Vec::new()));
+        let observed = ends.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::CompactionEnd { error_message, .. } = event {
+                lock(&observed).push(error_message.clone());
+            }
+        }));
         let calls_before = spent_primary_calls(&provider);
         let error = session.compact(None).await.expect_err("spent account");
         assert_eq!(
@@ -29157,6 +29164,13 @@ mod tests {
             "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model, or configure another provider in retry.fallbackChains."
         );
         assert_eq!(spent_primary_calls(&provider), calls_before);
+        let last_end = lock(&ends).last().cloned().flatten().expect("compaction_end error");
+        assert!(
+            last_end.contains(
+                "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model"
+            ),
+            "compaction_end errorMessage: {last_end}"
+        );
     }
 
     /// senpi 3131-spent-account.test.ts "skips an authenticated summary alternate whose context window cannot
