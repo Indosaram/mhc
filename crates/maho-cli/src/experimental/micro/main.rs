@@ -1,6 +1,6 @@
 //! Port of senpi `experimental/micro/main.ts` (target 59d58cee): parse `--continue`/`-c`, open the
-//! micro runtime, run the screen host, then close. The screen host (`tui.ts`) is injected because
-//! it is not ported yet; the binary entry point is owned by `main.rs` (senpi-interactive).
+//! micro runtime, run the screen host (`tui.rs`), then close. `run_micro_with` keeps both seams
+//! injectable for tests; the binary entry point is owned by `main.rs` (senpi-interactive).
 
 use std::future::Future;
 use std::rc::Rc;
@@ -21,8 +21,13 @@ pub fn parse_args(argv: &[String]) -> Result<OpenMicroOptions, String> {
     Ok(options)
 }
 
-/// senpi's module body: `openMicro`, then `runMicroTui(view, controller)`, closing in `finally`.
-pub async fn run_micro<Open, OpenFut, Tui, TuiFut>(
+/// senpi's module body: `openMicro(parseArgs(argv))`, then `runMicroTui(view, controller)`.
+pub async fn run_micro(argv: &[String]) -> Result<(), String> {
+    run_micro_with(argv, super::runtime::open_micro, super::tui::run_micro_tui).await
+}
+
+/// [`run_micro`] with the runtime and screen host injected; the runtime closes after the screen.
+pub async fn run_micro_with<Open, OpenFut, Tui, TuiFut>(
     argv: &[String],
     open: Open,
     tui: Tui,
