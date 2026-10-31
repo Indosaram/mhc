@@ -383,6 +383,43 @@ impl Subscription {
         }
     }
 
+    /// Waits until `ready` returns `true` (returns `true`), or the connection closes, the
+    /// subscription is cancelled or `timeout` passes (returns `false`). `ready` is checked after
+    /// every event, under the client lock, so it must not call back into the client; it suits
+    /// filters that fold events into their own state instead of queueing them.
+    pub fn wait_until(&self, timeout: Duration, ready: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.shared.lock();
+        loop {
+            if !state.subscribers.contains_key(&self.id) {
+                return false;
+            }
+            if ready() {
+                return true;
+            }
+            let now = Instant::now();
+            if state.closed.is_some() || now >= deadline {
+                return false;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Events queued and not yet drained.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.shared
+            .lock()
+            .subscribers
+            .get(&self.id)
+            .map_or(0, |subscriber| subscriber.queue.len())
+    }
+
     /// Whether the connection has ended.
     pub fn is_closed(&self) -> bool {
         self.shared.lock().closed.is_some()
