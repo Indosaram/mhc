@@ -4681,6 +4681,8 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
