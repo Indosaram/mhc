@@ -621,6 +621,11 @@ pub async fn mcp_request_with_clock(
                         }
                         // Cancellation has its own request lifetime, independent of the aborted tool call.
                         let checked = signal.is_some();
+                        // Upstream rejects the follower with the abort reason, so a CONTEXT_CHANGED stop never sends
+                        // `tasks/cancel`; the tool signal carries no reason, so the stop is read from the operation.
+                        if !checked && operation.state.failure().is_some_and(|failure| failure.code == McpMrtrErrorCode::ContextChanged) {
+                            return Err(McpMrtrError::new(McpMrtrErrorCode::ContextChanged));
+                        }
                         let guard_operation = operation.clone();
                         let guard: DispatchGuard = Arc::new(move |snapshot: Option<String>| {
                             let changed = guard_operation.origin.as_ref().is_some_and(|origin| origin_changed(origin, guard_operation.generation));
