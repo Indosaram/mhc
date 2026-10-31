@@ -29,6 +29,8 @@ pub mod google_shared_retry;
 pub mod google_shared_signed_empty_blocks;
 #[path = "google_shared_tool_call_id.rs"]
 pub mod google_shared_tool_call_id;
+#[path = "google_thinking_level_generation.rs"]
+pub mod google_thinking_level_generation;
 #[path = "google_thinking_level_map.rs"]
 pub mod google_thinking_level_map;
 #[path = "google_thinking_signature.rs"]
