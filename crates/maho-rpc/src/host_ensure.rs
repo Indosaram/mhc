@@ -228,17 +228,47 @@ pub fn start_host(
         stderr_options.mode(0o600);
     }
     let stderr = stderr_options.open(&paths.stderr_log)?;
-    let mut command = tokio::process::Command::new(&launch.command);
-    command
-        .args(&launch.args)
-        .env_clear()
-        .envs(env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(stderr);
+    // senpi `startHost`: the presenter channel enrolls this initial launch, and enforcement is the deployment opt-in.
+    let bootstrap = crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
+    let args: Vec<String> = launch
+        .args
+        .iter()
+        .cloned()
+        .chain(crate::mcp_presenter_bootstrap::presenter_launch_args(
+            bootstrap.is_some(),
+            crate::mcp_presenter_bootstrap::presenter_enforcement(),
+        ))
+        .collect();
+    let configure = |command: &mut tokio::process::Command| {
+        command
+            .env_clear()
+            .envs(env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(stderr);
+        #[cfg(unix)]
+        command.process_group(0);
+    };
     #[cfg(unix)]
-    command.process_group(0);
-    let mut child = command.spawn()?;
+    let (mut child, presenter_enrollment) =
+        crate::mcp_presenter_bootstrap::spawn_with_presenter_bootstrap(
+            launch.command.as_os_str(),
+            &args,
+            configure,
+            bootstrap,
+            crate::mcp_presenter_bootstrap::PresenterLaunch {
+                kind: "initial",
+                predecessor_host_instance: Some(None),
+            },
+        )?;
+    #[cfg(not(unix))]
+    let (mut child, presenter_enrollment) = {
+        drop(bootstrap);
+        let mut command = tokio::process::Command::new(&launch.command);
+        command.args(&args);
+        configure(&mut command);
+        (command.spawn()?, None::<tokio::task::JoinHandle<()>>)
+    };
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("RPC socket host has no process identity"))?;
@@ -282,12 +312,21 @@ pub fn start_host(
     }
     .await;
     match result {
-        Ok(protocol) => Ok(StartedHost {
-            child,
-            protocol,
-            instance_id: settings.instance_id,
-        }),
+        Ok(protocol) => {
+            // senpi `await presenterEnrollment` once the host is ready.
+            if let Some(enrollment) = presenter_enrollment {
+                let _ = enrollment.await;
+            }
+            Ok(StartedHost {
+                child,
+                protocol,
+                instance_id: settings.instance_id,
+            })
+        }
         Err(error) => {
+            if let Some(enrollment) = presenter_enrollment {
+                enrollment.abort();
+            }
             let _ = child.kill().await;
             let _ = child.wait().await;
             crate::host_daemon_registration::release_generation(

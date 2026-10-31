@@ -110,6 +110,34 @@ pub enum HostToSessionWorker {
         connection: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         roles: Option<Vec<String>>,
+        /// The host enforces private MCP forms: the worker binds its forms through the host (senpi `mcpFormsEnforced`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mcp_forms_enforced: bool,
+    },
+    /// The host's answer to `mcp_form_bind`: the binding epoch and its current grant version.
+    #[serde(rename = "mcp_form_bound")]
+    McpFormBound {
+        id: String,
+        epoch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// The binding's grant changed (or a `mcp_form_ready` was answered, echoing its `id`).
+    #[serde(rename = "mcp_form_availability")]
+    McpFormAvailability {
+        epoch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// One created form settled on the host; `outcome` is the `McpFormOutcome` wire union.
+    #[serde(rename = "mcp_form_settlement")]
+    McpFormSettlement {
+        id: String,
+        epoch: String,
+        settlement_id: String,
+        outcome: serde_json::Value,
     },
     Command {
         request: u64,
@@ -159,6 +187,37 @@ pub const fn grant_from_credit_code(code: i32) -> Option<SessionWriteGrant> {
     rename_all_fields = "camelCase"
 )]
 pub enum SessionWorkerWire {
+    /// Private MCP forms (senpi#4254): these never pass through output, snapshots or replay.
+    #[serde(rename = "mcp_form_bind")]
+    McpFormBind {
+        id: String,
+        durable_id: String,
+    },
+    #[serde(rename = "mcp_form_ready")]
+    McpFormReady {
+        id: String,
+        epoch: String,
+    },
+    #[serde(rename = "mcp_form_release")]
+    McpFormRelease {
+        epoch: String,
+    },
+    #[serde(rename = "mcp_form_cancel")]
+    McpFormCancel {
+        id: String,
+        epoch: String,
+        lifetime: McpFormCancelLifetime,
+    },
+    /// NATIVE-DIVERGENCE(senpi SharedArrayBuffer operationFence): the worker is a process, so the operation fence
+    /// is the host-side `operation` abort a `mcp_form_cancel { lifetime: "operation" }` sets; the frames are
+    /// ordered on one pipe, so the cancel lands before any later host dispatch.
+    #[serde(rename = "mcp_form_create")]
+    McpFormCreate {
+        id: String,
+        epoch: String,
+        version: String,
+        input: crate::mcp_form_types::McpFormInputWire,
+    },
     Prepared {
         request: u64,
         session_path: String,
@@ -267,6 +326,12 @@ pub enum SessionWorkerToHost {
     Failure {
         error: String,
     },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpFormCancelLifetime {
+    Operation,
+    Presentation,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -442,6 +507,65 @@ mod tests {
             prepare,
             HostToSessionWorker::Prepare { subscription_limits, .. } if subscription_limits.is_empty()
         ));
+    }
+    #[test]
+    fn private_form_messages_cross_both_ways_in_their_upstream_shape() {
+        let bound: HostToSessionWorker = serde_json::from_value(
+            serde_json::json!({"type":"mcp_form_bound","id":"i","epoch":"e"}),
+        )
+        .unwrap();
+        assert_eq!(
+            bound,
+            HostToSessionWorker::McpFormBound {
+                id: "i".into(),
+                epoch: "e".into(),
+                version: None
+            }
+        );
+        let settlement = serde_json::to_value(HostToSessionWorker::McpFormSettlement {
+            id: "i".into(),
+            epoch: "e".into(),
+            settlement_id: "s".into(),
+            outcome: serde_json::json!({"kind":"processing_failure"}),
+        })
+        .unwrap();
+        assert_eq!(settlement["settlementId"], "s");
+        let cancel = serde_json::to_value(SessionWorkerWire::McpFormCancel {
+            id: "i".into(),
+            epoch: "e".into(),
+            lifetime: McpFormCancelLifetime::Operation,
+        })
+        .unwrap();
+        assert_eq!(
+            cancel,
+            serde_json::json!({"type":"mcp_form_cancel","id":"i","epoch":"e","lifetime":"operation"})
+        );
+        let bind: SessionWorkerWire = serde_json::from_value(
+            serde_json::json!({"type":"mcp_form_bind","id":"i","durableId":"d"}),
+        )
+        .unwrap();
+        assert_eq!(
+            bind,
+            SessionWorkerWire::McpFormBind {
+                id: "i".into(),
+                durable_id: "d".into()
+            }
+        );
+        let enforced = serde_json::to_value(HostToSessionWorker::Bind {
+            request: 1,
+            session_id: "s".into(),
+            display: WorkerDisplay {
+                revision: 1.,
+                width: 80.,
+                rendered: false,
+                capabilities: vec![],
+            },
+            connection: None,
+            roles: None,
+            mcp_forms_enforced: true,
+        })
+        .unwrap();
+        assert_eq!(enforced["mcpFormsEnforced"], true);
     }
     #[test]
     fn worker_death_is_a_closing_channel_not_a_generic_failure() {

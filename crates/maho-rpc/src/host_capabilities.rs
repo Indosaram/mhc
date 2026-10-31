@@ -5,6 +5,9 @@
 //! child already serves and `offload_api`, and a capability a client negotiates under one of those names is
 //! dropped, so there are never two answers.
 
+/// Advertised only by a host whose deployment enforces private MCP presenters (senpi `mcpPresenters`); a client
+/// can never negotiate it in.
+pub const MCP_FORM_PRESENTER_CAPABILITY: &str = "mcp_form_presenter_v1";
 /// Advertised in both runtimes: `ctx.offload` / `registerChildModule` exist (where they run is the runtime's choice).
 pub const OFFLOAD_API_CAPABILITY: &str = "offload_api";
 /// What the tool child already serves, advertised as `placement:<name>` beside `tool_runtime:child`.
@@ -67,13 +70,17 @@ pub fn is_host_owned_tool_runtime_capability(capability: &str) -> bool {
 }
 
 /// The host's own tool-runtime capabilities followed by the negotiated ones a client may legitimately add: a
-/// negotiated tool-runtime capability is filtered out (senpi `multiSessionHostCapabilities`).
+/// negotiated tool-runtime capability and a negotiated `mcp_form_presenter_v1` are filtered out (senpi
+/// `multiSessionHostCapabilities`).
 pub fn host_tool_runtime_capabilities(kind: ToolRuntimeKind, negotiated: &[String]) -> Vec<String> {
     let mut capabilities = tool_runtime_capabilities(kind);
     capabilities.extend(
         negotiated
             .iter()
-            .filter(|capability| !is_host_owned_tool_runtime_capability(capability))
+            .filter(|capability| {
+                *capability != MCP_FORM_PRESENTER_CAPABILITY
+                    && !is_host_owned_tool_runtime_capability(capability)
+            })
             .cloned(),
     );
     capabilities
@@ -137,6 +144,7 @@ mod tests {
             "tool_runtime:child",
             "placement:hostcall",
             "offload_api",
+            MCP_FORM_PRESENTER_CAPABILITY,
             "warm",
         ]
         .map(str::to_owned);
