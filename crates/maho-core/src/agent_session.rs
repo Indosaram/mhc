@@ -12878,6 +12878,22 @@ impl AgentSession {
         if veto.cancelled {
             return Ok(veto);
         }
+        self.rebuild_runtime_for_reload().await
+    }
+
+    /// senpi `applyProjectTrustChange` (senpi#3420): loads or unloads the project's code after the
+    /// session's project trust changed (Full access left or re-entered). It rebuilds the runtime exactly
+    /// like [`Self::reload`], but nothing can cancel it: no `session_before_reload` handler runs, so a
+    /// project extension cannot keep itself loaded. A reload already in flight holds the reload
+    /// admission; this one waits for it and then rebuilds under the new trust.
+    pub async fn apply_project_trust_change(&self) -> Result<(), String> {
+        let _reload = self.reload_admission.lock().await;
+        self.rebuild_runtime_for_reload().await.map(|_| ())
+    }
+
+    async fn rebuild_runtime_for_reload(
+        &self,
+    ) -> Result<maho_ext_api::ReloadVetoDecision, String> {
         self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous_flag_values = self
@@ -12890,13 +12906,25 @@ impl AgentSession {
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload)
             .await;
         self.invalidate_extension_runtime().await;
-        self.with_settings_manager_mut(|manager| manager.reload());
+        let mut trust_epoch = self.with_settings_manager_mut(|manager| {
+            manager.reload();
+            manager.trust_epoch()
+        });
         self.sync_queue_modes_from_settings();
         // `modelRuntime.reloadConfig()`: the registry's runtime shares its config/provider state, so
         // reloading a clone re-reads models.json for the session's live catalog.
         self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
         self.load_resources_with_refresh(true).await?;
+        // senpi#3420 trust epoch: a trust change that landed while the resources loaded must not leave
+        // the session with what the previous trust allowed; load again until the trust stops moving.
+        while self.with_settings_manager(|manager| manager.trust_epoch()) != trust_epoch {
+            trust_epoch = self.with_settings_manager_mut(|manager| {
+                manager.reload();
+                manager.trust_epoch()
+            });
+            self.load_resources_with_refresh(true).await?;
+        }
         self.refresh_eval_only_tool_names();
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
