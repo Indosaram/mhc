@@ -21,7 +21,7 @@ fn given_a_reused_run_when_its_stored_key_fingerprint_differs_then_reuse_is_reje
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
-    let started = dag.start(DagStartParams {
+    let started = dag.start(DagStartParams { parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -35,7 +35,7 @@ fn given_a_reused_run_when_its_stored_key_fingerprint_differs_then_reuse_is_reje
         run_id: started.snapshot.run_id,
         definition_fingerprint: Some("mismatch".to_string()),
     }).expect("rewrite key");
-    let error = dag.start(DagStartParams {
+    let error = dag.start(DagStartParams { parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -106,7 +106,7 @@ fn given_a_pending_run_when_amended_with_a_changed_node_then_dependents_are_inva
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { definition: plan_build_definition(), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    let started = dag.start(DagStartParams { parent_model: None, definition: plan_build_definition(), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
     let mut definition = plan_build_definition();
     definition.nodes[0].prompt = "revise plan".into();
     let amended = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition, parent_session_id: PARENT_SESSION_ID.into() }).expect("amend");
@@ -118,22 +118,22 @@ fn given_a_pending_run_when_amended_with_a_changed_node_then_dependents_are_inva
 #[test]
 fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_invalidated_and_cached_siblings_survive() {
     let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    let started = dag.start(DagStartParams { parent_model: None, definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
     complete_diamond(&store, &started.snapshot.run_id);
     let amended = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into() }).expect("amend");
     assert_eq!(amended.nodes.iter().map(|n| (n.id.as_str(), n.state, n.exec_attempt)).collect::<Vec<_>>(), vec![("A", DagNodeState::Completed, None), ("B", DagNodeState::Pending, Some(1)), ("C", DagNodeState::Completed, None), ("D", DagNodeState::Pending, Some(1))]);
     assert_eq!(amended.amend_history.as_ref().expect("history").len(), 1);
     assert_eq!(dag.snapshot(&started.snapshot.run_id, PARENT_SESSION_ID).expect("snapshot").amend_history.expect("projected history").len(), 1);
-    let reused=dag.start(DagStartParams { definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("reuse");
+    let reused=dag.start(DagStartParams { parent_model: None, definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("reuse");
     assert!(reused.reused);
-    let conflict=dag.start(DagStartParams { definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect_err("conflict");
+    let conflict=dag.start(DagStartParams { parent_model: None, definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect_err("conflict");
     assert_eq!(conflict.code,DagManagerErrorCode::DefinitionConflict);
 }
 
 #[test]
 fn given_changed_running_and_removed_graph_members_when_amended_then_unsafe_nodes_and_dangling_removals_are_rejected_but_leaf_removal_is_allowed() {
     let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
-    let started = dag.start(DagStartParams { definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    let started = dag.start(DagStartParams { parent_model: None, definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
     let complete = complete_diamond(&store, &started.snapshot.run_id);
     let mut running = complete.clone(); running.status = DagRunStatus::Running; running.completed_at = None;
     running.nodes.iter_mut().find(|n| n.id == "B").expect("B").state = DagNodeState::Running;
@@ -150,7 +150,7 @@ fn given_changed_running_and_removed_graph_members_when_amended_then_unsafe_node
 #[test]
 fn given_a_completed_run_when_a_node_is_added_then_compiled_graph_projections_include_the_new_node() {
     let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
-    let base = diamond("build b", vec![]); let started = dag.start(DagStartParams { definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store, &started.snapshot.run_id);
+    let base = diamond("build b", vec![]); let started = dag.start(DagStartParams { parent_model: None, definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store, &started.snapshot.run_id);
     let mut added=base; added.nodes.push(DagNodeInput { id:"E".into(), prompt:"build e".into(), target:DagNodeTarget::Category("quick".into()), label:None, depends_on:Some(vec!["D".into()]), task_summary:None, description:None, load_skills:None });
     let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id), key:None, definition:added, parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
     assert_eq!(amended.nodes.iter().find(|n| n.id=="E").expect("E").state,DagNodeState::Pending);
@@ -166,7 +166,7 @@ fn given_a_materialized_run_when_changed_and_added_nodes_are_amended_then_only_t
         Ok(DagSkillMaterialization { nodes:input.definition.nodes.iter().map(|node|(node.id.clone(),format!("skill:{}",node.prompt))).collect(),diagnostics:Vec::new() })
     });
     let dag=create_dag_manager(DagManagerOptions { store:Arc::clone(&store), new_run_id:Some(counter_run_ids()), now:None, materialize_skills:Some(materializer), settings:None });
-    let base=diamond("build b",vec![]); let started=dag.start(DagStartParams { definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
+    let base=diamond("build b",vec![]); let started=dag.start(DagStartParams { parent_model: None, definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
     let mut changed=base; changed.nodes[1].prompt="changed".into(); changed.nodes.push(DagNodeInput { id:"E".into(), prompt:"build e".into(), target:DagNodeTarget::Category("quick".into()), label:None, depends_on:None, task_summary:None, description:None, load_skills:None });
     let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id),key:None,definition:changed,parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
     let expected_calls = vec![
@@ -188,7 +188,7 @@ fn given_invalid_amend_selectors_or_missing_runs_when_amended_then_invalid_argum
 
 #[test]
 fn given_amended_and_retried_events_when_replayed_from_old_checkpoint_then_the_reducer_rebuilds_the_same_record() {
-    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); let old=complete_diamond(&store,&started.snapshot.run_id);
+    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { parent_model: None, definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); let old=complete_diamond(&store,&started.snapshot.run_id);
     let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id.clone()),key:None,definition:diamond("changed",vec![]),parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
     let expected=amended;
     store.write_checkpoint(&started.snapshot.run_id,&DagRunRecordV1 { checkpoint_seq:1,..old.clone() }).expect("restore old checkpoint");
@@ -202,7 +202,7 @@ fn given_amended_and_retried_events_when_replayed_from_old_checkpoint_then_the_r
 
 #[test]
 fn given_a_durable_amendment_with_stale_preconditions_when_replayed_then_the_reducer_noops() {
-    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
+    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { parent_model: None, definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
     dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id.clone()),key:None,definition:diamond("changed",vec![]),parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
     let event=store.read_events(&started.snapshot.run_id,1,&DagEventReadOptions { limit:1,..Default::default() }).expect("read").events.remove(0);
     let mut hostile=store.read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id).expect("read checkpoint").expect("record");
@@ -258,7 +258,7 @@ fn given_a_valid_two_node_definition_when_started_then_a_run_a_key_file_and_one_
     let dag = manager_over(&store);
 
     let started = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -346,7 +346,7 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
     let store = open_store(&project);
     let dag = manager_over(&store);
     let first = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -354,7 +354,7 @@ fn given_a_run_created_from_a_definition_when_the_identical_definition_is_resubm
         .expect("first start");
 
     let second = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -381,7 +381,7 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
     let store = open_store(&project);
     let dag = manager_over(&store);
     let first = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -402,7 +402,7 @@ fn given_a_run_created_from_a_definition_when_the_same_key_is_resubmitted_with_a
         description: None,
         load_skills: None,
     }];
-    let conflicting = dag.start(DagStartParams {
+    let conflicting = dag.start(DagStartParams { parent_model: None,
         definition: conflicting_definition,
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -442,7 +442,7 @@ fn given_a_key_file_whose_run_record_was_pruned_when_a_changed_definition_reuses
     let store = open_store(&project);
     let dag = manager_over(&store);
     let first = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -453,7 +453,7 @@ fn given_a_key_file_whose_run_record_was_pruned_when_a_changed_definition_reuses
     let mut changed_definition = plan_build_definition();
     changed_definition.nodes[0].prompt = "a different plan".to_string();
     let second = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: changed_definition,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -483,7 +483,7 @@ fn given_a_definition_with_a_cyclic_dependency_when_started_then_invalid_definit
     cyclic.nodes[0].depends_on = Some(vec!["build".to_string()]);
     cyclic.nodes[1].depends_on = Some(vec!["plan".to_string()]);
 
-    let rejected = dag.start(DagStartParams {
+    let rejected = dag.start(DagStartParams { parent_model: None,
         definition: cyclic,
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -522,7 +522,7 @@ fn given_a_configured_node_ceiling_when_a_definition_exceeds_it_then_invalid_def
         }),
     });
 
-    let rejected = dag.start(DagStartParams {
+    let rejected = dag.start(DagStartParams { parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -545,14 +545,14 @@ fn given_the_same_run_key_in_two_different_sessions_when_both_start_then_each_se
     let dag = manager_over(&store);
 
     let mine = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
         .expect("mine");
     let theirs = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: OTHER_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -569,7 +569,7 @@ fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_r
     let project = temp_project();
     let store = open_store(&project);
     let dag = manager_over(&store);
-    let started = dag.start(DagStartParams {
+    let started = dag.start(DagStartParams { parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -583,7 +583,7 @@ fn given_a_stored_key_with_a_mismatched_fingerprint_when_started_then_reuse_is_r
         definition_fingerprint: Some("wrong-fingerprint".to_string()),
     }).expect("tamper key fingerprint");
 
-    let error = dag.start(DagStartParams {
+    let error = dag.start(DagStartParams { parent_model: None,
         definition: plan_build_definition(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -621,14 +621,14 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
     });
 
     let materialized = with_skills
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
         })
         .expect("materialized start");
     let bare = plain
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: OTHER_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -675,7 +675,7 @@ fn given_a_run_owned_by_one_session_when_another_session_attaches_then_run_not_o
     let store = open_store(&project);
     let dag = manager_over(&store);
     let started = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -721,7 +721,7 @@ fn given_a_run_owned_by_one_session_when_a_foreign_session_reads_history_then_ru
     let store = open_store(&project);
     let dag = manager_over(&store);
     let started = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -771,7 +771,7 @@ fn given_journaled_events_when_history_pages_with_an_exclusive_since_and_a_throu
     let store = open_store(&project);
     let dag = manager_over(&store);
     let started = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: plan_build_definition(),
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -842,7 +842,7 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut alpha = plan_build_definition();
     alpha.key = "alpha".to_string();
     let first = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: alpha,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -851,7 +851,7 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut beta = plan_build_definition();
     beta.key = "beta".to_string();
     let second = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: beta,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -861,7 +861,7 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
     let mut gamma = plan_build_definition();
     gamma.key = "gamma".to_string();
     let third = dag
-        .start(DagStartParams {
+        .start(DagStartParams { parent_model: None,
             definition: gamma,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -869,7 +869,7 @@ fn given_runs_across_two_sessions_when_listed_then_only_this_sessions_runs_appea
         .expect("gamma start");
     let mut delta = plan_build_definition();
     delta.key = "delta".to_string();
-    dag.start(DagStartParams {
+    dag.start(DagStartParams { parent_model: None,
         definition: delta,
         parent_session_id: OTHER_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
@@ -900,7 +900,7 @@ fn given_more_runs_than_the_requested_limit_when_listed_then_the_limit_is_clampe
     for index in 0..3 {
         let mut definition = plan_build_definition();
         definition.key = format!("key-{index}");
-        dag.start(DagStartParams {
+        dag.start(DagStartParams { parent_model: None,
             definition,
             parent_session_id: PARENT_SESSION_ID.to_string(),
             root_session_id: ROOT_SESSION_ID.to_string(),
@@ -945,7 +945,7 @@ fn given_two_threads_starting_the_same_run_key_concurrently_when_both_race_then_
                     settings: None,
                 });
                 barrier.wait();
-                dag.start(DagStartParams {
+                dag.start(DagStartParams { parent_model: None,
                     definition: plan_build_definition(),
                     parent_session_id: PARENT_SESSION_ID.to_string(),
                     root_session_id: ROOT_SESSION_ID.to_string(),
@@ -992,7 +992,7 @@ fn given_two_threads_racing_the_same_key_with_different_prompts_when_both_race_t
                 let mut definition = plan_build_definition();
                 definition.nodes[0].prompt = prompt;
                 barrier.wait();
-                dag.start(DagStartParams {
+                dag.start(DagStartParams { parent_model: None,
                     definition,
                     parent_session_id: PARENT_SESSION_ID.to_string(),
                     root_session_id: ROOT_SESSION_ID.to_string(),
@@ -1039,4 +1039,29 @@ fn given_two_threads_racing_the_same_key_with_different_prompts_when_both_race_t
             .collect::<Vec<_>>(),
         vec!["dag.run.created"]
     );
+}
+
+// dag/parent-model-rung.test.ts (#10783): the parent's model is captured once at run start and
+// persisted, so admission, retry and recovery all hand it to the node as its last rung.
+#[test]
+fn given_a_parent_model_when_the_run_starts_then_the_checkpoint_keeps_it_for_every_node_start() {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag
+        .start(DagStartParams {
+            parent_model: Some("openai/parent".to_string()),
+            definition: plan_build_definition(),
+            parent_session_id: PARENT_SESSION_ID.to_string(),
+            root_session_id: ROOT_SESSION_ID.to_string(),
+        })
+        .expect("start");
+    assert_eq!(started.snapshot.parent_model.as_deref(), Some("openai/parent"));
+    let persisted = store
+        .read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id)
+        .expect("checkpoint read")
+        .expect("checkpoint exists");
+    assert_eq!(persisted.parent_model.as_deref(), Some("openai/parent"));
+    let spec = crate::dag::recovery::start_spec_for_tests(&persisted, &"plan".to_string(), 0);
+    assert_eq!(spec.parent_model.as_deref(), Some("openai/parent"));
 }

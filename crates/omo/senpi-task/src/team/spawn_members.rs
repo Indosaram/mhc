@@ -23,6 +23,8 @@ pub struct SpawnMembersInput<'a> {
     pub team_run_id: &'a str,
     pub manager: &'a dyn TeamRuntimeManagerPort,
     pub lead_session_id: &'a str,
+    /// The tree root nested members record; `None` means the lead is the root.
+    pub root_session_id: Option<&'a str>,
     pub spawn_depth: u32,
     pub max_parallel: u64,
     pub deadline_at: i64,
@@ -135,7 +137,12 @@ fn build_member_start_spec(input: &SpawnMembersInput<'_>, member: &Member) -> Te
         description: None,
         prompt: build_member_prompt(input.spec, member),
         parent_session_id: input.lead_session_id.to_string(),
-        root_session_id: Some(input.lead_session_id.to_string()),
+        root_session_id: Some(
+            input
+                .root_session_id
+                .unwrap_or(input.lead_session_id)
+                .to_string(),
+        ),
         depth: input.spawn_depth,
         execution_mode: ExecutionMode::parse("process"),
         model: None,

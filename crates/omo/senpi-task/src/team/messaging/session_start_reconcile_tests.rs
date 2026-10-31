@@ -66,6 +66,7 @@ fn active_team_with_member(member: &str) -> ActiveTeam {
             state_dir: state_dir_config(&project_dir),
             team_bounds: team_bounds(TeamBoundsOverrides::default()),
             lead_session_id: "lead-session".to_string(),
+            root_session_id: None,
             spawn_depth: 1,
             now: None,
             member_extension: None,

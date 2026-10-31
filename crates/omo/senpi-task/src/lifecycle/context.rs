@@ -31,6 +31,8 @@ const DEFAULT_HOST_CLOSE_TIMEOUT_MS: u64 = 10_000;
 
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub type DequeuePendingFn = Arc<dyn Fn(&str) + Send + Sync>;
+/// One startup generation: shutdown, dispose or the caller's abort permanently invalidates it.
+pub type ReconcileActiveFn = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type MutationSubscription =
     Arc<dyn Fn(Arc<dyn Fn() + Send + Sync>) -> Box<dyn FnOnce() + Send> + Send + Sync>;
 
@@ -62,6 +64,8 @@ pub struct LifecycleDeps {
     pub host_retry: Option<HostSessionRetryPolicy>,
     pub host_endpoint: Option<Arc<dyn HostEndpointPort>>,
     pub host_close_timeout_ms: Option<u64>,
+    /// When the live-parent recovery worker scans; `None` keeps the 5 s production cadence.
+    pub live_parent_recovery: Option<super::live_parent_recovery::RecoverySchedule>,
 }
 
 impl LifecycleDeps {
@@ -92,12 +96,15 @@ impl LifecycleDeps {
             host_retry: None,
             host_endpoint: None,
             host_close_timeout_ms: None,
+            live_parent_recovery: None,
         }
     }
 }
 
 #[derive(Clone)]
 pub struct LifecycleContext {
+    /// Captures one startup generation (TS `reconcileActive`); `None` outside a fenced pass.
+    pub reconcile_active: Option<ReconcileActiveFn>,
     pub on_store_mutation: Option<MutationSubscription>,
     pub teardown_step_deadline_ms: u64,
     pub live_parents: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -160,6 +167,7 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         .clone()
         .unwrap_or_else(|| Arc::new(NoHostTransport));
     LifecycleContext {
+        reconcile_active: None,
         on_store_mutation: deps.on_store_mutation,
         teardown_step_deadline_ms: deps.teardown_step_deadline_ms.unwrap_or(10_000),
         live_parents: Arc::default(),
@@ -226,6 +234,14 @@ impl LifecycleContext {
             step = (step * 2).min(Duration::from_millis(250));
         }
     }
+}
+
+/// TS `reconciliationActive`: an unfenced context is always active.
+pub fn reconciliation_active(context: &LifecycleContext) -> bool {
+    context
+        .reconcile_active
+        .as_ref()
+        .is_none_or(|active| active())
 }
 
 pub(crate) fn is_terminal(status: TaskStatus) -> bool {
