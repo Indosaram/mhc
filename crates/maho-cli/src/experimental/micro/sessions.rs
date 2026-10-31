@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use maho_core::file_lock::{FileLockLostError, HeldFileLock, OnLostCallback};
 use maho_core::lockfile_policy::{LockGuard, acquire_host_lock_sync};
 use sha2::{Digest, Sha256};
 
@@ -20,12 +21,24 @@ pub struct MicroSessionLocation {
     pub cwd: PathBuf,
     pub created: bool,
     lock: Option<LockGuard>,
+    held: Option<HeldFileLock>,
 }
 
 impl MicroSessionLocation {
     /// senpi `release()`.
     pub fn release(&mut self) {
         self.lock.take();
+    }
+
+    /// senpi `assertHeld()`: fails with `FileLockLostError` once another process reclaimed the
+    /// session lock.
+    pub fn assert_held(&self) -> Result<(), FileLockLostError> {
+        self.held.as_ref().map_or(Ok(()), HeldFileLock::assert_held)
+    }
+
+    /// A shareable `assert_held` for the lock-gated storage.
+    pub fn held_lock(&self) -> Option<HeldFileLock> {
+        self.held.clone()
     }
 }
 
@@ -50,15 +63,17 @@ fn is_session_dir_name(name: &str) -> bool {
 }
 
 /// senpi `selectSession`: a new session, or the newest session for this cwd, without opening any
-/// JSONL logs.
+/// JSONL logs. `on_lost` fires once if another process reclaims the session lock.
 pub fn select_session(
     cwd_input: &Path,
     continue_session: bool,
+    on_lost: OnLostCallback,
 ) -> Result<MicroSessionLocation, String> {
     select_session_in(
         Path::new(&maho_core::config::get_agent_dir()),
         cwd_input,
         continue_session,
+        on_lost,
     )
 }
 
@@ -67,6 +82,7 @@ pub fn select_session_in(
     agent_dir: &Path,
     cwd_input: &Path,
     continue_session: bool,
+    on_lost: OnLostCallback,
 ) -> Result<MicroSessionLocation, String> {
     let absolute = std::path::absolute(cwd_input).map_err(|error| error.to_string())?;
     let cwd = fs::canonicalize(&absolute).map_err(|error| error.to_string())?;
@@ -110,9 +126,13 @@ pub fn select_session_in(
         path
     };
 
-    // proper-lockfile `lock(path, { realpath: false, retries: 0 })`: one attempt, no waiting.
+    // `lockWithLossHandling(path, { realpath: false, retries: 0, onLost })`: one attempt, no waiting.
     let lock = acquire_host_lock_sync(&path.to_string_lossy(), 0)
         .map_err(|_| format!("Micro session is already open: {}", path.display()))?;
+    let held = lock.held_lock();
+    if let Some(held) = &held {
+        held.set_on_lost(on_lost);
+    }
     let id = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -123,6 +143,7 @@ pub fn select_session_in(
         cwd,
         created,
         lock: Some(lock),
+        held,
     })
 }
 
@@ -151,12 +172,12 @@ mod tests {
         let agent = tempfile::tempdir().expect("agent dir");
         let cwd = tempfile::tempdir().expect("cwd");
 
-        let missing = select_session_in(agent.path(), cwd.path(), true)
+        let missing = select_session_in(agent.path(), cwd.path(), true, None)
             .err()
             .expect("no session yet");
         assert!(missing.starts_with("No micro session exists for "));
 
-        let mut first = select_session_in(agent.path(), cwd.path(), false).expect("first");
+        let mut first = select_session_in(agent.path(), cwd.path(), false, None).expect("first");
         assert!(first.created);
         assert!(first.path.is_dir());
         assert_eq!(
@@ -180,7 +201,8 @@ mod tests {
         let newer = root.join("9999999999999-ffffffff-ffff-4fff-8fff-ffffffffffff");
         fs::create_dir(&newer).expect("newer session");
 
-        let mut continued = select_session_in(agent.path(), cwd.path(), true).expect("continue");
+        let mut continued =
+            select_session_in(agent.path(), cwd.path(), true, None).expect("continue");
         assert!(!continued.created);
         assert_eq!(continued.path, newer);
         assert_eq!(
@@ -188,7 +210,7 @@ mod tests {
             "9999999999999-ffffffff-ffff-4fff-8fff-ffffffffffff"
         );
 
-        let busy = select_session_in(agent.path(), cwd.path(), true)
+        let busy = select_session_in(agent.path(), cwd.path(), true, None)
             .err()
             .expect("locked session");
         assert!(busy.starts_with(&format!(
@@ -197,7 +219,7 @@ mod tests {
         )));
 
         continued.release();
-        let mut reopened = select_session_in(agent.path(), cwd.path(), true).expect("reopen");
+        let mut reopened = select_session_in(agent.path(), cwd.path(), true, None).expect("reopen");
         assert_eq!(reopened.path, newer);
         reopened.release();
     }

@@ -70,3 +70,55 @@ async fn public_proxy_and_connection_facade_follow_server_replacement() {
     let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(3), async { tokio::join!(runtime, scenario) }).await.unwrap(); result.unwrap();
     assert!(!public.exists()); assert!(!control.exists());
 }
+/// senpi `CoordinatorConnection`: peer events update `peerIds` and reach the server; an invalid coordinator message
+/// destroys the socket, which marks the connection replaced (the `replaced` promise resolves). Driven by a scripted
+/// control socket, so every step waits on a socket read, never on time.
+#[cfg(unix)]
+#[tokio::test]
+async fn connection_events_track_peers_and_an_invalid_message_marks_it_replaced() {
+    use maho_cli::experimental::mini::shared::transport::JsonConnection;
+    let dir = tempfile::tempdir().unwrap();
+    let control = dir.path().join("control");
+    let listener = tokio::net::UnixListener::bind(&control).unwrap();
+    let script = async {
+        let (socket, _) = listener.accept().await.unwrap();
+        let (input, output) = socket.into_split();
+        let mut coordinator = JsonConnection::new(input, output);
+        let registration = coordinator.receive().await.unwrap().unwrap();
+        assert_eq!(registration, serde_json::json!({"type":"register_server", "protocol":COORDINATOR_PROTOCOL_VERSION, "serverConnectionId":"server-a", "endpoint":"/endpoint"}));
+        coordinator.send(&serde_json::json!({"type":"server_registered", "serverConnectionId":"server-a", "peers":["early"]})).await.unwrap();
+        coordinator.send(&serde_json::json!({"type":"peer_connected", "peerId":"late"})).await.unwrap();
+        coordinator.send(&serde_json::json!({"type":"message", "from":"late", "payload":{"n":1}})).await.unwrap();
+        coordinator.send(&serde_json::json!({"type":"peer_disconnected", "peerId":"early"})).await.unwrap();
+        coordinator.send(&serde_json::json!({"type":"bogus"})).await.unwrap();
+        coordinator
+    };
+    let client = async {
+        let mut connection = CoordinatorConnection::connect(&control, "/endpoint", "server-a".to_owned()).await.unwrap();
+        assert!(connection.peer_ids.contains("early"));
+        assert_eq!(connection.next_connection_event().await, Some(CoordinatorConnectionEvent::PeerConnected { peer_id: "late".to_owned() }));
+        assert_eq!(connection.next_connection_event().await, Some(CoordinatorConnectionEvent::Message { from: "late".to_owned(), payload: serde_json::json!({"n":1}) }));
+        assert_eq!(connection.next_connection_event().await, Some(CoordinatorConnectionEvent::PeerDisconnected { peer_id: "early".to_owned() }));
+        assert_eq!(connection.peer_ids, std::collections::HashSet::from(["late".to_owned()]));
+        assert!(!connection.was_replaced());
+        assert_eq!(connection.next_connection_event().await, None);
+        assert!(connection.was_replaced());
+        assert!(connection.send("late", serde_json::json!(1)).await.is_err());
+    };
+    let (_coordinator, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async { tokio::join!(script, client) }).await.unwrap();
+}
+/// senpi coordinator-entry.ts: only an internal coordinator invocation runs the coordinator, and both socket paths are
+/// required before anything is bound.
+#[test]
+fn coordinator_entry_requires_the_coordinator_role_and_both_paths() {
+    use maho_cli::experimental::process::InternalProcessRole;
+    assert!(require_coordinator_role(Some(InternalProcessRole::Coordinator)).is_ok());
+    for role in [None, Some(InternalProcessRole::Server), Some(InternalProcessRole::SessionWorker)] {
+        assert_eq!(require_coordinator_role(role).unwrap_err(), "Coordinator entrypoint requires an internal coordinator invocation");
+    }
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn coordinator_process_requires_public_and_control_paths() {
+    assert_eq!(run_coordinator_process(&["only-one".to_owned()]).await.unwrap_err(), "Coordinator requires public and control socket paths");
+}

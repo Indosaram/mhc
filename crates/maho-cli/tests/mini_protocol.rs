@@ -32,3 +32,25 @@ fn absent_account_fields_are_not_serialized() {
     assert_eq!(value["authType"], "api_key"); assert!(value.get("source").is_none());
     assert_eq!(serde_json::from_value::<ProviderAccount>(value).unwrap(), account);
 }
+/// senpi `LaneSubscription`/`SessionSnapshot`/`LaneEvent`: camelCase wire fields; the lane snapshot and harness event
+/// cross the wire as the harness's own JSON (maho_agent's `watch_lane` snapshot), carried verbatim.
+#[test]
+fn lane_subscription_and_event_keep_upstream_wire_shape() {
+    let value = serde_json::json!({
+        "subscriptionId": "sub-1",
+        "snapshot": {
+            "sessionId": "s", "cwd": "/w", "sessionPath": "/w/s.jsonl",
+            "lane": {"status": "idle", "queue": {"steering": [], "followUp": []}},
+            "models": {"models": [{"provider": "p", "modelId": "m", "name": "M"}], "accounts": [], "refreshing": false}
+        }
+    });
+    let subscription: LaneSubscription = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(subscription.snapshot.lane["status"], "idle");
+    assert_eq!(serde_json::to_value(&subscription).unwrap(), value);
+    let event = serde_json::json!({"subscriptionId": "sub-1", "event": {"type": "agent_start"}});
+    assert_eq!(serde_json::to_value(serde_json::from_value::<LaneEvent>(event.clone()).unwrap()).unwrap(), event);
+    let described = serde_json::json!({"sessionId": "s"});
+    assert_eq!(serde_json::to_value(serde_json::from_value::<WorkerDescription>(described.clone()).unwrap()).unwrap(), described);
+    let state = ModelsEvent::State { state: subscription.snapshot.models.clone() };
+    assert_eq!(AuthEventPayload::from_models_event(&state), None);
+}
