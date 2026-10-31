@@ -20,6 +20,7 @@ use super::repo_types::{
     GitCommitAuthor, GitCommitResult, GitHookInstaller, GitLogOptions, GitMemoryRepoOptions,
     GitMergeOptions, GitTreeBlobEntry, GitTreeSizedEntry, InitializeGitRepoOptions, MemoryCommit,
 };
+use super::secret::assert_no_secret_like_staging;
 use super::worktree_mutation_queue::with_serialized_git_worktree_mutation;
 
 const INITIAL_COMMIT: &str = "Initialize memory repository";
@@ -167,6 +168,7 @@ impl GitMemoryRepo {
         if !self.has_path_changes(&normalized)? {
             return Err(GitError::NoEffectiveChanges { paths: normalized });
         }
+        assert_no_secret_like_staging(&normalized, |argv| self.git_result(argv))?;
         self.commit_staged(reason, author)
     }
 
@@ -188,6 +190,7 @@ impl GitMemoryRepo {
         if !self.has_path_changes(&normalized)? {
             return Err(GitError::NoEffectiveChanges { paths: normalized });
         }
+        assert_no_secret_like_staging(&normalized, |argv| self.git_result(argv))?;
         self.commit_staged(reason, author)
     }
 
