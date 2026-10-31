@@ -9,6 +9,45 @@ pub struct HostIdlePolicy {
     pub idle_eviction_ms: f64,
     pub empty_exit_ms: f64,
 }
+/// senpi `sessionMemory`: one `list_sessions` row's heap split. NATIVE-DIVERGENCE: a native host has no JS
+/// main-thread heap, so `main_heap_bytes` is 0; the kernel figures come from the codemode kernel registry.
+pub fn session_memory(
+    kernels: &[maho_core::memory_report::kernel_registry_read::HostKernelMemoryRow],
+    session_id: &str,
+) -> serde_json::Value {
+    let (count, bytes) = kernels
+        .iter()
+        .filter(|kernel| kernel.session_id == session_id)
+        .fold((0u64, 0u64), |(count, bytes), kernel| {
+            (count + 1, bytes + kernel.live_bytes)
+        });
+    serde_json::json!({"main_heap_bytes":0,"kernel_heap_bytes":bytes,"kernel_count":count})
+}
+/// senpi `createZeroSessionTrim` + the trim half of `startHostObservers`: a host that drops to zero sessions (or a
+/// 2 GB+ host whose count drops) reports one `host_trimmed` record. NATIVE-DIVERGENCE: a native process has no
+/// garbage collector to run, so `collect` answers `false` and the record reports `collected: false`.
+pub fn create_zero_session_trim(
+    emit: impl FnMut(serde_json::Value) + Send + 'static,
+    sessions: impl FnMut() -> usize + Send + 'static,
+) -> crate::host_zero_session_trim::ZeroSessionTrimmer {
+    let started = std::time::Instant::now();
+    crate::host_zero_session_trim::ZeroSessionTrimmer::new(
+        crate::host_zero_session_trim::ZeroSessionTrimmerOptions {
+            emit: Box::new(emit),
+            sessions: Box::new(sessions),
+            now: Box::new(|| crate::connection_handler::now_ms() as u64),
+            monotonic_now: Box::new(move || started.elapsed().as_millis() as u64),
+            read_footprint: Box::new(|| {
+                let footprint = maho_core::process_footprint::read_own_footprint();
+                crate::host_zero_session_trim::ProcessFootprint {
+                    bytes: footprint.bytes,
+                    measure: footprint.measure.as_str().to_owned(),
+                }
+            }),
+            collect: Box::new(|| false),
+        },
+    )
+}
 pub enum HostMonitorSample {
     Lag(crate::loop_lag_watchdog::LagSample),
     Memory(crate::host_memory_sampler::MemorySample),
@@ -1726,7 +1765,13 @@ impl HostCore {
                 }
             }
             crate::rpc_types::RpcCommandBody::ListSessions { include_workers } => {
-                let sessions = self.list_rows(include_workers.unwrap_or(false)).await;
+                let mut sessions = self.list_rows(include_workers.unwrap_or(false)).await;
+                let kernels =
+                    maho_core::memory_report::kernel_registry_read::read_codemode_kernel_rows();
+                for row in &mut sessions {
+                    let memory = session_memory(&kernels, row["sessionId"].as_str().unwrap_or(""));
+                    row["memory"] = memory;
+                }
                 self.success(
                     connection,
                     command.id.clone(),
@@ -3368,7 +3413,68 @@ impl HostCore {
                     }
                 }
             };
-            run_host_monitors(
+            // senpi `createZeroSessionTrim` + `onSessionCountChange: (size) => trim.observe(size)`.
+            let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
+                core.session_count().await,
+            ));
+            // The record leaves through a channel: `check` emits under the trimmer lock, which a registry size
+            // change takes while it holds its own state, so the broadcast never runs under either.
+            let (trimmed, mut trimmed_records) = tokio::sync::mpsc::unbounded_channel();
+            let trimmer = std::sync::Arc::new(std::sync::Mutex::new(create_zero_session_trim(
+                move |record| {
+                    let _ = trimmed.send(record);
+                },
+                {
+                    let count = std::sync::Arc::clone(&count);
+                    move || count.load(std::sync::atomic::Ordering::SeqCst)
+                },
+            )));
+            trimmer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .start();
+            let trim_wake = std::sync::Arc::new(tokio::sync::Notify::new());
+            let hook: crate::session_registry::SizeChangeHook = {
+                let (count, trimmer, wake) = (
+                    std::sync::Arc::clone(&count),
+                    std::sync::Arc::clone(&trimmer),
+                    std::sync::Arc::clone(&trim_wake),
+                );
+                std::sync::Arc::new(move |size| {
+                    count.store(size, std::sync::atomic::Ordering::SeqCst);
+                    trimmer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .observe(size);
+                    wake.notify_one();
+                })
+            };
+            match &core.workers {
+                Some(workers) => workers.set_on_size_change(hook),
+                None => core.registry.lock().await.on_size_change = Some(hook),
+            }
+            let trim = crate::host_zero_session_trim::run_zero_session_trimmer(
+                std::sync::Arc::clone(&trimmer),
+                trim_wake,
+                stopped.clone(),
+            );
+            let broadcaster = std::sync::Arc::downgrade(&core);
+            let mut broadcast_stopped = stopped.clone();
+            let broadcast = async move {
+                loop {
+                    tokio::select! {
+                        record = trimmed_records.recv() => match (record, broadcaster.upgrade()) {
+                            (Some(record), Some(core)) => core.broadcast_record(&record),
+                            _ => break,
+                        },
+                        changed = broadcast_stopped.wait_for(|stop| *stop) => {
+                            let _ = changed;
+                            break;
+                        }
+                    }
+                }
+            };
+            let monitors = run_host_monitors(
                 &env,
                 &core.activity,
                 &core.blocked,
@@ -3376,8 +3482,12 @@ impl HostCore {
                 crate::connection_handler::now_ms,
                 publish,
                 stopped,
-            )
-            .await;
+            );
+            tokio::join!(monitors, trim, broadcast);
+            trimmer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stop();
         })
     }
     /// Detaches the closing connection's UI/width state (senpi `releaseOwnerAttachment`); the
@@ -6237,6 +6347,53 @@ async fn serve_socket_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// senpi `sessionMemory`: only the session's own kernels count, and a session without one reports zeros.
+    #[test]
+    fn a_rows_memory_sums_only_its_own_kernels() {
+        let kernel = |session: &str, bytes| {
+            maho_core::memory_report::kernel_registry_read::HostKernelMemoryRow {
+                session_id: session.into(),
+                language: "js".into(),
+                live_bytes: bytes,
+                measure: "heap".into(),
+            }
+        };
+        let kernels = [kernel("a", 10), kernel("b", 5), kernel("a", 7)];
+        assert_eq!(
+            session_memory(&kernels, "a"),
+            serde_json::json!({"main_heap_bytes":0,"kernel_heap_bytes":17,"kernel_count":2})
+        );
+        assert_eq!(
+            session_memory(&kernels, "c"),
+            serde_json::json!({"main_heap_bytes":0,"kernel_heap_bytes":0,"kernel_count":0})
+        );
+    }
+    /// senpi `createZeroSessionTrim`: a drop to zero is answered by one `host_trimmed` record on the next tick;
+    /// with no collector the record says `collected: false`.
+    #[test]
+    fn a_drop_to_zero_reports_one_uncollected_trim() {
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        let (seen, sessions) = (
+            std::sync::Arc::clone(&records),
+            std::sync::Arc::clone(&count),
+        );
+        let mut trimmer = create_zero_session_trim(
+            move |record| seen.lock().unwrap().push(record),
+            move || sessions.load(std::sync::atomic::Ordering::SeqCst),
+        );
+        trimmer.start();
+        trimmer.observe(1);
+        count.store(0, std::sync::atomic::Ordering::SeqCst);
+        trimmer.observe(0);
+        trimmer.check();
+        trimmer.check();
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["type"], "host_trimmed");
+        assert_eq!(records[0]["collected"], false);
+        assert_eq!(records[0]["sessions"], 0);
+    }
     #[test]
     fn explicit_policy_overrides_environment_and_bad_env_uses_defaults() {
         let env = HashMap::from([
