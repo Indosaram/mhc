@@ -103,6 +103,13 @@ impl FileMonitor {
     pub fn register(id:String,description:String,path:&Path,event:FileEvent,approved_parent:Option<&Path>)->std::io::Result<Self> {
         let path=if path.is_absolute() {path.to_path_buf()} else {std::env::current_dir()?.join(path)};
         let raw_parent=path.parent().ok_or_else(||std::io::Error::other("file has no parent"))?;
+        // Upstream `proveWatchTarget`: the parent directory must already be reachable; a missing one
+        // fails the registration instead of watching a path that can never appear.
+        match std::fs::metadata(raw_parent) {
+            Ok(_)=>{},
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Err(std::io::Error::other(format!("Cannot watch file: parent directory does not exist: {}",raw_parent.display()))),
+            Err(error)=>return Err(std::io::Error::other(format!("Cannot access parent directory {}: {error}",raw_parent.display()))),
+        }
         // Identity is derived without open(2), with the same walker the permission parser used, so
         // the two sides agree byte-for-byte and neither can block on a wedged mount.
         let parent=realpath_without_open(raw_parent);
@@ -209,6 +216,12 @@ mod tests {
         let parent=dir.path().join("parent");std::os::unix::fs::symlink(&second,&parent)?;
         let error=FileMonitor::register("watch_1".to_owned(),"retarget".to_owned(),&parent.join("file"),FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
         assert!(error.contains("parent directory changed during permission approval"),"{error}");Ok(())
+    }
+    #[test]
+    fn a_missing_parent_directory_fails_registration() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("missing").join("file");
+        let error=FileMonitor::register("watch_1".to_owned(),"missing".to_owned(),&path,FileEvent::Create,None).err().expect("register must fail").to_string();
+        assert!(error.contains("parent directory does not exist"),"{error}");
     }
     #[test]
     fn a_target_whose_identity_changed_is_refused()->std::io::Result<()> {
