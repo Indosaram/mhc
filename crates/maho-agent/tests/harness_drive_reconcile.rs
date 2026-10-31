@@ -16,6 +16,7 @@ use maho_agent::harness::runtime::drive::deferred::run_deferred;
 use maho_agent::harness::runtime::drive::drive_operation;
 use maho_agent::harness::runtime::drive::generation::run_generation;
 use maho_agent::harness::runtime::drive::reconcile::reconcile_operation;
+use maho_agent::harness::runtime::drive::retry::{DriveClock, with_drive_clock};
 use maho_agent::harness::runtime::lane::{
     CommitDecision, Drive, Lane, LaneCommand, OperationMismatch, ProcedureResult, PromptInput,
 };
@@ -1341,29 +1342,40 @@ async fn admits_an_abort_aware_timer_only_for_local_waiting() {
     let fixture = create_fixture(FixtureOptions::default()).await;
     accept_prompt(&fixture).await;
     let ready = advance_to_ready(&fixture).await;
-    let not_before = maho_agent::harness::runtime::drive::retry::retry_not_before(
-        &maho_ai::utils::retry::RetryPolicy {
-            enabled: true,
-            max_retries: 1,
-            base_delay_ms: 100,
-            max_agent_delay_ms: None,
-            random: None,
-        },
-        1,
-        0,
-    );
-    replace_run_state(&fixture, retry_wait_from(&ready, not_before), Vec::new()).await;
+    replace_run_state(&fixture, retry_wait_from(&ready, 3_100), Vec::new()).await;
     let drive = fixture.install_drive(Some(true), None);
     fixture.storage.clear_commit_attempts();
     let retry_wait = fixture.current();
 
-    // A deadline already behind the wall clock admits the local timer and commits ready.
-    assert_eq!(
-        bounded(run_generation(fixture.lane.as_ref(), &drive, &retry_wait))
-            .await
-            .expect("local wait"),
-        ProcedureResult::Continue
+    // Pinned `vi.useFakeTimers(); vi.setSystemTime(3_000)`: the drive clock is 3_000 plus paused
+    // tokio time, so `tokio::time::advance` moves both the clock and the retry timer. Each clock
+    // read is counted; the second read is `wait_until` computing its delay immediately before it
+    // parks on the timer, so it proves the drive is waiting.
+    tokio::time::pause();
+    let start = tokio::time::Instant::now();
+    let (reads_tx, mut reads_rx) = tokio::sync::watch::channel(0usize);
+    let clock: DriveClock = Arc::new(move || {
+        reads_tx.send_modify(|reads| *reads += 1);
+        3_000 + start.elapsed().as_millis() as i64
+    });
+    let waiting = with_drive_clock(
+        clock,
+        run_generation(fixture.lane.as_ref(), &drive, &retry_wait),
     );
+    let storage = fixture.storage.clone();
+    let timeline = async move {
+        reads_rx
+            .wait_for(|reads| *reads >= 2)
+            .await
+            .expect("drive clock read");
+        assert!(storage.get_commit_attempts().is_empty());
+        tokio::time::advance(Duration::from_millis(99)).await;
+        assert!(storage.get_commit_attempts().is_empty());
+        tokio::time::advance(Duration::from_millis(1)).await;
+    };
+    let (result, ()) = bounded(async { tokio::join!(waiting, timeline) }).await;
+    assert_eq!(result.expect("local wait"), ProcedureResult::Continue);
+    assert!(!fixture.storage.get_commit_attempts().is_empty());
     let state = fixture.current_json();
     assert_eq!(state["at"], "assistant.ready");
     assert_eq!(state["nextAttempt"], 2);
