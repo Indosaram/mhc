@@ -195,8 +195,43 @@ pub struct RestoreDigest {
     pub lost: usize,
     pub expired: usize,
     pub muted: usize,
+    /// Command watches that exited 0 inside the restore grace window (one-shot gates).
+    pub completed: usize,
     pub attached_elsewhere: usize,
     pub store_error: bool,
+    /// Per-monitor results in manifest order (upstream `RestoreDigest.results`), for the
+    /// `restore_digest` sentence that names every watch. Filled by the manifest writer's restore.
+    pub results: Vec<RestoredMonitor>,
+    /// Background sessions the previous generation left: never respawned (`exited` here).
+    pub background_sessions: Vec<RestoredBackground>,
+}
+/// One manifest monitor and how its restore ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredMonitor {
+    pub monitor_id: String,
+    pub description: String,
+    pub file: bool,
+    /// `restored`, `muted`, `lost`, `completed`, `attachedElsewhere` or `expired`.
+    pub outcome: &'static str,
+    pub command: Option<String>,
+    pub path: Option<String>,
+    /// Why a watch was lost (upstream `MonitorRestoreResult.reason`), e.g. `exited 127 in 12ms: ...`.
+    pub reason: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredBackground {
+    pub id: String,
+    pub command: String,
+}
+impl RestoreOutcome {
+    pub fn bucket(self) -> &'static str {
+        match self {
+            Self::Restored => "restored",
+            Self::Lost => "lost",
+            Self::Muted => "muted",
+            Self::AttachedElsewhere => "attachedElsewhere",
+        }
+    }
 }
 pub fn reapply_persisted_mute(
     monitor: &ManifestMonitor,
