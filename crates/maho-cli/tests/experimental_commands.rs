@@ -1,4 +1,4 @@
-use maho_cli::cli::experimental::{command_options::{parse_transport_address, TransportAddress}, commands::{client::parse_client, server::parse_server}};
+use maho_cli::cli::experimental::{command_options::{parse_transport_address, AuthInput, TransportAddress}, commands::{client::parse_client, server::parse_server}};
 fn args(values: &[&str]) -> Vec<String> { values.iter().map(|value| (*value).to_owned()).collect() }
 #[test]
 fn unix_addresses_decode_paths_and_reject_authorities() {
@@ -32,4 +32,102 @@ fn server_accepts_identifier_and_model_but_not_prompts() {
     assert_eq!(command.session_dir.as_deref(), Some("/tmp/sessions"));
     assert!(parse_server(&args(&["--server-id", "invalid"])).is_err());
     assert!(parse_server(&args(&["prompt"])).is_err());
+}
+
+// Upstream packages/coding-agent/test/experimental-cli-command.test.ts (senpi pin 903b8336):
+// every case driven through the parse_server/parse_client entry points.
+const UNSUPPORTED_SERVER_OPTIONS: &str = "The experimental server command does not support existing CLI options yet";
+const UNSUPPORTED_CLIENT_OPTIONS: &str = "The experimental client command does not support existing CLI options yet";
+const SERVER_ID: &str = "00000000-0000-4000-8000-000000000001";
+#[test]
+fn upstream_parses_server_configuration() {
+    let command = parse_server(&args(&["--server-id", SERVER_ID, "--session-dir", "~/pi-sessions", "--provider", "anthropic", "--model", "claude-sonnet-4-5", "-e", "./first-plugin", "-e=./second-plugin"])).ok().unwrap();
+    assert_eq!(command.server_id.as_deref(), Some(SERVER_ID));
+    assert_eq!(command.session_dir.as_deref(), Some("~/pi-sessions"));
+    assert_eq!(command.provider.as_deref(), Some("anthropic"));
+    assert_eq!(command.model.as_deref(), Some("claude-sonnet-4-5"));
+    assert_eq!(command.plugin_packages, args(&["./first-plugin", "./second-plugin"]));
+    assert!(command.auth.is_none());
+}
+#[test]
+fn upstream_parses_provider_qualified_server_models() {
+    let command = parse_server(&args(&["--model", "anthropic/claude-sonnet-4-5:high"])).ok().unwrap();
+    assert_eq!(command.model.as_deref(), Some("anthropic/claude-sonnet-4-5:high"));
+    assert!(command.provider.is_none() && command.server_id.is_none() && command.session_dir.is_none() && command.auth.is_none() && command.plugin_packages.is_empty());
+}
+#[test]
+fn upstream_parses_client_transport_addresses() {
+    let command = parse_client(&args(&["--connect", "unix:///tmp/pi.sock"])).ok().unwrap();
+    assert!(matches!(command.connect, Some(TransportAddress::Unix(ref path)) if path == "/tmp/pi.sock"));
+    assert!(command.session_id.is_none());
+    let command = parse_client(&args(&["--connect", "radius://00000000-0000-4000-8000-000000000001", "--session-id", "demo-1"])).ok().unwrap();
+    assert!(matches!(command.connect, Some(TransportAddress::Radius(ref id)) if id == SERVER_ID));
+    assert_eq!(command.session_id.as_deref(), Some("demo-1"));
+}
+#[test]
+fn upstream_parses_client_session_selection() {
+    for (option, resume) in [("-c", false), ("--continue", false), ("-r", true), ("--resume", true)] {
+        let command = parse_client(&args(&[option])).ok().unwrap();
+        assert_eq!((command.continue_session, command.resume), (!resume, resume), "{option}");
+        assert!(command.prompt.is_none() && command.session_id.is_none() && command.connect.is_none(), "{option}");
+    }
+}
+#[test]
+fn upstream_parses_session_selection_followed_by_one_shot_prompt() {
+    let command = parse_client(&args(&["-r", "Explain this project"])).ok().unwrap();
+    assert!(command.resume && !command.continue_session);
+    assert_eq!(command.prompt.as_deref(), Some("Explain this project"));
+}
+#[test]
+fn upstream_parses_client_model_and_plugin_configuration() {
+    let command = parse_client(&args(&["--model", "anthropic/claude-sonnet-4-5:high", "-e", "./first-plugin", "-e", "./second-plugin"])).ok().unwrap();
+    assert_eq!(command.model.as_deref(), Some("anthropic/claude-sonnet-4-5:high"));
+    assert_eq!(command.plugin_packages, args(&["./first-plugin", "./second-plugin"]));
+    assert!(command.provider.is_none() && command.prompt.is_none());
+}
+#[test]
+fn upstream_parses_authentication_sources() {
+    let cases = [(["--auth-token", "secret"], AuthInput::Token("secret".to_owned())), (["--auth-token-file", "/tmp/token"], AuthInput::File("/tmp/token".to_owned()))];
+    for (argv, auth) in cases {
+        assert!(parse_server(&args(&argv)).ok().unwrap().auth == Some(auth.clone()), "server {argv:?}");
+        assert!(parse_client(&args(&argv)).ok().unwrap().auth == Some(auth), "client {argv:?}");
+    }
+}
+#[test]
+fn upstream_permits_omitted_authentication() {
+    let server = parse_server(&[]).ok().unwrap();
+    assert!(server.auth.is_none() && server.provider.is_none() && server.model.is_none() && server.server_id.is_none() && server.session_dir.is_none() && server.plugin_packages.is_empty());
+    let client = parse_client(&[]).ok().unwrap();
+    assert!(client.auth.is_none() && client.connect.is_none() && client.session_id.is_none() && !client.continue_session && !client.resume && client.provider.is_none() && client.model.is_none() && client.plugin_packages.is_empty() && client.prompt.is_none());
+}
+#[test]
+fn upstream_rejects_invalid_experimental_input() {
+    let cases: [(&[&str], &str); 17] = [
+        (&["client", "--listen", "unix:///tmp/pi.sock"], UNSUPPORTED_CLIENT_OPTIONS),
+        (&["server", "--listen", "unix:///tmp/pi.sock"], UNSUPPORTED_SERVER_OPTIONS),
+        (&["server", "--connect", "unix:///tmp/pi.sock"], UNSUPPORTED_SERVER_OPTIONS),
+        (&["client", "--connect", "ws://localhost:8080"], "Unsupported --connect transport \"ws:\""),
+        (&["client", "--connect", "radius://not-a-server"], "Radius transport address requires"),
+        (&["client", "--connect", "unix://relative.sock"], "Unix transport address must not include an authority"),
+        (&["client", "--connect", "unix:///tmp/pi.sock?wrong=value"], "Invalid --connect address"),
+        (&["client", "--provider", "anthropic"], "--provider requires --model"),
+        (&["client", "-c", "-r"], "--session-id, --continue, and --resume are mutually exclusive"),
+        (&["client", "--continue=true"], "--continue does not take a value"),
+        (&["server", "--provider", "anthropic"], "--provider requires --model"),
+        (&["server", "--server-id", "not-a-uuid"], "Invalid --server-id"),
+        (&["server", "--server-id"], "--server-id requires a value"),
+        (&["server", "--session-dir"], "--session-dir requires a value"),
+        (&["client", "-e"], "-e requires a value"),
+        (&["server", "--session-dir", "/tmp/first", "--session-dir=/tmp/second"], "--session-dir may only be specified once"),
+        (&["client", "--connect="], "--connect requires a value"),
+    ];
+    for (argv, error) in cases {
+        let rest = args(&argv[1..]);
+        let errors = match argv[0] { "server" => parse_server(&rest).err(), _ => parse_client(&rest).err() }.unwrap_or_else(|| panic!("{argv:?} parsed"));
+        assert!(errors.iter().any(|message| message.contains(error)), "{argv:?}: {errors:?} lacks {error:?}");
+    }
+}
+#[test]
+fn upstream_rejects_unsupported_options_without_parsing_them_through_the_stable_cli() {
+    assert_eq!(parse_client(&args(&["--tui-mode", "wrong", "--model", "claude-sonnet"])).err().unwrap(), vec![UNSUPPORTED_CLIENT_OPTIONS.to_owned()]);
 }
