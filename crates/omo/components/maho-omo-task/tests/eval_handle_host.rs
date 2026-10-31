@@ -73,3 +73,114 @@ async fn shared_pool_mutation_settles_epoch_zero_handle_without_task_mutations()
     assert!(!host.cancel(reference, context()).await.expect("settled pool cancellation").cancelled);
     (watch.close)();
 }
+
+// eval-handle-host.test.ts parity: owner fencing, terminal-before-watch, live cancel, stale cancel, pool cancel and foreign pools.
+fn failure_code<T>(result: Result<T, maho_ext_api::ExtensionFailure>) -> String { match result { Err(error) => error.code.unwrap_or_default(), Ok(_) => panic!("expected an eval handle failure") } }
+fn task_fixture(root: &std::path::Path) -> (TaskRecordStore, Arc<TaskManager>, NativeEvalHandleHost) {
+    let store = TaskRecordStore::new(&StateDirConfig { project_dir: root.into(), task_state_dir: None });
+    let manager = Arc::new(TaskManager::new(TaskManagerOptions::new(store.clone(), ManagedRunners { in_process: Arc::new(NoLaunch), process: Arc::new(NoLaunch) }, Arc::new(|_| Ok(ResolvedChildPlan { model: "faux/faux".into(), ..Default::default() })), root.to_string_lossy())));
+    let pools = WorkpoolEngine::new(store.state_dir(), maho_omo_task::workpool_admission::create_workpool_admission(manager.clone()));
+    let host = NativeEvalHandleHost::new(manager.clone(), pools, Arc::new(TaskMutationObserver::default()), Arc::new(|| Some("parent".into())));
+    (store, manager, host)
+}
+fn saved_task(store: &TaskRecordStore, status: TaskStatus) -> senpi_task::state::TaskRecord {
+    let mut record = create_task_record(TaskRecordInput { parent_session_id: "parent".into(), root_session_id: "parent".into(), ..Default::default() }, Some(1)).expect("record");
+    record.status = status;
+    if status == TaskStatus::Completed { record.final_response = Some("done".into()); }
+    store.save(&record).expect("save");
+    record
+}
+fn agent_ref(record: &senpi_task::state::TaskRecord) -> EvalHandleRef { EvalHandleRef { kind: EvalHandleKind::Agent, id: record.task_id.clone(), run_epoch: record.notification.run_epoch } }
+
+#[tokio::test]
+async fn foreign_owner_is_forbidden_and_unknown_task_is_not_found() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, _manager, host) = task_fixture(root.path());
+    let record = saved_task(&store, TaskStatus::Running);
+    assert_eq!(failure_code(host.watch(vec![agent_ref(&record)], EvalHandleCallContext { owner_session_id: "someone-else".into(), signal: None }).await), "eval_handle_forbidden");
+    let unknown = EvalHandleRef { id: "st_0000000000000000000000000".into(), ..agent_ref(&record) };
+    assert_eq!(failure_code(host.result(unknown, context()).await), "eval_handle_not_found");
+}
+
+#[tokio::test]
+async fn run_finished_before_watch_arrives_once_in_initial_without_update() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, _manager, host) = task_fixture(root.path());
+    let record = saved_task(&store, TaskStatus::Completed);
+    let mut watch = host.watch(vec![agent_ref(&record)], context()).await.expect("watch");
+    assert_eq!(watch.initial.len(), 1);
+    assert_eq!(watch.initial[0].phase, EvalHandlePhase::Succeeded);
+    let idle = std::future::poll_fn(|cx| std::task::Poll::Ready(watch.updates.as_mut().poll_next(cx).is_pending())).await;
+    assert!(idle, "a run settled before the watch must not produce an update");
+    assert!(matches!(host.result(agent_ref(&record), context()).await.expect("result"), EvalHandleOutcome::Fulfilled { value, .. } if value == "done"));
+    (watch.close)();
+}
+
+#[tokio::test]
+async fn cancelling_live_run_cancels_it_and_repeat_reports_already_ended() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, _manager, host) = task_fixture(root.path());
+    let record = saved_task(&store, TaskStatus::Running);
+    let first = host.cancel(agent_ref(&record), context()).await.expect("cancel live run");
+    assert!(first.cancelled);
+    assert_eq!(first.phase, EvalHandlePhase::Cancelled);
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").status, TaskStatus::Cancelled);
+    let second = host.cancel(agent_ref(&record), context()).await.expect("cancel again");
+    assert!(!second.cancelled);
+    assert_eq!(second.phase, EvalHandlePhase::Cancelled);
+}
+
+#[tokio::test]
+async fn cancelling_stale_handle_is_refused_and_successor_keeps_running() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, _manager, host) = task_fixture(root.path());
+    let mut record = saved_task(&store, TaskStatus::Running);
+    let stale = agent_ref(&record);
+    record.notification.run_epoch += 1;
+    store.replace(&record).expect("successor run");
+    assert_eq!(failure_code(host.cancel(stale, context()).await), "eval_handle_stale");
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").status, TaskStatus::Running);
+}
+
+#[tokio::test]
+async fn pool_cancel_through_handle_and_foreign_pool_is_forbidden() {
+    use senpi_task::workpool::types::{WorkpoolAgent, WorkpoolCaller, WorkpoolCreate, WorkpoolMode, WorkpoolSpec};
+    let root = tempfile::tempdir().expect("root");
+    let (store, manager, _) = task_fixture(root.path());
+    let engine = Arc::new(tokio::sync::Mutex::new(WorkpoolEngine::new(store.state_dir(), maho_omo_task::workpool_admission::create_workpool_admission(manager.clone()))));
+    let pool_store = engine.lock().await.store.clone();
+    let create = |session: &str, name: &str| pool_store.create(&WorkpoolCaller { session_id: session.into(), root_session_id: session.into(), depth: 0, cwd: root.path().to_string_lossy().into_owned() }, &WorkpoolCreate { name: name.into(), agent: WorkpoolAgent::Category { prompt: "work".into(), model: None, category: "quick".into() }, mode: Some(WorkpoolMode::Fresh), tools: None }, WorkpoolMode::Fresh, WorkpoolSpec { start: Default::default(), plan: ResolvedChildPlan { model: "faux/faux".into(), ..Default::default() } }).expect("persist pool");
+    let owned = create("parent", "owned");
+    let foreign = create("other", "foreign");
+    let host = NativeEvalHandleHost::with_shared_workpools(manager, engine, Arc::new(TaskMutationObserver::default()), Arc::new(|| Some("parent".into()))).expect("shared pool host");
+    let foreign_ref = EvalHandleRef { kind: EvalHandleKind::Workpool, id: foreign.pool_id.clone(), run_epoch: 0 };
+    assert_eq!(failure_code(host.watch(vec![foreign_ref], context()).await), "eval_handle_forbidden");
+    let reference = EvalHandleRef { kind: EvalHandleKind::Workpool, id: owned.pool_id.clone(), run_epoch: 0 };
+    let receipt = host.cancel(reference.clone(), context()).await.expect("cancel pool");
+    assert!(receipt.cancelled);
+    assert_eq!(receipt.phase, EvalHandlePhase::Cancelled);
+    assert!(matches!(host.result(reference, context()).await.expect("pool result"), EvalHandleOutcome::Rejected { error, .. } if error.code == "eval_handle_cancelled"));
+}
+
+// pool-refs.ts loadOwnedPool parity: an inspect error other than scope_denied (here store_corrupt) reads as not found.
+#[tokio::test]
+async fn corrupt_pool_record_reports_not_found() {
+    let root = tempfile::tempdir().expect("root");
+    let (store, _manager, host) = task_fixture(root.path());
+    let id = "wp_00000000000000000000000000000000";
+    let dir = store.state_dir().join("workpools");
+    std::fs::create_dir_all(&dir).expect("workpool dir");
+    std::fs::write(dir.join(format!("{id}.json")), "{").expect("corrupt record");
+    let reference = EvalHandleRef {
+        kind: EvalHandleKind::Workpool,
+        id: id.into(),
+        run_epoch: 0,
+    };
+    match host.result(reference, context()).await {
+        Err(error) => {
+            assert_eq!(error.code.as_deref(), Some("eval_handle_not_found"));
+            assert_eq!(error.message, format!("no workpool {id}"));
+        }
+        Ok(_) => panic!("expected an eval handle failure"),
+    }
+}

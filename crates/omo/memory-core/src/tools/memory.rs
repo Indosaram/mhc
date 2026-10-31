@@ -236,6 +236,8 @@ fn run_memory_tool_inner(
     }
 
     let root = &repo.dir;
+    // Pin `memory.ts:69`: inside the writer lock, unrelated dirty files fail first with the porcelain.
+    repo.clean_check().map_err(|e| err(e.to_string()))?;
     let mut affected_relative_paths: Vec<String> = Vec::new();
     let mut stripped_paths = Vec::new();
     let claim = params.provenance.as_ref().and_then(|p| p.claim.as_ref());
@@ -481,6 +483,11 @@ fn run_memory_tool_inner(
 
     execute_command()?;
 
+    // Pin `memory.ts:71-73`: a command that touched no tracked path is refused before commit.
+    if affected_relative_paths.is_empty() {
+        return Err(err(format!("{command_str} made no changes")));
+    }
+
     if writer == MemoryWriter::MemoryTool
         && let Some(violation) = refuse_agreements_violation(repo, &affected_relative_paths)
             .map_err(|e| err(e.to_string()))?
@@ -610,7 +617,8 @@ fn assert_not_readonly(
     frontmatter: &MemoryFrontmatter,
     display_path: &str,
 ) -> Result<(), MemoryToolError> {
-    if frontmatter.read_only.is_some() {
+    // Pin `memory.ts:192`: only the literal "true" locks a block; `read_only: false` stays editable.
+    if frontmatter.read_only.as_deref() == Some("true") {
         return Err(err(format!(
             "{display_path} is read_only and cannot be modified"
         )));

@@ -37,12 +37,16 @@ impl Extension for FallbackArchitectComponent {
             let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if event.model.id==FABLE_FIVE_MODEL_ID || event.source==ModelSelectSource::FallbackRevert { state.active=None;state.refusal_pending=false;return Ok(EventResult::None); }
             if event.source!=ModelSelectSource::Fallback || event.previous_model.as_ref().is_none_or(|m|m.id!=FABLE_FIVE_MODEL_ID) || !state.refusal_pending { return Ok(EventResult::None); }
-            if !gate(&ctx.cwd,Some(ctx.model_registry.as_ref())) { state.refusal_pending=false;return Ok(EventResult::None); }
+            if !gate(&ctx.cwd,Some(ctx.model_registry.as_ref())) {
+                if let Some(logger)=&ctx.logger { logger.info("omo-senpi fallback-architect skipped",Some(&serde_json::json!({"reason":"architect-category-inactive"}))); }
+                state.refusal_pending=false;return Ok(EventResult::None);
+            }
             let Some(previous)=&event.previous_model else { return Ok(EventResult::None); };
             let from=format!("{}/{}",previous.provider,previous.id); let to=format!("{}/{}",event.model.provider,event.model.id);
             let api=ExtensionApi::new(LoadedExtension::new("fallback-architect",ctx.cwd.clone(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
             api.send_message(CustomMessage{custom_type:FALLBACK_ARCHITECT_DIRECTIVE_TYPE.into(),content:vec![ToolContent::text(build_fallback_architect_directive(&from,&to))],display:false,details:None},SendMessageOptions::default())?;
             api.send_message(CustomMessage{custom_type:FALLBACK_ARCHITECT_NOTICE_TYPE.into(),content:vec![ToolContent::text(build_fallback_architect_notice(&from,&to))],display:true,details:Some(serde_json::json!({"from":from,"to":to}))},SendMessageOptions::default())?;
+            if let Some(logger)=&ctx.logger { logger.info("omo-senpi fallback-architect directive injected",Some(&serde_json::json!({"from":from,"to":to}))); }
             state.active=Some((from,to));state.refusal_pending=false;
             Ok(EventResult::None)
         }) }));
