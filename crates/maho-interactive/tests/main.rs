@@ -37,6 +37,8 @@ mod extension_ui_repaint;
 mod footer_corpus;
 #[path = "foundation.rs"]
 mod foundation;
+#[path = "global_keybindings.rs"]
+mod global_keybindings;
 #[path = "grok_mermaid_edges.rs"]
 mod grok_mermaid_edges;
 #[path = "keybinding_hints_global.rs"]
