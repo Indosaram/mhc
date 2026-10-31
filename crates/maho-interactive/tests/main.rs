@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "binding_status.rs"]
+mod binding_status;
 #[path = "components32_boundary.rs"]
 mod components32_boundary;
 #[path = "components32_callonly.rs"]
