@@ -333,6 +333,7 @@ pub fn start_host(
             instance_id: settings.instance_id.clone(),
             generation: settings.generation,
             launch_profile_id,
+            build: Some(crate::host_daemon_registration::RegisteredBuild::this_engine()),
         };
         crate::host_daemon_registration::write_host_registration(&paths, &registration)
             .map_err(|error| error.source)?;

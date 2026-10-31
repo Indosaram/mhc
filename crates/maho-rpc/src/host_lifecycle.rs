@@ -795,6 +795,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                     instance_id,
                     generation: 0.,
                     launch_profile_id: String::new(),
+                    build: Some(crate::host_daemon_registration::RegisteredBuild::this_engine()),
                 },
             )
             .map_err(|error| error.source)
