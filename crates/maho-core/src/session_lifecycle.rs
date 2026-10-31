@@ -22,6 +22,82 @@ struct OutstandingTool {
     since: String,
 }
 
+/// Live run activity (senpi `SessionLifecycleController` `outstandingTools`/`modelSince`): the oldest outstanding
+/// top-level tool, else the model stream in progress. Wire-only; durable records never carry it.
+#[derive(Clone, Debug, Default)]
+pub struct LifecycleActivity {
+    /// Insertion-ordered: the first entry is the oldest outstanding top-level tool.
+    outstanding_tools: Vec<OutstandingTool>,
+    model_since: Option<String>,
+}
+impl LifecycleActivity {
+    pub fn clear(&mut self) {
+        self.activity.clear();
+    }
+    /// Returns whether the event changed the live activity.
+    pub fn observe(&mut self, event: &maho_agent::types::AgentEvent) -> bool {
+        use maho_agent::types::AgentEvent;
+        match event {
+            AgentEvent::ToolExecutionStart {
+                tool_call_id,
+                tool_name,
+                parent_tool_call_id: None,
+                ..
+            } => {
+                if let Some(tool) = self
+                    .outstanding_tools
+                    .iter_mut()
+                    .find(|tool| &tool.tool_call_id == tool_call_id)
+                {
+                    tool.tool_name = tool_name.clone();
+                    tool.since = now_iso();
+                } else {
+                    self.outstanding_tools.push(OutstandingTool {
+                        tool_name: tool_name.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                        since: now_iso(),
+                    });
+                }
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                parent_tool_call_id: None,
+                ..
+            } => self
+                .outstanding_tools
+                .retain(|tool| &tool.tool_call_id != tool_call_id),
+            // Only the provider stream start is live model activity; prepared/synthetic starts are not.
+            AgentEvent::MessageStart {
+                message,
+                streaming: Some(true),
+            } if message.role() == "assistant" => {
+                self.model_since = Some(now_iso());
+            }
+            AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
+                self.model_since = None;
+            }
+            AgentEvent::AgentEnd { .. } => self.clear(),
+            _ => return false,
+        }
+        true
+    }
+    /// The live `activity` a running lifecycle projects; `None` when the state is not running or nothing is live.
+    pub fn project(&self, state: &str) -> Option<Value> {
+        if state != "running" {
+            return None;
+        }
+        match self.outstanding_tools.first() {
+            Some(oldest) => Some(
+                json!({"kind":"tool","toolName":oldest.tool_name,"toolCallId":oldest.tool_call_id,"since":oldest.since,"outstanding":self.outstanding_tools.len()}),
+            ),
+            None => self
+                .model_since
+                .as_ref()
+                .map(|since| json!({"kind":"model","since":since})),
+        }
+    }
+}
+
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -80,9 +156,7 @@ pub struct SessionLifecycleController {
     liveness: Option<Value>,
     stop_facts: Option<RunStopFacts>,
     deadline_stop: Option<DeadlineStopCapture>,
-    /// Insertion-ordered: the first entry is the oldest outstanding top-level tool.
-    outstanding_tools: Vec<OutstandingTool>,
-    model_since: Option<String>,
+    activity: LifecycleActivity,
     /// A run that ended before this process keeps exactly the stop its record carries; none is derived for it.
     restored_run_id: Option<String>,
 }
@@ -126,8 +200,7 @@ impl SessionLifecycleController {
             liveness,
             stop_facts: None,
             deadline_stop: None,
-            outstanding_tools: Vec::new(),
-            model_since: None,
+            activity: LifecycleActivity::default(),
             restored_run_id,
         }
     }
@@ -206,8 +279,7 @@ impl SessionLifecycleController {
         self.recompute();
     }
     pub fn start_run(&mut self, origin: Option<EpochOrigin>) {
-        self.outstanding_tools.clear();
-        self.model_since = None;
+        self.activity.clear();
         self.admitting_human = false;
         self.run_admitted = false;
         self.idle_boundary_passed = false;
@@ -240,8 +312,7 @@ impl SessionLifecycleController {
         self.ledger.publish_unwritten(|r| append(r));
     }
     pub fn idle(&mut self) {
-        self.outstanding_tools.clear();
-        self.model_since = None;
+        self.activity.clear();
         self.run_admitted = false;
         self.ledger.run_active = false;
         self.idle_boundary_passed = true;
@@ -253,56 +324,12 @@ impl SessionLifecycleController {
     }
     /// Synchronous core boundaries only; token/progress events never cause activity writes.
     pub fn observe_activity(&mut self, event: &maho_agent::types::AgentEvent) {
-        use maho_agent::types::AgentEvent;
         if !self.ledger.run_active {
             return;
         }
-        match event {
-            AgentEvent::ToolExecutionStart {
-                tool_call_id,
-                tool_name,
-                parent_tool_call_id: None,
-                ..
-            } => {
-                if let Some(tool) = self
-                    .outstanding_tools
-                    .iter_mut()
-                    .find(|tool| &tool.tool_call_id == tool_call_id)
-                {
-                    tool.tool_name = tool_name.clone();
-                    tool.since = now_iso();
-                } else {
-                    self.outstanding_tools.push(OutstandingTool {
-                        tool_name: tool_name.clone(),
-                        tool_call_id: tool_call_id.clone(),
-                        since: now_iso(),
-                    });
-                }
-            }
-            AgentEvent::ToolExecutionEnd {
-                tool_call_id,
-                parent_tool_call_id: None,
-                ..
-            } => self
-                .outstanding_tools
-                .retain(|tool| &tool.tool_call_id != tool_call_id),
-            // Only the provider stream start is live model activity; prepared/synthetic starts are not.
-            AgentEvent::MessageStart {
-                message,
-                streaming: Some(true),
-            } if message.role() == "assistant" => {
-                self.model_since = Some(now_iso());
-            }
-            AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
-                self.model_since = None;
-            }
-            AgentEvent::AgentEnd { .. } => {
-                self.outstanding_tools.clear();
-                self.model_since = None;
-            }
-            _ => return,
+        if self.activity.observe(event) {
+            self.recompute();
         }
-        self.recompute();
     }
     /// The turn deadline fired: captured before its durable write, for the run it stopped only.
     pub fn deadline_stopped(&mut self, kind: LifecycleDeadlineKind, at_ms: i64) {
@@ -539,15 +566,7 @@ impl SessionLifecycleController {
             self.ledger.custody_write_failed();
             return;
         }
-        let activity = (state == "running")
-            .then(|| match self.outstanding_tools.first() {
-                Some(oldest) => Some(json!({"kind":"tool","toolName":oldest.tool_name,"toolCallId":oldest.tool_call_id,"since":oldest.since,"outstanding":self.outstanding_tools.len()})),
-                None => self
-                    .model_since
-                    .as_ref()
-                    .map(|since| json!({"kind":"model","since":since})),
-            })
-            .flatten();
+        let activity = self.activity.project(&state);
         let append = self.options.append.clone();
         self.ledger.update_with(
             LedgerUpdate {

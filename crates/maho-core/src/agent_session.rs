@@ -973,6 +973,8 @@ pub struct AgentSessionInner {
     /// senpi `RunStopFacts` of the run whose agent_end was bound, and the run restored from disk, which keeps exactly
     /// the stop its record carries (senpi#3864).
     lifecycle_stop_facts: Mutex<(Option<crate::lifecycle_stop::RunStopFacts>, Option<String>)>,
+    /// Live run activity projected on the lifecycle (senpi#3864): wire-only, never written.
+    lifecycle_activity: Mutex<crate::session_lifecycle::LifecycleActivity>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -4189,6 +4191,7 @@ impl AgentSession {
                 lifecycle_goal: Mutex::new(None),
                 lifecycle_turn_facts: Mutex::new(None),
                 lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
+                lifecycle_activity: Mutex::new(Default::default()),
                 session_manager: Mutex::new(config.session_manager),
                 settings_manager: Arc::new(Mutex::new(config.settings_manager)),
                 model_registry,
@@ -4461,6 +4464,7 @@ impl AgentSession {
                     };
                     ledger.start_run(origin);
                     lock(&self.lifecycle_stop_facts).0 = None;
+                    lock(&self.lifecycle_activity).clear();
                     // The run's opening record carries the admitted input and the epoch (senpi#3980).
                     ledger.publish_unwritten(|record| self.persist_lifecycle_record(record));
                     state.required_compaction_turn_error = None;
@@ -4502,6 +4506,7 @@ impl AgentSession {
                 | AgentEvent::ToolExecutionEnd { .. } => {}
             }
         }
+        self.observe_activity(&event);
         if let AgentEvent::MessageStart { message, .. } = &event
             && let Ok(value) = session_message_to_value(message) {
                 if let Some(id) = value
@@ -4778,6 +4783,7 @@ impl AgentSession {
             }
 
             lock(&self.lifecycle).run_active = false;
+            lock(&self.lifecycle_activity).clear();
             let last = boundary
                 .messages
                 .iter()
@@ -5445,7 +5451,7 @@ impl AgentSession {
                 holds,
                 failure,
                 last_stop,
-                activity: None,
+                activity: lock(&self.lifecycle_activity).project(&state),
             },
             |record| self.persist_lifecycle_record(record),
         );
@@ -5453,6 +5459,17 @@ impl AgentSession {
         drop(ledger);
         if changed {
             self.event_bus.emit("session_lifecycle", &json!({"type":"session_lifecycle","sessionId":self.session_id(),"lifecycle":snapshot}));
+        }
+    }
+
+    /// senpi `SessionLifecycleController.observeActivity`: a run's tool and model edges are live lifecycle activity.
+    /// An activity-only change emits `session_lifecycle` with a new activity revision and writes nothing.
+    fn observe_activity(&self, event: &maho_agent::types::AgentEvent) {
+        if !lock(&self.lifecycle).run_active {
+            return;
+        }
+        if lock(&self.lifecycle_activity).observe(event) {
+            self.refresh_lifecycle();
         }
     }
 
@@ -35051,6 +35068,71 @@ mod tests {
         });
         assert!(!session.is_compacting());
         assert_eq!(session.lifecycle_snapshot()["state"], "done");
+    }
+
+    /// senpi test/suite/regressions/3864-activity-delivery.test.ts and 3864-activity-ordering.test.ts: a run's tool
+    /// edges project live `activity` on the lifecycle and emit `session_lifecycle` with a new activity revision, but
+    /// write no durable record, and durable records never carry the activity.
+    #[tokio::test]
+    async fn run_activity_is_projected_live_and_never_written() {
+        use maho_agent::types::AgentEvent;
+        let session = test_session();
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let seen = emitted.clone();
+        let _subscription = session.on_extension_event(
+            "session_lifecycle",
+            Arc::new(move |data| lock(&seen).push(data["lifecycle"].clone())),
+        );
+        let signal = || maho_ai::utils::abort::AbortController::new().signal();
+        session
+            .process_agent_event(AgentEvent::AgentStart, signal())
+            .await;
+        session.refresh_lifecycle();
+        assert_eq!(session.lifecycle_snapshot()["state"], "running");
+        assert!(session.lifecycle_snapshot().get("activity").is_none());
+        let records = lifecycle_record_count(&session);
+        let emits = lock(&emitted).len();
+        session
+            .process_agent_event(
+                AgentEvent::ToolExecutionStart {
+                    tool_call_id: "call-a".into(),
+                    tool_name: "bash".into(),
+                    args: Value::Null,
+                    parent_tool_call_id: None,
+                },
+                signal(),
+            )
+            .await;
+        let activity = session.lifecycle_snapshot()["activity"].clone();
+        assert_eq!(activity["kind"], "tool");
+        assert_eq!(activity["toolCallId"], "call-a");
+        assert_eq!(activity["outstanding"], 1);
+        assert_eq!(lifecycle_record_count(&session), records);
+        assert!(lock(&emitted).len() > emits);
+        let last = lock(&emitted).last().cloned().expect("activity emit");
+        assert_eq!(last["activity"]["toolCallId"], "call-a");
+        assert!(last["activityRevision"]["revision"].as_u64() > Some(0));
+        session
+            .process_agent_event(
+                AgentEvent::ToolExecutionEnd {
+                    tool_call_id: "call-a".into(),
+                    tool_name: "bash".into(),
+                    result: Default::default(),
+                    is_error: false,
+                    parent_tool_call_id: None,
+                },
+                signal(),
+            )
+            .await;
+        assert!(session.lifecycle_snapshot().get("activity").is_none());
+        assert_eq!(lifecycle_record_count(&session), records);
+        assert!(session.with_session_manager(|manager| {
+            manager
+                .entries()
+                .iter()
+                .filter(|entry| entry["customType"] == "session-lifecycle")
+                .all(|entry| entry["data"].get("activity").is_none())
+        }));
     }
 
     /// senpi test/suite/regressions/3980-lifecycle-compaction-edges.test.ts: releasing the session-work barrier,
