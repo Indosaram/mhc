@@ -109,8 +109,70 @@ pub fn rpc_command_payload_error(command: &Value) -> Option<&'static str> {
             Some("append_session_entry entry is malformed.")
         }
         Some("unload_session") => unload_session_error(command),
+        Some("dequeue_message" | "edit_queued_message") => queued_input_change_error(command),
+        Some("get_effect_status") => effect_status_error(command),
+        Some("get_pending_inputs") => pending_inputs_error(command),
         _ => None,
     }
+}
+/// A non-empty string of at most 256 UTF-16 code units (senpi's `value.length <= 256`).
+fn id_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.is_empty() && text.encode_utf16().count() <= 256)
+}
+/// senpi rpc-input-validation.ts `dequeue_message` / `edit_queued_message`.
+fn queued_input_change_error(command: &Value) -> Option<&'static str> {
+    if !id_string(command.get("queuedId")) {
+        return Some(
+            "queuedId must be a non-empty string of at most 256 characters; read it from get_state or queue_update.",
+        );
+    }
+    if command["type"] == "edit_queued_message"
+        && !command
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| {
+                !text.is_empty() && text.encode_utf16().count() <= MAX_RPC_MESSAGE_CHARACTERS
+            })
+    {
+        return Some(
+            "text must be a non-empty string of at most 1000000 characters; dequeue_message removes an input.",
+        );
+    }
+    // `Number.isSafeInteger(n) && n >= 1`.
+    if command.get("expectedRevision").is_some_and(|revision| {
+        !revision
+            .as_u64()
+            .is_some_and(|revision| (1..=9_007_199_254_740_991).contains(&revision))
+    }) {
+        return Some(
+            "expectedRevision must be a whole number of at least 1; read it from the input's revision in get_state or queue_update.",
+        );
+    }
+    None
+}
+/// senpi rpc-input-validation.ts `get_effect_status`: a required `effectId`, an optional string `sessionPath`.
+fn effect_status_error(command: &Value) -> Option<&'static str> {
+    if !id_string(command.get("effectId")) {
+        return Some("effectId must be a non-empty string of at most 256 characters.");
+    }
+    command
+        .get("sessionPath")
+        .is_some_and(|path| !path.is_string())
+        .then_some("sessionPath must be a string.")
+}
+/// senpi rpc-input-validation.ts `get_pending_inputs`: at most 64 non-empty ids of at most 256 characters.
+fn pending_inputs_error(command: &Value) -> Option<&'static str> {
+    let Some(ids) = command.get("knownClientMessageIds") else {
+        return None;
+    };
+    let valid = ids
+        .as_array()
+        .is_some_and(|ids| ids.len() <= 64 && ids.iter().all(|id| id_string(Some(id))));
+    (!valid).then_some(
+        "knownClientMessageIds must be an array of at most 64 non-empty strings of at most 256 characters.",
+    )
 }
 /// senpi rpc-input-validation.ts `unload_session`: `children` is `refuse`/`detach`, the flags are booleans.
 fn unload_session_error(command: &Value) -> Option<&'static str> {
@@ -285,6 +347,63 @@ mod tests {
             check(json!({"type":"unload_session","clearQueue":"yes"})),
             Some("clearQueue must be a boolean.")
         );
+    }
+    // senpi rpc-input-validation.ts: queuedId, text, expectedRevision, effectId, sessionPath and
+    // knownClientMessageIds are refused before anything is read (rpc-queued-input-edit, rpc-pending-inputs tests).
+    #[test]
+    fn queued_input_effect_and_pending_input_fields_are_validated() {
+        let check = |command: Value| rpc_command_payload_error(&command);
+        assert_eq!(
+            check(
+                json!({"type":"dequeue_message","queuedId":"q_1","expectedRevision":1,"effectId":"d1"})
+            ),
+            None
+        );
+        assert!(
+            check(json!({"type":"dequeue_message","queuedId":""}))
+                .is_some_and(|error| error.starts_with("queuedId must be"))
+        );
+        assert!(check(json!({"type":"dequeue_message"})).is_some());
+        assert!(
+            check(json!({"type":"dequeue_message","queuedId":"q_1","expectedRevision":0}))
+                .is_some_and(|error| error.starts_with("expectedRevision must be"))
+        );
+        assert!(
+            check(json!({"type":"dequeue_message","queuedId":"q_1","expectedRevision":1.5}))
+                .is_some()
+        );
+        assert_eq!(
+            check(json!({"type":"edit_queued_message","queuedId":"q_1","text":"fixed"})),
+            None
+        );
+        assert!(
+            check(json!({"type":"edit_queued_message","queuedId":"q_1","text":""}))
+                .is_some_and(|error| error.starts_with("text must be"))
+        );
+        assert_eq!(
+            check(json!({"type":"get_effect_status","effectId":"e1"})),
+            None
+        );
+        assert!(check(json!({"type":"get_effect_status"})).is_some());
+        assert_eq!(
+            check(json!({"type":"get_effect_status","effectId":"e1","sessionPath":7})),
+            Some("sessionPath must be a string.")
+        );
+        let ids = |count: usize| {
+            (0..count)
+                .map(|index| format!("c-{index}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            check(json!({"type":"get_pending_inputs","knownClientMessageIds":ids(64)})),
+            None
+        );
+        assert_eq!(check(json!({"type":"get_pending_inputs"})), None);
+        assert!(
+            check(json!({"type":"get_pending_inputs","knownClientMessageIds":ids(65)}))
+                .is_some_and(|error| error.contains("at most 64"))
+        );
+        assert!(check(json!({"type":"get_pending_inputs","knownClientMessageIds":[""]})).is_some());
     }
     #[test]
     fn rejects_nonobject_input() {

@@ -668,7 +668,7 @@ pub fn build_rpc_session_state_with_dialogs(
         "pendingMessageCount":session.pending_message_count(),
         "steering":session.get_steering_messages(),
         "followUp":session.get_follow_up_messages(),
-        "ordered":session.get_queued_input_order().iter().map(|input|serde_json::json!({"text":input.text,"mode":match input.mode{maho_ext_api::StreamingBehavior::Steer=>"steer",maho_ext_api::StreamingBehavior::FollowUp=>"followUp"},"enqueueOrder":input.enqueue_order})).collect::<Vec<_>>(),
+        "ordered":session.get_queued_inputs().iter().map(|input|crate::client_admission_record::client_facing_identity(rpc_queued_input(input))).collect::<Vec<_>>(),
         "favoriteModels":session.favorite_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
         "scopedModels":session.scoped_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
     });
@@ -735,6 +735,109 @@ const CLASSIC_CAPABILITIES: [&str; 17] = [
 ];
 /// The leading capabilities of the classic `get_protocol_info` list that precede the negotiated ones.
 const CLASSIC_BASE_CAPABILITIES: usize = CLASSIC_CAPABILITIES.len();
+/// senpi connection-handler.ts `effectContext()`: the session, the connection that acts, and the routing handle.
+/// Upstream keys the ledgers by the session object. Here a routed session's ledgers live under its routing handle
+/// (the key its record stream reads them under), a classic session's under its identity; both are released when
+/// the session is disposed.
+fn effect_context(
+    session: &AgentSession,
+    session_id: Option<String>,
+) -> crate::effect_commands::EffectCommandContext {
+    let route = session_id.clone().unwrap_or_else(|| {
+        format!(
+            "session:{}:{}",
+            session.memory_report_owner(),
+            session.session_id()
+        )
+    });
+    if EFFECT_ROUTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(route.clone())
+    {
+        let released = route.clone();
+        session.add_tool_context_disposer(move || {
+            crate::client_admissions::ClientAdmissions::forget(&released);
+            crate::effect_ledger::EffectLedger::forget(&released);
+            EFFECT_ROUTES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&released);
+        });
+    }
+    crate::effect_commands::EffectCommandContext {
+        session: std::sync::Arc::new(crate::agent_effect_session::AgentEffectSession::new(
+            session.clone(),
+            route,
+        )),
+        // senpi `options.clientInfo?.connectionId() ?? "local"`: this handler serves one local connection.
+        by: crate::effect_record::EffectActor {
+            connection_id: "local".into(),
+        },
+        session_id,
+    }
+}
+/// Routes whose effect-ledger release is already registered on their session.
+static EFFECT_ROUTES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+/// An effect command's answer (already a full response object) as this handler's response.
+fn effect_response(command: &RpcCommand, answer: serde_json::Value) -> RpcResponse {
+    let kind = answer["command"].as_str().unwrap_or_default().to_owned();
+    let result = if answer["success"] == true {
+        RpcResponseResult::Success {
+            data: answer.get("data").cloned(),
+        }
+    } else {
+        RpcResponseResult::Error {
+            error: answer["error"].as_str().unwrap_or_default().to_owned(),
+            error_code: answer["errorCode"].as_str().map(str::to_owned),
+            error_data: answer.get("errorData").cloned(),
+        }
+    };
+    RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind,
+        session_id: command.session_id.clone(),
+        result,
+    }
+}
+/// senpi `PendingInputSnapshot` on the wire.
+fn pending_input_snapshot_json(
+    snapshot: &maho_core::pending_input_session::PendingInputSnapshot,
+) -> serde_json::Value {
+    use maho_core::pending_input_session::PendingInputOutcome;
+    let outcomes = snapshot
+        .outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            PendingInputOutcome::Admitted {
+                client_message_id,
+                projection,
+            } => serde_json::json!({"clientMessageId":client_message_id,"status":"admitted","projection":projection}),
+            PendingInputOutcome::NotAdmitted { client_message_id } => {
+                serde_json::json!({"clientMessageId":client_message_id,"status":"not_admitted"})
+            }
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "lifetimeId": snapshot.lifetime_id,
+        "throughCursor": snapshot.through_cursor,
+        "inputs": snapshot.inputs,
+        "outcomes": outcomes,
+    })
+}
+/// senpi `QueuedInput` on the wire, `queuedId` and `revision` included.
+fn rpc_queued_input(input: &maho_core::agent_session::QueuedInput) -> serde_json::Value {
+    crate::session_binding::queued_input_json(
+        &input.text,
+        input.mode,
+        input.enqueue_order,
+        &input.queued_id,
+        input.revision,
+        input.client_message_id.as_deref(),
+    )
+}
 pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
@@ -1060,7 +1163,7 @@ async fn handle_session_command_with_sink(
         },
         RpcCommandBody::GetSteeringMessages=>("get_steering_messages",Ok(Some(serde_json::json!({"messages":session.get_steering_messages()})))),
         RpcCommandBody::GetFollowUpMessages=>("get_follow_up_messages",Ok(Some(serde_json::json!({"messages":session.get_follow_up_messages()})))),
-        RpcCommandBody::ClearQueue{abort_will_follow}=>{let cleared=session.clear_queue(abort_will_follow.unwrap_or(false));let ordered=cleared.ordered.iter().map(|input|serde_json::json!({"text":input.text,"mode":match input.mode{maho_ext_api::StreamingBehavior::Steer=>"steer",maho_ext_api::StreamingBehavior::FollowUp=>"followUp"},"enqueueOrder":input.enqueue_order})).collect::<Vec<_>>();("clear_queue",Ok(Some(serde_json::json!({"steering":cleared.steering,"followUp":cleared.follow_up,"ordered":ordered}))))},
+        RpcCommandBody::ClearQueue{abort_will_follow}=>{let cleared=session.clear_queue(abort_will_follow.unwrap_or(false));let ordered=cleared.ordered.iter().map(rpc_queued_input).collect::<Vec<_>>();("clear_queue",Ok(Some(serde_json::json!({"steering":cleared.steering,"followUp":cleared.follow_up,"ordered":ordered}))))},
         RpcCommandBody::SetSessionName{name}=>{let name=name.trim();let result=if name.is_empty(){Err("Session name cannot be empty".into())}else{session.set_session_name(name);Ok(None)};("set_session_name",result)},
         RpcCommandBody::GetLastAssistantText=>("get_last_assistant_text",Ok(Some(session.get_last_assistant_text().map_or_else(||serde_json::json!({}),|text|serde_json::json!({"text":text}))))),
         RpcCommandBody::GetMessages=>{let messages=session.messages().into_iter().map(|message|match message{maho_agent::types::AgentMessage::Llm(message)=>serde_json::to_value(message),maho_agent::types::AgentMessage::Custom(message)=>match message{maho_agent::types::CustomAgentMessage::BashExecution(message)=>serde_json::to_value(message),maho_agent::types::CustomAgentMessage::Custom(message)=>serde_json::to_value(message),maho_agent::types::CustomAgentMessage::BranchSummary(message)=>serde_json::to_value(message),maho_agent::types::CustomAgentMessage::CompactionSummary(message)=>serde_json::to_value(message)}}).collect::<Result<Vec<_>,_>>();("get_messages",messages.map(|messages|Some(serde_json::json!({"messages":messages}))).map_err(|error|error.to_string()))},
@@ -1268,6 +1371,14 @@ async fn handle_session_command_with_sink(
             ("account_remove",result)
         },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new())))),
+        // senpi connection-handler.ts: `runQueuedInputChange(effectContext(), command)` / `runGetEffectStatus(...)`.
+        RpcCommandBody::DequeueMessage{..}|RpcCommandBody::EditQueuedMessage{..}|RpcCommandBody::GetEffectStatus{..}=>{
+            let value=serde_json::to_value(command).unwrap_or(serde_json::Value::Null);
+            let ctx=effect_context(session,command.session_id.clone());
+            let answer=if matches!(command.body,RpcCommandBody::GetEffectStatus{..}){crate::effect_commands::run_get_effect_status(&ctx,&value).await}else{crate::effect_commands::run_queued_input_change(&ctx,&value).await};
+            return Some(effect_response(command,answer));
+        },
+        RpcCommandBody::GetPendingInputs{known_client_message_ids}=>("get_pending_inputs",session.get_pending_inputs(known_client_message_ids.as_deref().unwrap_or_default()).await.map(|snapshot|Some(pending_input_snapshot_json(&snapshot)))),
         RpcCommandBody::ResumeSession=>("resume_session",session.resume_session().await.map(|()|None)),
         // senpi `session.recordUserActivity("draft")`: the only accepted kind (closed enum) reaches the session's activity listeners.
         RpcCommandBody::RecordUserActivity{..}=>{session.record_user_activity(maho_core::agent_session::UserActivityKind::Draft);("record_user_activity",Ok(None))},
@@ -2870,6 +2981,338 @@ mod new_session_tests {
             auto_title_sessions: Some(false),
         })
         .expect("session")
+    }
+
+    async fn send(session: &AgentSession, command: serde_json::Value) -> serde_json::Value {
+        let line = handle_input_line(session, &command.to_string())
+            .await
+            .expect("serialize")
+            .expect("response");
+        serde_json::from_str(&line).expect("response json")
+    }
+
+    async fn queued(session: &AgentSession) -> Vec<serde_json::Value> {
+        send(session, serde_json::json!({"type":"get_state"})).await["data"]["ordered"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// senpi test/suite/rpc-queued-input-edit.test.ts: dequeue_message / edit_queued_message remove and edit by
+    /// queuedId with receipts, refuse unknown ids with an action, refuse an empty id, and replay a same-id retry.
+    #[tokio::test]
+    async fn queued_inputs_are_dequeued_and_edited_by_queued_id_with_receipts() {
+        let session = session();
+        for message in ["drop me", "keep me"] {
+            let queued = send(
+                &session,
+                serde_json::json!({"type":"steer","message":message}),
+            )
+            .await;
+            assert_eq!(queued["success"], true, "{queued}");
+        }
+        let ordered = queued(&session).await;
+        let (drop, keep) = (
+            ordered[0]["queuedId"].clone(),
+            ordered[1]["queuedId"].clone(),
+        );
+        assert!(drop.as_str().is_some_and(|id| id.starts_with("q_")));
+
+        let removed = send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":drop,"effectId":"d1"}),
+        )
+        .await;
+        let edited = send(&session, serde_json::json!({"type":"edit_queued_message","queuedId":keep,"text":"kept and edited","effectId":"e1"})).await;
+        let missing = send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":"q_999"}),
+        )
+        .await;
+        let invalid = send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":""}),
+        )
+        .await;
+
+        assert_eq!(
+            (
+                removed["success"].clone(),
+                removed["data"]["status"].clone()
+            ),
+            (true.into(), "removed".into()),
+            "{removed}"
+        );
+        assert_eq!(
+            (
+                removed["data"]["effectId"].clone(),
+                removed["data"]["state"].clone()
+            ),
+            ("d1".into(), "done".into())
+        );
+        assert_eq!(
+            (
+                edited["data"]["status"].clone(),
+                edited["data"]["effectId"].clone(),
+                edited["data"]["state"].clone()
+            ),
+            ("edited".into(), "e1".into(), "done".into()),
+            "{edited}"
+        );
+        assert_eq!(
+            (
+                missing["success"].clone(),
+                missing["data"]["status"].clone(),
+                missing["data"]["reason"].clone()
+            ),
+            (true.into(), "not_found".into(), "not_found".into()),
+            "{missing}"
+        );
+        assert!(
+            missing["data"]["action"].as_str().is_some_and(
+                |action| action.contains("get_state") || action.contains("queue_update")
+            )
+        );
+        assert_eq!(invalid["success"], false, "{invalid}");
+        let state = send(&session, serde_json::json!({"type":"get_state"})).await;
+        assert_eq!(
+            state["data"]["steering"],
+            serde_json::json!(["kept and edited"])
+        );
+        let ids = queued(&session)
+            .await
+            .iter()
+            .map(|input| input["queuedId"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [keep]);
+        let replay = send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":drop,"effectId":"d1"}),
+        )
+        .await;
+        assert_eq!(
+            (
+                replay["success"].clone(),
+                replay["data"]["status"].clone(),
+                replay["data"]["replayed"].clone()
+            ),
+            (true.into(), "removed".into(), true.into()),
+            "{replay}"
+        );
+    }
+
+    /// senpi test/suite/rpc-queued-input-revision.test.ts: a stale revision is refused with the current one, an
+    /// edit answers its new revision, a conflict replays, and a revision below 1 is refused before anything runs.
+    #[tokio::test]
+    async fn a_stale_revision_is_refused_with_the_current_one_and_replays() {
+        let session = session();
+        let info = send(&session, serde_json::json!({"type":"get_protocol_info"})).await;
+        assert!(
+            info["data"]["capabilities"].as_array().is_some_and(
+                |capabilities| capabilities.contains(&"queued_message_revision".into())
+            ),
+            "{info}"
+        );
+        send(
+            &session,
+            serde_json::json!({"type":"follow_up","message":"draft"}),
+        )
+        .await;
+        let seen = queued(&session).await[0].clone();
+        assert_eq!(seen["revision"], 1);
+        let id = seen["queuedId"].clone();
+
+        let first = send(&session, serde_json::json!({"type":"edit_queued_message","queuedId":id,"text":"client B","expectedRevision":1})).await;
+        let stale = send(&session, serde_json::json!({"type":"edit_queued_message","queuedId":id,"text":"client A","expectedRevision":1,"effectId":"e-stale"})).await;
+        let stale_remove = send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":id,"expectedRevision":1}),
+        )
+        .await;
+        let replay = send(&session, serde_json::json!({"type":"edit_queued_message","queuedId":id,"text":"client A","expectedRevision":1,"effectId":"e-stale"})).await;
+        let bad_revision = send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":id,"expectedRevision":0}),
+        )
+        .await;
+
+        assert_eq!(
+            first["data"],
+            serde_json::json!({"queuedId":id,"status":"edited","text":"client B","revision":2}),
+            "{first}"
+        );
+        for (field, expected) in [
+            ("status", "conflict".into()),
+            ("queuedId", id.clone()),
+            ("currentRevision", 2.into()),
+            ("reason", "conflict".into()),
+            ("effectId", "e-stale".into()),
+            ("state", "failed".into()),
+        ] {
+            assert_eq!(stale["data"][field], expected, "{field}: {stale}");
+        }
+        assert!(
+            stale["data"]["action"].as_str().is_some_and(
+                |action| action.contains("get_state") || action.contains("queue_update")
+            )
+        );
+        assert_eq!(
+            (
+                stale_remove["data"]["status"].clone(),
+                stale_remove["data"]["currentRevision"].clone()
+            ),
+            ("conflict".into(), 2.into()),
+            "{stale_remove}"
+        );
+        assert_eq!(
+            (
+                replay["data"]["status"].clone(),
+                replay["data"]["replayed"].clone()
+            ),
+            ("conflict".into(), true.into()),
+            "{replay}"
+        );
+        assert_eq!(bad_revision["success"], false, "{bad_revision}");
+        let current = queued(&session).await;
+        assert_eq!(current.len(), 1);
+        assert_eq!(
+            (
+                current[0]["queuedId"].clone(),
+                current[0]["text"].clone(),
+                current[0]["revision"].clone()
+            ),
+            (id, "client B".into(), 2.into())
+        );
+    }
+
+    /// senpi rpc-queued-input-revision.test.ts: "answers a same-id retry with exactly the fields of the live answer,
+    /// for every outcome".
+    #[tokio::test]
+    async fn a_same_id_retry_answers_exactly_the_live_fields() {
+        let session = session();
+        send(
+            &session,
+            serde_json::json!({"type":"follow_up","message":"edit me"}),
+        )
+        .await;
+        send(
+            &session,
+            serde_json::json!({"type":"follow_up","message":"remove me"}),
+        )
+        .await;
+        let ordered = queued(&session).await;
+        let (edit, remove) = (
+            ordered[0]["queuedId"].clone(),
+            ordered[1]["queuedId"].clone(),
+        );
+        let requests = [
+            serde_json::json!({"type":"edit_queued_message","queuedId":edit,"text":"edited","expectedRevision":1,"effectId":"r-edit"}),
+            serde_json::json!({"type":"edit_queued_message","queuedId":edit,"text":"stale","expectedRevision":1,"effectId":"r-conflict"}),
+            serde_json::json!({"type":"dequeue_message","queuedId":remove,"effectId":"r-remove"}),
+            serde_json::json!({"type":"dequeue_message","queuedId":"q_999","effectId":"r-missing"}),
+        ];
+        for request in requests {
+            let mut live = send(&session, request.clone()).await["data"].clone();
+            let mut replay = send(&session, request.clone()).await["data"].clone();
+            assert_eq!(replay["replayed"], true, "{request}: {replay}");
+            for answer in [&mut live, &mut replay] {
+                answer.as_object_mut().expect("data").remove("replayed");
+            }
+            assert_eq!(replay, live, "{request}");
+        }
+    }
+
+    /// senpi test/suite/rpc-pending-inputs.test.ts "refuses more than 64 known ids before reading anything", and
+    /// the snapshot shape of a session that holds nothing in durable custody.
+    #[tokio::test]
+    async fn get_pending_inputs_answers_outcomes_and_refuses_more_than_64_ids() {
+        let session = session();
+        let ids = (0..65)
+            .map(|index| format!("c-{index}"))
+            .collect::<Vec<_>>();
+        let refused = send(
+            &session,
+            serde_json::json!({"type":"get_pending_inputs","knownClientMessageIds":ids}),
+        )
+        .await;
+        assert_eq!(refused["success"], false, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("at most 64")),
+            "{refused}"
+        );
+
+        let snapshot = send(&session, serde_json::json!({"id":"p","type":"get_pending_inputs","knownClientMessageIds":["never-sent"]})).await;
+        assert_eq!(
+            (
+                snapshot["id"].clone(),
+                snapshot["command"].clone(),
+                snapshot["success"].clone()
+            ),
+            ("p".into(), "get_pending_inputs".into(), true.into()),
+            "{snapshot}"
+        );
+        assert_eq!(snapshot["data"]["inputs"], serde_json::json!([]));
+        assert_eq!(snapshot["data"]["throughCursor"], 0);
+        assert_eq!(
+            snapshot["data"]["outcomes"],
+            serde_json::json!([{"clientMessageId":"never-sent","status":"not_admitted"}])
+        );
+        assert!(
+            snapshot["data"]["lifetimeId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+    }
+
+    /// senpi connection-handler.ts `get_effect_status`: an unknown id on the loaded session is `found: false`, a
+    /// receipt written by an effect command is found, and an unreadable `sessionPath` is `transcript_unreadable`.
+    #[tokio::test]
+    async fn get_effect_status_reads_the_session_ledger_and_refuses_an_unreadable_path() {
+        let session = session();
+        let unknown = send(
+            &session,
+            serde_json::json!({"type":"get_effect_status","effectId":"never"}),
+        )
+        .await;
+        assert_eq!(
+            unknown["data"],
+            serde_json::json!({"found":false,"searched":"complete"}),
+            "{unknown}"
+        );
+        send(
+            &session,
+            serde_json::json!({"type":"dequeue_message","queuedId":"q_404","effectId":"gone"}),
+        )
+        .await;
+        let found = send(
+            &session,
+            serde_json::json!({"type":"get_effect_status","effectId":"gone"}),
+        )
+        .await;
+        assert_eq!(
+            (
+                found["data"]["found"].clone(),
+                found["data"]["effect"]["state"].clone()
+            ),
+            (true.into(), "failed".into()),
+            "{found}"
+        );
+        let dir = tempfile::tempdir().expect("directory");
+        let missing = dir.path().join("absent.jsonl");
+        let unreadable = send(&session, serde_json::json!({"type":"get_effect_status","effectId":"e","sessionPath":missing.to_string_lossy()})).await;
+        assert_eq!(
+            (
+                unreadable["success"].clone(),
+                unreadable["errorCode"].clone()
+            ),
+            (
+                false.into(),
+                crate::rpc_types::RPC_ERROR_TRANSCRIPT_UNREADABLE.into()
+            ),
+            "{unreadable}"
+        );
     }
 
     #[tokio::test]
