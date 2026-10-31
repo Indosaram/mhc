@@ -51,6 +51,7 @@ pub mod host_command;
 pub mod host_handover_args;
 pub mod host_request;
 pub mod host_runtime;
+pub mod host_session_command;
 #[cfg(feature = "omo")]
 pub mod host_transport;
 pub mod initial_message;
