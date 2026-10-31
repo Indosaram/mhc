@@ -1,6 +1,7 @@
 //! `keybinding-hints.ts` reads the process-wide manager (`getKeybindings()`), so a user rebind
 //! installed with `setKeybindings` reaches every hint. The manager is process-global, so the swap
-//! holds `global_keybindings`'s lock and is restored when the test ends.
+//! runs in its own test binary (`global_keybindings_main.rs`), holds `global_keybindings`'s lock and is
+//! restored when the test ends.
 
 use maho_interactive::components::keybinding_hints::{key_display_text, key_text};
 use maho_tui::keybindings::{KeybindingsConfig, Keys};

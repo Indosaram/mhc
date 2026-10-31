@@ -48,3 +48,9 @@ workspace = true
 [[test]]
 name = "integration"
 path = "tests/main.rs"
+
+# Tests that swap the process-global keybindings run in their own process: the integration binary
+# has unlocked writers (InteractiveMode::new, /reload, /keybindings) and readers of that global.
+[[test]]
+name = "global_keybindings"
+path = "tests/global_keybindings_main.rs"
