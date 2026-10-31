@@ -8251,15 +8251,24 @@ impl InteractiveMode {
         for action in &mut self.parked_actions {
             action.painted = true;
         }
-        std::future::poll_fn(|context| {
-            self.poll_parked(context);
-            if self.parked_actions.is_empty() {
-                std::task::Poll::Ready(())
-            } else {
-                std::task::Poll::Pending
+        // A parked action can raise a UI request it then awaits (a /resume asking for project trust, senpi
+        // `projectTrustContextFactory`), so the dialogs it opens are served here as `await_turn` does.
+        while !self.parked_actions.is_empty() {
+            let request = std::future::poll_fn(|context| {
+                self.poll_parked(context);
+                if self.parked_actions.is_empty() {
+                    return std::task::Poll::Ready(None);
+                }
+                match self.ui_requests.poll_recv(context) {
+                    std::task::Poll::Ready(Some(request)) => std::task::Poll::Ready(Some(request)),
+                    _ => std::task::Poll::Pending,
+                }
+            })
+            .await;
+            if let Some(request) = request {
+                self.handle_ui_request(request);
             }
-        })
-        .await;
+        }
     }
 
     /// Enqueue into a live turn without awaiting it on the UI task. Failures surface when the

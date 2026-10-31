@@ -307,9 +307,11 @@ pub struct ResolvedProjectTrust {
 /// senpi `projectTrustContextFactory` + `resolveProjectTrusted` for a replacement in another project with no
 /// cached, overridden, Full-access or saved-"trust" decision: emits the extension `project_trust` event, reads the
 /// saved decision and `defaultProjectTrust`, and asks when the host has a UI that can. The host caches the answer.
-/// Arguments: the target cwd and the runtime's current `permission-preset` (already known not to grant Full access).
+/// Arguments: the target cwd, the runtime's current `permission-preset` (already known not to grant Full access),
+/// and the UI of a host that may ask (senpi `projectTrustContext.ui`, `hasUI: true`): the extension `project_trust`
+/// handlers run with it. `None` is senpi's context-less replacement (`hasUI: false`).
 pub type ProjectTrustResolver = std::sync::Arc<
-    dyn Fn(String, Option<String>)
+    dyn Fn(String, Option<String>, Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)
             -> std::pin::Pin<Box<dyn std::future::Future<Output = ResolvedProjectTrust> + Send>>
         + Send
         + Sync,
@@ -981,7 +983,7 @@ impl AgentSessionRuntime {
                 Some(maho_ext_api::FlagValue::String(preset)) => Some(preset.clone()),
                 _ => None,
             };
-            let resolved = resolver(cwd.to_owned(), preset).await;
+            let resolved = resolver(cwd.to_owned(), preset, None).await;
             self.diagnostics
                 .extend(resolved.warnings.into_iter().map(|message| AgentSessionRuntimeDiagnostic {
                     kind: crate::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning,
@@ -2694,7 +2696,7 @@ mod tests {
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = asked.clone();
         let resolver: ProjectTrustResolver =
-            std::sync::Arc::new(move |cwd: String, preset: Option<String>| {
+            std::sync::Arc::new(move |cwd: String, preset: Option<String>, _ui| {
                 seen.lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push((cwd, preset));
@@ -2735,7 +2737,7 @@ mod tests {
             .insert(other.clone(), false);
         runtime.set_project_trust_cache(Some(cache));
         let resolver: ProjectTrustResolver =
-            std::sync::Arc::new(|_: String, _: Option<String>| -> ProjectTrustResolution {
+            std::sync::Arc::new(|_: String, _: Option<String>, _| -> ProjectTrustResolution {
                 panic!("a cached decision is never asked again")
             });
         runtime.set_project_trust_resolver(Some(resolver));
@@ -2771,12 +2773,15 @@ mod tests {
 
     /// senpi's symlink fixture: a link to project B under B's own fixture-owned temp root. Fails the test when
     /// the link cannot be made.
+    /// senpi's `home/other-link`: the link lives in its own fixture-owned temp dir beside the project, never inside
+    /// it, so the project tree has no cycle. Fails the test when the link cannot be made.
     #[cfg(unix)]
-    fn link_to(other: &tempfile::TempDir, target: &str) -> String {
-        let link = other.path().join("other-link");
+    fn link_to(target: &str) -> (tempfile::TempDir, String) {
+        let home = crate::test_support::isolated_tempdir();
+        let link = home.path().join("other-link");
         std::os::unix::fs::symlink(target, &link)
             .unwrap_or_else(|error| panic!("cannot create the symlink fixture {}: {error}", link.display()));
-        link.to_string_lossy().into_owned()
+        (home, link.to_string_lossy().into_owned())
     }
 
     // senpi "a project reached through a symlink is keyed by its real path: its own saved decision applies".
@@ -2784,12 +2789,12 @@ mod tests {
     #[tokio::test]
     async fn a_project_reached_through_a_symlink_is_keyed_by_its_real_path() {
         let (_dir, mut runtime) = full_access_fixture(Some(true)).await;
-        let (other_dir, other, path) = other_project_session();
+        let (_other_dir, other, path) = other_project_session();
         // B's saved "trust" is stored under its real path; the session reaches B through a link.
         trust_store(&runtime)
             .set(&other, Some(true))
             .expect("save trust");
-        let link = link_to(&other_dir, &other);
+        let (_home, link) = link_to(&other);
 
         switch_into(&mut runtime, &link, &path).await;
         runtime.set_permission_preset("ask".to_owned()).await;
@@ -2805,8 +2810,8 @@ mod tests {
     async fn a_symlinked_project_without_its_own_decision_does_not_inherit_the_opening_project() {
         // A is saved "trust"; B (reached through a link) has no decision, so only Full access trusts it.
         let (_dir, mut runtime) = saved_trust_fixture().await;
-        let (other_dir, other, path) = other_project_session();
-        let link = link_to(&other_dir, &other);
+        let (_other_dir, other, path) = other_project_session();
+        let (_home, link) = link_to(&other);
 
         switch_into(&mut runtime, &link, &path).await;
         runtime.set_permission_preset("ask".to_owned()).await;

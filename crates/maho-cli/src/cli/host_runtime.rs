@@ -393,6 +393,21 @@ pub async fn resolve_launch_project_trust(
     selector: Box<super::project_trust::Selector>,
     launch_profile: Option<&AgentSessionLaunchProfile>,
 ) -> LaunchProjectTrust {
+    resolve_launch_project_trust_with(config, cwd, mode, has_ui, selector, launch_profile, None).await
+}
+
+/// [`resolve_launch_project_trust`] where the extension `project_trust` handlers run with a live session's UI and
+/// `hasUI: true` (senpi interactive `projectTrustContextFactory`). The prompt itself stays with the caller: no
+/// selector is shown here.
+pub async fn resolve_launch_project_trust_with(
+    config: &CliRuntimeConfiguration,
+    cwd: &str,
+    mode: AppMode,
+    has_ui: bool,
+    selector: Box<super::project_trust::Selector>,
+    launch_profile: Option<&AgentSessionLaunchProfile>,
+    session_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+) -> LaunchProjectTrust {
     let cached = config
         .project_trust_by_cwd
         .lock()
@@ -466,13 +481,18 @@ pub async fn resolve_launch_project_trust(
                 }
             }),
         });
-        let resolved = super::project_trust::resolve_extension_project_trust(
+        let (handler_ui, handler_has_ui): (Arc<dyn maho_ext_api::ExtensionUi>, bool) = match session_ui {
+            Some(session_ui) => (session_ui, true),
+            None => (ui, has_ui),
+        };
+        let resolved = super::project_trust::resolve_extension_project_trust_with(
             cwd,
             &config.agent_dir,
             &config.resolved_extension_paths(),
             config.no_extensions,
             mode,
-            ui,
+            handler_ui,
+            handler_has_ui,
         )
         .await;
         warnings.extend(resolved.load_warnings);
@@ -543,13 +563,15 @@ pub async fn resolve_launch_project_trust(
     LaunchProjectTrust { trusted, trust_from_full_access: false, decided, warnings }
 }
 
-/// senpi `createServices` for a replacement's cwd, without a prompt: the extension `project_trust` event, the
-/// saved decision and `defaultProjectTrust` (hasUI false). `decided` is false when only a prompt could trust it.
+/// senpi `createServices` for a replacement's cwd: the extension `project_trust` event, the saved decision and
+/// `defaultProjectTrust`. The handlers run with the session's UI and `hasUI: true` when the switch may ask (senpi
+/// interactive `projectTrustContextFactory`), else headless. Nothing is prompted here; `decided` is false when only
+/// the caller's prompt could trust the project.
 pub fn project_trust_resolver(
     config: &CliRuntimeConfiguration,
 ) -> maho_core::agent_session_runtime::ProjectTrustResolver {
     let config = config.clone();
-    Arc::new(move |cwd: String, preset: Option<String>| {
+    Arc::new(move |cwd: String, preset: Option<String>, session_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>| {
         let config = config.clone();
         Box::pin(async move {
             let profile = AgentSessionLaunchProfile {
@@ -557,13 +579,14 @@ pub fn project_trust_resolver(
                 permission_preset: preset,
                 ..Default::default()
             };
-            let resolved = resolve_launch_project_trust(
+            let resolved = resolve_launch_project_trust_with(
                 &config,
                 &cwd,
                 to_project_trust_mode(config.app_mode),
                 false,
                 Box::new(|_, _| None),
                 Some(&profile),
+                session_ui,
             )
             .await;
             maho_core::agent_session_runtime::ResolvedProjectTrust {
