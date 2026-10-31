@@ -362,6 +362,26 @@ impl McpFormsUnbind{
     }
     #[test]fn tool_updates_replace_only_same_key_until_barrier(){let mut queue=RecordQueue::default();queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":1}));queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":2}));assert_eq!(queue.pop().unwrap()["value"],2);assert!(queue.pop().is_none());}
     #[test]fn scheduler_round_robins_only_after_current_record_drains(){let mut scheduler=SessionRecordScheduler::default();scheduler.enqueue("a",None,json!({"n":1}));scheduler.enqueue("a",None,json!({"n":2}));scheduler.enqueue("b",None,json!({"n":3}));assert_eq!(scheduler.next_record().unwrap().1["n"],1);assert!(scheduler.next_record().is_none());scheduler.enqueue("a",None,json!({"n":4}));scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],3);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],2);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],4);scheduler.acknowledge_write();assert!(scheduler.next_record().is_none());}
+    /// 3913-sealed-reattach / 3913-writer-accounting "delivers an admitted close response even when overflow already
+    /// sealed the handle": a terminal close on a sealed session appends only its response, never a second seal.
+    #[tokio::test]async fn an_admitted_close_on_a_sealed_session_appends_only_its_response(){
+        use tokio::io::AsyncReadExt;
+        let(writer,mut reader)=tokio::io::duplex(64*1024);
+        let actor=SessionWriterActor::new(writer);
+        let first=json!({"type":"response","command":"close_session","success":false});
+        let id=actor.reserve_close_response("session",&first,true).unwrap().unwrap();
+        actor.complete_close_response(id,"session",first.clone(),true,Some("client_close")).unwrap();
+        assert!(actor.is_session_sealed("session"));
+        let reply=json!({"id":"close","type":"response","command":"close_session","success":true});
+        let id=actor.reserve_close_response("session",&reply,true).unwrap().unwrap();
+        actor.complete_close_response(id,"session",reply,true,Some("client_close")).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2),actor.flush()).await.unwrap().unwrap();
+        drop(actor);
+        let mut wire=String::new();reader.read_to_string(&mut wire).await.unwrap();
+        let records=wire.lines().map(|line|serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+        assert_eq!(records.iter().filter(|record|record["type"]=="session_closed").count(),1);
+        assert_eq!(records.last(),Some(&json!({"sessionId":"session","id":"close","type":"response","command":"close_session","success":true})));
+    }
     #[test]fn presenters_answer_private_records_only_when_enabled_and_withdraw_on_capability_loss(){
         let presenters=SessionMcpPresenters::default();
         assert_eq!(presenters.handle(&json!({"type":"mcp_form_sync","id":"1"}),Some("c")),None);
