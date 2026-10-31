@@ -18359,6 +18359,27 @@ impl AgentSession {
     /// Clear all queued messages and return them. `ordered` preserves the recovery order across
     /// both native queue modes.
     pub fn clear_queue(&self, abort_will_follow: bool) -> ClearedQueue {
+        let cleared_custom_messages: Vec<maho_agent::harness::messages::CustomMessage> = {
+            let state = self.state();
+            let receipts = lock(&self.queued_custom_receipts);
+            receipts
+                .iter()
+                .filter(|(_, receipt)| receipt.outcome().is_none())
+                .filter_map(|(custom, _)| {
+                    let agent_message = AgentMessage::Custom(
+                        maho_agent::types::CustomAgentMessage::Custom(custom.clone()),
+                    );
+                    let in_cleared_queue = self.agent.contains_queued_message(&agent_message)
+                        || state
+                            .post_compaction_deferred_steering_messages
+                            .contains(&agent_message)
+                        || state
+                            .post_compaction_deferred_follow_up_messages
+                            .contains(&agent_message);
+                    in_cleared_queue.then(|| custom.clone())
+                })
+                .collect()
+        };
         let steering;
         let follow_up;
         let ordered;
@@ -18378,7 +18399,35 @@ impl AgentSession {
         let cleared_deliveries = self.queued_delivery_tickets();
         self.agent.clear_all_queues();
         self.release_queued_deliveries(&cleared_deliveries, "cleared");
-        self.audit_queued_custom_receipts("queued custom message cleared before delivery");
+        for custom in cleared_custom_messages {
+            let is_appended =
+                serde_json::to_value(&custom.content)
+                    .ok()
+                    .is_some_and(|content_val| {
+                        self.with_session_manager(|manager| {
+                            manager.entries().iter().rev().any(|e| {
+                                let details_match = match (&custom.details, e.get("details")) {
+                                    (Some(expected), Some(actual)) => expected == actual,
+                                    (None, None) | (None, Some(Value::Null)) => true,
+                                    _ => false,
+                                };
+                                e.get("type").and_then(Value::as_str) == Some("custom_message")
+                                    && e.get("customType").and_then(Value::as_str)
+                                        == Some(custom.custom_type.as_str())
+                                    && e.get("content") == Some(&content_val)
+                                    && e.get("display").and_then(Value::as_bool)
+                                        == Some(custom.display)
+                                    && details_match
+                            })
+                        })
+                    });
+            if !is_appended {
+                self.settle_queued_custom_receipt(
+                    &custom,
+                    Err("queued custom message cleared before delivery".to_owned()),
+                );
+            }
+        }
         self.emit_queue_update();
         ClearedQueue {
             steering,
@@ -24091,6 +24140,173 @@ mod tests {
         assert_eq!(cleared.steering, vec!["a".to_owned()]);
         assert_eq!(cleared.follow_up, vec!["b".to_owned()]);
         assert_eq!(session.pending_message_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn clear_queue_settles_only_genuinely_cleared_custom_receipts() {
+        let session = test_session();
+
+        // 1. Unqueued custom message and receipt simulating consumed in-flight
+        let unqueued_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "in_flight".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "in flight payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"flight_id": 42})),
+            timestamp: 0,
+        };
+        let unqueued_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(unqueued_msg.clone(), unqueued_receipt.clone());
+
+        // 2. Genuinely queued custom message and receipt
+        let queued_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "queued_turn".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "queued payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"queued_id": 7})),
+            timestamp: 0,
+        };
+        let queued_agent_msg = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+            queued_msg.clone(),
+        ));
+        session.agent.steer(queued_agent_msg);
+        let queued_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(queued_msg.clone(), queued_receipt.clone());
+
+        // 3. Appended-but-still-queued custom message to verify transcript guard
+        let appended_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "appended_already".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "appended payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"appended_id": 99})),
+            timestamp: 0,
+        };
+        let appended_agent_msg = AgentMessage::Custom(
+            maho_agent::types::CustomAgentMessage::Custom(appended_msg.clone()),
+        );
+        session.agent.steer(appended_agent_msg);
+        let appended_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(appended_msg.clone(), appended_receipt.clone());
+        session.with_session_manager_mut(|manager| {
+            manager.append_custom_message(
+                &appended_msg.custom_type,
+                serde_json::to_value(&appended_msg.content).expect("content to value"),
+                appended_msg.display,
+                appended_msg.details.clone(),
+            );
+        });
+
+        // 4. Pending next-turn message and receipt (must NOT be cleared or failed)
+        let next_turn_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "next_turn".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "next turn payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"next_turn_id": 123})),
+            timestamp: 0,
+        };
+        let next_turn_agent_msg = AgentMessage::Custom(
+            maho_agent::types::CustomAgentMessage::Custom(next_turn_msg.clone()),
+        );
+        session
+            .state()
+            .pending_next_turn_messages
+            .push(next_turn_agent_msg.clone());
+        let next_turn_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(next_turn_msg.clone(), next_turn_receipt.clone());
+
+        // 5. Pending custom message (must NOT be cleared or failed)
+        let pending_streaming_msg = maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(),
+            custom_type: "streaming_pending".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text(
+                "streaming pending payload".into(),
+            ),
+            display: true,
+            details: Some(serde_json::json!({"streaming_id": 456})),
+            timestamp: 0,
+        };
+        session
+            .state()
+            .pending_custom_messages
+            .push(pending_streaming_msg.clone());
+        let pending_streaming_receipt = maho_ext_api::MessageDeliveryReceipt::pending();
+        session.track_queued_custom_receipt(
+            pending_streaming_msg.clone(),
+            pending_streaming_receipt.clone(),
+        );
+
+        // Register oneshot settlement callbacks before the action
+        let (unqueued_tx, unqueued_rx) = tokio::sync::oneshot::channel();
+        unqueued_receipt.on_settled(move |outcome| {
+            let _ = unqueued_tx.send(outcome);
+        });
+
+        let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
+        queued_receipt.on_settled(move |outcome| {
+            let _ = queued_tx.send(outcome);
+        });
+
+        let (appended_tx, appended_rx) = tokio::sync::oneshot::channel();
+        appended_receipt.on_settled(move |outcome| {
+            let _ = appended_tx.send(outcome);
+        });
+
+        // Act: clear the queue
+        session.clear_queue(false);
+
+        // Queued receipt must be failed by clear_queue
+        let queued_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), queued_rx)
+            .await
+            .expect("queued receipt did not settle within timeout")
+            .expect("queued oneshot closed");
+        assert!(queued_outcome.is_err());
+
+        // Unqueued receipt must remain pending (not failed by clear_queue)
+        assert!(unqueued_receipt.outcome().is_none());
+
+        // Appended-but-still-queued receipt must also remain pending due to transcript guard
+        assert!(appended_receipt.outcome().is_none());
+
+        // Pending next-turn message and receipt must remain preserved in state and pending
+        assert!(next_turn_receipt.outcome().is_none());
+        assert_eq!(
+            session.state().pending_next_turn_messages,
+            vec![next_turn_agent_msg]
+        );
+
+        // Pending streaming custom message and receipt must remain preserved in state and pending
+        assert!(pending_streaming_receipt.outcome().is_none());
+        assert_eq!(
+            session.state().pending_custom_messages,
+            vec![pending_streaming_msg]
+        );
+
+        // Manually settle unqueued receipt as delivered and await exact outcome
+        session.settle_queued_custom_receipt(&unqueued_msg, Ok(()));
+        let unqueued_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), unqueued_rx)
+            .await
+            .expect("unqueued receipt did not settle within timeout")
+            .expect("unqueued oneshot closed");
+        assert_eq!(unqueued_outcome, Ok(()));
+
+        // Manually settle appended receipt as delivered and await exact outcome
+        session.settle_queued_custom_receipt(&appended_msg, Ok(()));
+        let appended_outcome = tokio::time::timeout(std::time::Duration::from_secs(5), appended_rx)
+            .await
+            .expect("appended receipt did not settle within timeout")
+            .expect("appended oneshot closed");
+        assert_eq!(appended_outcome, Ok(()));
     }
 
     #[test]
