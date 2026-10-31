@@ -65,11 +65,13 @@ maho-ext-imagegen = { path = "../builtins/maho-ext-imagegen" }
 maho-ext-openai-image-gen = { path = "../builtins/maho-ext-openai-image-gen" }
 maho-ext-herdr = { path = "../builtins/maho-ext-herdr" }
 maho-ext-btw = { path = "../builtins/maho-ext-btw" }
-maho-ext-llama = { path = "../builtins/maho-ext-llama" }
 maho-ext-cache-keepalive = { path = "../builtins/maho-ext-cache-keepalive" }
 maho-ext-handoff-hint = { path = "../builtins/maho-ext-handoff-hint" }
 maho-ext-webfetch = { path = "../builtins/maho-ext-webfetch" }
 maho-ext-goal = { path = "../builtins/maho-ext-goal" }
+maho-ext-schedule = { path = "../builtins/maho-ext-schedule" }
+maho-ext-html-render = { path = "../builtins/maho-ext-html-render" }
+maho-ext-vertex-model-garden = { path = "../builtins/maho-ext-vertex-model-garden" }
 maho-ext-rules = { path = "../builtins/maho-ext-rules" }
 maho-ext-compaction = { path = "../builtins/maho-ext-compaction" }
 maho-ext-host = { path = "../maho-ext-host" }
