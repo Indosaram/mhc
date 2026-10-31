@@ -31,9 +31,12 @@ pub const SUMMARY_SHUTDOWN_WAIT_MS: u64 = 1_000;
 
 /// The privacy client's capture entry: an ack-gated event returns the transport's immediate-send future.
 pub type CaptureFn = Arc<
-    dyn Fn(&str, Map<String, Value>, Option<EventTelemetryCaptureOptions>) -> Option<
-            BoxFuture<'static, Result<(), TelemetryDeliveryError>>,
-        > + Send
+    dyn Fn(
+            &str,
+            Map<String, Value>,
+            Option<EventTelemetryCaptureOptions>,
+        ) -> Option<BoxFuture<'static, Result<(), TelemetryDeliveryError>>>
+        + Send
         + Sync,
 >;
 
@@ -117,9 +120,11 @@ impl NativeCaptureState {
                     timestamp_ms: Some(publication.timestamp_ms),
                     ..Default::default()
                 };
-                let Some(send) =
-                    capture("session_summary", publication.properties.clone(), Some(options))
-                else {
+                let Some(send) = capture(
+                    "session_summary",
+                    publication.properties.clone(),
+                    Some(options),
+                ) else {
                     return Err(transient(
                         "session_summary was rejected before reaching the transport",
                     ));
@@ -178,9 +183,13 @@ pub fn create_native_summary_recorder(
     );
     let diagnostics = input.diagnostics.clone();
     SessionSummaryRecorder::new(SessionSummaryOptions {
-        is_consented: Arc::new(move |fresh| consent_is_consented.is_consented(fresh)),
+        // Consent is read fresh before every summary write (upstream `isConsented: () => currentConsent(true)`):
+        // a cached read would let a turn right after an opt-out still persist a window.
+        is_consented: Arc::new(move |_fresh| consent_is_consented.is_consented(true)),
         consent_scope: Arc::new(move || consent_scope.consent_scope()),
-        is_scope_consented: Arc::new(move |scope| consent_scope_consented.is_scope_consented(scope)),
+        is_scope_consented: Arc::new(move |scope| {
+            consent_scope_consented.is_scope_consented(scope)
+        }),
         storage,
         publish: NativeCaptureState::publish(&input.state),
         session_role: input.session_role,
@@ -194,13 +203,16 @@ pub fn create_native_summary_recorder(
 
 /// `telemetry.rawTurnSampleRate` from omo.json; an unreadable config leaves the documented default.
 fn configured_sample_rate(cwd: Option<&Path>, env: &telemetry_core::TelemetryEnv) -> Option<f64> {
-    let loaded = maho_omo_config_resolution::load_senpi_omo_config(
-        omo_config_core::LoadOmoConfigOptions {
+    let loaded =
+        maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
             cwd: cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
-            env: Some(env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
+            env: Some(
+                env.iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
             ..Default::default()
-        },
-    );
+        });
     omo_config_core::omo_telemetry_raw_turn_sample_rate(&loaded.config)
 }
 
@@ -214,8 +226,8 @@ pub async fn settle_within(work: BoxFuture<'static, ()>, ms: u64) {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn options(enabled: Arc<AtomicBool>) -> crate::index::SenpiTelemetryOptions {
         crate::index::SenpiTelemetryOptions {
@@ -299,11 +311,14 @@ mod tests {
         let error = (publish)(publication()).await.expect_err("rejected");
         assert!(!error.permanent);
         state.set_capture(Arc::new(|_, _, _| {
-            Some(
-                async { Err(TelemetryDeliveryError::new(Some(400), None)) }.boxed(),
-            )
+            Some(async { Err(TelemetryDeliveryError::new(Some(400), None)) }.boxed())
         }));
-        assert!((publish)(publication()).await.expect_err("refused").permanent);
+        assert!(
+            (publish)(publication())
+                .await
+                .expect_err("refused")
+                .permanent
+        );
     }
 
     #[tokio::test]

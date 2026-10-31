@@ -343,6 +343,9 @@ pub struct StartNativeSessionInput<'a> {
     pub payload: &'a Value,
     pub agent_dir: &'a Path,
     pub session_role: TelemetrySessionRole,
+    /// The session context's component logger; a failed legacy daily-active send is reported there
+    /// (upstream `ctx.logger.warn`), on stderr when the host hands none.
+    pub logger: Option<Arc<dyn maho_ext_api::ComponentLogger>>,
 }
 
 pub fn start_native_session(
@@ -474,9 +477,18 @@ pub fn start_native_session(
     client.capture_event("session_started", &properties);
     let mut legacy = options.clone();
     legacy.state_dir = Some(get_senpi_telemetry_state_dir(&env));
+    let logger = input.logger.clone();
     tokio::spawn(async move {
         if let Err(error) = crate::index::record_senpi_daily_active(&legacy).await {
-            maho_ext_api::diagnostic(&format!("omo-senpi legacy telemetry failed: {error}"));
+            match logger {
+                Some(logger) => logger.warn(
+                    "omo-senpi legacy telemetry failed",
+                    Some(&json!({"error": error.to_string()})),
+                ),
+                None => {
+                    maho_ext_api::diagnostic(&format!("omo-senpi legacy telemetry failed: {error}"))
+                }
+            }
         }
     });
     Ok(Some(client))
