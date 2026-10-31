@@ -1045,6 +1045,78 @@ mod tests {
         }
     }
 
+    /// senpi test/suite/regressions/2848-sdk-boundary-cwd.test.ts: every model request the SDK session's agent
+    /// streams carries the session cwd, overriding whatever the caller's options held, so subprocess-backed lanes
+    /// (the Claude SDK lane) start in the session cwd.
+    #[tokio::test]
+    async fn sdk_stream_requests_carry_the_session_cwd() {
+        use maho_ai::providers::faux::{
+            FauxModelDefinition, RegisterFauxProviderOptions, faux_assistant_message, faux_provider,
+        };
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let faux = faux_provider(RegisterFauxProviderOptions {
+            models: Some(vec![FauxModelDefinition {
+                id: "faux-1".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        })
+        .expect("faux provider");
+        faux.core.set_responses(vec![
+            faux_assistant_message("ok", Default::default()).into(),
+        ]);
+        let mut runtime =
+            ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(Vec::new()),
+                ..Default::default()
+            })
+            .expect("model runtime");
+        runtime.register_native_provider(faux.provider.clone());
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()),
+            agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()),
+            model_runtime: Some(runtime),
+            session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()),
+            ..Default::default()
+        })
+        .await
+        .expect("SDK session");
+        let mut options = maho_agent::types::AgentStreamOptions::default();
+        options.simple.stream.request.cwd = Some("/caller-cwd".into());
+        options.simple.stream.request.api_key = Some("fixture-key".into());
+        let model = faux.get_model(Some("faux-1")).expect("model");
+        let stream = created.session.agent().stream_function()(
+            &model,
+            &maho_ai::types::Context {
+                active_tool_names: None,
+                system_prompt: None,
+                messages: Vec::new(),
+                tools: None,
+            },
+            Some(options),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+            .await
+            .expect("bounded stream")
+            .expect("result");
+        created.session.dispose().await;
+        let log = faux.get_call_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            log[0]
+                .options
+                .as_ref()
+                .expect("options")
+                .request
+                .cwd
+                .as_deref(),
+            Some(cwd.as_str())
+        );
+    }
+
     #[tokio::test]
     async fn sdk_rejects_a_fresh_model_without_startup_context_budget() {
         let dir = tempfile::tempdir().expect("directory");
