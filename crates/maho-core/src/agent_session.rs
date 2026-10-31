@@ -703,6 +703,8 @@ struct AgentSessionState {
     superseded_compaction_log_attempt_ids: BTreeSet<String>,
     resume_compaction_requirement: Option<(serde_json::Value, String)>,
     resume_slice: Option<ResumeSliceState>,
+    /// The last repair of the session file, replayed to surfaces that attach before the next prompt (senpi#4295).
+    standing_recovery: Option<AgentSessionEvent>,
     sizes_only_startup: bool,
     prompt_size_inventory: Option<Arc<dyn crate::prompt_size_inventory::PromptSizeInventory>>,
     disposed: bool,
@@ -4156,6 +4158,7 @@ impl AgentSession {
             active_compaction_log_attempt: None,
             superseded_compaction_log_attempt_ids: BTreeSet::new(),
             resume_compaction_requirement: None,
+            standing_recovery: None,
             resume_slice: None,
             sizes_only_startup: false,
             prompt_size_inventory: None,
@@ -4319,6 +4322,15 @@ impl AgentSession {
                 Box::new(SessionCustodyStore(Arc::downgrade(&session.inner))),
             ));
         session.restore_queued_external_deliveries();
+        // A torn session tail is reported once and replayed to later subscribers until the next prompt (senpi#4295).
+        let recovery_cell = Arc::downgrade(&session.inner);
+        lock(&session.session_manager).on_recovery(crate::session_manager::RecoveryListener(
+            Arc::new(move |recovery| {
+                if let Some(inner) = recovery_cell.upgrade() {
+                    AgentSession { inner }.report_session_recovered(recovery);
+                }
+            }),
+        ));
         let initial_model = session.agent.state().model;
         let scoped_tier = lock(&session.state)
             .scoped_models
@@ -5473,6 +5485,19 @@ impl AgentSession {
         }
     }
 
+    /// senpi `sessionManager.onRecovery` listener: emits `session_recovered` and keeps it standing for replay. Runs
+    /// inside the session manager's append, so it must not touch the session manager.
+    fn report_session_recovered(&self, recovery: &crate::session_write_recovery::SessionRecovery) {
+        let event = AgentSessionEvent::SessionRecovered {
+            cause: recovery.cause.as_str().to_owned(),
+            backup_path: recovery.backup_path.clone(),
+            dropped_bytes: recovery.dropped_bytes as u64,
+            notice: recovery.notice.clone(),
+        };
+        self.state().standing_recovery = Some(event.clone());
+        self.emit(event);
+    }
+
     fn persist_lifecycle_record(&self, record: &Value) -> Result<(), String> {
         // Writes and emits nothing once disposed: the session file is no longer this session's (senpi#4149).
         if self.lifecycle_disposed.load(Ordering::SeqCst) {
@@ -6081,6 +6106,7 @@ impl AgentSession {
         text: &str,
         mut options: PromptOptions,
     ) -> Result<PromptDisposition, String> {
+        self.state().standing_recovery = None;
         options
             .observed_pause_seq
             .get_or_insert_with(|| lock(&self.engine_turn_hold).current_pause_seq());
@@ -8903,14 +8929,19 @@ impl AgentSession {
             return;
         };
         let mut data = Map::new();
-        data.insert("model".to_owned(), Value::String(event.model));
-        data.insert("provider".to_owned(), Value::String(event.provider));
+        data.insert("model".to_owned(), Value::String(event.model.clone()));
+        data.insert("provider".to_owned(), Value::String(event.provider.clone()));
         data.insert(
             "errorMessage".to_owned(),
             Value::String(message.error_message.clone().unwrap_or_default()),
         );
         crate::retry_fallback::log::FallbackLogger::new(std::path::Path::new(&self.agent_dir()), None)
             .warn("model_config_error", Some(&data));
+        self.emit(AgentSessionEvent::ModelConfigError {
+            model: event.model,
+            provider: event.provider,
+            error_excerpt: event.error_excerpt,
+        });
     }
 
     /// senpi `agent_end`: an unhandled Cursor quota `resource_exhausted` names the likely cause.
@@ -18616,11 +18647,12 @@ impl AgentSession {
         let mut guard = lock(&self.event_listeners);
         Arc::make_mut(&mut guard).push((id, listener.clone()));
         drop(guard);
-        let (resume_req, resume_slice) = {
+        let (resume_req, resume_slice, standing_recovery) = {
             let state = self.state();
             (
                 state.resume_compaction_requirement.clone(),
                 state.resume_slice.clone(),
+                state.standing_recovery.clone(),
             )
         };
         if let Some((projection, notice)) = resume_req {
@@ -18633,6 +18665,9 @@ impl AgentSession {
                 dropped_entries: slice.dropped_entries,
                 notice: slice.notice,
             });
+        }
+        if let Some(recovery) = standing_recovery {
+            listener(&recovery);
         }
         let sources = self.with_settings_manager(|manager| manager.get_selected_settings_sources());
         for source in sources {
@@ -18678,6 +18713,7 @@ impl AgentSession {
         self.agent.abort(None);
         lock(&self.wake_source_subscription).take();
         lock(&self.lifecycle_fact_subscriptions).clear();
+        lock(&self.session_manager).clear_recovery_listener();
         self.state().security_notices.dispose();
         crate::mcp_grant_presentations::clear_mcp_grant_presentations(&self.session_id());
         lock(&self.extension_rpc_event_forward).take();
@@ -32076,6 +32112,113 @@ mod tests {
         assert!(session.agent.has_queued_messages());
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("prior"));
         assert_eq!(session.compaction_state().status(), "failed");
+    }
+
+    /// senpi test/suite/regressions/4295-session-recovered-notice.test.ts: a torn session tail found on open is
+    /// emitted once as `session_recovered`, replayed to later subscribers, and cleared by the next prompt.
+    #[tokio::test]
+    async fn a_torn_session_tail_is_replayed_until_the_next_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("torn.jsonl");
+        let header = serde_json::to_string(&json!({
+            "type": "session", "version": crate::session_manager::CURRENT_SESSION_VERSION, "id": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z", "cwd": "/tmp",
+        }))
+        .expect("header");
+        std::fs::write(&path, format!("{header}\n{{\"type\":\"mess")).expect("torn");
+        let manager =
+            SessionManager::open(&path.to_string_lossy(), None, None, None).expect("open");
+        let session = test_session_with_manager(manager);
+        let recovered = |events: &Arc<Mutex<Vec<AgentSessionEvent>>>| {
+            lock(events)
+                .iter()
+                .filter_map(|event| match event {
+                    AgentSessionEvent::SessionRecovered {
+                        cause,
+                        backup_path,
+                        dropped_bytes,
+                        ..
+                    } => Some((cause.clone(), backup_path.clone(), *dropped_bytes)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let subscribe = || {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let sink = events.clone();
+            let subscription = session.subscribe(Arc::new(move |event| {
+                lock(&sink).push(event.clone());
+            }));
+            (events, subscription)
+        };
+        let (first, _first) = subscribe();
+        let seen = recovered(&first);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "unknown");
+        assert_eq!(
+            std::fs::read_to_string(&seen[0].1).expect("backup"),
+            "{\"type\":\"mess"
+        );
+        assert_eq!(seen[0].2, "{\"type\":\"mess".len() as u64);
+        let (second, _second) = subscribe();
+        assert_eq!(recovered(&second), seen);
+        // The next prompt clears it, even one that is refused for missing auth.
+        let _ = session.prompt("next", Default::default()).await;
+        let (third, _third) = subscribe();
+        assert!(recovered(&third).is_empty());
+    }
+
+    /// senpi test/suite/regressions/4282-model-not-found-config-error.test.ts: a model configuration error is never
+    /// retried, and emits `model_config_error` once per session and model.
+    #[tokio::test]
+    async fn a_model_config_error_is_emitted_once_and_never_retried() {
+        let mut failed = maho_ai::providers::faux::faux_assistant_message(
+            "",
+            maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error),
+                error_message: Some("model_not_found: the model does not exist".to_owned()),
+                ..Default::default()
+            },
+        );
+        failed.error_cause = Some(maho_ai::types::AssistantErrorCause::ModelConfig {
+            model: failed.model.clone(),
+        });
+        let session = retry_session(Vec::new(), 3);
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(json!({"role":"user","content":"task","timestamp":0}));
+            manager.append_message(serde_json::to_value(&failed).expect("failed"));
+        });
+        session.rebuild_session_context().expect("context");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| match event {
+            AgentSessionEvent::ModelConfigError {
+                model,
+                provider,
+                error_excerpt,
+            } => lock(&seen).push((model.clone(), provider.clone(), error_excerpt.clone())),
+            AgentSessionEvent::AutoRetryStart { .. } => {
+                lock(&seen).push(("retry".into(), String::new(), String::new()))
+            }
+            _ => {}
+        }));
+        for _ in 0..2 {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                session.finish_provider_turn(),
+            )
+            .await
+            .expect("bounded turn")
+            .expect("turn");
+        }
+        assert_eq!(
+            *lock(&events),
+            vec![(
+                format!("{}/{}", failed.provider, failed.model),
+                failed.provider.clone(),
+                "model_not_found: the model does not exist".to_owned()
+            )]
+        );
     }
 
     #[tokio::test]
