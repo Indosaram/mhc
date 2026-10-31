@@ -99,6 +99,128 @@ fn modern_incoming(route: &ModernRoute, value: Value) -> Option<Value> {
         .flatten()
         .map(crate::modern::sdk_bridge::normalize_modern_result)
 }
+/// Upstream `pipeStderr`: a stdio child's stderr, logged line by line. Arbitrary server text may echo private
+/// messages, so under private forms only allowlisted system error codes survive; an unclassified child's text is
+/// held (up to 512 KiB) until the era is known, then released for legacy or discarded for modern.
+pub struct StderrDiagnostics {
+    logger: Arc<Mutex<McpLogger>>,
+    state: Mutex<StderrState>,
+}
+#[derive(Default)]
+struct StderrState {
+    pending: String,
+    undecided: String,
+    ended: bool,
+}
+const STDERR_UNDECIDED_LIMIT: usize = 512 * 1024;
+impl StderrDiagnostics {
+    pub fn new(logger: Arc<Mutex<McpLogger>>) -> Arc<Self> {
+        Arc::new(Self {
+            logger,
+            state: Mutex::new(StderrState::default()),
+        })
+    }
+    fn log_line(&self, protocol: &crate::modern::request::ModernProtocolState, line: &str) {
+        let private = protocol.private_forms.load(Ordering::Acquire);
+        let text = if private {
+            let code=regex::Regex::new(r"\b(?:EACCES|ENOENT|EPIPE|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOSPC|ENOMEM|EMFILE)\b").ok().and_then(|pattern|pattern.find(line).map(|found|found.as_str().to_owned()));
+            format!(
+                "[private MCP stderr redacted]{}",
+                code.map_or_else(String::new, |code| format!(" {code}"))
+            )
+        } else {
+            line.to_owned()
+        };
+        let _ = self
+            .logger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .log("info", &text, None, Some("stderr"));
+    }
+    fn append(
+        &self,
+        protocol: &crate::modern::request::ModernProtocolState,
+        state: &mut StderrState,
+        text: &str,
+    ) {
+        state.pending.push_str(text);
+        let mut lines = state
+            .pending
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+            .collect::<Vec<_>>();
+        state.pending = lines.pop().unwrap_or_default();
+        for line in lines.iter().filter(|line| !line.is_empty()) {
+            self.log_line(protocol, line);
+        }
+    }
+    /// One stderr chunk from the child.
+    pub fn data(&self, protocol: &crate::modern::request::ModernProtocolState, text: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let private = protocol.private_forms.load(Ordering::Acquire);
+        if protocol.version().is_some() && !private {
+            state.pending.clear();
+            state.undecided.clear();
+            return;
+        }
+        if !protocol.legacy.load(Ordering::Acquire) && !private {
+            // Release only after legacy classification or an unclassified child's exit.
+            let room = STDERR_UNDECIDED_LIMIT.saturating_sub(state.undecided.len());
+            let mut end = room.min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            state.undecided.push_str(&text[..end]);
+            return;
+        }
+        self.append(protocol, &mut state, text);
+    }
+    /// The child closed its stderr.
+    pub fn end(&self, protocol: &crate::modern::request::ModernProtocolState) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.ended = true;
+        let legacy = protocol.legacy.load(Ordering::Acquire);
+        if (protocol.private_forms.load(Ordering::Acquire)
+            || (legacy && protocol.version().is_none()))
+            && !state.pending.is_empty()
+        {
+            let pending = std::mem::take(&mut state.pending);
+            self.log_line(protocol, &pending);
+        }
+        state.pending.clear();
+        // A crashed probe is classified after EOF; only that decision may release or discard its buffer.
+        if legacy || protocol.version().is_some() {
+            state.undecided.clear();
+        }
+    }
+    /// Upstream `resolveStdioDiagnostics`: the era decision releases (legacy, or any private-forms child) or
+    /// discards (modern) the held text.
+    pub fn resolve(&self, protocol: &crate::modern::request::ModernProtocolState, modern: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let private = protocol.private_forms.load(Ordering::Acquire);
+        if !modern || private {
+            let undecided = std::mem::take(&mut state.undecided);
+            self.append(protocol, &mut state, &undecided);
+            if state.ended && !state.pending.is_empty() {
+                let pending = std::mem::take(&mut state.pending);
+                self.log_line(protocol, &pending);
+            }
+        }
+        state.undecided.clear();
+        if modern && !private {
+            state.pending.clear();
+        }
+    }
+}
 enum ClientTransport {
     Stdio {
         input: tokio::sync::Mutex<Option<ChildStdin>>,
@@ -333,44 +455,78 @@ impl McpClient {
             }
             close_signal.send_replace(true);
         });
-        let stderr = tokio::spawn(async move {
-            let mut lines = BufReader::new(errors).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.is_empty() {
-                    let _ = logger
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .log("info", &line, None, Some("stderr"));
+        let diagnostics = StderrDiagnostics::new(logger);
+        Ok(Arc::new_cyclic(|this: &std::sync::Weak<Self>| {
+            let weak = this.clone();
+            let reader_diagnostics = diagnostics.clone();
+            let stderr = tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut errors = errors;
+                let mut buffer = vec![0u8; 8192];
+                let mut carry = Vec::new();
+                loop {
+                    let read = errors.read(&mut buffer).await.unwrap_or(0);
+                    let Some(client) = weak.upgrade() else {
+                        return;
+                    };
+                    if read == 0 {
+                        if !carry.is_empty() {
+                            reader_diagnostics.data(
+                                &client.protocol,
+                                &String::from_utf8_lossy(&std::mem::take(&mut carry)),
+                            );
+                        }
+                        reader_diagnostics.end(&client.protocol);
+                        // An unclassified child that exits is decided legacy for diagnostics (upstream onclose).
+                        if client.protocol.version().is_none() {
+                            client.protocol.resolve_stdio_diagnostics(false);
+                        }
+                        return;
+                    }
+                    carry.extend_from_slice(&buffer[..read]);
+                    // Keep an incomplete UTF-8 tail for the next chunk.
+                    let valid = match std::str::from_utf8(&carry) {
+                        Ok(_) => carry.len(),
+                        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                        Err(_) => carry.len(),
+                    };
+                    let chunk = carry.drain(..valid).collect::<Vec<_>>();
+                    reader_diagnostics.data(&client.protocol, &String::from_utf8_lossy(&chunk));
                 }
+            });
+            let protocol = crate::modern::request::ModernProtocolState::default();
+            *protocol
+                .stdio_diagnostics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(diagnostics);
+            Self {
+                server: server.into(),
+                io: ClientTransport::Stdio {
+                    input: tokio::sync::Mutex::new(Some(input)),
+                    child: Box::new(tokio::sync::Mutex::new(child)),
+                    reader,
+                    stderr,
+                },
+                pending,
+                next_id: AtomicU64::new(1),
+                notifications,
+                closed,
+                root_pid,
+                server_capabilities: tokio::sync::RwLock::new(Value::Null),
+                server_info: tokio::sync::RwLock::new(Value::Null),
+                instructions: tokio::sync::RwLock::new(None),
+                protocol_version: std::sync::RwLock::new(None),
+                auth: tokio::sync::RwLock::new(None),
+                auth_challenge_handler: tokio::sync::RwLock::new(None),
+                http_stream: Mutex::new(None),
+                resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
+                protocol,
+                legacy_operations: Mutex::default(),
+                modern,
+                probe,
+                local_initialize: Mutex::new(None),
+                this: this.clone(),
             }
-        });
-        Ok(Arc::new_cyclic(|this| Self {
-            server: server.into(),
-            io: ClientTransport::Stdio {
-                input: tokio::sync::Mutex::new(Some(input)),
-                child: Box::new(tokio::sync::Mutex::new(child)),
-                reader,
-                stderr,
-            },
-            pending,
-            next_id: AtomicU64::new(1),
-            notifications,
-            closed,
-            root_pid,
-            server_capabilities: tokio::sync::RwLock::new(Value::Null),
-            server_info: tokio::sync::RwLock::new(Value::Null),
-            instructions: tokio::sync::RwLock::new(None),
-            protocol_version: std::sync::RwLock::new(None),
-            auth: tokio::sync::RwLock::new(None),
-            auth_challenge_handler: tokio::sync::RwLock::new(None),
-            http_stream: Mutex::new(None),
-            resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
-            protocol: Default::default(),
-            legacy_operations: Mutex::default(),
-            modern,
-            probe,
-            local_initialize: Mutex::new(None),
-            this: this.clone(),
         }))
     }
     pub async fn materialize(
