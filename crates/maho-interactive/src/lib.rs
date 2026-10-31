@@ -43,7 +43,6 @@ pub mod session_control_rpc_commands;
 pub mod session_control_server;
 pub mod session_control_session_commands;
 pub mod session_control_surface;
-pub mod session_control_wake;
 pub mod session_info_format;
 mod side_column;
 pub mod startup_tools;

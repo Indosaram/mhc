@@ -25,11 +25,11 @@ use crate::session_control_rpc_commands::RpcCommandContext;
 use crate::session_control_server::{
     ControlCommand, ControlConnection, ControlServer, ControlServerHandlers, listen_control_socket,
 };
-use crate::session_control_wake::{WakeScheduler, watch_inbox};
 use futures::future::BoxFuture;
 use maho_core::extensions::session_control_types::{
     RegisterControlEndpointOptions, SessionControlRegistration,
 };
+use maho_rpc::session_control_wake::{WakeScheduler, watch_inbox};
 use maho_rpc::socket_transport::{create_socket_secret, socket_secret_path};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -264,9 +264,8 @@ async fn open_endpoint(
     let inbox_surface = surface.clone();
     let inbox = watch_inbox(
         std::path::Path::new(&options.inbox_dir),
-        Arc::new(move || {
-            tokio::spawn(inbox_wake("inbox"));
-        }),
+        // Called on the watcher's own thread (no runtime): the scheduler spawns the pass on its runtime itself.
+        Arc::new(move || drop(inbox_wake("inbox"))),
         Arc::new(move |error: String| {
             inbox_surface.notice(&format!("control endpoint inbox watch failed: {error}"));
         }),
