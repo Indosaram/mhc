@@ -547,8 +547,9 @@ impl TaskManager {
                     live.remove(&id);
                 }
             }
-            let _ = done_tx.send(true);
+            // Delivered before waiters wake, so a settled task has always been reported.
             manager.deliver(&settled);
+            let _ = done_tx.send(true);
         });
     }
 
