@@ -4833,8 +4833,7 @@ impl InteractiveMode {
         // senpi `bindCurrentSessionExtensions`: the previous binding's endpoint goes first, then this
         // session can register one through the host.
         self.session_control_host.dispose_active().await;
-        self.session
-            .set_control_endpoint_host(Some(Arc::new(self.session_control_host.clone())));
+        self.session_control_host.set_offered(true);
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
         loop {
@@ -5050,6 +5049,13 @@ impl InteractiveMode {
 
     /// Releases the control endpoint before the process exits (senpi `shutdown` ->
     /// `sessionControlHost.disposeActive()`).
+    /// The `host` dependency of core's `create_session_control_actions` for this terminal.
+    pub fn control_endpoint_host_provider(
+        &self,
+    ) -> maho_core::session_control_actions::ControlEndpointHostProvider {
+        self.session_control_host.provider()
+    }
+
     pub async fn dispose_session_control(&self) {
         self.session_control_host.dispose_active().await;
     }
@@ -11983,8 +11989,9 @@ impl InteractiveMode {
             }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
-            // senpi v2026.10.27-2 `session_recovered`: a torn session tail was kept aside; say so once.
-            AgentSessionEvent::SessionRecovered { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
+            // senpi v2026.10.27-2 `session_recovered` (a torn session tail kept aside) is shown as
+            // `showWarning(sanitizeTerminalLabel(notice))`. OPEN: no branch has
+            // `AgentSessionEvent::SessionRecovered` yet (senpi-core-rest-46).
             // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
@@ -14828,7 +14835,7 @@ impl Component for InteractiveMode {
             .remove(crate::lifecycle_status::LIFECYCLE_STATUS_KEY);
         // The endpoint itself is released by `dispose_session_control` (it needs an await); the
         // session no longer offers this host to a new registration.
-        self.session.set_control_endpoint_host(None);
+        self.session_control_host.set_offered(false);
         self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets {
             widget.dispose();

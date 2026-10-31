@@ -143,8 +143,15 @@ async fn open_endpoint(
     // write and the bind instead of running inside the registry lock.
     drop(maho_rpc::host_daemon_registration::this_process_start_time());
     // Bound while the header is written, awaited before the endpoint is registered.
+    // mhc's `AgentSession` has no `persistHeaderNow`; maho-rpc's release adapter writes the header from
+    // the manager's own header and entries, as a host release does.
     let header_session = session.clone();
-    let header_durable = tokio::spawn(async move { header_session.persist_header_now().await });
+    let header_durable = tokio::spawn(async move {
+        use maho_rpc::session_release_interrupt::ReleasableSession;
+        maho_rpc::session_release_adapter::AgentSessionRelease::new((*header_session).clone())
+            .persist_header_now()
+            .await
+    });
     let instance_id = uuid::Uuid::new_v4().to_string();
     let socket = resolve_tui_socket(agent_dir, &instance_id)?;
     let secret_path = socket_secret_path(&socket)?;
@@ -155,7 +162,6 @@ async fn open_endpoint(
     let feed = Arc::new(Mutex::new(ControlFeed::new()));
     // Every wake runs a pass, so a failure that repeats is shown once, until a pass succeeds again.
     let failing = Arc::new(Mutex::new(None::<String>));
-    let pass_session = session.clone();
     let drain = options.drain.clone();
     let pass_failing = failing.clone();
     let error_failing = failing.clone();
@@ -163,11 +169,13 @@ async fn open_endpoint(
     let scheduler = WakeScheduler::new(
         Arc::new(
             move |event: Value| -> BoxFuture<'static, Result<Value, String>> {
-                let session = pass_session.clone();
                 let drain = drain.clone();
                 let failing = pass_failing.clone();
                 Box::pin(async move {
-                    session.emit_session_control_wake(&event).await?;
+                    // senpi emits the wake into the session's extensions first
+                    // (`extensionRunner.emit(event)`). OPEN: `AgentSession` exposes no way to emit a
+                    // `session_control_wake` extension event (the runner's `emit_session_control_wake`
+                    // is unreachable from here), so only the registrant's drain runs.
                     let result = drain(event)
                         .await
                         .unwrap_or_else(|| json!({"admitted": []}));

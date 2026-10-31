@@ -21,7 +21,7 @@ use futures::future::BoxFuture;
 use maho_core::extensions::session_control_types::{
     RegisterControlEndpointOptions, SessionControlRegistration,
 };
-use maho_core::session_control_actions::ControlEndpointHost;
+use maho_core::session_control_actions::{ControlEndpointHost, ControlEndpointHostProvider};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +63,9 @@ struct HostState {
     handoff: Mutex<Option<SubmissionTicket>>,
     registering: tokio::sync::Mutex<()>,
     context: ControlContextProvider,
+    /// Whether the bound session offers this host to a registration (senpi
+    /// `session.setControlEndpointHost(host | undefined)`).
+    offered: AtomicBool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -126,6 +129,7 @@ impl TuiSessionControlHost {
                 handoff: Mutex::new(None),
                 registering: tokio::sync::Mutex::new(()),
                 context,
+                offered: AtomicBool::new(false),
             }),
         }
     }
@@ -198,6 +202,25 @@ impl TuiSessionControlHost {
                 })
             }),
         }
+    }
+
+    /// senpi `session.setControlEndpointHost(offered ? host : undefined)`.
+    pub fn set_offered(&self, offered: bool) {
+        self.state.offered.store(offered, Ordering::SeqCst);
+    }
+
+    /// The `host` dependency of core's `create_session_control_actions`: this host while the bound
+    /// session offers it, `None` otherwise (then a registration answers `unsupported_mode`).
+    /// OPEN: no branch builds `pi.session` through `create_session_control_actions` yet
+    /// (senpi-core-session-01 / senpi-core-rest-47), so nothing reads this provider until that lands.
+    pub fn provider(&self) -> ControlEndpointHostProvider {
+        let host = self.clone();
+        Arc::new(move || {
+            host.state
+                .offered
+                .load(Ordering::SeqCst)
+                .then(|| Arc::new(host.clone()) as Arc<dyn ControlEndpointHost>)
+        })
     }
 
     /// The editor's change edge; `has_draft` reads the composer now.
@@ -322,6 +345,17 @@ mod tests {
         assert!(host.submission_in_flight());
         host.note_buffered_elsewhere(false);
         assert!(!host.submission_in_flight());
+    }
+
+    #[test]
+    fn the_provider_offers_the_host_only_while_the_session_offers_it() {
+        let host = host();
+        let provider = host.provider();
+        assert!(provider().is_none());
+        host.set_offered(true);
+        assert!(provider().is_some());
+        host.set_offered(false);
+        assert!(provider().is_none());
     }
 
     #[test]
