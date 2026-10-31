@@ -4391,6 +4391,8 @@ impl Inner {
             fallback_attempts: Some(attempts),
             updated_at: input.timestamp.clone(),
             notification,
+            // `handOffToNextRung` drops the failed rung's unconfirmed exit with its child.
+            provisional_exit: None,
             ..record.clone()
         };
         if let Err(error) = self.store.replace(&next_record) {
@@ -4780,6 +4782,8 @@ impl Inner {
             error_message: None,
             final_response: None,
             killed: None,
+            // A new run epoch carries no evidence about the old child's exit.
+            provisional_exit: None,
             ..fresh.clone()
         };
         if let Err(error) = self.store.replace(&reattached) {
