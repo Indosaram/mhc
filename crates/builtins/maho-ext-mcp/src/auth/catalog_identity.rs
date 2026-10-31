@@ -76,3 +76,73 @@ fn credential_material(
         }
     }
 }
+
+#[cfg(test)]
+// L-ext-terminal-mcp 044d529da test: the unkeyed (legacy) identity is the plain sha256 of the material.
+mod tests {
+    use super::*;
+    use crate::config_schema::Transport;
+
+    #[test]
+    fn legacy_none_bearer_and_oauth_identities() -> std::io::Result<()> {
+        let stdio = McpServerDeclaredConfig {
+            transport: Some(Transport::Stdio),
+            command: Some("x".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            legacy_mcp_credential_identity(&stdio, "s", None, None),
+            Some("none".into())
+        );
+
+        let bearer = McpServerDeclaredConfig {
+            transport: Some(Transport::Http),
+            url: Some("https://example.test/mcp".into()),
+            bearer_token_env: Some("MCP_TEST_TOKEN_IDENTITY".into()),
+            ..Default::default()
+        };
+        let env = BTreeMap::from([("MCP_TEST_TOKEN_IDENTITY".to_owned(), "tok".to_owned())]);
+        assert_eq!(
+            legacy_mcp_credential_identity(&bearer, "s", None, Some(&env)),
+            Some(format!(
+                "{:x}",
+                Sha256::digest(r#"["mcp-catalog-bearer","tok"]"#)
+            ))
+        );
+        let empty = BTreeMap::from([("MCP_TEST_TOKEN_IDENTITY".to_owned(), String::new())]);
+        assert_eq!(
+            legacy_mcp_credential_identity(&bearer, "s", None, Some(&empty)),
+            None
+        );
+
+        let dir = tempfile::tempdir()?;
+        let oauth = McpServerDeclaredConfig {
+            transport: Some(Transport::Http),
+            url: Some("https://example.test/mcp".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            legacy_mcp_credential_identity(&oauth, "s", Some(dir.path()), None),
+            None
+        );
+        let store = McpTokenStore::new(dir.path(), "s", "https://example.test/mcp");
+        std::fs::create_dir_all(store.dir())?;
+        std::fs::write(store.tokens_path(), r#"{"accessToken":"a"}"#)?;
+        assert_eq!(
+            legacy_mcp_credential_identity(&oauth, "s", Some(dir.path()), None),
+            Some(format!(
+                "{:x}",
+                Sha256::digest(r#"["mcp-catalog-oauth","a",null]"#)
+            ))
+        );
+        std::fs::write(
+            store.tokens_path(),
+            r#"{"accessToken":"a","refreshToken":7}"#,
+        )?;
+        assert_eq!(
+            legacy_mcp_credential_identity(&oauth, "s", Some(dir.path()), None),
+            None
+        );
+        Ok(())
+    }
+}
