@@ -1314,7 +1314,7 @@ impl Extension for TerminalExtension {
                         let mut monitors = monitors
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let result = crate::tools::monitor::execute_configured_monitor(
+                        let result = crate::tools::monitor::execute_configured_monitor_in(
                             &mut manager,
                             &mut monitors,
                             &call.params,
@@ -1322,6 +1322,9 @@ impl Extension for TerminalExtension {
                             approved_parent.as_deref(),
                             shell.as_deref(),
                             &settings,
+                            lifecycle
+                                .as_ref()
+                                .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
                         );
                         if call.params.get("action").and_then(Value::as_str) == Some("rearm")
                             && let Some(notifier) = notifier

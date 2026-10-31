@@ -132,6 +132,10 @@ impl TerminalManifestWriter {
         );
         self.persist(now).await;
     }
+    /// The session's terminal state dir (`<sessionDir>/extensions/terminal`) the store lives in.
+    pub fn terminal_dir(&self) -> Option<&std::path::Path> {
+        std::path::Path::new(self.store.file_path()).parent()
+    }
     pub fn adopt_restored(&mut self, mut entry: ManifestMonitor) {
         entry.suspended = false;
         self.entries.insert(entry.monitor_id.clone(), entry);
@@ -204,6 +208,12 @@ impl TerminalManifestWriter {
                 return digest;
             }
         };
+        // Upstream `restoreTerminalState`: the downtime is an upper bound measured from the
+        // manifest's last write, never an exact gap.
+        let restore_environment = crate::durable_command::RestoreEnvironment {
+            downtime_ms: (now - state.updated_at).max(0.0),
+            terminal_dir: self.terminal_dir().map(std::path::Path::to_path_buf),
+        };
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry| expiry <= now) {
                 digest.expired += 1;
@@ -212,11 +222,12 @@ impl TerminalManifestWriter {
             let outcome = match monitor.durability_class {
                 MonitorDurabilityClass::Ephemeral => RestoreOutcome::Lost,
                 MonitorDurabilityClass::RestartableCommand => {
-                    crate::durable_command::restore_configured_command(
+                    crate::durable_command::restore_configured_command_in(
                         &monitor,
                         manager,
                         shell,
                         settings,
+                        &restore_environment,
                         |_, runtime, record| registry.register(runtime, record),
                     )
                 }

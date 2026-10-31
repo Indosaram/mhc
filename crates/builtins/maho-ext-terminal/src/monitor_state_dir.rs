@@ -34,6 +34,15 @@ pub async fn ensure_monitor_state_dir(
     terminal_dir: &Path,
     monitor_id: &str,
 ) -> std::io::Result<PathBuf> {
+    ensure_monitor_state_dir_sync(terminal_dir, monitor_id)
+}
+
+/// The synchronous body of `ensure_monitor_state_dir`, for the spawn paths that run under the
+/// manager's std mutex.
+pub fn ensure_monitor_state_dir_sync(
+    terminal_dir: &Path,
+    monitor_id: &str,
+) -> std::io::Result<PathBuf> {
     let dir = monitor_state_dir(terminal_dir, monitor_id);
     // The crate's tokio has no `fs` feature; a single mkdir is not worth a blocking-pool hop.
     let mut builder = std::fs::DirBuilder::new();
