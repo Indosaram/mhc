@@ -14,9 +14,9 @@ async fn writer_actor_admits_more_sessions_while_peer_is_blocked(){
 async fn transport_drain_preserves_round_robin_record_boundaries(){
     use tokio::io::AsyncReadExt;
     let mut scheduler=maho_rpc::session_event_writer::SessionRecordScheduler::default();
-    scheduler.enqueue("a",None,serde_json::json!({"n":1}));
-    scheduler.enqueue("a",None,serde_json::json!({"n":2}));
-    scheduler.enqueue("b",None,serde_json::json!({"n":3}));
+    scheduler.enqueue("a",None,serde_json::json!({"n":1})).unwrap();
+    scheduler.enqueue("a",None,serde_json::json!({"n":2})).unwrap();
+    scheduler.enqueue("b",None,serde_json::json!({"n":3})).unwrap();
     let (mut writer,mut reader)=tokio::io::duplex(1);
     let run=async{scheduler.drain(&mut writer).await.unwrap();drop(writer);};
     let read=async{let mut wire=String::new();reader.read_to_string(&mut wire).await.unwrap();wire};
