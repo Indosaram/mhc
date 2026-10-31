@@ -147,3 +147,113 @@ async fn ensure_tool_reports_status_through_a_callback_without_writing_to_the_co
         )]
     );
 }
+
+struct FakeFetch<F>(F);
+impl<F: Fn(ToolFetchRequest) -> Result<ToolFetchResponse, ToolFetchError> + Send + Sync> ToolFetch
+    for FakeFetch<F>
+{
+    fn fetch(
+        &self,
+        request: ToolFetchRequest,
+    ) -> futures::future::BoxFuture<'_, Result<ToolFetchResponse, ToolFetchError>> {
+        let result = (self.0)(request);
+        Box::pin(async move { result })
+    }
+}
+
+struct DropFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn get_latest_version_discards_the_redirect_response_body() {
+    use futures::StreamExt;
+    let discarded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let requests = std::sync::Mutex::new(Vec::new());
+    let fetch = FakeFetch(
+        |request: ToolFetchRequest| -> Result<ToolFetchResponse, ToolFetchError> {
+            requests
+                .lock()
+                .unwrap()
+                .push((request.url, request.follow_redirects));
+            let flag = DropFlag(discarded.clone());
+            let body = futures::stream::iter([Ok(b"<html></html>".to_vec())])
+                .map(move |chunk| {
+                    let _flag = &flag;
+                    chunk
+                })
+                .boxed();
+            Ok(ToolFetchResponse {
+                status: 302,
+                location: Some("https://github.com/sharkdp/fd/releases/tag/v10.4.2".to_owned()),
+                body,
+            })
+        },
+    );
+    assert_eq!(
+        get_latest_version_with(&fetch, "sharkdp/fd").await.unwrap(),
+        "10.4.2"
+    );
+    assert!(discarded.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        *requests.lock().unwrap(),
+        [(
+            "https://github.com/sharkdp/fd/releases/latest".to_owned(),
+            false
+        )]
+    );
+}
+
+#[derive(Debug)]
+struct FetchFailed(std::io::Error);
+impl std::fmt::Display for FetchFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("fetch failed")
+    }
+}
+impl std::error::Error for FetchFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+#[tokio::test]
+async fn ensure_tool_surfaces_the_error_cause_chain_when_a_download_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let env = std::collections::BTreeMap::from([("PATH".to_owned(), String::new())]);
+    let fetch = FakeFetch(
+        |_: ToolFetchRequest| -> Result<ToolFetchResponse, ToolFetchError> {
+            Err(Box::new(FetchFailed(std::io::Error::other(
+                "connect ETIMEDOUT 140.82.113.3:443",
+            ))) as ToolFetchError)
+        },
+    );
+    let mut statuses = Vec::new();
+    assert!(
+        ensure_tool_with(
+            &fetch,
+            Tool::Fd,
+            directory.path(),
+            &env,
+            "linux",
+            "x64",
+            |status| statuses.push((status.kind, status.message))
+        )
+        .await
+        .is_none()
+    );
+    assert_eq!(
+        statuses,
+        [
+            ("info", "fd not found. Downloading...".to_owned()),
+            (
+                "warning",
+                "Failed to download fd: fetch failed: connect ETIMEDOUT 140.82.113.3:443"
+                    .to_owned()
+            ),
+        ]
+    );
+}
