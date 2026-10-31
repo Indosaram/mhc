@@ -168,3 +168,47 @@ async fn session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_
     session.dispose().await;
     registry.dispose().await.unwrap();
 }
+
+/// Records the service the lifecycle registers, so a test can inspect whether session_start attached it.
+struct RecordingMcpExtension {
+    registry: Arc<HostMcpRegistry>,
+    service: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Mutex<maho_ext_mcp::service::McpService>>>>>,
+}
+impl Extension for RecordingMcpExtension {
+    fn register(&self, api: &mut ExtensionApi) {
+        let service = maho_ext_mcp::index::register_mcp_lifecycle(api, self.registry.clone(), 1);
+        *self.service.lock().unwrap() = Some(service);
+    }
+}
+
+#[tokio::test]
+async fn sizes_only_session_start_skips_the_builtin_mcp_attach() {
+    // agent-session.ts emits `sizesOnly: true` for a sizes-only startup; index.ts returns before attach.
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings};
+    for sizes_only in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd: PathBuf = temp.path().to_path_buf();
+        seed_direct_server(&cwd);
+        let cwd_string = cwd.to_string_lossy().into_owned();
+        let session = AgentSession::new(AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions::default()),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd_string, None, None),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false),
+            cwd: cwd_string.clone(), agent_dir: Some(cwd_string), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
+            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
+            model_runtime: None, model_registry: None, uses_default_stream_function: Some(false),
+            initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None,
+            allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
+            session_start_event: None, auto_title_sessions: Some(false),
+        }).unwrap();
+        let registry = Arc::new(HostMcpRegistry::default());
+        let recorded = Arc::new(std::sync::Mutex::new(None));
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(RecordingMcpExtension {registry: registry.clone(), service: recorded.clone()})], context())).await;
+        session.bind_extensions(ExtensionBindings {sizes_only, ..Default::default()}).await;
+        let service = recorded.lock().unwrap().clone().expect("lifecycle registered");
+        let attached = service.lock().await.config.is_some();
+        assert_eq!(attached, !sizes_only, "sizes_only={sizes_only}");
+        session.dispose().await;
+        registry.dispose().await.unwrap();
+    }
+}

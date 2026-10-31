@@ -766,6 +766,7 @@ mod tests {
 
     fn start() -> ExtensionEvent {
         ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

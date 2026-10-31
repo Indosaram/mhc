@@ -158,6 +158,7 @@ async fn reload_preserves_live_pty_and_monitor_ids_until_new_owner_quits() {
     shutdown(&old, &ctx, SessionReason::Reload).await;
     let new = api(dir.path());
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Reload,
         initial_model_provenance: None,
         previous_session_file: None,

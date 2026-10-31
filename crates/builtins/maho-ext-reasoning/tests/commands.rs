@@ -243,6 +243,7 @@ async fn harness(model: Model, host: Host) -> (Harness, ExtensionContext) {
     let start = api.registered.handlers[&EventKind::SessionStart][0].clone();
     start(
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

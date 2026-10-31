@@ -152,6 +152,7 @@ async fn session_publishes_loaded_config_before_ui_callbacks() {
         compaction_signal: Default::default(),
     };
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

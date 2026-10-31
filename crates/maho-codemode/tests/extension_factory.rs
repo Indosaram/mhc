@@ -62,6 +62,7 @@ async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() 
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -236,6 +237,7 @@ async fn registered_callable_enforces_configured_detached_capacity() {
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -324,6 +326,7 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -421,6 +424,7 @@ async fn concurrent_completion_keeps_each_invocations_context() {
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -688,6 +692,7 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     let model:Model=serde_json::from_value(serde_json::json!({"id":"same","name":"same","provider":"fixture","api":"openai-responses","baseUrl":"http://localhost","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":100})).unwrap();
     ctx.model = Some(model.clone());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -898,6 +903,7 @@ async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale
         Arc::new(move |value| captured.lock().unwrap().push(value.clone())),
     );
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

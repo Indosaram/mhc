@@ -205,6 +205,7 @@ async fn dispatch(
 }
 fn start_event() -> ExtensionEvent {
     ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Resume,
         initial_model_provenance: None,
         previous_session_file: None,

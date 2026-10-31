@@ -657,6 +657,7 @@ async fn recovery(case: Case) {
         context.session_manager = Arc::new(PersistedSession(fixture));
     }
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Resume,
         initial_model_provenance: None,
         previous_session_file: None,
