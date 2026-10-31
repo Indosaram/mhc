@@ -140,6 +140,141 @@ pub async fn perform_shutdown(
 /// The supervisor's signal watch: `Some(exit code)` once a shutdown signal arrived.
 pub type StopRequests = tokio::sync::watch::Receiver<Option<i32>>;
 
+/// senpi `supervisorSender`.
+pub fn supervisor_sender(instance_id: &str) -> crate::host_stop_intent::HostStopSender {
+    crate::host_stop_intent::HostStopSender {
+        pid: std::process::id(),
+        kind: "supervisor".into(),
+        generation: Some(instance_id.to_owned()),
+    }
+}
+
+/// senpi `childExited`: the exit is already observed.
+pub fn child_exited(child: &mut tokio::process::Child) -> bool {
+    !matches!(child.try_wait(), Ok(None))
+}
+
+/// senpi `waitForChildExit`: `true` once the child's exit is observed within `timeout_ms`.
+pub async fn wait_for_child_exit(child: &mut tokio::process::Child, timeout_ms: u64) -> bool {
+    if child_exited(child) {
+        return true;
+    }
+    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), child.wait())
+        .await
+        .is_ok()
+}
+
+#[async_trait::async_trait]
+impl crate::host_lifecycle_stall_wait::StalledChild for tokio::process::Child {
+    async fn wait_for_exit(&mut self, timeout_ms: u64) -> bool {
+        wait_for_child_exit(self, timeout_ms).await
+    }
+}
+
+#[cfg(unix)]
+fn signal_child(pid: u32, signal: rustix::process::Signal) -> bool {
+    crate::host_stop::signal_generation(pid, signal).unwrap_or(false)
+}
+
+#[cfg(unix)]
+const SIGTERM: rustix::process::Signal = rustix::process::Signal::TERM;
+#[cfg(unix)]
+const SIGKILL: rustix::process::Signal = rustix::process::Signal::KILL;
+
+/// senpi `stopChild`: SIGTERM, then SIGKILL after `CHILD_STOP_TIMEOUT_MS` - or, for a child that is alive but
+/// stalled, after the bounded stall wait. The intent is on record BEFORE the signal, layered over any outer sender's
+/// intent for this generation so the record names who started it, and names a stall-wait escalation.
+#[cfg(unix)]
+pub async fn stop_child(
+    child: &mut tokio::process::Child,
+    generation: &crate::host_daemon_paths::HostGenerationPaths,
+    instance_id: &str,
+    reason: &str,
+) -> std::io::Result<()> {
+    use crate::host_stop_intent::{
+        CHILD_KILL_EXIT_TIMEOUT_MS, CHILD_STOP_TIMEOUT_MS, layered_supervisor_intent,
+        read_stop_intent, write_stop_intent,
+    };
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    if child_exited(child) {
+        return Ok(());
+    }
+    let now = crate::host_stalled_evidence::now_ms;
+    let outer = read_stop_intent(generation, now(), None);
+    let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let intent = layered_supervisor_intent(
+        outer.as_ref(),
+        supervisor_sender(instance_id),
+        pid,
+        reason,
+        &at,
+    );
+    write_stop_intent(generation, &intent, |message| supervisor_log(&message));
+    let signalled_at = now();
+    signal_child(pid, SIGTERM);
+    if wait_for_child_exit(child, CHILD_STOP_TIMEOUT_MS).await {
+        return Ok(());
+    }
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let stall_wait_ms = crate::host_lifecycle_stall_wait::wait_out_stalled_child(
+        &mut *child,
+        generation,
+        signalled_at,
+        &env,
+        now,
+    )
+    .await;
+    if child_exited(child) {
+        return Ok(());
+    }
+    if stall_wait_ms > 0 {
+        let mut escalated = intent.clone();
+        escalated.reason = format!(
+            "{}; escalated_after_stall_wait={stall_wait_ms}",
+            intent.reason
+        );
+        write_stop_intent(generation, &escalated, |message| supervisor_log(&message));
+    }
+    signal_child(pid, SIGKILL);
+    // SIGKILL cannot be ignored; the bound is only a circuit breaker for an uninterruptible kernel wait.
+    if !wait_for_child_exit(child, CHILD_KILL_EXIT_TIMEOUT_MS).await {
+        return Err(std::io::Error::other(format!(
+            "host child pid {pid} exit unobserved {CHILD_KILL_EXIT_TIMEOUT_MS}ms after SIGKILL"
+        )));
+    }
+    Ok(())
+}
+
+/// senpi `reapChildAfterFailure`: SIGTERM (unless already sent), the stop window, then SIGKILL and its breaker.
+#[cfg(unix)]
+pub async fn reap_child_after_failure(
+    child: &mut tokio::process::Child,
+    term_attempted: bool,
+) -> std::io::Result<()> {
+    use crate::host_stop_intent::{CHILD_KILL_EXIT_TIMEOUT_MS, CHILD_STOP_TIMEOUT_MS};
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    if child_exited(child) {
+        return Ok(());
+    }
+    if !term_attempted {
+        signal_child(pid, SIGTERM);
+        if wait_for_child_exit(child, CHILD_STOP_TIMEOUT_MS).await {
+            return Ok(());
+        }
+    }
+    signal_child(pid, SIGKILL);
+    if !wait_for_child_exit(child, CHILD_KILL_EXIT_TIMEOUT_MS).await {
+        return Err(std::io::Error::other(format!(
+            "host child pid {pid} exit unobserved {CHILD_KILL_EXIT_TIMEOUT_MS}ms after recovery SIGKILL"
+        )));
+    }
+    Ok(())
+}
+
 /// The shutdown reason a signal exit code stands for (`signal:SIGTERM` is 143, `signal:SIGHUP` 129).
 pub fn signal_shutdown_reason(code: i32) -> String {
     match code {
@@ -523,5 +658,59 @@ mod tests {
         assert_eq!(result, Ok(7));
         assert!(recorded.steps.lock().unwrap().is_empty());
         assert!(!state.shutting_down());
+    }
+
+    #[test]
+    fn the_supervisor_sender_names_this_process_and_its_generation() {
+        let sender = supervisor_sender("gen-1");
+        assert_eq!(sender.pid, std::process::id());
+        assert_eq!(sender.kind, "supervisor");
+        assert_eq!(sender.generation.as_deref(), Some("gen-1"));
+    }
+
+    /// senpi `stopChild`: the supervisor's intent is on record before the SIGTERM that ends the child.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_child_records_the_intent_then_terminates_the_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::host_daemon_paths::host_daemon_directory_paths(temp.path());
+        let generation = crate::host_daemon_paths::generation_paths(&paths, "gen-1");
+        std::fs::create_dir_all(&generation.dir).unwrap();
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        assert!(!child_exited(&mut child));
+        stop_child(&mut child, &generation, "gen-1", "signal:SIGTERM")
+            .await
+            .unwrap();
+        assert!(child_exited(&mut child));
+        assert!(wait_for_child_exit(&mut child, 0).await);
+        let intent = crate::host_stop_intent::read_stop_intent(
+            &generation,
+            crate::host_stalled_evidence::now_ms(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(intent.target_pid, pid);
+        assert_eq!(intent.reason, "signal:SIGTERM");
+        assert_eq!(intent.sender, supervisor_sender("gen-1"));
+        // An exited child is never signalled again.
+        stop_child(&mut child, &generation, "gen-1", "again")
+            .await
+            .unwrap();
+        reap_child_after_failure(&mut child, false).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_shutdown_reaps_the_child() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        reap_child_after_failure(&mut child, false).await.unwrap();
+        assert!(child_exited(&mut child));
     }
 }

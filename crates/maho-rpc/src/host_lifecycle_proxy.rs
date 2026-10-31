@@ -102,6 +102,120 @@ pub async fn run_public_proxy(
     Ok(())
 }
 
+/// One entry's identity including its change time: a rebind at the same inode still moves ctime.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EntryStamp {
+    dev: u64,
+    ino: u64,
+    ctime_ns: i128,
+    socket: bool,
+}
+
+#[cfg(unix)]
+fn stamp_of(socket_path: &str) -> std::io::Result<Option<EntryStamp>> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    match std::fs::metadata(socket_path) {
+        Ok(entry) => Ok(Some(EntryStamp {
+            dev: entry.dev(),
+            ino: entry.ino(),
+            ctime_ns: i128::from(entry.ctime()) * 1_000_000_000 + i128::from(entry.ctime_nsec()),
+            socket: entry.file_type().is_socket(),
+        })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// senpi `prepareSocketPath`: makes `socket_path` bindable without ever removing a live listener's entry. A path the
+/// kernel would truncate is refused; a dead socket entry is unlinked only while it is still the entry probed dead.
+#[cfg(unix)]
+pub async fn prepare_socket_path(socket_path: &str) -> std::io::Result<()> {
+    prepare_socket_path_with(
+        socket_path,
+        async |socket: &str| {
+            crate::socket_ownership::socket_entry_listener_state(
+                socket,
+                std::env::consts::OS,
+                crate::socket_ownership::lsof_socket_holders,
+            )
+            .await
+        },
+        async || {},
+    )
+    .await
+}
+
+/// [`prepare_socket_path`] with its test seams (senpi `PrepareSocketPathHooks`): `listener_state` replaces the
+/// listener probe; `after_stale_probe` runs after the entry was probed dead and before it is unlinked.
+#[cfg(unix)]
+pub async fn prepare_socket_path_with(
+    socket_path: &str,
+    listener_state: impl AsyncFnOnce(&str) -> crate::socket_ownership::ListenerState,
+    after_stale_probe: impl AsyncFnOnce(),
+) -> std::io::Result<()> {
+    use crate::socket_ownership::{ListenerVerdict, MAX_SOCKET_PATH_BYTES};
+    if socket_path.starts_with('\0') {
+        return Ok(());
+    }
+    // A path the kernel would truncate binds a DIFFERENT endpoint than the one every client was told about.
+    if socket_path.len() > MAX_SOCKET_PATH_BYTES {
+        return Err(std::io::Error::other(format!(
+            "{socket_path}: socket path is {} bytes, over the {MAX_SOCKET_PATH_BYTES}-byte limit.",
+            socket_path.len()
+        )));
+    }
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    let Some(probed) = stamp_of(socket_path)? else {
+        return Ok(());
+    };
+    let in_use = |evidence: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("{socket_path}: address already in use by a live server ({evidence})."),
+        )
+    };
+    // Linux refuses a connect to a regular file too; never remove what is not a socket.
+    if !probed.socket {
+        return Err(in_use("the entry is not a socket"));
+    }
+    let state = listener_state(socket_path).await;
+    match state.verdict {
+        ListenerVerdict::Gone => return Ok(()),
+        ListenerVerdict::Live => return Err(in_use(&state.evidence)),
+        ListenerVerdict::Dead => {}
+    }
+    after_stale_probe().await;
+    // Something may have replaced the entry since the probe; unlink only the entry probed dead.
+    let Some(current) = stamp_of(socket_path)? else {
+        return Ok(());
+    };
+    if (probed.dev, probed.ino, probed.ctime_ns) != (current.dev, current.ino, current.ctime_ns) {
+        return Err(in_use("the entry changed after it was probed"));
+    }
+    match std::fs::remove_file(socket_path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// senpi `listen` (POSIX): binds the public entry and makes it private to this user (0600).
+#[cfg(unix)]
+pub fn listen(socket_path: &str) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tokio::net::UnixListener::bind(socket_path)?;
+    if !socket_path.starts_with('\0') {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(listener)
+}
+
 /// What one readiness probe found (senpi `canConnect`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReadinessProbe {
@@ -171,6 +285,233 @@ mod tests {
     use serde_json::{Map, json};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     const KEY: [u8; 32] = [7; 32];
+
+    /// A listener that bound the path and went away: the entry stays, and connecting to it is refused.
+    fn stale_entry(path: &std::path::Path) {
+        drop(std::os::unix::net::UnixListener::bind(path).expect("bind"));
+    }
+
+    fn pinned(
+        verdict: crate::socket_ownership::ListenerVerdict,
+    ) -> crate::socket_ownership::ListenerState {
+        crate::socket_ownership::ListenerState {
+            verdict,
+            evidence: format!("pinned {verdict:?}"),
+        }
+    }
+
+    async fn prepare(path: &std::path::Path) -> std::io::Result<()> {
+        prepare_socket_path(path.to_str().expect("utf8")).await
+    }
+
+    #[tokio::test]
+    async fn removes_an_entry_nobody_listens_behind() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        stale_entry(&path);
+        prepare(&path).await.expect("prepared");
+        assert!(!path.exists());
+        // A missing entry (and its missing parent) is prepared, not refused.
+        prepare(&dir.path().join("new").join("rpc.sock"))
+            .await
+            .expect("absent");
+        assert!(dir.path().join("new").is_dir());
+    }
+
+    #[tokio::test]
+    async fn acts_on_each_listener_verdict_live_keeps_dead_removes_gone_leaves() {
+        use crate::socket_ownership::ListenerVerdict;
+        let dir = tempfile::tempdir().expect("dir");
+        let live = dir.path().join("live.sock");
+        stale_entry(&live);
+        let error = prepare_socket_path_with(
+            live.to_str().expect("utf8"),
+            async |_: &str| pinned(ListenerVerdict::Live),
+            async || {},
+        )
+        .await
+        .expect_err("live");
+        assert!(error.to_string().contains("pinned Live"));
+        assert!(live.exists());
+        let dead = dir.path().join("dead.sock");
+        stale_entry(&dead);
+        prepare_socket_path_with(
+            dead.to_str().expect("utf8"),
+            async |_: &str| pinned(ListenerVerdict::Dead),
+            async || {},
+        )
+        .await
+        .expect("dead");
+        assert!(!dead.exists());
+        let gone = dir.path().join("gone.sock");
+        stale_entry(&gone);
+        prepare_socket_path_with(
+            gone.to_str().expect("utf8"),
+            async |_: &str| pinned(ListenerVerdict::Gone),
+            async || {},
+        )
+        .await
+        .expect("gone");
+        assert!(gone.exists());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_path_a_live_listener_holds_and_keeps_it() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        let _listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        let error = prepare(&path).await.expect_err("live");
+        assert!(error.to_string().contains("accepting connections"));
+        assert!(tokio::net::UnixStream::connect(&path).await.is_ok());
+    }
+
+    // `libc::listen` re-arms the bound listener with a backlog of one; nothing else in the test is unsafe.
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    async fn keeps_a_live_listener_whose_backlog_is_full() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        // A live listener with a backlog of one that never accepts (re-listening lowers the backlog in place).
+        let stuck = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        // SAFETY: `stuck` owns this listening descriptor for the whole call.
+        assert_eq!(unsafe { libc::listen(stuck.as_raw_fd(), 1) }, 0);
+        // Connect until the backlog is full: Linux answers EAGAIN, macOS and the BSDs refuse.
+        let mut clients = Vec::new();
+        let full = loop {
+            assert!(clients.len() < 64, "the backlog never filled");
+            match tokio::net::UnixStream::connect(&path).await {
+                Ok(client) => clients.push(client),
+                Err(error) => break error,
+            }
+        };
+        assert_ne!(full.kind(), std::io::ErrorKind::NotFound);
+        let error = prepare(&path).await.expect_err("live");
+        assert!(
+            error
+                .to_string()
+                .contains("address already in use by a live server")
+        );
+        assert!(path.symlink_metadata().is_ok());
+        drop(clients);
+        drop(stuck);
+    }
+
+    #[tokio::test]
+    async fn keeps_an_entry_it_may_not_connect_to() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::getuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        let _listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        let error = prepare(&path).await.expect_err("eacces");
+        assert!(
+            error
+                .to_string()
+                .contains("address already in use by a live server")
+        );
+        assert!(path.symlink_metadata().is_ok());
+    }
+
+    #[tokio::test]
+    async fn never_removes_an_entry_that_is_not_a_socket() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        std::fs::write(&path, "not a socket").expect("write");
+        let error = prepare(&path).await.expect_err("regular file");
+        assert!(error.to_string().contains("not a socket"));
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn never_removes_a_listener_that_bound_the_path_after_the_stale_probe() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        stale_entry(&path);
+        let rebound = std::sync::Mutex::new(None);
+        let error = prepare_socket_path_with(
+            path.to_str().expect("utf8"),
+            async |socket: &str| {
+                crate::socket_ownership::socket_entry_listener_state(
+                    socket,
+                    "linux",
+                    crate::socket_ownership::lsof_socket_holders,
+                )
+                .await
+            },
+            async || {
+                std::fs::remove_file(&path).expect("unlink");
+                *rebound.lock().expect("lock") =
+                    Some(std::os::unix::net::UnixListener::bind(&path).expect("rebind"));
+            },
+        )
+        .await
+        .expect_err("changed");
+        assert!(
+            error
+                .to_string()
+                .contains("the entry changed after it was probed")
+        );
+        assert!(tokio::net::UnixStream::connect(&path).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn never_removes_a_different_dead_entry_that_replaced_the_probed_one() {
+        use crate::socket_ownership::ListenerVerdict;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        stale_entry(&path);
+        let error = prepare_socket_path_with(
+            path.to_str().expect("utf8"),
+            async |_: &str| pinned(ListenerVerdict::Dead),
+            async || {
+                std::fs::remove_file(&path).expect("unlink");
+                stale_entry(&path);
+            },
+        )
+        .await
+        .expect_err("changed");
+        assert!(
+            error
+                .to_string()
+                .contains("the entry changed after it was probed")
+        );
+        assert!(path.symlink_metadata().is_ok());
+    }
+
+    #[tokio::test]
+    async fn treats_an_entry_another_process_removed_after_the_probe_as_done() {
+        use crate::socket_ownership::ListenerVerdict;
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        stale_entry(&path);
+        prepare_socket_path_with(
+            path.to_str().expect("utf8"),
+            async |_: &str| pinned(ListenerVerdict::Dead),
+            async || std::fs::remove_file(&path).expect("unlink"),
+        )
+        .await
+        .expect("vanished");
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_path_the_kernel_would_truncate_and_listens_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let long = format!("/tmp/{}", "x".repeat(120));
+        let error = prepare_socket_path(&long).await.expect_err("too long");
+        assert!(error.to_string().contains("-byte limit"));
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("rpc.sock");
+        let _listener = listen(path.to_str().expect("utf8")).expect("listen");
+        assert_eq!(
+            std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[tokio::test]
     async fn a_sealed_host_is_ready_and_a_wrong_key_is_unproven() {
