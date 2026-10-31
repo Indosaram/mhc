@@ -486,6 +486,10 @@ const OVERFLOW_RECOVERY_RUNGS: u8 = 2;
 /// senpi `OVERFLOW_RECOVERY_EXHAUSTED_MESSAGE`: terminal message after both compact-and-retry rungs still overflow.
 pub const OVERFLOW_RECOVERY_FAILED_MESSAGE: &str = "Context overflow recovery failed after two compact-and-retry attempts. Try reducing context or switching to a larger-context model.";
 
+/// senpi `_promptAgent`: the refusal of an automatic turn after an interrupted run.
+pub const INTERRUPTED_RUN_REFUSAL: &str =
+    "The previous run was interrupted. Human input or Resume is required before another turn.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequiredCompactionError;
 
@@ -6422,6 +6426,40 @@ impl AgentSession {
     ) -> crate::run_resume_turn::RunResumeTurn {
         crate::run_resume_turn::start_run_resume_turn(ports).await
     }
+    /// senpi `SessionLifecycleController.requiresHumanContinuation`: the last run was interrupted and no human input
+    /// has been admitted since, so automatic continuations wait for a person or Resume.
+    pub fn requires_human_continuation(&self) -> bool {
+        lock(&self.lifecycle).interrupted && !self.lifecycle_human_pending.load(Ordering::SeqCst)
+    }
+    /// The hold key to install when this session is opened, if its run must wait for a person (senpi#4204).
+    pub fn opening_hold_key(&self) -> Option<&'static str> {
+        self.requires_human_continuation()
+            .then_some(crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
+    }
+    /// senpi `LifecycleSessionBinding` restore -> `controller.markInterruptedFromCustody`: consumed custody, or a
+    /// ticket whose delivery the transcript already holds, marks the run interrupted before session_start runs.
+    pub fn mark_interrupted_from_custody(&self, delivered: &dyn Fn(&str) -> bool) {
+        let consumed = lock(&self.work_obligations)
+            .as_ref()
+            .is_some_and(|registry| {
+                registry.active().into_iter().any(|record| {
+                    record.ticket_id.as_deref().is_some_and(|ticket| {
+                        record.state == crate::work_custody_record::CustodyState::Consumed
+                            || delivered(ticket)
+                    })
+                })
+            });
+        if consumed {
+            lock(&self.lifecycle).interrupted = true;
+        }
+    }
+    /// The production binding: the session's own ledger is the lifecycle controller, so restore's
+    /// `mark_interrupted_from_custody` reaches it before any queued delivery is re-sent (senpi#4204).
+    pub fn bind_session_lifecycle(
+        &self,
+    ) -> crate::lifecycle_session_binding::LifecycleSessionBinding {
+        self.bind_lifecycle(Arc::new(SessionLifecycleHost(Arc::downgrade(&self.inner))))
+    }
     pub fn bind_lifecycle(
         &self,
         host: Arc<dyn crate::lifecycle_session_binding::LifecycleBindingHost>,
@@ -6877,6 +6915,14 @@ impl AgentSession {
         );
         if let Some(spec) = options.tool_barrier.clone() {
             self.arm_tool_barrier(spec)?;
+        }
+        // senpi `_promptAgent`: an interrupted run admits no automatic turn. A turn the engine refused never ran, so
+        // it releases the barrier it armed (senpi#4106).
+        if self.requires_human_continuation() {
+            if let Some(spec) = &options.tool_barrier {
+                self.release_tool_barrier(&spec.id);
+            }
+            return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
         }
         lock(&self.transcript_write_failures).start_run();
         if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
@@ -16803,6 +16849,15 @@ impl AgentSession {
             }
         }
         self.apply_extension_bindings().await;
+        // Opening a session is not explicit Resume. Install the same hold used by Stop before session_start producers
+        // run, so automatic work waits quietly in notice custody (senpi#4204).
+        if let Some(key) = self.opening_hold_key() {
+            lock(&self.engine_turn_hold).add_hold(
+                crate::engine_turn_hold::HoldKind::SessionHold,
+                Some(key),
+                None,
+            );
+        }
         lock(&self.engine_turn_hold).start();
         let event = self.state().session_start_event.clone();
         let reason = if event.reason == maho_ext_api::SessionReason::Reload {
@@ -18104,6 +18159,9 @@ impl AgentSession {
         }
         lock(&self.delivered_held_inputs)
             .extend(held_ids.into_iter().map(|id| (id, user_abort_generation)));
+        if self.requires_human_continuation() {
+            return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
+        }
         if crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine {
             self.record_engine_turn_start(&message.custom_type);
         }
@@ -20094,6 +20152,29 @@ impl AgentSession {
     }
 }
 
+/// Forwards the binding's lifecycle edges to the session that owns the ledger.
+struct SessionLifecycleHost(std::sync::Weak<AgentSessionInner>);
+
+impl crate::lifecycle_session_binding::LifecycleBindingHost for SessionLifecycleHost {
+    fn event(&self, _: &str, _: Value) {
+        if let Some(inner) = self.0.upgrade() {
+            AgentSession { inner }.refresh_lifecycle();
+        }
+    }
+    fn facts_failed(&self, error: String) {
+        if let Some(inner) = self.0.upgrade() {
+            AgentSession { inner }.emit(AgentSessionEvent::ContinuationError {
+                error_message: error,
+            });
+        }
+    }
+    fn mark_interrupted_from_custody(&self, delivered: &dyn Fn(&str) -> bool) {
+        if let Some(inner) = self.0.upgrade() {
+            AgentSession { inner }.mark_interrupted_from_custody(delivered);
+        }
+    }
+}
+
 impl AgentSession {
     /// senpi `LifecycleSessionBinding` constructor (senpi#11209): a crashed receiver may hold durable custody but no
     /// transcript entry yet. Recovery owns that delivery already, so it is reserved before session_start can let the
@@ -20106,15 +20187,11 @@ impl AgentSession {
             .as_ref()
             .map(|registry| registry.active().into_iter().cloned().collect())
             .unwrap_or_default();
+        self.mark_interrupted_from_custody(&|ticket| deliveries.contains_key(ticket));
         for record in active {
             let Some(ticket) = record.ticket_id.clone() else {
                 continue;
             };
-            if record.state == crate::work_custody_record::CustodyState::Consumed
-                || deliveries.contains_key(&ticket)
-            {
-                lock(&self.lifecycle).interrupted = true;
-            }
             if record.state != crate::work_custody_record::CustodyState::Queued {
                 continue;
             }
@@ -34654,6 +34731,160 @@ mod tests {
 
         session.compact(None).await.expect("compact");
         assert_eq!(*lock(&preparation_enabled), Some(false));
+    }
+
+    /// senpi 4106-barrier-on-refused-turn.test.ts `interruptedSession`: a restored session whose run was active and
+    /// never sealed, so it was interrupted.
+    fn interrupted_test_session() -> AgentSession {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let session_id = manager.session_id().to_owned();
+        manager.append_custom(
+            "session-lifecycle",
+            Some(json!({
+                "sessionId": session_id, "state": "running", "seq": 2, "epoch": 1, "epochOrigin": "human",
+                "humanInputRevision": 1, "selfSettleEligible": true, "runPaused": false,
+                "since": "2026-10-23T00:00:00.000Z", "role": "root", "rootSessionId": session_id,
+                "persisted": true, "runActive": true, "epochSealed": false, "runId": "run-1",
+            })),
+        );
+        let session = test_session_with_manager(manager);
+        let mut runtime = session.model_runtime().clone();
+        runtime
+            .register_provider(
+                "faux",
+                crate::provider_composer::ProviderConfigInput {
+                    config: crate::model_config_schema::ModelsJsonProvider {
+                        api_key: Some("faux-test".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .expect("configured faux provider");
+        session.agent.set_model(test_model());
+        session
+    }
+
+    /// senpi test/suite/regressions/4204-interrupted-resume.test.ts: opening an interrupted session installs the
+    /// interrupted-run session hold before session_start producers run, and automatic work is refused until a
+    /// person continues.
+    #[tokio::test]
+    async fn opening_an_interrupted_session_holds_it_for_a_person_before_session_start() {
+        let session = interrupted_test_session();
+        assert!(session.requires_human_continuation());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = seen.clone();
+        let weak = Arc::downgrade(&session.inner);
+        let mut extension = maho_ext_api::LoadedExtension::new(
+            "<inline:interrupted-open>",
+            session.cwd().into(),
+            Default::default(),
+        );
+        extension.handlers.insert(
+            maho_ext_api::EventKind::SessionStart,
+            vec![Arc::new(move |_, _| {
+                let session = AgentSession {
+                    inner: weak.upgrade().expect("session"),
+                };
+                lock(&observed).extend(
+                    session
+                        .holds()
+                        .into_iter()
+                        .map(|hold| (hold.kind, hold.key)),
+                );
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })],
+        );
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+        session
+            .bind_extensions(ExtensionBindings {
+                mode: Some(ExtensionMode::Rpc),
+                ..Default::default()
+            })
+            .await;
+        assert!(lock(&seen).contains(&(
+            crate::engine_turn_hold::HoldKind::SessionHold,
+            crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY.to_owned()
+        )));
+        assert_eq!(
+            session.resume_cause(),
+            crate::stop_resume_directive::ResumeCause::Interrupted
+        );
+        // A person's input is the continuation: it admits the next run.
+        session.human_input_admitted(HumanInputKind::Prompt);
+        assert!(!session.requires_human_continuation());
+    }
+
+    /// senpi test/suite/regressions/4204-interrupted-resume.test.ts (binding restore): consumed custody marks the
+    /// reopened session interrupted through the production lifecycle host.
+    #[tokio::test]
+    async fn binding_restore_marks_consumed_custody_interrupted() {
+        let session = Arc::new(test_session());
+        let ticket = session
+            .with_work_obligations(|registry| {
+                let token = registry.open(
+                    "delivery:fixture",
+                    crate::work_custody_record::ObligationKind::Background,
+                    None,
+                );
+                token.ticket(registry)
+            })
+            .expect("ticket");
+        session
+            .with_work_obligations(|registry| registry.consumed(&ticket, "run-1", "entry-1"))
+            .expect("consumed");
+        assert!(!session.requires_human_continuation());
+        let mut binding = session.bind_session_lifecycle();
+        binding.restore().await.expect("restore");
+        assert!(session.requires_human_continuation());
+        assert_eq!(
+            session.opening_hold_key(),
+            Some(crate::engine_turn_hold::INTERRUPTED_RUN_HOLD_KEY)
+        );
+    }
+
+    /// senpi test/suite/regressions/4106-barrier-on-refused-turn.test.ts: a non-person prompt refused after an
+    /// interrupted run leaves no tool barrier armed.
+    #[tokio::test]
+    async fn a_refused_turn_releases_the_tool_barrier_it_armed() {
+        let session = interrupted_test_session();
+        let calls = Arc::new(AtomicU64::new(0));
+        let counted = calls.clone();
+        session.agent.set_stream_function(Arc::new(move |_, _, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            maho_ai::types::AssistantMessageEventStream::assistant()
+        }));
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.prompt(
+                "Automatic follow-up",
+                PromptOptions {
+                    source: Some(InputSource::Extension),
+                    tool_barrier: Some(crate::session_work_barrier::ToolBarrierSpec {
+                        id: "turn-1".into(),
+                        deadline_ms: 60_000,
+                    }),
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .expect("bounded refusal")
+        .expect_err("refused");
+        assert!(
+            refused.contains("Human input or Resume is required"),
+            "{refused}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(session.tool_barrier.id().is_none());
+        assert!(!session.release_tool_barrier("turn-1"));
     }
 
     fn lifecycle_record_count(session: &AgentSession) -> usize {
