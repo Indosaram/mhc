@@ -43,29 +43,36 @@ fn sealed_attempt(entries: &[Value], move_id: &str) -> Option<String> {
         .filter(|id| super::bundle::is_plain_id_str(id))
         .map(str::to_owned)
 }
-pub fn sealed_outgoing_state_dir(file: &Path, move_id: &str) -> Result<Option<PathBuf>, String> {
+pub async fn sealed_outgoing_state_dir(
+    file: &Path,
+    move_id: &str,
+) -> Result<Option<PathBuf>, String> {
     let root = outgoing_state_dir(file, move_id)?;
-    Ok(sealed_attempt(&super::entries(file), move_id).map(|attempt| root.join(attempt)))
+    Ok(sealed_attempt(&super::entries(file).await, move_id).map(|attempt| root.join(attempt)))
 }
 #[derive(Debug, Clone)]
 pub struct OutgoingState {
     pub attempt: String,
     pub dir: PathBuf,
 }
-pub fn prepare_outgoing_state(file: &Path, move_id: &str) -> Result<OutgoingState, String> {
+pub async fn prepare_outgoing_state(file: &Path, move_id: &str) -> Result<OutgoingState, String> {
     let root = outgoing_state_dir(file, move_id)?;
-    let sealed = sealed_attempt(&super::entries(file), move_id);
-    if root.exists() {
-        for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+    let sealed = sealed_attempt(&super::entries(file).await, move_id);
+    if super::path_exists(&root).await {
+        let mut entries = tokio::fs::read_dir(&root)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             if Some(entry.file_name().to_string_lossy().as_ref()) != sealed.as_deref() {
-                super::remove(&entry.path())?;
+                super::remove(&entry.path()).await?;
             }
         }
     }
     let attempt = new_attempt();
     let dir = root.join(&attempt);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(OutgoingState { attempt, dir })
 }
 #[derive(Debug, Clone)]
@@ -73,8 +80,11 @@ pub struct PendingMovedState {
     pub move_id: String,
     pub dir: PathBuf,
 }
-pub fn pending_moved_state(file: &Path) -> Result<Option<PendingMovedState>, String> {
-    let entries = super::entries(file);
+pub async fn pending_moved_state(file: &Path) -> Result<Option<PendingMovedState>, String> {
+    if !super::path_exists(file).await {
+        return Ok(None);
+    }
+    let entries = super::entries(file).await;
     let Some(move_id) = entries
         .iter()
         .rev()
@@ -91,7 +101,7 @@ pub fn pending_moved_state(file: &Path) -> Result<Option<PendingMovedState>, Str
         return Ok(None);
     }
     let dir = moved_state_dir(file, move_id)?;
-    Ok(dir.exists().then(|| PendingMovedState {
+    Ok(super::path_exists(&dir).await.then(|| PendingMovedState {
         move_id: move_id.into(),
         dir,
     }))
@@ -107,12 +117,13 @@ where
     F: FnOnce(MovedStateDelivery) -> Fut,
     Fut: std::future::Future<Output = Result<bool, String>>,
 {
-    restore_moved_state_with_mark(file, deliver, |data| {
-        super::append_custom(file, MOVED_STATE_RESTORED, data)
+    restore_moved_state_with(file, deliver, |data| async move {
+        super::append_custom(file, MOVED_STATE_RESTORED, data).await
     })
     .await
 }
 
+/// `restore_moved_state` with the caller's own (synchronous) restored mark, e.g. the live session manager.
 pub async fn restore_moved_state_with_mark<F, Fut, Mark>(
     file: &Path,
     deliver: F,
@@ -123,7 +134,21 @@ where
     Fut: std::future::Future<Output = Result<bool, String>>,
     Mark: FnOnce(Value) -> Result<(), String>,
 {
-    let Some(pending) = pending_moved_state(file)? else {
+    restore_moved_state_with(file, deliver, |data| std::future::ready(mark(data))).await
+}
+
+async fn restore_moved_state_with<F, Fut, Mark, MarkFut>(
+    file: &Path,
+    deliver: F,
+    mark: Mark,
+) -> Result<(), String>
+where
+    F: FnOnce(MovedStateDelivery) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, String>>,
+    Mark: FnOnce(Value) -> MarkFut,
+    MarkFut: std::future::Future<Output = Result<(), String>>,
+{
+    let Some(pending) = pending_moved_state(file).await? else {
         return Ok(());
     };
     let bookkeeping = pending
@@ -134,24 +159,33 @@ where
         .join("delivery")
         .join(pending.dir.file_name().ok_or("invalid moved state name")?);
     let marker = bookkeeping.join("delivered");
-    let redelivered = marker.exists();
-    if bookkeeping.exists() {
-        for entry in std::fs::read_dir(&bookkeeping).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+    let redelivered = super::path_exists(&marker).await;
+    if super::path_exists(&bookkeeping).await {
+        let mut entries = tokio::fs::read_dir(&bookkeeping)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             if entry.file_name().to_string_lossy().starts_with("attempt-") {
-                super::remove(&entry.path())?;
+                super::remove(&entry.path()).await?;
             }
         }
     }
-    std::fs::create_dir_all(&bookkeeping).map_err(|e| e.to_string())?;
-    std::fs::write(marker, "").map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&bookkeeping)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::write(marker, "")
+        .await
+        .map_err(|e| e.to_string())?;
     let copy = bookkeeping.join(format!("attempt-{}", new_attempt()));
-    std::fs::create_dir_all(&copy).map_err(|e| e.to_string())?;
-    for from in super::files_under(&pending.dir)? {
+    tokio::fs::create_dir_all(&copy)
+        .await
+        .map_err(|e| e.to_string())?;
+    for from in super::files_under(&pending.dir).await? {
         super::copy(
             &from,
             &copy.join(from.strip_prefix(&pending.dir).map_err(|e| e.to_string())?),
-        )?;
+        )
+        .await?;
     }
     let result = deliver(MovedStateDelivery {
         move_id: pending.move_id.clone(),
@@ -159,13 +193,12 @@ where
         redelivered,
     })
     .await;
-    super::remove(&copy)?;
+    super::remove(&copy).await?;
     if !result? {
         return Ok(());
     }
-    mark(
-        json!({"move_id":pending.move_id,"restored_at":crate::session_manager::now_iso_millis()}),
-    )?;
-    super::remove(&pending.dir)?;
-    super::remove(&bookkeeping)
+    mark(json!({"move_id":pending.move_id,"restored_at":crate::session_manager::now_iso_millis()}))
+        .await?;
+    super::remove(&pending.dir).await?;
+    super::remove(&bookkeeping).await
 }

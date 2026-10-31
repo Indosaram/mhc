@@ -165,6 +165,8 @@ pub struct PartialAgentState {
 /// Options for constructing an [`Agent`].
 #[derive(Default)]
 pub struct AgentOptions {
+    /// Construction-time channel for senpi's session layer only.
+    pub internal_channel: Option<crate::internal_events::InternalAgentChannel>,
     pub initial_state: Option<PartialAgentState>,
     pub convert_to_llm: Option<ConvertToLlm>,
     pub transform_context: Option<TransformContext>,
@@ -323,6 +325,8 @@ impl AgentSubscription {
 }
 
 struct AgentInner {
+    /// Construction-only: there is no getter and no attach path.
+    internal_channel: Option<crate::internal_events::InternalAgentChannel>,
     state: Mutex<AgentState>,
     listeners: Mutex<Listeners>,
     steering_queue: Mutex<PendingMessageQueue>,
@@ -427,6 +431,7 @@ impl Agent {
 
         Self {
             inner: Arc::new(AgentInner {
+                internal_channel: options.internal_channel.clone(),
                 state: Mutex::new(state),
                 listeners: Mutex::new(Listeners {
                     next_id: 0,
@@ -945,6 +950,16 @@ impl Agent {
         };
 
         let mut config = AgentLoopConfig::new(state.model.clone(), settings.convert_to_llm.clone());
+        // A run gets a progress sink only if an internal listener exists at run start.
+        config.internal_progress_sink =
+            crate::internal_events::internal_loop_sink(self.inner.internal_channel.as_ref());
+        if config.internal_progress_sink.is_some() {
+            let agent = self.clone();
+            config.captured_event_sink = Some(Arc::new(move |event| {
+                let agent = agent.clone();
+                Box::pin(async move { agent.process_captured_events(event).await })
+            }));
+        }
         config.options = SimpleStreamOptions {
             stream: maho_ai::types::StreamOptions {
                 request: ProviderRequestOptions {
@@ -1272,8 +1287,19 @@ impl Agent {
     /// considered idle later, after all awaited listeners for `agent_end` finish
     /// and `finishRun()` clears runtime-owned state.
     async fn process_events(&self, event: AgentEvent) {
+        self.process_captured_events(maho_ai::utils::assistant_capture::Captured::bare(event))
+            .await;
+    }
+
+    /// `processEvents` for an event that may carry its assistant capture; only the internal
+    /// channel sees the capture, public listeners get the bare event.
+    async fn process_captured_events(
+        &self,
+        captured: maho_ai::utils::assistant_capture::Captured<AgentEvent>,
+    ) {
+        let event = captured.value.clone();
         match &event {
-            AgentEvent::MessageStart { message } => {
+            AgentEvent::MessageStart { message, .. } => {
                 lock(&self.inner.state).streaming_message = Some(message.clone());
             }
             AgentEvent::MessageUpdate { message, .. } => {
@@ -1318,6 +1344,12 @@ impl Agent {
             // error channel, and no loop event is ever emitted outside a run.
             return;
         };
+        if let Some(internal) = crate::internal_events::dispatch_internal_agent(
+            self.inner.internal_channel.as_ref(),
+            crate::internal_events::InternalEvent::Event(captured),
+        ) {
+            internal.await;
+        }
         let listeners: Vec<AgentListener> = lock(&self.inner.listeners)
             .entries
             .iter()
