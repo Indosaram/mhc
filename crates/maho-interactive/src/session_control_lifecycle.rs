@@ -2,12 +2,13 @@
 //!
 //! A bound control endpoint's live wiring and its clean exit.
 //!
-//! Edges: `agent_idle` -> idle; a delivery's entry written -> emitted; SIGCONT -> continue; the last
-//! input hold of the session ended (`on_inputs_settled`) -> submission. The host adds submission (its
+//! Edges: `agent_idle` -> idle; a delivery's entry written (its `message_end`) -> emitted;
+//! SIGCONT -> continue; the last input hold of the session ended (`on_inputs_settled`) -> submission. The host adds submission (its
 //! last open submission ticket released) and draft_cleared; the socket adds command; the watcher adds
 //! inbox.
 //!
-//! Clean exit, in order: stop every edge source, close the socket, apply the header-only rule (a
+//! Clean exit, in order: stop every edge source, close the socket, apply the header-only rule (OPEN
+//! until mhc's `SessionManager` can discard a header-only file; the file is kept meanwhile) (a
 //! session file holding nothing but its header is removed only when the registrant says nothing
 //! references the session - an unanswerable question keeps the file), then remove the endpoint.
 //! A process that exits without disposing still removes its endpoint on exit.
@@ -123,7 +124,7 @@ pub fn unregister_endpoints_at_exit() {
 pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoint {
     let ActivationParts {
         context,
-        options,
+        options: _,
         entry,
         server,
         scheduler,
@@ -160,6 +161,16 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
             | AgentSessionEvent::CompactionEnd { .. } => {
                 publish(ControlFeedKind::State, Map::new());
             }
+            // senpi `externalAdmission.onEmitted`: an admitted delivery reached the transcript. mhc's
+            // admission has no emitted listener; its delivery's `message_end` is the same edge.
+            AgentSessionEvent::Agent(AgentEvent::MessageEnd { message })
+                if message.role() == "custom"
+                    && serde_json::to_value(message).is_ok_and(|value| {
+                        maho_core::external_admission::delivery_id_of(&value).is_some()
+                    }) =>
+            {
+                tokio::spawn(events_wake("emitted"));
+            }
             AgentSessionEvent::Agent(AgentEvent::MessageEnd { message })
                 if message.role() == "assistant" =>
             {
@@ -171,13 +182,6 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
             _ => {}
         }
     }));
-    let emitted_wake = wake.clone();
-    let stop_emitted =
-        session
-            .external_admission()
-            .on_emitted(Arc::new(move |_delivery_id: &str| {
-                tokio::spawn(emitted_wake("emitted"));
-            }));
     // Deferred like the host's release: an accepted prompt marks its run active right after.
     let inputs_wake = wake.clone();
     let inputs_live = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -202,20 +206,20 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
     lock(&EXIT_ENTRIES).push((exit_id, entry.clone()));
     let teardown_feed = feed.clone();
     let teardown_entry = entry.clone();
-    let teardown_session = session.clone();
     let teardown: BoxFuture<'static, ()> = Box::pin(async move {
         lock(&EXIT_ENTRIES).retain(|(id, _)| *id != exit_id);
         drop(subscription);
-        stop_emitted();
         inputs_live.store(false, std::sync::atomic::Ordering::SeqCst);
         stop_continue();
         stop_inbox();
         scheduler.dispose();
         lock(&teardown_feed).clear();
         server.close().await;
-        if !session_referenced(&options).await {
-            drop(teardown_session.discard_header_only_file().await);
-        }
+        // senpi's header-only rule removes a file this endpoint's header write created and nothing
+        // else filled, unless the registrant says the session is referenced. OPEN: mhc's
+        // `SessionManager` has no `discard_header_only_file` (nor the owned-header record it reads),
+        // so the file is kept (what the rule does whenever it cannot answer), and the registrant's
+        // `is_session_referenced` is not asked.
         unregister_tui_endpoint(&teardown_entry).await;
     });
     ActiveControlEndpoint {
@@ -234,15 +238,6 @@ pub fn editor_hold(context: &TuiControlContext) -> Value {
     match context.surface.draft_hold() {
         Some(hold) => json!({"hold_reason": hold, "revision": revision}),
         None => json!({"revision": revision}),
-    }
-}
-
-/// senpi `sessionReferenced`. Its "kept the session file" notice reports a rejected check; the Rust
-/// `IsSessionReferenced` answers a plain `bool`, so there is no failure to report.
-async fn session_referenced(options: &RegisterControlEndpointOptions) -> bool {
-    match options.is_session_referenced.as_ref() {
-        Some(is_session_referenced) => is_session_referenced().await,
-        None => false,
     }
 }
 
