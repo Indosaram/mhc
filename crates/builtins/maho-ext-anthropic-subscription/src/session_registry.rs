@@ -22,6 +22,8 @@ pub struct SessionEntry {
     pub assistant_uuid_by_index: BTreeMap<usize, String>,
     pub last_used_at: u64,
     pub pending_fork_reason: Option<String>,
+    /// senpi#1975: first diverged field path the commit boundary named for the pending fork, when it named one.
+    pub pending_fork_diverged_path: Option<String>,
     pub tainted_reason: Option<String>,
     pub branch_info: Option<crate::session_entry_annotations::SessionBranchInfo>,
 }
@@ -79,6 +81,7 @@ impl SessionEntry {
             assistant_uuid_by_index: BTreeMap::new(),
             last_used_at: input.now,
             pending_fork_reason: None,
+            pending_fork_diverged_path: None,
             tainted_reason: None,
             branch_info: None,
         })
@@ -194,7 +197,7 @@ mod tests {
         std::fs::write(&executable,"#!/usr/bin/python3\nimport sys,json\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}}),flush=True)\n else:\n  print(json.dumps({'type':'user','isReplay':True,'uuid':f['uuid']}),flush=True)\n  print(json.dumps({'type':'result','subtype':'success','user_message_uuid':f['uuid'],'result':f['message']['content']}),flush=True)\n").expect("script");
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
             .expect("permissions");
-        let options = json!({});
+        let options = json!({"cwd":dir.path()});
         let environment = BTreeMap::new();
         let mut entry = SessionEntry::create(CreateEntry {
             session_id: "s",
@@ -260,7 +263,12 @@ mod tests {
             .expect("model")
         );
         assert_eq!(entry.model_id, "next");
-        crate::session_entry_annotations::annotate_pending_fork(Some(&mut entry), "compaction", 3);
+        crate::session_entry_annotations::annotate_pending_fork(
+            Some(&mut entry),
+            "compaction",
+            None,
+            3,
+        );
         assert_eq!(entry.pending_fork_reason.as_deref(), Some("compaction"));
         assert_eq!(entry.last_used_at, 3);
         let branch = crate::session_entry_annotations::SessionBranchInfo {

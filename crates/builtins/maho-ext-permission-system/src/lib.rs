@@ -12,10 +12,13 @@ pub mod settings;
 pub mod prompt;
 pub mod external_dir;
 pub mod parsers;
+pub mod bash_command_segments;
+pub mod external_pattern;
+pub mod external_spellings;
 
 use maho_ext_api::{Extension,ExtensionApi,EventKind,ExtensionEvent,EventResult,FlagType,FlagValue,ExtensionFailure,ToolCallEventResult};
 use std::sync::{Arc,Mutex};
-struct SessionPolicy{service:service::PermissionService,registry:parsers::ParserRegistry,static_rules:types::Ruleset,cli:types::Ruleset,initial_approved:usize}
+struct SessionPolicy{service:service::PermissionService,registry:parsers::ParserRegistry,preset_bound:bool,initial_approved:usize}
 pub struct PermissionSystem;
 impl Extension for PermissionSystem{
     fn register(&self,api:&mut ExtensionApi){
@@ -33,19 +36,21 @@ impl Extension for PermissionSystem{
                 let preset=match runtime.get_flag("permission-preset"){
                     Some(FlagValue::String(value))=>Some(cli::parse_permission_preset_flag(&value).ok_or_else(||ExtensionFailure::new(format!("Invalid --permission-preset \"{value}\". Expected one of: guarded, full-access, workspace, accept-edits, auto, read-only, ask.")))?),_=>None,
                 };
-                let (rules,approved)=settings::load_permission_settings(&manager,&cli,(&ctx.cwd,&home),preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                let resolved=settings::resolve_permission_config(&manager,&cli,&home,preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                let preset_bound=resolved.preset==types::PermissionPresetName::Auto;let rules=resolved.rules;
+                let approved=storage::load_approved(&ctx.cwd).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let initial_approved=approved.len();let actions=runtime.session_actions()?;let active=actions.get_active_tools()?;
                 let disabled=config::disabled(&active,&rules);actions.set_active_tools(active.into_iter().filter(|name|!disabled.contains(name)).collect())?;
                 let mut registry = parsers::create_builtin_parser_registry_in(&ctx.agent_dir);
                 let rt = runtime.clone();
                 registry.set_definition_resolver(Arc::new(move |name: &str| rt.live_tool_definition(name)));
-                *state.lock().expect("permission state lock")=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}),registry,static_rules:rules,cli,initial_approved});
+                *state.lock().expect("permission state lock")=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}),registry,preset_bound,initial_approved});
                 Ok(EventResult::None)
             })
         }));
-        let call_state=Arc::clone(&state);let call_counter=Arc::clone(&counter);let bus=api.events.clone();
+        let call_state=Arc::clone(&state);let call_counter=Arc::clone(&counter);
         api.on(EventKind::ToolCall,Arc::new(move|event,ctx|{
-            let state=Arc::clone(&call_state);let counter=Arc::clone(&call_counter);let bus=bus.clone();
+            let state=Arc::clone(&call_state);let counter=Arc::clone(&call_counter);
             Box::pin(async move{
                 let ExtensionEvent::ToolCall(event)=event else{return Ok(EventResult::None)};
                 let home=std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map_err(|error|ExtensionFailure::new(error.to_string()))?;
@@ -60,15 +65,16 @@ impl Extension for PermissionSystem{
                         if config::EDIT_TOOLS.contains(&event.tool_name.as_str()){metadata.insert("filepath".into(),path.clone());}
                         if event.tool_name=="read"{metadata.insert("filePath".into(),path);}
                     }
-                    let request=types::Request::new(format!("permission-{}",counter.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1),ctx.session_manager.session_id().into(),parsed.permission,parsed.patterns,parsed.always,metadata);
-                    let (future,pending,rules,cli)={let mut guard=state.lock().expect("permission state lock");let policy=guard.as_mut().expect("session policy initialized");let future=policy.service.ask(request.clone());let pending=policy.service.list().iter().any(|entry|entry.id==request.id);(future,pending,policy.static_rules.clone(),policy.cli.clone())};
+                    let mut request=types::Request::new(format!("permission-{}",counter.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1),ctx.session_manager.session_id().into(),parsed.permission,parsed.patterns,parsed.always,metadata);
+                    request.original_paths=parsed.original_paths;
+                    let ask=service::AskOptions{auto_approve_ask:parsed.auto_approve_ask,rule_aliases:parsed.rule_aliases};
+                    let (future,pending,preset_bound)={let mut guard=state.lock().expect("permission state lock");let policy=guard.as_mut().expect("session policy initialized");let future=policy.service.ask_with(request.clone(),ask);let pending=policy.service.list().iter().any(|entry|entry.id==request.id);(future,pending,policy.preset_bound)};
                     if pending{
-                        let reply=if ctx.has_ui{Some(prompt::show_permission_prompt(ctx,&request).await)}else{
-                            // The service already emitted asked; use a private telemetry bus to avoid emitting it twice.
-                            let emitter=events::PermissionEventEmitter::default();let forwarded=bus.clone();let _subscription=emitter.bus.on("permission_replied",Arc::new(move|value|forwarded.emit("permission_replied",value)));
-                            non_interactive::handle_no_ui(&request,(&rules,&cli),&emitter).map_err(|error|ExtensionFailure::new(error.to_string()))?
+                        let reply=if ctx.has_ui{prompt::show_permission_prompt(ctx,&request).await}else{
+                            // The service already emitted asked; a private bus keeps it from being emitted twice.
+                            non_interactive::handle_no_ui(&request,preset_bound,&events::PermissionEventEmitter::default()).map_err(|error|ExtensionFailure::new(error.to_string()))?
                         };
-                        if let Some(reply)=reply && let Some(policy)=state.lock().expect("permission state lock").as_mut(){policy.service.reply(reply);}
+                        if let Some(policy)=state.lock().expect("permission state lock").as_mut(){policy.service.reply(reply);}
                     }
                     if let Err(error)=future.await{return Ok(EventResult::ToolCall(ToolCallEventResult{block:Some(true),reason:Some(error.to_string()),terminate:None}));}
                 }
