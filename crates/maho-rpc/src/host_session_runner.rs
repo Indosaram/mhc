@@ -146,8 +146,13 @@ pub async fn run_host_session_request(request: HostSessionRequest) -> HostOutcom
     }
 }
 
+/// senpi `ensureHostLocked` polls a stopping generation every 50 ms (`delay(Math.min(50, remaining))`).
+const HOST_STOPPING_RETRY_MS: u64 = 50;
+
 /// senpi `runHostSessionRequest`: an `open` that meets a stopping generation tries again until the
 /// stop budget runs out; every other error, and any error from another action, is returned at once.
+/// Rust `ensure_host` refuses a stopping host at once instead of waiting for it like senpi, so each
+/// retry waits on the tokio clock first. Without that wait, reconnects would spin.
 async fn retry_while_host_stopping<F, Fut>(
     retry: bool,
     budget: Duration,
@@ -165,7 +170,9 @@ where
                     && error.error_code() == Some("host_stopping")
                     && tokio::time::Instant::now() < deadline =>
             {
-                continue;
+                let remaining = deadline - tokio::time::Instant::now();
+                tokio::time::sleep(remaining.min(Duration::from_millis(HOST_STOPPING_RETRY_MS)))
+                    .await;
             }
             result => return result,
         }
@@ -1379,6 +1386,22 @@ mod tests {
         .await;
         assert_eq!(result.unwrap().payload["action"], "open");
         assert_eq!(attempts.get(), 3);
+    }
+
+    // The paused tokio clock only advances through the retry sleeps, so elapsed time counts them exactly.
+    #[tokio::test(start_paused = true)]
+    async fn a_stopping_retry_waits_between_attempts_and_gives_up_at_the_budget() {
+        let started = tokio::time::Instant::now();
+        let attempts = std::cell::Cell::new(0);
+        let result = retry_while_host_stopping(true, Duration::from_millis(120), || {
+            attempts.set(attempts.get() + 1);
+            async { Err(stopping()) }
+        })
+        .await;
+        assert_eq!(result.unwrap_err().error_code(), Some("host_stopping"));
+        // Waits of 50, 50 and the remaining 20 ms, then one last attempt at the deadline.
+        assert_eq!(attempts.get(), 4);
+        assert_eq!(started.elapsed(), Duration::from_millis(120));
     }
 
     #[tokio::test(start_paused = true)]
