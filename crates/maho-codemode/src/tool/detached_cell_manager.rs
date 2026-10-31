@@ -16,13 +16,19 @@ pub struct DetachedCellManagerOptions {
     pub hard_limit_seconds: f64,
     pub run_budget_seconds: f64,
     pub max_detached_cells: usize,
+    /// Settled-snapshot in-memory byte budget; 0 keeps only the count cap.
+    pub retained_results_bytes: u64,
+    /// Disk budget for settled-cell images spilled under `artifacts_dir/settled-images`.
+    pub retained_images_bytes: u64,
 }
 
 impl Default for DetachedCellManagerOptions {
     fn default() -> Self {
         Self { artifacts_dir:None, on_status_change:None, on_wake_source_state:None, notifier:None,
             now:Arc::new(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64() * 1000.0),
-            hard_limit_seconds:DEFAULT_HARD_LIMIT_SECONDS, run_budget_seconds:DEFAULT_RUN_BUDGET_SECONDS, max_detached_cells:DEFAULT_MAX_DETACHED_CELLS as usize }
+            hard_limit_seconds:DEFAULT_HARD_LIMIT_SECONDS, run_budget_seconds:DEFAULT_RUN_BUDGET_SECONDS, max_detached_cells:DEFAULT_MAX_DETACHED_CELLS as usize,
+            retained_results_bytes:crate::config::memory_settings::DEFAULT_RETAINED_RESULTS_MB*1024*1024,
+            retained_images_bytes:crate::config::memory_settings::DEFAULT_RETAINED_IMAGES_MB*1024*1024 }
     }
 }
 
@@ -37,7 +43,9 @@ pub struct EvalDetachedCellManager {
 impl EvalDetachedCellManager {
     pub fn new(mut options: DetachedCellManagerOptions) -> Self {
         let notification_queue = DetachedNotificationQueue::new(options.notifier.take());
-        Self { options, cells:Vec::new(), detached:Vec::new(), terminal_snapshots:TerminalSnapshotStore::default(), notification_queue }
+        let spill = options.artifacts_dir.as_ref().map(|dir| super::settled_image_spill::SettledImageSpill::new(dir.join("settled-images"), options.retained_images_bytes));
+        let terminal_snapshots = TerminalSnapshotStore::with_budget(super::terminal_snapshot_store::TERMINAL_SNAPSHOT_CAP, options.retained_results_bytes, spill);
+        Self { options, cells:Vec::new(), detached:Vec::new(), terminal_snapshots, notification_queue }
     }
 
     pub fn max_detached_cells(&self) -> usize { self.options.max_detached_cells }
@@ -153,7 +161,7 @@ impl EvalDetachedCellManager {
 
     pub fn peek(&self, cell_id: &str) -> Result<EvalDetachedCellSnapshot, String> {
         if let Some((_,cell)) = self.cells.iter().find(|(id,_)|id==cell_id) { return Ok(snapshot_detached_cell(&cell.lock().expect("managed cell poisoned").source, (self.options.now)())); }
-        self.terminal_snapshots.get(cell_id).cloned().ok_or_else(|| format!("Unknown detached eval cell \"{cell_id}\""))
+        self.terminal_snapshots.get(cell_id).ok_or_else(|| format!("Unknown detached eval cell \"{cell_id}\""))
     }
 
     pub async fn stop(manager: &Arc<Mutex<Self>>, cell_id: &str, reason: &str) -> Result<EvalDetachedCellSnapshot,String> {
