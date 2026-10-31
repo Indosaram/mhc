@@ -17,6 +17,8 @@ pub mod mouse_input_tests;
 pub mod select_list_tests;
 #[path = "tui_lifecycle_tests.rs"]
 pub mod tui_lifecycle_tests;
+#[path = "tui_main_screen_mouse.rs"]
+pub mod tui_main_screen_mouse;
 #[path = "tui_screen_golden.rs"]
 pub mod tui_screen_golden;
 #[path = "width_golden.rs"]
