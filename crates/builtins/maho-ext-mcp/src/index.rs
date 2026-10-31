@@ -31,12 +31,12 @@ pub fn register_mcp_lifecycle_with_tool_search(
     );
     let command_events = publish_events.clone();
     let pending_service = service.clone();
-    let entry_api = Arc::new(std::sync::Mutex::new(ExtensionApi::new(
+    let entry_api = Arc::new(ExtensionApi::new(
         api.registered.clone(),
         api.profile.clone(),
         api.events.clone(),
         api.runtime.clone(),
-    )));
+    ));
     crate::commands::register_mcp_commands(
         api,
         crate::commands::McpCommandHost {
@@ -53,22 +53,15 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 })
             }),
             append_entry: Some(Arc::new(move |message| {
-                let api = entry_api
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Err(error) = api.append_entry(
+                if let Err(error) = entry_api.append_entry(
                     crate::commands::MCP_AUTH_ENTRY_TYPE,
                     Some(serde_json::Value::String(message.into())),
                 ) {
                     maho_ext_api::diagnostic(&format!("MCP auth notice failed: {}", error.message));
                 }
             })),
-            after_reconnect: Some(Arc::new(move |service| {
-                let events = command_events.clone();
-                Box::pin(async move {
-                    let snapshot = service.wire_status_snapshot().await;
-                    publish_wire_status(&events, &snapshot);
-                })
+            after_reconnect: Some(Arc::new(move |snapshot| {
+                publish_wire_status(&command_events, &snapshot);
             })),
             open_browser: Some(crate::auth::challenge_login::system_browser_opener()),
         },

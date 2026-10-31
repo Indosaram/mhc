@@ -338,7 +338,7 @@ async fn reconnect_server(name: &str, ctx: &ExtensionContext, host: &McpCommandH
         Err(error) => Err(error),
     };
     if let Some(after) = &host.after_reconnect {
-        after(&service).await;
+        after(service.wire_status_snapshot().await);
     }
     match result {
         Ok(()) => ui.notify(
