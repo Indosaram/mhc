@@ -6,7 +6,7 @@ struct Chunks(Vec<Vec<u8>>);
 impl BashOperations for Chunks {
     fn exec<'a>(&'a self, _: &'a str, _: &'a Path, options: BashExecOptions) -> ToolFuture<'a, BashExit> {
         Box::pin(async move {
-            for chunk in &self.0 { (options.on_data)(chunk)?; }
+            for chunk in &self.0 { (options.on_data)(chunk, maho_tools::bash::BashStream::Stdout)?; }
             Ok(BashExit { exit_code: Some(0) })
         })
     }
