@@ -77,10 +77,40 @@ pub async fn call_mcp_tool(
             let call_params =
                 json!({"name":entry.tool,"arguments":args,"_meta":{"progressToken":token}});
             // `mcpRequestOptions(current.requestOrigin?.(), {signal})`: a fresh binding-issued origin per attempt.
-            let options = crate::request_origin::mcp_request_options(
+            let mut options = crate::request_origin::mcp_request_options(
                 entry.request_origin.as_ref().and_then(|origin| origin()),
                 Some(signal.clone()),
             );
+            // call.ts `onprogress`: the modern engine reports attempt progress and synthesized task status here.
+            let (progress_sender, mut engine_progress) =
+                tokio::sync::mpsc::unbounded_channel::<Value>();
+            options.on_progress = Some(std::sync::Arc::new(move |progress: Value| {
+                let _ = progress_sender.send(progress);
+            }));
+            let report = |progress: &Value| -> Result<(), McpError> {
+                let Some(update) = on_update else {
+                    return Ok(());
+                };
+                let label = format!("{}/{}", entry.server, entry.tool);
+                update(ToolResult {
+                    content: vec![ToolContent::text(
+                        maho_core::config_reference_redaction::redact_resolved_reference_values(
+                            &format_progress(&label, progress),
+                            "<redacted>",
+                        ),
+                    )],
+                    details: Some(
+                        maho_core::config_reference_redaction::redact_resolved_reference_data(
+                            &json!({"progress":progress,"server":entry.server,"tool":entry.tool}),
+                        ),
+                    ),
+                    structured_content: None,
+                    is_error: None,
+                })
+                .map_err(|error| {
+                    McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string())
+                })
+            };
             // tool-client.ts: a modern call validates structured output against the declared output schema.
             let request = async {
                 if crate::modern::request::is_modern_mcp_client(&client) {
@@ -120,25 +150,11 @@ pub async fn call_mcp_tool(
                         let progress = value.get("params").unwrap_or(&Value::Null);
                         if value.get("method").and_then(Value::as_str) == Some("notifications/progress")
                             && progress.get("progressToken") == Some(&json!(token))
-                            && let Some(update) = on_update
                         {
-                            let label = format!("{}/{}", entry.server, entry.tool);
-                            update(ToolResult {
-                                content: vec![ToolContent::text(
-                                    maho_core::config_reference_redaction::redact_resolved_reference_values(
-                                        &format_progress(&label, progress),
-                                        "<redacted>",
-                                    ),
-                                )],
-                                details: Some(maho_core::config_reference_redaction::redact_resolved_reference_data(
-                                    &json!({"progress":progress,"server":entry.server,"tool":entry.tool}),
-                                )),
-                                structured_content: None,
-                                is_error: None,
-                            })
-                            .map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
+                            report(progress)?;
                         }
                     }
+                    Some(progress) = engine_progress.recv() => report(&progress)?,
                     result = &mut request => {
                         signal.check().map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
                         break result?;
