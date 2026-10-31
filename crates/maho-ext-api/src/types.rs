@@ -3321,9 +3321,12 @@ pub enum ExtensionEvent {
         should_continue: bool,
         context: JsonValue,
     },
+    /// senpi `SessionControlWakeEvent`: `reason` is the batch's highest-priority reason, `reasons`
+    /// every reason it covers; `delivery_ids` are the deliveries a `wake` command named.
     SessionControlWake {
-        source: String,
         reason: String,
+        reasons: Vec<String>,
+        delivery_ids: Option<Vec<String>>,
     },
     ToolActivated {
         tool_names: Vec<String>,

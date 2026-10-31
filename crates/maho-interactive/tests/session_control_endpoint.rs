@@ -668,3 +668,89 @@ async fn pi_session_registers_through_the_terminal_host_once_extensions_are_boun
     assert!(!std::path::Path::new(&socket).exists());
     mode.dispose_session_control().await;
 }
+
+/// An extension that records each `session_control_wake` it sees and fails while `failing` is set.
+struct WakeWatcher {
+    seen: Arc<Mutex<Vec<(String, Vec<String>, Option<Vec<String>>)>>>,
+    failing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl maho_ext_api::Extension for WakeWatcher {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        let seen = self.seen.clone();
+        let failing = self.failing.clone();
+        api.on(
+            maho_ext_api::EventKind::SessionControlWake,
+            Arc::new(move |event, _ctx| {
+                let seen = seen.clone();
+                let failing = failing.load(std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    if let maho_ext_api::ExtensionEvent::SessionControlWake {
+                        reason,
+                        reasons,
+                        delivery_ids,
+                    } = event
+                    {
+                        lock(&seen).push((reason.clone(), reasons.clone(), delivery_ids.clone()));
+                    }
+                    if failing {
+                        return Err(maho_ext_api::ExtensionFailure::new("wake handler broke"));
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+    }
+}
+
+// senpi `session-control-endpoint.ts`: each wake pass emits `session_control_wake` into the session's
+// extensions before the registrant's drain; a failing handler is an extension error, not a failed pass.
+#[tokio::test]
+async fn a_wake_is_emitted_into_the_sessions_extensions_before_the_drain() {
+    let fixture = start_endpoint(None).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fixture
+        .session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::from_static(
+            vec![Box::new(WakeWatcher {
+                seen: seen.clone(),
+                failing: failing.clone(),
+            })],
+            fixture
+                .session
+                .extension_context(fixture._mode.extension_ui.clone()),
+        ))
+        .await;
+    control_data(
+        &fixture.socket,
+        json!({"type": "wake", "delivery_ids": ["d1"]}),
+    )
+    .await;
+    assert_eq!(
+        *lock(&seen),
+        [(
+            "command".to_owned(),
+            vec!["command".to_owned()],
+            Some(vec!["d1".to_owned()])
+        )]
+    );
+    assert_eq!(lock(&fixture.wakes).len(), 1, "the drain still ran");
+    // senpi's `emit` reports a handler's failure through `emitError`; the drain still runs.
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    control_data(&fixture.socket, json!({"type": "wake"})).await;
+    assert_eq!(lock(&seen).len(), 2);
+    assert_eq!(
+        lock(&fixture.wakes).len(),
+        2,
+        "a failing handler does not skip the drain"
+    );
+    assert!(
+        lock(&fixture.surface.notices)
+            .iter()
+            .all(|line| !line.contains("drain failed")),
+        "{:?}",
+        lock(&fixture.surface.notices)
+    );
+    fixture.endpoint.dispose().await;
+}

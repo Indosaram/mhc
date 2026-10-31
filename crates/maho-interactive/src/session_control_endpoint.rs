@@ -174,16 +174,18 @@ async fn open_endpoint(
     let pass_failing = failing.clone();
     let error_failing = failing.clone();
     let error_surface = surface.clone();
+    let wake_session = session.clone();
     let scheduler = WakeScheduler::new(
         Arc::new(
             move |event: Value| -> BoxFuture<'static, Result<Value, String>> {
                 let drain = drain.clone();
                 let failing = pass_failing.clone();
+                let session = wake_session.clone();
                 Box::pin(async move {
                     // senpi emits the wake into the session's extensions first
-                    // (`extensionRunner.emit(event)`). OPEN: `AgentSession` exposes no way to emit a
-                    // `session_control_wake` extension event (the runner's `emit_session_control_wake`
-                    // is unreachable from here), so only the registrant's drain runs.
+                    // (`extensionRunner.emit(event)`); handler failures go to the runner's error
+                    // listeners, and only an inactive runner fails the pass.
+                    session.emit_session_control_wake(&event).await?;
                     // senpi's drain may throw; mhc's returns no error, so a panicking drain is the
                     // failed pass (and must not take the scheduler's task down with it).
                     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
