@@ -60,25 +60,35 @@ pub fn describe_usage_limit_message(message: &AssistantMessage) -> AssistantMess
     match usage_limit_scope(message) {
         Some(UsageLimitScope::Account) => {
             if let Some(raw) = message.error_message.as_deref().filter(|raw| !raw.is_empty()) {
-                let raw = maho_ai::utils::provider_failure_description::strip_turn_retry_suppression_prefix(raw);
-                projected.error_message = Some(if raw.contains("To keep going now, ") {
-                    raw.rsplit_once(" (retry-after-ms: ").filter(|(_, suffix)| {
-                        suffix.strip_suffix(')').is_some_and(|millis| !millis.is_empty() && millis.bytes().all(|byte| byte.is_ascii_digit()))
-                    }).map_or_else(|| raw.clone(), |(message, _)| message.to_owned())
-                } else {
-                    let reset = raw.split_whitespace().collect::<Vec<_>>();
-                    let reset = reset.iter().position(|word| word.eq_ignore_ascii_case("reset") || word.eq_ignore_ascii_case("resets"))
-                        .map(|index| reset[index.saturating_add(1)..].join(" "))
-                        .map(|reset| reset.split(['"', '}', '\n']).next().unwrap_or_default().trim_end_matches(['.', ';']).trim().to_owned())
-                        .filter(|reset| !reset.is_empty())
-                        .map(|reset| format!(" (resets {reset})")).unwrap_or_default();
-                    format!("The {} account usage limit has been reached{reset}. Switch to another provider with /model, or configure another provider in retry.fallbackChains.", message.provider)
-                });
+                projected.error_message = Some(describe_account_limit(&message.provider, raw));
             }
         }
         Some(UsageLimitScope::Model) | None => {}
     }
     projected
+}
+
+/// The account-limit advice for `provider`, carrying the reset time named in `raw` when there is one.
+fn describe_account_limit(provider: &str, raw: &str) -> String {
+    let raw = maho_ai::utils::provider_failure_description::strip_turn_retry_suppression_prefix(raw);
+    if raw.contains("To keep going now, ") {
+        raw.rsplit_once(" (retry-after-ms: ").filter(|(_, suffix)| {
+            suffix.strip_suffix(')').is_some_and(|millis| !millis.is_empty() && millis.bytes().all(|byte| byte.is_ascii_digit()))
+        }).map_or_else(|| raw.clone(), |(message, _)| message.to_owned())
+    } else {
+        let reset = raw.split_whitespace().collect::<Vec<_>>();
+        let reset = reset.iter().position(|word| word.eq_ignore_ascii_case("reset") || word.eq_ignore_ascii_case("resets"))
+            .map(|index| reset[index.saturating_add(1)..].join(" "))
+            .map(|reset| reset.split(['"', '}', '\n']).next().unwrap_or_default().trim_end_matches(['.', ';']).trim().to_owned())
+            .filter(|reset| !reset.is_empty())
+            .map(|reset| format!(" (resets {reset})")).unwrap_or_default();
+        format!("The {provider} account usage limit has been reached{reset}. Switch to another provider with /model, or configure another provider in retry.fallbackChains.")
+    }
+}
+
+/// senpi `AccountUsageLimitError`: a spent account with nowhere to route, phrased as the account advice.
+pub fn account_usage_limit_error(provider: &str, raw: Option<&str>) -> String {
+    describe_account_limit(provider, raw.filter(|raw| !raw.is_empty()).unwrap_or("usage limit reached"))
 }
 
 pub fn describe_usage_limit_entry(mut entry: Value) -> Value {
