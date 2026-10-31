@@ -17,10 +17,12 @@ pub mod harness_drive_accept;
 pub mod harness_drive_generation;
 #[path = "harness_drive_lane.rs"]
 pub mod harness_drive_lane;
-#[path = "harness_drive_public.rs"]
-pub mod harness_drive_public;
 #[path = "harness_drive_progress.rs"]
 pub mod harness_drive_progress;
+#[path = "harness_drive_public.rs"]
+pub mod harness_drive_public;
+#[path = "harness_drive_reconcile.rs"]
+pub mod harness_drive_reconcile;
 #[path = "harness_drive_reducer.rs"]
 pub mod harness_drive_reducer;
 #[path = "harness_drive_restore.rs"]

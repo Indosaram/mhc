@@ -346,6 +346,29 @@ impl Lane {
             .map(|drive| drive.operation_id.clone())
     }
 
+    /// Pinned test constructor argument `() => config`: edit the process-local drive configuration
+    /// a standalone lane reads, as procedure-level fixtures do before driving it.
+    #[doc(hidden)]
+    pub fn update_drive_config(&self, update: impl FnOnce(&mut Config<()>)) {
+        update(
+            &mut self
+                .drive_config
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+    }
+
+    /// Pinned test assignment `lane.activeDrive = drive`: install (or clear) the drive pass that
+    /// procedure-level fixtures drive directly, without the public `drive` claim.
+    #[doc(hidden)]
+    pub fn set_active_drive(&self, drive: Option<Arc<Drive>>) {
+        *self
+            .active_drive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = drive;
+        self.state_change.notify_waiters();
+    }
+
     fn active_drive_matching(&self, operation_id: &str) -> Option<Arc<Drive>> {
         self.active_drive
             .lock()
