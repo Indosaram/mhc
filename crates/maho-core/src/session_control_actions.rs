@@ -175,6 +175,45 @@ impl SessionControlActions for GenerationSessionControlActions {
     }
 }
 
+const NOT_BOUND: &str =
+    "Extension runtime not initialized. pi.session cannot be used during extension loading.";
+
+/// The actions `pi.session` exposes before the extension runtime is bound: every call fails.
+pub struct UnboundSessionControlActions;
+
+impl SessionControlActions for UnboundSessionControlActions {
+    fn register_control_endpoint(
+        &self,
+        _options: RegisterControlEndpointOptions,
+    ) -> BoxFuture<'_, SessionControlRegistration> {
+        Box::pin(async {
+            SessionControlRegistration::Failed {
+                reason: "Extension runtime not initialized".to_owned(),
+            }
+        })
+    }
+
+    fn admission_gate(&self) -> Value {
+        Value::Null
+    }
+
+    fn admit_external_message(&self, _input: Value) -> Result<Value, String> {
+        Err(NOT_BOUND.to_owned())
+    }
+
+    fn list_admitted_deliveries(&self) -> Value {
+        Value::Null
+    }
+
+    fn persist_header_now(&self) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Err("Extension runtime not initialized".to_owned()) })
+    }
+}
+
+pub fn unbound_session_control_actions() -> UnboundSessionControlActions {
+    UnboundSessionControlActions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +420,23 @@ mod tests {
         assert!(lock(&actions.owned).is_empty(), "nothing left registered");
         actions.retire().await.expect("idempotent");
         assert_eq!(host.disposed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn unbound_actions_refuse_every_call() {
+        let actions = unbound_session_control_actions();
+        assert_eq!(
+            actions.admit_external_message(Value::Null),
+            Err(NOT_BOUND.to_owned())
+        );
+        assert!(actions.persist_header_now().await.is_err());
+        assert!(!actions.relocation_offered());
+        let result = actions
+            .register_control_endpoint(options(Arc::new(AtomicUsize::new(0))))
+            .await;
+        assert_eq!(
+            result.to_json(),
+            json!({"status":"failed","reason":"Extension runtime not initialized"})
+        );
     }
 }
