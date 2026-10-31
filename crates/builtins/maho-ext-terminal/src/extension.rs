@@ -1734,21 +1734,42 @@ impl Extension for TerminalExtension {
                     // Upstream monitor.ts:164/:315 hand the captured spec to the session's manifest writer
                     // and :207-217 caps durable creates before any spawn. The writer lock is async; the
                     // manager/registry locks are held only across the synchronous registration.
-                    // Upstream monitor.ts: every create binds persistence first (lazy lease +
+                    // Upstream monitor.ts:189-215: a create names exactly one source and passes
+                    // the pure checks (wakes_per_hour, rpc human_input) BEFORE persistence is
+                    // bound, so a refused create takes no lease and writes no state. Only a
+                    // valid rpc, file or command create binds persistence (lazy lease +
                     // recorder), before durable admission and before the writer lock is taken
                     // (the bind installs the lifecycle under that lock).
-                    if call.params.get("action").and_then(Value::as_str) != Some("rearm") {
-                        crate::extension_state::ensure_persistence(&ensure).await;
-                    }
+                    let source = if call.params.get("action").and_then(Value::as_str)
+                        != Some("rearm")
+                    {
+                        let source =
+                            match crate::tools::monitor_rpc::monitor_source_of(&call.params) {
+                                Ok(source) => source,
+                                Err(error) => return tool_result(error_result(error)),
+                            };
+                        if let Some(refused) =
+                            crate::tools::monitor_rpc::precheck_create(&call.params, source)
+                        {
+                            return tool_result(refused);
+                        }
+                        if source == crate::tools::monitor_rpc::MonitorSource::Rpc
+                            || crate::tools::monitor_schema::is_file_create_input(&call.params)
+                            || crate::tools::monitor_schema::is_create_input(&call.params)
+                        {
+                            crate::extension_state::ensure_persistence(&ensure).await;
+                        }
+                        Some(source)
+                    } else {
+                        None
+                    };
                     let mut lifecycle = lifecycle.lock().await;
                     let session_key =
                         crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
-                    // Upstream monitor.ts: a create names exactly one source; the rpc branch
-                    // (monitor-rpc.ts) arms a watch over every RPC host and terminal.
-                    if call.params.get("action").and_then(Value::as_str) != Some("rearm") {
-                        match crate::tools::monitor_rpc::monitor_source_of(&call.params) {
-                            Err(error) => return tool_result(error_result(error)),
-                            Ok(crate::tools::monitor_rpc::MonitorSource::Rpc) => {
+                    // The rpc branch (monitor-rpc.ts) arms a watch over every RPC host and terminal.
+                    {
+                        match source {
+                            Some(crate::tools::monitor_rpc::MonitorSource::Rpc) => {
                                 return tool_result(
                                     create_rpc_monitor_call(
                                         &call.params,
@@ -1761,7 +1782,7 @@ impl Extension for TerminalExtension {
                                     .await,
                                 );
                             }
-                            Ok(_) => {}
+                            _ => {}
                         }
                     }
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(

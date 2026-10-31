@@ -112,6 +112,34 @@ pub fn monitor_source_of(input: &Value) -> Result<MonitorSource, String> {
     Ok(source)
 }
 
+/// Upstream monitor.ts:189-200: the pure checks a create of `source` passes before persistence is
+/// bound: `wakes_per_hour` only on a persistent command watch and within 1..=3600, and no
+/// `human_input` on an rpc watch.
+pub fn precheck_create(input: &Value, source: MonitorSource) -> Option<TerminalToolResult> {
+    if let Some(rate) = input.get("wakes_per_hour") {
+        if source != MonitorSource::Command
+            || input.get("persistent").and_then(Value::as_bool) != Some(true)
+        {
+            return Some(error_result(
+                "wakes_per_hour applies to persistent command monitors (command with persistent: true); other watches are not wake-paced.",
+            ));
+        }
+        if rate
+            .as_u64()
+            .is_none_or(|value| !(1..=3600).contains(&value))
+        {
+            return Some(error_result("wakes_per_hour must be an integer from 1 to 3600."));
+        }
+    }
+    if source == MonitorSource::Rpc && input.get("human_input").and_then(Value::as_bool) == Some(true)
+    {
+        return Some(error_result(
+            "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
+        ));
+    }
+    None
+}
+
 /// What the rpc branch needs from the tool context.
 pub struct RpcMonitorContext {
     /// The registry's rpc source (`ctx.monitorRegistry.registerRpc`).

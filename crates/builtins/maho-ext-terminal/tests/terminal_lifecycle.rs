@@ -289,6 +289,33 @@ async fn a_session_that_registers_nothing_leaves_no_terminal_state() {
     assert!(!state_dir(dir.path()).exists(), "nothing written at quit");
 }
 
+/// monitor.ts:198-215: a create refused by the pure checks (two sources, or wakes_per_hour on a
+/// non-command watch) binds no persistence: no lease, no manifest, no state dir.
+#[tokio::test]
+async fn an_invalid_monitor_create_writes_no_terminal_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context_for(dir.path(), "terminal-lazy-invalid");
+    let api = api(dir.path());
+    start(&api, &ctx, SessionReason::Startup).await;
+    for params in [
+        serde_json::json!({"description":"both","command":"cat","path":"file","persistent":true}),
+        serde_json::json!({"description":"paced rpc","target":"all","persistent":true,"wakes_per_hour":12}),
+    ] {
+        (monitor_tool(&api).execute)(maho_tools::definition::ToolCall {
+            id: "invalid",
+            params,
+            signal: Default::default(),
+            on_update: None,
+            context: None,
+        })
+        .await
+        .expect_err("refused before persistence");
+        assert!(!state_dir(dir.path()).exists(), "a refused create binds no persistence");
+    }
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    assert!(!state_dir(dir.path()).exists());
+}
+
 /// terminal-lazy-persistence.test.ts: the first persistent monitor creates the lease and the
 /// manifest together.
 #[tokio::test]
