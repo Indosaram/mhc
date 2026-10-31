@@ -229,8 +229,12 @@ impl Operation {
                 .as_ref()
                 .is_some_and(|form| (form.ready)()),
             Some(origin) => {
+                // Upstream's abort listener runs synchronously; read the signal too, not only the watcher's flag.
                 !self.state.presentation_lost.load(Ordering::Acquire)
-                    && origin.presentation.is_some()
+                    && origin
+                        .presentation
+                        .as_ref()
+                        .is_some_and(|presentation| !presentation.signal.aborted())
             }
             None => false,
         };
@@ -335,7 +339,9 @@ impl Operation {
                 let (Some(origin), Some(presentation)) = (origin, presentation) else {
                     return Err(code(McpMrtrErrorCode::ProcessingUnavailable));
                 };
-                if self.state.presentation_lost.load(Ordering::Acquire) {
+                if self.state.presentation_lost.load(Ordering::Acquire)
+                    || presentation.signal.aborted()
+                {
                     return Err(code(McpMrtrErrorCode::ProcessingUnavailable));
                 }
                 let consent = AbortSignal::default();

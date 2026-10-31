@@ -156,6 +156,16 @@ pub async fn call_mcp_tool(
                     }
                     Some(progress) = engine_progress.recv() => report(&progress)?,
                     result = &mut request => {
+                        // Progress the engine reported before settling is delivered before the result.
+                        while let Ok(progress) = engine_progress.try_recv() {
+                            report(&progress)?;
+                        }
+                        // call.ts rethrows an McpMrtrError unchanged; only a non-MRTR outcome yields to the abort.
+                        if let Err(error) = &result
+                            && crate::modern::errors::as_mcp_mrtr_error(error).is_some()
+                        {
+                            break result?;
+                        }
                         signal.check().map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
                         break result?;
                     }
