@@ -126,6 +126,9 @@ pub fn apply_workspace_edit(edit: &Value) -> ApplyResult {
             }
             Some("create") => {
                 let path = uri_to_path(&uri_of("uri"));
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
                 match std::fs::write(&path, "") {
                     Ok(()) => result.files_modified.push(path.display().to_string()),
                     Err(error) => {
@@ -141,6 +144,9 @@ pub fn apply_workspace_edit(edit: &Value) -> ApplyResult {
                     uri_to_path(&uri_of("oldUri")),
                     uri_to_path(&uri_of("newUri")),
                 );
+                if let Some(parent) = new.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
                 let moved = std::fs::read(&old)
                     .and_then(|bytes| std::fs::write(&new, bytes))
                     .and_then(|()| std::fs::remove_file(&old));
@@ -241,5 +247,23 @@ mod tests {
             apply_workspace_edit(&Value::Null).errors,
             vec!["No edit provided"]
         );
+    }
+
+    #[test]
+    fn test_apply_workspace_edit_rename_creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let old = dir.path().join("old.txt");
+        let new = dir.path().join("sub/dir/new.txt");
+        std::fs::write(&old, "hello").expect("write old");
+        let edit_value = json!({
+            "documentChanges": [
+                {"kind": "rename", "oldUri": path_to_uri(&old), "newUri": path_to_uri(&new)},
+            ]
+        });
+        let result = apply_workspace_edit(&edit_value);
+        assert!(result.success);
+        assert!(new.exists());
+        assert_eq!(std::fs::read_to_string(&new).expect("read new"), "hello");
+        assert!(!old.exists());
     }
 }

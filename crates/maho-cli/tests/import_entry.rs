@@ -76,3 +76,18 @@ fn import_omo_without_from_reports_nothing_to_import() {
     assert_eq!(missing.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("omo agent directory does not exist"));
 }
+
+#[test]
+fn test_import_omo_falls_back_to_userprofile() {
+    let profile = tempfile::tempdir().expect("isolated profile");
+    fs::create_dir_all(profile.path().join(".omo/agent")).expect("agent dir");
+    let output = Command::new(env!("CARGO_BIN_EXE_mhc"))
+        .env_clear()
+        .env("USERPROFILE", profile.path())
+        .current_dir(profile.path())
+        .arg("import-omo")
+        .output()
+        .expect("real mhc");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("already reads ~/.omo/agent directly; nothing to import"));
+}

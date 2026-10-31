@@ -265,3 +265,17 @@ fn extension_registers_tool_command_and_handlers() {
         1
     );
 }
+
+#[test]
+fn test_run_skill_tool_with_windows_path_separator() {
+    let dir = tempfile::tempdir().expect("dir");
+    let alpha = skill_dir(dir.path(), "alpha", "First skill", "");
+    write(
+        &PathBuf::from(&alpha.base_dir).join("file.txt"),
+        "hello from file\n",
+    );
+    let skills = [alpha];
+    let outcome = run_skill_tool(&skills, &[], &json!({"name": "alpha\\file.txt"}));
+    assert!(!outcome.is_error, "unexpected error: {}", outcome.text);
+    assert!(outcome.text.contains("hello from file"));
+}
