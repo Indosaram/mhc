@@ -82,6 +82,12 @@ fn header_paths(header: &str) -> Option<(String, String)> {
         ));
     }
     let a_rest = rest.strip_prefix("a/")?;
+    if let Some(split) = a_rest.rfind(" \"b/") {
+        let a = &a_rest[..split];
+        let b = a_rest[split + 1..].trim_matches('"');
+        let b = b.strip_prefix("b/").unwrap_or(b);
+        return Some((a.to_owned(), b.to_owned()));
+    }
     // `a/<p> b/<p>`: the separator is the last " b/" (paths may contain spaces).
     let split = a_rest.rfind(" b/")?;
     Some((a_rest[..split].to_owned(), a_rest[split + 3..].to_owned()))
@@ -452,6 +458,14 @@ mod tests {
         assert_eq!(
             header_files("diff --git \"a/x y\" \"b/x z\""),
             vec!["x y", "x z"]
+        );
+    }
+
+    #[test]
+    fn test_header_paths_asymmetrical_quote() {
+        assert_eq!(
+            header_paths(r#"diff --git a/plain.rs "b/with space.rs""#),
+            Some(("plain.rs".into(), "with space.rs".into()))
         );
     }
 
