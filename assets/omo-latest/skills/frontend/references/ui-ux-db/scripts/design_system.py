@@ -18,6 +18,8 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+import sys
+sys.dont_write_bytecode = True
 from core import search, DATA_DIR
 
 

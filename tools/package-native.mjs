@@ -240,19 +240,25 @@ function modeString(mode) {
 	return `0${(mode & 0o777).toString(8).padStart(3, "0")}`;
 }
 
-function shouldSkipEntry(relPath, name, isDirectory) {
+// Test directories (`test`, `tests`, `__tests__`, `*_test`) are source-only at any depth inside a
+// skill; only a skill's own top-level `test/` or `tests/` ships. Applied to skill trees only, where
+// relPath is relative to the skill directory.
+const TEST_DIR_NAME = /^(?:tests?|__tests__|.+_test)$/;
+const SHIPPED_TOP_LEVEL_TEST_DIRS = new Set(["test", "tests"]);
+
+function shouldSkipEntry(relPath, name, isDirectory, skillTree) {
 	if (isDirectory) {
 		if (IGNORED_DIR_NAMES.has(name)) return true;
+		if (!skillTree) return false;
 		const segments = relPath.split("/");
-		const scriptsIndex = segments.lastIndexOf("scripts");
-		return scriptsIndex !== -1 && segments[scriptsIndex + 1] === "tests";
+		return segments.some((segment, index) => TEST_DIR_NAME.test(segment) && !(index === 0 && SHIPPED_TOP_LEVEL_TEST_DIRS.has(segment)));
 	}
 	if (IGNORED_FILE_NAMES.has(name)) return true;
 	return name.endsWith(".test.ts") || name.endsWith(".pyc");
 }
 
-/** Every copied regular file under `root`, as sorted POSIX-style relative paths (symlinks are skipped). */
-async function listFiles(root) {
+/** Every copied regular file under `root`, as sorted POSIX-style relative paths (symlinks are skipped). `skillTree` marks `root` as one skill's directory, which also drops its nested test directories. */
+async function listFiles(root, { skillTree = false } = {}) {
 	const files = [];
 	async function visit(rel) {
 		const entries = await readdir(join(root, rel), { withFileTypes: true });
@@ -260,9 +266,9 @@ async function listFiles(root) {
 		for (const entry of entries) {
 			const child = rel === "" ? entry.name : `${rel}/${entry.name}`;
 			if (entry.isDirectory()) {
-				if (shouldSkipEntry(child, entry.name, true)) continue;
+				if (shouldSkipEntry(child, entry.name, true, skillTree)) continue;
 				await visit(child);
-			} else if (entry.isFile() && !shouldSkipEntry(child, entry.name, false)) {
+			} else if (entry.isFile() && !shouldSkipEntry(child, entry.name, false, skillTree)) {
 				files.push(child);
 			}
 		}
@@ -272,8 +278,8 @@ async function listFiles(root) {
 }
 
 /** Copies the filtered tree, preserving each file's mode; returns the copied relative paths. */
-async function copyTree(sourceRoot, destRoot) {
-	const files = await listFiles(sourceRoot);
+async function copyTree(sourceRoot, destRoot, options = {}) {
+	const files = await listFiles(sourceRoot, options);
 	for (const rel of files) {
 		const source = join(sourceRoot, rel);
 		const destination = join(destRoot, rel);
@@ -556,7 +562,7 @@ async function resolveLatestSkillSources(overlay) {
 			errors.push(`skill ${name} declares an entry without a path`);
 			continue;
 		}
-		const onDisk = [...(await listFiles(directory))].sort();
+		const onDisk = [...(await listFiles(directory, { skillTree: true }))].sort();
 		const declaredSorted = [...declaredPaths].sort();
 		if (declaredSorted.join("\n") !== onDisk.join("\n")) {
 			errors.push(`skill ${name} file set differs from its declaration: on-disk=[${onDisk.join(", ")}] declared=[${declaredSorted.join(", ")}]`);
@@ -792,7 +798,7 @@ export async function stage(options) {
 	const skillFiles = [];
 	for (const name of stagedNames) {
 		const { directory, root } = sources.get(name);
-		for (const rel of await copyTree(directory, join(output, SKILLS_DIR, name))) {
+		for (const rel of await copyTree(directory, join(output, SKILLS_DIR, name), { skillTree: true })) {
 			skillFiles.push(await fileEntry(output, `${SKILLS_DIR}/${name}/${rel}`, `${root}/${name}/${rel}`));
 		}
 	}
@@ -1328,6 +1334,11 @@ async function selfTest() {
 			await writeFile(join(base, name, "references/note.md"), `note ${marker}\n`);
 			await writeFile(join(base, name, ".gitignore"), "ignored\n");
 			await writeFile(join(base, name, "junk.test.ts"), "ignored\n");
+			// Nested test directories are source-only; a skill's top-level tests/ still ships.
+			for (const dir of ["engine/tests", "scripts/__tests__", "lib/unit_test", "tests"]) {
+				await mkdir(join(base, name, dir), { recursive: true });
+				await writeFile(join(base, name, dir, "case.txt"), "test\n");
+			}
 		};
 		await putSkill(join(omo, "packages/omo-senpi/skills"), "alpha", "native");
 		await putSkill(join(omo, "packages/omo-senpi/skills"), "gamma", "native");
@@ -1362,6 +1373,8 @@ async function selfTest() {
 		check("native skill overrides the shared pool", (await readFile(join(out, "skills/alpha/SKILL.md"), "utf8")).includes("native"));
 		check("shared-only skill staged", (await readFile(join(out, "skills/beta/SKILL.md"), "utf8")).includes("shared"));
 		check("skill debris excluded", !existsSync(join(out, "skills/alpha/.gitignore")) && !existsSync(join(out, "skills/alpha/junk.test.ts")));
+		check("nested skill test dirs excluded at any depth", ["engine/tests", "scripts/__tests__", "lib/unit_test"].every((dir) => !existsSync(join(out, "skills/alpha", dir))));
+		check("a skill's top-level tests/ still ships", existsSync(join(out, "skills/alpha/tests/case.txt")));
 		check("licenses retained", LICENSE_FILES.every((license) => existsSync(join(out, LICENSES_DIR, license.name))));
 		check("versions recorded", result.manifest.versions.omoSenpi === "5.0.0-beta.9");
 		check("versions.mhc is the payload build version, not Cargo.toml", result.manifest.versions.mhc === "2026.1.2-fixture" && result.manifest.versions.mhc !== "9.9.9");
