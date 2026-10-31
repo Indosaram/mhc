@@ -115,7 +115,7 @@ pub async fn move_session(agent_dir: &str, hosted_paths: &[String], command: &Va
             if !matches!(session_ownership(&entries),SessionOwnership::Refused(ref owner) if owner.state==RefusedState::Moving&&owner.move_id==id){return Err("move_not_released: release the session for this move first".into());}
             let destination=root.join("outgoing").join(id);
             let dropped=command["droppedUserMessages"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>();
-            let state=maho_core::session_move::extension_state::sealed_outgoing_state_dir(path,id)?;
+            let state=maho_core::session_move::extension_state::sealed_outgoing_state_dir(path,id).await?;
             let guard=||closed(hosted_paths,&path.to_string_lossy());
             let manifest=maho_core::session_move::export::export_session_for_move(maho_core::session_move::export::ExportSessionForMoveOptions{session_file:path,move_id:id,target:text(command,"target")?,dropped_user_messages:&dropped,bundle_dir:&destination,extension_state_dir:state.as_deref(),resolve_extension_state:None,guard:Some(&guard),locked_guard:Some(&guard)}).await?;
             let files=1+manifest.sidecars.len()+manifest.payloads.iter().map(|payload|payload.files.len()).sum::<usize>();
