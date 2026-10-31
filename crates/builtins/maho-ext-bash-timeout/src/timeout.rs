@@ -22,6 +22,9 @@ pub fn resolve_bash_timeout_defaults(default: Option<&str>, maximum: Option<&str
 }
 
 pub fn apply_bash_timeout(input: &Value, defaults: BashTimeoutDefaults) -> Value {
+    if !input.is_object() {
+        return input.clone();
+    }
     let mut result = input.clone();
     if input.get("timeout").is_none() || input.get("timeout").and_then(Value::as_f64).is_some_and(|value| value <= 0.0) {
         result["timeout"] = json!(defaults.default_seconds);
