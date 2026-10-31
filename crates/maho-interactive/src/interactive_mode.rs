@@ -534,8 +534,9 @@ fn is_internal_only_command(text: &str) -> bool {
     .any(with_argument)
 }
 
-/// senpi `chooseResumePath`'s `ResumeRebindUi` for the terminal: the rebind question is a private
-/// Yes/No dialog (`showExtensionConfirm`), and the error is kept for the mode's `showError`.
+/// senpi `chooseResumePath`'s `ResumeRebindUi` for the terminal: the rebind question is the host's own
+/// Yes/No dialog (`showExtensionConfirm(title, message)`: no blocked bracket, not ephemeral, so the
+/// answer is a human admission), and the error is kept for the mode's `showError`.
 struct ResumeRebindDialogs {
     ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     error: RefCell<Option<String>>,
@@ -547,15 +548,7 @@ impl crate::resume_rebind::ResumeRebindUi for ResumeRebindDialogs {
         title: &'a str,
         message: &'a str,
     ) -> crate::resume_rebind::ConfirmFuture<'a> {
-        use maho_ext_api::ExtensionUi;
-        self.ui.confirm(
-            title,
-            message,
-            maho_ext_api::ExtensionUiDialogOptions {
-                ephemeral: true,
-                ..Default::default()
-            },
-        )
+        self.ui.host_confirm(title, message)
     }
 
     fn show_error(&self, message: &str) {
