@@ -162,6 +162,9 @@ pub struct MonitorRegistry {
     /// File registrations still proving their target (upstream `FileMonitorSource.#guard`).
     registrations: std::sync::Arc<crate::file_monitor_guard::RegistrationGuard>,
     disposed: bool,
+    /// Test seam: raises a native watcher error on a live file watch.
+    #[cfg(test)]
+    watcher_errors: indexmap::IndexMap<String, crate::file_monitor_source::WatcherErrorInjector>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WakePacing {
@@ -282,6 +285,8 @@ impl MonitorRegistry {
             rpc,
             registrations: Default::default(),
             disposed: false,
+            #[cfg(test)]
+            watcher_errors: Default::default(),
         }
     }
     pub fn detach_delivery(&self) {
@@ -612,6 +617,8 @@ impl MonitorRegistry {
         let mut parked = self.parked.subscribe();
         let expires = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         let wake = watcher.wake();
+        #[cfg(test)]
+        self.watcher_errors.insert(id.clone(), watcher.error_injector());
         let watch = tokio::spawn(async move {
             let period =
                 std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
@@ -623,7 +630,9 @@ impl MonitorRegistry {
                 let paused = checker.lock().expect("file monitor").paused || *parked.borrow();
                 let timed_out = tokio::select! {
                     _=timer.tick(),if !paused=>false,
-                    _=wake.notified(),if !paused=>false,
+                    // A watcher error settles even a paused or parked watch (upstream settles on
+                    // the watcher's `error` event at once), so the wake is always listened to.
+                    _=wake.notified()=>false,
                     _=&mut deadline=>true,
                     changed=state.changed()=>{if changed.is_err() {return;}state.borrow_and_update();timer.reset();continue;}
                     changed=parked.changed()=>{if changed.is_err() {return;}let resumed=!*parked.borrow_and_update();if resumed {timer.reset_immediately();}else {timer.reset();}continue;}
@@ -631,6 +640,10 @@ impl MonitorRegistry {
                 // The poll does blocking lstat/open/digest work, so it runs off the async workers.
                 let blocking = checker.clone();
                 let watcher_error = watcher.take_error();
+                // A plain change while paused waits for the resume, which checks at once.
+                if paused && !timed_out && watcher_error.is_none() {
+                    continue;
+                }
                 let Ok((events, settled, summary)) = tokio::task::spawn_blocking(move || {
                     let mut summary = None;
                     let mut file = blocking.lock().expect("file monitor");
@@ -1168,6 +1181,33 @@ mod registry_tests {
             events.try_recv(),
             Ok(MonitorEvent::Summary { .. })
         ));
+        assert!(registry.snapshot().is_empty());
+        registry.dispose();
+    }
+    /// Upstream settles a file watch on its watcher's `error` event at once, paused or not.
+    #[tokio::test]
+    async fn a_watcher_error_settles_a_paused_file_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let (id, _) = registry
+            .register_persistent_file(
+                "watch",
+                &dir.path().join("file"),
+                crate::terminal_manifest_model::FileEvent::Create,
+            )
+            .unwrap();
+        registry.pause(std::slice::from_ref(&id));
+        (registry.watcher_errors[&id])("watcher error: boom".to_owned());
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .unwrap();
+        assert!(
+            matches!(&event, Some(MonitorEvent::Summary { summary, .. }) if summary == "watcher error: boom"),
+            "{event:?}"
+        );
         assert!(registry.snapshot().is_empty());
         registry.dispose();
     }

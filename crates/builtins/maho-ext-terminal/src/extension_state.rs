@@ -21,6 +21,40 @@ pub type Lifecycle = Arc<tokio::sync::Mutex<Option<crate::terminal_state::Termin
 /// manifest writer; cleared whenever the writer is swapped or detached.
 pub type RecordedBackgroundIds = Arc<Mutex<BTreeSet<String>>>;
 
+/// One lazy persistence binding (upstream `state.ensurePersistence`): a session with no manifest on
+/// disk takes no lease and binds no recorder at start; the first durable need (a monitor create, a
+/// background session) runs `bind` (acquire or wait, then the restore in flight) exactly once.
+#[derive(Clone)]
+pub struct LazyPersistence {
+    once: Arc<tokio::sync::OnceCell<()>>,
+    bind: Arc<dyn Fn() -> PersistenceFuture + Send + Sync>,
+}
+pub type PersistenceFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+/// The current generation's lazy binding; `None` once persistence is bound eagerly or detached.
+pub type EnsurePersistence = Arc<Mutex<Option<LazyPersistence>>>;
+
+impl LazyPersistence {
+    pub fn new(bind: impl Fn() -> PersistenceFuture + Send + Sync + 'static) -> Self {
+        Self {
+            once: Arc::default(),
+            bind: Arc::new(bind),
+        }
+    }
+}
+
+/// Upstream `ctx.ensurePersistence()`: bind persistence once and await it (the binding is shared,
+/// so concurrent callers await the same acquire). A no-op without a lazy binding. No std lock is
+/// held across the await.
+pub async fn ensure_persistence(slot: &EnsurePersistence) {
+    let lazy = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(lazy) = lazy {
+        lazy.once.get_or_init(|| (lazy.bind)()).await;
+    }
+}
+
 /// Install `next` as the manifest recorder (or detach it with `None`) and hand back the previous
 /// one. Upstream clears `recordedBackgroundIds` at every writer swap (the reload rebind, `own`,
 /// `detachPersistence`), so the next background state re-records every live session into the new
@@ -55,6 +89,8 @@ pub struct TerminalExtensionState {
     /// The completion delivery the notifier reads (`getMode` resolved for the session's mode).
     pub delivery: Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
     pub recorded_background_ids: RecordedBackgroundIds,
+    /// Upstream `state.ensurePersistence`.
+    pub ensure_persistence: EnsurePersistence,
 }
 
 pub fn manifest_now_ms() -> f64 {
@@ -332,12 +368,18 @@ pub fn bundle_sinks(state: &TerminalExtensionState) -> TerminalEventSinks {
             let Ok(handle) = tokio::runtime::Handle::try_current() else {
                 return;
             };
-            let (lifecycle, recorded, snapshot) = (
+            let (lifecycle, recorded, ensure, snapshot) = (
                 background_state.lifecycle.clone(),
                 background_state.recorded_background_ids.clone(),
+                background_state.ensure_persistence.clone(),
                 snapshot.to_vec(),
             );
             handle.spawn(async move {
+                // Upstream: a live background session with no recorder bound yet binds
+                // persistence first, then records.
+                if !snapshot.is_empty() {
+                    ensure_persistence(&ensure).await;
+                }
                 record_background_starts(&lifecycle, &recorded, snapshot).await;
             });
         }),
@@ -467,7 +509,38 @@ mod tests {
             notifier: Arc::default(),
             delivery: Arc::default(),
             recorded_background_ids: Arc::default(),
+            ensure_persistence: Arc::default(),
         }
+    }
+
+    /// `ensurePersistence`: concurrent callers share one binding, a later call does not re-run it,
+    /// and without a lazy binding it is a no-op.
+    #[tokio::test]
+    async fn lazy_persistence_binds_once_for_concurrent_callers() {
+        let slot: EnsurePersistence = Arc::default();
+        ensure_persistence(&slot).await;
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, gate) = tokio::sync::watch::channel(false);
+        let counted = runs.clone();
+        *slot.lock().unwrap() = Some(LazyPersistence::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut gate = gate.clone();
+            Box::pin(async move {
+                let _ = gate.wait_for(|open| *open).await;
+            })
+        }));
+        let (first, second) = (slot.clone(), slot.clone());
+        let first = tokio::spawn(async move { ensure_persistence(&first).await });
+        let second = tokio::spawn(async move { ensure_persistence(&second).await });
+        release.send_replace(true);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            first.await.unwrap();
+            second.await.unwrap();
+        })
+        .await
+        .unwrap();
+        ensure_persistence(&slot).await;
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     type Seen = Arc<Mutex<Vec<(String, Value)>>>;

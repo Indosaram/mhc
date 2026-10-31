@@ -345,6 +345,10 @@ enum TerminalSessionBackend {
 
 pub struct TerminalRuntimeSession {
     pub command: String,
+    /// Upstream `startedAtMs`: wall-clock instant the child was spawned.
+    pub started_at_ms: f64,
+    /// Upstream `argv`: the spawned program and its arguments.
+    argv: Vec<String>,
     session: TerminalSessionBackend,
     kill_requested: Arc<AtomicBool>,
     output: Arc<Mutex<OutputState>>,
@@ -378,6 +382,9 @@ impl TerminalRuntimeSession {
         scrollback: usize,
         redact_secrets_in_output: bool,
     ) -> Result<Self, RuntimeError> {
+        let argv = std::iter::once(options.command.clone())
+            .chain(options.args.iter().cloned())
+            .collect::<Vec<_>>();
         let output = Arc::new(Mutex::new(OutputState::default()));
         let sink = Arc::clone(&output);
         let observers: OutputObservers = Arc::new(Mutex::new(vec![]));
@@ -420,6 +427,9 @@ impl TerminalRuntimeSession {
                 let waiter = session.wait_in_background()?;
                 (TerminalSessionBackend::Native(session), waiter)
             };
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
         let kill_requested = Arc::new(AtomicBool::new(false));
         let exit_kill_requested = Arc::clone(&kill_requested);
         let final_screen = Arc::new(Mutex::new(None));
@@ -471,6 +481,8 @@ impl TerminalRuntimeSession {
         });
         Ok(Self {
             command: command.to_owned(),
+            started_at_ms,
+            argv,
             session,
             kill_requested,
             output,
@@ -491,6 +503,30 @@ impl TerminalRuntimeSession {
             TerminalSessionBackend::Native(session) => session.pid(),
             TerminalSessionBackend::PipeFallback(session) => Some(session.pid()),
         }
+    }
+
+    /// The process group the session's signals target: the PTY's group on the native backend,
+    /// the child's own group on the pipe fallback (spawned with `process_group(0)` on Unix).
+    pub fn process_group(&self) -> Option<u32> {
+        match &self.session {
+            TerminalSessionBackend::Native(session) => session.process_group(),
+            #[cfg(unix)]
+            TerminalSessionBackend::PipeFallback(session) => Some(session.pid()),
+            #[cfg(not(unix))]
+            TerminalSessionBackend::PipeFallback(_) => None,
+        }
+    }
+
+    /// Upstream `identity()`: the spawned child as a later process can recognise it (pid, group,
+    /// start instant, boot instant, argv); `None` when the backend exposes no pid.
+    pub fn identity(&self) -> Option<crate::process_identity::ChildProcessIdentity> {
+        Some(crate::process_identity::ChildProcessIdentity {
+            pid: self.pid()?,
+            process_group_id: self.process_group(),
+            started_at_ms: self.started_at_ms,
+            boot_at_ms: crate::process_identity::process_boot_at_ms(None),
+            argv: self.argv.clone(),
+        })
     }
 
     pub fn backend(&self) -> &'static str {
@@ -1064,6 +1100,31 @@ mod tests {
         runtime.wait(Duration::from_secs(5))?;
         assert_eq!(output, "ready\r\nnext\r\n");
         assert_eq!(runtime.read_delta()?.text, output);
+        runtime.dispose()
+    }
+
+    /// runtime-session.ts `identity()`: the pid, its process group, the spawn instant, the boot
+    /// instant and the argv a later process recognises the child by.
+    #[cfg(unix)]
+    #[test]
+    fn identity_names_the_spawned_child() -> Result<(), RuntimeError> {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
+        let options = crate::shared::test_sh_options("read value");
+        let expected_argv = std::iter::once(options.command.clone())
+            .chain(options.args.iter().cloned())
+            .collect::<Vec<_>>();
+        let runtime = TerminalRuntimeSession::start("read value", options)?;
+        let identity = runtime.identity().expect("a spawned child has a pid");
+        assert_eq!(Some(identity.pid), runtime.pid());
+        assert!(identity.process_group_id.is_some_and(|group| group > 0));
+        assert!(identity.started_at_ms >= before);
+        assert_eq!(
+            identity.boot_at_ms,
+            crate::process_identity::process_boot_at_ms(None)
+        );
+        assert_eq!(identity.argv, expected_argv);
         runtime.dispose()
     }
 

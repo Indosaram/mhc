@@ -36,7 +36,25 @@ pub struct TerminalManifestWriter {
     /// Where a restored rpc watch looks for endpoints (upstream `CheckpointedRpcRestoreDeps.agentDir`);
     /// `None` is `getAgentDir()`.
     pub rpc_agent_dir: Option<std::path::PathBuf>,
+    /// Orphans found by `reap_orphans`, attached to the next restore's results by monitor id.
+    reaped: BTreeMap<String, crate::restore_digest::Orphan>,
+    /// Test seam for `reapBeforeRespawn` (upstream `RestartableCommandDeps.reapOrphan`).
+    pub reap_orphan: Option<ReapOrphan>,
 }
+/// `reapBeforeRespawn(runtime, monitorId)`.
+pub type ReapOrphan = std::sync::Arc<
+    dyn Fn(
+            crate::process_identity::ChildProcessIdentity,
+            String,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::io::Result<crate::orphan_reaper::ReapResult>,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
+>;
 impl TerminalManifestWriter {
     pub fn new(session_dir: &std::path::Path, session_id: &str) -> Self {
         Self {
@@ -48,6 +66,73 @@ impl TerminalManifestWriter {
             pending_rpc: Default::default(),
             persist_failure: None,
             rpc_agent_dir: None,
+            reaped: BTreeMap::new(),
+            reap_orphan: None,
+        }
+    }
+    /// Upstream restartable-command `reapOrphan` + `orphanOf`, run before the synchronous apply: for
+    /// every command watch the restore will re-spawn that recorded its child, confirm the old
+    /// watcher still runs and stop its tree. A kill reports `killed`, an unconfirmable pid
+    /// `unverified`, a dead one nothing.
+    pub async fn reap_orphans(&mut self, state: &TerminalManifest, now: f64) {
+        self.reaped.clear();
+        for monitor in &state.monitors {
+            let Some(runtime) = &monitor.runtime else {
+                continue;
+            };
+            let respawned = monitor.runtime_kind == MonitorRuntimeKind::Command
+                && monitor.expires_at.is_none_or(|expiry| expiry > now)
+                && (monitor.persistent
+                    || monitor.deadline_ms.is_some_and(|deadline| deadline > now))
+                // durable-command.ts:136-138: the lost checks run before reapOrphan, so a watch
+                // the restore reports lost (no command, no absolute or existing cwd) is never
+                // reaped and carries no orphan.
+                && monitor.command.as_deref().is_some_and(|command| !command.is_empty())
+                && monitor.cwd.as_deref().is_some_and(|cwd| {
+                    std::path::Path::new(cwd).is_absolute() && std::path::Path::new(cwd).is_dir()
+                });
+            if !respawned {
+                continue;
+            }
+            let reaped = match &self.reap_orphan {
+                Some(reap) => reap(runtime.clone(), monitor.monitor_id.clone()).await,
+                None => {
+                    crate::orphan_reaper::reap_before_respawn(
+                        runtime,
+                        &monitor.monitor_id,
+                        &crate::orphan_reaper::OwnerProbes::default(),
+                        &crate::orphan_reaper::KillTreeOptions::default(),
+                    )
+                    .await
+                }
+            };
+            let action = match reaped {
+                Ok(result) if result.action == crate::orphan_reaper::ReapAction::Killed => {
+                    Some(crate::restore_digest::OrphanAction::Killed)
+                }
+                Ok(result) if result.reason.is_some() => {
+                    Some(crate::restore_digest::OrphanAction::Unverified)
+                }
+                Ok(_) => None,
+                // Native divergence: upstream lets a kill error fail the whole restore; here the
+                // watch is reported with an unverified orphan and the restore goes on.
+                Err(error) => {
+                    maho_ext_api::diagnostic(&format!(
+                        "terminal restore: stopping the previous watcher of {} failed: {error}",
+                        monitor.monitor_id
+                    ));
+                    Some(crate::restore_digest::OrphanAction::Unverified)
+                }
+            };
+            if let Some(action) = action {
+                self.reaped.insert(
+                    monitor.monitor_id.clone(),
+                    crate::restore_digest::Orphan {
+                        pid: runtime.pid,
+                        action,
+                    },
+                );
+            }
         }
     }
     pub async fn record_register(&mut self, registration: MonitorRegistration, now: f64) {
@@ -58,6 +143,7 @@ impl TerminalManifestWriter {
         let RecordedRegistration {
             registration,
             deadline_ms,
+            runtime,
         } = recorded;
         let (
             description,
@@ -179,7 +265,7 @@ impl TerminalManifestWriter {
                     start_ms: now,
                     count: 0.0,
                 },
-                runtime: None,
+                runtime: runtime.filter(|_| runtime_kind == MonitorRuntimeKind::Command),
                 deadline_ms: deadline_ms.filter(|_| !persistent),
             },
         );
@@ -273,6 +359,9 @@ impl TerminalManifestWriter {
         settings: &crate::settings::ResolvedTerminalSettings,
     ) -> crate::restore::RestoreDigest {
         let state = self.read_restore_state().await;
+        if let Ok(Some(manifest)) = &state {
+            self.reap_orphans(manifest, now).await;
+        }
         self.apply_restore_state(state, manager, registry, now, shell, settings)
     }
     pub fn apply_restore_state(
@@ -308,6 +397,7 @@ impl TerminalManifestWriter {
                 command: monitor.command.clone(),
                 path: monitor.path.clone(),
                 reason: None,
+                orphan: None,
             };
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry| expiry <= now) {
@@ -387,9 +477,18 @@ impl TerminalManifestWriter {
             }
             let mut result = restored(&monitor, outcome.bucket());
             result.reason = reason;
+            result.orphan = self.reaped.remove(&monitor.monitor_id);
             digest.results.push(result);
             if matches!(outcome, RestoreOutcome::Restored | RestoreOutcome::Muted) {
-                self.adopt_restored(monitor.clone());
+                // Upstream adopts the entry with the fresh runtime identity, so the NEXT crash
+                // stops this process instead of starting a copy.
+                let mut adopted = monitor.clone();
+                if monitor.runtime_kind == MonitorRuntimeKind::Command
+                    && let Some(id) = manager.resolve_id(&monitor.monitor_id)
+                {
+                    adopted.runtime = manager.get(&id).and_then(|runtime| runtime.identity());
+                }
+                self.adopt_restored(adopted);
                 registry.adopt_fire_window(&monitor.monitor_id, &monitor.fire_window);
                 if let Some(id) = manager.resolve_id(&monitor.monitor_id)
                     && let Some(checkpoint) = registry.file_checkpoint(&id)
@@ -1010,6 +1109,232 @@ mod tests {
         );
     }
 }
+/// terminal-restore-session.test.ts (a)/(a2): a persistent command watch records its child's
+/// identity; after a crash (the old watcher still running) the next restore confirms and stops it
+/// before re-spawning once, reports it as an orphan, and records the NEW child, so a second crash
+/// stops the respawned watcher in turn.
+#[cfg(all(test, target_os = "linux"))]
+mod orphan_tests {
+    use super::*;
+
+    fn now_ms() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
+    }
+
+    /// Spawn a watch as the monitor tool does (stable id in the environment), and record it with
+    /// its runtime identity.
+    async fn record_live_watch(
+        dir: &std::path::Path,
+        manager: &mut crate::manager::TerminalManager,
+        monitor_id: &str,
+    ) -> crate::process_identity::ChildProcessIdentity {
+        let command = "while true; do read line; done";
+        let options = crate::tools::spawn::command_options(command, Some(dir), None)
+            .unwrap()
+            .0
+            .env(crate::shared::MONITOR_ENV_ID, monitor_id);
+        let id = manager.create(command, options).unwrap();
+        manager.bind_monitor_id(monitor_id, &id);
+        let identity = manager.get(&id).unwrap().identity().unwrap();
+        let mut writer = TerminalManifestWriter::new(dir, "orphans");
+        writer
+            .record_register_with(
+                MonitorRegistration {
+                    monitor_id: monitor_id.to_owned(),
+                    spec: MonitorSpec::Command {
+                        description: "ticker".into(),
+                        command: command.into(),
+                        filter: None,
+                        human_input: None,
+                        wakes_per_hour: None,
+                        cwd: Some(dir.to_string_lossy().into_owned()),
+                        persistent: true,
+                    },
+                }
+                .with_deadline_ms(None)
+                .with_runtime(Some(identity.clone())),
+                now_ms(),
+            )
+            .await;
+        writer.record_shutdown(now_ms()).await;
+        identity
+    }
+
+    /// The next process's restore: reap, then re-spawn. Returns the orphan reported and the
+    /// identity the manifest now records for the watch.
+    async fn restart(
+        dir: &std::path::Path,
+        manager: &mut crate::manager::TerminalManager,
+        registry: &mut crate::monitor_registry::MonitorRegistry,
+    ) -> (
+        Option<crate::restore_digest::Orphan>,
+        crate::process_identity::ChildProcessIdentity,
+    ) {
+        let mut next = TerminalManifestWriter::new(dir, "orphans");
+        let digest = next.restore_live(manager, registry, now_ms()).await;
+        assert_eq!(digest.restored, 1, "{digest:?}");
+        next.persist_restored(now_ms()).await;
+        let saved = next.read_restore_state().await.unwrap().unwrap();
+        (
+            digest.results[0].orphan.clone(),
+            saved.monitors[0].runtime.clone().expect("fresh runtime recorded"),
+        )
+    }
+
+    /// Resolves once the watcher `monitor_id` runs under in `manager` has exited: the crashed
+    /// generation's runtime still observes its child, so the reaper's kill is an exit event.
+    async fn exited(manager: &mut crate::manager::TerminalManager, monitor_id: &str) {
+        let id = manager.resolve_id(monitor_id).expect("bound watch");
+        let mut exit = manager.get(&id).expect("live runtime").subscribe_exit();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            exit.wait_for(Option::is_some),
+        )
+        .await
+        .expect("orphan stopped")
+        .expect("exit channel open");
+    }
+
+    #[tokio::test]
+    async fn a_crash_orphan_is_stopped_and_two_crashes_leave_exactly_one_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        // The crashed generation's manager is leaked: its watcher keeps running, as after a crash.
+        let crashed = Box::leak(Box::new(crate::manager::TerminalManager::default()));
+        let first = record_live_watch(&dir, crashed, "mon_ORPHANTICKER01").await;
+        assert!(crate::orphan_reaper::is_process_alive(first.pid));
+
+        // (a) The next process stops the old watcher, re-spawns once, and reports it.
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let (orphan, respawned) = restart(&dir, &mut manager, &mut registry).await;
+        assert_eq!(
+            orphan,
+            Some(crate::restore_digest::Orphan {
+                pid: first.pid,
+                action: crate::restore_digest::OrphanAction::Killed
+            })
+        );
+        exited(crashed, "mon_ORPHANTICKER01").await;
+        assert_ne!(respawned.pid, first.pid);
+        assert!(crate::orphan_reaper::is_process_alive(respawned.pid));
+        assert_eq!(manager.size(), 1);
+
+        // (a2) A second crash: the restore recorded the NEW process, so it is the one stopped.
+        let crashed_again = Box::leak(Box::new(manager));
+        std::mem::forget(registry);
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let (orphan, third) = restart(&dir, &mut manager, &mut registry).await;
+        assert_eq!(
+            orphan,
+            Some(crate::restore_digest::Orphan {
+                pid: respawned.pid,
+                action: crate::restore_digest::OrphanAction::Killed
+            })
+        );
+        exited(crashed_again, "mon_ORPHANTICKER01").await;
+        assert!(crate::orphan_reaper::is_process_alive(third.pid));
+        registry.dispose();
+        manager.teardown().unwrap();
+        let _ = (crashed.teardown(), crashed_again.teardown());
+    }
+
+    /// durable-command.ts:136-140: a watch the restore reports lost (empty command, relative or
+    /// missing cwd) is never handed to the reaper and carries no orphan.
+    #[tokio::test]
+    async fn a_lost_watch_is_never_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        let missing = dir.join("gone").to_string_lossy().into_owned();
+        let present = dir.to_string_lossy().into_owned();
+        // The last case is the control: a restorable watch IS handed to the reaper.
+        for (command, cwd, reaps) in [
+            ("", Some(present.clone()), 0),
+            ("cat", Some("relative/dir".to_owned()), 0),
+            ("cat", Some(missing), 0),
+            ("cat", None, 0),
+            ("cat", Some(present.clone()), 1),
+        ] {
+            let mut state = crate::restore::parse_terminal_manifest(
+                &serde_json::json!({"monitors":[{"monitorId":"mon_LOSTWATCH00001","sessionId":"orphans","description":"lost","runtimeKind":"command","durabilityClass":"restartable-command","command":"cat","cwd":present,"createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),
+                "orphans",
+            )
+            .unwrap();
+            let monitor = &mut state.monitors[0];
+            monitor.command = Some(command.to_owned());
+            monitor.cwd = cwd.clone();
+            monitor.runtime = Some(crate::process_identity::ChildProcessIdentity {
+                pid: std::process::id(),
+                process_group_id: None,
+                started_at_ms: 0.0,
+                boot_at_ms: 0.0,
+                argv: vec!["cat".to_owned()],
+            });
+            let mut writer = TerminalManifestWriter::new(&dir, "orphans");
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = calls.clone();
+            writer.reap_orphan = Some(std::sync::Arc::new(move |_, _| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(crate::orphan_reaper::ReapResult {
+                        action: crate::orphan_reaper::ReapAction::Killed,
+                        reason: None,
+                    })
+                })
+            }));
+            writer.reap_orphans(&state, now_ms()).await;
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), reaps, "{command:?} {cwd:?}");
+            assert_eq!(writer.reaped.len(), reaps, "an orphan only for a reaped watch");
+        }
+    }
+
+    /// A recorded pid that is no longer this watcher (dead) reports no orphan; a reaper that cannot
+    /// confirm it reports it unverified and kills nothing.
+    #[tokio::test]
+    async fn a_dead_or_unverifiable_orphan_is_reported_as_such() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        let crashed = Box::leak(Box::new(crate::manager::TerminalManager::default()));
+        record_live_watch(&dir, crashed, "mon_ORPHANUNVERIF1").await;
+        // The watcher is gone before the restart: its recorded pid is dead.
+        let id = crashed.resolve_id("mon_ORPHANUNVERIF1").unwrap();
+        let mut exit = crashed.get(&id).unwrap().subscribe_exit();
+        crashed.teardown().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), exit.wait_for(Option::is_some))
+            .await
+            .expect("watcher stopped")
+            .expect("exit channel open");
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let (orphan, _) = restart(&dir, &mut manager, &mut registry).await;
+        assert_eq!(orphan, None);
+        registry.dispose();
+        manager.teardown().unwrap();
+
+        let mut next = TerminalManifestWriter::new(&dir, "orphans");
+        next.reap_orphan = Some(std::sync::Arc::new(|runtime, _| {
+            Box::pin(async move {
+                Ok(crate::orphan_reaper::ReapResult {
+                    action: crate::orphan_reaper::ReapAction::None,
+                    reason: Some(format!("previous watcher pid {} unverifiable", runtime.pid)),
+                })
+            })
+        }));
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = next.restore_live(&mut manager, &mut registry, now_ms()).await;
+        assert_eq!(
+            digest.results[0].orphan.as_ref().map(|orphan| orphan.action),
+            Some(crate::restore_digest::OrphanAction::Unverified)
+        );
+        registry.dispose();
+        manager.teardown().unwrap();
+    }
+}
+
 #[cfg(test)]
 mod debounce_tests {
     use super::*;

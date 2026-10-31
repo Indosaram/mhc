@@ -24,6 +24,9 @@ pub struct ParentWatcher {
     error: Arc<Mutex<Option<String>>>,
 }
 
+#[cfg(test)]
+pub(crate) type WatcherErrorInjector = Box<dyn Fn(String) + Send + Sync>;
+
 /// Whether one native event concerns the watched file. Pure access events are dropped: the check
 /// pass itself opens the file to digest it, and an open must not wake another pass.
 pub fn event_concerns(event: &notify::Event, name: &OsStr) -> bool {
@@ -77,6 +80,18 @@ impl ParentWatcher {
     /// Notified once per batch of relevant events; a wake before anyone waits is kept as a permit.
     pub fn wake(&self) -> Arc<tokio::sync::Notify> {
         self.wake.clone()
+    }
+
+    /// Test seam: raises a watcher error as the native callback would.
+    #[cfg(test)]
+    pub(crate) fn error_injector(&self) -> WatcherErrorInjector {
+        let (wake, error) = (self.wake.clone(), self.error.clone());
+        Box::new(move |message| {
+            *error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
+            wake.notify_one();
+        })
     }
 
     /// The watcher error to settle with (upstream `watcher.on("error")`), taken once.

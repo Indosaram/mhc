@@ -996,6 +996,95 @@ mod tests {
         }).await.unwrap();
         manager.lock().unwrap().teardown().unwrap();
     }
+    /// terminal-bash-abort.test.ts: a descendant that escaped the group kill (its own session)
+    /// keeps the PTY slave open and chattering; abort and timeout must still release the tool.
+    /// Linux only: `setsid` is a util-linux binary absent on macOS.
+    /// The command records the escaped pid in `pid_file` so the test can kill it afterwards.
+    #[cfg(target_os = "linux")]
+    fn escaped_descendant_command(pid_file: &std::path::Path) -> String {
+        format!(
+            "setsid sh -c 'while :; do echo orphan-tick; sleep 0.05; done' & echo $! > '{}'; while :; do sleep 1; done",
+            pid_file.display()
+        )
+    }
+    #[cfg(target_os = "linux")]
+    fn kill_escaped(pid_file: &std::path::Path) {
+        if let Some(pid) = std::fs::read_to_string(pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+        {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn abort_releases_while_an_escaped_descendant_holds_the_pty_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("orphan.pid");
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let signal = maho_tools::definition::AbortSignal::default();
+        let cancel = signal.clone();
+        let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
+        let running = manager.clone();
+        let command = escaped_descendant_command(&pid_file);
+        let task = tokio::spawn(async move {
+            execute_bash(running, ToolCall {
+                id: "escaped-abort",
+                params: json!({"command": command, "timeout": 60}),
+                signal,
+                on_update: Some(Arc::new(move |update| {
+                    sender.send(update).unwrap();
+                    Ok(())
+                })),
+                context: None,
+            })
+            .await
+        });
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            // Abort only once the escaped descendant is proven alive and writing.
+            while let Some(update) = updates.recv().await {
+                if update.content.iter().any(|part| matches!(part, maho_tools::definition::ToolContent::Text { text, .. } if text.contains("orphan-tick"))) {
+                    break;
+                }
+            }
+            cancel.abort();
+            task.await.unwrap().unwrap()
+        })
+        .await
+        .expect("abort releases the tool while the PTY is held open");
+        kill_escaped(&pid_file);
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("Command aborted"));
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn timeout_releases_while_an_escaped_descendant_holds_the_pty_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("orphan.pid");
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            execute_bash(
+                manager.clone(),
+                call(json!({"command": escaped_descendant_command(&pid_file), "timeout": 1})),
+            ),
+        )
+        .await
+        .expect("timeout releases the tool while the PTY is held open")
+        .unwrap();
+        kill_escaped(&pid_file);
+        assert_eq!(result.is_error, Some(true));
+        assert!(
+            text_of(&result).contains("Command timed out after 1 seconds"),
+            "{}",
+            text_of(&result)
+        );
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
     #[tokio::test]
     async fn subscribed_progress_reports_output_before_child_is_released() {
         let manager = Arc::new(Mutex::new(TerminalManager::default()));
