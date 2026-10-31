@@ -222,6 +222,10 @@ pub struct HostCore {
     public_socket: std::sync::OnceLock<String>,
     /// Requests in flight that carry no session (an open being admitted): the idle judgement waits for them.
     sessionless_requests: std::sync::atomic::AtomicUsize,
+    /// senpi `HostCoreGate.answering`: `begin_handover` requests whose answer has not been delivered yet.
+    handover_answering: std::sync::atomic::AtomicUsize,
+    /// Woken whenever a `begin_handover` answer was delivered.
+    handover_answered: tokio::sync::Notify,
 }
 /// senpi `HostCoreGate`'s state: the idle handover, this host's endpoint (a `begin_handover` naming another agent
 /// dir is refused), and the runtime build id `get_protocol_info` reports.
@@ -267,6 +271,23 @@ struct SessionlessGuard<'a>(&'a std::sync::atomic::AtomicUsize);
 impl Drop for SessionlessGuard<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// senpi `HostCoreGate.intercept`'s `answering` entry: held until the `begin_handover` answer was delivered.
+struct HandoverAnswering<'a>(&'a HostCore);
+impl<'a> HandoverAnswering<'a> {
+    fn new(core: &'a HostCore) -> Self {
+        core.handover_answering
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(core)
+    }
+}
+impl Drop for HandoverAnswering<'_> {
+    fn drop(&mut self) {
+        self.0
+            .handover_answering
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.handover_answered.notify_waiters();
     }
 }
 /// Re-checks a pending handover once a routed request settles (senpi `handover?.observe()` in `dispatch`).
@@ -353,6 +374,8 @@ impl HostCore {
             handover: std::sync::OnceLock::new(),
             public_socket: std::sync::OnceLock::new(),
             sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
+            handover_answering: std::sync::atomic::AtomicUsize::new(0),
+            handover_answered: tokio::sync::Notify::new(),
         }
     }
     /// Installs the conditional idle handover (senpi `runSocketHost` `canHandOver`): the operation judges idleness
@@ -477,6 +500,31 @@ impl HostCore {
             .lock()
             .await
             .set_path_reservations(reservations);
+    }
+    /// senpi `HostCoreGate.answered`: settles once every `begin_handover` being answered has its answer. A host idle at
+    /// once drains the moment its successor takes the socket, and its shutdown waits here so the caller that asked is
+    /// told the outcome instead of reading a closed connection.
+    pub async fn handover_answered(&self) {
+        loop {
+            // Registered before the count is read, so a delivery between the read and the wait still wakes it.
+            let answered = self.handover_answered.notified();
+            tokio::pin!(answered);
+            answered.as_mut().enable();
+            if self
+                .handover_answering
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                return;
+            }
+            answered.await;
+        }
+    }
+    /// senpi shutdown `handover?.dispose()`: a pending idle handover stops its timer with the host.
+    pub fn dispose_handover(&self) {
+        if let Some(gate) = self.handover.get() {
+            gate.handover.dispose();
+        }
     }
     /// Whether a handoff drain is running (senpi `router.draining`).
     pub fn is_draining(&self) -> bool {
@@ -1466,6 +1514,7 @@ impl HostCore {
             && let Some(record) = value.as_object()
         {
             let gate = self.handover.get();
+            let _answering = HandoverAnswering::new(self);
             let answer = crate::host_handover_wire::answer_begin_handover(
                 gate.map(|gate| &gate.handover),
                 gate.map(|gate| &gate.endpoint),
@@ -4409,6 +4458,18 @@ mod handoff_tests {
         core.enable_handoff();
         assert!(core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));
     }
+    /// senpi `HostCoreGate.answered`: shutdown waits for a `begin_handover` still being answered, and settles at once
+    /// when none is.
+    #[tokio::test]
+    async fn handover_answered_waits_for_an_answer_in_flight() {
+        let core = idle_core();
+        core.handover_answered().await;
+        let answering = HandoverAnswering::new(&core);
+        let mut waiting = Box::pin(core.handover_answered());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        drop(answering);
+        waiting.await;
+    }
     #[tokio::test]
     async fn begin_handover_reaches_the_gate_and_a_foreign_agent_dir_is_refused() {
         use tokio::io::AsyncBufReadExt;
@@ -6239,10 +6300,14 @@ async fn run_socket_host(
     let _ = observers_stop.send(true);
     observers.abort();
     idle.abort();
+    core.dispose_handover();
     if let Some(reaper) = reaper {
         reaper.stop();
     }
     core.dispose_presenter_control();
+    // senpi `await handoverAnswered()`: a handover that completed at once drains this host; its caller still gets the
+    // answer.
+    core.handover_answered().await;
     #[cfg(unix)]
     drop(presenter_dir);
     // Ownership-checked: only the entry THIS process bound is removed (senpi `unlinkOwnedSocket`).
