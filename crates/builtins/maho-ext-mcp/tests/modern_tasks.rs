@@ -262,39 +262,21 @@ fn origin(
     ))
 }
 
-/// Upstream `mrtrTui()`: answers Submit/first choice and "answer" for text input; `lose()` aborts it.
-struct TaskUi {
-    select: Box<
-        dyn Fn(
-                &[String],
-                maho_ext_api::ExtensionUiDialogOptions,
-            ) -> BoxFuture<'static, Option<String>>
-            + Send
-            + Sync,
-    >,
-}
-impl TaskUi {
-    fn submitting() -> Self {
-        Self {
-            select: Box::new(|choices, _| {
-                let answer = if choices.iter().any(|choice| choice == "Submit") {
-                    Some("Submit".to_owned())
-                } else {
-                    choices.first().cloned()
-                };
-                Box::pin(async move { answer })
-            }),
-        }
-    }
-}
+/// Upstream `mrtrTui()`: answers Submit (else the first choice) and "answer" for text input.
+struct TaskUi;
 impl ExtensionUi for TaskUi {
     fn select<'a>(
         &'a self,
         _: &'a str,
         choices: &'a [String],
-        options: maho_ext_api::ExtensionUiDialogOptions,
+        _: maho_ext_api::ExtensionUiDialogOptions,
     ) -> maho_ext_api::UiFuture<'a, Option<String>> {
-        (self.select)(choices, options)
+        let answer = if choices.iter().any(|choice| choice == "Submit") {
+            Some("Submit".to_owned())
+        } else {
+            choices.first().cloned()
+        };
+        Box::pin(async move { answer })
     }
     fn confirm<'a>(
         &'a self,
@@ -662,7 +644,7 @@ async fn answers_through_the_presenter_once_per_task_input_key(kind: &str) {
     .await;
     let root = tempfile::tempdir().expect("tempdir");
     let (connection, client) = connect(&script, root.path()).await;
-    let (presentation, _lifetime) = presentation(TaskUi::submitting());
+    let (presentation, _lifetime) = presentation(TaskUi);
     let presented = Arc::new(AtomicUsize::new(0));
     let private_form = (kind == "private").then(|| {
         let presented = presented.clone();
@@ -845,7 +827,7 @@ async fn losing_the_presenter_removes_elicitation_from_subsequent_task_polls() {
     .await;
     let root = tempfile::tempdir().expect("tempdir");
     let (connection, client) = connect(&script, root.path()).await;
-    let (presentation, lifetime) = presentation(TaskUi::submitting());
+    let (presentation, lifetime) = presentation(TaskUi);
     let options = mcp_request_options(Some(origin(connection, Some(presentation), None)), None);
     let scheduled = clock.next_scheduled(400_000.0);
     let pending = call_tool(&client, &clock, SDK_TIMEOUT, options);
