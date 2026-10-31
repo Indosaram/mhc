@@ -1,12 +1,9 @@
 //! senpi `modes/rpc/structured-session-records.ts`: the session's internal structured lane behind the
 //! compact-updates flag, and the seeded block gate every structured subscriber runs.
 //!
-//! Cross-lane: upstream reads the provider capture of a record (`getAssistantCapture`, maho-ai lane),
-//! projects it with the seeded `toJsonEvent(record, {blockSeeds: 1})` (senpi-interactive-31, not yet in
-//! `json_event.rs`) and subscribes through `AgentSession.subscribeStructured` (senpi-core-rest-58, not
-//! yet in maho-core). The gate below is the whole upstream state machine, coded against those seams:
-//! the caller supplies each record's `StructuredCapture` view and the seeded projection, so wiring
-//! `subscribe_structured_session_records` to a live session is the remaining cross-lane step.
+//! The provider capture rides beside each event (`Captured`), the seeded projection is
+//! `json_event::to_seeded_json_event`, and the lane is `AgentSession::subscribe_structured`;
+//! [`subscribe_structured_session_records`] joins them through the gate below.
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Value, json};
@@ -222,6 +219,58 @@ impl SeededBlockGate {
     }
 }
 
+impl StructuredCapture {
+    /// The gate's view of a provider capture (`getAssistantCapture(record)`).
+    pub fn of(capture: &maho_ai::utils::assistant_capture::AssistantCapture) -> Self {
+        Self {
+            content_index: capture.content_index,
+            offset: capture.offset,
+            next_offset: capture.next_offset,
+            has_message: capture.message.is_some(),
+            rewritten_from: capture.rewritten_from,
+        }
+    }
+}
+
+/// senpi `subscribeStructuredSessionRecords`: the session's internal structured lane, projected like its legacy
+/// records: seeded `toJsonEvent` projections of every session event plus the three block controls, in session order,
+/// admitted through one [`SeededBlockGate`]. `output` never reaches a legacy destination. `Err` when the session's
+/// agent has no internal channel. Dropping the subscription detaches it.
+pub fn subscribe_structured_session_records(
+    session: &maho_core::agent_session::AgentSession,
+    output: std::sync::Arc<dyn Fn(Value) + Send + Sync>,
+) -> Result<
+    maho_core::structured_session_lane::StructuredSubscription,
+    maho_core::structured_session_lane::StructuredLaneUnavailableError,
+> {
+    use maho_core::structured_session_lane::AgentSessionStructuredRecord as Record;
+    let gate = std::sync::Mutex::new(SeededBlockGate::default());
+    session.subscribe_structured(std::sync::Arc::new(move |record: &Record| {
+        let (value, capture) = match record {
+            Record::Progress(progress) => match serde_json::to_value(&**progress) {
+                Ok(value) => (value, None),
+                Err(_) => return,
+            },
+            Record::Event(event) => {
+                match crate::session_binding::session_event_record(&event.value) {
+                    Ok(value) => (value, event.capture.as_deref()),
+                    Err(_) => return,
+                }
+            }
+        };
+        let view = capture.map(StructuredCapture::of);
+        let accepted = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accept(&value, view.as_ref(), || {
+                crate::json_event::to_seeded_json_event(&value, capture).map_err(|_| SeedFrontier)
+            });
+        if let Ok(Some(accepted)) = accepted {
+            output(crate::session_record_stream::session_record(accepted));
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +385,136 @@ mod tests {
             .expect("end")
             .expect("record");
         assert_eq!(out["invalidatedBlocks"], json!([2]));
+    }
+
+    /// senpi 4272-structured-lane-bridge: the structured lane reaches its subscriber as seeded projections with the
+    /// block control between the assistant's start and end; a session with no internal channel refuses it.
+    #[tokio::test]
+    async fn a_live_session_streams_seeded_records_and_controls_in_order() {
+        use maho_ai::utils::assistant_capture::{
+            AssistantProgress, BlockPhase, push_assistant_progress,
+        };
+        use std::sync::{Arc, Mutex};
+        let channel = maho_agent::create_internal_agent_channel();
+        let stream_fn: maho_agent::types::StreamFn = Arc::new(|_, _, _| {
+            let stream =
+                maho_ai::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(
+                    true,
+                );
+            let mut partial =
+                maho_ai::providers::faux::faux_assistant_message("", Default::default());
+            partial.content.clear();
+            stream.push(maho_ai::types::AssistantMessageEvent::Start {
+                partial: partial.clone(),
+            });
+            let native = maho_ai::types::ContentBlock::ProviderNative(
+                maho_ai::types::ProviderNativeContent {
+                    subtype: "fixture".into(),
+                    raw: json!({"value": 1}),
+                },
+            );
+            partial.content.push(native.clone());
+            push_assistant_progress(
+                &stream,
+                AssistantProgress::block_state(0, BlockPhase::Insert, &native),
+            );
+            stream.push(maho_ai::types::AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop,
+                message: partial.clone(),
+            });
+            stream.end(Some(partial));
+            stream
+        });
+        let config = |agent| maho_core::agent_session::AgentSessionConfig {
+            agent,
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                "/tmp", None, None,
+            ),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: Some("/tmp/maho-agent".to_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: Default::default(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(
+                maho_core::model_runtime::ModelRuntime::create_sync(
+                    maho_core::model_runtime::CreateModelRuntimeOptions {
+                        providers: Some(Vec::new()),
+                        ..Default::default()
+                    },
+                )
+                .expect("valid model runtime"),
+            ),
+            model_registry: None,
+            uses_default_stream_function: Some(false),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        };
+        let plain = maho_core::agent_session::AgentSession::new(config(maho_agent::Agent::new(
+            maho_agent::AgentOptions::default(),
+        )))
+        .expect("session");
+        assert!(subscribe_structured_session_records(&plain, Arc::new(|_| {})).is_err());
+        let session = maho_core::agent_session::AgentSession::new_with_internal_channel(
+            config(maho_agent::Agent::new(maho_agent::AgentOptions {
+                internal_channel: Some(channel.clone()),
+                stream_fn: Some(stream_fn),
+                ..Default::default()
+            })),
+            None,
+            Some(channel),
+        )
+        .expect("session");
+        let records = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let seen = records.clone();
+        let subscription = subscribe_structured_session_records(
+            &session,
+            Arc::new(move |record| seen.lock().unwrap().push(record)),
+        )
+        .expect("the session layer owns the channel");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session
+                .agent
+                .prompt(maho_agent::AgentPromptInput::text("go")),
+        )
+        .await
+        .expect("bounded turn");
+        drop(subscription);
+        let records = records.lock().unwrap().clone();
+        let kinds: Vec<&str> = records
+            .iter()
+            .map(|record| record["type"].as_str().unwrap_or_default())
+            .collect();
+        let start = records
+            .iter()
+            .rposition(|record| {
+                record["type"] == "message_start" && record["message"]["role"] == "assistant"
+            })
+            .expect("assistant message_start");
+        let control = kinds
+            .iter()
+            .position(|kind| *kind == "message_block_state")
+            .expect("the block control passed the gate");
+        let end = records
+            .iter()
+            .rposition(|record| {
+                record["type"] == "message_end" && record["message"]["role"] == "assistant"
+            })
+            .expect("assistant message_end");
+        assert!(start < control && control < end, "{kinds:?}");
+        assert_eq!(records[control]["phase"], "insert");
     }
 }

@@ -517,6 +517,9 @@ pub struct RpcSessionBinding {
     security_subscription: std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
     relocation_subscription:
         std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>,
+    /// senpi `sink.writeStructured`: the session's structured lane, held only behind the compact-updates flag.
+    structured_subscription:
+        std::sync::Mutex<Option<maho_core::structured_session_lane::StructuredSubscription>>,
     connection_roles: Option<SharedConnectionRoles>,
     /// senpi `bindMcpForms(session, ui)`: the session's private form binding and the writer state that owns it.
     mcp_forms: std::sync::Mutex<
@@ -638,12 +641,40 @@ pub async fn create_rpc_session_binding(
         hold_subscription: std::sync::Mutex::new(Some(hold_subscription)),
         security_subscription: std::sync::Mutex::new(Some(security_subscription)),
         relocation_subscription: Default::default(),
+        structured_subscription: Default::default(),
         connection_roles,
         mcp_forms: Default::default(),
         presenters: Default::default(),
     }
 }
 impl RpcSessionBinding {
+    /// senpi session-binding.ts `writeStructured` (only when `structuredLaneEnabled()`): the session's structured
+    /// records, tagged with this routing handle, go to `lanes` while `scope` is open; never to a legacy destination.
+    pub fn install_structured_lane(
+        &self,
+        session: &maho_core::agent_session::AgentSession,
+        lanes: crate::session_structured_lanes::SessionStructuredLanes,
+        scope: maho_ai::node::provider_scope::ProviderScope,
+    ) {
+        let tag = self.session_id.clone();
+        let output: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
+            std::sync::Arc::new(move |mut record: serde_json::Value| {
+                if scope.state() == maho_ai::node::provider_scope::ScopeState::Closed {
+                    return;
+                }
+                record["sessionId"] = tag.clone().into();
+                lanes.accept(&tag, &record);
+            });
+        // An agent built outside the session layer has no structured lane; the legacy records still flow.
+        let subscription = crate::structured_session_records::subscribe_structured_session_records(
+            session, output,
+        )
+        .ok();
+        *self
+            .structured_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = subscription;
+    }
     pub fn keep_relocation_subscription(
         &self,
         subscription: maho_core::agent_session::AgentSessionSubscription,
@@ -810,6 +841,10 @@ impl RpcSessionBinding {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         self.relocation_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.structured_subscription
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
