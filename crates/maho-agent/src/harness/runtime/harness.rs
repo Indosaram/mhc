@@ -828,13 +828,23 @@ fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json
     value
 }
 
-/// Pinned `resolveSystemPrompt` (`drive/generation.ts`): resolve the configured `toolContext` for
-/// each request and hand it to the typed `systemPrompt` callback. The lane config is context-free,
+/// Pinned `resolveSystemPrompt` (`drive/generation.ts`): a string prompt is returned as is;
+/// otherwise resolve the configured `toolContext` for each request and hand it to the typed
+/// `systemPrompt` callback. The lane config is context-free,
 /// so the typed callback is captured here with its tool context source.
 fn resolve_system_prompt<TContext: Clone + Send + Sync + 'static>(
-    prompt: crate::harness::agent_harness::AgentHarnessSystemPromptFn<TContext>,
+    prompt: crate::harness::agent_harness::AgentHarnessSystemPrompt<TContext>,
     source: Option<crate::harness::agent_harness::ToolContextSource<TContext>>,
 ) -> super::types::SystemPromptFn {
+    let prompt = match prompt {
+        crate::harness::agent_harness::AgentHarnessSystemPrompt::Text(text) => {
+            return Arc::new(move |_context: &Context| {
+                let text = text.clone();
+                Box::pin(async move { text })
+            });
+        }
+        crate::harness::agent_harness::AgentHarnessSystemPrompt::Resolve(prompt) => prompt,
+    };
     Arc::new(move |context: &Context| {
         let prompt = prompt.clone();
         let source = source.clone();
