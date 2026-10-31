@@ -250,6 +250,10 @@ pub async fn ensure_outcome(
             (host.child.id().unwrap_or_default(), false)
         }
     };
+    // The CLI ensure gets the same background pass as `ensure_host`: only once it has its host.
+    crate::host_gc_pass::schedule_opportunistic_host_gc(
+        crate::host_gc_pass::OpportunisticGcOptions::new(agent_dir, socket),
+    );
     let host = crate::host_probe::probe_protocol_info(socket, 10000).await;
     if !reused {
         let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);

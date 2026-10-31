@@ -607,10 +607,12 @@ pub async fn ensure_host(options: EnsureHostOptions) -> Result<EnsuredHostInfo, 
         .unwrap_or_else(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()));
     let ensured = crate::host_probe::with_rpc_key_root(root, ensure_host_in_key_root(options)).await;
     // Off the awaited path and outside the lock: the caller gets its host first, then dead endpoint records under
-    // this agent dir are reaped in the background on `host gc`'s own evidence.
-    crate::host_gc_pass::schedule_opportunistic_host_gc(
-        crate::host_gc_pass::OpportunisticGcOptions::new(agent_dir, socket),
-    );
+    // this agent dir are reaped in the background on `host gc`'s own evidence. A failed ensure schedules nothing.
+    if ensured.is_ok() {
+        crate::host_gc_pass::schedule_opportunistic_host_gc(
+            crate::host_gc_pass::OpportunisticGcOptions::new(agent_dir, socket),
+        );
+    }
     ensured
 }
 async fn ensure_host_in_key_root(
@@ -813,6 +815,25 @@ mod tests {
         })
         .await;
         assert!(outcome.is_ok() || matches!(outcome, Err(EnsureHostError::Refused(_))));
+    }
+    // senpi host-ensure.ts: the gc pass is scheduled after an ensure returned its host, never after a failure.
+    // A current-thread runtime cannot run a scheduled pass before the check, so a scheduled one is still pending.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_ensure_schedules_no_gc_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent_dir = temp.path().join("not-a-dir");
+        std::fs::write(&agent_dir, "").unwrap();
+        let outcome = ensure_host(EnsureHostOptions {
+            socket: temp.path().join("s.sock").to_string_lossy().into_owned(),
+            agent_dir: Some(agent_dir.clone()),
+            readiness_ms: 200,
+            ..Default::default()
+        })
+        .await;
+        assert!(outcome.is_err());
+        assert!(!crate::host_gc_pass::opportunistic_host_gc_pending(
+            &agent_dir
+        ));
     }
     #[cfg(unix)]
     #[tokio::test]
