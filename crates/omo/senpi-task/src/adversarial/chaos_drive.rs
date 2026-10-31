@@ -311,6 +311,7 @@ fn seed_mutation_record(
         child_session_id: None,
         final_response: None,
         error_message: None,
+        provisional_exit: None,
         killed: None,
         run_stats: None,
         isolation: None,
