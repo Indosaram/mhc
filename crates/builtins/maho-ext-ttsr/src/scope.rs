@@ -133,7 +133,7 @@ fn glob_fragment(pattern:&str)->Option<String> {
                 match value { '\\'=>escaped=true,'('=>depth+=1,')'=>depth-=1,'|' if depth==0=>{ alternatives.push(glob_fragment(&body[part..index])?); part=index+1; },_=>() }
             }
             alternatives.push(glob_fragment(&body[part..])?);
-            let suffix=&pattern[end+1..]; let (quantifier,suffix)=if suffix.starts_with('+')||suffix.starts_with('?') { (&suffix[..1],&suffix[1..]) } else { ("",suffix) };
+            let suffix=&pattern[end+1..]; let (quantifier,suffix)=if suffix.starts_with('+')||suffix.starts_with('?')||suffix.starts_with('*') { (&suffix[..1],&suffix[1..]) } else { ("",suffix) };
             return Some(format!("{}(?:{}){quantifier}{}",glob_fragment(&pattern[..start])?,alternatives.join("|"),glob_fragment(suffix)?));
         }
     }
@@ -181,6 +181,12 @@ pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs
         for (pattern,path,expected) in [(r"\(a\).rs","(a).rs",true),(r"\[a\].rs","[a].rs",true),(r"\{a\}.rs","{a}.rs",true),("(a(b|c)).rs","ab.rs",true),("(a|b)+.rs","aa.rs",true),("(a|b)?.rs",".rs",true)] {
             assert_eq!(matches_path(pattern,path),expected,"{pattern}: {path}");
         }
+    }
+    #[test]
+    fn glob_fragment_preserves_group_star_quantifier() {
+        assert_eq!(glob_fragment("(a|b)*"), Some("(?:a|b)*".to_string()));
+        assert!(matches_path("(a|b)*.rs", ".rs"));
+        assert!(!matches_path("(a|b)*.rs", "ac.rs"));
     }
     #[test] fn picomatch_bracket_literal_and_negation_matrix() {
         for (pattern,path,expected) in [("[abc].rs","[abc].rs",true),("[abc].rs","a.rs",true),("[!a].rs","b.rs",false),("[!a].rs","!.rs",true),("[^a].rs","b.rs",true),("{abc}.rs","abc.rs",false),("{abc}.rs","{abc}.rs",true)] {
