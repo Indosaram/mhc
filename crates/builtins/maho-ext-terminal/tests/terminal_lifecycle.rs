@@ -10,10 +10,11 @@ use std::{
 
 struct Session {
     dir: PathBuf,
+    id: &'static str,
 }
 impl ToolSessionManager for Session {
     fn session_id(&self) -> &str {
-        "terminal-lifecycle"
+        self.id
     }
     fn session_file(&self) -> Option<&Path> {
         None
@@ -105,7 +106,10 @@ fn context(dir: &Path) -> ExtensionContext {
         has_ui: false,
         cwd: dir.into(),
         agent_dir: dir.into(),
-        session_manager: Arc::new(Session { dir: dir.into() }),
+        session_manager: Arc::new(Session {
+            dir: dir.into(),
+            id: "terminal-lifecycle",
+        }),
         model_registry: Arc::new(Registry),
         model: None,
         thinking_level: None,
@@ -300,6 +304,7 @@ async fn a_context_without_a_session_dir_keeps_no_durable_terminal_state() {
     let mut ctx = context(dir.path());
     ctx.session_manager = Arc::new(Session {
         dir: PathBuf::new(),
+        id: "terminal-lifecycle",
     });
     let api = api(dir.path());
     start(&api, &ctx, SessionReason::Startup).await;
@@ -350,4 +355,70 @@ async fn a_persistent_monitor_created_through_the_registered_tool_is_recorded_in
     );
     assert_eq!(monitors[0]["monitorId"], monitor_id);
     assert_eq!(monitors[0]["suspended"], true);
+}
+
+/// A spec the monitor tool queued while no writer was bound (upstream `handMonitorSpec`) is
+/// drained into the writer SessionStart binds, on the fresh-start (`own`) and the reload path,
+/// and is in the manifest the next shutdown writes. The binding map is process-wide, so each
+/// case uses its own session id.
+async fn queued_spec_is_recorded_after_session_start(id: &'static str, reason: SessionReason) {
+    use maho_ext_terminal::terminal_manifest_model::{MonitorRegistration, MonitorSpec};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = context(dir.path());
+    ctx.session_manager = Arc::new(Session {
+        dir: dir.path().into(),
+        id,
+    });
+    let manifest = state_dir(dir.path()).join(format!(
+        "{}.json",
+        maho_core::session_sidecar_store::encoded_session_id(id)
+    ));
+    assert!(
+        maho_ext_terminal::tools::monitor_manifest_binding::hand_monitor_spec(
+            Some(id),
+            MonitorRegistration {
+                monitor_id: "mon_QUEUEDWHILEUNBND".into(),
+                spec: MonitorSpec::Command {
+                    description: "queued watch".into(),
+                    command: "cat".into(),
+                    filter: None,
+                    human_input: None,
+                    wakes_per_hour: None,
+                    cwd: None,
+                    persistent: true,
+                },
+            },
+        )
+        .is_none(),
+        "no writer is bound yet, so the spec is queued"
+    );
+    let api = api(dir.path());
+    start(&api, &ctx, reason).await;
+    assert!(
+        maho_ext_terminal::tools::monitor_manifest_binding::is_terminal_manifest_writer_bound(id)
+    );
+    assert_eq!(
+        maho_ext_terminal::tools::monitor_manifest_binding::pending_durable_spec_count(id),
+        0,
+        "the queue drained into the bound writer"
+    );
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).expect("manifest written"))
+            .expect("manifest json");
+    let monitors = saved["monitors"].as_array().expect("monitors");
+    assert_eq!(monitors.len(), 1, "the queued spec is recorded: {saved}");
+    assert_eq!(monitors[0]["monitorId"], "mon_QUEUEDWHILEUNBND");
+}
+
+#[tokio::test]
+async fn a_spec_queued_while_unbound_is_recorded_after_a_fresh_session_start() {
+    queued_spec_is_recorded_after_session_start("terminal-queued-fresh", SessionReason::Startup)
+        .await;
+}
+
+#[tokio::test]
+async fn a_spec_queued_while_unbound_is_recorded_after_a_reload_session_start() {
+    queued_spec_is_recorded_after_session_start("terminal-queued-reload", SessionReason::Reload)
+        .await;
 }
