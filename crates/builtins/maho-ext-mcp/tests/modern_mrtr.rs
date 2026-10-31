@@ -5,16 +5,17 @@
 //!
 //! Covering the multi-round-trip request (MRTR) engine, continuation lifecycles, boundaries, and deadlines.
 
+use crate::support::clock::{ManualClock, freeze_time, unique_binding, within};
 use axum::{
     Json, Router,
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::post,
 };
-use maho_ai::utils::abort::AbortSignal as HostSignal;
 use maho_core::mcp_mrtr_presentations::McpMrtrPresentation;
 use maho_ext_api::AbortSignal;
 use maho_ext_api::*;
+use maho_ext_mcp::modern::request::{DEFAULT_REQUEST_TIMEOUT_MS, mcp_request_with_clock};
 use maho_ext_mcp::{
     config_schema::{Auth, McpServerConfig, Transport},
     connection::ServerConnection,
@@ -82,6 +83,10 @@ struct MrtrStub {
     notifications: Arc<Mutex<Vec<Value>>>,
     extra_methods: Arc<Mutex<Vec<String>>>,
     hang: Arc<AtomicBool>,
+    /// Every recorded application request, in arrival order (upstream `transport.received`).
+    received: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Value>>>,
+    /// The open SSE stream of the hanging request: server-sent events for it go through here.
+    live: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
     stop: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 
@@ -95,6 +100,8 @@ impl MrtrStub {
         let notifications = Arc::new(Mutex::new(Vec::new()));
         let extra_methods = Arc::new(Mutex::new(Vec::new()));
         let hang = Arc::new(AtomicBool::new(false));
+        let (received_tx, received_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let live: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>> = Arc::default();
 
         let req_clone = requests.clone();
         let res_clone = results.clone();
@@ -104,6 +111,7 @@ impl MrtrStub {
         let notif_clone = notifications.clone();
         let extra_clone = extra_methods.clone();
         let hang_clone = hang.clone();
+        let live_clone = live.clone();
 
         let app = Router::new().route(
             "/mcp",
@@ -116,12 +124,10 @@ impl MrtrStub {
                 let notifications = notif_clone.clone();
                 let extra_methods = extra_clone.clone();
                 let hang = hang_clone.clone();
+                let received = received_tx.clone();
+                let live = live_clone.clone();
 
                 async move {
-                    if hang.load(Ordering::SeqCst) {
-                        std::future::pending::<()>().await;
-                    }
-
                     let id = request.get("id").cloned().unwrap_or(Value::Null);
                     let method = request
                         .get("method")
@@ -241,6 +247,25 @@ impl MrtrStub {
                     reqs.push(request.clone());
                     drop(reqs);
 
+                    // A hanging application request keeps its SSE response open without a reply; the test
+                    // pushes server events for it through `live`.
+                    if hang.load(Ordering::SeqCst) {
+                        let (events, stream) = tokio::sync::mpsc::unbounded_channel::<String>();
+                        *live.lock().unwrap() = Some(events);
+                        let _ = received.send(request.clone());
+                        let body = futures::stream::unfold(stream, |mut stream| async move {
+                            stream
+                                .recv()
+                                .await
+                                .map(|chunk| (Ok::<_, std::io::Error>(chunk), stream))
+                        });
+                        return axum::response::Response::builder()
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .body(axum::body::Body::from_stream(body))
+                            .expect("sse response");
+                    }
+                    let _ = received.send(request.clone());
+
                     let status_code = *continuation_status.lock().unwrap();
                     if let Some(code) = status_code
                         && params.get("requestState").is_some()
@@ -341,12 +366,45 @@ impl MrtrStub {
             notifications,
             extra_methods,
             hang,
+            received: Arc::new(tokio::sync::Mutex::new(received_rx)),
+            live,
             stop: Arc::new(Mutex::new(Some(stop_tx))),
         }
     }
 
     fn requests(&self) -> Vec<Value> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Upstream `await f.transport.received.promise`: the next application request reached the server.
+    async fn next_request(&self) -> Value {
+        let mut received = self.received.lock().await;
+        within(
+            "the stub to receive an application request",
+            received.recv(),
+        )
+        .await
+        .expect("stub open")
+    }
+
+    /// Upstream `transport.progress()`: one progress notification for the hanging request.
+    fn progress(&self, request: &Value) {
+        let event = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {
+                "progressToken": request["params"]["_meta"]["progressToken"],
+                "progress": 1,
+                "message": "PRIVATE_PROGRESS_CANARY",
+            },
+        });
+        self.live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("a hanging request")
+            .send(format!("data: {event}\n\n"))
+            .expect("stream open");
     }
 
     fn close(&self) {
@@ -488,7 +546,7 @@ fn make_origin_with_binding(
 ) -> Arc<McpRequestOrigin> {
     let presentation = ui.map(|ui| McpMrtrPresentation {
         ui,
-        signal: HostSignal::default(),
+        signal: maho_ai::utils::abort::AbortController::new().signal(),
         admit: None,
         presented: None,
         private_forms: None,
@@ -514,7 +572,7 @@ fn make_origin(
     ui: Option<Arc<dyn ExtensionUi>>,
     signal: Option<AbortSignal>,
 ) -> Arc<McpRequestOrigin> {
-    make_origin_with_binding(1, connection, ui, signal)
+    make_origin_with_binding(unique_binding(), connection, ui, signal)
 }
 
 async fn connect_mrtr(
@@ -980,7 +1038,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         .unwrap();
 
     let origin = make_origin_with_binding(
-        1,
+        unique_binding(),
         ServerConnection::new("stdio-test", config.clone(), None, transport.logger.clone()),
         Some(MrtrUi::default_ui()),
         None,
@@ -1251,7 +1309,7 @@ async fn rejects_an_already_aborted_unpresented_form_without_manufacturing_a_can
     signal.abort();
     let run_called = Arc::new(AtomicBool::new(false));
     let was_called = run_called.clone();
-    let res = queued_form(1, &signal, || async move {
+    let res = queued_form(unique_binding(), &signal, || async move {
         was_called.store(true, Ordering::SeqCst);
         Ok::<_, McpMrtrError>(())
     })
@@ -1266,7 +1324,7 @@ async fn rejects_an_already_aborted_unpresented_form_without_manufacturing_a_can
 /// Upstream case: `rejects a queued form aborted before presentation without an action` in `modern-mrtr-boundaries.test.ts`
 #[tokio::test]
 async fn rejects_a_queued_form_aborted_before_presentation_without_an_action() {
-    let binding = 200;
+    let binding = unique_binding();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -1371,28 +1429,43 @@ async fn preserves_a_numeric_remote_error_code_without_exposing_its_message() {
 // -------------------------------------------------------------------------------------------------
 
 /// Upstream case: `uses the SDK default for both attempt and operation budgets when timeout is omitted` in `modern-mrtr-lifecycle.test.ts`
+///
+/// The SDK default is `DEFAULT_REQUEST_TIMEOUT_MS`; the operation budget is `9 * timeout + 300000`. Upstream reads
+/// both from the SDK call options; the port reads the scheduled operation deadline off the manual clock. HTTP
+/// cancellation drops the attempt (no `notifications/cancelled` is POSTed), so there is no cancellation count.
 #[tokio::test(start_paused = true)]
 async fn uses_the_default_for_both_attempt_and_operation_budgets_when_timeout_is_omitted() {
+    let _frozen = freeze_time();
+    let clock = ManualClock::new();
     let server = MrtrStub::start(vec![], false).await;
+    let (_conn, client, _origin, _root) = connect_mrtr(&server, None).await;
     server.hang.store(true, Ordering::SeqCst);
-    let (_conn, client, origin, _root) = connect_mrtr(&server, Some(MrtrUi::default_ui())).await;
-
+    let request_clock = clock.clone();
     let pending = tokio::spawn(async move {
-        client
-            .request_with_options(
-                "tools/call",
-                json!({"name": "test"}),
-                Duration::from_secs(60),
-                &mcp_request_options(Some(origin), None),
-            )
-            .await
+        mcp_request_with_clock(
+            &client,
+            "tools/call",
+            json!({"name": "test"}),
+            Duration::from_secs_f64(DEFAULT_REQUEST_TIMEOUT_MS / 1000.0),
+            &McpRequestOptions::default(),
+            Arc::new(request_clock),
+        )
+        .await
     });
-
-    tokio::time::advance(Duration::from_millis(840_000)).await;
-
-    let err = pending.await.unwrap().expect_err("should time out");
+    server.next_request().await;
+    assert_eq!(
+        clock.pending(),
+        vec![9.0 * DEFAULT_REQUEST_TIMEOUT_MS + 300_000.0]
+    );
+    clock.advance(9.0 * DEFAULT_REQUEST_TIMEOUT_MS + 300_000.0);
+    let err = within("the timed-out request", pending)
+        .await
+        .unwrap()
+        .expect_err("should time out");
     let mrtr = as_mcp_mrtr_error(&err).expect("mcp mrtr error");
     assert_eq!(mrtr.code, McpMrtrErrorCode::Timeout);
+    assert_eq!(server.requests().len(), 1);
+    within("every timer to clear", clock.settled()).await;
     server.close();
 }
 
@@ -1459,9 +1532,194 @@ async fn a_stopped_multi_input_batch_never_dispatches_partial_answers() {
     }
 }
 
+/// A terminal host's selector widgets: every `select` mounts one widget whose answer slot the test fills by index,
+/// like upstream feeding `handleInput` to a captured `ExtensionSelectorComponent`. Enter picks the first choice,
+/// Escape cancels, and a settled widget ignores further input (upstream `answerSettled`).
+struct WidgetUi {
+    widgets: Mutex<
+        Vec<(
+            Vec<String>,
+            Option<tokio::sync::oneshot::Sender<Option<String>>>,
+        )>,
+    >,
+    shown: tokio::sync::mpsc::UnboundedSender<usize>,
+    admitted: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl WidgetUi {
+    fn handle_input(&self, widget: usize, data: &str) {
+        let mut widgets = self.widgets.lock().unwrap();
+        let (choices, slot) = &mut widgets[widget];
+        let Some(reply) = slot.take() else {
+            return;
+        };
+        let answer = match data {
+            "\n" => {
+                // Host `onSelect`: a selector answer is human admission.
+                self.admitted.fetch_add(1, Ordering::SeqCst);
+                choices.first().cloned()
+            }
+            _ => None,
+        };
+        let _ = reply.send(answer);
+    }
+}
+impl ExtensionUi for WidgetUi {
+    fn select<'a>(
+        &'a self,
+        _title: &'a str,
+        choices: &'a [String],
+        options: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let index = {
+            let mut widgets = self.widgets.lock().unwrap();
+            widgets.push((choices.to_vec(), Some(reply)));
+            widgets.len() - 1
+        };
+        let _ = self.shown.send(index);
+        Box::pin(async move {
+            let aborted = async {
+                match options.signal {
+                    Some(signal) => signal.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                answer = answer => answer.ok().flatten(),
+                () = aborted => None,
+            }
+        })
+    }
+    fn confirm<'a>(
+        &'a self,
+        _title: &'a str,
+        _message: &'a str,
+        _options: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn input<'a>(
+        &'a self,
+        _title: &'a str,
+        _placeholder: Option<&'a str>,
+        _options: ExtensionUiDialogOptions,
+    ) -> UiFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String {
+        String::new()
+    }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async { Err("custom UI must not be used".into()) })
+    }
+    fn theme(&self) -> Theme {
+        Theme::default()
+    }
+}
+
+/// Upstream `nextWidget(at)`: the widget the form mounts next, which must be the `at`-th one.
+async fn next_widget(
+    mounted: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
+    at: usize,
+) -> usize {
+    let index = within("the next selector widget", mounted.recv())
+        .await
+        .expect("widget mounted");
+    assert_eq!(index, at, "widgets mount in order");
+    index
+}
+
+/// Upstream case: `duplicate and prior-round widget answers cannot dismiss the next round or dispatch again` in
+/// `modern-mrtr-lifecycle.test.ts`.
+///
+/// DIVERGENCE: upstream drives `InteractiveMode`'s private selector components and counts the host's
+/// `admitHumanAnswer`. This crate does not depend on maho-interactive, so `WidgetUi` stands in for the host's
+/// widgets (one answer slot per mounted selector, Enter/Escape, settled widgets inert) and counts admissions the
+/// same way: once per selector answer. The render-path assertions (`renderNow`/`requestRender`) are host-only.
+#[tokio::test]
+async fn duplicate_and_prior_round_widget_answers_cannot_dismiss_the_next_round_or_dispatch_again()
+{
+    let empty = json!({
+        "method": "elicitation/create",
+        "params": {"message": "empty form", "requestedSchema": {"type": "object", "properties": {}}},
+    });
+    let server = MrtrStub::start(
+        vec![
+            input_result("one", json!({"question": empty.clone()})),
+            input_result("two", json!({"question": empty})),
+            json!({"resultType": "complete", "content": [{"type": "text", "text": "final"}]}),
+        ],
+        false,
+    )
+    .await;
+    let (shown, mut mounted) = tokio::sync::mpsc::unbounded_channel::<usize>();
+    let admitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let widgets = Arc::new(WidgetUi {
+        widgets: Mutex::new(Vec::new()),
+        shown,
+        admitted: admitted.clone(),
+    });
+    let ui: Arc<dyn ExtensionUi> = widgets.clone();
+    let (connection, client, _origin, _root) = connect_mrtr(&server, None).await;
+    let origin = make_origin_with_binding(unique_binding(), connection, Some(ui), None);
+    let pending = tokio::spawn(async move {
+        client
+            .request_with_options(
+                "tools/call",
+                json!({"name": "test"}),
+                Duration::from_secs(5),
+                &mcp_request_options(Some(origin), None),
+            )
+            .await
+    });
+
+    widgets.handle_input(next_widget(&mut mounted, 0).await, "\n");
+    let old_review = next_widget(&mut mounted, 1).await;
+    assert_eq!(admitted.load(Ordering::SeqCst), 1);
+    widgets.handle_input(old_review, "\n");
+    widgets.handle_input(next_widget(&mut mounted, 2).await, "\n");
+    let current_review = next_widget(&mut mounted, 3).await;
+    assert_eq!(admitted.load(Ordering::SeqCst), 3);
+    // The settled prior-round review must neither answer nor dismiss the current round.
+    widgets.handle_input(old_review, "\n");
+    widgets.handle_input(old_review, "\u{1b}");
+    assert_eq!(admitted.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        server.requests().len(),
+        2,
+        "no dispatch before the current review is answered"
+    );
+    widgets.handle_input(current_review, "\n");
+
+    let result = within("the request to complete", pending)
+        .await
+        .unwrap()
+        .expect("request completes");
+    assert_eq!(
+        result["content"],
+        json!([{"type": "text", "text": "final"}])
+    );
+    assert_eq!(admitted.load(Ordering::SeqCst), 4);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1]["params"]["requestState"], "one");
+    assert_eq!(requests[2]["params"]["requestState"], "two");
+    server.close();
+}
+
 /// Upstream case: `supplied maxTotalTimeout is a duration from a nonzero start` in `modern-mrtr-lifecycle.test.ts`
 #[tokio::test(start_paused = true)]
 async fn supplied_max_total_timeout_is_a_duration_from_a_nonzero_start() {
+    let _frozen = freeze_time();
+    let clock = ManualClock::new();
     let server = MrtrStub::start(
         vec![
             default_input_result(),
@@ -1474,11 +1732,13 @@ async fn supplied_max_total_timeout_is_a_duration_from_a_nonzero_start() {
     )
     .await;
 
-    let ui = MrtrUi::with_async_select(|_title, choices, _opts| {
+    let consent_clock = clock.clone();
+    let ui = MrtrUi::with_async_select(move |_title, choices, _opts| {
         let choices = choices.to_vec();
+        let clock = consent_clock.clone();
         Box::pin(async move {
             if choices.iter().any(|c| c == "Submit") {
-                tokio::time::advance(Duration::from_millis(1250)).await;
+                clock.advance(1250.0);
                 return Some("Submit".into());
             }
             choices.first().cloned()
@@ -1489,80 +1749,121 @@ async fn supplied_max_total_timeout_is_a_duration_from_a_nonzero_start() {
     let mut options = mcp_request_options(Some(origin), None);
     options.max_total_timeout = Some(Duration::from_millis(2000));
 
-    let res = client
-        .request_with_options(
+    let res = within(
+        "the request to complete",
+        mcp_request_with_clock(
+            &client,
             "tools/call",
             json!({"name": "test"}),
             Duration::from_millis(1000),
             &options,
-        )
-        .await
-        .expect("call succeeds within maxTotalTimeout");
+            Arc::new(clock.clone()),
+        ),
+    )
+    .await
+    .expect("call succeeds within maxTotalTimeout");
 
     assert_eq!(res["content"], json!([{"type": "text", "text": "final"}]));
     assert_eq!(server.requests().len(), 2);
+    within("every timer to clear", clock.settled()).await;
     server.close();
 }
 
 /// Upstream case: `omitted maxTotalTimeout uses the bounded operation duration` in `modern-mrtr-lifecycle.test.ts`
 #[tokio::test(start_paused = true)]
 async fn omitted_max_total_timeout_uses_the_bounded_operation_duration() {
+    let _frozen = freeze_time();
+    let clock = ManualClock::new();
     let server = MrtrStub::start(vec![], false).await;
+    let (_conn, client, _origin, _root) = connect_mrtr(&server, None).await;
     server.hang.store(true, Ordering::SeqCst);
-    let (_conn, client, origin, _root) = connect_mrtr(&server, Some(MrtrUi::default_ui())).await;
-
+    let request_clock = clock.clone();
     let pending = tokio::spawn(async move {
-        client
-            .request_with_options(
-                "tools/call",
-                json!({"name": "test"}),
-                Duration::from_millis(1000),
-                &mcp_request_options(Some(origin), None),
-            )
-            .await
+        mcp_request_with_clock(
+            &client,
+            "tools/call",
+            json!({"name": "test"}),
+            Duration::from_millis(1000),
+            &McpRequestOptions::default(),
+            Arc::new(request_clock),
+        )
+        .await
     });
-
-    tokio::time::advance(Duration::from_millis(309_000)).await;
-
-    let err = pending.await.unwrap().expect_err("should time out");
+    server.next_request().await;
+    assert_eq!(clock.pending(), vec![309_000.0]);
+    clock.advance(309_000.0);
+    let err = within("the timed-out request", pending)
+        .await
+        .unwrap()
+        .expect_err("should time out");
     let mrtr = as_mcp_mrtr_error(&err).expect("mcp mrtr error");
     assert_eq!(mrtr.code, McpMrtrErrorCode::Timeout);
+    assert_eq!(server.requests().len(), 1);
+    within("every timer to clear", clock.settled()).await;
     server.close();
 }
 
 /// Upstream case: `progress near the deadline cannot extend the logical operation` in `modern-mrtr-lifecycle.test.ts`
 #[tokio::test(start_paused = true)]
 async fn progress_near_the_deadline_cannot_extend_the_logical_operation() {
+    let _frozen = freeze_time();
+    let clock = ManualClock::new();
     let server = MrtrStub::start(vec![], false).await;
+    let (_conn, client, _origin, _root) = connect_mrtr(&server, None).await;
     server.hang.store(true, Ordering::SeqCst);
-    let (_conn, client, origin, _root) = connect_mrtr(&server, Some(MrtrUi::default_ui())).await;
 
-    let mut options = mcp_request_options(Some(origin), None);
-    options.max_total_timeout = Some(Duration::from_millis(2000));
-
+    let updates = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let (progressed_tx, progressed_rx) = tokio::sync::oneshot::channel::<()>();
+    let progressed_tx = Mutex::new(Some(progressed_tx));
+    let recorded = updates.clone();
+    let options = McpRequestOptions {
+        max_total_timeout: Some(Duration::from_millis(2000)),
+        on_progress: Some(Arc::new(move |progress: Value| {
+            recorded.lock().unwrap().push(progress);
+            if let Some(progressed) = progressed_tx.lock().unwrap().take() {
+                let _ = progressed.send(());
+            }
+        })),
+        ..Default::default()
+    };
+    let request_clock = clock.clone();
     let pending = tokio::spawn(async move {
-        client
-            .request_with_options(
-                "tools/call",
-                json!({"name": "test"}),
-                Duration::from_millis(1000),
-                &options,
-            )
-            .await
+        mcp_request_with_clock(
+            &client,
+            "tools/call",
+            json!({"name": "test"}),
+            Duration::from_millis(1000),
+            &options,
+            Arc::new(request_clock),
+        )
+        .await
     });
 
-    tokio::time::advance(Duration::from_millis(1999)).await;
-    tokio::time::advance(Duration::from_millis(1)).await;
+    let request = server.next_request().await;
+    clock.advance(1999.0);
+    server.progress(&request);
+    within("the progress update", progressed_rx)
+        .await
+        .expect("progress delivered");
+    clock.advance(1.0);
 
-    let err = pending.await.unwrap().expect_err("should time out");
+    let err = within("the timed-out request", pending)
+        .await
+        .unwrap()
+        .expect_err("should time out");
     let mrtr = as_mcp_mrtr_error(&err).expect("mcp mrtr error");
     assert_eq!(mrtr.code, McpMrtrErrorCode::Timeout);
+    let updates = updates.lock().unwrap().clone();
+    assert_eq!(updates, vec![json!({"progress": 1})]);
+    assert!(!serde_json::to_string(&updates).unwrap().contains("CANARY"));
     server.close();
 }
 
 /// Upstream case: `operation deadline expires while queued for TUI consent` in `modern-mrtr-lifecycle.test.ts`
 #[tokio::test(start_paused = true)]
 async fn operation_deadline_expires_while_queued_for_tui_consent() {
+    let _frozen = freeze_time();
+    let clock = ManualClock::new();
     let server = MrtrStub::start(vec![default_input_result(), default_input_result()], false).await;
     let (shown_tx, shown_rx) = tokio::sync::oneshot::channel::<()>();
     let shown_tx = Arc::new(Mutex::new(Some(shown_tx)));
@@ -1580,66 +1881,98 @@ async fn operation_deadline_expires_while_queued_for_tui_consent() {
                 let _ = tx.send(());
             }
             let rx = release_clone.lock().await.take();
-            if let Some(rx) = rx {
-                tokio::select! {
-                    _ = rx => {},
-                    _ = async {
-                        if let Some(sig) = opts.signal {
-                            sig.cancelled().await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {},
+            let aborted = async {
+                match opts.signal {
+                    Some(signal) => signal.cancelled().await,
+                    None => std::future::pending::<()>().await,
                 }
+            };
+            match rx {
+                Some(rx) => tokio::select! {
+                    _ = rx => {},
+                    () = aborted => {},
+                },
+                None => aborted.await,
             }
-            Some("Submit".into())
+            None
         })
     });
 
     let (connection, client, _orig, _root) = connect_mrtr(&server, Some(ui.clone())).await;
 
-    let binding = 555;
-    let origin1 = make_origin_with_binding(binding, connection.clone(), Some(ui.clone()), None);
-    let origin2 = make_origin_with_binding(binding, connection.clone(), Some(ui), None);
+    let binding = unique_binding();
+    let lifetime = AbortSignal::default();
+    let origin1 = make_origin_with_binding(
+        binding,
+        connection.clone(),
+        Some(ui.clone()),
+        Some(lifetime.clone()),
+    );
+    let origin2 = make_origin_with_binding(
+        binding,
+        connection.clone(),
+        Some(ui.clone()),
+        Some(lifetime.clone()),
+    );
 
     let client1 = client.clone();
+    let clock1 = clock.clone();
     let mut opts1 = mcp_request_options(Some(origin1), None);
     opts1.max_total_timeout = Some(Duration::from_millis(10000));
     let first = tokio::spawn(async move {
-        client1
-            .request_with_options(
-                "tools/call",
-                json!({"name": "test"}),
-                Duration::from_millis(1000),
-                &opts1,
-            )
-            .await
+        mcp_request_with_clock(
+            &client1,
+            "tools/call",
+            json!({"name": "test"}),
+            Duration::from_millis(1000),
+            &opts1,
+            Arc::new(clock1),
+        )
+        .await
     });
 
-    let _ = shown_rx.await;
+    server.next_request().await;
+    within("the first consent prompt", shown_rx)
+        .await
+        .expect("first form shown");
 
     let client2 = client.clone();
+    let clock2 = clock.clone();
     let mut opts2 = mcp_request_options(Some(origin2), None);
     opts2.max_total_timeout = Some(Duration::from_millis(100));
     let second = tokio::spawn(async move {
-        client2
-            .request_with_options(
-                "tools/call",
-                json!({"name": "test"}),
-                Duration::from_millis(1000),
-                &opts2,
-            )
-            .await
+        mcp_request_with_clock(
+            &client2,
+            "tools/call",
+            json!({"name": "test"}),
+            Duration::from_millis(1000),
+            &opts2,
+            Arc::new(clock2),
+        )
+        .await
     });
 
-    tokio::time::advance(Duration::from_millis(100)).await;
+    server.next_request().await;
+    clock.advance(100.0);
 
-    let second_err = second.await.unwrap().expect_err("second should time out");
+    let second_err = within("the queued request to time out", second)
+        .await
+        .unwrap()
+        .expect_err("second should time out");
     let mrtr = as_mcp_mrtr_error(&second_err).expect("mcp mrtr error");
     assert_eq!(mrtr.code, McpMrtrErrorCode::Timeout);
 
+    lifetime.abort();
+    let first_err = within("the first request to stop", first)
+        .await
+        .unwrap()
+        .expect_err("first should stop on context change");
+    let mrtr = as_mcp_mrtr_error(&first_err).expect("mcp mrtr error");
+    assert_eq!(mrtr.code, McpMrtrErrorCode::ContextChanged);
     let _ = release_tx.send(());
-    first.abort();
+    assert_eq!(ui.select_titles.lock().unwrap().len(), 1);
+    assert_eq!(server.requests().len(), 2);
+    within("every timer to clear", clock.settled()).await;
     server.close();
 }
 
