@@ -231,6 +231,14 @@ pub fn create_web_search_tool_with_registry(
                             .into(),
                     ));
                 }
+                let listed = config.providers.len();
+                let config = super::session_login_entries::config_with_session_logins(
+                    config,
+                    model.as_ref(),
+                    registry.as_ref(),
+                    Some(&call.signal),
+                )
+                .await?;
                 let config = super::native::config_with_native_routes(
                     config,
                     model.as_ref(),
@@ -238,6 +246,9 @@ pub fn create_web_search_tool_with_registry(
                     Some(&call.signal),
                 )
                 .await?;
+                if config.providers.is_empty() && listed > 0 {
+                    return Ok(error_result("No web search provider is usable: the websearch.json entries that rely on a senpi login have no matching login.".into(),None));
+                }
                 let labels: Vec<_> = config
                     .providers
                     .iter()

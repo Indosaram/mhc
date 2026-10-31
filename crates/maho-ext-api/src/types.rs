@@ -1170,8 +1170,17 @@ pub struct CredentialAccountSummary {
     pub source: CredentialAccountSource,
     pub blocked: bool,
     pub pinned: bool,
+    /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
+    pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+}
+
+/// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialAccountBlockedModel {
+    pub model: String,
+    pub until: i64,
 }
 
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
@@ -1442,6 +1451,36 @@ pub struct ReloadVetoDecision {
     pub cancelled: bool,
     pub reason: Option<String>,
 }
+/// senpi `UserActivityKind`: a draft keystroke in the composer or a submitted prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserActivityKind {
+    Draft,
+    Prompt,
+}
+pub type UserActivityListener = Arc<dyn Fn(UserActivityKind) + Send + Sync>;
+pub type UserActivityUnsubscribe = Box<dyn FnOnce() + Send>;
+/// Provider request prefix of the next user turn (see
+/// `ExtensionContextActions::get_prompt_cache_prefix_request`).
+#[derive(Clone, Debug)]
+pub struct PromptCachePrefixRequest {
+    pub model: Model,
+    pub context: maho_ai::types::Context,
+    pub options: maho_ai::types::SimpleStreamOptions,
+}
+#[derive(Clone, Debug, Default)]
+pub struct PromptCachePrefixRequestOptions {
+    /// Inspect composition without resolving credentials.
+    pub sizes_only: bool,
+    /// Aborting resolves the build as `Skipped`.
+    pub signal: Option<maho_ai::utils::abort::AbortSignal>,
+}
+/// Outcome of `getPromptCachePrefixRequest`.
+#[derive(Clone, Debug)]
+pub enum PromptCachePrefixResult {
+    Ready(Box<PromptCachePrefixRequest>),
+    Skipped(String),
+}
+pub const NO_PROMPT_CACHE_PREFIX_REASON: &str = "the host builds no prompt-cache prefix";
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptCacheKeepAliveSettings {
     pub enabled: bool,
@@ -1733,6 +1772,23 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings;
+    /// senpi `onUserActivity`: subscribe to host-authenticated activity; extensions cannot publish
+    /// it. `None` when the host cannot report activity.
+    fn on_user_activity(&self, _listener: UserActivityListener) -> Option<UserActivityUnsubscribe> {
+        None
+    }
+    /// senpi `getPromptCachePrefixRequest`: the provider request prefix the next user turn will
+    /// send, with an empty conversation. Hosts without a prefix builder skip.
+    fn get_prompt_cache_prefix_request(
+        &self,
+        _options: PromptCachePrefixRequestOptions,
+    ) -> ExtensionFuture<'_, PromptCachePrefixResult> {
+        Box::pin(async {
+            Ok(PromptCachePrefixResult::Skipped(
+                NO_PROMPT_CACHE_PREFIX_REASON.into(),
+            ))
+        })
+    }
     fn get_look_at_settings(&self) -> LookAtSettings;
     fn get_ask_user_settings(&self) -> AskUserSettings;
     fn get_image_settings(&self) -> ImageSettings;
@@ -2552,6 +2608,23 @@ impl ExtensionContext {
         &self,
     ) -> Result<PromptCacheKeepAliveSettings, ExtensionFailure> {
         Ok(self.actions()?.get_prompt_cache_keep_alive_settings())
+    }
+    pub fn on_user_activity(
+        &self,
+        listener: UserActivityListener,
+    ) -> Result<Option<UserActivityUnsubscribe>, ExtensionFailure> {
+        Ok(self.actions()?.on_user_activity(listener))
+    }
+    pub async fn get_prompt_cache_prefix_request(
+        &self,
+        options: PromptCachePrefixRequestOptions,
+    ) -> Result<PromptCachePrefixResult, ExtensionFailure> {
+        let result = self
+            .actions()?
+            .get_prompt_cache_prefix_request(options)
+            .await?;
+        self.actions()?;
+        Ok(result)
     }
     pub fn get_look_at_settings(&self) -> Result<LookAtSettings, ExtensionFailure> {
         Ok(self.actions()?.get_look_at_settings())
@@ -4790,6 +4863,13 @@ pub struct ExtensionRuntime {
     registration_pending: Arc<Mutex<Option<RegistrationPending>>>,
     registration_classifiers: Arc<Mutex<Vec<u64>>>,
     person_answer_pending: Arc<std::sync::atomic::AtomicBool>,
+    subscriptions: Arc<Mutex<TrackedSubscriptions>>,
+}
+/// senpi `eventBusUnsubscribers`: host subscriptions released when the runtime retires.
+#[derive(Default)]
+struct TrackedSubscriptions {
+    next_id: u64,
+    open: BTreeMap<u64, UserActivityUnsubscribe>,
 }
 #[derive(Default)]
 struct RegistrationPending {
@@ -4815,7 +4895,45 @@ impl ExtensionRuntime {
             registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))),
             registration_classifiers: Arc::default(),
             person_answer_pending: self.person_answer_pending.clone(),
+            subscriptions: self.subscriptions.clone(),
         }
+    }
+    /// senpi `trackEventBusSubscription`: ties a host subscription to this runtime's lifetime.
+    /// [`Self::invalidate`] runs every tracked unsubscribe once; the returned hook runs it early
+    /// and is a no-op afterwards. A runtime that already retired releases the subscription now.
+    pub fn track_subscription(
+        &self,
+        unsubscribe: UserActivityUnsubscribe,
+    ) -> UserActivityUnsubscribe {
+        let id = {
+            let mut tracked = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Checked under the lock: `invalidate` marks the runtime stale before it drains.
+            if self.assert_active().is_err() {
+                drop(tracked);
+                unsubscribe();
+                return Box::new(|| {});
+            }
+            let id = tracked.next_id;
+            tracked.next_id += 1;
+            tracked.open.insert(id, unsubscribe);
+            id
+        };
+        let subscriptions = Arc::downgrade(&self.subscriptions);
+        Box::new(move || {
+            let unsubscribe = subscriptions.upgrade().and_then(|subscriptions| {
+                subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .open
+                    .remove(&id)
+            });
+            if let Some(unsubscribe) = unsubscribe {
+                unsubscribe();
+            }
+        })
     }
     /// Marks that a question answer is being delivered: the `send_user_message` that follows
     /// synchronously is a person's input. The mark also lapses on the next scheduler turn.
@@ -5082,6 +5200,19 @@ impl ExtensionRuntime {
         Ok(())
     }
     pub fn invalidate(&self, message: &str) {
+        self.invalidate_state(message);
+        let released = std::mem::take(
+            &mut self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open,
+        );
+        for unsubscribe in released.into_values() {
+            unsubscribe();
+        }
+    }
+    fn invalidate_state(&self, message: &str) {
         let mut state = self
             .state
             .lock()

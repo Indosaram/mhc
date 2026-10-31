@@ -168,14 +168,8 @@ pub type ExtensionErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 /// Session-bus channel carrying the engine-turn hold's `session_paused` / `session_resumed` events.
 pub const SESSION_HOLD_CHANNEL: &str = "session:hold";
 
-/// senpi `UserActivityKind`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UserActivityKind {
-    Draft,
-    Prompt,
-}
-
-pub type UserActivityListener = Arc<dyn Fn(UserActivityKind) + Send + Sync>;
+/// senpi `UserActivityKind`; one type shared with the extension API so `onUserActivity` forwards as-is.
+pub use maho_ext_api::{UserActivityKind, UserActivityListener};
 
 /// Session-bus channel published after an in-place session replacement (`reason` new/resume/fork)
 /// or a reload (`reason` reload). Native adaptation of senpi `AgentSessionRuntime.setRebindSession`:
@@ -953,6 +947,14 @@ pub struct AgentSession {
     inner: Arc<AgentSessionInner>,
 }
 
+/// Settles the session start when dropped, including on cancellation (senpi's `finally`).
+struct SessionStartSettlement(tokio::sync::watch::Sender<bool>);
+impl Drop for SessionStartSettlement {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
 /// One parent tool call's nested host-call recorder and the counter behind its `<parent>/<n>` ids.
 type NestedHostCallSlot = (
     Arc<Mutex<crate::session_record::NestedCallRecorder>>,
@@ -1064,6 +1066,10 @@ pub struct AgentSessionInner {
     /// senpi `_userInputSources`: where each user message came from, keyed by message identity.
     user_input_sources: Mutex<Vec<(AgentMessage, InputSource)>>,
     user_activity_listeners: Mutex<Vec<(u64, UserActivityListener)>>,
+    /// senpi `_promptCachePrefixBuilds`: in-flight prefix builds a real turn cancels (senpi#2115).
+    prompt_cache_prefix_builds: crate::prompt_cache_prefix_request::PromptCachePrefixBuilds,
+    /// senpi `_sessionStartSettled`: `true` once the session start the prefix depends on has run.
+    session_start_settled: tokio::sync::watch::Sender<bool>,
     probe_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// senpi `_userAbortPromise`: the in-flight user abort every concurrent abort joins.
     user_abort_wait:
@@ -2243,6 +2249,22 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                 })
             })
             .unwrap_or(270.0)
+    }
+    fn on_user_activity(
+        &self,
+        listener: maho_ext_api::UserActivityListener,
+    ) -> Option<maho_ext_api::UserActivityUnsubscribe> {
+        let session = self.session().ok()?;
+        Some(Box::new(session.on_user_activity(listener)))
+    }
+    fn get_prompt_cache_prefix_request(
+        &self,
+        options: maho_ext_api::PromptCachePrefixRequestOptions,
+    ) -> maho_ext_api::ExtensionFuture<'_, maho_ext_api::PromptCachePrefixResult> {
+        Box::pin(async move {
+            let session = self.session()?;
+            Ok(session.prompt_cache_prefix_request(options).await)
+        })
     }
     fn get_prompt_cache_keep_alive_settings(&self) -> maho_ext_api::PromptCacheKeepAliveSettings {
         let configured = self.session().ok().and_then(|session| {
@@ -4337,6 +4359,8 @@ impl AgentSession {
                 prompts_in_flight: std::sync::atomic::AtomicUsize::new(0),
                 user_input_sources: Mutex::new(Vec::new()),
                 user_activity_listeners: Mutex::new(Vec::new()),
+                prompt_cache_prefix_builds: Default::default(),
+                session_start_settled: tokio::sync::watch::Sender::new(true),
                 probe_task: Mutex::new(None),
                 user_abort_wait: Mutex::new(None),
                 mcp_wire_status_order: tokio::sync::Mutex::new(()),
@@ -6551,7 +6575,102 @@ impl AgentSession {
                 )),
             }))
         };
-        tokio::select! { biased; () = signal.cancelled() => crate::prompt_cache_prefix_request::PromptCachePrefixResult::Skipped("prefix build cancelled".into()), result = work => result }
+        tokio::select! { biased; () = signal.cancelled() => crate::prompt_cache_prefix_request::PromptCachePrefixResult::Skipped(crate::prompt_cache_prefix_request::cancelled_reason(&signal)), result = work => result }
+    }
+    /// senpi `getPromptCachePrefixRequest`: the preview-composed prefix of the next user turn
+    /// (`prompt_size_prefix_request`) as a ready `{ model, context, options }` request. Unless
+    /// `sizes_only`, auth, headers (through `before_provider_headers`), extra body and env resolve
+    /// the way the turn resolves them; an auth failure skips with its message.
+    pub async fn prompt_cache_prefix_request(
+        &self,
+        options: maho_ext_api::PromptCachePrefixRequestOptions,
+    ) -> maho_ext_api::PromptCachePrefixResult {
+        let sizes_only = options.sizes_only;
+        self.prompt_cache_prefix_builds
+            .run(options.signal, |signal| {
+                self.build_prompt_cache_prefix_request(sizes_only, signal)
+            })
+            .await
+    }
+    /// Resolves once the session start the prefix depends on has settled (senpi `ready`).
+    async fn session_start_settled(&self) {
+        let mut settled = self.session_start_settled.subscribe();
+        // The sender lives as long as the session, so the wait ends only by settling; the
+        // borrow guard is dropped within the statement.
+        let _settled: bool = settled.wait_for(|settled| *settled).await.is_ok();
+    }
+    /// senpi `_beginSessionStartSettlement`: unsettled until the returned guard drops.
+    fn begin_session_start_settlement(&self) -> SessionStartSettlement {
+        self.session_start_settled.send_replace(false);
+        SessionStartSettlement(self.session_start_settled.clone())
+    }
+    async fn build_prompt_cache_prefix_request(
+        &self,
+        sizes_only: bool,
+        signal: maho_ai::utils::abort::AbortSignal,
+    ) -> maho_ext_api::PromptCachePrefixResult {
+        use crate::prompt_cache_prefix_request::{
+            PromptCachePrefixResult as Built, cancelled_reason,
+        };
+        use maho_ext_api::PromptCachePrefixResult;
+        tokio::select! {
+            biased;
+            () = signal.cancelled() => return PromptCachePrefixResult::Skipped(cancelled_reason(&signal)),
+            () = self.session_start_settled() => {}
+        }
+        let request = match self.prompt_size_prefix_request(signal.clone()).await {
+            Built::Skipped(reason) => return PromptCachePrefixResult::Skipped(reason),
+            Built::Ready(request) => *request,
+        };
+        let mut stream = maho_ai::types::SimpleStreamOptions {
+            reasoning: thinking_level_from_model_level(self.thinking_level()),
+            thinking_selection: self.thinking_selection(),
+            thinking_budgets: self.agent.thinking_budgets(),
+            service_tier: self.resolve_request_service_tier(&request.model),
+            ..Default::default()
+        };
+        stream.stream.session_id = Some(self.session_id());
+        stream.stream.request.on_payload = self.agent.on_payload();
+        let mut model = request.model;
+        if !sizes_only {
+            let auth = match self.get_required_request_auth(&model).await {
+                Ok(auth) => auth,
+                Err(error) => return PromptCachePrefixResult::Skipped(error),
+            };
+            let mut headers: ProviderHeaders = auth
+                .headers
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, value)| (name, Some(value)))
+                .collect();
+            let runner = self.extension_runner.lock().await.clone();
+            if let Some(mut runner) = runner
+                && runner.has_handlers(maho_ext_api::EventKind::BeforeProviderHeaders)
+            {
+                headers = match runner.emit_before_provider_headers(headers).await {
+                    Ok(headers) => headers,
+                    Err(error) => return PromptCachePrefixResult::Skipped(error.message),
+                };
+            }
+            model = auth.model;
+            stream.stream.request.api_key = auth.api_key;
+            stream.stream.request.headers = Some(headers);
+            stream.stream.request.env = auth.env;
+            stream.stream.extra_body = auth.extra_body;
+        }
+        if signal.aborted() {
+            return PromptCachePrefixResult::Skipped(cancelled_reason(&signal));
+        }
+        PromptCachePrefixResult::Ready(Box::new(maho_ext_api::PromptCachePrefixRequest {
+            model,
+            context: maho_ai::types::Context {
+                system_prompt: Some(request.system_prompt),
+                messages: Vec::new(),
+                active_tool_names: Some(request.tools.iter().map(|tool| tool.name.clone()).collect()),
+                tools: Some(request.tools),
+            },
+            options: stream,
+        }))
     }
     pub async fn start_run_resume_turn(
         &self,
@@ -6935,6 +7054,8 @@ impl AgentSession {
         }
         let base_system_prompt = self.state().base_system_prompt.clone();
         let consumed = std::mem::take(&mut self.state().pending_next_turn_messages);
+        // senpi#2115: a real turn's before_agent_start never runs beside a preview pass.
+        self.prompt_cache_prefix_builds.cancel_all();
         let before = {
             let mut runner = self.extension_runner.lock().await.clone();
             match runner.as_mut() {
@@ -12975,6 +13096,7 @@ impl AgentSession {
                 || state.extension_error_listener.is_some()
         };
         if has_bindings {
+            let _settlement = self.begin_session_start_settlement();
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(
                 maho_ext_api::SessionStartEvent {
                     sizes_only: false,
@@ -17129,6 +17251,7 @@ impl AgentSession {
     }
 
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
+        let _settlement = self.begin_session_start_settlement();
         let binding_work = self.work_barrier.begin();
         let pending = Arc::new(Mutex::new(Vec::new()));
         *lock(&self.binding_readiness) = Some(pending.clone());
@@ -18416,6 +18539,7 @@ impl AgentSession {
                     .collect::<String>(),
             };
             let base_system_prompt = self.state().base_system_prompt.clone();
+            self.prompt_cache_prefix_builds.cancel_all();
             let before = {
                 let mut runner = self.extension_runner.lock().await.clone();
                 match runner.as_mut() {
@@ -28413,6 +28537,127 @@ mod tests {
             (3, 7.0)
         );
         assert!(!profile.turn.enabled);
+    }
+
+    #[test]
+    fn extension_context_on_user_activity_forwards_until_unsubscribed() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let seen: Arc<Mutex<Vec<UserActivityKind>>> = Arc::default();
+        let recorded = Arc::clone(&seen);
+        let unsubscribe = actions
+            .on_user_activity(Arc::new(move |kind| lock(&recorded).push(kind)))
+            .expect("session reports activity");
+        session.record_user_activity(UserActivityKind::Draft);
+        session.record_user_activity(UserActivityKind::Prompt);
+        unsubscribe();
+        session.record_user_activity(UserActivityKind::Draft);
+        assert_eq!(
+            lock(&seen).clone(),
+            vec![UserActivityKind::Draft, UserActivityKind::Prompt]
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_context_prompt_cache_prefix_request_is_the_empty_turn_prefix() {
+        use maho_ext_api::{
+            ExtensionContextActions, PromptCachePrefixRequestOptions, PromptCachePrefixResult,
+        };
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.register_tool_definition(
+            test_definition("read"),
+            empty_source_info(),
+            test_tool("read"),
+        );
+        session.set_active_tools_by_name(vec!["read".to_owned()]);
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let result = actions
+            .get_prompt_cache_prefix_request(PromptCachePrefixRequestOptions {
+                sizes_only: true,
+                signal: None,
+            })
+            .await
+            .expect("live session");
+        let PromptCachePrefixResult::Ready(request) = result else {
+            panic!("prefix skipped");
+        };
+        assert_eq!(request.model.id, "faux-1");
+        assert!(request.context.messages.is_empty());
+        assert_eq!(
+            request.context.system_prompt.as_deref(),
+            Some(session.state().base_system_prompt.as_str())
+        );
+        assert_eq!(
+            request
+                .context
+                .tools
+                .unwrap_or_default()
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["read"]
+        );
+        assert_eq!(request.options.stream.session_id, Some(session.session_id()));
+        assert!(request.options.stream.request.api_key.is_none());
+
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let cancelled = actions
+            .get_prompt_cache_prefix_request(PromptCachePrefixRequestOptions {
+                sizes_only: true,
+                signal: Some(controller.signal()),
+            })
+            .await
+            .expect("live session");
+        assert!(matches!(cancelled, PromptCachePrefixResult::Skipped(_)));
+    }
+
+    /// senpi#2115 and `ready`: a prefix build waits for the session start to settle, and a prompt
+    /// composing its turn cancels every in-flight build with the prompt-started reason.
+    #[tokio::test]
+    async fn prefix_builds_wait_for_session_start_and_a_prompt_cancels_them() {
+        use maho_ext_api::{PromptCachePrefixRequestOptions, PromptCachePrefixResult};
+        fn pending<F: std::future::Future>(future: std::pin::Pin<&mut F>) -> bool {
+            future
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        }
+        let options = || PromptCachePrefixRequestOptions {
+            sizes_only: true,
+            signal: None,
+        };
+        let session = retry_session(
+            vec![maho_ai::providers::faux::faux_assistant_message(
+                "done",
+                Default::default(),
+            )],
+            0,
+        );
+        let settlement = session.begin_session_start_settlement();
+        let mut cancelled = std::pin::pin!(session.prompt_cache_prefix_request(options()));
+        assert!(pending(cancelled.as_mut()));
+        session
+            .prompt("hello", PromptOptions::default())
+            .await
+            .expect("prompt");
+        match cancelled.await {
+            PromptCachePrefixResult::Skipped(reason) => assert_eq!(
+                reason,
+                crate::prompt_cache_prefix_request::PROMPT_STARTED_REASON
+            ),
+            PromptCachePrefixResult::Ready(_) => panic!("a prompt must cancel the build"),
+        }
+        let mut waiting = std::pin::pin!(session.prompt_cache_prefix_request(options()));
+        assert!(pending(waiting.as_mut()));
+        drop(settlement);
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+                .await
+                .expect("settled build completes"),
+            PromptCachePrefixResult::Ready(_)
+        ));
     }
 
     #[test]

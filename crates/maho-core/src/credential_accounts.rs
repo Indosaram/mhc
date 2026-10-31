@@ -65,8 +65,40 @@ pub struct CredentialAccountSummary {
     /// Epoch ms when the block lifts (the re-probe time for `AuthError`); absent for `Disabled`.
     pub blocked_until: Option<u64>,
     pub pinned: bool,
+    /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
+    pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+}
+
+/// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialAccountBlockedModel {
+    pub model: String,
+    pub until: i64,
+}
+
+/// senpi `storedModelBlocks` + `blockedModels`: the slot's live `modelBlocks` entries
+/// (`{model: {blockedUntil}}`), malformed entries skipped, expired ones dropped. The pool sidecar
+/// carries no model blocks in this port, so the stored slot is the only source.
+fn blocked_models(slot: &Value, now: u64) -> Vec<CredentialAccountBlockedModel> {
+    let Some(blocks) = slot.get("modelBlocks").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|(model, block)| {
+            // senpi `numberField`: any finite number; anthropic-subscription writes floats.
+            let until = block
+                .get("blockedUntil")
+                .and_then(Value::as_f64)
+                .filter(|until| until.is_finite())?;
+            (until > now as f64).then(|| CredentialAccountBlockedModel {
+                model: model.clone(),
+                until: until as i64,
+            })
+        })
+        .collect()
 }
 
 pub fn assert_valid_account_name(name: &str) -> Result<(), String> {
@@ -337,6 +369,7 @@ pub async fn summarize_credential_accounts(
                 blocked_reason: block.blocked_reason,
                 blocked_until: block.blocked_until,
                 pinned: pinned.as_deref() == Some(name.as_str()),
+                blocked_models: blocked_models(&slot, now),
                 unused: !usable.contains(&name),
             });
         }
@@ -362,6 +395,7 @@ pub async fn summarize_credential_accounts(
             blocked_reason: block.blocked_reason,
             blocked_until: block.blocked_until,
             pinned: pinned.as_deref() == Some(slot.name.as_str()),
+            blocked_models: Vec::new(),
             unused: false,
         });
     }
@@ -827,6 +861,49 @@ mod tests {
             accounts
                 .iter()
                 .all(|account| account.source == CredentialAccountSource::Login)
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_lists_live_model_blocks_from_the_stored_slot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","modelBlocks":{"fable":{"blockedUntil":500},"opus":{"blockedUntil":50},"bad":{}}},
+            {"name":"other","key":"other-key"}
+        ]}))).expect("seed");
+        let accounts = get_credential_accounts(&store, "fixture", &env_none(), &repo, 100)
+            .await
+            .expect("accounts");
+        assert_eq!(
+            accounts[0].blocked_models,
+            vec![CredentialAccountBlockedModel {
+                model: "fable".into(),
+                until: 500
+            }]
+        );
+        assert!(!accounts[0].blocked);
+        assert!(accounts[1].blocked_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_reads_float_model_block_expiries_as_anthropic_subscription_writes_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","modelBlocks":{"opus":{"blockedUntil":500.0},"fable":{"blockedUntil":50.0}}}
+        ]}))).expect("seed");
+        let accounts = get_credential_accounts(&store, "fixture", &env_none(), &repo, 100)
+            .await
+            .expect("accounts");
+        assert_eq!(
+            accounts[0].blocked_models,
+            vec![CredentialAccountBlockedModel {
+                model: "opus".into(),
+                until: 500
+            }]
         );
     }
 
