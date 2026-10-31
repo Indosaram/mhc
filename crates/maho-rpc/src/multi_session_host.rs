@@ -500,38 +500,38 @@ impl HostCore {
     /// Re-reads one session's registry half into the status source (senpi `registryStatusSource` reads it live);
     /// a handle no registry holds any more leaves the source.
     async fn sync_status(&self, session_id: &str) {
-        use crate::session_status_source::{StatusRuntime, entry_view};
+        use crate::session_status_source::{RegistryEntryFields, StatusRuntime, entry_view};
         let projected = match &self.workers {
             Some(workers) => workers.with_entry(session_id, |entry| {
                 (
-                    entry_view(
-                        entry.close.state,
-                        entry.identity.kind,
-                        &entry.cwd,
-                        entry.close.attachments,
-                        entry.durable_session_id.clone(),
-                        entry.session_path.clone(),
-                        &entry.identity.context,
-                        entry.context_overlay.as_ref(),
-                    ),
+                    entry_view(RegistryEntryFields {
+                        state: entry.close.state,
+                        kind: entry.identity.kind,
+                        cwd: &entry.cwd,
+                        attachments: entry.close.attachments,
+                        durable_session_id: entry.durable_session_id.clone(),
+                        session_path: entry.session_path.clone(),
+                        context: &entry.identity.context,
+                        overlay: entry.context_overlay.as_ref(),
+                    }),
                     StatusRuntime::Worker(std::sync::Arc::clone(&entry.worker)),
                 )
             }),
             None => self.registry.lock().await.get(session_id).map(|entry| {
                 (
-                    entry_view(
-                        entry.close.state,
-                        entry.identity.kind,
-                        entry
+                    entry_view(RegistryEntryFields {
+                        state: entry.close.state,
+                        kind: entry.identity.kind,
+                        cwd: entry
                             .runtime
                             .as_ref()
                             .map_or(entry.profile.runtime.cwd.as_str(), |runtime| runtime.cwd()),
-                        entry.close.attachments,
-                        entry.durable_session_id.clone(),
-                        entry.session_path.clone(),
-                        &entry.identity.context,
-                        entry.context_overlay.as_ref(),
-                    ),
+                        attachments: entry.close.attachments,
+                        durable_session_id: entry.durable_session_id.clone(),
+                        session_path: entry.session_path.clone(),
+                        context: &entry.identity.context,
+                        overlay: entry.context_overlay.as_ref(),
+                    }),
                     entry
                         .runtime
                         .as_ref()
@@ -3627,14 +3627,16 @@ mod handoff_tests {
             fanout.status.lock().unwrap().source.upsert(
                 "s",
                 crate::session_status_source::entry_view(
-                    crate::session_registry::RpcSessionState::Open,
-                    maho_ext_api::SessionKind::Interactive,
-                    "/w",
-                    1,
-                    Some("d1".into()),
-                    None,
-                    &std::collections::BTreeMap::new(),
-                    None,
+                    crate::session_status_source::RegistryEntryFields {
+                        state: crate::session_registry::RpcSessionState::Open,
+                        kind: maho_ext_api::SessionKind::Interactive,
+                        cwd: "/w",
+                        attachments: 1,
+                        durable_session_id: Some("d1".into()),
+                        session_path: None,
+                        context: &std::collections::BTreeMap::new(),
+                        overlay: None,
+                    },
                 ),
                 crate::session_status_source::StatusRuntime::None,
             );
