@@ -17,6 +17,8 @@ mod context_support;
 mod dispatch;
 #[path = "dispatch_metadata.rs"]
 mod dispatch_metadata;
+#[path = "dispatch_policy.rs"]
+mod dispatch_policy;
 #[path = "denial_is_final.rs"]
 mod denial_is_final;
 #[path = "events.rs"]
