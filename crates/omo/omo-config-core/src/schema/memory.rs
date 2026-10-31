@@ -365,9 +365,9 @@ pub fn omo_memory_project_scope_layer_schema() -> Node {
 pub fn omo_memory_projection_schema() -> Node {
     strict_object(vec![
         defaulted("max_entries_per_directory", nonnegative_integer(), || {
-            json!(40)
+            json!(0)
         }),
-        defaulted("max_bytes", nonnegative_integer(), || json!(24576)),
+        defaulted("max_bytes", nonnegative_integer(), || json!(40960)),
     ])
 }
 
@@ -416,7 +416,7 @@ pub fn omo_memory_settings_schema() -> Node {
         defaulted(
             "projection",
             omo_memory_projection_schema(),
-            || json!({ "max_entries_per_directory": 40, "max_bytes": 24576 }),
+            || json!({ "max_entries_per_directory": 0, "max_bytes": 40960 }),
         ),
         defaulted(
             "reflection",

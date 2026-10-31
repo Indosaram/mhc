@@ -54,7 +54,7 @@ fn resolve_plan_path(directory: &Path, active_plan: &str, worktree_path: Option<
 }
 
 /// Node's `path.resolve(base, tracked)`: absolute and lexically normalized.
-fn resolve_tracked_path(base: &Path, tracked: &Path) -> PathBuf {
+pub(crate) fn resolve_tracked_path(base: &Path, tracked: &Path) -> PathBuf {
     if tracked.is_absolute() {
         return normalize(tracked);
     }

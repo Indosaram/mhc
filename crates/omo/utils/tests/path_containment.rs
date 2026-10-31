@@ -39,7 +39,7 @@ fn canonical_containment_rejects_outside_and_propagates_missing() {
 }
 
 #[test]
-fn containment_resolves_dot_dot_before_realpath() {
+fn containment_accepts_a_plain_dot_dot_path_without_links() {
     let root = tempdir().unwrap();
     let inside = root.path().join("inside");
     let outside = root.path().join("outside");
@@ -133,12 +133,84 @@ fn native_symlink_dot_dot_and_lexical_input_have_distinct_contracts() {
         )
         .unwrap()
     );
+    // dot-dot after a link in the input: the verdict is about the path the OS opens, which
+    // follows `jump` before applying `..` (outside/workspace).
     assert!(
-        is_path_inside(
-            inside.join("jump/../workspace"),
+        !is_path_inside(
+            format!("{}/jump/../workspace", inside.display()),
             &inside,
             PathContainmentOptions::default()
         )
         .unwrap()
+    );
+}
+
+#[cfg(unix)]
+fn symlink_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::symlink;
+    let root = tempdir().unwrap();
+    let base = std::fs::canonicalize(root.path()).unwrap();
+    let inside = base.join("inside");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(inside.join("workspace")).unwrap();
+    std::fs::create_dir_all(outside.join("subdir")).unwrap();
+    std::fs::create_dir_all(outside.join("workspace")).unwrap();
+    std::fs::write(inside.join("workspace/note.md"), "inside").unwrap();
+    std::fs::write(outside.join("workspace/note.md"), "outside").unwrap();
+    symlink(outside.join("subdir"), inside.join("jump")).unwrap();
+    symlink("jump/..", inside.join("entry")).unwrap();
+    (root, inside)
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_inside_and_different_directories_stay_distinct() {
+    let (_root, inside) = symlink_fixture();
+    let options = PathContainmentOptions::default();
+    assert_eq!(
+        contained_relative_path(inside.join("workspace").join("note.md"), &inside, options)
+            .unwrap(),
+        Some(Path::new("workspace").join("note.md"))
+    );
+    assert_eq!(
+        contained_relative_path(inside.join("..").join("outside"), &inside, options).unwrap(),
+        None
+    );
+    assert_eq!(
+        contained_relative_path(&inside, &inside, options).unwrap(),
+        Some(std::path::PathBuf::new())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn dot_dot_after_a_link_in_the_parent_is_also_resolved_natively() {
+    let (_root, inside) = symlink_fixture();
+    let parent = format!("{}/jump/..", inside.display());
+    assert!(
+        !is_path_inside(
+            inside.join("workspace"),
+            parent,
+            PathContainmentOptions::default()
+        )
+        .unwrap()
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_case_alias_of_the_same_directory_is_accepted_by_native_containment() {
+    let (_root, inside) = symlink_fixture();
+    let alias = inside.with_file_name("INSIDE");
+    // Case-sensitive macOS volumes have distinct directory names, not an alias.
+    if !alias.exists() {
+        assert!(
+            contained_relative_path(&alias, &inside, PathContainmentOptions::default()).is_err()
+        );
+        return;
+    }
+    assert_eq!(
+        contained_relative_path(&alias, &inside, PathContainmentOptions::default()).unwrap(),
+        Some(std::path::PathBuf::new())
     );
 }

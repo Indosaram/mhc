@@ -75,10 +75,10 @@ fn side_panel_layers_do_not_materialize_defaults() {
 fn memory_projection_defaults_and_agent_layers_are_preserved() {
     let input = json!({ "projection": { "max_bytes": 0 }, "agents": { "reviewer": { "projection": { "max_entries_per_directory": 0 } } } });
     let parsed = safe_parse(&omo_memory_settings_schema(), &input).expect("projection settings");
-    assert_eq!(parsed["projection"], json!({ "max_entries_per_directory": 40, "max_bytes": 0 }));
+    assert_eq!(parsed["projection"], json!({ "max_entries_per_directory": 0, "max_bytes": 0 }));
     assert_eq!(parsed["agents"], input["agents"]);
     let defaults = safe_parse(&omo_memory_settings_schema(), &json!({})).expect("memory defaults");
-    assert_eq!(defaults["projection"], json!({ "max_entries_per_directory": 40, "max_bytes": 24576 }));
+    assert_eq!(defaults["projection"], json!({ "max_entries_per_directory": 0, "max_bytes": 40960 }));
 }
 
 #[test]

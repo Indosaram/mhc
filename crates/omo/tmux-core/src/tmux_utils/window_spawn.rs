@@ -2,10 +2,9 @@
 
 use serde_json::json;
 
+use crate::pane_auth::build_pane_auth_environment_args_from;
 use crate::tmux_utils::deps::{SpawnTmuxWindowDeps, strings};
-use crate::tmux_utils::pane_command::{
-    build_pane_auth_environment_args_from, build_tmux_placeholder_command,
-};
+use crate::tmux_utils::pane_command::build_tmux_placeholder_command_from;
 use crate::types::{SpawnPaneResult, TmuxConfig};
 
 const ISOLATED_WINDOW_NAME: &str = "omo-agents";
@@ -53,7 +52,17 @@ pub fn spawn_tmux_window(
         return SpawnPaneResult::failure();
     }
 
-    let auth_env_args = build_pane_auth_environment_args_from(&*deps.environment);
+    let auth_env_args =
+        match build_pane_auth_environment_args_from(&*deps.environment, &deps.pane_auth) {
+            Ok(args) => args,
+            Err(error) => {
+                deps.log(
+                    "[spawnTmuxWindow] FAILED: could not write the pane password file",
+                    Some(json!({ "error": error.to_string() })),
+                );
+                return SpawnPaneResult::failure();
+            }
+        };
     if deps.cmux_compat() && !auth_env_args.is_empty() {
         deps.log(
             "[spawnTmuxWindow] SKIP: authenticated cmux windows are unsupported",
@@ -82,7 +91,10 @@ pub fn spawn_tmux_window(
         "#{pane_id}",
     ]);
     args.extend(auth_env_args);
-    args.push(build_tmux_placeholder_command(request.description));
+    args.push(build_tmux_placeholder_command_from(
+        request.description,
+        &*deps.environment,
+    ));
 
     let result = deps.run(&tmux, &args);
     let pane_id = result.output;

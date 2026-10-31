@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::cmux_detect::is_cmux_compat_environment;
 use crate::env_source::{EnvSource, ProcessEnv};
+use crate::pane_auth::PaneAuthFallbackDirectory;
 use crate::runner::{RunTmuxOptions, TmuxCommandResult, run_tmux_command};
 use crate::tmux_utils::environment::is_inside_tmux_environment;
 use crate::tmux_utils::pane_command::build_subagent_pane_title;
@@ -36,6 +37,9 @@ pub struct TmuxDeps {
     pub is_cmux_compat_environment: Option<PredicateFn>,
     /// Environment read for auth args and default tmux/cmux detection.
     pub environment: Arc<dyn EnvSource>,
+    /// Owns the pane password directory used when [`Self::environment`] sets no
+    /// `OPENCODE_SERVER_PASSWORD_DIR`; dropping the last clone removes unconsumed password files.
+    pub pane_auth: Arc<PaneAuthFallbackDirectory>,
     pub delay: DelayFn,
 }
 
@@ -53,6 +57,7 @@ impl Default for TmuxDeps {
             get_tmux_path: Arc::new(|| None),
             is_cmux_compat_environment: None,
             environment: Arc::new(ProcessEnv),
+            pane_auth: Arc::default(),
             delay: Arc::new(|milliseconds| std::thread::sleep(Duration::from_millis(milliseconds))),
         }
     }

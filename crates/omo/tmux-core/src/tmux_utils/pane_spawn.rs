@@ -2,11 +2,11 @@
 
 use serde_json::json;
 
+use crate::pane_auth::build_pane_auth_environment_args_from;
 use crate::tmux_utils::deps::{SpawnTmuxPaneDeps, strings};
 use crate::tmux_utils::environment::SplitDirection;
 use crate::tmux_utils::pane_command::{
-    build_pane_auth_environment_args_from, build_tmux_attach_command,
-    build_tmux_placeholder_command,
+    build_tmux_attach_command_from, build_tmux_placeholder_command_from,
 };
 use crate::types::{SpawnPaneResult, TmuxConfig};
 
@@ -67,7 +67,17 @@ pub fn spawn_tmux_pane(
 
     deps.log("[spawnTmuxPane] all checks passed, spawning...", None);
 
-    let auth_env_args = build_pane_auth_environment_args_from(&*deps.environment);
+    let auth_env_args =
+        match build_pane_auth_environment_args_from(&*deps.environment, &deps.pane_auth) {
+            Ok(args) => args,
+            Err(error) => {
+                deps.log(
+                    "[spawnTmuxPane] FAILED: could not write the pane password file",
+                    Some(json!({ "error": error.to_string() })),
+                );
+                return SpawnPaneResult::failure();
+            }
+        };
     let cmux = deps.cmux_compat();
     if cmux && !auth_env_args.is_empty() {
         deps.log(
@@ -78,13 +88,14 @@ pub fn spawn_tmux_pane(
     }
 
     let initial_cmd = if cmux {
-        build_tmux_attach_command(
+        build_tmux_attach_command_from(
             request.server_url,
             request.session_id,
             Some(request.directory),
+            &*deps.environment,
         )
     } else {
-        build_tmux_placeholder_command(request.description)
+        build_tmux_placeholder_command_from(request.description, &*deps.environment)
     };
 
     let mut args = strings(&[

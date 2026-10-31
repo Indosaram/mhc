@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
+use crate::fable_55_launch::FABLE_55_LAUNCH_ID;
+use crate::fable_55_launch::launch_rungs;
 use crate::model_requirement_types::FallbackEntry;
 use crate::model_requirement_types::ModelRequirement;
 
@@ -38,9 +40,15 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                                 "opencode-go",
                                 "kimi-for-coding",
                                 "moonshotai",
+                                "moonshotai-cn",
+                            ],
+                            "kimi-k3.1-pro",
+                            None,
+                        ),
+                        entry(
+                            &[
                                 "opencode",
                                 "bailian-coding-plan",
-                                "moonshotai-cn",
                                 "firmware",
                                 "ollama-cloud",
                                 "aihubmix",
@@ -219,7 +227,7 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             "gpt-5.6-sol",
                             Some("low"),
                         ),
-                        entry(&["opencode-go"], "kimi-k3", None),
+                        entry(&["opencode-go"], "kimi-k3.1-pro", None),
                         entry(&["zai-coding-plan"], "glm-4.6v", None),
                         entry(
                             &[
@@ -238,7 +246,12 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
             (
                 "prometheus",
                 ModelRequirement {
-                    fallback_chain: vec![
+                    fallback_chain: launch_rungs(vec![
+                        entry(
+                            &["anthropic", "github-copilot", "opencode"],
+                            FABLE_55_LAUNCH_ID,
+                            Some("xhigh"),
+                        ),
                         entry(
                             &["anthropic", "github-copilot", "opencode"],
                             "claude-fable-5-1",
@@ -250,23 +263,24 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("max"),
                         ),
                         entry(
-                            &[
-                                "opencode-go",
-                                "kimi-for-coding",
-                                "moonshotai",
-                                "opencode",
-                            ],
-                            "kimi-k3",
+                            &["opencode-go", "kimi-for-coding", "moonshotai"],
+                            "kimi-k3.1-pro",
                             Some("max"),
                         ),
-                    ],
+                        entry(&["opencode"], "kimi-k3", Some("max")),
+                    ]),
                     ..ModelRequirement::default()
                 },
             ),
             (
                 "metis",
                 ModelRequirement {
-                    fallback_chain: vec![
+                    fallback_chain: launch_rungs(vec![
+                        entry(
+                            &["anthropic", "github-copilot", "opencode"],
+                            FABLE_55_LAUNCH_ID,
+                            Some("max"),
+                        ),
                         entry(
                             &["anthropic", "github-copilot", "opencode"],
                             "claude-fable-5-1",
@@ -278,16 +292,12 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             Some("max"),
                         ),
                         entry(
-                            &[
-                                "opencode-go",
-                                "kimi-for-coding",
-                                "moonshotai",
-                                "opencode",
-                            ],
-                            "kimi-k3",
+                            &["opencode-go", "kimi-for-coding", "moonshotai"],
+                            "kimi-k3.1-pro",
                             Some("max"),
                         ),
-                    ],
+                        entry(&["opencode"], "kimi-k3", Some("max")),
+                    ]),
                     ..ModelRequirement::default()
                 },
             ),
@@ -339,7 +349,7 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             "claude-sonnet-5",
                             None,
                         ),
-                        entry(&["opencode-go"], "kimi-k3", None),
+                        entry(&["opencode-go"], "kimi-k3.1-pro", None),
                         entry(
                             &[
                                 "openai",
@@ -370,7 +380,7 @@ pub static AGENT_MODEL_REQUIREMENTS: LazyLock<IndexMap<&'static str, ModelRequir
                             "claude-sonnet-5",
                             None,
                         ),
-                        entry(&["opencode-go"], "kimi-k3", None),
+                        entry(&["opencode-go"], "kimi-k3.1-pro", None),
                         entry(
                             &[
                                 "openai",
