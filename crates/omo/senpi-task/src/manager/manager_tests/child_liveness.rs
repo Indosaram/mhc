@@ -230,3 +230,19 @@ fn forgetting_a_child_cancels_its_pending_liveness_notice() {
     child.advance();
     assert!(child.notices().is_empty(), "{:?}", child.notices());
 }
+
+/// `child-liveness.test.ts` "terminal-pending bypasses the transient-status debounce": the notice
+/// is immediate, and the pending `unresponsive` window it superseded never fires after it.
+#[test]
+fn terminal_pending_bypasses_the_transient_status_debounce() {
+    let child = Observed::new();
+    child
+        .fake
+        .publish_liveness(HostLivenessStatus::Unresponsive { since: 0 });
+    child
+        .fake
+        .publish_liveness(HostLivenessStatus::TerminalPending { since: 0 });
+    assert_eq!(child.notices(), vec!["terminal-pending"]);
+    child.advance();
+    assert_eq!(child.notices(), vec!["terminal-pending"]);
+}
