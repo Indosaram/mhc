@@ -61,25 +61,34 @@ pub async fn call_mcp_proxy_entry(
     args: Option<&str>,
     mut call: ToolCall<'_>,
 ) -> Result<ToolResult, ToolError> {
+    match parse_proxy_args(entry, args) {
+        Ok(params) => {
+            call.params = params;
+            (full.execute)(call).await
+        }
+        Err(guidance) => Ok(guidance),
+    }
+}
+
+/// The proxy's JSON-string `args` as an object, or the guiding text result.
+fn parse_proxy_args(entry: &McpToolCatalogEntry, args: Option<&str>) -> Result<Value, ToolResult> {
     let parsed = serde_json::from_str::<Value>(args.unwrap_or("{}"));
-    let params = match parsed {
-        Ok(params) if params.is_object() => params,
+    match parsed {
+        Ok(params) if params.is_object() => Ok(params),
         result => {
             let error = match result {
                 Ok(_) => "args must encode a JSON object".to_owned(),
                 Err(error) => error.to_string(),
             };
-            return Ok(text_result(
+            Err(text_result(
                 &entry.server,
                 format!(
                     "Invalid args for '{}': {error}. Pass args as a JSON object STRING matching the schema from op:\"describe\", e.g. {{\"op\":\"call\",\"tool\":\"{}\",\"args\":\"{{\\\"key\\\": \\\"value\\\"}}\"}}.",
                     entry.tool, entry.tool,
                 ),
-            ));
+            ))
         }
-    };
-    call.params = params;
-    (full.execute)(call).await
+    }
 }
 
 /// Tier-C gateway (todo 38): one always-active `mcp_<server>` tool per proxy
@@ -119,6 +128,11 @@ pub fn create_mcp_proxy_tool(
         })
         .collect();
     let index = Arc::new(build_bm25_index(&documents));
+    let defaults = super::register::McpGuardDefaults {
+        agent_dir: agent_dir.clone(),
+        artifacts: artifacts.clone(),
+        output_guard: output_guard.clone(),
+    };
     let full: Arc<BTreeMap<String, ToolDefinition>> = Arc::new(
         build_mcp_tool_definitions(entries, agent_dir, artifacts, output_guard)
             .into_iter()
@@ -135,6 +149,8 @@ pub fn create_mcp_proxy_tool(
     );
     let server = server.to_owned();
     let closure_server = server.clone();
+    let gateway_name = name.clone();
+    let identity_by_tool = by_tool.clone();
     let mut definition = ToolDefinition::new(
         &name,
         &description,
@@ -144,6 +160,8 @@ pub fn create_mcp_proxy_tool(
             let by_tool = by_tool.clone();
             let index = index.clone();
             let full = full.clone();
+            let defaults = defaults.clone();
+            let gateway_name = gateway_name.clone();
             Box::pin(async move {
                 let op = call.params.get("op").and_then(Value::as_str).unwrap_or("");
                 if op == "search" {
@@ -238,6 +256,27 @@ pub fn create_mcp_proxy_tool(
                     .get("args")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                if entry.invocation.is_some() {
+                    // proxy.ts: the call is the gateway's invocation (its name and raw params), the
+                    // operation its preflight approved.
+                    let params = match parse_proxy_args(&entry, args.as_deref()) {
+                        Ok(params) => params,
+                        Err(guidance) => return Ok(guidance),
+                    };
+                    let invocation = crate::invocation::McpInvocation::from_call(
+                        &call,
+                        &gateway_name,
+                        call.params.clone(),
+                    );
+                    return super::register::execute_mcp_catalog_entry(
+                        &entry,
+                        params,
+                        &call,
+                        &invocation,
+                        &defaults,
+                    )
+                    .await;
+                }
                 let Some(full) = full.get(&mcp_name) else {
                     return Ok(text_result(
                         &server,
@@ -247,6 +286,17 @@ pub fn create_mcp_proxy_tool(
                 call_mcp_proxy_entry(&entry, full, args.as_deref(), call).await
             })
         }),
+    );
+    // proxy.ts `registerDispatchIdentity(parameters, ...)`: a `call` names the operation it dispatches.
+    maho_ext_permission_system::dispatch_metadata::register_dispatch_identity(
+        &mut definition,
+        move |input| {
+            if input.get("op").and_then(Value::as_str) != Some("call") {
+                return None;
+            }
+            let (entry, _) = identity_by_tool.get(input.get("tool")?.as_str()?)?;
+            Some(entry.invocation.as_ref()?.identity(entry))
+        },
     );
     definition.label = format!("MCP proxy for {server}");
     definition.prompt_snippet = Some(format!(

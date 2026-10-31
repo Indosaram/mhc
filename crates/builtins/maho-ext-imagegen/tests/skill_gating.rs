@@ -64,10 +64,32 @@ async fn contributes_no_skill_or_section_when_credentials_are_absent() {
 }
 
 #[test]
-fn embedded_skill_materializes_the_bundled_text() {
-    let path = maho_ext_imagegen::embedded_skill_path().expect("embedded skill path");
+fn embedded_skill_materializes_the_bundled_text_in_a_private_agent_dir_folder() {
+    let agent_dir = tempfile::tempdir().expect("agent dir");
+    let path = maho_ext_imagegen::embedded_skill_path(agent_dir.path()).expect("embedded skill path");
+    let skill_dir = maho_ext_imagegen::embedded_skill_dir(agent_dir.path());
+    assert_eq!(path, skill_dir.join("SKILL.md"));
+    assert!(skill_dir.starts_with(agent_dir.path().join("cache")));
     let bundled = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/skill/SKILL.md")).expect("bundled skill");
-    assert_eq!(std::fs::read_to_string(path).expect("embedded skill"), bundled);
+    assert_eq!(std::fs::read_to_string(&path).expect("embedded skill"), bundled);
+    #[cfg(unix)]
+    for dir in [skill_dir.parent().expect("version dir"), skill_dir.as_path()] {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir).expect("dir metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", dir.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn embedded_skill_refuses_a_symlinked_skill_folder() {
+    let agent_dir = tempfile::tempdir().expect("agent dir");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let skill_dir = maho_ext_imagegen::embedded_skill_dir(agent_dir.path());
+    std::fs::create_dir_all(skill_dir.parent().expect("version dir")).expect("version dir");
+    std::os::unix::fs::symlink(elsewhere.path(), &skill_dir).expect("symlink");
+    assert!(maho_ext_imagegen::embedded_skill_path(agent_dir.path()).is_none());
+    assert!(!elsewhere.path().join("SKILL.md").exists());
 }
 
 #[tokio::test]

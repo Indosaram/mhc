@@ -138,6 +138,7 @@ fn catalog_entry(
         artifacts: entry.artifacts.clone(),
         output_guard: settings.output_guard.clone(),
         request_origin: entry.request_origin.clone(),
+        invocation: entry.invocation.clone(),
     }
 }
 
@@ -177,6 +178,7 @@ async fn build_catalog(
                 collected.artifacts = entry.artifacts.clone();
                 collected.output_guard = settings.output_guard.clone();
                 collected.request_origin = entry.request_origin.clone();
+                collected.invocation = entry.invocation.clone();
                 collected
             })
             .collect();

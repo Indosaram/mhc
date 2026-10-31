@@ -6,6 +6,7 @@ pub mod lifecycle_api;
 pub use lifecycle_api::*;
 pub mod mcp_wire;
 pub mod offload;
+pub mod private_dir;
 pub mod process_env;
 pub mod settle_observer;
 pub use settle_observer::*;
