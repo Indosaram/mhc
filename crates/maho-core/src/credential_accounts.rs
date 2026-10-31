@@ -42,8 +42,38 @@ pub struct CredentialAccountSummary {
     pub source: CredentialAccountSource,
     pub blocked: bool,
     pub pinned: bool,
+    /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
+    pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+}
+
+/// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialAccountBlockedModel {
+    pub model: String,
+    pub until: i64,
+}
+
+/// senpi `storedModelBlocks` + `blockedModels`: the slot's live `modelBlocks` entries
+/// (`{model: {blockedUntil}}`), malformed entries skipped, expired ones dropped. The pool sidecar
+/// carries no model blocks in this port, so the stored slot is the only source.
+fn blocked_models(slot: &Value, now: u64) -> Vec<CredentialAccountBlockedModel> {
+    let Some(blocks) = slot.get("modelBlocks").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|(model, block)| {
+            let until = block.get("blockedUntil").and_then(Value::as_i64)?;
+            (until > i64::try_from(now).unwrap_or(i64::MAX)).then(|| {
+                CredentialAccountBlockedModel {
+                    model: model.clone(),
+                    until,
+                }
+            })
+        })
+        .collect()
 }
 
 pub fn assert_valid_account_name(name: &str) -> Result<(), String> {
@@ -224,6 +254,7 @@ pub async fn summarize_credential_accounts(
                 source: slot_source(&slot).unwrap_or(CredentialAccountSource::Login),
                 blocked: slot_blocked(&slot, applicable, now),
                 pinned: pinned.as_deref() == Some(name.as_str()),
+                blocked_models: blocked_models(&slot, now),
                 unused: !usable.contains(&name),
             });
         }
@@ -246,6 +277,7 @@ pub async fn summarize_credential_accounts(
             source: CredentialAccountSource::Env,
             blocked: slot_health(applicable, now) == SlotHealth::Blocked,
             pinned: pinned.as_deref() == Some(slot.name.as_str()),
+            blocked_models: Vec::new(),
             unused: false,
         });
     }
@@ -666,6 +698,29 @@ mod tests {
                 .iter()
                 .all(|account| account.source == CredentialAccountSource::Login)
         );
+    }
+
+    #[tokio::test]
+    async fn summary_lists_live_model_blocks_from_the_stored_slot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","modelBlocks":{"fable":{"blockedUntil":500},"opus":{"blockedUntil":50},"bad":{}}},
+            {"name":"other","key":"other-key"}
+        ]}))).expect("seed");
+        let accounts = get_credential_accounts(&store, "fixture", &env_none(), &repo, 100)
+            .await
+            .expect("accounts");
+        assert_eq!(
+            accounts[0].blocked_models,
+            vec![CredentialAccountBlockedModel {
+                model: "fable".into(),
+                until: 500
+            }]
+        );
+        assert!(!accounts[0].blocked);
+        assert!(accounts[1].blocked_models.is_empty());
     }
 
     #[tokio::test]

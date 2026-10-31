@@ -1169,8 +1169,17 @@ pub struct CredentialAccountSummary {
     pub source: CredentialAccountSource,
     pub blocked: bool,
     pub pinned: bool,
+    /// Usage limits binding one model (family) while the account serves the rest (senpi#2555).
+    pub blocked_models: Vec<CredentialAccountBlockedModel>,
     /// A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486).
     pub unused: bool,
+}
+
+/// One live model-scoped block: the model (family) key and the epoch ms when it lifts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialAccountBlockedModel {
+    pub model: String,
+    pub until: i64,
 }
 
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
