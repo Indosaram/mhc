@@ -1051,6 +1051,10 @@ pub struct AgentSessionInner {
     /// senpi `runtimeHost.setBeforeSessionInvalidate`: runs once a replacement or reload proceeds,
     /// right before the extension runtime is invalidated and the next `session_start` re-registers UI.
     before_session_invalidate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// senpi `onBeforeSessionReplace` for a session replaced in place (new, switch/import, fork): runs after the
+    /// outgoing `session_shutdown` handlers and before its extension runtime is invalidated.
+    before_session_replace: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    next_before_session_replace: AtomicU64,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
     monitor_generation: AtomicU64,
@@ -4382,6 +4386,8 @@ impl AgentSession {
                 extension_rpc_event_forward: Mutex::new(None),
                 settings_source_subscription: Mutex::new(None),
                 before_session_invalidate: Mutex::new(None),
+                before_session_replace: Mutex::new(Vec::new()),
+                next_before_session_replace: AtomicU64::new(0),
                 settled_delivery: Mutex::new(
                     crate::agent_settled_delivery::AgentSettledDelivery::new(),
                 ),
@@ -11513,6 +11519,7 @@ impl AgentSession {
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::New)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| manager.new_session(options));
         self.finish_session_replacement(maho_ext_api::SessionReason::New, previous)
@@ -11578,6 +11585,7 @@ impl AgentSession {
         let previous_cwd = self.cwd();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Resume)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         // Nothing writes to the replaced manager any more, so it releases its writer claim.
         self.with_session_manager_mut(|manager| std::mem::replace(manager, target).dispose());
@@ -11778,6 +11786,7 @@ impl AgentSession {
         });
         self.emit_session_shutdown(maho_ext_api::SessionReason::Fork)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| {
             manager.new_session(Some(crate::session_manager::NewSessionOptions {
@@ -16149,6 +16158,31 @@ impl AgentSession {
                 .map_err(|error| error.message)?;
         }
         Ok(())
+    }
+
+    /// senpi `onBeforeSessionReplace` for this session's in-place replacements (new, switch, import, fork; never
+    /// reload or dispose). Returns the id [`Self::remove_before_session_replace`] takes.
+    pub fn on_before_session_replace(&self, listener: Arc<dyn Fn() + Send + Sync>) -> u64 {
+        let id = self
+            .next_before_session_replace
+            .fetch_add(1, Ordering::Relaxed);
+        lock(&self.before_session_replace).push((id, listener));
+        id
+    }
+
+    /// Removes a listener [`Self::on_before_session_replace`] added.
+    pub fn remove_before_session_replace(&self, id: u64) {
+        lock(&self.before_session_replace).retain(|(listener, _)| *listener != id);
+    }
+
+    fn run_before_session_replace(&self) {
+        let listeners: Vec<_> = lock(&self.before_session_replace)
+            .iter()
+            .map(|(_, listener)| listener.clone())
+            .collect();
+        for listener in listeners {
+            listener();
+        }
     }
 
     /// senpi `setBeforeSessionInvalidate`.
@@ -35920,6 +35954,27 @@ mod tests {
             session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
             Some(reply_id.to_owned())
         );
+    }
+
+    /// senpi `onBeforeSessionReplace`: an in-place replacement runs the listener once, while the outgoing identity is
+    /// still current; a removed listener does not run.
+    #[tokio::test]
+    async fn before_session_replace_runs_once_per_replacement_on_the_outgoing_session() {
+        let session = test_session();
+        let id = session.session_id();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let weak = session.weak_accessor();
+        let record = seen.clone();
+        let listener = session.on_before_session_replace(Arc::new(move || {
+            if let Some(session) = weak() {
+                lock(&record).push(session.session_id());
+            }
+        }));
+        assert!(session.new_session(None).await.expect("new"));
+        assert_eq!(*lock(&seen), [id]);
+        session.remove_before_session_replace(listener);
+        assert!(session.new_session(None).await.expect("new"));
+        assert_eq!(lock(&seen).len(), 1);
     }
 
     #[tokio::test]

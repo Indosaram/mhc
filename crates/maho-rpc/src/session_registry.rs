@@ -104,6 +104,14 @@ pub enum OpenAdmission {
         session_path: String,
     },
 }
+/// senpi `ClientAdmissions.sealQueuedOnReplace` + `EffectLedger.sealOnReplace` for the ledgers published under
+/// `route`: the before-replace listener a host session (and the stdio session) installs.
+pub fn seal_ledgers_on_replace(route: String) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        crate::client_admissions::ClientAdmissions::seal_queued_on_replace(&route);
+        crate::effect_ledger::EffectLedger::seal_on_replace(&route);
+    })
+}
 impl RpcSessionRegistry {
     pub fn size(&self) -> usize {
         self.entries.len()
@@ -432,6 +440,12 @@ impl RpcSessionRegistry {
                 .set_session_recovery_epoch(lane.recovery_epoch());
             entry.acceptance = Some(Arc::new(std::sync::Mutex::new(lane)));
         }
+        // senpi `openRegistrySession`/`createEntrySwitchSession`: a replacement in place seals the outgoing
+        // session's queued client input and held model switches while its transcript can still be written. The
+        // ledgers are keyed by the host handle, which survives the replacement.
+        runtime
+            .session()
+            .on_before_session_replace(seal_ledgers_on_replace(handle.to_owned()));
         entry.close.writing = true;
         entry.close.state = RpcSessionState::Open;
         entry.runtime = Some(runtime);
@@ -486,7 +500,7 @@ impl RpcSessionRegistry {
     pub fn list_sessions(&self, include_workers: bool) -> Vec<serde_json::Value> {
         self.entries.iter().filter(|(_,entry)|entry.close.state!=RpcSessionState::Quarantined&&(include_workers||entry.identity.kind!=maho_ext_api::SessionKind::Worker)).map(|(handle,entry)|{
             let status=match entry.close.state{RpcSessionState::Opening=>"opening",RpcSessionState::Open=>"open",RpcSessionState::Closing=>"closing",RpcSessionState::Quarantined=>"quarantined",RpcSessionState::Closed=>"closed"};
-            let mut row=serde_json::json!({"sessionId":handle,"cwd":entry.runtime.as_ref().map_or(entry.profile.runtime.cwd.as_str(),|runtime|runtime.cwd()),"status":status,"attachments":entry.close.attachments,"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":entry.runtime.as_ref().and_then(|runtime|serde_json::to_value(runtime.session().tool_child_row()).ok()).unwrap_or_else(||serde_json::json!({"state":"none"}))});
+            let mut row=serde_json::json!({"sessionId":handle,"cwd":entry.runtime.as_ref().map_or_else(||entry.profile.runtime.cwd.clone(),|runtime|runtime.session().cwd()),"status":status,"attachments":entry.close.attachments,"kind":if entry.identity.kind==maho_ext_api::SessionKind::Worker{"worker"}else{"interactive"},"tool_child":entry.runtime.as_ref().and_then(|runtime|serde_json::to_value(runtime.session().tool_child_row()).ok()).unwrap_or_else(||serde_json::json!({"state":"none"}))});
             if let Some(id)=&entry.durable_session_id{row["durableSessionId"]=id.clone().into();}
             if let Some(path)=&entry.session_path{row["sessionPath"]=path.clone().into();}
             if let Some(name)=entry.runtime.as_ref().and_then(|runtime|runtime.session().session_name()){row["name"]=name.into();}

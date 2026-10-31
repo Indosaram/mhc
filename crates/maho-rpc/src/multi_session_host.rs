@@ -809,14 +809,16 @@ impl HostCore {
                 )
             }),
             None => self.registry.lock().await.get(session_id).map(|entry| {
+                // A switch replaces the session in place, so its live cwd is the session's, not the runtime's.
+                let cwd = entry.runtime.as_ref().map_or_else(
+                    || entry.profile.runtime.cwd.clone(),
+                    |runtime| runtime.session().cwd(),
+                );
                 (
                     entry_view(RegistryEntryFields {
                         state: entry.close.state,
                         kind: entry.identity.kind,
-                        cwd: entry
-                            .runtime
-                            .as_ref()
-                            .map_or(entry.profile.runtime.cwd.as_str(), |runtime| runtime.cwd()),
+                        cwd: &cwd,
                         attachments: entry.close.attachments,
                         durable_session_id: entry.durable_session_id.clone(),
                         session_path: entry.session_path.clone(),
@@ -2062,7 +2064,12 @@ impl HostCore {
                             CURRENT_CONNECTION
                                 .scope(connection.map(str::to_owned), binding.handle(&value)),
                         )
-                        .await?
+                        .await?;
+                        // senpi `createEntrySwitchSession` -> `syncRuntimeMetadata`: a replacement in place moves
+                        // the entry's file, durable id and path claim with it.
+                        if replaces_session(&value) {
+                            self.registry.lock().await.sync_runtime_metadata();
+                        }
                     }
                     None => self.error(
                         connection,
@@ -4094,6 +4101,13 @@ impl crate::session_unload::SessionUnloadPort for HostUnloadPort<'_> {
             .tear_down_unloaded(session_id, session_path)
             .await
     }
+}
+/// The session commands that replace the live session in place (senpi `SessionRuntime` new/switch/fork/import).
+fn replaces_session(command: &serde_json::Value) -> bool {
+    matches!(
+        command["type"].as_str(),
+        Some("new_session" | "switch_session" | "fork" | "clone" | "import_jsonl")
+    )
 }
 /// Listed sessions other than `durable_session_id` itself whose context names it as parent or root.
 fn open_child_session_count(rows: &[serde_json::Value], durable_session_id: &str) -> usize {
