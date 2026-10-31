@@ -35,3 +35,20 @@ fn upstream_eager_languages_answer_and_uncommon_ones_do_not() {
     }
     assert!(!supports_language("ada"));
 }
+#[test]
+fn highlights_code_through_highlight_js() {
+    assert!(maho_interactive::theme::supports_language("typescript"));
+    let theme = HighlightTheme::from([
+        (
+            "keyword".to_owned(),
+            Box::new(|text: &str| format!("[keyword:{text}]")) as HighlightFormatter,
+        ),
+        (
+            "number".to_owned(),
+            Box::new(|text: &str| format!("[number:{text}]")) as HighlightFormatter,
+        ),
+    ]);
+    let rendered = highlight("const value = 1", "typescript", &theme).expect("typescript");
+    assert!(rendered.contains("[keyword:const]"), "{rendered:?}");
+    assert!(rendered.contains("[number:1]"), "{rendered:?}");
+}
