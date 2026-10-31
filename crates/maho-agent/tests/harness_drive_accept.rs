@@ -482,3 +482,143 @@ async fn acceptance_commits_exact_write_families_and_event_context() {
     assert_eq!(seen.iter().map(|(event, _)| event.as_str()).collect::<Vec<_>>(), vec!["run_start", "message_start", "message_end", "entry_added", "message_start", "message_end", "entry_added"]);
     assert!(seen.iter().all(|(_, value)| value.as_deref() == Some("source")));
 }
+
+/// Pinned `lane.accept(request, context)`: the tagged entry point dispatches every request kind
+/// and returns the expected pre-acceptance errors without writing.
+#[tokio::test]
+async fn tagged_accept_dispatches_each_request_kind() {
+    use maho_agent::harness::agent_harness::OperationRequest;
+    let lane = fixture().await.unwrap();
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Prompt {
+                operation_id: None,
+                prompt: String::new(),
+                images: vec![]
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::Empty)
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Skill {
+                operation_id: None,
+                name: "missing".into(),
+                additional_instructions: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::UnknownSkill {
+            name: "missing".into()
+        })
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::PromptTemplate {
+                operation_id: None,
+                name: "missing".into(),
+                args: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::UnknownTemplate {
+            name: "missing".into()
+        })
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Compaction {
+                operation_id: None,
+                custom_instructions: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::NothingToCompact)
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Navigation {
+                operation_id: None,
+                target_id: Some("missing".into()),
+                options: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::UnknownTarget {
+            target_id: "missing".into()
+        })
+    );
+    assert!(lane.state().operation.is_none());
+    let admission = lane
+        .accept(
+            OperationRequest::Prompt {
+                operation_id: Some("op".into()),
+                prompt: "hello".into(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(admission.operation_id, "op");
+    assert_eq!(admission.kind_label(), "run");
+    assert_eq!(
+        lane.state()
+            .operation
+            .map(|operation| operation.meta.operation_id),
+        Some("op".into())
+    );
+}
+
+/// Pinned "returns Closed when acceptance starts after close": every request kind, including the
+/// structural ones whose dedicated acceptors throw, reports `Closed` through the tagged entry.
+#[tokio::test]
+async fn tagged_accept_returns_closed_for_every_kind_after_close() {
+    use maho_agent::harness::agent_harness::OperationRequest;
+    let lane = fixture().await.unwrap();
+    lane.seal(maho_agent::harness::session::session::SessionError::new(
+        maho_agent::harness::session::session::SessionErrorKind::Closed,
+        maho_agent::harness::HarnessClosed::MESSAGE,
+    ));
+    let closed = Err(AdmissionError::Closed {
+        message: maho_agent::harness::HarnessClosed::MESSAGE.into(),
+    });
+    for request in [
+        OperationRequest::Prompt {
+            operation_id: None,
+            prompt: "late".into(),
+            images: vec![],
+        },
+        OperationRequest::Compaction {
+            operation_id: None,
+            custom_instructions: None,
+        },
+        OperationRequest::Navigation {
+            operation_id: None,
+            target_id: None,
+            options: None,
+        },
+        OperationRequest::Skill {
+            operation_id: None,
+            name: "s".into(),
+            additional_instructions: None,
+        },
+    ] {
+        assert_eq!(
+            lane.accept(request, &BACKGROUND_CONTEXT).await.unwrap(),
+            closed
+        );
+    }
+}
