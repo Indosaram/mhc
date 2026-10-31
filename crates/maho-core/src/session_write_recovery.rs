@@ -4,7 +4,7 @@
 //! the torn bytes are copied to `<file>.torn-<time>-<id>` through the atomic writer and the person
 //! gets a one-time notice naming that backup (senpi#4295).
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -147,6 +147,75 @@ pub fn truncate_to_last_complete_line(
     Ok(None)
 }
 
+/// The write failed, and its partial file could not be cleaned up either.
+#[derive(Debug)]
+pub struct SessionWriteCleanupError {
+    pub path: String,
+    pub write_error: std::io::Error,
+    pub cleanup_errors: Vec<std::io::Error>,
+}
+
+impl std::fmt::Display for SessionWriteCleanupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Session file write failed and the partial file {} could not be cleaned up",
+            self.path
+        )
+    }
+}
+
+impl std::error::Error for SessionWriteCleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.write_error)
+    }
+}
+
+#[derive(Debug)]
+pub enum FailedFirstFlush {
+    /// Cleanup succeeded: the original write error.
+    Write(std::io::Error),
+    Cleanup(SessionWriteCleanupError),
+}
+
+/// Closes and removes a session file whose first flush failed part-way, then returns the write error. The
+/// first flush creates the file exclusively, so a partial file left behind would fail every later flush
+/// with EEXIST. Rust closes `file` on drop, which cannot report a failure, so only the removal can fail.
+pub fn discard_failed_first_flush(
+    path: &str,
+    file: Option<File>,
+    write_error: std::io::Error,
+) -> FailedFirstFlush {
+    drop(file);
+    match std::fs::remove_file(path) {
+        Ok(()) => FailedFirstFlush::Write(write_error),
+        Err(error) if error.kind() == ErrorKind::NotFound => FailedFirstFlush::Write(write_error),
+        Err(error) => FailedFirstFlush::Cleanup(SessionWriteCleanupError {
+            path: path.to_owned(),
+            write_error,
+            cleanup_errors: vec![error],
+        }),
+    }
+}
+
+/// `discard_failed_first_flush` for the asynchronous header write.
+pub async fn discard_failed_first_flush_async(
+    path: &str,
+    file: Option<tokio::fs::File>,
+    write_error: std::io::Error,
+) -> FailedFirstFlush {
+    drop(file);
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => FailedFirstFlush::Write(write_error),
+        Err(error) if error.kind() == ErrorKind::NotFound => FailedFirstFlush::Write(write_error),
+        Err(error) => FailedFirstFlush::Cleanup(SessionWriteCleanupError {
+            path: path.to_owned(),
+            write_error,
+            cleanup_errors: vec![error],
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +308,15 @@ mod tests {
             recovery_notice(SessionRecoveryCause::Unknown, "/x")
                 .starts_with("The last message of this session wasn't saved completely")
         );
+    }
+
+    #[test]
+    fn removes_the_partial_first_flush_and_returns_the_write_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("s.jsonl").to_string_lossy().into_owned();
+        let file = File::create(&path).ok();
+        let result = discard_failed_first_flush(&path, file, std::io::Error::other("ENOSPC"));
+        assert!(matches!(result, FailedFirstFlush::Write(error) if error.to_string() == "ENOSPC"));
+        assert!(!std::path::Path::new(&path).exists());
     }
 }

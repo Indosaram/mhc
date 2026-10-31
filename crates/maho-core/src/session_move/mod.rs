@@ -15,13 +15,14 @@ pub mod ownership;
 pub mod requeue;
 pub mod revoke;
 pub mod session_lock;
+pub mod write_guard;
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 pub(crate) async fn entries(file: &Path) -> Vec<Value> {
-    crate::session_entry_file::load_entries_from_file_async(file).await
+    crate::session_entry_file::load_entries_from_file_async(file, None).await
 }
 /// Move metadata bypasses ordinary write admission: the caller holds the move lock.
 /// Unlike SessionManager's best-effort append, failure must abort the protocol.
