@@ -461,3 +461,27 @@ fn mcp_presenter_flags_parse_and_reject_other_descriptors() {
     assert_eq!(value.presenter_bootstrap_fd, None);
     assert!(value.diagnostics[0].error);
 }
+// senpi v2026.10.27-2 main.ts:529: ancestry is ignored, with a warning, unless the session is fresh.
+#[test]
+fn spawned_by_is_ignored_with_a_warning_when_resuming_or_forking() {
+    let ancestry = r#"{"parentSessionId":"parent","rootSessionId":"root","taskId":"task"}"#;
+    assert_eq!(
+        spawned_by_ignored_warning(&parse(&["--spawned-by", ancestry])),
+        None
+    );
+    for reuse in [
+        &["--resume"][..],
+        &["--continue"][..],
+        &["--session", "s.jsonl"][..],
+        &["--fork", "s.jsonl"][..],
+    ] {
+        let mut values = vec!["--spawned-by", ancestry];
+        values.extend_from_slice(reuse);
+        assert_eq!(
+            spawned_by_ignored_warning(&parse(&values)),
+            Some("--spawned-by is ignored when resuming or forking a session."),
+            "{reuse:?}"
+        );
+    }
+    assert_eq!(spawned_by_ignored_warning(&parse(&["--resume"])), None);
+}
