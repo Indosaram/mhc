@@ -555,3 +555,163 @@ async fn an_aborted_call_is_an_error_not_a_refusal() {
     assert!(result.is_err());
     assert_eq!(fx.readies.load(Ordering::SeqCst), 0);
 }
+
+/// Records the definitions a session registration publishes and serves them as the live tools.
+#[derive(Default)]
+struct PublishingRegistrar {
+    tools: Mutex<Vec<ToolDefinition>>,
+    active: Mutex<Vec<String>>,
+}
+impl maho_ext_mcp::tool_registrar::McpToolRegistrar for PublishingRegistrar {
+    fn get_active_tools(&self) -> Result<Vec<String>, maho_ext_api::ExtensionFailure> {
+        Ok(self.active.lock().expect("active").clone())
+    }
+    fn set_active_tools(&self, names: Vec<String>) -> Result<(), maho_ext_api::ExtensionFailure> {
+        *self.active.lock().expect("active") = names;
+        Ok(())
+    }
+    fn register_tool(
+        &self,
+        definition: ToolDefinition,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let mut tools = self.tools.lock().expect("tools");
+        tools.retain(|tool| tool.name != definition.name);
+        tools.push(definition);
+        Ok(())
+    }
+    fn register_tool_with_renderers(
+        &self,
+        definition: ToolDefinition,
+        _: maho_ext_mcp::tool_registrar::McpToolRenderers,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.register_tool(definition)
+    }
+    fn live_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.tools
+            .lock()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool.name == name)
+            .cloned()
+    }
+}
+
+#[tokio::test]
+async fn binding_registered_tools_serve_only_calls_from_the_bound_session() {
+    use maho_ext_mcp::{host_registry::HostMcpRegistry, service::McpService};
+    let root = tempfile::tempdir().expect("root");
+    let registry = Arc::new(HostMcpRegistry::default());
+    let mut service = McpService::new(registry.clone(), 1);
+    let declaration = maho_ext_api::RegisteredMcpServerDeclaration {
+        name: "fx".into(),
+        config: maho_ext_api::McpServerDeclaration {
+            command: Some(crate::support::node()),
+            args: Some(vec![
+                crate::support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),
+                "--tools".into(),
+                "1".into(),
+            ]),
+            exposure: Some(maho_ext_api::McpExposure::Direct),
+            ..Default::default()
+        },
+        extension_path: "fixture".into(),
+        registration_cwd: root.path().into(),
+    };
+    // A cached catalog keeps the server lazy: attach and registration make no connection.
+    let mut wire = maho_ext_mcp::config_schema::ServerConfigWire::from(&declaration.config);
+    wire.cwd
+        .get_or_insert_with(|| declaration.registration_cwd.to_string_lossy().into_owned());
+    let hash = maho_ext_mcp::config::hash_config(
+        &maho_ext_mcp::config::normalize_server(wire),
+        Some(root.path()),
+    )
+    .expect("config hash");
+    maho_ext_mcp::catalog_cache::write_mcp_cached_server(
+        root.path(),
+        "fx",
+        maho_ext_mcp::catalog_cache::McpCachedServerCatalog {
+            modern: false,
+            credential_identity: None,
+            config_hash: hash,
+            fetched_at: chrono::Utc::now().timestamp_millis() as f64,
+            tools: vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],
+            resources: vec![],
+            prompts: vec![],
+            instructions: None,
+        },
+    )
+    .expect("seed catalog");
+    // index.rs session_start: the binding records its session before attach registers tools.
+    service.session_binding().bind_session("mcp-bound-session");
+    service
+        .attach_session(
+            root.path(),
+            root.path(),
+            &Default::default(),
+            true,
+            &[declaration],
+        )
+        .await
+        .expect("attach");
+    let registrar = Arc::new(PublishingRegistrar::default());
+    service
+        .register_session_tools(registrar.clone(), None)
+        .await
+        .expect("register");
+    let tool = registrar
+        .tools
+        .lock()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool.name.starts_with("mcp_fx_"))
+        .cloned()
+        .expect("registered MCP tool");
+
+    let run = |ctx: Option<ExtensionContext>| {
+        let tool = tool.clone();
+        async move {
+            (tool.execute)(maho_ext_api::ToolCall {
+                id: "call",
+                params: json!({"value":"bound"}),
+                signal: AbortSignal::default(),
+                on_update: None,
+                context: ctx
+                    .as_ref()
+                    .map(|ctx| ctx as &dyn maho_ext_api::ToolContext),
+            })
+            .await
+            .expect("tool result")
+        }
+    };
+    let refusal = |result: &maho_ext_api::ToolResult| {
+        let details = result.details.as_ref().expect("details");
+        (
+            details["error"]["kind"].as_str().map(str::to_owned),
+            details["error"]["message"].as_str().map(str::to_owned),
+        )
+    };
+    let not_this_session = (
+        Some("unavailable".to_owned()),
+        Some("MCP invocation does not belong to this session.".to_owned()),
+    );
+    // Another session's context and a call without any context are refused before a send.
+    let other: Arc<dyn SessionManager> = Arc::new(Session("mcp-other-session".into()));
+    assert_eq!(
+        refusal(&run(Some(context(&other, &[]))).await),
+        not_this_session
+    );
+    assert_eq!(refusal(&run(None).await), not_this_session);
+
+    // The bound session's context reaches the server.
+    let bound: Arc<dyn SessionManager> = Arc::new(Session("mcp-bound-session".into()));
+    let result = run(Some(context(&bound, &[]))).await;
+    let details = result.details.as_ref().expect("details");
+    assert!(details.get("error").is_none(), "{details}");
+    assert!(
+        matches!(&result.content[0], maho_ext_api::ToolContent::Text { text, .. } if text == "fixture tool_1 value=bound mode=alpha"),
+        "{:?}",
+        result.content
+    );
+    service.dispose().await.expect("dispose");
+    registry.dispose().await.expect("dispose registry");
+}
