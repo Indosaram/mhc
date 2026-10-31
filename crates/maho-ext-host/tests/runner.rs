@@ -204,6 +204,16 @@ fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
     );
 }
 
+#[test]
+fn lifecycle_ui_set_subagent_cost_on_invalidated_runtime_does_not_panic() {
+    let runtime = ExtensionRuntime::default();
+    let ui =
+        maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(|_| {}));
+    runtime.invalidate("stale");
+    assert!(!ui.supports_subagent_cost());
+    ui.set_subagent_cost(Some(0.5));
+}
+
 #[tokio::test]
 async fn completed_dialog_rejects_runtime_invalidated_after_prompt_start() {
     let runtime = ExtensionRuntime::default();
