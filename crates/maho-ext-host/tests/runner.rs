@@ -4152,6 +4152,26 @@ async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn retained_kernel_tools_invoke_scope_returns_false_on_invalidated_context() {
+    use maho_ext_host::kernel_tools_context::with_kernel_tools;
+    let mut runner = runner(vec![]);
+    runner
+        .bind_context_actions(Arc::new(ContextActions {
+            revision: std::sync::atomic::AtomicU64::new(0),
+            aborted: Mutex::new(None),
+            monitor: Mutex::new(None),
+        }))
+        .unwrap();
+    with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        let context = runner.create_context().unwrap();
+        let tools = context.kernel_tools().unwrap().unwrap();
+        runner.invalidate("replaced");
+        assert!(!tools.invoke_scope());
+    })
+    .await;
+}
 impl ExtensionKernelTools for KernelCapabilities {
     fn invoke_scope(&self) -> bool {
         self.0
