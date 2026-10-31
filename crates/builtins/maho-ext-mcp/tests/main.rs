@@ -39,6 +39,8 @@ pub mod instructions;
 pub mod lifecycle_registration;
 #[path = "log.rs"]
 pub mod log;
+#[path = "manager.rs"]
+pub mod manager;
 #[path = "modern_era.rs"]
 pub mod modern_era;
 #[path = "modern_mrtr_privacy.rs"]

@@ -617,7 +617,7 @@ mod tests {
     fn surface(keys: KeybindingsManager) -> Surface {
         let (render_tx, renders) = mpsc::unbounded_channel();
         let (handle, parts) = mcp_manager_channel(Arc::new(move || {
-            render_tx.send(()).expect("test render channel");
+            render_tx.send(()).ok();
         }));
         let dimensions = Rc::new(Cell::new((120u16, 36u16)));
         let reader = dimensions.clone();

@@ -111,18 +111,79 @@ pub async fn handle_mcp_command(args: &[String], ctx: &ExtensionContext, host: &
     let name = args.get(1).map_or("", String::as_str);
     let ui = ctx.ui.clone();
     if subcommand.is_empty() {
-        // The TUI manager view (manager.ts, unported) is the only other branch; every mode renders status.
-        let text = host.service.lock().await.status("MCP servers").await;
-        ui.notify(&text, NotificationType::Info);
+        if !ctx.has_ui || ctx.mode != maho_ext_api::ExtensionMode::Tui {
+            let text = host.service.lock().await.status("MCP servers").await;
+            ui.notify(&text, NotificationType::Info);
+        } else if let Err(error) = crate::manager::show_mcp_manager(ctx, host).await {
+            ui.notify(&redact(&error.message), NotificationType::Error);
+        }
         return;
     }
     if AUTH_SUBCOMMANDS.contains(&subcommand) {
+        run_auth_command(subcommand, &args[1..], ctx, host).await;
+        return;
+    }
+    match subcommand {
+        "status" => {
+            let text = host.service.lock().await.status("MCP status").await;
+            ui.notify(&text, NotificationType::Info);
+        }
+        "add" => add_server(&args[1..], ctx, host).await,
+        "enable" | "disable" => set_server_enabled(ctx, host, name, subcommand == "enable").await,
+        "test" => test_server(name, ctx, host, None).await,
+        "logs" => show_logs(name, ctx, host).await,
+        "reconnect" => reconnect_server(name, ctx, host, None).await,
+        _ => ui.notify(
+            &format!("Unknown /mcp subcommand: {subcommand}"),
+            NotificationType::Error,
+        ),
+    }
+}
+
+/// A notice sink replacing `ctx.ui.notify` (upstream `Notify`).
+pub type McpNotify = Arc<dyn Fn(&str, NotificationType) + Send + Sync>;
+
+/// The commands the manager dispatches through the existing handlers (upstream `McpManagerCommand`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpManagerCommand {
+    Test,
+    Reconnect,
+    Auth,
+    Logout,
+}
+
+/// Upstream manager `run` callback: `handleMcpCommand([command, name], ctx, pi, service, notify)`.
+pub async fn run_manager_command(
+    command: McpManagerCommand,
+    name: &str,
+    ctx: &ExtensionContext,
+    host: &McpCommandHost,
+    notify: Option<McpNotify>,
+) {
+    let args = [name.to_owned()];
+    match command {
+        McpManagerCommand::Test => test_server(name, ctx, host, notify).await,
+        McpManagerCommand::Reconnect => reconnect_server(name, ctx, host, notify).await,
+        McpManagerCommand::Auth => run_auth_command("auth", &args, ctx, host).await,
+        McpManagerCommand::Logout => run_auth_command("logout", &args, ctx, host).await,
+    }
+}
+
+async fn run_auth_command(
+    subcommand: &str,
+    args: &[String],
+    ctx: &ExtensionContext,
+    host: &McpCommandHost,
+) {
+    let ui = ctx.ui.clone();
+    let name = args.first().map_or("", String::as_str);
+    {
         let reconnect_service = host.service.clone();
         let reconnect_name = name.to_owned();
         let reconnect_ctx = ReattachContext::from(ctx);
         handle_mcp_auth_command(
             subcommand,
-            &args[1..],
+            args,
             McpAuthCommandContext {
                 ui,
                 has_ui: ctx.has_ui,
@@ -143,28 +204,12 @@ pub async fn handle_mcp_command(args: &[String], ctx: &ExtensionContext, host: &
             &host.service,
         )
         .await;
-        return;
-    }
-    match subcommand {
-        "status" => {
-            let text = host.service.lock().await.status("MCP status").await;
-            ui.notify(&text, NotificationType::Info);
-        }
-        "add" => add_server(&args[1..], ctx, host).await,
-        "enable" | "disable" => set_server_enabled(ctx, host, name, subcommand == "enable").await,
-        "test" => test_server(name, ctx, host).await,
-        "logs" => show_logs(name, ctx, host).await,
-        "reconnect" => reconnect_server(name, ctx, host).await,
-        _ => ui.notify(
-            &format!("Unknown /mcp subcommand: {subcommand}"),
-            NotificationType::Error,
-        ),
     }
 }
 
 /// The reload attach a command runs (`service.attachSession({type:"session_start",reason:"reload"}, ctx, pi)`).
 #[derive(Clone)]
-struct ReattachContext {
+pub(crate) struct ReattachContext {
     cwd: std::path::PathBuf,
     agent_dir: std::path::PathBuf,
     project_trusted: bool,
@@ -181,7 +226,7 @@ impl From<&ExtensionContext> for ReattachContext {
     }
 }
 impl ReattachContext {
-    async fn reattach(
+    pub(crate) async fn reattach(
         &self,
         service: &mut McpService,
     ) -> Result<(), crate::service::McpServiceError> {
@@ -283,20 +328,32 @@ async fn set_server_enabled(
     );
 }
 
-async fn test_server(name: &str, ctx: &ExtensionContext, host: &McpCommandHost) {
-    let ui = &ctx.ui;
+fn notifier(ctx: &ExtensionContext, notify: Option<McpNotify>) -> McpNotify {
+    notify.unwrap_or_else(|| {
+        let ui = ctx.ui.clone();
+        Arc::new(move |text, kind| ui.notify(text, kind))
+    })
+}
+
+async fn test_server(
+    name: &str,
+    ctx: &ExtensionContext,
+    host: &McpCommandHost,
+    notify: Option<McpNotify>,
+) {
+    let notify = notifier(ctx, notify);
     let service = host.service.lock().await;
     if !ensure_known(name, &service, &|text| {
-        ui.notify(text, NotificationType::Error)
+        notify(text, NotificationType::Error)
     }) {
         return;
     }
     match service.test_server(name).await {
-        Ok((elapsed, tools)) => ui.notify(
+        Ok((elapsed, tools)) => notify(
             &format!("MCP test {name} ok ({elapsed:.0}ms): {tools} tools"),
             NotificationType::Info,
         ),
-        Err(failure) => ui.notify(
+        Err(failure) => notify(
             &redact(&format!(
                 "MCP test {name} failed ({:.0}ms): {}",
                 failure.elapsed_ms, failure.error
@@ -325,11 +382,16 @@ async fn show_logs(name: &str, ctx: &ExtensionContext, host: &McpCommandHost) {
     );
 }
 
-async fn reconnect_server(name: &str, ctx: &ExtensionContext, host: &McpCommandHost) {
-    let ui = &ctx.ui;
+async fn reconnect_server(
+    name: &str,
+    ctx: &ExtensionContext,
+    host: &McpCommandHost,
+    notify: Option<McpNotify>,
+) {
+    let notify = notifier(ctx, notify);
     let mut service = host.service.lock().await;
     if !ensure_known(name, &service, &|text| {
-        ui.notify(text, NotificationType::Error)
+        notify(text, NotificationType::Error)
     }) {
         return;
     }
@@ -341,11 +403,11 @@ async fn reconnect_server(name: &str, ctx: &ExtensionContext, host: &McpCommandH
         after(service.wire_status_snapshot().await);
     }
     match result {
-        Ok(()) => ui.notify(
+        Ok(()) => notify(
             &format!("MCP reconnect {name} connected"),
             NotificationType::Info,
         ),
-        Err(error) => ui.notify(
+        Err(error) => notify(
             &redact(&format!("MCP reconnect {name} failed: {error}")),
             NotificationType::Error,
         ),

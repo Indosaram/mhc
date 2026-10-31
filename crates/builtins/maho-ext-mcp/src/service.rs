@@ -119,6 +119,8 @@ pub struct McpService {
     pub reference_errors: BTreeMap<String, maho_ai::utils::config_reference::ConfigReferenceError>,
     /// Upstream `McpSessionBinding`: shared with registrations so an origin is issued without the service lock.
     binding: Arc<McpSessionBinding>,
+    /// Upstream `#registrationListeners`: bumped after every completed catalog registration.
+    registration_events: tokio::sync::watch::Sender<u64>,
 }
 /// Upstream `McpSessionBinding`: lifetime, presentation and declared sources of one session's binding.
 #[derive(Default)]
@@ -356,6 +358,7 @@ impl McpService {
             registration_inputs: None,
             reference_errors: BTreeMap::new(),
             binding: Arc::default(),
+            registration_events: tokio::sync::watch::Sender::new(0),
         }
     }
     /// Upstream `bindMcpMrtrPresentation`: keeps the binding's presentation current (a missing one keeps
@@ -1103,7 +1106,93 @@ impl McpService {
                 self.report_registration_error(error);
             }
         }
+        // Upstream `for (const listener of this.#registrationListeners) listener()`.
+        self.registration_events.send_modify(|generation| *generation += 1);
         Ok(())
+    }
+    /// Upstream `onMcpRegistrationChanged`: a receiver whose `changed()` fires after each completed
+    /// catalog registration. Dropping it is the unsubscribe.
+    pub fn on_registration_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.registration_events.subscribe()
+    }
+    /// The state-change stream of every live connection (upstream `getConnection(name).onStateChange`).
+    pub async fn connection_state_changes(
+        &self,
+    ) -> Vec<
+        tokio::sync::broadcast::Receiver<crate::connection::ServerConnectionStateChangedEvent>,
+    > {
+        let mut receivers = Vec::new();
+        for connection in self.connections.values() {
+            receivers.push(connection.entry.lock().await.connection.on_state_change());
+        }
+        receivers
+    }
+    /// The client of a connection whose state is `connected` (upstream `connection?.state === "connected"`).
+    pub async fn connected_client(
+        &self,
+        name: &str,
+    ) -> Option<Arc<crate::transport_sdk::McpClient>> {
+        let entry = self.connections.get(name)?.entry.lock().await;
+        if entry.connection.state() != crate::connection::ServerConnectionState::Connected {
+            return None;
+        }
+        entry.connection.client().ok()
+    }
+    /// Upstream `getServerExposureStatus`.
+    pub async fn exposure_status(
+        &self,
+        name: &str,
+    ) -> crate::expose::status::McpServerExposureStatus {
+        let entry = match self.connections.get(name) {
+            Some(connection) => Some(connection.entry.lock().await),
+            None => None,
+        };
+        crate::service_exposure::get_mcp_service_exposure_status(
+            name,
+            self.config.as_ref(),
+            entry.as_deref(),
+        )
+        .await
+    }
+    /// Upstream `getServerAuthStatus` (`wireAuthStatus`): bearer servers in `needs_auth` are not logged in;
+    /// OAuth servers are logged in when a stored access token exists.
+    pub async fn server_auth_status(&self, name: &str) -> crate::service_types::McpWireAuthStatus {
+        use crate::service_types::McpWireAuthStatus;
+        let Some(server) = self.config.as_ref().and_then(|config| config.servers.get(name)) else {
+            return McpWireAuthStatus::Unsupported;
+        };
+        let state = match self.connections.get(name) {
+            Some(connection) => Some(connection.entry.lock().await.connection.state()),
+            None => None,
+        };
+        match server.config.as_ref().map(crate::auth::context::resolve_auth_mode) {
+            Some(crate::auth::context::ServerAuthMode::Bearer) => {
+                if state == Some(crate::connection::ServerConnectionState::NeedsAuth) {
+                    McpWireAuthStatus::NotLoggedIn
+                } else {
+                    McpWireAuthStatus::BearerToken
+                }
+            }
+            Some(crate::auth::context::ServerAuthMode::OAuth) => {
+                let logged_in = self
+                    .agent_dir
+                    .as_ref()
+                    .zip(server.config.as_ref())
+                    .and_then(|(dir, config)| {
+                        config.url.as_ref().map(|url| {
+                            crate::auth::token_store::McpTokenStore::new(dir, name, url)
+                        })
+                    })
+                    .and_then(|store| store.read().ok().flatten())
+                    .is_some_and(|record| record.access_token.is_some());
+                if logged_in {
+                    McpWireAuthStatus::OAuth
+                } else {
+                    McpWireAuthStatus::NotLoggedIn
+                }
+            }
+            _ => McpWireAuthStatus::Unsupported,
+        }
     }
     fn report_registration_error(&self, message: &str) {
         if let Some(agent_dir) = &self.agent_dir
