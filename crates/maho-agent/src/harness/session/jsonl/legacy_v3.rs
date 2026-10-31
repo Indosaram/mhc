@@ -268,6 +268,27 @@ fn time_from_iso(value: &str) -> Option<i64> {
         Some(parts) => parts,
         None => (normalized, ""),
     };
+    let (rest, offset_seconds) = match rest.find(['+', '-']) {
+        Some(index) => {
+            let (clock, offset) = rest.split_at(index);
+            let (hours, minutes) = offset[1..].split_once(':')?;
+            let hours: i64 = hours.parse().ok()?;
+            let minutes: i64 = minutes.parse().ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let seconds = hours * 3_600 + minutes * 60;
+            (
+                clock,
+                if offset.starts_with('-') {
+                    -seconds
+                } else {
+                    seconds
+                },
+            )
+        }
+        None => (rest, 0),
+    };
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
     let month: i64 = date_parts.next()?.parse().ok()?;
@@ -286,7 +307,7 @@ fn time_from_iso(value: &str) -> Option<i64> {
     };
 
     let days = days_from_civil(year, month, day);
-    Some(((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000) + millis)
+    Some(((days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds) * 1_000) + millis)
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
