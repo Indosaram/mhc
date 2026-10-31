@@ -45,6 +45,8 @@ mod keybinding_hints_global;
 mod mermaid_golden;
 #[path = "mermaid_transformer.rs"]
 mod mermaid_transformer;
+#[path = "mcp_local_presenter.rs"]
+mod mcp_local_presenter;
 #[path = "presentation.rs"]
 mod presentation;
 #[path = "runtime35_external_editor.rs"]
@@ -70,6 +72,9 @@ mod runtime35_widget_clock;
 #[cfg(unix)]
 #[path = "session_control_endpoint.rs"]
 mod session_control_endpoint;
+#[cfg(windows)]
+#[path = "session_control_win32.rs"]
+mod session_control_win32;
 #[path = "task33_search.rs"]
 mod task33_search;
 #[path = "task33_selectors.rs"]
