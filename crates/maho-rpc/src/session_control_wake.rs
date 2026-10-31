@@ -5,11 +5,12 @@
 //! returns, never dropped and never multiplied. Every requester is answered with the result of the pass that covered
 //! its edge.
 //!
-//! The inbox watch (`watchInbox`) and SIGCONT edge live with the interactive endpoint; this module is the scheduler
-//! the host's `HostSessionControl` shares with it.
+//! The one port of the file: the scheduler both the terminal endpoint and the host's `HostSessionControl` run, the
+//! inbox watch (`watchInbox`) and the SIGCONT edge (`onProcessContinue`).
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -59,8 +60,8 @@ pub struct WakeScheduler {
     on_error: WakeError,
 }
 
-fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
-    state
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -161,6 +162,196 @@ impl WakeScheduler {
     }
 }
 
+/// Prefix of the engine's own entries in an inbox; a registrant never treats them as deliveries.
+pub const INBOX_ENGINE_ENTRY_PREFIX: &str = ".senpi-";
+const INBOX_ARM_ATTEMPTS: u32 = 25;
+const INBOX_ARM_ATTEMPT_MS: u64 = 200;
+
+/// A live inbox watch. `armed` settles once arming did: the watch confirmed, the bounded retry ran
+/// out, or it was stopped.
+pub struct InboxWatch {
+    pub armed: BoxFuture<'static, ()>,
+    stop: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl InboxWatch {
+    pub fn stop(&self) {
+        (self.stop)();
+    }
+
+    pub fn stopper(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.stop.clone()
+    }
+}
+
+/// Whether an inbox event changed an entry (senpi `fs.watch` "rename" and "change": created, removed, renamed or
+/// written). inotify also reports opens, reads and closes, which libuv never surfaces.
+fn inbox_entry_changed(kind: &notify::EventKind) -> bool {
+    !matches!(kind, notify::EventKind::Access(_))
+}
+
+/// One watch on the inbox directory.
+///
+/// The watcher arms asynchronously, and an entry written before it is armed produces no event.
+/// Arming is confirmed by a sentinel entry's own event coming back - the sentinel is re-touched until
+/// then, bounded, which is the only timer here and runs only while arming (an unconfirmed arm is
+/// reported through `on_error`). Nothing waits on that confirmation: the watch is returned at once and
+/// `armed` settles when arming did, so the caller can request the pass that picks up anything created
+/// before the watch could see it.
+pub async fn watch_inbox(
+    inbox_dir: &Path,
+    on_change: Arc<dyn Fn() + Send + Sync>,
+    on_error: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<InboxWatch, String> {
+    create_private_dir_all(inbox_dir).map_err(|error| error.to_string())?;
+    let sentinel = format!("{INBOX_ENGINE_ENTRY_PREFIX}armed-{}", uuid::Uuid::new_v4());
+    let (confirm_tx, confirm_rx) = tokio::sync::watch::channel(None::<bool>);
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sentinel_name = sentinel.clone();
+    let confirm = confirm_tx.clone();
+    let watch_error = on_error.clone();
+    let watcher =
+        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            // An open, read or close changes no entry (senpi's `fs.watch` never surfaces one), and the drain opens
+            // the entries it reads: waking on those would re-wake the drain forever.
+            Ok(event) if !inbox_entry_changed(&event.kind) => {}
+            Ok(event) => {
+                for path in &event.paths {
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned());
+                    if name.as_deref() == Some(sentinel_name.as_str()) {
+                        confirm.send_replace(Some(true));
+                    } else if !name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with(INBOX_ENGINE_ENTRY_PREFIX))
+                    {
+                        on_change();
+                    }
+                }
+            }
+            Err(error) => watch_error(error.to_string()),
+        });
+    let mut watcher = watcher.map_err(|error| error.to_string())?;
+    notify::Watcher::watch(&mut watcher, inbox_dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|error| error.to_string())?;
+    let watcher = Arc::new(Mutex::new(Some(watcher)));
+    let sentinel_path = inbox_dir.join(&sentinel);
+    let arm_stopped = stopped.clone();
+    let arm_error = on_error.clone();
+    let directory = inbox_dir.display().to_string();
+    let mut confirmed = confirm_rx.clone();
+    let arming = tokio::spawn(async move {
+        let seen = confirm_arm(&sentinel_path, &mut confirmed, &arm_stopped).await;
+        match seen {
+            Ok(false) if !arm_stopped.load(std::sync::atomic::Ordering::SeqCst) => {
+                arm_error(format!("inbox watch on {directory} was not confirmed"));
+            }
+            Err(error) if !arm_stopped.load(std::sync::atomic::Ordering::SeqCst) => {
+                arm_error(error);
+            }
+            _ => {}
+        }
+    });
+    let mut armed_rx = confirm_rx;
+    let armed: BoxFuture<'static, ()> = Box::pin(async move {
+        // Settles on the sentinel's own event, before any later event of the same watch is
+        // delivered; otherwise when arming ended.
+        tokio::select! {
+            _ = armed_rx.wait_for(|value| *value == Some(true)) => {}
+            _ = arming => {}
+        }
+    });
+    let stop_watcher = watcher.clone();
+    let stop: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        confirm_tx.send_replace(Some(false));
+        drop(lock(&stop_watcher).take());
+    });
+    Ok(InboxWatch { armed, stop })
+}
+
+async fn confirm_arm(
+    sentinel_path: &Path,
+    confirmed: &mut tokio::sync::watch::Receiver<Option<bool>>,
+    stopped: &std::sync::atomic::AtomicBool,
+) -> Result<bool, String> {
+    let mut seen = false;
+    let mut attempt = 0;
+    let mut failure = None;
+    while attempt < INBOX_ARM_ATTEMPTS
+        && !seen
+        && !stopped.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        if let Err(error) = write_private_file(sentinel_path, &attempt.to_string()) {
+            failure = Some(error.to_string());
+            break;
+        }
+        seen = tokio::select! {
+            result = confirmed.wait_for(Option::is_some) => result.is_ok_and(|value| *value == Some(true)),
+            () = tokio::time::sleep(std::time::Duration::from_millis(INBOX_ARM_ATTEMPT_MS)) => false,
+        };
+        attempt += 1;
+    }
+    match std::fs::remove_file(sentinel_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => failure = failure.or(Some(error.to_string())),
+    }
+    failure.map_or(Ok(seen), Err)
+}
+
+fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
+fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    std::io::Write::write_all(&mut options.open(path)?, content.as_bytes())
+}
+
+/// A continue after any stop (`^Z` or an external SIGSTOP) wakes the drain once the terminal has been
+/// restored: the listener is persistent, so every stop/continue cycle is covered, and it defers past
+/// the handlers that restore the terminal on the same signal.
+pub fn on_process_continue(listener: Arc<dyn Fn() + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let Ok(mut continued) = signal(SignalKind::from_raw(libc::SIGCONT)) else {
+            return Box::new(|| {});
+        };
+        let task = tokio::spawn(async move {
+            while continued.recv().await.is_some() {
+                tokio::task::yield_now().await;
+                listener();
+            }
+        });
+        Box::new(move || task.abort())
+    }
+    #[cfg(not(unix))]
+    {
+        drop(listener);
+        Box::new(|| {})
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +428,39 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(covered.await, json!({"admitted": ["inbox"]}));
+    }
+
+    /// senpi test/suite/tui-endpoint-inbox-arm.test.ts "stops arming quietly when the watch is stopped before it
+    /// was confirmed". On the current-thread test runtime the arming task has not run when `stop` is called, so the
+    /// watch is never confirmed and no sentinel is ever written.
+    #[tokio::test]
+    async fn stops_arming_quietly_when_the_watch_is_stopped_before_it_was_confirmed() {
+        let inbox = tempfile::tempdir().unwrap();
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = errors.clone();
+        let watch = watch_inbox(
+            inbox.path(),
+            Arc::new(|| {}),
+            Arc::new(move |error| sink.lock().unwrap().push(error)),
+        )
+        .await
+        .unwrap();
+        watch.stop();
+        tokio::time::timeout(std::time::Duration::from_secs(1), watch.armed)
+            .await
+            .expect("arming settles after stop");
+        assert!(errors.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(inbox.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn an_access_changes_no_entry_and_every_other_kind_does() {
+        use notify::EventKind;
+        use notify::event::{AccessKind, AccessMode, CreateKind, RemoveKind};
+        assert!(inbox_entry_changed(&EventKind::Create(CreateKind::File)));
+        assert!(inbox_entry_changed(&EventKind::Remove(RemoveKind::File)));
+        assert!(!inbox_entry_changed(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
     }
 }
