@@ -3427,8 +3427,8 @@ mod connection_events_tests {
         });
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let requests = of_type(&records, "question_request");
-                if let Some(first) = requests.first() {
+                let requests = of_type(&records, "extension_ui_request");
+                if let Some(first) = requests.iter().find(|record| record["method"] == "question") {
                     return first["id"].as_str().expect("id").to_owned();
                 }
                 tokio::task::yield_now().await;

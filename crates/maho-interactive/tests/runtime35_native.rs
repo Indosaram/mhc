@@ -4856,14 +4856,17 @@ fn gated_native_mode() -> GatedMode {
     let (wake_tx, wake) = tokio::sync::mpsc::unbounded_channel();
     let hook_entered = entered.clone();
     let hook_gate = gate_rx.clone();
+    let hook_wake = wake_tx.clone();
     let provider = faux_provider(RegisterFauxProviderOptions {
         api: Some("faux".into()),
         tokens_per_second: Some(0.0),
         scheduler_hook: Some(Arc::new(move || {
             let entered = hook_entered.clone();
             let mut rx = hook_gate.clone();
+            let wake = hook_wake.clone();
             Box::pin(async move {
                 entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = wake.send(());
                 let _ = rx.wait_for(|released| *released).await;
             })
         })),
