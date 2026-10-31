@@ -63,6 +63,7 @@ open, any of:
 - `assets/omo.schema.json` and `assets/omo-latest/**` (regenerate the schema from
   `config-keys.md` instead);
 - any output of `faux-harness --omo` or other reference produced by running the SUL code.
+- `docs/cleanroom/reviews/**` (reviews quote short SUL fragments as leak-check evidence).
 
 Run the implementation in a checkout from which those paths were removed, and attach the
 environment manifest (list of files + hashes) to the implementing commit, as plan §5 requires.
