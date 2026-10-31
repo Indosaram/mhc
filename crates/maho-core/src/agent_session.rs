@@ -1006,6 +1006,12 @@ pub struct AgentSessionInner {
     /// senpi `_handlerTurnScope`: bumped per admitted prompt turn (`_promptAgent`), so the turn deadline
     /// releases only the held extension handler waits its own turn started (senpi#3650).
     handler_turn_scope: Arc<AtomicU64>,
+    /// senpi `_deadlineTracker`: the turn's inactivity lease and max-runtime cap (senpi#3227), armed at
+    /// prompt admission and disarmed when the run settles idle. Set once, right after construction.
+    deadline_tracker: std::sync::OnceLock<crate::turn_deadline::AgentDeadlineTracker>,
+    /// senpi `SessionLifecycleController.deadlineStop`: the deadline that stopped the current run,
+    /// captured before its durable write. Lock order: `lifecycle`, then this.
+    lifecycle_deadline_stop: Mutex<Option<crate::lifecycle_stop::DeadlineStopCapture>>,
     event_bus: EventBus,
     event_listeners: SharedEventListeners,
     next_listener_id: Arc<AtomicU64>,
@@ -1152,11 +1158,13 @@ struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
 
 /// senpi `SessionLifecycleController.lastStop`: derived only from the current run's own bound end; an end processed
 /// after a later run started sets nothing, and an unchanged stop keeps its first `at`. A run restored from disk keeps
-/// exactly the stop its record carries. No turn deadline is captured here: maho has no turn-deadline tracker.
+/// exactly the stop its record carries. The run's own turn deadline, captured when it fired, explains its stop
+/// first (senpi `deadlineStop`, only with a turn-end input and only for the run it stopped).
 fn lifecycle_last_stop(
     ledger: &crate::lifecycle_ledger::LifecycleLedger,
     restored_run_id: Option<&str>,
     facts: Option<&crate::lifecycle_stop::RunStopFacts>,
+    deadline: Option<&crate::lifecycle_stop::DeadlineStopCapture>,
     input: Option<&Value>,
     stalled: bool,
 ) -> Option<Value> {
@@ -1168,7 +1176,8 @@ fn lifecycle_last_stop(
     let Some(facts) = facts.filter(|facts| facts.run_id.as_deref() == Some(run_id)) else {
         return existing_value;
     };
-    let Some(detail) = crate::lifecycle_stop::stop_detail(input, Some(facts), None, stalled) else {
+    let deadline = deadline.filter(|deadline| input.is_some() && deadline.run_id == run_id);
+    let Some(detail) = crate::lifecycle_stop::stop_detail(input, Some(facts), deadline, stalled) else {
         return existing_value;
     };
     let existing = existing_value.as_ref().and_then(|stop| {
@@ -3803,6 +3812,85 @@ impl std::ops::Deref for AgentSession {
     }
 }
 
+/// The tracker's owner: the session, held weakly so the tracker stored on it forms no cycle. A session
+/// already dropped records nothing and counts as idle.
+struct WeakDeadlineOwner(std::sync::Weak<AgentSessionInner>);
+
+impl WeakDeadlineOwner {
+    fn session(&self) -> Option<AgentSession> {
+        self.0.upgrade().map(|inner| AgentSession { inner })
+    }
+}
+
+impl crate::turn_deadline::DeadlineSessionOwner for WeakDeadlineOwner {
+    fn record_deadline_stop(
+        &self,
+        deadline: &crate::turn_deadline::TurnDeadline,
+    ) -> Result<(), String> {
+        use crate::turn_deadline::DeadlineSessionOwner as _;
+        self.session()
+            .map_or(Ok(()), |session| session.record_deadline_stop(deadline))
+    }
+
+    fn abort_turn_for_deadline(&self) -> crate::turn_deadline::DeadlineAbort {
+        use crate::turn_deadline::DeadlineSessionOwner as _;
+        match self.session() {
+            Some(session) => session.abort_turn_for_deadline(),
+            None => Box::pin(async { Ok(()) }),
+        }
+    }
+
+    fn release_held_extension_handlers(&self) -> usize {
+        self.session()
+            .map_or(0, |session| session.release_held_extension_handlers_now())
+    }
+
+    fn is_retry_in_flight(&self) -> bool {
+        self.session().is_some_and(|session| session.is_retrying())
+    }
+
+    fn is_idle(&self) -> bool {
+        self.session()
+            .is_none_or(|session| !session.agent_run_active.load(Ordering::SeqCst))
+    }
+
+    fn warn_deadline(&self, event: crate::turn_deadline::TurnDeadlineWarning, detail: &str) {
+        use crate::turn_deadline::DeadlineSessionOwner as _;
+        if let Some(session) = self.session() {
+            session.warn_deadline(event, detail);
+        }
+    }
+}
+
+impl AgentSession {
+    /// senpi `currentDeadline`: the deadline that stopped the current turn, when the lease fired (senpi#3227).
+    pub fn current_deadline(&self) -> Option<crate::turn_deadline::TurnDeadline> {
+        self.deadline_tracker
+            .get()
+            .and_then(crate::turn_deadline::AgentDeadlineTracker::current)
+    }
+
+    /// senpi `SessionLifecycleController.deadlineStopped`: captured for the active run only.
+    fn lifecycle_deadline_stopped(&self, kind: crate::turn_deadline::TurnDeadlineKind, at_ms: i64) {
+        use crate::session_lifecycle_types::LifecycleDeadlineKind;
+        let ledger = lock(&self.lifecycle);
+        let Some(run_id) = ledger.run_id.clone().filter(|_| ledger.run_active) else {
+            return;
+        };
+        *lock(&self.lifecycle_deadline_stop) = Some(crate::lifecycle_stop::DeadlineStopCapture {
+            run_id,
+            kind: match kind {
+                crate::turn_deadline::TurnDeadlineKind::Inactivity => LifecycleDeadlineKind::Inactivity,
+                crate::turn_deadline::TurnDeadlineKind::MaxRuntime => LifecycleDeadlineKind::MaxRuntime,
+            },
+            at: chrono::DateTime::from_timestamp_millis(at_ms)
+                .unwrap_or_default()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            persisted: None,
+        });
+    }
+}
+
 /// senpi AgentSession's deadline owner adapters (`_recordDeadlineStop`, `abortTurnForDeadline`,
 /// `releaseHeldExtensionHandlers`, `isRetryInFlight`, `isIdle`, `_warnDeadline`).
 impl crate::turn_deadline::DeadlineSessionOwner for AgentSession {
@@ -3810,15 +3898,27 @@ impl crate::turn_deadline::DeadlineSessionOwner for AgentSession {
         &self,
         deadline: &crate::turn_deadline::TurnDeadline,
     ) -> Result<(), String> {
+        let at = chrono::Utc::now().timestamp_millis();
+        // The lifecycle stop is captured before the write, so a refused write keeps it for this run (senpi#3864).
+        self.lifecycle_deadline_stopped(deadline.kind, at);
         let data = json!({
             "kind": deadline.kind,
             "limitMs": deadline.limit_ms,
             "elapsedMs": deadline.elapsed_ms,
-            "at": chrono::Utc::now().timestamp_millis(),
+            "at": at,
         });
-        let entry = self.with_session_manager_mut(|manager| {
-            manager.append_custom(crate::turn_deadline::TURN_DEADLINE_ENTRY_TYPE, Some(data))
+        let (entry, write_error) = self.with_session_manager_mut(|manager| {
+            let entry =
+                manager.append_custom(crate::turn_deadline::TURN_DEADLINE_ENTRY_TYPE, Some(data));
+            (entry, manager.last_persistence_error().map(str::to_owned))
         });
+        if let Some(error) = write_error {
+            // senpi `_lifecycleBinding.deadlineStopWriteFailed()`.
+            if let Some(stop) = lock(&self.lifecycle_deadline_stop).as_mut() {
+                stop.persisted = Some(false);
+            }
+            return Err(error);
+        }
         if let Some(id) = entry.get("id").and_then(Value::as_str) {
             self.emit_entry_appended(id);
         }
@@ -4303,6 +4403,8 @@ impl AgentSession {
                 extension_runner: tokio::sync::Mutex::new(None),
                 extension_runner_epoch: AtomicU64::new(0),
                 handler_turn_scope: Arc::new(AtomicU64::new(0)),
+                deadline_tracker: std::sync::OnceLock::new(),
+                lifecycle_deadline_stop: Mutex::new(None),
                 event_bus: EventBus::new(),
                 event_listeners: Arc::new(Mutex::new(Arc::new(Vec::new()))),
                 next_listener_id: Arc::new(AtomicU64::new(0)),
@@ -4423,6 +4525,22 @@ impl AgentSession {
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
         let _ = session_cell.set(Arc::downgrade(&session.inner));
+        // senpi agent-session.ts constructor: the turn deadline reads its limits from the live settings at
+        // each arm. It holds the session weakly: the tracker lives on the session.
+        let deadline_settings = Arc::clone(&session.settings_manager);
+        let _ = session
+            .deadline_tracker
+            .set(crate::turn_deadline::AgentDeadlineTracker::new(
+                Arc::new(WeakDeadlineOwner(Arc::downgrade(&session.inner))),
+                Arc::new(move || {
+                    let settings = lock(&deadline_settings);
+                    crate::turn_deadline::resolve_turn_deadline_settings(
+                        settings.get_value("turn_inactivity_ms"),
+                        settings.get_value("turn_max_runtime_ms"),
+                    )
+                }),
+                None,
+            ));
 
         *lock(&session.work_obligations) =
             Some(crate::work_obligations::SessionWorkObligations::new(
@@ -4587,6 +4705,7 @@ impl AgentSession {
                     };
                     ledger.start_run(origin);
                     lock(&self.lifecycle_stop_facts).0 = None;
+                    *lock(&self.lifecycle_deadline_stop) = None;
                     lock(&self.lifecycle_activity).clear();
                     // The run's opening record carries the admitted input and the epoch (senpi#3980).
                     ledger.publish_unwritten(|record| self.persist_lifecycle_record(record));
@@ -4630,6 +4749,16 @@ impl AgentSession {
             }
         }
         self.observe_activity(&event);
+        // senpi `_handleAgentEvent`: tool execution progress renews the inactivity lease; text deltas never do.
+        if matches!(
+            event,
+            AgentEvent::ToolExecutionStart { .. }
+                | AgentEvent::ToolExecutionUpdate { .. }
+                | AgentEvent::ToolExecutionEnd { .. }
+        ) && let Some(tracker) = self.deadline_tracker.get()
+        {
+            tracker.renew();
+        }
         if let AgentEvent::MessageStart { message, .. } = &event
             && let Ok(value) = session_message_to_value(message) {
                 if let Some(id) = value
@@ -5592,10 +5721,12 @@ impl AgentSession {
                     .and_then(|input| input["todoOutcome"].as_str())
                     .map(str::to_owned);
             }
+            let deadline = lock(&self.lifecycle_deadline_stop).clone();
             lifecycle_last_stop(
                 &ledger,
                 stop_facts.1.as_deref(),
                 facts.as_ref(),
+                deadline.as_ref(),
                 input.as_ref(),
                 ledger.attention.synthetic().as_array().is_some_and(|waits| {
                     waits.iter().any(|wait| wait["wait"]["kind"] == "stalled")
@@ -6407,6 +6538,9 @@ impl AgentSession {
     /// A person's input (prompt, steer, follow-up, answer) attends the session and releases what it holds.
     fn begin_person_input(&self) {
         self.record_user_activity(UserActivityKind::Prompt);
+        if let Some(tracker) = self.deadline_tracker.get() {
+            tracker.clear_hold();
+        }
         self.engine_resume_window.store(false, Ordering::SeqCst);
         let mut hold = lock(&self.engine_turn_hold);
         lock(&self.engine_turn_input).begin(&mut hold);
@@ -7234,7 +7368,11 @@ impl AgentSession {
             }
             return Err(INTERRUPTED_RUN_REFUSAL.to_owned());
         }
-        // senpi `_promptAgent`: a new turn admitted owns the held handler waits it starts.
+        // senpi `_promptAgent`: a new turn admitted arms the inactivity lease and the hard max-runtime cap,
+        // and owns the held handler waits it starts.
+        if let Some(tracker) = self.deadline_tracker.get() {
+            tracker.arm();
+        }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         lock(&self.transcript_write_failures).start_run();
         if let Some(kept) = lock(&self.transcript_write_failures).take_refused_out(&self.messages())
@@ -17015,6 +17153,10 @@ impl AgentSession {
                     "custom message left pending queue without being appended",
                 );
                 session.release_idle_runtime_messages();
+                // senpi `_emitAgentIdleAfterDeferredTurns`: the run settled idle; its deadline is over.
+                if let Some(tracker) = session.deadline_tracker.get() {
+                    tracker.disarm();
+                }
                 session.emit(AgentSessionEvent::AgentIdle);
             }
             // Run settlement is a settle point even when a deferred turn takes over above.
@@ -18793,7 +18935,11 @@ impl AgentSession {
         if crate::input_origin::custom_turn_origin(&message.custom_type) == InputOrigin::Engine {
             self.record_engine_turn_start(&message.custom_type);
         }
-        // senpi `_promptAgent`: a new turn admitted owns the held handler waits it starts.
+        // senpi `_promptAgent`: a new turn admitted arms the inactivity lease and the hard max-runtime cap,
+        // and owns the held handler waits it starts.
+        if let Some(tracker) = self.deadline_tracker.get() {
+            tracker.arm();
+        }
         self.handler_turn_scope.fetch_add(1, Ordering::SeqCst);
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.hydrate_runtime_messages_for_run();
@@ -19326,6 +19472,9 @@ impl AgentSession {
         self.state().disposed = true;
         self.lifecycle_disposed.store(true, Ordering::SeqCst);
         lock(&self.engine_turn_hold).invalidate();
+        if let Some(tracker) = self.deadline_tracker.get() {
+            tracker.disarm();
+        }
         lock(&self.settled_delivery).cancel();
         self.fail_all_queued_custom_receipts("session disposed before custom message delivery");
         if let Some(controller) = self.state().session_title_abort_controller.take() {
@@ -27025,6 +27174,98 @@ mod tests {
             stalled_log_stages(agent_dir.path(), "turn_start"),
             ["released"]
         );
+        session.dispose().await;
+    }
+
+    // senpi#3227 / #3650: the session's own turn deadline, armed at prompt admission, stops a run held by an
+    // extension handler no abort reaches: it records the durable stop, captures it for the run's lifecycle,
+    // and releases the turn's held handler waits after the grace so the run settles.
+    #[tokio::test(start_paused = true)]
+    async fn the_turn_deadline_stops_a_held_run_and_releases_its_handlers() {
+        use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_streams};
+        let agent_dir = tempfile::tempdir().expect("agent dir");
+        let session = test_session_in_agent_dir(agent_dir.path());
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            ..Default::default()
+        })
+        .expect("valid faux provider");
+        provider.set_responses(vec![
+            maho_ai::providers::faux::faux_assistant_message("unreached", Default::default())
+                .into(),
+        ]);
+        let streams = faux_streams(provider.core.clone());
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        session
+            .agent
+            .set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session
+            .agent
+            .set_stream_function(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            }));
+        // No handler budget and no inactivity lease: only the max-runtime cap can end the held run.
+        handler_budget_settings(&session, 0, 0);
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([
+                ("turn_inactivity_ms".to_owned(), json!(0)),
+                ("turn_max_runtime_ms".to_owned(), json!(1_000)),
+            ]))
+        });
+        let errors = collect_extension_errors(&session);
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let extension = held_turn_start_extension(&session, started);
+        session
+            .set_extension_runner(maho_ext_host::ExtensionRunner::new(
+                vec![extension],
+                Default::default(),
+                Default::default(),
+                test_extension_context(&session),
+            ))
+            .await;
+        assert_eq!(session.current_deadline(), None);
+
+        let held = async {
+            starts.recv().await.expect("held handler started");
+            // The run is live and held; nothing but the deadline acts on it from here.
+            assert!(session.agent_run_active.load(Ordering::SeqCst));
+            lock(&session.lifecycle).run_id.clone().expect("run id")
+        };
+        // Without the armed deadline the held turn_start never settles and this times out.
+        let (_prompted, run_id) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(session.prompt("start", Default::default()), held)
+        })
+        .await
+        .expect("the turn deadline ends the held run");
+
+        assert!(!session.is_streaming());
+        let deadline = session.current_deadline().expect("the deadline that stopped the turn");
+        assert_eq!(
+            deadline.kind,
+            crate::turn_deadline::TurnDeadlineKind::MaxRuntime
+        );
+        assert_eq!(deadline.limit_ms, 1_000);
+        let pending = session.with_session_manager(|manager| {
+            crate::turn_deadline::deadline_stop_pending_since_last_turn(&manager.branch(None))
+        });
+        assert_eq!(
+            pending.map(|stop| stop.kind),
+            Some(crate::turn_deadline::TurnDeadlineKind::MaxRuntime)
+        );
+        let captured = lock(&session.lifecycle_deadline_stop)
+            .clone()
+            .expect("the lifecycle captured the stop");
+        assert_eq!(captured.run_id, run_id);
+        assert_eq!(
+            captured.kind,
+            crate::session_lifecycle_types::LifecycleDeadlineKind::MaxRuntime
+        );
+        assert_eq!(captured.persisted, None);
+        let errors = lock(&errors).clone();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].event, "turn_start");
+        assert_eq!(errors[0].error, "handler released by the turn deadline");
         session.dispose().await;
     }
 
