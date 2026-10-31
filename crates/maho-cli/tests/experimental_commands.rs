@@ -131,3 +131,35 @@ fn upstream_rejects_invalid_experimental_input() {
 fn upstream_rejects_unsupported_options_without_parsing_them_through_the_stable_cli() {
     assert_eq!(parse_client(&args(&["--tui-mode", "wrong", "--model", "claude-sonnet"])).err().unwrap(), vec![UNSUPPORTED_CLIENT_OPTIONS.to_owned()]);
 }
+
+// senpi client.ts/server.ts `.action((command, context) => context.runClient/runServer(command))`:
+// executing the built command hands the parsed command to the context; a rejected argv never does.
+#[derive(Default)]
+struct RecordingContext { servers: std::sync::Mutex<Vec<Option<String>>>, clients: std::sync::Mutex<Vec<Option<String>>> }
+impl maho_cli::cli::experimental::commands::server::ServerCommandContext for RecordingContext {
+    fn run_server(&self, command: maho_cli::cli::experimental::commands::server::ServerCommand) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+        self.servers.lock().unwrap().push(command.model);
+        Box::pin(async { Ok(()) })
+    }
+}
+impl maho_cli::cli::experimental::commands::client::ClientCommandContext for RecordingContext {
+    fn run_client(&self, command: maho_cli::cli::experimental::commands::client::ClientCommand) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+        self.clients.lock().unwrap().push(command.prompt);
+        Box::pin(async { Ok(()) })
+    }
+}
+#[tokio::test]
+async fn executing_the_commands_hands_the_built_command_to_the_context_action() {
+    use maho_cli::cli::experimental::commands::{client::client_command, server::server_command};
+    let context = std::sync::Arc::new(RecordingContext::default());
+    let server = server_command().expect("server command");
+    let served = server.execute(&args(&["--provider", "openai", "--model", "gpt-5"]), context.clone()).await.expect("action");
+    assert!(served.is_ok());
+    let refused = server.execute(&args(&["--provider", "openai"]), context.clone()).await.expect("no action error");
+    assert_eq!(refused.err(), Some(vec!["--provider requires --model".to_owned()]));
+    assert_eq!(*context.servers.lock().unwrap(), vec![Some("gpt-5".to_owned())]);
+    let client = client_command().expect("client command");
+    assert!(client.execute(&args(&["--", "hello"]), context.clone()).await.expect("action").is_ok());
+    assert!(client.execute(&args(&["--continue", "--resume"]), context.clone()).await.expect("no action error").is_err());
+    assert_eq!(*context.clients.lock().unwrap(), vec![Some("hello".to_owned())]);
+}
