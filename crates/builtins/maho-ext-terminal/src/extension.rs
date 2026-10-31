@@ -3093,6 +3093,100 @@ mod persistence_tests {
         teardown(&fixture);
     }
 
+    /// 02a7938a0: `own` binds the writer and installs the lifecycle under one hold of the state
+    /// lock. A monitor call that lands between the bind and the install (interleaved through the
+    /// after-bind seam) must wait for the lifecycle and record through it; with the lock free at
+    /// that instant it would see the session bound with no lifecycle and drop its spec.
+    #[tokio::test]
+    async fn a_monitor_call_between_bind_and_install_records_its_spec() {
+        // Its own session id: the binding map and the after-bind seam are process-wide.
+        let session = "terminal-bind-race";
+        let mut fixture = fixture(1, None);
+        fixture.encoded = maho_core::session_sidecar_store::encoded_session_id(session);
+        fixture.context.encoded = fixture.encoded.clone();
+        let mut lifecycle =
+            crate::terminal_state::TerminalStateLifecycle::new(&fixture.session_dir, session);
+        assert_eq!(
+            lifecycle
+                .acquire(
+                    &fixture.terminal_dir,
+                    &fixture.encoded,
+                    f64::from(std::process::id()),
+                    terminal_now_ms()
+                )
+                .unwrap(),
+            crate::terminal_state::TerminalStateAdoption::Acquired
+        );
+        let registration = || crate::terminal_manifest_model::MonitorRegistration {
+            monitor_id: "mon_BINDRACE00000001".into(),
+            spec: crate::terminal_manifest_model::MonitorSpec::Command {
+                description: "between bind and install".into(),
+                command: "cat".into(),
+                filter: None,
+                human_input: None,
+                wakes_per_hour: None,
+                cwd: None,
+                persistent: true,
+            },
+        };
+        let handed: Arc<Mutex<Option<tokio::task::JoinHandle<bool>>>> = Arc::default();
+        let hook_handed = handed.clone();
+        let state = fixture.context.state.clone();
+        crate::tools::monitor_manifest_binding::set_after_bind_hook(
+            session,
+            Box::new(move || {
+                // The registered monitor tool's protocol: take the state lock, record through the
+                // installed lifecycle, else hand the spec to the binding (dropped when bound).
+                let task = match state.clone().try_lock_owned() {
+                    Ok(slot) => {
+                        let kept = slot.is_none()
+                            && crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                                Some(session),
+                                registration(),
+                            )
+                            .is_none();
+                        tokio::spawn(async move { kept })
+                    }
+                    Err(_) => tokio::spawn(async move {
+                        let mut slot = state.lock().await;
+                        match slot.as_mut() {
+                            Some(lifecycle) => {
+                                lifecycle
+                                    .writer
+                                    .record_register(registration(), terminal_now_ms())
+                                    .await;
+                                true
+                            }
+                            None => crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                                Some(session),
+                                registration(),
+                            )
+                            .is_none(),
+                        }
+                    }),
+                };
+                *hook_handed.lock().unwrap() = Some(task);
+            }),
+        );
+        fixture.context.own(lifecycle, terminal_now_ms()).await;
+        let task = handed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the monitor call ran between bind and install");
+        assert!(
+            task.await.unwrap(),
+            "a spec handed off between bind and install is recorded, not dropped"
+        );
+        decided(&mut fixture).await;
+        let mut lifecycle = fixture.context.state.lock().await.take().unwrap();
+        crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(session);
+        lifecycle.record_shutdown(terminal_now_ms()).await;
+        lifecycle.release().unwrap();
+        assert_eq!(manifest_ids(&fixture), ["mon_BINDRACE00000001"]);
+        teardown(&fixture);
+    }
+
     /// extension-state.ts `bundleSinks.onMonitorEnded`: a watch that ended (exit, timeout, kill)
     /// loses its restore baseline dir; a disposed one (shutdown or reload) keeps it, and an event
     /// with no stable id or no durable state dir removes nothing.

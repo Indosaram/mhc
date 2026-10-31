@@ -44,9 +44,34 @@ pub fn bind_terminal_manifest_writer(session_id: &str) -> Vec<MonitorRegistratio
 
 /// `bindTerminalManifestWriter` followed by the drain: every queued spec is recorded in order.
 pub async fn bind_and_drain(session_id: &str, writer: &mut TerminalManifestWriter, now: f64) {
-    for registration in bind_terminal_manifest_writer(session_id) {
+    let drained = bind_terminal_manifest_writer(session_id);
+    #[cfg(test)]
+    {
+        let hook = after_bind_hooks().remove(session_id);
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    for registration in drained {
         writer.record_register(registration, now).await;
     }
+}
+
+/// Test seam: a one-shot callback run right after a session's writer is bound, before the caller
+/// installs the lifecycle that holds it, so a test can interleave a monitor call at that instant.
+#[cfg(test)]
+type AfterBindHook = Box<dyn FnOnce() + Send>;
+#[cfg(test)]
+fn after_bind_hooks() -> std::sync::MutexGuard<'static, BTreeMap<String, AfterBindHook>> {
+    static HOOKS: OnceLock<Mutex<BTreeMap<String, AfterBindHook>>> = OnceLock::new();
+    HOOKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+#[cfg(test)]
+pub(crate) fn set_after_bind_hook(session_id: &str, hook: AfterBindHook) {
+    after_bind_hooks().insert(session_id.to_owned(), hook);
 }
 
 pub fn unbind_terminal_manifest_writer(session_id: &str) {
