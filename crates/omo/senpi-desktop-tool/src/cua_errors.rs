@@ -15,6 +15,10 @@ fn engine_to_computer_code(code: &str) -> &'static str {
         "CursorRestoreFailed" => "COMPUTER_CURSOR_RESTORE_FAILED",
         "FocusRestoreFailed" => "COMPUTER_FOCUS_RESTORE_FAILED",
         "BackgroundUnavailable" => "COMPUTER_BACKGROUND_UNAVAILABLE",
+        "UserIntervened" => "COMPUTER_USER_INTERVENED",
+        "AxUnconfirmed" => "COMPUTER_AX_UNCONFIRMED",
+        "SpaceUnsupported" => "COMPUTER_SPACE_UNSUPPORTED",
+        "SpaceMoveDenied" => "COMPUTER_SPACE_MOVE_DENIED",
         "Cancelled" | "Timeout" | "timeout" | "aborted" => "COMPUTER_CANCELLED",
         other if other.starts_with("COMPUTER_") => "COMPUTER_CUSTOM",
         _ => "COMPUTER_ERROR",
@@ -49,6 +53,22 @@ fn recovery_hint(code: &str, stop_hotkey: &str) -> Option<String> {
         ),
         "COMPUTER_BACKGROUND_UNAVAILABLE" => Some(
             "This window cannot take background input; use the computer tool's accessibility actions instead."
+                .to_string(),
+        ),
+        "COMPUTER_USER_INTERVENED" => Some(
+            "The user is working in this window. Read the window again after the user pauses and decide from what it shows now; never repeat the action as it was."
+                .to_string(),
+        ),
+        "COMPUTER_AX_UNCONFIRMED" => Some(
+            "The app did not confirm the accessibility request, so it may already have taken effect. Read the element or window back before any retry."
+                .to_string(),
+        ),
+        "COMPUTER_SPACE_UNSUPPORTED" => Some(
+            "Moving windows between Spaces is not available here; ask the user to bring the window to the current Space."
+                .to_string(),
+        ),
+        "COMPUTER_SPACE_MOVE_DENIED" => Some(
+            "The window could not be moved to the current Space; ask the user to bring it over, then read the window again."
                 .to_string(),
         ),
         _ => None,

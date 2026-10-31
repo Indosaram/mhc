@@ -263,6 +263,12 @@ fn optional_token(label: &str, value: Option<&str>) -> Option<String> {
 
 fn task_send_result_row(details: &SendResultDetails) -> ResultRow {
     match details {
+        SendResultDetails::Unresponsive {
+            task_id, reason, ..
+        } => row(
+            ThemeColor::Muted,
+            format!("task_send unresponsive {task_id}: {reason}"),
+        ),
         SendResultDetails::Steered {
             task_id,
             status,
@@ -457,5 +463,21 @@ mod held_parity_tests {
             entry_id: "entry".into(),
         });
         assert_eq!(result.color, ThemeColor::Muted);
+    }
+}
+
+#[cfg(test)]
+mod unresponsive_row_tests {
+    use super::*;
+
+    #[test]
+    fn an_unresponsive_send_renders_a_muted_row_with_its_reason() {
+        let result = task_send_result_row(&SendResultDetails::Unresponsive {
+            task_id: "st_1".into(),
+            retryable: true,
+            reason: "nothing was sent".into(),
+        });
+        assert_eq!(result.color, ThemeColor::Muted);
+        assert_eq!(result.text, "task_send unresponsive st_1: nothing was sent");
     }
 }

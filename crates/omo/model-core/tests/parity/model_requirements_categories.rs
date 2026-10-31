@@ -155,7 +155,7 @@ fn visual_engineering_starts_with_argon_low() {
 }
 
 #[test]
-fn visual_engineering_follows_the_approved_4_rung_chain() {
+fn visual_engineering_follows_the_approved_5_rung_chain_with_the_gated_fable_5_5_rung_dropped() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain,
         vec![
@@ -181,15 +181,11 @@ fn visual_engineering_follows_the_approved_4_rung_chain() {
                 Some("max")
             ),
             entry(
-                &[
-                    "kimi-for-coding",
-                    "moonshotai",
-                    "opencode-go",
-                    "opencode"
-                ],
-                "kimi-k3",
+                &["kimi-for-coding", "moonshotai", "opencode-go"],
+                "kimi-k3.1-pro",
                 Some("max")
             ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
         ]
     );
 }
@@ -316,21 +312,17 @@ fn unspecified_high_follows_the_approved_opus_first_3_rung_chain() {
                 Some("max")
             ),
             entry(
-                &[
-                    "kimi-for-coding",
-                    "moonshotai",
-                    "opencode-go",
-                    "opencode"
-                ],
-                "kimi-k3",
+                &["kimi-for-coding", "moonshotai", "opencode-go"],
+                "kimi-k3.1-pro",
                 Some("max")
             ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
         ]
     );
 }
 
 #[test]
-fn artistry_follows_the_approved_3_rung_chain() {
+fn artistry_follows_the_approved_4_rung_chain_with_the_gated_fable_5_5_rung_dropped() {
     assert_eq!(
         CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,
         vec![
@@ -355,15 +347,11 @@ fn artistry_follows_the_approved_3_rung_chain() {
                 Some("max")
             ),
             entry(
-                &[
-                    "kimi-for-coding",
-                    "moonshotai",
-                    "opencode-go",
-                    "opencode"
-                ],
-                "kimi-k3",
+                &["kimi-for-coding", "moonshotai", "opencode-go"],
+                "kimi-k3.1-pro",
                 Some("max")
             ),
+            entry(&["opencode"], "kimi-k3", Some("max")),
         ]
     );
 }

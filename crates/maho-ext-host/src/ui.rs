@@ -10,10 +10,9 @@ pub struct LifecycleUi {
     observer: PromptObserver,
     prompts: PromptState,
 }
-struct PromptGuard { state: PromptState, observer: PromptObserver, inert: bool }
+struct PromptGuard { state: PromptState, observer: PromptObserver }
 impl Drop for PromptGuard {
     fn drop(&mut self) {
-        if self.inert { return; }
         let prompt = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.0 = state.0.saturating_sub(1);
@@ -27,12 +26,7 @@ impl LifecycleUi {
         Self { inner, runtime, observer, prompts: Arc::default() }
     }
     fn begin(&self, kind: UiPromptKind, title: Option<&str>) -> Result<PromptGuard, ExtensionFailure> {
-        self.begin_with(kind, title, false)
-    }
-    /// An `ephemeral` dialog is private and local: it emits no generic blocked event or pending marker.
-    fn begin_with(&self, kind: UiPromptKind, title: Option<&str>, ephemeral: bool) -> Result<PromptGuard, ExtensionFailure> {
         self.runtime.assert_active()?;
-        if ephemeral { return Ok(PromptGuard { state: self.prompts.clone(), observer: self.observer.clone(), inert: true }); }
         let title = title.filter(|title| !title.is_empty()).map(str::to_owned);
         let outer = {
             let mut state = self.prompts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -42,25 +36,35 @@ impl LifecycleUi {
             outer
         };
         if outer { (self.observer)(ExtensionEvent::UiPromptStart { kind, title }); }
-        Ok(PromptGuard { state: self.prompts.clone(), observer: self.observer.clone(), inert: false })
+        Ok(PromptGuard { state: self.prompts.clone(), observer: self.observer.clone() })
     }
     fn active(&self) {
         if let Err(error) = self.runtime.assert_active() { std::panic::panic_any(error); }
     }
 }
 impl ExtensionUi for LifecycleUi {
-    fn supports_subagent_cost(&self) -> bool { self.active(); self.inner.supports_subagent_cost() }
-    fn set_subagent_cost(&self, cost: Option<f64>) { self.active(); self.inner.set_subagent_cost(cost); }
+    fn supports_subagent_cost(&self) -> bool {
+        if self.runtime.assert_active().is_err() {
+            return false;
+        }
+        self.inner.supports_subagent_cost()
+    }
+    fn set_subagent_cost(&self, cost: Option<f64>) {
+        if self.runtime.assert_active().is_err() {
+            return;
+        }
+        self.inner.set_subagent_cost(cost);
+    }
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { self.active(); self.inner.actions().map(|_| self as &dyn ExtensionUiActions) }
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { self.active(); self.inner.factories().map(|_| self as &dyn ExtensionUiFactories) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
-        Box::pin(async move { let _guard = self.begin_with(UiPromptKind::Select, Some(title), dialog.ephemeral).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.select(title, options, dialog).await; self.active(); result })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Select, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.select(title, options, dialog).await; self.active(); result })
     }
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, dialog: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
-        Box::pin(async move { let _guard = self.begin_with(UiPromptKind::Confirm, Some(title), dialog.ephemeral).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.confirm(title, message, dialog).await; self.active(); result })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Confirm, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.confirm(title, message, dialog).await; self.active(); result })
     }
     fn input<'a>(&'a self, title: &'a str, placeholder: Option<&'a str>, dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
-        Box::pin(async move { let _guard = self.begin_with(UiPromptKind::Input, Some(title), dialog.ephemeral).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.input(title, placeholder, dialog).await; self.active(); result })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Input, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.input(title, placeholder, dialog).await; self.active(); result })
     }
     fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> {
         Box::pin(async move { let _guard = self.begin(UiPromptKind::Editor, Some(title))?; let result = self.inner.editor(title, prefill).await?; self.runtime.assert_active()?; Ok(result) })

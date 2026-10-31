@@ -65,6 +65,20 @@ pub fn outer_kitty_graphics_mode(client_termname: &str) -> Option<&'static str> 
         .then_some("placeholder")
 }
 
+/// VS Code's integrated terminal normally sets `TERM_PROGRAM=vscode`, but a terminal reached through
+/// WSL (or a shell profile that resets it) can arrive with `TERM_PROGRAM` empty (#2826). VS Code sets
+/// `VSCODE_IPC_HOOK_CLI` in every integrated terminal, local or remote. Every process started from that
+/// terminal inherits it too, so it counts only when `TERM_PROGRAM` is empty: a terminal that sets
+/// `TERM_PROGRAM` has claimed the session. Both detectors check this after every other terminal.
+pub fn is_vs_code_terminal(env: &Env) -> bool {
+    let term_program = env
+        .get("TERM_PROGRAM")
+        .map(|v| v.to_lowercase())
+        .unwrap_or_default();
+    term_program == "vscode"
+        || (term_program.is_empty() && process_env::truthy(env, "VSCODE_IPC_HOOK_CLI"))
+}
+
 const fn caps(
     images: Option<ImageProtocol>,
     true_color: bool,
@@ -141,14 +155,14 @@ pub fn detect_terminal_capabilities_in(
     if has("WT_SESSION") {
         return caps(None, true, true);
     }
-    if term_program == "vscode" {
-        return caps(None, true, true);
+    if term.starts_with("screen") {
+        return caps(None, true_color, false);
     }
     if has("CMUX_WORKSPACE_ID") || terminal_emulator.contains("JetBrains") {
         return caps(None, true, false);
     }
-    if term.starts_with("screen") {
-        return caps(None, true_color, false);
+    if is_vs_code_terminal(env) {
+        return caps(None, true, true);
     }
     // Windows Terminal does not always set WT_SESSION; modern Windows consoles support truecolor.
     if platform == "win32" {
@@ -204,6 +218,49 @@ mod tests {
         assert_eq!(win, caps(None, true, false));
         assert!(d(&[("TERM", "xterm-truecolor-direct")]).true_color);
         assert!(!d(&[("TERM", "xterm-256color")]).true_color);
+    }
+
+    const REMOTE_WSL_VS_CODE: [(&str, &str); 3] = [
+        ("TERM", "xterm-256color"),
+        ("VSCODE_IPC_HOOK_CLI", "/run/user/1000/vscode-ipc-1.sock"),
+        ("VSCODE_GIT_IPC_HANDLE", "/run/user/1000/vscode-git-1.sock"),
+    ];
+
+    fn with_extra(extra: &[(&'static str, &'static str)]) -> Env {
+        let mut pairs: Vec<(&str, &str)> = REMOTE_WSL_VS_CODE.to_vec();
+        for (key, value) in extra {
+            pairs.retain(|(k, _)| k != key);
+            pairs.push((key, value));
+        }
+        env_from(&pairs)
+    }
+
+    #[test]
+    fn vs_code_without_term_program_turns_hyperlinks_on() {
+        let env = env_from(&REMOTE_WSL_VS_CODE);
+        assert!(is_vs_code_terminal(&env));
+        assert!(detect_terminal_capabilities_in(&env, "linux", None).hyperlinks);
+        let git_only = env_from(&[
+            ("TERM", "xterm-256color"),
+            ("VSCODE_GIT_IPC_HANDLE", "/run/user/1000/vscode-git-1.sock"),
+        ]);
+        assert!(!is_vs_code_terminal(&git_only));
+        let plain = env_from(&[("TERM", "xterm-256color")]);
+        assert!(!detect_terminal_capabilities_in(&plain, "linux", None).hyperlinks);
+    }
+
+    #[test]
+    fn a_more_specific_terminal_wins_over_the_inherited_vs_code_marker() {
+        let other = with_extra(&[("TERM_PROGRAM", "someterm")]);
+        assert!(!detect_terminal_capabilities_in(&other, "linux", None).hyperlinks);
+        for env in [
+            with_extra(&[("TERM", "screen-256color")]),
+            with_extra(&[("TERM", "screen-256color"), ("TERM_PROGRAM", "vscode")]),
+        ] {
+            assert!(!detect_terminal_capabilities_in(&env, "linux", None).hyperlinks);
+        }
+        let jetbrains = with_extra(&[("TERMINAL_EMULATOR", "JetBrains-JediTerm")]);
+        assert!(!detect_terminal_capabilities_in(&jetbrains, "linux", None).hyperlinks);
     }
 
     #[test]

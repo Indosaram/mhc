@@ -9,6 +9,7 @@ autotests = false
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+maho-core = { path = "../../maho-core" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time", "rt", "macros"] }

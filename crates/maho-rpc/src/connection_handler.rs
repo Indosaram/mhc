@@ -586,6 +586,12 @@ pub fn build_rpc_session_state_with_dialogs(
     if let Some(rate) = usage_totals.latest_cache_hit_rate {
         state["usageTotals"]["latestCacheHitRate"] = rate.into();
     }
+    // Session-generation receipts of answered UI requests (senpi `answeredUiRequests`).
+    state["answeredUiRequests"] =
+        crate::ui_answer_ledger::session_ui_answer_ledger(&session.session_id())
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot();
     if let Some(thinking_selection) = session.thinking_selection()
         && let Ok(value) = serde_json::to_value(thinking_selection)
     {
@@ -618,7 +624,7 @@ pub fn build_rpc_session_state_with_dialogs(
     state
 }
 /// The leading capabilities of the classic `get_protocol_info` list that precede the negotiated ones.
-const CLASSIC_BASE_CAPABILITIES: usize = 3;
+const CLASSIC_BASE_CAPABILITIES: usize = 6;
 pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
@@ -925,7 +931,25 @@ async fn handle_session_command_with_sink(
             if let Some(usage)=stats.context_usage{value["contextUsage"]=serde_json::json!({"tokens":usage.tokens,"contextWindow":usage.context_window,"percent":usage.percent});}
             ("get_session_stats",Ok(Some(value)))
         },
-        RpcCommandBody::GetEntries{since}=>{let since=since.clone();("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since.as_deref(){let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))}))},
+        RpcCommandBody::GetEntries{since,before,limit,tail,max_bytes}=>{
+            // senpi `answerGetEntries`: one answer for every surface, forward (`limit`) or backward (`tail`) pages.
+            let args=crate::get_entries_command::GetEntriesArgs{since:since.clone(),before:before.clone(),page:crate::get_entries_page::EntryPageRequest{limit:limit.clone(),tail:tail.clone(),max_bytes:max_bytes.clone()}};
+            match session.with_session_manager(|manager|crate::get_entries_command::answer_get_entries(&manager.entries(),manager.leaf_id(),&args)){
+                Ok(data)=>("get_entries",Ok(Some(data))),
+                Err(refusal)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_entries".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:refusal.message,error_code:Some(refusal.code.into()),error_data:default_error_data(session,"get_entries")}}),
+            }
+        },
+        RpcCommandBody::GetSnapshot{tail,max_bytes}=>{
+            // Capture and mark on this loop, before any response-writing await (senpi `getSnapshot`).
+            let (tail,max_bytes)=match crate::get_snapshot::snapshot_bounds(tail.as_ref(),max_bytes.as_ref()){
+                Ok(bounds)=>bounds,
+                Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_snapshot".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error,error_code:Some(crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT.into()),error_data:default_error_data(session,"get_snapshot")}}),
+            };
+            let state=build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new());
+            let (data,marker_id)=session.with_session_manager(|manager|crate::get_snapshot::build_snapshot(state,&manager.entries(),tail,max_bytes));
+            if command.session_id.is_some()&&let Some(sink)=sink.as_ref(){sink(serde_json::json!({"type":crate::get_snapshot::SNAPSHOT_MARKER,"markerId":marker_id}));}
+            ("get_snapshot",Ok(Some(data)))
+        },
         RpcCommandBody::NavigateTree{entry_id,target_id,intent,expected_leaf_id,summarize,custom_instructions,replace_instructions,label}=>{
             if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None}});}
             if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires entryId or targetId".into(),error_code:None}});}
@@ -1028,8 +1052,8 @@ async fn handle_session_command_with_sink(
         },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new())))),
         RpcCommandBody::ResumeSession=>("resume_session",session.resume_session().await.map(|()|None)),
-        // The session keeps no draft-activity state in this port; the validated command is acknowledged (kind is a closed enum).
-        RpcCommandBody::RecordUserActivity{..}=>("record_user_activity",Ok(None)),
+        // senpi `session.recordUserActivity("draft")`: the only accepted kind (closed enum) reaches the session's activity listeners.
+        RpcCommandBody::RecordUserActivity{..}=>{session.record_user_activity(maho_core::agent_session::UserActivityKind::Draft);("record_user_activity",Ok(None))},
         RpcCommandBody::GetTree => {
             fn tree_node(node: maho_core::session_manager::SessionTreeNode) -> serde_json::Value {
                 let mut value = serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>()});
@@ -1104,7 +1128,8 @@ async fn handle_session_command_with_sink(
             let argv=std::env::args().skip(1).collect::<Vec<_>>();
             let cwd=std::env::current_dir().map(|cwd|cwd.to_string_lossy().into_owned()).unwrap_or_default();
             let mut data=crate::protocol_identity::host_launch_profile(&argv,&cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&env));
-            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned()];
+            // senpi v2026.10.27-2: the classic binding answers get_snapshot, the UI-answer ledger and backward `tail` pages too.
+            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY.to_owned(),crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY.to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned(),crate::custom_capability::ENTRIES_TAIL_CAPABILITY.to_owned()];
             for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if !capabilities.contains(&capability){capabilities.push(capability);}}
             data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
             data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
@@ -1116,6 +1141,8 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ReleaseSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"release_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: release_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::SetSessionContext{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_session_context".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: set_session_context".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::AttachSession{..}|RpcCommandBody::ReleaseAttachment|RpcCommandBody::ReclaimSession{..}=>{let kind=match &command.body{RpcCommandBody::AttachSession{..}=>"attach_session",RpcCommandBody::ReleaseAttachment=>"release_attachment",_=>"reclaim_session"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
+        RpcCommandBody::SubscribeSessions|RpcCommandBody::UnsubscribeSessions=>{let kind=if matches!(command.body,RpcCommandBody::SubscribeSessions){"subscribe_sessions"}else{"unsubscribe_sessions"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse {
@@ -1451,6 +1478,7 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
             .ask(request.clone(), None, now);
         (self.out)(frame);
         let questions = self.questions.clone();
+        let out = self.out.clone();
         Box::pin(async move {
             match tokio::time::timeout(
                 std::time::Duration::from_millis(request.timeout_ms),
@@ -1460,11 +1488,19 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
             {
                 Ok(Ok(response)) => Ok(response),
                 _ => {
-                    let deadline = now.saturating_add(request.timeout_ms);
-                    questions
+                    let deadline = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or_else(
+                            |_| now.saturating_add(request.timeout_ms),
+                            |elapsed| elapsed.as_millis() as u64,
+                        );
+                    let resolved = questions
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .expire(deadline);
+                    for record in resolved {
+                        (out)(record);
+                    }
                     Ok(maho_ext_api::QuestionResponse {
                         status: maho_ext_api::QuestionStatus::TimedOut,
                         answers: Default::default(),
@@ -1926,6 +1962,27 @@ impl RpcConnectionHandler {
         self.connection_roles = roles;
         self
     }
+    /// senpi `uiRequestChanged` for a hosted session: every dialog registration and settlement is reported as a
+    /// `ui_request_pending`/`ui_request_settled` observation record on `out` (dialog observers, senpi#4266).
+    pub fn report_ui_request_changes(&self, out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>) {
+        let dialogs = out.clone();
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_changed(Box::new(move |change| {
+                if let Some(change) = change {
+                    dialogs(change.record());
+                }
+            }));
+        self.questions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_changed(Box::new(move |change| {
+                if let Some(change) = change {
+                    out(change.record());
+                }
+            }));
+    }
     pub fn ui(&self) -> &std::sync::Arc<RpcExtensionUi> {
         &self.ui
     }
@@ -1945,6 +2002,49 @@ impl RpcConnectionHandler {
                 Some("extension_ui_response" | "extension_ui_progress")
             )
         {
+            let reply_to = || {
+                serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response"})
+            };
+            // A named answer (`answerId`) asks for a receipt (senpi `settleExtensionUiResponse`).
+            let is_response = value["type"] == "extension_ui_response";
+            let answer_id = if is_response {
+                match crate::ui_answer_ledger::valid_answer_id(value) {
+                    Ok(answer_id) => answer_id.map(str::to_owned),
+                    Err(()) => {
+                        let mut reply = reply_to();
+                        reply["success"] = false.into();
+                        reply["error"] = "invalid_answer_id".into();
+                        return crate::jsonl::serialize_json_line(&reply).map(Some);
+                    }
+                }
+            } else {
+                None
+            };
+            let request_id = crate::extension_ui_response::answered_ui_request_id(value)
+                .unwrap_or_default()
+                .to_owned();
+            let ledger = crate::ui_answer_ledger::session_ui_answer_ledger(&self.session.session_id());
+            if answer_id.is_some() {
+                let receipt = ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lookup(&request_id, answer_id.as_deref());
+                if let Some(receipt) = receipt {
+                    let mut reply = reply_to();
+                    match receipt {
+                        crate::ui_answer_ledger::LedgerLookup::Replay => {
+                            reply["success"] = true.into();
+                            reply["disposition"] = "replay".into();
+                        }
+                        crate::ui_answer_ledger::LedgerLookup::AlreadyAnswered => {
+                            reply["success"] = false.into();
+                            reply["error"] = "already_answered".into();
+                            reply["disposition"] = "already_answered".into();
+                        }
+                    }
+                    return crate::jsonl::serialize_json_line(&reply).map(Some);
+                }
+            }
             let mut answer = value.clone();
             if let Some(id) = crate::extension_ui_response::answered_ui_request_id(value) {
                 answer["id"] = id.into();
@@ -1971,6 +2071,18 @@ impl RpcConnectionHandler {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            if value["type"] == "extension_ui_progress" {
+                if let Some(record) = self
+                    .questions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .progress(value, now)
+                {
+                    self.out_record(record);
+                }
+                return Ok(None);
+            }
+            let mut dialog_matched = false;
             let (kind, resolved) = self
                 .questions
                 .lock()
@@ -1979,6 +2091,12 @@ impl RpcConnectionHandler {
             let error = match kind {
                 crate::connection_question_bridge::QuestionReply::Incomplete => {
                     Some("question_incomplete")
+                }
+                // A named answer to a settled question is unknown to it, never a second answer.
+                crate::connection_question_bridge::QuestionReply::AlreadyResolved
+                    if answer_id.is_some() =>
+                {
+                    Some("unknown_extension_ui_request")
                 }
                 crate::connection_question_bridge::QuestionReply::AlreadyResolved => {
                     Some("question_already_resolved")
@@ -1989,7 +2107,8 @@ impl RpcConnectionHandler {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .resolve(value.clone());
-                    if !matched && connection.is_some() {
+                    dialog_matched = matched;
+                    if !matched && (connection.is_some() || answer_id.is_some()) {
                         Some("unknown_extension_ui_request")
                     } else {
                         None
@@ -2000,13 +2119,34 @@ impl RpcConnectionHandler {
             if let Some(record) = resolved {
                 self.out_record(record);
             }
+            let applied = error.is_none()
+                && (kind == crate::connection_question_bridge::QuestionReply::Accepted
+                    || dialog_matched);
+            if applied && is_response {
+                ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .record(&request_id, answer_id.as_deref());
+            }
             if error.is_some()
                 || kind == crate::connection_question_bridge::QuestionReply::Accepted
                 || connection.is_some()
+                || answer_id.is_some()
             {
-                let mut reply = serde_json::json!({"id":parsed.as_ref().map(|frame|frame["id"].clone()),"type":"response","command":"extension_ui_response","success":error.is_none()});
+                let mut reply = reply_to();
+                reply["success"] = error.is_none().into();
                 if let Some(error) = error {
                     reply["error"] = error.into();
+                    let disposition = match error {
+                        "question_already_resolved" => Some("already_answered"),
+                        "unknown_extension_ui_request" => Some("unknown"),
+                        _ => None,
+                    };
+                    if let Some(disposition) = disposition {
+                        reply["disposition"] = disposition.into();
+                    }
+                } else if is_response {
+                    reply["disposition"] = "applied".into();
                 }
                 return crate::jsonl::serialize_json_line(&reply).map(Some);
             }
@@ -2563,12 +2703,16 @@ mod new_session_tests {
         assert_eq!(info["success"], true);
         assert_eq!(info["data"]["mode"], "classic");
         assert_eq!(info["data"]["protocolVersion"], 1);
-        assert!(
-            info["data"]["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|capability| capability == "multi_session")
+        assert_eq!(
+            info["data"]["capabilities"].as_array().unwrap()[..CLASSIC_BASE_CAPABILITIES],
+            [
+                "multi_session",
+                "snapshot_cursor",
+                "ui_answer_ledger",
+                "auto_title_sessions",
+                "media_placeholders",
+                "entries_tail"
+            ]
         );
         let open = serde_json::to_value(
             handle_session_command(
@@ -3375,6 +3519,108 @@ mod connection_events_tests {
         );
         rendered.release().await;
         plain.release().await;
+    }
+
+    #[tokio::test]
+    async fn test_extension_ui_progress_does_not_settle_question() {
+        let session = session();
+        let (capable, records) = handler(
+            &session,
+            &[crate::custom_capability::QUESTION_CAPABILITY],
+        )
+        .await;
+        let ui = capable.ui().clone();
+        let question_task = tokio::spawn(async move {
+            maho_ext_api::ExtensionUi::question(
+                ui.as_ref(),
+                maho_ext_api::QuestionRequest {
+                    request_id: "req1".into(),
+                    questions: vec![maho_ext_api::Question {
+                        id: "q1".into(),
+                        header: "h".into(),
+                        question: "prompt".into(),
+                        options: vec![],
+                        multi_select: false,
+                    }],
+                    wait_for_answer: true,
+                    timeout_ms: 10_000,
+                },
+                Default::default(),
+            )
+            .await
+        });
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let requests = of_type(&records, "question_request");
+                if let Some(first) = requests.first() {
+                    return first["id"].as_str().expect("id").to_owned();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("question_request frame emitted");
+
+        let progress_line = serde_json::json!({
+            "type": "extension_ui_progress",
+            "id": id,
+            "answers": {"q1": {"selected": ["A"]}}
+        })
+        .to_string();
+        let outcome = capable.handle_input_line(&progress_line).await.expect("handle line");
+        assert!(outcome.is_none());
+
+        assert!(!question_task.is_finished());
+        let updates = of_type(&records, "question_updated");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["id"], id);
+
+        let response_line = serde_json::json!({
+            "type": "extension_ui_response",
+            "id": id,
+            "answers": {"q1": {"selected": ["B"]}}
+        })
+        .to_string();
+        capable.handle_input_line(&response_line).await.expect("handle line");
+
+        let response = question_task.await.expect("task join").expect("response ok");
+        assert_eq!(response.answers.get("q1").unwrap().selected, vec!["B".to_string()]);
+        capable.release().await;
+    }
+
+    #[tokio::test]
+    async fn test_question_timeout_emits_question_resolved_event() {
+        let session = session();
+        let (capable, records) = handler(
+            &session,
+            &[crate::custom_capability::QUESTION_CAPABILITY],
+        )
+        .await;
+        let response = maho_ext_api::ExtensionUi::question(
+            capable.ui().as_ref(),
+            maho_ext_api::QuestionRequest {
+                request_id: "req_timeout".into(),
+                questions: vec![maho_ext_api::Question {
+                    id: "q1".into(),
+                    header: "h".into(),
+                    question: "prompt".into(),
+                    options: vec![],
+                    multi_select: false,
+                }],
+                wait_for_answer: true,
+                timeout_ms: 20,
+            },
+            Default::default(),
+        )
+        .await
+        .expect("response ok");
+        assert_eq!(response.status, maho_ext_api::QuestionStatus::TimedOut);
+
+        let resolved = of_type(&records, "question_resolved");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0]["outcome"], "timed_out");
+        assert_eq!(resolved[0]["requestId"], "req_timeout");
+        capable.release().await;
     }
 }
 #[cfg(test)]

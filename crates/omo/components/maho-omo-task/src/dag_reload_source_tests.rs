@@ -30,7 +30,7 @@ fn summary(run_id: &str, status: senpi_task::dag::types::DagRunStatus, name: &st
 fn given_paused_run_when_live_runs_are_read_then_it_is_reported_with_its_name() {
     let (_root, manager) = manager();
     manager.start(senpi_task::dag::manager::DagStartParams {
-        parent_session_id: "parent".into(), root_session_id: "parent".into(),
+        parent_session_id: "parent".into(), root_session_id: "parent".into(), parent_model: None,
         definition: senpi_task::dag::graph::DagDefinition {
             key: "key".into(), name: "release".into(), nodes: vec![senpi_task::dag::graph::DagNodeInput {
                 id: "node".into(), prompt: "work".into(), target: senpi_task::dag::types::DagNodeTarget::Category("quick".into()),

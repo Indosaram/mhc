@@ -12,8 +12,10 @@ pub enum BackendChoice {
     Auto,
     /// `copy`: always a recursive copy.
     Copy,
-    /// A copy-on-write backend of the original (`apfs`, `btrfs`, ...) that this build does not
-    /// implement; behaves like `Auto` and says so.
+    /// `apfs`, `btrfs`, `zfs`, `reflink`, `overlayfs`, `projfs`, `block-clone`: the copy-on-write
+    /// backend of the original; falls back to `Auto` (with the reason) when it is unavailable.
+    Cow(crate::iso::BackendKind),
+    /// A backend name this build does not know; behaves like `Auto` and says so.
     Unsupported(String),
 }
 
@@ -58,7 +60,11 @@ impl IsolationSettings {
             settings.backend = match backend.trim() {
                 "auto" | "rcopy" | "worktree" | "" => BackendChoice::Auto,
                 "copy" => BackendChoice::Copy,
-                other => BackendChoice::Unsupported(other.to_owned()),
+                other => match crate::iso::BackendKind::from_str(other) {
+                    Some(crate::iso::BackendKind::Rcopy) => BackendChoice::Auto,
+                    Some(kind) => BackendChoice::Cow(kind),
+                    None => BackendChoice::Unsupported(other.to_owned()),
+                },
             };
         }
         if let Some(apply) = isolation.get("apply").and_then(Value::as_bool) {
@@ -101,9 +107,12 @@ mod tests {
         assert_eq!(settings.backend, BackendChoice::Copy);
         assert!(!settings.apply);
         assert_eq!(settings.merge, MergeMode::Branch);
-        let view = json!({"task": {"isolation": {"backend": "btrfs", "merge": "weird"}}});
+        let view = json!({"task": {"isolation": {"backend": "hammerfs", "merge": "weird"}}});
         let settings = IsolationSettings::from_view(Some(&view));
-        assert_eq!(settings.backend, BackendChoice::Unsupported("btrfs".into()));
+        assert_eq!(
+            settings.backend,
+            BackendChoice::Unsupported("hammerfs".into())
+        );
         assert_eq!(settings.merge, MergeMode::Patch);
         assert_eq!(
             IsolationSettings::from_view(Some(
@@ -112,5 +121,30 @@ mod tests {
             .backend,
             BackendChoice::Auto
         );
+    }
+
+    /// Upstream `cfgIsolationBackend` values (and `pi-iso` `BackendKind::from_str` aliases) map
+    /// to the ported copy-on-write backends.
+    #[test]
+    fn reads_copy_on_write_backends() {
+        use crate::iso::BackendKind as Kind;
+        for (name, kind) in [
+            ("apfs", Kind::Apfs),
+            ("btrfs", Kind::Btrfs),
+            ("zfs", Kind::Zfs),
+            ("reflink", Kind::LinuxReflink),
+            ("linux-reflink", Kind::LinuxReflink),
+            ("overlayfs", Kind::Overlayfs),
+            ("projfs", Kind::Projfs),
+            ("block-clone", Kind::WindowsBlockClone),
+            ("windows-block-clone", Kind::WindowsBlockClone),
+        ] {
+            let view = json!({"task": {"isolation": {"backend": name}}});
+            assert_eq!(
+                IsolationSettings::from_view(Some(&view)).backend,
+                BackendChoice::Cow(kind),
+                "{name}"
+            );
+        }
     }
 }

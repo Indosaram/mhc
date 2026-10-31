@@ -104,9 +104,16 @@ impl MemoryFactsWiring {
         };
         match enqueue() { Ok(result) => result, Err(error) => { (self.options.warn)(&format!("facts queue enqueue failed: {conversation}: {error}")); disabled() } }
     }
-    pub fn on_settled(&mut self, conversation: &str) -> FactsEnqueueResult {
+    pub fn on_settled(&mut self, conversation: &str) -> FactsEnqueueResult { self.on_settled_with_signal(conversation, None) }
+    /// `onSettled(conversationId, selection, signal)`: nothing is enqueued, marked settled or launched once the
+    /// signal aborts (checked before and after each step, as upstream's `throwIfAborted`).
+    pub fn on_settled_with_signal(&mut self, conversation: &str, signal: Option<&FactsAbortSignal>) -> FactsEnqueueResult {
+        let aborted = || signal.is_some_and(FactsAbortSignal::is_aborted);
+        if aborted() { return self.enqueue_settled(conversation, signal); }
         let pending = if self.settled_sessions.contains(conversation) { Vec::new() } else { self.reconcile_pending() };
-        let result = self.enqueue_settled(conversation, None);
+        if aborted() { return self.enqueue_settled(conversation, signal); }
+        let result = self.enqueue_settled(conversation, signal);
+        if aborted() { return result; }
         if !(self.options.facts_enabled)() { return result; }
         self.settled_sessions.insert(conversation.to_owned());
         self.settles += 1;
@@ -498,4 +505,5 @@ mod tests {
         let resolved = resolve_boundary_to_canonical(&entries, &prov);
         assert_eq!(resolved, Some(("m2".to_string(), 2)));
     }
+    #[tokio::test] async fn an_aborted_settle_is_not_marked_settled_or_launched() { let root=tempfile::tempdir().unwrap(); let (mut wiring,calls)=fixture(root.path(),true,Rc::new(Cell::new(1))); let signal=FactsAbortSignal::new(); signal.abort(); assert!(!wiring.on_settled_with_signal("conversation",Some(&signal)).is_enqueued()); assert_eq!(calls.get(),0); assert!(!wiring.settled_sessions.contains("conversation")); }
 }

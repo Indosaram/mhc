@@ -10,6 +10,7 @@
 
 mod chord;
 mod tap;
+mod worker;
 
 #[cfg(test)]
 mod live_tests;
@@ -22,7 +23,7 @@ use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
 use senpi_desktop_safety::{
-    Chord, StopPathError, StopPathId, StopPathListener, StopSource, Supervisor,
+    Chord, StopPathError, StopPathId, StopPathListener, Supervisor,
 };
 
 pub use chord::DEFAULT_STOP_CHORD;
@@ -81,18 +82,27 @@ enum Wake {
 struct Shared {
     supervisor: Arc<Supervisor>,
     hotkey: Mutex<Hotkey>,
-    control: Mutex<Control>,
-    changed: Condvar,
+    control: Arc<Mutex<Control>>,
+    changed: Arc<Condvar>,
+    stop_worker: worker::StopWorker,
 }
 
 impl Shared {
-    fn new(supervisor: Arc<Supervisor>, hotkey: Hotkey) -> Self {
-        Self {
+    fn new(supervisor: Arc<Supervisor>, hotkey: Hotkey) -> Result<Self, StopPathError> {
+        let control = Arc::new(Mutex::new(Control::default()));
+        let changed = Arc::new(Condvar::new());
+        let stop_worker = worker::StopWorker::start(
+            Arc::clone(&supervisor),
+            Arc::clone(&control),
+            Arc::clone(&changed),
+        )?;
+        Ok(Self {
             supervisor,
             hotkey: Mutex::new(hotkey),
-            control: Mutex::new(Control::default()),
-            changed: Condvar::new(),
-        }
+            control,
+            changed,
+            stop_worker,
+        })
     }
 
     fn update(&self, change: impl FnOnce(&mut Control)) {
@@ -126,8 +136,7 @@ impl Shared {
     /// The tap saw a key-down; latches a stop when it is the chord.
     fn key_down(&self, keycode: i64, flags: u64) {
         if self.hotkey.lock().matches_hotkey(keycode, flags) {
-            self.supervisor.trigger_stop(StopSource::Hotkey);
-            self.update(|control| control.stops = control.stops.saturating_add(1));
+            self.stop_worker.stop();
         }
     }
 
@@ -219,7 +228,7 @@ impl StopPathListener for CgEventTapListener {
             shared.request_restart();
             (Arc::clone(shared), failures)
         } else {
-            let shared = Arc::new(Shared::new(sup, hotkey));
+            let shared = Arc::new(Shared::new(sup, hotkey)?);
             let listener = Arc::clone(&shared);
             thread::Builder::new()
                 .name(THREAD_NAME.to_owned())

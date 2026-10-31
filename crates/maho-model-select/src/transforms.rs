@@ -96,6 +96,8 @@ pub fn model_id_for_provider(provider: &str, model_id: &str) -> String {
         "kimi-coding" | "kimi-for-coding" => match model_id {
             "kimi-k3" => "k3".into(),
             "kimi-k3-256k" => "k3-256k".into(),
+            "kimi-k3.1-pro" => "k3.1-pro".into(),
+            "kimi-k3.1-pro-highspeed" => "k3.1-pro-highspeed".into(),
             other => other.to_owned(),
         },
         _ => model_id.to_owned(),

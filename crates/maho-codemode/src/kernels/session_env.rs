@@ -1,8 +1,14 @@
 use std::collections::HashMap;
 
-pub const SESSION_ENVIRONMENT_KEYS: [&str; 7] = [
-    "PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE",
-    "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL",
+pub const SESSION_ENVIRONMENT_KEYS: [&str; 8] = [
+    "PI_SESSION_ID",
+    "PI_SESSION_FILE",
+    "PI_SESSION_CWD",
+    "PI_GOAL_STORE_FILE",
+    "PI_PROVIDER",
+    "PI_MODEL",
+    "PI_REASONING_LEVEL",
+    "OMO_BROWSER_ENGINE",
 ];
 
 pub type SessionEnvironment = HashMap<String, String>;
@@ -14,6 +20,7 @@ pub struct SessionEnvironmentSource<'a> {
     pub session_file: Option<&'a str>,
     pub model: Option<(&'a str, &'a str)>,
     pub thinking_level: Option<&'a str>,
+    pub browser_engine: Option<&'a str>,
 }
 
 pub fn session_environment_from(source: &SessionEnvironmentSource<'_>) -> SessionEnvironment {
@@ -25,8 +32,11 @@ pub fn session_environment_from(source: &SessionEnvironmentSource<'_>) -> Sessio
         ("PI_GOAL_STORE_FILE", source.goal_store_file),
         ("PI_SESSION_FILE", source.session_file),
         ("PI_REASONING_LEVEL", source.thinking_level),
+        ("OMO_BROWSER_ENGINE", source.browser_engine),
     ] {
-        if let Some(value) = value.filter(|value| !value.is_empty()) { env.insert(key.into(), value.into()); }
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            env.insert(key.into(), value.into());
+        }
     }
     if let Some((provider, model)) = source.model {
         env.insert("PI_PROVIDER".into(), provider.into());
@@ -35,14 +45,23 @@ pub fn session_environment_from(source: &SessionEnvironmentSource<'_>) -> Sessio
     env
 }
 
-pub fn apply_session_environment(base: &SessionEnvironment, session: Option<&SessionEnvironment>) -> SessionEnvironment {
+pub fn apply_session_environment(
+    base: &SessionEnvironment,
+    session: Option<&SessionEnvironment>,
+) -> SessionEnvironment {
     let mut merged = base.clone();
-    for key in SESSION_ENVIRONMENT_KEYS { merged.remove(key); }
-    if let Some(session) = session { merged.extend(session.clone()); }
+    for key in SESSION_ENVIRONMENT_KEYS {
+        merged.remove(key);
+    }
+    if let Some(session) = session {
+        merged.extend(session.clone());
+    }
     merged
 }
 
-pub fn session_environment_from_context(context: &dyn maho_ext_api::ToolContext) -> SessionEnvironment {
+pub fn session_environment_from_context(
+    context: &dyn maho_ext_api::ToolContext,
+) -> SessionEnvironment {
     let cwd = context.cwd().to_string_lossy();
     let goal = context.goal_store_file().map(|path| path.to_string_lossy());
     let session = context.session_manager();
@@ -56,8 +75,14 @@ pub fn session_environment_from_context(context: &dyn maho_ext_api::ToolContext)
         maho_ext_api::ThinkingLevel::Max => "max",
     });
     session_environment_from(&SessionEnvironmentSource {
-        cwd: &cwd, goal_store_file: goal.as_deref(), session_id: session.session_id(),
-        session_file: file.as_deref(), model: context.model().map(|model| (model.provider.as_str(), model.id.as_str())),
+        cwd: &cwd,
+        goal_store_file: goal.as_deref(),
+        session_id: session.session_id(),
+        session_file: file.as_deref(),
+        model: context
+            .model()
+            .map(|model| (model.provider.as_str(), model.id.as_str())),
         thinking_level: thinking,
+        browser_engine: context.browser_engine(),
     })
 }

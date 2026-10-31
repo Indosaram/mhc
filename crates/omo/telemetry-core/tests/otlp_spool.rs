@@ -298,3 +298,64 @@ fn old_batch_expires_by_id_and_corrupt_records_are_counted_once() -> io::Result<
     );
     Ok(())
 }
+#[test]
+fn owner_marker_lives_from_open_through_seal_until_close() -> io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let dir = root.path().join("spool");
+    let marker = owners_dir(&dir).join(owner_name(Signal::Logs, 4242, &"f".repeat(32)));
+    let mut writer = SpoolWriter::new(input(&dir));
+    assert!(!marker.exists());
+    assert!(writer.append(&[]));
+    assert!(marker.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(&marker)?.permissions().mode() & 0o777, 0o600);
+    }
+    writer.seal(&create_batch_id(1000))?.expect("sealed");
+    assert!(marker.exists());
+    writer.close();
+    assert!(!marker.exists());
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
+fn close_reports_an_owner_marker_that_cannot_be_deleted() -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir()?;
+    let dir = root.path().join("spool");
+    let owners = owners_dir(&dir);
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let recorded = errors.clone();
+    let mut config = input(&dir);
+    config.on_error = Arc::new(move |_, n| recorded.lock().expect("errors").push(n));
+    let mut writer = SpoolWriter::new(config);
+    assert!(writer.append(&[]));
+    fs::set_permissions(&owners, fs::Permissions::from_mode(0o500))?;
+    // A privileged user ignores directory modes; the failure cannot be provoked then.
+    let enforced = fs::write(owners.join("probe"), "").is_err();
+    writer.close();
+    fs::set_permissions(&owners, fs::Permissions::from_mode(0o700))?;
+    if enforced {
+        assert_eq!(*errors.lock().expect("errors"), vec![0]);
+    }
+    Ok(())
+}
+#[test]
+fn sweep_deletes_a_dead_owner_marker_and_keeps_a_live_one() -> io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let dir = root.path().join("spool");
+    let owners = owners_dir(&dir);
+    fs::create_dir(&dir)?;
+    fs::create_dir(&owners)?;
+    let dead = owner_name(Signal::Logs, 7, &"a".repeat(32));
+    let live = owner_name(Signal::Traces, 8, &"b".repeat(32));
+    fs::write(owners.join(&dead), "")?;
+    fs::write(owners.join(&live), "")?;
+    let mut ctx = context(&dir, 2000);
+    ctx.is_pid_alive = Arc::new(|pid| pid == 8);
+    sweep_spool(&ctx)?;
+    assert!(!owners.join(dead).exists());
+    assert!(owners.join(live).exists());
+    Ok(())
+}

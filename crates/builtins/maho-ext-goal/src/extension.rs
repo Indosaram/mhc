@@ -45,6 +45,11 @@ impl GoalExtension {
                 replaces: Some(crate::cache_warm_renderer::cache_warm_entry_replaces()),
             },
         );
+        api.register_entry_renderer(
+            crate::deadline_stop_renderer::TURN_DEADLINE_ENTRY_TYPE,
+            crate::deadline_stop_renderer::render_deadline_stop_entry(),
+            maho_ext_api::EntryRendererOptions::default(),
+        );
         for (name, label, description, schema) in [
             (
                 "create_goal",
@@ -61,7 +66,7 @@ impl GoalExtension {
             (
                 "update_goal",
                 "Update Goal",
-                "Update the existing goal. Set complete only when the objective has actually been achieved and no required work remains. A non-empty reason is required when blocking; reason must not be provided when completing.",
+                crate::tool_registration::UPDATE_GOAL_DESCRIPTION,
                 crate::tool_registration::update_goal_schema(),
             ),
         ] {
@@ -149,6 +154,7 @@ impl GoalExtension {
         }
         for kind in [
             EventKind::SessionStart,
+            EventKind::SessionTree,
             EventKind::AgentStart,
             EventKind::MessageStart,
             EventKind::MessageEnd,
@@ -180,6 +186,15 @@ impl GoalExtension {
                 }),
             );
         }
+        let tree = continuation.clone();
+        api.on(
+            EventKind::SessionTree,
+            Arc::new(move |_, context| {
+                context.ui.set_status("todo-waiting", None);
+                tree.reset_todo_chain();
+                Box::pin(async { Ok(EventResult::None) })
+            }),
+        );
         let stale = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reset = stale.clone();
         api.on(
@@ -241,6 +256,16 @@ mod tests {
             Default::default(),
         );
         GoalExtension::default().register(&mut api);
+        let update = api
+            .registered
+            .tools
+            .iter()
+            .find(|tool| tool.definition.name == "update_goal")
+            .unwrap();
+        assert_eq!(
+            update.definition.description,
+            crate::tool_registration::UPDATE_GOAL_DESCRIPTION
+        );
         for name in ["create_goal", "update_goal", "get_goal"] {
             assert!(
                 api.registered
@@ -266,6 +291,64 @@ mod tests {
             api.registered
                 .entry_renderers
                 .contains_key(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE)
+        );
+    }
+    #[tokio::test]
+    async fn session_tree_clears_todo_waiting_and_deadline_entry_renders_notice() {
+        let mut api = ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        GoalExtension::default().register(&mut api);
+        let ui = Arc::new(crate::test_context::Ui::default());
+        let mut context = crate::test_context::context();
+        context.ui = ui.clone();
+        for handler in &api.registered.handlers[&EventKind::SessionTree] {
+            handler(
+                &mut maho_ext_api::ExtensionEvent::SessionTree {
+                    new_leaf_id: None,
+                    old_leaf_id: None,
+                    summary_entry: None,
+                    from_extension: None,
+                },
+                &context,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            *ui.statuses.lock().unwrap(),
+            [("todo-waiting".to_owned(), None)]
+        );
+        let renderer = &api.registered.entry_renderers
+            [crate::deadline_stop_renderer::TURN_DEADLINE_ENTRY_TYPE];
+        let entry = |data: serde_json::Value| maho_ext_api::SessionEntry {
+            id: "d".into(),
+            parent_id: None,
+            timestamp: String::new(),
+            kind: "custom".into(),
+            data: serde_json::json!({"customType":"deadline-stop","data":data}),
+        };
+        let theme = maho_ext_api::Theme::default();
+        let lines = renderer(
+            &entry(serde_json::json!({"kind":"inactivity","limitMs":120_000,"elapsedMs":121_000,"at":1})),
+            &Default::default(),
+            &theme,
+        )
+        .unwrap()
+        .render(200)
+        .join("\n");
+        assert!(lines.contains("turn stopped on a deadline"));
+        assert!(lines.contains("no tool progress for 2 min (turn_inactivity_ms)"));
+        assert!(
+            renderer(
+                &entry(serde_json::json!({"kind":"bogus"})),
+                &Default::default(),
+                &theme
+            )
+            .is_none()
         );
     }
     #[tokio::test]
@@ -467,6 +550,50 @@ mod tests {
         api.registered.handlers[&EventKind::SessionShutdown][0](&mut shutdown, &context)
             .await
             .unwrap();
+    }
+    #[tokio::test]
+    async fn new_turn_and_tree_navigation_clear_todo_waiting_status() {
+        use maho_ext_api::*;
+        let dir = tempfile::tempdir().unwrap();
+        let reference = crate::types::GoalStoreRef {
+            base_dir: dir.path().into(),
+            thread_id: "s".into(),
+        };
+        let extension = GoalExtension {
+            reference: Arc::new(move |_| reference.clone()),
+            now: Arc::new(|| 0.0),
+        };
+        let mut api = ExtensionApi::new(
+            LoadedExtension::new("goal", "/tmp".into(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        extension.register(&mut api);
+        let ui = Arc::new(crate::test_context::Ui::default());
+        let mut context = crate::test_context::context();
+        context.ui = ui.clone();
+        let mut tree = ExtensionEvent::SessionTree {
+            new_leaf_id: None,
+            old_leaf_id: None,
+            summary_entry: None,
+            from_extension: None,
+        };
+        for event in [&mut ExtensionEvent::AgentStart, &mut tree] {
+            api.registered.handlers[&event.kind()][0](event, &context)
+                .await
+                .unwrap();
+        }
+        let cleared = ui
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|status| {
+                **status == (crate::delivery::TODO_WAITING_STATUS_KEY.to_owned(), None)
+            })
+            .count();
+        assert_eq!(cleared, 2);
     }
     #[tokio::test]
     async fn registered_factory_hooks_share_accounting_and_persist_user_abort() {

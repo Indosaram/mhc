@@ -1,6 +1,6 @@
 [package]
 name = "maho-isolation"
-description = "Workspace isolation for mhc's delegated tasks: a git worktree (or a copy outside git) mirroring the parent's live state, change capture as a patch, patch apply or branch cherry-pick back into the parent, retention and stale cleanup (ported from the MIT oh-my-pi pi-iso rcopy backend and task isolation runner)."
+description = "Workspace isolation for mhc's delegated tasks: a git worktree (or a copy outside git) mirroring the parent's live state, change capture as a patch, patch apply or branch cherry-pick back into the parent, retention and stale cleanup (ported from the MIT oh-my-pi pi-iso rcopy and copy-on-write backends and task isolation runner)."
 version.workspace = true
 edition.workspace = true
 publish = false
@@ -17,14 +17,24 @@ similar = "=2.7.0"
 tokio = { workspace = true, features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]
+libc.workspace = true
 nix = { version = "=0.28.0", features = ["signal"] }
 
 [target.'cfg(not(unix))'.dependencies]
 maho-tool-child = { path = "../maho-tool-child" }
 
+[target.'cfg(windows)'.dependencies]
+# pi-iso block clone (FSCTL_DUPLICATE_EXTENTS_TO_FILE) and ProjFS backends.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_Storage_ProjectedFileSystem", "Win32_System_Com", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_LibraryLoader"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
-[lints]
-workspace = true
+# Mirrors the workspace lints with unsafe_code = "deny": the pi-iso copy-on-write backends
+# (src/iso/) call clonefile(2), FICLONE, statfs(2), mount(2) and the Windows FSCTL/ProjFS APIs.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"

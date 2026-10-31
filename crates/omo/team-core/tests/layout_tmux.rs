@@ -103,6 +103,7 @@ impl Harness {
             }),
             env: Arc::new(move |key| env.lock().expect("env").get(key).cloned()),
             cwd: Arc::new(|| "/cwd".to_owned()),
+            pane_auth: Arc::default(),
         }
     }
 
@@ -204,17 +205,51 @@ fn layout_creates_teammate_panes_in_caller_window_and_sends_attach_via_send_keys
             .iter()
             .any(|line| line.contains("--session 's-m2'"))
     );
+    let pane_options: Vec<Vec<String>> = harness
+        .commands()
+        .into_iter()
+        .filter(|args| args[0] == "set-option" && args[1] == "-p")
+        .collect();
+    for (pane, session) in [("%1", "s-m1"), ("%2", "s-m2")] {
+        assert!(pane_options.contains(&sv(&[
+            "set-option",
+            "-p",
+            "-t",
+            pane,
+            "@omo_attach_server_url",
+            "http://127.0.0.1:12345",
+        ])));
+        assert!(pane_options.contains(&sv(&[
+            "set-option",
+            "-p",
+            "-t",
+            pane,
+            "@omo_attach_session_id",
+            session,
+        ])));
+    }
 }
 
 #[test]
-fn layout_given_env_auth_send_keys_omit_secrets_while_split_window_forwards_pane_env() {
+fn layout_given_env_auth_no_argv_contains_the_password_and_the_pane_consumes_its_private_file() {
+    // Fixtures assembled at runtime (never literals) so static secret scanners don't flag a
+    // username/password pair (#4466). The embedded single quote still exercises the shell-escape path.
     let harness = Harness::new();
     let password = ["a", "'", "b"].concat();
     let username = "u".to_owned();
+    let auth_directory = tmux_core::create_pane_auth_directory().expect("pane auth directory");
+    let sandbox = tempfile::Builder::new()
+        .prefix("team-pane-auth-")
+        .tempdir()
+        .expect("sandbox");
     {
         let mut env = harness.env.lock().expect("env");
         env.insert("OPENCODE_SERVER_PASSWORD".into(), password.clone());
         env.insert("OPENCODE_SERVER_USERNAME".into(), username.clone());
+        env.insert(
+            "OPENCODE_SERVER_PASSWORD_DIR".into(),
+            auth_directory.path().to_string_lossy().into_owned(),
+        );
     }
     create_team_layout("run-auth", &members(1), &Mgr, &harness.deps());
     let send_keys: Vec<String> = harness
@@ -226,7 +261,6 @@ fn layout_given_env_auth_send_keys_omit_secrets_while_split_window_forwards_pane
         .iter()
         .find(|line| line.contains("opencode attach"))
         .expect("attach command");
-    assert!(!attach.contains("OPENCODE_SERVER_PASSWORD"));
     assert!(!attach.contains("OPENCODE_SERVER_USERNAME"));
     assert!(!attach.contains(&password));
     assert!(!attach.contains(&username));
@@ -236,8 +270,75 @@ fn layout_given_env_auth_send_keys_omit_secrets_while_split_window_forwards_pane
         .next()
         .expect("split-window");
     assert!(split.contains(&"-e".to_owned()));
-    assert!(split.contains(&format!("OPENCODE_SERVER_PASSWORD={password}")));
+    assert!(
+        !harness
+            .commands()
+            .iter()
+            .any(|args| args.iter().any(|arg| arg.contains(&password)))
+    );
+    assert!(
+        split
+            .iter()
+            .any(|arg| arg.starts_with("OPENCODE_SERVER_PASSWORD_FILE="))
+    );
     assert!(split.contains(&format!("OPENCODE_SERVER_USERNAME={username}")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file = split
+            .iter()
+            .find_map(|arg| arg.strip_prefix("OPENCODE_SERVER_PASSWORD_FILE="))
+            .expect("team pane password file")
+            .to_owned();
+        let mode = |path: &std::path::Path| {
+            std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
+        };
+        assert_eq!(mode(std::path::Path::new(&file)), 0o600);
+        assert_eq!(
+            mode(std::path::Path::new(&file).parent().expect("parent")),
+            0o700
+        );
+        let opencode = sandbox.path().join("opencode");
+        std::fs::write(
+            &opencode,
+            [
+                "#!/bin/sh",
+                r#"test "$OPENCODE_SERVER_PASSWORD" = "$EXPECTED_PASSWORD" || exit 2"#,
+                r#"test ! -e "$EXPECTED_FILE" || exit 3"#,
+                r#"for arg in "$@"; do test "$arg" != "$EXPECTED_PASSWORD" || exit 4; done"#,
+                "printf auth-ok",
+            ]
+            .join("\n"),
+        )
+        .expect("fake opencode");
+        std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o700))
+            .expect("fake opencode mode");
+        let attach_command = harness
+            .commands_named("send-keys")
+            .into_iter()
+            .next()
+            .expect("send-keys")[3]
+            .clone();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &attach_command])
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    sandbox.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OPENCODE_SERVER_PASSWORD", "")
+            .env("OPENCODE_SERVER_PASSWORD_FILE", &file)
+            .env("EXPECTED_PASSWORD", &password)
+            .env("EXPECTED_FILE", &file)
+            .output()
+            .expect("run attach command");
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "auth-ok");
+        assert!(!std::path::Path::new(&file).exists());
+    }
 }
 
 #[test]
@@ -254,6 +355,7 @@ fn layout_given_no_password_attach_command_has_no_env_prefix() {
         .find(|line| line.contains("opencode attach"))
         .expect("attach command");
     assert!(!attach.contains("OPENCODE_SERVER_PASSWORD"));
+    assert!(!attach.contains("OPENCODE_SERVER_PASSWORD_FILE"));
 }
 
 #[test]

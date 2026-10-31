@@ -32,6 +32,11 @@ pub struct MonitorAwareGoalContinuation {
     pub ask_user_deadline_at_ms: Option<f64>,
     pub recent_normalized_output_hashes: Vec<String>,
     pub toolless_continuation_streak: u64,
+    recent_tool_effects: Vec<String>,
+    /// Progress facts of the last clean agent_end (`afterAgentEnd`): a new tool effect, and a
+    /// human-input monitor delivery. Todo progress needs the continuation signature, so the
+    /// delivery owner combines these with it.
+    pub last_turn_progress: (bool, bool),
     toolless_streak_goal_id: Option<String>,
     pub consecutive_length_recoveries: BTreeMap<String, u64>,
     pending_system_recovery: Option<PendingGoalRecovery>,
@@ -101,7 +106,10 @@ impl MonitorAwareGoalContinuation {
                 crate::prompt::build_truncation_recovery_prompt()
             }
             crate::continuation::ContinuationPrompt::Full => {
-                crate::prompt::build_continuation_prompt(goal)
+                crate::prompt::build_continuation_prompt_for(
+                    goal,
+                    context.model.as_ref().map(|model| model.id.as_str()),
+                )
             }
         };
         if !verdict.stall_notice {
@@ -456,8 +464,25 @@ impl MonitorAwareGoalContinuation {
         self.cache_warm_iteration = 0.0;
         self.consecutive_length_recoveries.clear();
         self.recent_normalized_output_hashes.clear();
+        self.recent_tool_effects.clear();
+        self.last_turn_progress = (false, false);
         self.toolless_continuation_streak = 0;
         self.toolless_streak_goal_id = None;
+    }
+    /// `#recordToolEffect`: a tool turn is progress only when its calls and outcomes differ from
+    /// every recent tool turn. With no history (first turn, or after a reload or input reset) there
+    /// is nothing to prove change against, so it only seeds.
+    pub fn record_tool_effect(&mut self, messages: &[maho_agent::types::AgentMessage]) -> bool {
+        let Some(fingerprint) = crate::continuation::tool_effect_fingerprint(messages) else {
+            return false;
+        };
+        let repeated =
+            self.recent_tool_effects.is_empty() || self.recent_tool_effects.contains(&fingerprint);
+        self.recent_tool_effects.push(fingerprint);
+        if self.recent_tool_effects.len() > crate::continuation::GOAL_TOOL_EFFECT_WINDOW {
+            self.recent_tool_effects.remove(0);
+        }
+        !repeated
     }
     pub fn ask_user_wait_ms(&self, now: f64, idle_timeout_ms: f64) -> Option<f64> {
         if self.wake_sources.get("ask-user").copied().unwrap_or(0.0) <= 0.0 {
@@ -911,5 +936,23 @@ mod tests {
         monitor.note_continuation_started();
         monitor.record_toolless_continuation_turn("g", false);
         assert_eq!(monitor.toolless_continuation_streak, 1);
+    }
+    #[test]
+    fn tool_effect_seeds_then_counts_only_new_effects() {
+        let turn = |text: &str| {
+            let result: maho_ai::types::ToolResultMessage = serde_json::from_value(
+                serde_json::json!({"role":"toolResult","toolCallId":"c","toolName":"read","content":[{"type":"text","text":text}],"isError":false,"timestamp":0}),
+            )
+            .unwrap();
+            vec![maho_agent::types::AgentMessage::Llm(
+                maho_ai::types::Message::ToolResult(result),
+            )]
+        };
+        let mut monitor = MonitorAwareGoalContinuation::default();
+        assert!(!monitor.record_tool_effect(&turn("a")));
+        assert!(monitor.record_tool_effect(&turn("b")));
+        assert!(!monitor.record_tool_effect(&turn("a")));
+        monitor.reset_continuation_state();
+        assert!(!monitor.record_tool_effect(&turn("c")));
     }
 }

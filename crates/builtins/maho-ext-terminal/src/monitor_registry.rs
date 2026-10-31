@@ -27,6 +27,9 @@ pub enum MonitorEvent {
         id: String,
         description: String,
         line: String,
+        /// Output lines are a person's words (a chat bridge); goal continuation counts them as new
+        /// input. Only a command watch registered with `human_input: true` sets it.
+        human_input: bool,
     },
     Summary {
         id: String,
@@ -55,6 +58,8 @@ impl MonitorEndedReason {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorEndedEvent {
     pub id: String,
+    /// The stable `mon_` id (upstream `manager.monitorIdOf(event.id)`), when the watch has one.
+    pub monitor_id: Option<String>,
     pub description: String,
     pub started_at_ms: f64,
     pub ended_at_ms: f64,
@@ -72,6 +77,7 @@ fn emit_ended(
 ) {
     sink(MonitorEndedEvent {
         id: snapshot.id.clone(),
+        monitor_id: snapshot.monitor_id.clone(),
         description: snapshot.description.clone(),
         started_at_ms: snapshot.started_at_ms,
         ended_at_ms: now,
@@ -128,166 +134,8 @@ fn monitor_id_from_bytes(bytes: [u8; 10]) -> String {
     id
 }
 
-/// One-minute bucket of matched lines plus the run of consecutive flood minutes before it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RunawayWindow {
-    pub minute_start_ms: f64,
-    pub count: usize,
-    pub flood_minutes: usize,
-}
-
-pub struct CommandMonitor {
-    pub snapshot: MonitorSnapshotEntry,
-    pub muted_dropped: usize,
-    pub runaway: Option<RunawayWindow>,
-    /// Per-monitor wake-rate override of a persistent watch; `None` uses terminal.monitorWakesPerHour.
-    pub wakes_per_hour: Option<f64>,
-    filter: Option<fancy_regex::Regex>,
-    lines: crate::monitor_line_buffer::MonitorLineBuffer,
-    settled: bool,
-}
-impl CommandMonitor {
-    pub fn new(snapshot: MonitorSnapshotEntry, filter: Option<fancy_regex::Regex>) -> Self {
-        let mut snapshot = snapshot;
-        snapshot.fire_count = Some(0);
-        Self {
-            snapshot,
-            muted_dropped: 0,
-            runaway: None,
-            wakes_per_hour: None,
-            filter,
-            lines: Default::default(),
-            settled: false,
-        }
-    }
-    pub fn with_wakes_per_hour(mut self, wakes_per_hour: Option<f64>) -> Self {
-        self.wakes_per_hour = wakes_per_hour;
-        self
-    }
-    /// Count one matched line into the minute bucket. A minute with more lines than the guard allows is a
-    /// flood minute; the watch trips once the current minute floods and the minutes right before it flooded
-    /// too, `minutes` in a row. A quiet or skipped minute resets the run.
-    fn floods_runaway(&mut self, now: f64, guard: &crate::settings::MonitorRunawayGuard) -> bool {
-        let previous = self.runaway.clone();
-        if previous
-            .as_ref()
-            .is_none_or(|current| now - current.minute_start_ms >= 60_000.0)
-        {
-            let elapsed = previous.as_ref().map_or(0.0, |previous| {
-                ((now - previous.minute_start_ms) / 60_000.0).floor()
-            });
-            let previous_flooded = previous.as_ref().is_some_and(|previous| {
-                elapsed == 1.0 && previous.count as f64 > guard.lines_per_minute
-            });
-            self.runaway = Some(RunawayWindow {
-                minute_start_ms: previous.as_ref().map_or(now, |previous| {
-                    previous.minute_start_ms + elapsed * 60_000.0
-                }),
-                count: 0,
-                flood_minutes: match &previous {
-                    Some(previous) if previous_flooded => previous.flood_minutes + 1,
-                    _ => 0,
-                },
-            });
-        }
-        let Some(current) = &mut self.runaway else {
-            return false;
-        };
-        current.count += 1;
-        current.count as f64 > guard.lines_per_minute
-            && (current.flood_minutes + 1) as f64 >= guard.minutes
-    }
-    fn record_fire(&mut self, now: f64) {
-        self.snapshot.fire_count = Some(self.snapshot.fire_count.unwrap_or(0) + 1);
-        self.snapshot.last_fired_at_ms = Some(now);
-    }
-    pub fn consume(
-        &mut self,
-        chunk: &str,
-        now: f64,
-        guard: &crate::settings::MonitorRunawayGuard,
-    ) -> Vec<MonitorEvent> {
-        if self.settled || chunk.is_empty() {
-            return vec![];
-        }
-        let mut events = vec![];
-        for line in self.lines.append(chunk) {
-            if self
-                .filter
-                .as_ref()
-                .is_some_and(|filter| !filter.is_match(&line).unwrap_or(false))
-            {
-                continue;
-            }
-            if self.snapshot.paused {
-                self.muted_dropped += 1;
-                continue;
-            }
-            self.record_fire(now);
-            events.push(MonitorEvent::Line {
-                id: self.snapshot.id.clone(),
-                description: self.snapshot.description.clone(),
-                line,
-            });
-            if let Some(window) = &mut self.snapshot.fire_window {
-                if now - window.start_ms >= crate::shared::FIRE_BUDGET_WINDOW_MS as f64 {
-                    *window = MonitorFireWindow {
-                        start_ms: now,
-                        count: 0,
-                    };
-                }
-                window.count += 1;
-            }
-            if self.snapshot.fire_window.is_some() && self.floods_runaway(now, guard) {
-                self.snapshot.paused = true;
-                self.record_fire(now);
-                events.push(MonitorEvent::Summary {
-                    id: self.snapshot.id.clone(),
-                    description: self.snapshot.description.clone(),
-                    summary: crate::shared::runaway_pause_summary(
-                        &self.snapshot.id,
-                        guard.lines_per_minute as usize,
-                        guard.minutes as usize,
-                    ),
-                });
-            }
-        }
-        events
-    }
-    pub fn pause(&mut self) -> bool {
-        if self.snapshot.paused {
-            return false;
-        }
-        self.snapshot.paused = true;
-        true
-    }
-    pub fn resume(&mut self) -> Option<usize> {
-        if !self.snapshot.paused {
-            return None;
-        }
-        self.snapshot.paused = false;
-        if let Some(window) = &mut self.snapshot.fire_window {
-            window.count = 0;
-        }
-        self.runaway = None;
-        Some(std::mem::take(&mut self.muted_dropped))
-    }
-    pub fn settle(&mut self, summary: String, now: f64) -> Option<MonitorEvent> {
-        if self.settled {
-            return None;
-        }
-        self.settled = true;
-        self.record_fire(now);
-        Some(MonitorEvent::Summary {
-            id: self.snapshot.id.clone(),
-            description: self.snapshot.description.clone(),
-            summary,
-        })
-    }
-    pub fn dispose(&mut self) {
-        self.settled = true;
-    }
-}
+/// Upstream monitor-registry.ts re-exports the command source's record types.
+pub use crate::command_monitor_source::{CommandMonitor, RunawayWindow};
 
 pub struct MonitorRegistry {
     records: std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String, CommandMonitor>>>,
@@ -302,12 +150,17 @@ pub struct MonitorRegistry {
     >,
     file_snapshots:
         std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String, MonitorSnapshotEntry>>>,
+    rpc_slot: RpcSourceSlot,
     next_file_id: usize,
     transitions: tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
     parked: tokio::sync::watch::Sender<bool>,
     delivery: std::sync::Arc<std::sync::Mutex<MonitorRouting>>,
     ended: MonitorEndedSink,
     runaway_guard: std::sync::Arc<std::sync::Mutex<crate::settings::MonitorRunawayGuard>>,
+    /// Upstream `#rpc`: rpc watches (eager here; upstream loads the source on the first one).
+    rpc: crate::rpc_monitor_source::RpcMonitorSource,
+    /// File registrations still proving their target (upstream `FileMonitorSource.#guard`).
+    registrations: std::sync::Arc<crate::file_monitor_guard::RegistrationGuard>,
     disposed: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -320,9 +173,12 @@ struct MonitorRouting {
     sink: Option<MonitorSink>,
     pending: std::collections::VecDeque<MonitorEvent>,
 }
+type RpcSourceSlot =
+    std::sync::Arc<std::sync::OnceLock<crate::rpc_monitor_source::RpcMonitorSource>>;
 fn publish_snapshot(
     records: &std::sync::Mutex<indexmap::IndexMap<String, CommandMonitor>>,
     files: &std::sync::Mutex<indexmap::IndexMap<String, MonitorSnapshotEntry>>,
+    rpc: &RpcSourceSlot,
     sender: &tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
 ) {
     let mut snapshot = records
@@ -332,6 +188,9 @@ fn publish_snapshot(
         .map(|record| record.snapshot.clone())
         .collect::<Vec<_>>();
     snapshot.extend(files.lock().expect("file snapshots").values().cloned());
+    if let Some(rpc) = rpc.get() {
+        snapshot.extend(rpc.snapshots());
+    }
     sender.send_if_modified(|current| {
         if *current == snapshot {
             false
@@ -378,20 +237,50 @@ impl MonitorRegistry {
                 sink(event);
             }
         });
+        let records: std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String, CommandMonitor>>> =
+            Default::default();
+        let file_snapshots: std::sync::Arc<
+            std::sync::Mutex<indexmap::IndexMap<String, MonitorSnapshotEntry>>,
+        > = Default::default();
+        let transitions = tokio::sync::watch::channel(vec![]).0;
+        let ended: MonitorEndedSink = std::sync::Arc::new(ended);
+        let rpc_slot: RpcSourceSlot = Default::default();
+        let rpc = crate::rpc_monitor_source::RpcMonitorSource::new(
+            crate::rpc_monitor_source::RpcSourceHost {
+                emit: emit.clone(),
+                ended: ended.clone(),
+                changed: {
+                    let (records, files, slot, transitions) = (
+                        records.clone(),
+                        file_snapshots.clone(),
+                        rpc_slot.clone(),
+                        transitions.clone(),
+                    );
+                    std::sync::Arc::new(move || {
+                        publish_snapshot(&records, &files, &slot, &transitions)
+                    })
+                },
+                now_ms: std::sync::Arc::new(now_ms),
+            },
+        );
+        let _ = rpc_slot.set(rpc.clone());
         Self {
-            records: Default::default(),
+            records,
             tasks: vec![],
             emit,
             files: Default::default(),
-            file_snapshots: Default::default(),
+            file_snapshots,
+            rpc_slot,
             next_file_id: 0,
-            transitions: tokio::sync::watch::channel(vec![]).0,
+            transitions,
             parked: tokio::sync::watch::channel(false).0,
             delivery,
-            ended: std::sync::Arc::new(ended),
+            ended,
             runaway_guard: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor_runaway,
             )),
+            rpc,
+            registrations: Default::default(),
             disposed: false,
         }
     }
@@ -442,10 +331,30 @@ impl MonitorRegistry {
             .lock()
             .expect("monitor records")
             .get(id)
-            .map_or(0, |record| record.muted_dropped)
+            .map(|record| record.muted_dropped)
+            .or_else(|| self.rpc.muted_dropped(id))
+            .unwrap_or(0)
+    }
+    /// The rpc source, for an arm that is awaited without holding the registry lock (upstream
+    /// `registerRpc`).
+    pub fn rpc_source(&self) -> crate::rpc_monitor_source::RpcMonitorSource {
+        self.rpc.clone()
+    }
+    /// Upstream `stopRpc`: false when the id is not a live rpc watch.
+    pub fn stop_rpc(&self, id: &str) -> bool {
+        self.rpc.settle(id, "watcher killed")
+    }
+    /// Upstream `stopAllRpc`.
+    pub fn stop_all_rpc(&self) -> usize {
+        self.rpc.settle_all("watcher killed")
     }
     fn publish_state(&self) {
-        publish_snapshot(&self.records, &self.file_snapshots, &self.transitions);
+        publish_snapshot(
+            &self.records,
+            &self.file_snapshots,
+            &self.rpc_slot,
+            &self.transitions,
+        );
     }
     pub fn register_file(
         &mut self,
@@ -504,13 +413,28 @@ impl MonitorRegistry {
         path: &std::path::Path,
         now: f64,
     ) -> std::io::Result<(String, String)> {
+        self.restore_file_with_lifetime(monitor, path, now, None)
+    }
+    /// `restore_persistent_file`, or (with `ephemeral_time_left`) an ephemeral watch resumed with
+    /// only the time it had left and a live deadline (upstream durable-file.ts `lifetime`).
+    pub fn restore_file_with_lifetime(
+        &mut self,
+        monitor: &crate::terminal_manifest_model::ManifestMonitor,
+        path: &std::path::Path,
+        now: f64,
+        ephemeral_time_left: Option<f64>,
+    ) -> std::io::Result<(String, String)> {
+        let lifetime = match ephemeral_time_left {
+            Some(time_left) => (time_left.max(1.0) as u64, false),
+            None => (crate::durable_file::remaining_ms(monitor, now) as u64, true),
+        };
         let registered = self.register_file_lifetime(
             &monitor.description,
             path,
             monitor
                 .event
                 .unwrap_or(crate::terminal_manifest_model::FileEvent::Create),
-            (crate::durable_file::remaining_ms(monitor, now) as u64, true),
+            lifetime,
             Some(&monitor.monitor_id),
             monitor.approved_parent.as_deref().map(std::path::Path::new),
         )?;
@@ -539,21 +463,123 @@ impl MonitorRegistry {
                 "Cannot create file monitor: monitor registry is disposed.",
             ));
         }
+        let record = crate::file_monitor::FileMonitor::register(
+            String::new(),
+            description.to_owned(),
+            path,
+            event,
+            approved_parent,
+        )?;
+        let watcher = crate::file_monitor_source::ParentWatcher::watch(
+            &record.parent,
+            record.path.file_name().unwrap_or_default(),
+        )
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "Cannot watch file {}: {error}",
+                record.path.display()
+            ))
+        })?;
+        self.adopt_file(
+            crate::file_monitor_source::ProvenFileWatch { record, watcher },
+            lifetime,
+            monitor_id,
+            None,
+        )
+    }
+    /// Opens a guarded file registration (upstream `registerFile` up to `proveWatchTarget`): the
+    /// guard and the pending entry the caller proves the target against, outside any registry lock,
+    /// with [`crate::file_monitor_source::prove_file_registration`]. `release` is the capacity slot
+    /// the watch will own; a dispose or [`Self::stop_all_files`] aborts the registration and frees it.
+    pub fn begin_file_registration(
+        &self,
+        release: Option<crate::manager::CapacityReservation>,
+        timeout_ms: u64,
+    ) -> std::io::Result<(
+        std::sync::Arc<crate::file_monitor_guard::RegistrationGuard>,
+        crate::file_monitor_guard::PendingFileRegistration,
+    )> {
+        if self.disposed {
+            return Err(std::io::Error::other(
+                "Cannot create file monitor: monitor registry is disposed.",
+            ));
+        }
+        Ok((
+            self.registrations.clone(),
+            self.registrations.open(release, timeout_ms),
+        ))
+    }
+    /// Completes a guarded registration: a proof that is still live becomes a watch that owns the
+    /// pending capacity slot; a proof that lost the race (deadline, dispose, `stopAllFiles`) or a
+    /// disposed registry fails, and the slot is released.
+    pub fn finish_file_registration(
+        &mut self,
+        pending: &crate::file_monitor_guard::PendingFileRegistration,
+        proven: std::io::Result<crate::file_monitor_source::ProvenFileWatch>,
+        lifetime: (u64, bool),
+        monitor_id: Option<&str>,
+    ) -> std::io::Result<(String, String)> {
+        let proven = match proven {
+            Ok(proven) if !pending.is_aborted() && !self.disposed => proven,
+            Ok(_) => {
+                self.registrations.finish(pending, false);
+                return Err(std::io::Error::other(if self.disposed {
+                    "Cannot create file monitor: monitor registry is disposed."
+                } else {
+                    crate::file_monitor_guard::REGISTRATION_ABORTED
+                }));
+            }
+            Err(error) => {
+                self.registrations.finish(pending, false);
+                return Err(error);
+            }
+        };
+        let reservation = self.registrations.finish(pending, true);
+        self.adopt_file(proven, lifetime, monitor_id, reservation)
+    }
+    /// `registerFile` end to end: reserve, prove under the registration deadline without holding
+    /// the registry lock across a filesystem step, then adopt the watch.
+    pub async fn register_file_guarded(
+        registry: &std::sync::Mutex<Self>,
+        request: crate::file_monitor_source::FileRegistrationRequest,
+        release: Option<crate::manager::CapacityReservation>,
+        timeout_ms: u64,
+        lifetime: (u64, bool),
+        monitor_id: Option<&str>,
+    ) -> std::io::Result<(String, String)> {
+        let (guard, pending) = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .begin_file_registration(release, timeout_ms)?;
+        let proven =
+            crate::file_monitor_source::prove_file_registration(&guard, &pending, request).await;
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .finish_file_registration(&pending, proven, lifetime, monitor_id)
+    }
+    fn adopt_file(
+        &mut self,
+        proven: crate::file_monitor_source::ProvenFileWatch,
+        lifetime: (u64, bool),
+        monitor_id: Option<&str>,
+        reservation: Option<crate::manager::CapacityReservation>,
+    ) -> std::io::Result<(String, String)> {
+        let crate::file_monitor_source::ProvenFileWatch {
+            mut record,
+            watcher,
+        } = proven;
         let (timeout_ms, persistent) = lifetime;
         let id = format!("watch_{}", self.next_file_id + 1);
         let monitor_id = match monitor_id {
             Some(id) => id.to_owned(),
             None => allocate_monitor_id()?,
         };
-        let file = std::sync::Arc::new(std::sync::Mutex::new(
-            crate::file_monitor::FileMonitor::register(
-                id.clone(),
-                description.to_owned(),
-                path,
-                event,
-                approved_parent,
-            )?,
-        ));
+        let description = record.description.clone();
+        let description = description.as_str();
+        record.id = id.clone();
+        record.reservation = reservation;
+        let file = std::sync::Arc::new(std::sync::Mutex::new(record));
         let checker = file.clone();
         let emit = self.emit.clone();
         let snapshots = self.file_snapshots.clone();
@@ -580,10 +606,12 @@ impl MonitorRegistry {
             .fire_count = Some(0);
         self.publish_state();
         let records = self.records.clone();
+        let rpc_slot = self.rpc_slot.clone();
         let transitions = self.transitions.clone();
         let mut state = self.subscribe_state();
         let mut parked = self.parked.subscribe();
         let expires = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let wake = watcher.wake();
         let watch = tokio::spawn(async move {
             let period =
                 std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
@@ -595,16 +623,22 @@ impl MonitorRegistry {
                 let paused = checker.lock().expect("file monitor").paused || *parked.borrow();
                 let timed_out = tokio::select! {
                     _=timer.tick(),if !paused=>false,
+                    _=wake.notified(),if !paused=>false,
                     _=&mut deadline=>true,
                     changed=state.changed()=>{if changed.is_err() {return;}state.borrow_and_update();timer.reset();continue;}
                     changed=parked.changed()=>{if changed.is_err() {return;}let resumed=!*parked.borrow_and_update();if resumed {timer.reset_immediately();}else {timer.reset();}continue;}
                 };
                 // The poll does blocking lstat/open/digest work, so it runs off the async workers.
                 let blocking = checker.clone();
+                let watcher_error = watcher.take_error();
                 let Ok((events, settled, summary)) = tokio::task::spawn_blocking(move || {
                     let mut summary = None;
                     let mut file = blocking.lock().expect("file monitor");
-                    let events: Vec<MonitorEvent> = if timed_out {
+                    let events: Vec<MonitorEvent> = if let Some(error) = watcher_error {
+                        let events: Vec<MonitorEvent> = file.stop(&error).into_iter().collect();
+                        summary = Some(error);
+                        events
+                    } else if timed_out {
                         summary = Some(
                             (if persistent {
                                 "watcher expired"
@@ -648,7 +682,7 @@ impl MonitorRegistry {
                         );
                     }
                 }
-                publish_snapshot(&records, &snapshots, &transitions);
+                publish_snapshot(&records, &snapshots, &rpc_slot, &transitions);
                 for event in events {
                     emit(event);
                 }
@@ -661,6 +695,19 @@ impl MonitorRegistry {
         self.next_file_id += 1;
         self.files.insert(id.clone(), (file, watch));
         Ok((id, monitor_id))
+    }
+    /// `stopAllFiles`: kill every live file watch and abort every registration still proving its
+    /// target (its capacity is released). Returns how many live watches were stopped.
+    pub fn stop_all_files(&mut self) -> usize {
+        let ids = self
+            .file_snapshots
+            .lock()
+            .expect("file snapshots")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.registrations.finish_all();
+        ids.into_iter().filter(|id| self.stop_file(id)).count()
     }
     pub fn stop_file(&mut self, id: &str) -> bool {
         let Some((file, watch)) = self.files.shift_remove(id) else {
@@ -750,6 +797,7 @@ impl MonitorRegistry {
                 id: file.id.clone(),
                 description: file.description.clone(),
                 line,
+                human_input: false,
             }
         };
         if let Some(snapshot) = self
@@ -780,6 +828,7 @@ impl MonitorRegistry {
                 .values()
                 .cloned(),
         );
+        snapshot.extend(self.rpc.snapshots());
         snapshot
     }
     pub fn pause(&self, ids: &[String]) -> Vec<String> {
@@ -806,19 +855,29 @@ impl MonitorRegistry {
                 }
             }
         }
+        paused.extend(ids.iter().filter(|id| self.rpc.pause(id)).cloned());
         drop(records);
         self.publish_state();
         paused
     }
     pub fn resume(&self, ids: Option<&[String]>) -> Vec<(String, usize)> {
         let mut records = self.records.lock().expect("monitor records");
-        let ids = ids
-            .map(<[String]>::to_vec)
-            .unwrap_or_else(|| records.keys().chain(self.files.keys()).cloned().collect());
+        let ids = ids.map(<[String]>::to_vec).unwrap_or_else(|| {
+            records
+                .keys()
+                .chain(self.files.keys())
+                .cloned()
+                .chain(self.rpc.keys())
+                .collect()
+        });
         let mut resumed = vec![];
         let mut pending_events = vec![];
         for id in ids {
             if let Some(dropped) = records.get_mut(&id).and_then(CommandMonitor::resume) {
+                resumed.push((id, dropped));
+                continue;
+            }
+            if let Some(dropped) = self.rpc.resume(&id) {
                 resumed.push((id, dropped));
                 continue;
             }
@@ -881,6 +940,7 @@ impl MonitorRegistry {
         let records = self.records.clone();
         let emit = self.emit.clone();
         let files = self.file_snapshots.clone();
+        let rpc_slot = self.rpc_slot.clone();
         let transitions = self.transitions.clone();
         let ended = self.ended.clone();
         self.tasks.retain(|task| !task.is_finished());
@@ -889,16 +949,19 @@ impl MonitorRegistry {
                 let settled=exit.borrow().clone();
                 if let Some(result)=settled {
                     let Some(mut record)=records.lock().expect("monitor records").shift_remove(&id) else {return;};
-                    publish_snapshot(&records,&files,&transitions);
+                    publish_snapshot(&records,&files,&rpc_slot,&transitions);
                     while let Ok(chunk)=output.try_recv() {let current=*guard.lock().expect("runaway guard");for event in record.consume(&chunk,now_ms(),&current) {emit(event);}}
                     let (reason,exit_code)=match &result {Ok(exit)=>(if exit.timed_out {MonitorEndedReason::Timeout} else if exit.cancelled {MonitorEndedReason::Killed} else {MonitorEndedReason::Exit},exit.exit_code),Err(_)=>(MonitorEndedReason::Exit,None)};
-                    let summary=match result {Ok(result)=>format!("watcher {}{}",crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned()),result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})"))),Err(error)=>format!("watcher error: {error}")};
+                    // A timed-out watch was KILLED by its own timeout_ms deadline; say so instead of a
+                    // passive "timed_out". The exit code is deliberately omitted in this branch: a
+                    // killed child's code is noise, and "killed at deadline" names the cause instead.
+                    let summary=match result {Ok(result)=>{let status=crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned());if result.timed_out {format!("watcher killed at deadline ({status})")} else {format!("watcher {status}{}",result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})")))}},Err(error)=>format!("watcher error: {error}")};
                     if let Some(event)=record.settle(summary,now_ms()) {emit(event);}
                     emit_ended(&ended,&record.snapshot,reason,exit_code,now_ms());
                     return;
                 }
                 tokio::select! {
-                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|{let current=*guard.lock().expect("runaway guard");record.consume(&chunk,now_ms(),&current)}).unwrap_or_default();if !events.is_empty() {publish_snapshot(&records,&files,&transitions);}for event in events {emit(event);}},
+                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|{let current=*guard.lock().expect("runaway guard");record.consume(&chunk,now_ms(),&current)}).unwrap_or_default();if !events.is_empty() {publish_snapshot(&records,&files,&rpc_slot,&transitions);}for event in events {emit(event);}},
                     changed=exit.changed()=>{if changed.is_err() {return;}}
                 }
             }
@@ -910,6 +973,7 @@ impl MonitorRegistry {
             return;
         }
         self.disposed = true;
+        self.registrations.finish_all();
         let now = now_ms();
         let mut events = vec![];
         for (_, (file, task)) in std::mem::take(&mut self.files) {
@@ -941,6 +1005,7 @@ impl MonitorRegistry {
             );
         }
         self.records.lock().expect("monitor records").clear();
+        self.rpc.dispose();
         self.publish_state();
         for event in events {
             (self.emit)(event);
@@ -1003,6 +1068,7 @@ mod registry_tests {
                 id: "bash_1".to_owned(),
                 description: "watch".to_owned(),
                 line: index.to_string(),
+                human_input: false,
             });
         }
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -1103,6 +1169,43 @@ mod registry_tests {
             Ok(MonitorEvent::Summary { .. })
         ));
         assert!(registry.snapshot().is_empty());
+        registry.dispose();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_parent_settles_with_a_single_watcher_error_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (first, second) = (root.join("first"), root.join("second"));
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("file"), b"first").unwrap();
+        std::fs::write(second.join("file"), b"second").unwrap();
+        let parent = root.join("parent");
+        std::os::unix::fs::symlink(&first, &parent).unwrap();
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let (id, _) = registry
+            .register_persistent_file(
+                "watch",
+                &parent.join("file"),
+                crate::terminal_manifest_model::FileEvent::Modify,
+            )
+            .unwrap();
+        registry.pause(std::slice::from_ref(&id));
+        std::fs::remove_file(&parent).unwrap();
+        std::os::unix::fs::symlink(&second, &parent).unwrap();
+        registry.resume(Some(std::slice::from_ref(&id)));
+        let expected = format!(
+            "watcher error: monitored parent changed: {}",
+            parent.display()
+        );
+        assert!(matches!(
+            events.try_recv(),
+            Ok(MonitorEvent::Summary { summary, .. }) if summary == expected
+        ));
         registry.dispose();
     }
     #[tokio::test]
@@ -1321,6 +1424,243 @@ mod registry_tests {
         runtime.dispose().unwrap();
     }
     #[tokio::test]
+    async fn a_watch_killed_by_its_own_deadline_says_killed_at_deadline_without_exit_code() {
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let (ended_sender, mut ended) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new_with_ended(
+            move |event| {
+                sender.send(event).unwrap();
+            },
+            move |event| {
+                ended_sender.send(event).unwrap();
+            },
+        );
+        let runtime = crate::runtime_session::TerminalRuntimeSession::start(
+            "sleep",
+            crate::shared::test_sh_options("stty -echo; sleep 30")
+                .timeout(std::time::Duration::from_millis(200)),
+        )
+        .unwrap();
+        registry
+            .register(
+                &runtime,
+                CommandMonitor::new(
+                    MonitorSnapshotEntry {
+                        id: "bash_1".to_owned(),
+                        description: "deadline".to_owned(),
+                        ..Default::default()
+                    },
+                    None,
+                ),
+            )
+            .unwrap();
+        let summary = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(MonitorEvent::Summary { summary, .. }) = events.recv().await {
+                    return summary;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(summary, "watcher killed at deadline (timed_out)");
+        // Structural guard, not prose: the timed-out branch omits the "(exit code N)" suffix.
+        assert!(!summary.contains("exit code"));
+        // The machine-read outcome: a timed watch ends with reason "timeout" exactly once, and the
+        // ending is emitted before the registry is disposed.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), ended.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.reason, MonitorEndedReason::Timeout);
+        assert_eq!(first.id, "bash_1");
+        registry.dispose();
+        let mut timeouts = 1;
+        while let Ok(event) = ended.try_recv() {
+            timeouts += usize::from(event.reason == MonitorEndedReason::Timeout);
+        }
+        assert_eq!(timeouts, 1);
+        runtime.dispose().unwrap();
+    }
+    fn file_request(
+        dir: &std::path::Path,
+        event: crate::terminal_manifest_model::FileEvent,
+    ) -> crate::file_monitor_source::FileRegistrationRequest {
+        crate::file_monitor_source::FileRegistrationRequest {
+            description: "pending".to_owned(),
+            path: "artifact".into(),
+            cwd: dir.to_path_buf(),
+            event,
+            approved_parent: None,
+        }
+    }
+    /// terminal-monitor.test.ts "holds native-watch capacity until the watch settles".
+    #[tokio::test]
+    async fn a_guarded_registration_holds_capacity_until_the_watch_settles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let registry = std::sync::Mutex::new(MonitorRegistry::new(|_| {}));
+        let (id, monitor_id) = MonitorRegistry::register_file_guarded(
+            &registry,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+            manager.reserve().unwrap(),
+            5_000,
+            (5_000, false),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(id.starts_with("watch_") && monitor_id.starts_with("mon_"));
+        assert!(manager.reserve().unwrap().is_none());
+        assert_eq!(registry.lock().unwrap().stop_all_files(), 1);
+        assert_eq!(manager.active_size().unwrap(), 0);
+        registry.lock().unwrap().dispose();
+    }
+    /// terminal-monitor.test.ts "aborts a pending registration when disposed and releases
+    /// capacity": a proof that completes after the dispose is refused and frees its slot.
+    #[tokio::test]
+    async fn dispose_aborts_a_pending_registration_and_releases_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("artifact"), b"before").unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let mut registry = MonitorRegistry::new(|_| {});
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 5_000)
+            .unwrap();
+        registry.dispose();
+        assert_eq!(manager.active_size().unwrap(), 0);
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Modify,
+            ),
+        )
+        .await;
+        let error = registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("disposed"), "{error}");
+        assert!(registry.snapshot().is_empty());
+        assert!(manager.reserve().unwrap().is_some());
+    }
+    /// terminal-monitor.test.ts "aborts all pending registrations when stopAllFiles is called":
+    /// the registry stays usable, but the registration in flight is refused.
+    #[tokio::test]
+    async fn stop_all_files_aborts_pending_registrations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let mut registry = MonitorRegistry::new(|_| {});
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 5_000)
+            .unwrap();
+        assert_eq!(registry.stop_all_files(), 0);
+        assert_eq!(manager.active_size().unwrap(), 0);
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+        )
+        .await;
+        let error = registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::file_monitor_guard::REGISTRATION_ABORTED);
+        assert!(registry.snapshot().is_empty());
+        // A fresh registration after stopAllFiles still succeeds.
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 5_000)
+            .unwrap();
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+        )
+        .await;
+        registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap();
+        assert_eq!(registry.snapshot().len(), 1);
+        assert_eq!(manager.active_size().unwrap(), 1);
+        registry.dispose();
+        assert_eq!(manager.active_size().unwrap(), 0);
+    }
+    /// A registration whose deadline passes before its proof completes is refused (the paused
+    /// clock is the injected time; no sleep).
+    #[tokio::test(start_paused = true)]
+    async fn a_registration_past_its_deadline_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = crate::manager::TerminalManager::new(1);
+        let mut registry = MonitorRegistry::new(|_| {});
+        let (guard, pending) = registry
+            .begin_file_registration(manager.reserve().unwrap(), 100)
+            .unwrap();
+        let proven = crate::file_monitor_source::prove_file_registration(
+            &guard,
+            &pending,
+            file_request(
+                dir.path(),
+                crate::terminal_manifest_model::FileEvent::Create,
+            ),
+        )
+        .await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        let error = registry
+            .finish_file_registration(&pending, proven, (5_000, false), None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, crate::file_monitor_guard::REGISTRATION_ABORTED);
+        assert_eq!(manager.active_size().unwrap(), 0);
+        registry.dispose();
+    }
+    /// The native parent watcher settles a watch whose parent was retargeted (upstream "fails
+    /// closed when an approved symlink parent is retargeted after activation").
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_retargeted_parent_settles_the_watch_without_a_line() {
+        let root = tempfile::tempdir().unwrap();
+        let internal = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let link = root.path().join("parent");
+        std::os::unix::fs::symlink(internal.path(), &link).unwrap();
+        registry
+            .register_file(
+                "drift",
+                &link.join("artifact"),
+                crate::terminal_manifest_model::FileEvent::Create,
+                5_000,
+            )
+            .unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(external.path(), &link).unwrap();
+        std::fs::write(external.path().join("artifact"), b"external").unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&event, MonitorEvent::Summary { summary, .. } if summary.contains("monitored parent changed")),
+            "{event:?}"
+        );
+        assert!(registry.snapshot().is_empty());
+    }
+    #[tokio::test]
     async fn dispose_emits_disposed_ending_for_every_live_record() {
         let (ended_sender, ended) = std::sync::mpsc::channel();
         let mut registry = MonitorRegistry::new_with_ended(
@@ -1391,89 +1731,6 @@ mod tests {
             },
             Some(fancy_regex::Regex::new("^ready").unwrap()),
         )
-    }
-    #[test]
-    fn filtering_buffers_partial_lines_and_counts_only_muted_matches() {
-        let mut monitor = monitor();
-        assert!(monitor.consume("ignored\nrea", 10.0, &guard()).is_empty());
-        assert_eq!(monitor.consume("dy\n", 11.0, &guard()).len(), 1);
-        assert!(monitor.pause());
-        assert!(
-            monitor
-                .consume("ignored\nready again\n", 12.0, &guard())
-                .is_empty()
-        );
-        assert_eq!(monitor.resume(), Some(1));
-        assert_eq!(monitor.resume(), None);
-        assert_eq!(monitor.snapshot.fire_window.as_ref().unwrap().count, 0);
-        assert!(
-            monitor
-                .settle("watcher exited (exit code 0)".to_owned(), 13.0)
-                .is_some()
-        );
-        assert!(monitor.settle("duplicate".to_owned(), 14.0).is_none());
-        assert!(monitor.consume("ready\n", 15.0, &guard()).is_empty());
-    }
-    fn guard() -> crate::settings::MonitorRunawayGuard {
-        crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor_runaway
-    }
-    fn flood(monitor: &mut CommandMonitor, now: f64, lines: usize) -> Vec<MonitorEvent> {
-        monitor.consume(&"ready\n".repeat(lines), now, &guard())
-    }
-    #[test]
-    fn busy_watch_is_not_muted_by_a_line_count() {
-        let mut monitor = monitor();
-        let events = flood(&mut monitor, 20.0, 500);
-        assert_eq!(events.len(), 500);
-        assert!(
-            events
-                .iter()
-                .all(|event| matches!(event, MonitorEvent::Line { .. }))
-        );
-        assert!(!monitor.snapshot.paused);
-        assert_eq!(monitor.snapshot.fire_window.as_ref().unwrap().count, 500);
-    }
-    #[test]
-    fn runaway_trips_only_after_consecutive_flood_minutes_and_rearm_clears_history() {
-        let mut monitor = monitor();
-        let guard = guard();
-        let minutes = guard.minutes as usize;
-        let per_minute = guard.lines_per_minute as usize + 1;
-        for minute in 0..minutes - 1 {
-            let events = flood(&mut monitor, 10.0 + minute as f64 * 60_000.0, per_minute);
-            assert!(!monitor.snapshot.paused);
-            assert!(
-                events
-                    .iter()
-                    .all(|event| matches!(event, MonitorEvent::Line { .. }))
-            );
-        }
-        let events = flood(
-            &mut monitor,
-            10.0 + (minutes - 1) as f64 * 60_000.0,
-            per_minute,
-        );
-        assert!(monitor.snapshot.paused);
-        assert!(
-            matches!(events.last(),Some(MonitorEvent::Summary {summary,..}) if *summary==crate::shared::runaway_pause_summary("bash_1",guard.lines_per_minute as usize,guard.minutes as usize)&&summary.starts_with(crate::shared::RUNAWAY_PAUSE_SUMMARY_PREFIX))
-        );
-        assert!(monitor.resume().is_some());
-        assert_eq!(monitor.runaway, None);
-        assert_eq!(
-            monitor.snapshot.fire_window.as_ref().unwrap().start_ms,
-            10.0
-        );
-    }
-    #[test]
-    fn a_quiet_or_skipped_minute_resets_the_flood_run() {
-        let mut monitor = monitor();
-        let per_minute = guard().lines_per_minute as usize + 1;
-        for minute in 0..4 {
-            flood(&mut monitor, 10.0 + minute as f64 * 60_000.0, per_minute);
-        }
-        flood(&mut monitor, 10.0 + 6.0 * 60_000.0, per_minute);
-        assert!(!monitor.snapshot.paused);
-        assert_eq!(monitor.runaway.as_ref().unwrap().flood_minutes, 0);
     }
     #[test]
     fn wake_pacing_applies_only_to_persistent_command_watches() {

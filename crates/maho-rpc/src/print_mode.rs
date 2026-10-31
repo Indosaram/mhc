@@ -98,7 +98,9 @@ pub async fn run_print_session(
             let rendered=format_print_result(assistant).map_err(std::io::Error::other)?;
             output.write_all(rendered.stdout.as_bytes()).await?;diagnostics.write_all(rendered.stderr.as_bytes()).await?;rendered.exit_code
         },
-        Ok(())=>0
+        // senpi v2026.10.27-2: JSON mode shares text mode's exit status, so a parent that only checks
+        // the code never takes an errored or aborted run for success.
+        Ok(())=>i32::from(json_run_failed(session.messages().iter().rev().find_map(|message|message.as_assistant())))
     };
     output.flush().await?;diagnostics.flush().await?;Ok(exit_code)
 }
@@ -130,6 +132,10 @@ pub fn fallback_diagnostic(event:&maho_ext_api::AgentSessionEvent)->Option<Strin
     AgentSessionEvent::RetryFallbackReverted{from,to}=>Some(format!("Model fallback reverted: {from} -> {to}\n")),
     _=>None,
 }}
+/// Whether the last assistant message ended the run in failure (senpi print-mode `failed`).
+pub fn json_run_failed(message: Option<&AssistantMessage>) -> bool {
+    message.is_some_and(|message| matches!(message.stop_reason,StopReason::Error|StopReason::Aborted))
+}
 pub fn format_print_result(message: Option<&AssistantMessage>) -> Result<PrintOutput,serde_json::Error> {
     let Some(message) = message else { return Ok(PrintOutput::default()); };
     if matches!(message.stop_reason,StopReason::Error|StopReason::Aborted) {
@@ -172,6 +178,12 @@ mod tests {
     #[test] fn prints_text_blocks_with_newlines() { let message=message(json!([{"type":"text","text":"one"},{"type":"text","text":"two"}]),"stop",None);assert_eq!(format_print_result(Some(&message)).unwrap().stdout,"one\ntwo\n"); }
     #[test] fn provider_native_uses_summary_and_body() { let message=message(json!([{"type":"providerNative","subtype":"image_generation_call","raw":{"result":"YWJj"}}]),"stop",None);let output=format_print_result(Some(&message)).unwrap();assert!(output.stdout.ends_with("\n3 bytes\n"));assert!(!output.stdout.contains("YWJj")); }
     #[test] fn failed_turn_strips_internal_marker_and_exits_one() { let message=message(json!([]),"error",Some("senpi:no-turn-retry:failed"));assert_eq!(format_print_result(Some(&message)).unwrap(),PrintOutput { stdout:String::new(),stderr:"failed\n".into(),exit_code:1 }); }
+    #[test] fn json_exit_status_fails_on_error_and_aborted_stops() {
+        assert!(json_run_failed(Some(&message(json!([]),"error",Some("boom")))));
+        assert!(json_run_failed(Some(&message(json!([]),"aborted",None))));
+        assert!(!json_run_failed(Some(&message(json!([{"type":"text","text":"ok"}]),"stop",None))));
+        assert!(!json_run_failed(None));
+    }
     #[test] fn missing_error_uses_terminal_status() { let message=message(json!([]),"aborted",None);assert_eq!(format_print_result(Some(&message)).unwrap().stderr,"Request aborted\n"); }
     #[test] fn stripped_message_update_matches_full_record_json_event() {
         let partial=message(json!([{"type":"text","text":"ab"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"x":1}}]),"stop",None);
@@ -187,6 +199,30 @@ mod tests {
             assert_eq!(crate::jsonl::serialize_json_line(&crate::json_event::to_json_event(&stripped).unwrap()).unwrap(),expected);
         }
         assert!(stripped_message_update(&agent_message,&A::ToolcallStart{content_index:1,partial}).is_none());
+    }
+    // senpi test/print-mode-fallback-notice.test.ts: the fallback notices go to stderr in both modes.
+    #[test] fn fallback_notices_are_stderr_diagnostics() {
+        use maho_ext_api::AgentSessionEvent;
+        let applied=AgentSessionEvent::RetryFallbackApplied{from:"anthropic/claude-opus-4-6".into(),to:"openai/gpt-4o".into(),chain_key:"anthropic/claude-opus-4-6".into(),reason:"billing".into()};
+        assert_eq!(fallback_diagnostic(&applied).as_deref(),Some("Model fallback: anthropic/claude-opus-4-6 -> openai/gpt-4o (billing)\n"));
+        let exhausted=AgentSessionEvent::RetryFallbackExhausted{chain_key:"anthropic/claude-opus-4-6".into(),last_error:"all models unavailable".into()};
+        assert_eq!(fallback_diagnostic(&exhausted).as_deref(),Some("Model fallback exhausted: anthropic/claude-opus-4-6 (all models unavailable)\n"));
+        let reverted=AgentSessionEvent::RetryFallbackReverted{from:"openai/gpt-4o".into(),to:"anthropic/claude-opus-4-6".into()};
+        assert_eq!(fallback_diagnostic(&reverted).as_deref(),Some("Model fallback reverted: openai/gpt-4o -> anthropic/claude-opus-4-6\n"));
+    }
+    // senpi test/print-mode.test.ts: an aborted or errored last assistant fails the run in both modes, and a
+    // terminating tool result trailing the final answer leaves the text result intact.
+    #[test] fn last_assistant_decides_the_exit_status_in_text_and_json() {
+        let aborted=message(json!([]),"aborted",Some("user aborted"));
+        assert_eq!(format_print_result(Some(&aborted)).unwrap(),PrintOutput{stdout:String::new(),stderr:"user aborted\n".into(),exit_code:1});
+        assert!(json_run_failed(Some(&aborted)));
+        let recovered=message(json!([{"type":"text","text":"recovered"}]),"stop",None);
+        assert_eq!(format_print_result(Some(&recovered)).unwrap().exit_code,0);
+        assert!(!json_run_failed(Some(&recovered)));
+        let final_answer=message(json!([{"type":"text","text":"final answer"}]),"stop",None);
+        let messages=[maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(final_answer)))];
+        let last=messages.iter().rev().find_map(|message|message.as_assistant());
+        assert_eq!(format_print_result(last).unwrap().stdout,"final answer\n");
     }
     #[test] fn absent_assistant_outputs_nothing() { assert_eq!(format_print_result(None).unwrap(),PrintOutput::default()); }
 }

@@ -169,6 +169,9 @@ pub struct AuthNotices {
 type AuthUiEvents = tokio::sync::mpsc::UnboundedReceiver<AuthUiEvent>;
 /// senpi `FALLBACK_STATUS_KEY`.
 const FALLBACK_STATUS_KEY: &str = "fallback";
+/// senpi `HOST_STATUS_KEYS`: footer statuses the host owns; an extension UI reset (e.g. /reload)
+/// keeps them.
+const HOST_STATUS_KEYS: [&str; 1] = [crate::lifecycle_status::LIFECYCLE_STATUS_KEY];
 /// A queued tree-edit prefill: `(entryId, editedText, expectedLeafId)`.
 type PendingTreeEdit = (String, String, Option<String>);
 /// A queued tree-navigation choice: `(entryId, summarize, customInstructions)`.
@@ -769,6 +772,9 @@ pub struct InteractiveModeOptions {
     pub auto_trust_on_reload_cwd: Option<String>,
     /// senpi `initialTitlePrompt`: the title source for the initial message (`None` disables titling).
     pub initial_title_prompt: Option<String>,
+    /// senpi `mcpPresenterEnforcement` (`--mcp-presenter-enforcement`): the terminal enrolls as the
+    /// `local_tui` MCP presenter.
+    pub mcp_presenter_enforcement: bool,
 }
 
 pub struct InteractiveMode {
@@ -1000,7 +1006,27 @@ pub struct InteractiveMode {
     mounted_renderer: Option<std::rc::Weak<RefCell<crate::tui_renderer::InteractiveTui>>>,
     side_column: Option<maho_ext_api::ExtensionSideColumn>,
     detach_mcp_grant_presentation: Option<Box<dyn FnOnce() + Send + 'static>>,
+    /// senpi `mcpMrtrPresentationLifetime`: one per extension binding, aborted on rebind and at dispose.
+    mcp_mrtr_presentation_lifetime:
+        std::sync::Mutex<Option<maho_ai::utils::abort::AbortController>>,
     unsubscribe_security_notices: Option<Box<dyn FnOnce() + Send + 'static>>,
+    /// senpi `lifecycleStatus`: the footer's projection of the bound session's lifecycle.
+    lifecycle_status: crate::lifecycle_status::LifecycleStatus,
+    /// senpi `agentSubscriptionGeneration`: lifecycle records from a retired binding are dropped.
+    lifecycle_subscription_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// The `session_lifecycle` bus subscription of the bound session and its record channel.
+    lifecycle_subscription: Option<maho_core::event_bus::EventSubscription>,
+    lifecycle_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>>,
+    /// senpi `sessionControlHost`: lets an extension expose this session on a control endpoint.
+    session_control_host: crate::session_control_host::TuiSessionControlHost,
+    /// What the endpoint reads from this pane, and the actions it queues for it.
+    session_control_surface: Arc<crate::session_control_surface::InteractiveControlSurface>,
+    session_control_actions:
+        tokio::sync::mpsc::UnboundedReceiver<crate::session_control_surface::ControlSurfaceAction>,
+    /// Tickets a typed submission claimed (senpi `claimHandoff`): released once the main loop hands
+    /// that text to the runtime.
+    submission_tickets:
+        Rc<RefCell<std::collections::VecDeque<crate::session_control_host::SubmissionTicket>>>,
     side_column_widget_bounds: Option<(usize, usize)>,
     mounted_side_column: Option<crate::side_column::MountedSideColumn>,
     terminal_dimensions: Rc<std::cell::Cell<(u16, u16)>>,
@@ -1034,6 +1060,9 @@ pub struct InteractiveMode {
         serde_json::Value,
         maho_core::cache_stats::CacheMiss,
     )>,
+    /// The session whose prompts the editor history holds, so a rebuild for another session drops
+    /// them.
+    history_session_id: Option<String>,
     /// senpi `providerErrors`: the current provider-failure display episode, mounted in the chat.
     provider_errors:
         Option<Rc<RefCell<crate::provider_error_presentation::ProviderErrorPresentation>>>,
@@ -2611,7 +2640,60 @@ impl InteractiveMode {
         let question_actions: QuestionActions =
             Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let empty_submit_actions = question_actions.clone();
+        let control_surface_slot: Arc<
+            std::sync::OnceLock<Arc<crate::session_control_surface::InteractiveControlSurface>>,
+        > = Arc::default();
+        let control_session = session.clone();
+        let control_surface = control_surface_slot.clone();
+        let session_control_host =
+            crate::session_control_host::TuiSessionControlHost::new(Arc::new(move || {
+                // Set right after the host is built, before any extension can register.
+                let surface = control_surface.get().cloned().map(
+                    |surface| -> Arc<dyn crate::session_control_commands::TuiControlSurface> {
+                        surface
+                    },
+                );
+                (
+                    control_session.clone(),
+                    control_session.agent_dir(),
+                    surface,
+                )
+            }));
+        let in_flight_host = session_control_host.clone();
+        let (session_control_surface, session_control_actions) =
+            crate::session_control_surface::InteractiveControlSurface::new(Box::new(move || {
+                in_flight_host.submission_in_flight()
+            }));
+        drop(control_surface_slot.set(session_control_surface.clone()));
+        let submission_tickets: Rc<
+            RefCell<std::collections::VecDeque<crate::session_control_host::SubmissionTicket>>,
+        > = Rc::default();
+        // senpi `sessionControlHost.attachEditor`: the change and submit edges.
+        let change_host = session_control_host.clone();
+        let change_images = pending_images.clone();
+        editor.editor.on_change = Some(Box::new(move |text| {
+            change_host
+                .editor_changed(!change_images.borrow().is_empty() || !text.trim().is_empty());
+        }));
+        let submit_host = session_control_host.clone();
+        let submit_tickets = submission_tickets.clone();
+        let submit_on = Rc::new(RefCell::new(None::<Box<dyn FnMut(&str)>>));
+        let wrapped_submit = submit_on.clone();
         editor.editor.on_submit = Some(Box::new(move |text| {
+            let mut submit = wrapped_submit.borrow_mut();
+            submit_host.editor_submitted(|| {
+                // Typed text is buffered for the main loop, so its ticket waits for the hand-off.
+                if !text.trim().is_empty()
+                    && let Some(ticket) = submit_host.claim_handoff()
+                {
+                    submit_tickets.borrow_mut().push_back(ticket);
+                }
+                if let Some(submit) = submit.as_mut() {
+                    submit(text);
+                }
+            });
+        }));
+        *submit_on.borrow_mut() = Some(Box::new(move |text: &str| {
             // senpi `onSubmit`: Enter on an empty editor opens the pending async question.
             if text.trim().is_empty() {
                 empty_submit_actions
@@ -2634,6 +2716,7 @@ impl InteractiveMode {
                 captured.borrow_mut().push_back(text.trim().into());
             }
         }));
+        drop(submit_on);
         let (auth_ui_sender, auth_ui_events) = tokio::sync::mpsc::unbounded_channel();
         let (auth_lifecycle_events, _) = tokio::sync::broadcast::channel(32);
         let mermaid_session = session.clone();
@@ -2692,7 +2775,16 @@ impl InteractiveMode {
             side_column_widget_bounds: None,
             side_column: None,
             detach_mcp_grant_presentation: None,
+            mcp_mrtr_presentation_lifetime: std::sync::Mutex::new(None),
             unsubscribe_security_notices: None,
+            lifecycle_status: crate::lifecycle_status::LifecycleStatus::new(),
+            lifecycle_subscription_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lifecycle_subscription: None,
+            lifecycle_rx: None,
+            session_control_host,
+            session_control_surface,
+            session_control_actions,
+            submission_tickets,
             mounted_side_column: None,
             keyword_turn_glow: false,
             theme_rebuild_pending: false,
@@ -2843,6 +2935,7 @@ impl InteractiveMode {
             provider_errors: None,
             reload_box: None,
             history_cache_misses: Vec::new(),
+            history_session_id: None,
             external_owner_compaction_notice_shown: false,
             compaction_delegated: false,
             fallback_applied_before_retry_start: false,
@@ -4255,6 +4348,17 @@ impl InteractiveMode {
     }
 
     pub fn rebuild_history(&mut self) {
+        // senpi renderInitialMessages keeps the editor's prompt history across session replacement,
+        // so Up recalls the previous session's prompts; mhc drops it when the rebuilt session differs
+        // from the one the history came from (docs/divergences.md UX-3).
+        let session_id = match &self.session_host {
+            Some(host) => host.session_id(),
+            None => Some(self.session.session_id()),
+        };
+        if self.history_session_id.is_some() && self.history_session_id != session_id {
+            self.editor.editor.clear_history();
+        }
+        self.history_session_id = session_id;
         // senpi `renderInitialMessages`: a full transcript rerender ends the external-owner episode.
         self.external_owner_compaction_notice_shown = false;
         self.compaction_delegated = false;
@@ -4598,6 +4702,7 @@ impl InteractiveMode {
             AgentMessage::Llm(maho_ai::types::Message::User(_)) => {
                 self.handle_event(&AgentEvent::MessageStart {
                     message: message.clone(),
+                    streaming: None,
                 });
                 let value = serde_json::to_value(message).expect("user message");
                 let text = value["content"]
@@ -4714,7 +4819,7 @@ impl InteractiveMode {
                 Box::pin(async move {
                     use maho_ext_api::ExtensionUi;
                     let signal = maho_ext_api::AbortSignal::default();
-                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None });
+                    let selection = ui.select(&title, &choices, maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: None, ..Default::default() });
                     tokio::select! {
                         answer = selection => Ok(answer),
                         () = opts.cancelled() => { signal.abort(); Ok(None) }
@@ -4740,6 +4845,11 @@ impl InteractiveMode {
         );
         self.unsubscribe_security_notices = Some(Box::new(move || drop(subscription)));
 
+        self.subscribe_to_lifecycle();
+        // senpi `bindCurrentSessionExtensions`: the previous binding's endpoint goes first, then this
+        // session can register one through the host.
+        self.session_control_host.dispose_active().await;
+        self.session_control_host.set_offered(true);
         let binding = self.start_extension_binding();
         tokio::pin!(binding);
         loop {
@@ -4748,10 +4858,266 @@ impl InteractiveMode {
         self.finish_extension_binding().await;
     }
 
+    /// senpi `showLifecycleStatus` + the `session_lifecycle` arm of `subscribeToAgent`: bind the
+    /// footer status to the current session, and drop records from a retired subscription.
+    fn subscribe_to_lifecycle(&mut self) {
+        use std::sync::atomic::Ordering;
+        let generation = self
+            .lifecycle_subscription_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        self.lifecycle_subscription = None;
+        let session_id = self.session.session_id();
+        self.lifecycle_status
+            .bind(&session_id, &self.session.lifecycle_snapshot());
+        let text = self.lifecycle_status.text();
+        self.set_extension_status(
+            crate::lifecycle_status::LIFECYCLE_STATUS_KEY,
+            text.as_deref(),
+        );
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let current = self.lifecycle_subscription_generation.clone();
+        self.lifecycle_subscription = Some(self.session.on_extension_event(
+            "session_lifecycle",
+            Arc::new(move |record: &serde_json::Value| {
+                if current.load(Ordering::SeqCst) == generation {
+                    drop(sender.send((generation, record.clone())));
+                }
+            }),
+        ));
+        self.lifecycle_rx = Some(receiver);
+    }
+
+    /// Apply queued `session_lifecycle` records of the current subscription.
+    fn drain_lifecycle_records(&mut self) {
+        use std::sync::atomic::Ordering;
+        let Some(receiver) = self.lifecycle_rx.as_mut() else {
+            return;
+        };
+        let mut records = Vec::new();
+        while let Ok(record) = receiver.try_recv() {
+            records.push(record);
+        }
+        let generation = self
+            .lifecycle_subscription_generation
+            .load(Ordering::SeqCst);
+        let session_id = self.session.session_id();
+        for (record_generation, record) in records {
+            if record_generation != generation
+                || record["sessionId"].as_str() != Some(session_id.as_str())
+            {
+                continue;
+            }
+            let lifecycle = &record["lifecycle"];
+            if !self.lifecycle_status.owns(lifecycle) {
+                self.lifecycle_status
+                    .bind(&session_id, &self.session.lifecycle_snapshot());
+            }
+            self.lifecycle_status.accept(lifecycle);
+            let text = self.lifecycle_status.text();
+            let current = self
+                .extension_ui
+                .statuses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(crate::lifecycle_status::LIFECYCLE_STATUS_KEY)
+                .cloned();
+            if current != text {
+                self.set_extension_status(
+                    crate::lifecycle_status::LIFECYCLE_STATUS_KEY,
+                    text.as_deref(),
+                );
+            }
+        }
+    }
+
+    /// senpi's surface reads, published for the control endpoint (see `session_control_surface`).
+    fn publish_control_surface(&self) {
+        let composer_hold = if !self.pending_images.borrow().is_empty() {
+            Some("attachment".to_owned())
+        } else if self.editor.editor.get_text().trim().is_empty() {
+            None
+        } else {
+            Some("draft".to_owned())
+        };
+        let pending_questions = self
+            .questions
+            .order()
+            .iter()
+            .filter_map(|id| {
+                self.questions.get(id).map(|entry| {
+                    let questions = entry
+                        .request
+                        .questions
+                        .iter()
+                        .map(|question| {
+                            serde_json::json!({
+                                "id": question.id,
+                                "header": question.header,
+                                "question": question.question,
+                                "multiSelect": question.multi_select,
+                                "options": question.options.iter().map(|option| serde_json::json!({
+                                    "label": option.label,
+                                    "description": option.description,
+                                })).collect::<Vec<_>>(),
+                            })
+                        })
+                        .collect();
+                    (id.clone(), questions)
+                })
+            })
+            .collect();
+        let blocking_question = self.question.is_some();
+        self.session_control_surface.publish(|published| {
+            published.composer_hold = composer_hold;
+            published.blocking_question = blocking_question;
+            published.pending_questions = pending_questions;
+        });
+        self.session_control_host.note_buffered_elsewhere(
+            !self.compaction_queue.borrow().queued.is_empty()
+                || !self.compaction_queue.borrow().in_flight.is_empty(),
+        );
+    }
+
+    /// Runs what the control endpoint asked this pane to do (senpi's surface closures).
+    fn drain_control_surface_actions(&mut self) {
+        use crate::session_control_surface::ControlSurfaceAction;
+        while let Ok(action) = self.session_control_actions.try_recv() {
+            match action {
+                ControlSurfaceAction::AnswerQuestion {
+                    request_id,
+                    response,
+                    reply,
+                } => {
+                    let pending = self.questions.get(&request_id).is_some();
+                    if pending {
+                        self.finish_question(&request_id, response);
+                    }
+                    drop(reply.send(pending));
+                }
+                ControlSurfaceAction::Notice(line) => self.show_warning(&line),
+                ControlSurfaceAction::SelectModel { model, reply } => {
+                    // senpi `applyModelSelection(this, model, {source: "control"})`.
+                    let session = self.session.clone();
+                    let selected = model.clone();
+                    self.park_action(
+                        async move {
+                            session
+                                .set_session_model(selected)
+                                .await
+                                .map(|change| change.and_then(|change| change.system_prompt_name))
+                        },
+                        move |mode, result: Result<Option<String>, String>| {
+                            mode.finish_model_select(model, result.clone());
+                            drop(reply.send(result));
+                        },
+                    );
+                }
+                ControlSurfaceAction::SelectThinkingLevel { level, remember } => {
+                    // senpi `applyThinkingLevel(this, level, remember)`.
+                    if remember {
+                        self.session.set_thinking_level(level);
+                        let current = self.session.thinking_level();
+                        if current != maho_ai::types::ModelThinkingLevel::Off
+                            || self.session.supports_thinking()
+                        {
+                            let values: maho_core::settings_manager::Settings = [(
+                                "defaultThinkingLevel".into(),
+                                serde_json::json!(current.as_str()),
+                            )]
+                            .into_iter()
+                            .collect();
+                            if let Err(error) = self.session.with_settings_manager_mut(|settings| {
+                                settings.set(
+                                    maho_core::settings_manager::SettingsScope::Global,
+                                    &values,
+                                )
+                            }) {
+                                self.show_error(&error);
+                            }
+                        }
+                    } else {
+                        self.session.set_session_thinking_level(level);
+                    }
+                    if let Some(footer) = &mut self.footer {
+                        footer.invalidate();
+                    }
+                    self.update_editor_border_color();
+                    self.show_status(if remember {
+                        format!("Default thinking level: {}", level.as_str())
+                    } else {
+                        format!("Thinking level: {}", level.as_str())
+                    });
+                }
+                ControlSurfaceAction::InterruptTurn { reply } => {
+                    // senpi `abortAndFireQueuedMessages`: queued input returns to the editor, then the
+                    // turn stops.
+                    self.restore_queued_messages_to_editor(true);
+                    let session = self.session.clone();
+                    self.park_independent_action(
+                        async move { session.stop().await },
+                        move |_mode, ()| drop(reply.send(())),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `host` dependency of core's `create_session_control_actions` for this terminal.
+    pub fn control_endpoint_host_provider(
+        &self,
+    ) -> maho_core::session_control_actions::ControlEndpointHostProvider {
+        self.session_control_host.provider()
+    }
+
+    /// Releases the control endpoint before the process exits (senpi `shutdown` ->
+    /// `sessionControlHost.disposeActive()`).
+    pub async fn dispose_session_control(&self) {
+        self.session_control_host.dispose_active().await;
+    }
+
+    /// senpi `bindCurrentSessionExtensions` + `createExtensionUIContext`: the previous binding's MRTR
+    /// presentation lifetime ends, and the terminal UI is registered as this binding's local MCP MRTR
+    /// presentation (pre-aborted when the mode is already shutting down). The private-forms presenter
+    /// (`--mcp-presenter-enforcement`, `registerLocalMcpPresenter`) is not ported yet, so none is passed.
+    fn register_mcp_mrtr_presentation(&self) {
+        let lifetime = maho_ai::utils::abort::AbortController::new();
+        if self.shutdown_requested {
+            lifetime.abort(None);
+        }
+        let signal = lifetime.signal();
+        let previous = self
+            .mcp_mrtr_presentation_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(lifetime);
+        if let Some(previous) = previous {
+            previous.abort(None);
+        }
+        let ui: Arc<dyn maho_ext_api::ExtensionUi> = self.extension_ui.clone();
+        drop(
+            maho_core::mcp_mrtr_presentations::register_mcp_mrtr_presentation(
+                ui, signal, None, None,
+            ),
+        );
+    }
+
+    fn end_mcp_mrtr_presentation(&self) {
+        if let Some(lifetime) = self
+            .mcp_mrtr_presentation_lifetime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            lifetime.abort(None);
+        }
+    }
+
     /// The session-side half of `bind_extensions`. It does not borrow the mode, so the caller can
     /// keep reading input and painting while it runs (senpi's event loop serves keystrokes during
     /// `await rebindCurrentSession()`); UI requests it raises arrive through `drain_events`.
     pub fn start_extension_binding(&self) -> impl std::future::Future<Output = ()> + 'static {
+        self.register_mcp_mrtr_presentation();
         let session = self.session.clone();
         let bindings = maho_core::agent_session::ExtensionBindings {
             ui_context: Some(self.extension_ui.clone()),
@@ -4764,6 +5130,12 @@ impl InteractiveMode {
     /// The mode-side half of `bind_extensions`, run once the binding future settles.
     pub async fn finish_extension_binding(&mut self) {
         self.drain_ui_requests();
+        // senpi v2026.10.27-2 `bindCurrentSessionExtensions`: a reopened interrupted/paused session
+        // shows its footer before any pause event.
+        let pause = crate::pause_footer::pause_footer_text(
+            &crate::pause_footer::PauseView::of_session(&self.session),
+        );
+        self.set_extension_status(crate::pause_footer::PAUSE_STATUS_KEY, pause.as_deref());
         self.register_discovered_themes();
         // senpi `rebindCurrentSession` -> `setupAutocompleteProvider`: extension commands and skills
         // are known only once the session is bound.
@@ -5100,6 +5472,12 @@ impl InteractiveMode {
         }
         let text = self.submissions.borrow_mut().pop_front();
         let text = text?;
+        // senpi releases a claimed ticket once the runtime took the input: the main loop takes it here.
+        if !split_internal_command(&text).1
+            && let Some(ticket) = self.submission_tickets.borrow_mut().pop_front()
+        {
+            ticket.release();
+        }
         // senpi `onSubmit`: built-in commands return before `addToHistory`, and the selector/dialog
         // continuations the port queues internally are never typed text.
         let (typed, internal) = split_internal_command(&text);
@@ -8605,11 +8983,7 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/resume" {
-            let view = crate::pause_footer::PauseView {
-                paused: self.session.paused(),
-                paused_notice_count: self.session.paused_notice_count(),
-                run_paused: self.session.run_paused(),
-            };
+            let view = crate::pause_footer::PauseView::of_session(&self.session);
             if crate::pause_footer::resume_command_target(&view)
                 == crate::pause_footer::ResumeCommandTarget::ResumeSession
             {
@@ -9384,12 +9758,7 @@ impl InteractiveMode {
                                     .expect("resolved thinking level")
                             }),
                             thinking_selection: entry.thinking_selection,
-                            service_tier: entry.service_tier.map(|tier| match tier.as_str() {
-                                "auto" => maho_ext_api::ServiceTier::Auto,
-                                "flex" => maho_ext_api::ServiceTier::Flex,
-                                "priority" => maho_ext_api::ServiceTier::Priority,
-                                _ => unreachable!("resolved service tier"),
-                            }),
+                            service_tier: entry.service_tier.as_deref().and_then(service_tier_from_wire),
                         })
                         .collect();
                     if favorites {
@@ -9728,12 +10097,7 @@ impl InteractiveMode {
                                     serde_json::from_value(serde_json::json!(level.as_str())).ok()
                                 }),
                                 thinking_selection: entry.thinking_selection,
-                                service_tier: entry.service_tier.map(|tier| match tier.as_str() {
-                                    "auto" => maho_ext_api::ServiceTier::Auto,
-                                    "flex" => maho_ext_api::ServiceTier::Flex,
-                                    "priority" => maho_ext_api::ServiceTier::Priority,
-                                    _ => unreachable!("resolved service tier"),
-                                }),
+                                service_tier: entry.service_tier.as_deref().and_then(service_tier_from_wire),
                             })
                             .collect(),
                     );
@@ -10354,6 +10718,9 @@ impl InteractiveMode {
         self.drain_remote_history();
         self.drain_remote_models();
         self.drain_remote_stats();
+        self.drain_lifecycle_records();
+        self.publish_control_surface();
+        self.drain_control_surface_actions();
         while let Ok(event) = self.events.try_recv() {
             self.handle_session_event(&event);
         }
@@ -11137,7 +11504,7 @@ impl InteractiveMode {
 
     /// senpi `setExtensionStatus`.
     fn set_extension_status(&mut self, key: &str, text: Option<&str>) {
-        maho_ext_api::ExtensionUi::set_status(self.extension_ui.as_ref(), key, text);
+        self.extension_ui.set_host_status(key, text);
         self.editor_host.request_render();
     }
 
@@ -11628,6 +11995,9 @@ impl InteractiveMode {
             }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
+            // senpi v2026.10.27-2 `session_recovered` (a torn session tail kept aside) is shown as
+            // `showWarning(sanitizeTerminalLabel(notice))`. OPEN: no branch has
+            // `AgentSessionEvent::SessionRecovered` yet (senpi-core-rest-46).
             // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
@@ -11641,11 +12011,7 @@ impl InteractiveMode {
             AgentSessionEvent::SessionPaused { .. }
             | AgentSessionEvent::SessionResumed { .. }
             | AgentSessionEvent::SessionNotice { .. } => {
-                let view = crate::pause_footer::PauseView {
-                    paused: self.session.paused(),
-                    paused_notice_count: self.session.paused_notice_count(),
-                    run_paused: self.session.run_paused(),
-                };
+                let view = crate::pause_footer::PauseView::of_session(&self.session);
                 let text = crate::pause_footer::pause_footer_text(&view);
                 self.set_extension_status(crate::pause_footer::PAUSE_STATUS_KEY, text.as_deref());
             }
@@ -12004,7 +12370,14 @@ impl InteractiveMode {
     /// editor, autocomplete wrappers, the extension and active-tool terminal titles, and the working
     /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
     fn reset_extension_ui(&mut self) {
+        // senpi `clearExtensionStatuses(HOST_STATUS_KEYS)`: the rendered statuses live in
+        // `extension_ui.statuses`, which keeps the host-owned keys (`reset_before_session_invalidate`).
         self.footer_data.clear_extension_statuses();
+        self.extension_ui
+            .statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|key, _| HOST_STATUS_KEYS.contains(&key.as_str()));
         use crate::interactive_extension_ui::UiRequest;
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
@@ -12797,6 +13170,8 @@ impl InteractiveMode {
     /// senpi's `refreshAsyncWidget`: the collapsed widget shows the shown question, and nothing
     /// while the expanded component owns the surface.
     fn refresh_async_question_widget(&mut self) {
+        self.publish_control_surface();
+        self.session_control_host.questions_changed();
         if self.questions.surface == crate::question_registry::QuestionSurface::Expanded {
             self.async_question_widget = None;
             return;
@@ -13368,7 +13743,7 @@ impl InteractiveMode {
                 self.tool_reveal.stop();
                 self.working_started_ms = None;
             }
-            AgentEvent::MessageStart { message } => {
+            AgentEvent::MessageStart { message, .. } => {
                 if message.role() == "user" {
                     self.take_provisional_user_echo();
                     let value = serde_json::to_value(message).expect("serializable agent message");
@@ -14092,6 +14467,7 @@ fn service_tier_from_wire(value: &str) -> Option<maho_ext_api::ServiceTier> {
         "auto" => maho_ext_api::ServiceTier::Auto,
         "flex" => maho_ext_api::ServiceTier::Flex,
         "priority" => maho_ext_api::ServiceTier::Priority,
+        "ultrafast" => maho_ext_api::ServiceTier::Ultrafast,
         _ => return None,
     })
 }
@@ -14449,9 +14825,24 @@ impl Component for InteractiveMode {
         if let Some(detach) = self.detach_mcp_grant_presentation.take() {
             detach();
         }
+        // senpi `shutdown`: the MRTR presentation lifetime ends with the terminal.
+        self.end_mcp_mrtr_presentation();
         if let Some(unsubscribe) = self.unsubscribe_security_notices.take() {
             unsubscribe();
         }
+        // senpi `dispose`: retire the lifecycle subscription and clear its status without a frame.
+        self.lifecycle_subscription_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.lifecycle_subscription = None;
+        self.lifecycle_rx = None;
+        self.extension_ui
+            .statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(crate::lifecycle_status::LIFECYCLE_STATUS_KEY);
+        // The endpoint itself is released by `dispose_session_control` (it needs an await); the
+        // session no longer offers this host to a new registration.
+        self.session_control_host.set_offered(false);
         self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SideColumn(None));
         for (_, widget, _) in &mut self.widgets {
             widget.dispose();
@@ -15026,6 +15417,13 @@ pub fn prepare_import_destination(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_tier_from_wire_maps_every_resolved_tier() {
+        assert!(matches!(service_tier_from_wire("ultrafast"), Some(maho_ext_api::ServiceTier::Ultrafast)));
+        assert!(matches!(service_tier_from_wire("priority"), Some(maho_ext_api::ServiceTier::Priority)));
+        assert!(service_tier_from_wire("bogus").is_none());
+    }
 
     #[test]
     fn expandable_text_follows_its_render_closures() {

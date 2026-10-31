@@ -643,6 +643,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             parent_session_id: "s".into(),
             root_session_id: "s".into(),
+            parent_model: None,
         })?;
     let configured = dag.scheduler(&started.snapshot.run_id, "s")?;
     let (release, released) = mpsc::channel();
@@ -791,6 +792,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             parent_session_id: context.session_manager.session_id().into(),
             root_session_id: context.session_manager.session_id().into(),
+            parent_model: None,
         })?;
     dispatch(
         &api,

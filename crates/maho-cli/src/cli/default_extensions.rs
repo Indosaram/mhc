@@ -920,13 +920,11 @@ impl Extension for Task {
                         resolve_ancestry: Some(Arc::new(move |session| manager.list(&senpi_task::manager::types::ListScope::All).into_iter()
                             .find(|entry| entry.record.child_session_id.as_deref() == Some(session))
                             .map(|entry| senpi_task::tools::task::execute_spec::TaskAncestry { root_session_id: entry.record.root_session_id, depth: u64::from(entry.record.depth) }))),
-                        // pin `task/index.ts:79` + `task-skill-loader.ts:18-36`: the packaged omo skills root joins the
-                        // loader as an extra dir, kept only when it exists (`packagedSkillDirs` existsSync filter).
+                        // pin `task/index.ts:102` + `task-skill-loader.ts:31-47`: the loader's default resolves the
+                        // packaged skill roots (`OMO_BUNDLED_SKILLS_DIR` override, then `skills-conditional`).
                         load_skills: Some(maho_omo_task::task_skill_loader::create_task_skill_loader(maho_omo_task::task_skill_loader::TaskSkillLoaderOptions {
                             home_dir: maho_core::config::home_dir().into(), agent_dir: maho_core::config::get_agent_dir().into(),
-                            plugin_skills_dirs: [environment.get(maho_omo::SKILLS_ROOT_ENV).filter(|root| !root.is_empty()).map(std::path::PathBuf::from)
-                                .or_else(|| environment.get("OMO_SENPI_PLUGIN_ROOT").map(|root| std::path::Path::new(root).join("skills")))
-                                .unwrap_or_else(maho_omo::builtin_skills_root)].into_iter().filter(|dir| dir.is_dir()).collect(),
+                            plugin_skills_dirs: None, env: Some(environment.clone()), logger: Some(shared.logger()),
                             load_settings: None,
                         })),
                         agents: engine.agents.iter().map(|(name, agent)| (name.clone(), senpi_task::tools::task::execute_spec::TaskAgentDefinition { execution_mode: agent.execution_mode.clone() })).collect(),
@@ -938,12 +936,7 @@ impl Extension for Task {
                             }).collect()).unwrap_or_default(),
                             task: Some(senpi_task::tools::task::execute_spec::TaskOmoTaskConfig {
                                 default_execution_mode: engine.config["task"]["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse),
-                                isolation: engine.config.get("task").and_then(|task| task.get("isolation")).map(|isolation| senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
-                                    enabled: isolation.get("enabled").and_then(serde_json::Value::as_bool),
-                                    backend: isolation.get("backend").and_then(serde_json::Value::as_str).map(str::to_owned),
-                                    merge: isolation.get("merge").and_then(serde_json::Value::as_str).map(|merge| if merge == "branch" { senpi_task::state::IsolationMergeMode::Branch } else { senpi_task::state::IsolationMergeMode::Patch }),
-                                    apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
-                                }),
+                                isolation: task_omo_isolation_config(&engine.config),
                             }),
                         },
                     };
@@ -1034,6 +1027,27 @@ impl Extension for Task {
             })
         }));
     }
+}
+/// The RESOLVED `task.isolation` block (enabled/backend/merge/apply) of the omo config, as the task
+/// tool's `omoConfig.task.isolation` (omo-config-core `OmoTaskIsolationSchema`; the resolved config
+/// already carries the schema defaults, so an absent key stays absent here).
+#[cfg(feature = "omo")]
+pub fn task_omo_isolation_config(
+    config: &serde_json::Value,
+) -> Option<senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig> {
+    let isolation = config.get("task")?.get("isolation")?;
+    Some(senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
+        enabled: isolation.get("enabled").and_then(serde_json::Value::as_bool),
+        backend: isolation.get("backend").and_then(serde_json::Value::as_str).map(str::to_owned),
+        merge: isolation.get("merge").and_then(serde_json::Value::as_str).map(|merge| {
+            if merge == "branch" {
+                senpi_task::state::IsolationMergeMode::Branch
+            } else {
+                senpi_task::state::IsolationMergeMode::Patch
+            }
+        }),
+        apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
+    })
 }
 #[cfg(feature = "omo")]
 pub(super) struct TaskActions(pub(super) TaskParent);

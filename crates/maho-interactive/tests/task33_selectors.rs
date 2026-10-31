@@ -872,6 +872,33 @@ fn extension_selector_windows_and_selects() {
     assert_eq!(*picked.borrow(), "option-1");
 }
 
+/// A disposed selector (settled or aborted) ignores every key, so it cannot answer twice
+/// (senpi v2026.10.27-2 `answerSettled`, modern-mrtr-lifecycle).
+#[test]
+fn extension_selector_ignores_input_after_dispose() {
+    let theme = theme();
+    let answers = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let sink = Rc::clone(&answers);
+    let cancels = Rc::new(std::cell::Cell::new(0));
+    let cancel_sink = Rc::clone(&cancels);
+    let mut selector = ExtensionSelectorComponent::new(
+        &theme,
+        full_keybindings(),
+        "Pick",
+        vec!["a".to_owned(), "b".to_owned()],
+        Box::new(move |option| sink.borrow_mut().push(option.to_owned())),
+        Box::new(move || cancel_sink.set(cancel_sink.get() + 1)),
+        ExtensionSelectorOptions::default(),
+    );
+    selector.dispose();
+    selector.handle_input("j");
+    selector.handle_input("\r");
+    selector.handle_input("\x1b");
+    assert_eq!(selector.selected_index(), 0);
+    assert!(answers.borrow().is_empty());
+    assert_eq!(cancels.get(), 0);
+}
+
 /// The extension input prefills by typing, so the cursor lands after the initial value.
 #[test]
 fn extension_input_prefills_with_cursor_at_end() {

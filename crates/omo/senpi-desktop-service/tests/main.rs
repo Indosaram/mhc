@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "forward_compat.rs"]
+mod forward_compat;
 #[path = "native_engine.rs"]
 mod native_engine;
 #[path = "service.rs"]

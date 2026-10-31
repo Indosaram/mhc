@@ -170,3 +170,59 @@ fn legacy_merge_copies_without_removing_and_skips_regenerable_entries() {
     );
     assert!(!new.join("cache").exists());
 }
+// senpi keybindings-migration.test.ts: runMigrations rewrites old key names in keybindings.json.
+#[test]
+fn upstream_keybindings_old_names_are_rewritten_to_namespaced_ids() {
+    let (_root, home, cwd, agent) = fixture();
+    fs::write(
+        agent.join("keybindings.json"),
+        "{\n  \"cursorUp\": [\"up\", \"ctrl+p\"],\n  \"expandTools\": \"ctrl+x\"\n}\n",
+    )
+    .expect("write");
+    run_migrations(&cwd, &home, &agent).expect("migrate");
+    let migrated: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(agent.join("keybindings.json")).unwrap()).unwrap();
+    assert_eq!(
+        migrated,
+        serde_json::json!({"tui.editor.cursorUp": ["up", "ctrl+p"], "app.tools.expand": "ctrl+x"})
+    );
+}
+#[test]
+fn upstream_keybindings_keep_the_namespaced_value_when_both_names_exist() {
+    let (_root, home, cwd, agent) = fixture();
+    fs::write(
+        agent.join("keybindings.json"),
+        "{\"expandTools\": \"ctrl+x\", \"app.tools.expand\": \"ctrl+y\"}",
+    )
+    .expect("write");
+    run_migrations(&cwd, &home, &agent).expect("migrate");
+    let migrated: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(agent.join("keybindings.json")).unwrap()).unwrap();
+    assert_eq!(migrated, serde_json::json!({"app.tools.expand": "ctrl+y"}));
+}
+// senpi config-value-migration.test.ts: migrations never rewrite credential values and never fail
+// on an unreadable models.json.
+#[test]
+fn upstream_uppercase_auth_values_stay_unchanged() {
+    let (_root, home, cwd, agent) = fixture();
+    let auth = serde_json::json!({
+        "anthropic": {"type": "api_key", "key": "ANTHROPIC_API_KEY"},
+        "openai": {"type": "api_key", "key": "$OPENAI_API_KEY"},
+        "opencode": {"type": "api_key", "key": "public"},
+        "github": {"type": "oauth", "access": "ACCESS_TOKEN", "refresh": "REFRESH_TOKEN", "expires": 1},
+    });
+    fs::write(agent.join("auth.json"), format!("{}\n", serde_json::to_string_pretty(&auth).unwrap())).expect("write");
+    run_migrations(&cwd, &home, &agent).expect("migrate");
+    let migrated: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(agent.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(migrated, auth);
+}
+#[test]
+fn upstream_malformed_or_blank_models_json_survives_migrations_byte_identical() {
+    for content in ["{\n  \"providers\": {\n", ""] {
+        let (_root, home, cwd, agent) = fixture();
+        fs::write(agent.join("models.json"), content).expect("write");
+        run_migrations(&cwd, &home, &agent).expect("migrations do not fail");
+        assert_eq!(fs::read_to_string(agent.join("models.json")).unwrap(), content);
+    }
+}

@@ -33,6 +33,8 @@ pub struct Goal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unattended_continuations: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_progress_continuations: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_continuation_signature: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_stopped_at: Option<u64>,

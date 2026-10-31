@@ -16,8 +16,8 @@ pub use child::{
 };
 pub use notifications::{DesktopNotificationError, Listener, NotificationHub, Subscription};
 pub use parse::{
-    is_audit_event, is_desktop_capabilities, is_stop_path_status, parse_error_data, parse_hello,
-    parse_permission, parse_session_opened, HelloHandshake, SessionOpened,
+    is_desktop_capabilities, is_stop_path_status, parse_audit_event, parse_error_data,
+    parse_hello, parse_permission, parse_session_opened, HelloHandshake, SessionOpened,
 };
 pub use rpc_client::{
     CallOptions, DesktopEngineRpcError, DesktopError, DesktopLaunchContextError,

@@ -196,7 +196,6 @@ pub struct TelemetryProductConfig {
     pub default_api_key: String,
     pub default_host: String,
     pub event_name: String,
-    pub machine_id_prefix: String,
     pub package_name: String,
     pub package_version: String,
     pub platform: String,

@@ -104,3 +104,23 @@ fn images_and_metadata_are_preserved() {
     assert_eq!(output[0].details, result.details);
     assert_eq!(output[0].is_error, result.is_error);
 }
+#[test]
+fn split_surrogate_pair_keeps_upstream_head_and_tail_lengths() {
+    // senpi cuts at 800 and length-400 UTF-16 units even inside a surrogate pair.
+    let input = format!(
+        "{}\u{1f600}{}\u{1f600}{}",
+        "a".repeat(799),
+        "b".repeat(3000),
+        "c".repeat(399)
+    );
+    let output = truncate_oversized_tool_results(&[ToolResult::text(input)]);
+    let out = text(&output[0]);
+    assert_eq!(out.encode_utf16().count(), 1378);
+    let (head, rest) = out.split_once('\n').expect("head");
+    assert_eq!(head, format!("{}\u{fffd}", "a".repeat(799)));
+    assert!(rest.starts_with("<truncated:4206 bytes original;"));
+    assert_eq!(
+        rest.rsplit_once('\n').expect("tail").1,
+        format!("\u{fffd}{}", "c".repeat(399))
+    );
+}

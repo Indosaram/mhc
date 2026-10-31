@@ -89,8 +89,8 @@
       "path": "kernels/js/worker-core.js",
       "status": "patched",
       "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting",
-      "sha256": "0713b0ece63ea041bdb55bc0559cce66c571737ab7201af2cfd8cad73f0d8e21"
+      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting; webview-connect/webview-port bridge with installKernelWebView",
+      "sha256": "8a7e9ce84a20ca8195914b3d2d89021d3f0a6e839e634a890b67791364ae1f9d"
     },
     {
       "path": "kernels/js/worker-entry.js",
@@ -109,8 +109,8 @@
       "path": "kernels/js/worker-runtime.js",
       "status": "patched",
       "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting",
-      "sha256": "40e0983bde1e03491bd8f93cbd083437c06727cc97cf4b2bd5715cf05d41ad61"
+      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun",
+      "sha256": "0fb1d35875763f8317a158023c0416cbd4cce3203b0c201385f8854511db6154"
     },
     {
       "path": "kernels/js/worker-shadow-guard.js",
@@ -196,9 +196,9 @@
     {
       "path": "skill/bun-1-4/SKILL.md",
       "status": "patched",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "74ce99000567fc14f8281cec7bf0f905523b12e1116d58f3b9eacde4d69a7864",
-      "change": "clarify eval-first skill loading"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "b41c6ca115e8ad3338f52ec63decc0efd8d6c2e1778bbead731ab7c5b27e62cc",
+      "change": "clarify eval-first skill loading; add rule 6"
     },
     {
       "path": "kernels/js/worker-global-sizes.js",
@@ -223,15 +223,15 @@
     },
     {
       "path": "kernels/js/worker-webview-client.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "verbatim",
+      "upstreamCommit": "269293392a468d22444e8508ce6a498d7356ccb6",
+      "sha256": "932b6fcefe186b25ec30136326067d8979253d5532d1dc5f53d609314030cc37"
     },
     {
       "path": "kernels/js/worker-webview.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "verbatim",
+      "upstreamCommit": "b621a01c2527b21684923ecf3fef3f7998307731",
+      "sha256": "2a8170cba1de08be6125450f37426505fbd3fe7518d92488e35dbf5fccb45874"
     },
     {
       "path": "kernels/js/windows-tree-kill.js",
@@ -244,8 +244,8 @@
       "path": "kernels/js/process-entry.js",
       "status": "patched",
       "upstreamCommit": "903b83367545bea516f35fc7f7c7cb692847988d",
-      "change": "Bun-only direct process entry; excludes the separately unported WebView bridge",
-      "sha256": "433bc7df5bbbb0020f346ca6a02882899d4485624f82735061e757908b872ff4"
+      "change": "Bun-only direct process entry; marks process mode for the WebView bridge (native views on the child main thread)",
+      "sha256": "a787bdc152a666a25f021044e70437ed1e1f4b878ae269ba86279eac3e20fac3"
     },
     {
       "path": "kernels/js/process-drain-scan.js",
@@ -259,6 +259,26 @@
       "upstreamCommit": null,
       "change": "Bun process footprint readers matching upstream OS counters",
       "sha256": "f638a5575da1bdc682164f38c79596e4463c07998c3c4595c10c55a999e0e1d2"
+    },
+    {
+      "path": "kernels/js/cell-run-context.js",
+      "status": "verbatim",
+      "upstreamCommit": "a81a155bee82848479054e827684ed51c17fded0",
+      "sha256": "62dc3a720fa1a9908e79128d093ca86e9a99c39c7c34b0134c71de46fa9fa77c"
+    },
+    {
+      "path": "kernels/js/webview-host.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "JavaScript port of senpi kernels/js/webview-host.ts (KernelWebViewClients) and coding-agent core/webview/{webview-wire,webview-readiness,native-webview,bun-chrome,webview-client,webview-service}.ts plus the main-thread connectWebViewService route; served by the relay process main thread; Windows Chrome retirement only calls closeAll()",
+      "sha256": "6ffaf6f78b0b9f030e0f0db50e854005502767413ff8f5a686c29d015d67400d"
+    },
+    {
+      "path": "kernels/js/worker-relay.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "bun relay process hosting the worker thread (was an inline -e script); its main thread grants webview-connect ports and releases them on worker exit, as senpi worker-slot.ts #publish/retire",
+      "sha256": "3fe0fcec216bdc80b1657f89aff18b31de65a56d7343f3942336e081111e8490"
     }
   ]
 }

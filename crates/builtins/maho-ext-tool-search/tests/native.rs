@@ -182,3 +182,19 @@ async fn schema_less_mcp_document_is_skipped_without_blaming_the_shared_service(
     let result=(tool.execute)(maho_tools::definition::ToolCall {id:"call",params:serde_json::json!({"query":"documentation","source":"mcp"}),signal:Default::default(),on_update:None,context:None}).await.expect("tool search");
     assert_eq!(result.details.unwrap()["matched"],serde_json::json!(["mcp_docs"]));
 }
+/// senpi agent-session `_releaseToolSearchService`: firing the registered SessionShutdown handler
+/// retires this load's service, and the retired service names the session and why it was retired.
+#[tokio::test]
+async fn session_shutdown_handler_retires_the_service_with_its_reason() {
+    for (reason,expected) in [(maho_ext_api::SessionReason::Reload,"replaced by a reload"),(maho_ext_api::SessionReason::Quit,"session disposed")] {
+        let catalog=std::sync::Arc::new(Catalog::default());
+        let (_runtime,service,api)=mcp_service(&catalog);
+        assert!(!service.lock().await.is_disposed());
+        let handler=api.registered.handlers[&maho_ext_api::EventKind::SessionShutdown][0].clone();
+        let mut event=ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {reason,target_session_file:None,signal:None});
+        handler(&mut event,&context()).await.expect("shutdown handler");
+        let mut service=service.lock().await;
+        assert!(service.is_disposed(),"{reason:?} shutdown must retire the service");
+        assert_eq!(service.get_catalog().unwrap_err().message,format!("The tool-search service of session session is disposed ({expected}). Resolve the live session's own tool-search service instead of a retained one."));
+    }
+}

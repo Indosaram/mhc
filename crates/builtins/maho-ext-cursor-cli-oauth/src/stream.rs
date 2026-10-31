@@ -70,12 +70,23 @@ pub fn turn_prompt(messages: &[maho_ai::types::Message]) -> Option<String> {
         _ => None,
     })
 }
+/// senpi `provider-context.ts` `toBuiltinProviderContext`: replay the transcript into the
+/// `{ systemPrompt, tools, messages }` shape, so mid-conversation system messages are folded into the
+/// current system prompt and never split the trailing user messages of a turn.
+pub fn to_builtin_provider_context(context: &maho_ai::types::Context) -> maho_ai::types::Context {
+    let mut resolved = maho_ai::types::transcript::resolve_provider_context(context, false);
+    if resolved.system_prompt.as_deref().is_some_and(str::is_empty) {
+        resolved.system_prompt = None;
+    }
+    resolved
+}
 pub fn stream_cursor_cli(
     model: Model,
     context: maho_ai::types::Context,
     options: Option<maho_ai::types::SimpleStreamOptions>,
     deps: StreamDeps,
 ) -> AssistantMessageEventStream {
+    let context = to_builtin_provider_context(&context);
     let mut mapper = StreamMapper::new(&model, (deps.now)());
     let stream = mapper.stream.clone();
     tokio::spawn(async move {
@@ -282,7 +293,7 @@ impl StreamMapper {
     pub fn new(model: &Model, at: i64) -> Self {
         Self {
             stream: create_assistant_message_event_stream(),
-            output: AssistantMessage {
+            output: AssistantMessage { credential_served_recently: None,
                 thinking_level: None,
                 provider_diagnostic: None,
                 prompt_cache_breakpoint: None,
@@ -566,5 +577,38 @@ mod tests {
             Some("request")
         );
         assert_eq!(turn_prompt(&[assistant("reply")]), None);
+    }
+    #[test]
+    fn provider_context_folds_mid_turn_system_messages_out_of_the_prompt() {
+        let system = maho_ai::types::Message::System(maho_ai::types::SystemMessage {
+            content: maho_ai::types::UserContent::Text("updated rules".into()),
+            sections: Default::default(),
+            tools_added: Vec::new(),
+            tools_removed: Vec::new(),
+            timestamp: 0,
+        });
+        let context = maho_ai::types::Context {
+            system_prompt: Some("base".into()),
+            messages: vec![user("request"), system, user("<reminder/>")],
+            tools: None,
+            active_tool_names: None,
+        };
+        let resolved = to_builtin_provider_context(&context);
+        assert!(
+            resolved
+                .messages
+                .iter()
+                .all(|m| !matches!(m, maho_ai::types::Message::System(_)))
+        );
+        assert!(
+            resolved
+                .system_prompt
+                .as_deref()
+                .is_some_and(|p| p.contains("updated rules"))
+        );
+        assert_eq!(
+            turn_prompt(&resolved.messages).as_deref(),
+            Some("request\n\n<reminder/>")
+        );
     }
 }

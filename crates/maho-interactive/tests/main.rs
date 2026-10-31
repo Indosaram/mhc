@@ -1,6 +1,8 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "binding_status.rs"]
+mod binding_status;
 #[path = "components32_boundary.rs"]
 mod components32_boundary;
 #[path = "components32_callonly.rs"]
@@ -41,6 +43,8 @@ mod grok_mermaid_edges;
 mod keybinding_hints_global;
 #[path = "mermaid_golden.rs"]
 mod mermaid_golden;
+#[path = "mermaid_transformer.rs"]
+mod mermaid_transformer;
 #[path = "presentation.rs"]
 mod presentation;
 #[path = "runtime35_external_editor.rs"]
@@ -63,6 +67,9 @@ mod runtime35_transfer;
 mod runtime35_viewport;
 #[path = "runtime35_widget_clock.rs"]
 mod runtime35_widget_clock;
+#[cfg(unix)]
+#[path = "session_control_endpoint.rs"]
+mod session_control_endpoint;
 #[path = "task33_search.rs"]
 mod task33_search;
 #[path = "task33_selectors.rs"]

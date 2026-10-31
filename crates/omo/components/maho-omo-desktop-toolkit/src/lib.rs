@@ -6,15 +6,16 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::Arc,
 };
-use tokio::sync::oneshot;
+pub mod runtime;
+pub mod thread_tools;
+pub const DEFAULT_ACQUIRE_TIMEOUT_MS: u64 = 15_000;
 pub const DESKTOP_TOOLKIT_TOOL_NAME: &str = "omo_desktop_toolkit";
 pub const TOOLKIT_REQUEST_EVENT: &str = "omo.toolkit.request";
 pub const TOOLKIT_GRANT_RPC: &str = "omo.toolkit.grant";
 pub const TOOLKITS_CONTEXT_KEY: &str = "omo_toolkits";
-fn reply(details: Value) -> AgentToolResult {
+pub(crate) fn reply(details: Value) -> AgentToolResult {
     AgentToolResult {
         content: vec![ContentBlock::text(details.to_string())],
         details,
@@ -36,7 +37,18 @@ pub fn offered_toolkits(context: &BTreeMap<String, String>) -> BTreeSet<String> 
         .map(str::to_owned)
         .collect()
 }
-pub fn parse_grant(value: &Value) -> Option<Value> {
+/// What the app hands one session for one toolkit. The token stays in the file, never in a tool result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolkitGrant {
+    pub endpoint: String,
+    pub token_file: String,
+}
+impl ToolkitGrant {
+    pub fn to_value(&self) -> Value {
+        json!({"endpoint":self.endpoint,"tokenFile":self.token_file})
+    }
+}
+pub fn parse_toolkit_grant(value: &Value) -> Option<ToolkitGrant> {
     let endpoint = value.get("endpoint")?.as_str()?;
     let token_file = value.get("tokenFile")?.as_str()?;
     if !Path::new(token_file).has_root() {
@@ -51,7 +63,13 @@ pub fn parse_grant(value: &Value) -> Option<Value> {
     {
         return None;
     }
-    Some(json!({"endpoint":endpoint,"tokenFile":token_file}))
+    Some(ToolkitGrant {
+        endpoint: endpoint.to_owned(),
+        token_file: token_file.to_owned(),
+    })
+}
+pub fn parse_grant(value: &Value) -> Option<Value> {
+    parse_toolkit_grant(value).map(|grant| grant.to_value())
 }
 #[derive(Clone)]
 pub struct DesktopToolkitComponent {
@@ -59,84 +77,56 @@ pub struct DesktopToolkitComponent {
 }
 impl Default for DesktopToolkitComponent {
     fn default() -> Self {
-        Self { timeout_ms: 15_000 }
+        Self {
+            timeout_ms: DEFAULT_ACQUIRE_TIMEOUT_MS,
+        }
     }
 }
 pub fn create_desktop_toolkit_component(timeout_ms: Option<u64>) -> DesktopToolkitComponent {
     DesktopToolkitComponent {
-        timeout_ms: timeout_ms.unwrap_or(15_000),
+        timeout_ms: timeout_ms.unwrap_or(DEFAULT_ACQUIRE_TIMEOUT_MS),
     }
 }
 impl Extension for DesktopToolkitComponent {
+    /// The lazy runtime (acquire tool, grant rpc, thread discovery) is registered only when the app
+    /// offers at least one toolkit; otherwise a stub tool answers `unavailable` at once.
     fn register(&self, api: &mut ExtensionApi) {
-        type Pending = Arc<Mutex<BTreeMap<String, oneshot::Sender<Value>>>>;
-        let pending: Pending = Arc::new(Mutex::new(BTreeMap::new()));
-        let offered = offered_toolkits(&api.profile.session_context);
-        let events = api.events.clone();
-        let timeout_ms = self.timeout_ms;
-        let requests = pending.clone();
+        let offered = api
+            .profile
+            .session_context
+            .get(TOOLKITS_CONTEXT_KEY)
+            .is_some_and(|raw| !raw.trim().is_empty());
+        if offered {
+            runtime::register_runtime(api, self.timeout_ms);
+            return;
+        }
         let mut tool = ToolDefinition::new(
             DESKTOP_TOOLKIT_TOOL_NAME,
-            "Internal channel for skills: ask the app for a toolkit it hosts for this thread, such as its in-app browser. Not for direct use.",
-            json!({"type":"object","properties":{"op":{"type":"string","enum":["acquire"]},"toolkit":{"type":"string"}},"required":["op","toolkit"],"additionalProperties":false}),
+            "Internal channel for skills: ask the app for a toolkit it hosts for this thread. Not for direct use.",
+            runtime::acquire_parameters(),
             Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })),
         );
         tool.label = "Desktop toolkit".into();
         tool.exposure = Some(ToolExposure::Eval);
         tool.execution_mode = Some(ToolExecutionMode::Parallel);
         tool.permission_parser = Some(Arc::new(|_, _| Vec::new()));
-        let execute: ExtensionToolExecutor = Arc::new(
-            move |_id, params, _signal, _update, _context| {
-                let pending = requests.clone();
-                let offered = offered.clone();
-                let events = events.clone();
+        let execute: ExtensionToolExecutor =
+            Arc::new(move |_id, params, _signal, _update, _context| {
                 Box::pin(async move {
                     let toolkit = params.get("toolkit").and_then(Value::as_str).unwrap_or("");
-                    if params.get("op").and_then(Value::as_str) != Some("acquire")
-                        || toolkit.is_empty()
+                    let reason = if params.get("op").and_then(Value::as_str) == Some("acquire")
+                        && !toolkit.is_empty()
                     {
-                        return Ok(reply(json!({"ok":false,"reason":"invalid_request"})));
-                    }
-                    if !offered.contains(toolkit) {
-                        return Ok(reply(json!({"ok":false,"reason":"unavailable"})));
-                    }
-                    let id = uuid::Uuid::new_v4().to_string();
-                    let (send, receive) = oneshot::channel();
-                    pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(id.clone(), send);
-                    events.emit("senpi:extension-rpc-event", &json!({"name":TOOLKIT_REQUEST_EVENT,"data":{"requestId":id,"toolkit":toolkit}}));
-                    let settled = match tokio::time::timeout(
-                        Duration::from_millis(timeout_ms),
-                        receive,
-                    )
-                    .await
-                    {
-                        Ok(Ok(value)) => value,
-                        _ => json!({"ok":false,"reason":"timeout"}),
+                        "unavailable"
+                    } else {
+                        "invalid_request"
                     };
-                    pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&id);
-                    Ok(reply(settled))
+                    Ok(reply(json!({"ok":false,"reason":reason})))
                 })
-            },
-        );
+            });
         if let Err(error) = api.register_tool_with_extension_context(tool, execute) {
             std::panic::panic_any(error);
         }
-        if let Err(error) = api.rpc_handle(TOOLKIT_GRANT_RPC, Arc::new(move |message| {
-            let pending = pending.clone();
-            Box::pin(async move {
-                let sender = message.get("requestId").and_then(Value::as_str).and_then(|id| pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id));
-                let Some(sender) = sender else { return Ok(json!({"accepted":false})); };
-                let settled = if let Some(grant) = message.get("grant").and_then(parse_grant) { json!({"ok":true,"grant":grant}) } else { json!({"ok":false,"reason":message.pointer("/refusal/reason").and_then(Value::as_str).unwrap_or("invalid_grant")}) };
-                let _ = sender.send(settled);
-                Ok(json!({"accepted":true}))
-            })
-        })) { std::panic::panic_any(error); }
     }
 }
 #[cfg(test)]

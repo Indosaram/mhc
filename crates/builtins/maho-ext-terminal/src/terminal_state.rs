@@ -5,8 +5,15 @@ pub enum TerminalStateAdoption {
     Acquired,
     AttachedElsewhere { pid: f64 },
 }
+/// The lease this generation holds: its path, the pid it records and the v2 generation token.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldLease {
+    pub path: PathBuf,
+    pub pid: f64,
+    pub token: String,
+}
 pub struct TerminalStateLifecycle {
-    lease: Option<(PathBuf, f64)>,
+    lease: Option<HeldLease>,
     pub writer: TerminalManifestWriter,
 }
 impl TerminalStateLifecycle {
@@ -26,20 +33,39 @@ impl TerminalStateLifecycle {
         pid: f64,
         started_at_ms: f64,
     ) -> std::io::Result<TerminalStateAdoption> {
-        match crate::manifest_lease::acquire_terminal_lease(
+        // Upstream `acquireTerminalLease` probes the holder's start instant, so a lease whose pid
+        // now belongs to an unrelated, later-started process is reclaimed at once.
+        let mut is_process_alive = crate::manifest_lease::probe_alive;
+        let mut read_process_start_ms = crate::manifest_lease::read_process_start_ms;
+        match crate::manifest_lease::acquire_terminal_lease_with(
             dir,
             encoded_session_id,
             pid,
             started_at_ms,
-            crate::manifest_lease::probe_alive,
+            &mut crate::manifest_lease::LeaseProbes {
+                is_process_alive: &mut is_process_alive,
+                read_process_start_ms: &mut read_process_start_ms,
+            },
         )? {
-            crate::manifest_lease::AcquireTerminalLeaseResult::Acquired { path, pid } => {
-                self.lease = Some((path, pid));
+            crate::manifest_lease::AcquireTerminalLeaseResult::Acquired { path, pid, token } => {
+                self.lease = Some(HeldLease { path, pid, token });
                 Ok(TerminalStateAdoption::Acquired)
             }
             crate::manifest_lease::AcquireTerminalLeaseResult::Held { holder } => {
                 Ok(TerminalStateAdoption::AttachedElsewhere { pid: holder.pid })
             }
+        }
+    }
+    /// Binds a lease the lease keeper acquired on this generation's behalf (upstream keeper
+    /// `onTakeover` -> `own(lease)`).
+    pub fn adopt_lease(&mut self, lease: HeldLease) {
+        self.lease = Some(lease);
+    }
+    /// Upstream `stopPersistence` `retireLeaseToken(lease.token)`: the moment shutdown starts, this
+    /// generation's token stops counting as a live same-pid holder, before any slow flush.
+    pub fn retire_token(&self) {
+        if let Some(lease) = &self.lease {
+            crate::manifest_lease::retire_lease_token(&lease.token);
         }
     }
     pub async fn restore(
@@ -102,19 +128,28 @@ impl TerminalStateLifecycle {
         self.writer.record_shutdown(now).await;
     }
     pub fn release(&mut self) -> std::io::Result<()> {
-        if let Some((path, pid)) = self.lease.take() {
-            crate::manifest_lease::release_terminal_lease(&path, pid)?;
+        if let Some(lease) = self.lease.take() {
+            crate::manifest_lease::release_terminal_lease(
+                &lease.path,
+                lease.pid,
+                Some(lease.token.as_str()),
+            )?;
         }
         Ok(())
     }
 }
 /// Releases a lease this generation inherited instead of acquiring (a reload generation keeps the
-/// previous generation's lease). `release_terminal_lease` unlinks only when the file records `pid`,
-/// so this removes exactly that lease and no foreign holder's.
+/// previous generation's lease). Upstream retires this process's current token for the session
+/// first, then releases by (path, own pid, token): exactly that lease and no foreign holder's.
 pub fn release_lease_at(dir: &Path, encoded_session_id: &str, pid: f64) -> std::io::Result<()> {
+    let token = crate::manifest_lease::current_lease_token(encoded_session_id);
+    if let Some(token) = &token {
+        crate::manifest_lease::retire_lease_token(token);
+    }
     crate::manifest_lease::release_terminal_lease(
         &dir.join(format!("{encoded_session_id}.lease")),
         pid,
+        token.as_deref(),
     )
 }
 #[cfg(test)]
@@ -134,6 +169,7 @@ mod tests {
                         description: "watch".to_owned(),
                         command: "stty -echo; printf 'restored\\n'".to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some(tmp_str),
                         persistent: true,
@@ -144,9 +180,13 @@ mod tests {
             .await;
         writer.record_shutdown(2.0).await;
 
+        // The acquisition instant is real: the start probe compares it with this process's start.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
         let mut owner = TerminalStateLifecycle::new(dir.path(), "s");
         assert_eq!(
-            owner.acquire(dir.path(), "s", f64::from(std::process::id()), 10.0)?,
+            owner.acquire(dir.path(), "s", f64::from(std::process::id()), now)?,
             TerminalStateAdoption::Acquired
         );
         assert!(owner.is_owner());
@@ -164,7 +204,7 @@ mod tests {
 
         let mut other = TerminalStateLifecycle::new(dir.path(), "s");
         assert_eq!(
-            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, 40.0)?,
+            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, now)?,
             TerminalStateAdoption::AttachedElsewhere {
                 pid: f64::from(std::process::id())
             }
@@ -177,12 +217,56 @@ mod tests {
 
         owner.release()?;
         assert_eq!(
-            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, 50.0)?,
+            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, now)?,
             TerminalStateAdoption::Acquired
         );
         other.release()?;
         registry.dispose();
         manager.teardown().unwrap();
+        Ok(())
+    }
+
+    /// terminal-restore-session.test.ts (e): two acquirers racing for one session - released at the
+    /// same instant by a barrier - leave exactly one owner. Both record this live process, so the
+    /// loser sees a live holder and never reclaims the winner's fresh lease.
+    #[test]
+    fn two_racing_acquirers_leave_exactly_one_owner() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let terminal_dir = dir.path().join("extensions/terminal");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
+        let barrier = &std::sync::Barrier::new(2);
+        let (session_dir, terminal_dir) = (dir.path(), &terminal_dir);
+        let outcomes = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let mut lifecycle = TerminalStateLifecycle::new(session_dir, "s");
+                        barrier.wait();
+                        lifecycle
+                            .acquire(terminal_dir, "s", f64::from(std::process::id()), now)
+                            .map(|adoption| (adoption, lifecycle.is_owner()))
+                    })
+                })
+                .collect();
+            racers
+                .into_iter()
+                .map(|racer| racer.join().expect("racer thread"))
+                .collect::<std::io::Result<Vec<_>>>()
+        })?;
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|(adoption, owner)| *adoption == TerminalStateAdoption::Acquired && *owner)
+                .count(),
+            1,
+            "exactly one acquirer owns the lease: {outcomes:?}"
+        );
+        assert!(outcomes.iter().any(|(adoption, owner)| matches!(
+            adoption,
+            TerminalStateAdoption::AttachedElsewhere { .. }
+        ) && !owner));
         Ok(())
     }
 }

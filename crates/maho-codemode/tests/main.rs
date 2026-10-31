@@ -61,6 +61,8 @@ mod extension_bindings;
 mod extension_factory;
 #[path = "host_package_installs.rs"]
 mod host_package_installs;
+#[path = "idle_parking_kernel.rs"]
+mod idle_parking_kernel;
 #[path = "image_collector.rs"]
 mod image_collector;
 #[path = "image_resize.rs"]
@@ -127,8 +129,13 @@ mod schema_hint;
 mod session_cwd;
 #[path = "session_manager_proxy.rs"]
 mod session_manager_proxy;
+#[path = "session_env.rs"]
+mod session_env;
+
 #[path = "settings.rs"]
 mod settings;
+#[path = "settled_snapshot_budget.rs"]
+mod settled_snapshot_budget;
 #[path = "start_recovery.rs"]
 mod start_recovery;
 #[path = "status_events.rs"]
@@ -145,3 +152,5 @@ mod timeouts;
 mod tool_result_marshal;
 #[path = "worker_host.rs"]
 mod worker_host;
+#[path = "env_scrub.rs"]
+mod env_scrub;

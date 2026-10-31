@@ -31,6 +31,10 @@ pub struct SessionInfo {
     pub message_count: usize,
     pub first_message: String,
     pub all_messages_text: String,
+    /// Latest repository identity the session recorded (see `repository_identity`).
+    pub repository_identity: Option<crate::session_move::bundle::RepositoryIdentity>,
+    /// Set on sessions of the current repository recorded at a path that no longer exists.
+    pub moved: bool,
 }
 
 fn resolve_modified(activity_time: Option<i64>, header: &Value, mtime: DateTime<Utc>) -> DateTime<Utc> {
@@ -75,6 +79,12 @@ fn build_session_info_with_text(file_path: &str, include_text: bool) -> Option<S
             cached.summary.first_user_message.clone()
         },
         all_messages_text: if include_text { cached.summary.all_messages_text.clone() } else { String::new() },
+        repository_identity: cached
+            .summary
+            .repository_identity
+            .as_ref()
+            .and_then(crate::session_move::bundle::parse_repository_identity),
+        moved: false,
     })
 }
 

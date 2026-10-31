@@ -393,6 +393,23 @@ pub struct EngineRunPause {
     sources: Arc<Mutex<Vec<Arc<dyn RunPauseSource>>>>,
 }
 
+fn block_on_nested<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    let runtime = tokio::runtime::Handle::try_current().ok();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _context = runtime.as_ref().map(tokio::runtime::Handle::enter);
+                futures::executor::block_on(future)
+            })
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 impl EngineRunPause {
     pub fn new(
         state_dir: impl Into<std::path::PathBuf>,
@@ -450,7 +467,7 @@ impl EngineRunPause {
 
     /// The durable Stop. A failed propagation still leaves a resumable record.
     pub fn pause(&self, parent_session_id: &str, pause_seq: u64) -> Result<(), String> {
-        match futures::executor::block_on(self.controller.pause(parent_session_id, pause_seq)) {
+        match block_on_nested(self.controller.pause(parent_session_id, pause_seq)) {
             Ok(()) => Ok(()),
             Err(error) => {
                 let _ = self.controller.record_propagation_failure(
@@ -470,7 +487,7 @@ impl EngineRunPause {
         pause_seq: u64,
         resume_id: &str,
     ) -> Result<RunResumeResult, String> {
-        futures::executor::block_on(
+        block_on_nested(
             self.controller
                 .resume(parent_session_id, pause_seq, resume_id),
         )
@@ -483,7 +500,7 @@ impl EngineRunPause {
         parent_session_id: &str,
         pause_seq: u64,
     ) -> Vec<senpi_task::pause::run_controller::ResumeFailure> {
-        match futures::executor::block_on(self.controller.retry_lost(parent_session_id, pause_seq))
+        match block_on_nested(self.controller.retry_lost(parent_session_id, pause_seq))
         {
             Ok(failures) => failures,
             Err(error) => {
@@ -524,7 +541,7 @@ impl EngineRunPause {
     }
 
     pub fn cancel(&self, parent_session_id: &str, run_ref: &RunRef) -> Result<(), String> {
-        futures::executor::block_on(self.controller.cancel(parent_session_id, run_ref))
+        block_on_nested(self.controller.cancel(parent_session_id, run_ref))
             .map_err(|error| error.to_string())
     }
 
@@ -1046,5 +1063,15 @@ mod parity_tests {
             ))
             .is_err()
         );
+    }
+    #[test]
+    fn nested_pause_inside_outer_executor_does_not_panic() {
+        let dir = tempfile::tempdir().expect("dir");
+        let effects = Arc::new(effects());
+        let engine = EngineRunPause::new(dir.path(), effects);
+        let result = futures::executor::block_on(async {
+            engine.pause("parent", 1)
+        });
+        assert!(result.is_ok());
     }
 }

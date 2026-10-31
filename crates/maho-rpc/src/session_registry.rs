@@ -20,6 +20,9 @@ pub struct RpcSessionLaunchProfile {
     pub retry_fallback: Option<serde_json::Value>,
     /// The host endpoint this session's holder record names (senpi `holderEndpoint`).
     pub holder_endpoint: Option<maho_core::session_holders::SessionHolderEndpoint>,
+    /// The validated ancestry of a child session, merged into the launch profile (senpi `spawnedBy`) for the
+    /// runtime factory to write into the new session's header.
+    pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
 }
 pub struct SessionIdentity {
     pub kind: maho_ext_api::SessionKind,
@@ -56,12 +59,20 @@ pub struct RpcSessionEntry {
     pub last_command_at: f64,
     /// Patches `set_session_context` applied over the frozen open-time context (senpi `contextOverlay`).
     pub context_overlay: Option<crate::session_context_patch::SessionContextOverlay>,
+    /// The in-process session's ordered acceptance lane, present only while the compact-updates flag is on.
+    pub acceptance: Option<SharedAcceptanceLane>,
 }
+pub type SharedAcceptanceLane =
+    Arc<std::sync::Mutex<crate::session_acceptance_lane::SessionAcceptanceLane>>;
 #[derive(Default)]
 pub struct RpcSessionRegistry {
     entries: BTreeMap<String, RpcSessionEntry>,
     next_handle: u64,
     worker_refusal: Option<(u64, u64)>,
+    /// A session worker's own registry: its host owns the acceptance lane, so the isolate opens none.
+    pub worker_isolate: bool,
+    /// The compact-updates flag as this registry sees it; `None` reads the process environment.
+    pub compact_updates: Option<bool>,
 }
 pub enum OpenAdmission {
     Create(String),
@@ -90,7 +101,11 @@ impl RpcSessionRegistry {
         if entry.close.state == RpcSessionState::Closing
             && !matches!(
                 command,
-                "abort" | "abort_bash" | "extension_ui_response" | "extension_ui_progress"
+                "abort"
+                    | "abort_bash"
+                    | "extension_ui_response"
+                    | "extension_ui_progress"
+                    | "host_response"
             )
         {
             return Err(RpcSessionRegistryError::new("session_closing", None, None));
@@ -101,8 +116,39 @@ impl RpcSessionRegistry {
         ) {
             return Err(RpcSessionRegistryError::new("unknown_session", None, None));
         }
-        entry.last_command_at = now;
+        // Polling a session nobody holds is observation, not work that needs its runtime; an attached
+        // client's polling keeps its session alive exactly as before.
+        if entry.close.attachments > 0
+            || crate::session_command_activity::refreshes_session_activity(command)
+        {
+            entry.last_command_at = now;
+        }
         Ok(entry)
+    }
+    /// senpi `attachSession` (`attachLiveSession`): a synchronous refcount change on an open entry; never opens a
+    /// path and never applies a launch profile. Returns the runtime when the attach ended a retained session's
+    /// parked window, so the caller emits `session_resumed` through it.
+    pub fn attach_session(
+        &mut self,
+        handle: &str,
+        now: f64,
+    ) -> Result<
+        Option<Arc<maho_core::agent_session_runtime::AgentSessionRuntime>>,
+        RpcSessionRegistryError,
+    > {
+        let entry = self
+            .entries
+            .get_mut(handle)
+            .filter(|entry| entry.close.state == RpcSessionState::Open)
+            .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
+        let was_parked = entry.close.retain_on_disconnect && entry.close.attachments == 0;
+        entry.close.attachments += 1;
+        entry.last_command_at = now;
+        Ok(if was_parked {
+            entry.runtime.clone()
+        } else {
+            None
+        })
     }
     pub fn set_worker_admission(&mut self, refusal: Option<(u64, u64)>) {
         self.worker_refusal = refusal;
@@ -225,6 +271,7 @@ impl RpcSessionRegistry {
                 identity,
                 last_command_at: now,
                 context_overlay: None,
+                acceptance: None,
             },
         );
         Ok(OpenAdmission::Create(handle))
@@ -241,6 +288,24 @@ impl RpcSessionRegistry {
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
         entry.durable_session_id = Some(runtime.session().session_id());
         entry.session_path = runtime.session().session_file();
+        // senpi `openSession`: the lane bootstraps from the manager's journal before admission.
+        let compact_updates = self
+            .compact_updates
+            .unwrap_or_else(maho_core::engine_socket_flag::compact_updates_enabled);
+        if compact_updates && !self.worker_isolate {
+            let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::default();
+            let transcript = runtime
+                .session()
+                .with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            lane.bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap { transcript },
+                None,
+            );
+            runtime
+                .session()
+                .set_session_recovery_epoch(lane.recovery_epoch());
+            entry.acceptance = Some(Arc::new(std::sync::Mutex::new(lane)));
+        }
         entry.close.writing = true;
         entry.close.state = RpcSessionState::Open;
         entry.runtime = Some(runtime);
@@ -308,6 +373,9 @@ impl RpcSessionRegistry {
             .entries
             .get_mut(handle)
             .ok_or_else(|| RpcSessionRegistryError::new("unknown_session", None, None))?;
+        // A session mid-turn keeps its claim until it parks: reclaiming it would put two writers on one transcript.
+        entry.close.writing =
+            crate::session_teardown::session_is_writing(None, entry.runtime.as_deref());
         crate::session_teardown::begin_session_close(&mut entry.close, detach)
     }
     pub async fn close_marked(
@@ -347,10 +415,29 @@ pub fn validate_profile_paths(
             .as_ref()
             .is_some_and(|path| !Path::new(path).is_absolute())
     {
-        Err(RpcSessionRegistryError::new("invalid_path", None, None))
-    } else {
-        Ok(())
+        return Err(RpcSessionRegistryError::new("invalid_path", None, None));
     }
+    // senpi `validateProfile`: a durable id must be one the session manager accepts (`assertValidSessionId`, checked
+    // here instead of asserted: the native assertion panics).
+    if let Some(id) = &profile.durable_session_id {
+        let bytes = id.as_bytes();
+        let valid = !bytes.is_empty()
+            && bytes[0].is_ascii_alphanumeric()
+            && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+        if !valid {
+            return Err(RpcSessionRegistryError::new(
+                "invalid_session_id",
+                Some(
+                    "Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character",
+                ),
+                None,
+            ));
+        }
+    }
+    Ok(())
 }
 pub fn check_durable_session_collision(
     requested_id: Option<&str>,
@@ -470,6 +557,91 @@ mod tests {
         profile.session_path = Some("relative".into());
         assert!(validate_profile_paths(&profile).is_err());
         profile.session_path = Some(abs_session.into());
+        assert!(validate_profile_paths(&profile).is_ok());
+    }
+    fn registry_with(state: RpcSessionState, attachments: i64) -> RpcSessionRegistry {
+        let mut registry = RpcSessionRegistry::default();
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = if cfg!(windows) { "C:\\cwd" } else { "/cwd" }.into();
+        let crate::session_registry::OpenAdmission::Create(handle) =
+            registry.admit_open(profile, true, 0.).unwrap()
+        else {
+            panic!("a fresh open creates");
+        };
+        let entry = registry.get_mut(&handle).unwrap();
+        entry.close.state = state;
+        entry.close.attachments = attachments;
+        registry
+    }
+    // senpi `getForCommand`: a closing session still takes control commands, `host_response` included.
+    #[test]
+    fn a_closing_session_accepts_only_control_commands() {
+        let mut registry = registry_with(RpcSessionState::Closing, 0);
+        for command in [
+            "abort",
+            "abort_bash",
+            "extension_ui_response",
+            "extension_ui_progress",
+            "host_response",
+        ] {
+            assert!(
+                registry.get_for_command("rpc-1", command, 1.).is_ok(),
+                "{command}"
+            );
+        }
+        assert_eq!(
+            registry
+                .get_for_command("rpc-1", "prompt", 1.)
+                .err()
+                .unwrap()
+                .code,
+            "session_closing"
+        );
+        let mut opening = registry_with(RpcSessionState::Opening, 1);
+        assert_eq!(
+            opening
+                .get_for_command("rpc-1", "abort", 1.)
+                .err()
+                .unwrap()
+                .code,
+            "unknown_session"
+        );
+    }
+    // senpi `getForCommand`: polling a session nobody holds is observation and leaves its idle clock alone.
+    #[test]
+    fn polling_an_unattached_session_does_not_refresh_its_activity() {
+        let mut registry = registry_with(RpcSessionState::Open, 0);
+        registry.get_for_command("rpc-1", "get_state", 5.).unwrap();
+        assert_eq!(registry.get("rpc-1").unwrap().last_command_at, 0.);
+        registry.get_for_command("rpc-1", "prompt", 6.).unwrap();
+        assert_eq!(registry.get("rpc-1").unwrap().last_command_at, 6.);
+        let mut attached = registry_with(RpcSessionState::Open, 1);
+        attached.get_for_command("rpc-1", "get_state", 7.).unwrap();
+        assert_eq!(attached.get("rpc-1").unwrap().last_command_at, 7.);
+    }
+    // senpi `attachSession`: only an open entry is joined; a parked one reports its runtime for the resume.
+    #[test]
+    fn attach_session_counts_only_open_entries() {
+        let mut registry = registry_with(RpcSessionState::Open, 0);
+        assert!(registry.attach_session("rpc-1", 3.).unwrap().is_none());
+        assert_eq!(registry.get("rpc-1").unwrap().close.attachments, 1);
+        assert_eq!(registry.get("rpc-1").unwrap().last_command_at, 3.);
+        let mut closing = registry_with(RpcSessionState::Closing, 1);
+        assert_eq!(
+            closing.attach_session("rpc-1", 3.).unwrap_err().code,
+            "unknown_session"
+        );
+    }
+    #[test]
+    fn an_invalid_durable_id_is_refused_with_its_own_code() {
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = if cfg!(windows) { "C:\\cwd" } else { "/cwd" }.into();
+        profile.durable_session_id = Some("../escape".into());
+        assert_eq!(
+            validate_profile_paths(&profile).unwrap_err().code,
+            "invalid_session_id"
+        );
+        profile.durable_session_id = Some("good-id".into());
         assert!(validate_profile_paths(&profile).is_ok());
     }
     #[test]

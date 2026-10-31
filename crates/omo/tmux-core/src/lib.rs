@@ -8,6 +8,7 @@
 mod cmux_detect;
 mod constants;
 mod env_source;
+mod pane_auth;
 mod runner;
 pub mod tmux_utils;
 mod types;
@@ -15,6 +16,10 @@ mod types;
 pub use cmux_detect::{is_cmux_compat, is_cmux_compat_environment};
 pub use constants::*;
 pub use env_source::{EnvSource, ProcessEnv};
+pub use pane_auth::{
+    PaneAuthDirectory, PaneAuthFallbackDirectory, create_pane_auth_directory, with_pane_auth,
+    with_pane_auth_from,
+};
 pub use runner::{RunTmuxOptions, TmuxCommandResult, run_tmux_command};
 pub use tmux_utils::*;
 pub use types::*;

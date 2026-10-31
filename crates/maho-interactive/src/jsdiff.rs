@@ -142,7 +142,10 @@ fn replace_suffix(text: &str, old_suffix: &str, new_suffix: &str) -> String {
     if old_suffix.is_empty() {
         return format!("{text}{new_suffix}");
     }
-    format!("{}{new_suffix}", &text[..text.len() - old_suffix.len()])
+    match text.strip_suffix(old_suffix) {
+        Some(prefix) => format!("{prefix}{new_suffix}"),
+        None => text.to_owned(),
+    }
 }
 
 fn remove_prefix(text: &str, old_prefix: &str) -> String {

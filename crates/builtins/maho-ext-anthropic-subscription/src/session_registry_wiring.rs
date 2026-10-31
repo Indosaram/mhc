@@ -35,6 +35,8 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                 let session = ctx.session_manager.session_id().to_owned();
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis() as u64;
                 let mut registry = registry.lock().await;
+                // senpi#1975: the diverged path of a rewrite this MessageEnd recorded, persisted on its invalidation entry.
+                let mut rewritten_path: Option<String> = None;
                 runtime.assert_active()?;
                 match event {
                     ExtensionEvent::SessionStart(event) if event.reason != maho_ext_api::SessionReason::Reload => {
@@ -54,7 +56,7 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                         }
                     },
                     ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted { .. }) => {
-                        crate::session_entry_annotations::annotate_pending_fork(registry.entries.get_mut(&session), "compaction", now);
+                        crate::session_entry_annotations::annotate_pending_fork(registry.entries.get_mut(&session), "compaction", None, now);
                         registry.bindings.forget(&session); registry.bindings.remember_invalidation(&session, Some("compaction"));
                     },
                     ExtensionEvent::SessionTree { old_leaf_id: Some(old), new_leaf_id: Some(new), .. } => {
@@ -79,10 +81,13 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                         if message.as_assistant().is_some() {
                             let message = serde_json::to_value(message).expect("message");
                             if crate::session_commit_boundary::is_terminal_failure(&message) { boundary.lock().expect("boundary").forget(&session); }
-                            else if let Some(model) = registry.entries.get(&session).map(|entry| entry.model_id.clone()).or_else(|| registry.bindings.get(&session).map(|binding| binding.model_id))
-                                && boundary.lock().expect("boundary").commit(&session, &message, &model) == crate::session_commit_boundary::AssistantCommitOutcome::Rewritten {
-                                    crate::session_entry_annotations::annotate_pending_fork(registry.entries.get_mut(&session), "assistant_rewritten", now);
+                            else if let Some(model) = registry.entries.get(&session).map(|entry| entry.model_id.clone()).or_else(|| registry.bindings.get(&session).map(|binding| binding.model_id)) {
+                                let committed = boundary.lock().expect("boundary").commit(&session, &message, &model);
+                                if committed.outcome == crate::session_commit_boundary::AssistantCommitOutcome::Rewritten {
+                                    crate::session_entry_annotations::annotate_pending_fork(registry.entries.get_mut(&session), "assistant_rewritten", committed.diverged_path.as_deref(), now);
                                     registry.bindings.forget(&session); registry.bindings.remember_invalidation(&session, Some("assistant_rewritten"));
+                                    rewritten_path = committed.diverged_path;
+                                }
                             }
                         }
                     },
@@ -97,7 +102,9 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
                 };
                 if let Some(reason) = invalidation {
                     let api = ExtensionApi::new(maho_ext_api::LoadedExtension::new("session-registry", cwd, Default::default()), profile, Default::default(), runtime);
-                    api.append_entry(crate::session_binding::BINDING_ENTRY_TYPE, Some(serde_json::json!({"schemaVersion":2,"invalidated":true,"reason":reason})))?;
+                    let mut record = serde_json::json!({"schemaVersion":2,"invalidated":true,"reason":reason});
+                    if reason == "assistant_rewritten" && let Some(path) = &rewritten_path { record["divergedPath"] = serde_json::json!(path); }
+                    api.append_entry(crate::session_binding::BINDING_ENTRY_TYPE, Some(record))?;
                     if let Some(path) = ctx.session_manager.session_file() { crate::session_binding_store::delete_binding(path).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
                 }
                 Ok(EventResult::None)

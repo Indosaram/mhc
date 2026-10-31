@@ -1,10 +1,14 @@
 //! Single integration-test binary for this crate: each file under tests/ is one module, so
 //! the crate links one test executable instead of one per file.
 
+#[path = "audit_dir_characterization.rs"]
+pub mod audit_dir_characterization;
 #[path = "command.rs"]
 pub mod command;
 #[path = "cua_adapter.rs"]
 pub mod cua_adapter;
+#[path = "cua_error_codes.rs"]
+pub mod cua_error_codes;
 #[path = "execute.rs"]
 pub mod execute;
 #[path = "host_settings.rs"]

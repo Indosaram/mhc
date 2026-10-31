@@ -9,6 +9,9 @@ use std::sync::{Mutex, PoisonError};
 pub struct MemoryUserActivity {
     accepted: Mutex<BTreeSet<String>>,
     reconciled: Mutex<BTreeSet<String>>,
+    /// Sessions whose `reconcile_once` is running now (upstream `inFlight` promise map).
+    in_flight: Mutex<BTreeMap<String, u64>>,
+    next_task: std::sync::atomic::AtomicU64,
     inputs: Mutex<BTreeMap<String, String>>,
 }
 
@@ -31,16 +34,34 @@ impl MemoryUserActivity {
     pub fn reset(&self, session_id: &str) {
         lock(&self.accepted).remove(session_id);
         lock(&self.reconciled).remove(session_id);
+        lock(&self.in_flight).remove(session_id);
         lock(&self.inputs).retain(|_, owner| owner != session_id);
     }
 
-    /// Runs `reconcile` once per accepted session; a second settle in the same session is a no-op.
+    /// Runs `reconcile` once per accepted session; a second settle in the same session is a no-op, and
+    /// a caller arriving while another reconcile for the session is in flight does not start a second
+    /// one. The session is marked reconciled only if this call is still the current task (a `reset`
+    /// during the run discards it).
     pub fn reconcile_once(&self, session_id: &str, reconcile: impl FnOnce()) {
         if !self.has(session_id) || self.has_reconciled(session_id) {
             return;
         }
-        reconcile();
-        lock(&self.reconciled).insert(session_id.to_string());
+        let task = self.next_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut in_flight = lock(&self.in_flight);
+            if in_flight.contains_key(session_id) {
+                return;
+            }
+            in_flight.insert(session_id.to_string(), task);
+        }
+        let is_current = |activity: &Self| lock(&activity.in_flight).get(session_id) == Some(&task);
+        if is_current(self) {
+            reconcile();
+        }
+        if is_current(self) {
+            lock(&self.reconciled).insert(session_id.to_string());
+            lock(&self.in_flight).remove(session_id);
+        }
     }
 
     /// Records that this session's initial reconciliation completed (`reconcileOnce`'s effect).
@@ -122,5 +143,25 @@ mod tests {
         assert!(activity.has("two"));
         // A session that never reconciled is never reconciled by a later settle of another session.
         activity.reconcile_once("one", || panic!("not accepted"));
+    }
+
+    #[test]
+    fn a_concurrent_caller_does_not_start_a_second_reconcile() {
+        let activity = MemoryUserActivity::default();
+        activity.accept("session");
+        let mut inner_runs = 0;
+        activity.reconcile_once("session", || {
+            activity.reconcile_once("session", || inner_runs += 1);
+        });
+        assert_eq!(inner_runs, 0);
+        assert!(activity.has_reconciled("session"));
+    }
+
+    #[test]
+    fn a_reset_during_the_run_discards_the_reconciled_mark() {
+        let activity = MemoryUserActivity::default();
+        activity.accept("session");
+        activity.reconcile_once("session", || activity.reset("session"));
+        assert!(!activity.has_reconciled("session"));
     }
 }

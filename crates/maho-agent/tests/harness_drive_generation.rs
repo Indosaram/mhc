@@ -180,6 +180,7 @@ async fn fixture_with_options(
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(Default::default())),
         StorageBackedSessionOptions::default(),
@@ -1272,10 +1273,11 @@ async fn unknown_deferred_poll_replaces_ids_and_deletes_abandoned_frames() {
             .len(),
         1
     );
-    maho_agent::harness::runtime::drive::deferred::run_deferred(
+    // Pinned `recoverDeferredPoll(lane, replacement, unknown)`.
+    maho_agent::harness::runtime::drive::deferred::recover_deferred_poll(
         lane.as_ref(),
         &poll_drive(),
-        &unknown,
+        old,
     )
     .await
     .expect("recover poll");
@@ -1509,10 +1511,13 @@ async fn local_retry_wait_is_abort_aware() {
     cancellation.resolve();
     drive.begin_abort(cancellation);
     drive.signal_abort();
-    assert!(
+    // Pinned: the refused admission is `AbortRequested` control flow the drive loop absorbs;
+    // the durable retry wait is left for reconciliation.
+    assert_eq!(
         run_retry_wait(lane.as_ref(), &drive, &current(&lane))
             .await
-            .is_err()
+            .expect("abort is control flow"),
+        ProcedureResult::Continue
     );
     assert!(matches!(
         current(&lane),

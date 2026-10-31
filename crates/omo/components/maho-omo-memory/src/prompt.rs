@@ -1,6 +1,11 @@
+use crate::projection_expiry::{ExpiryWindow, newly_expired};
 use crate::projection_pin::{
     NativeProjectionPins, ProjectionAdvanceInput, ProjectionPinRecord, ProjectionPins,
-    ProjectionTurn, render_projected_changes_line,
+    ProjectionTurn,
+};
+pub use crate::prompt_notice::{
+    MEMORY_AGREEMENT_METADATA_TOKEN, MEMORY_NUDGE_METADATA_TOKEN, MEMORY_SOUL_METADATA_TOKEN,
+    MemoryNoticeInputs, render_memory_notice,
 };
 use memory_core::{
     compile::{
@@ -13,9 +18,6 @@ use memory_core::{
 
 pub const MEMORY_PROMPT_TEMPLATE: &str = "omo-senpi:before_agent_start:v3";
 pub const MEMORY_NOTICE_CUSTOM_TYPE: &str = "omo-memory:notice";
-pub const MEMORY_NUDGE_METADATA_TOKEN: &str = "user turns since your last memory save";
-pub const MEMORY_SOUL_METADATA_TOKEN: &str = "Soul updated by";
-pub const MEMORY_AGREEMENT_METADATA_TOKEN: &str = "Agreement NEEDS-HUMAN";
 const MEMORY_TOOL_DISCOVERY_NOTE: &str = "The memory tools are discoverable through tool_search: run `tool_search(\"memory\")` once to activate them, then use them for every save.";
 
 pub struct MemoryPromptSession<'a> {
@@ -33,6 +35,8 @@ pub struct MemoryPromptInput<'a> {
     pub soul_sha: Option<&'a str>,
     /// Needs-human agreements consumed for this turn; empty in a preview.
     pub flagged_agreements: &'a [memory_core::agreements::AgreementItem],
+    /// A `before_agent_start` preview composes the real turn's bytes and leaves the pin untouched.
+    pub preview: bool,
 }
 #[derive(Debug)]
 pub enum MemoryPromptError {
@@ -66,6 +70,9 @@ pub struct MemoryPromptHandler {
     pub pins: NativeProjectionPins,
     pub record_pin: std::sync::Mutex<Option<PromptPinRecorder>>,
     pub agreements: std::sync::Mutex<Option<AgreementsNoticeInput>>,
+    /// Upstream `resolveProjectionLimits`: the identity's `<external_projection>` limits; `None`
+    /// keeps memory-core's default limits.
+    pub projection_limits: std::sync::Mutex<Option<PromptProjectionLimits>>,
 }
 /// The optional agreements notice input (pin `resolveAgreementsNotice` + `onNoticeInputFailed`): the
 /// resolver is skipped in a preview, and a failure is reported with input `"agreements"`.
@@ -74,7 +81,32 @@ pub struct AgreementsNoticeInput {
     pub resolve: PromptAgreementsResolver,
     pub on_failed: Option<PromptNoticeInputFailed>,
 }
+/// Resolves an identity's `<external_projection>` limits (pin `resolveProjectionLimits`).
+pub type PromptProjectionLimits = std::sync::Arc<
+    dyn Fn(&str) -> memory_core::compile::external_projection::ExternalProjectionLimits
+        + Send
+        + Sync,
+>;
 impl MemoryPromptHandler {
+    pub fn set_projection_limits(&self, resolve: Option<PromptProjectionLimits>) {
+        *self
+            .projection_limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resolve;
+    }
+    /// Upstream `blockOptions(context)`: the compile options of the identity's block.
+    fn block_options(&self, identity: &str) -> CompileMemoryBlockOptions {
+        let projection = self
+            .projection_limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|resolve| resolve(identity));
+        CompileMemoryBlockOptions {
+            agent_id: identity.to_owned(),
+            projection,
+        }
+    }
     pub fn prebuild(&self, context: &crate::context::MemoryIdentityContext) -> Result<(), String> {
         let repo = GitMemoryRepo::open(&context.identity_paths.repo, &context.identity)
             .map_err(|error| error.to_string())?;
@@ -82,10 +114,7 @@ impl MemoryPromptHandler {
             .compile(
                 &repo,
                 MEMORY_PROMPT_TEMPLATE,
-                &CompileMemoryBlockOptions {
-                    agent_id: context.identity.clone(),
-                    projection: None,
-                },
+                &self.block_options(&context.identity),
             )
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -300,6 +329,7 @@ pub fn register_memory_prompt_handler_with_cache(
                         nudge_turns: nudge,
                         soul_sha: soul.as_deref(),
                         flagged_agreements: &flagged,
+                        preview,
                     };
                     let result = handler
                         .inject(Some(&input))
@@ -349,50 +379,66 @@ impl MemoryPromptHandler {
             .repo
             .head()
             .map_err(|error| MemoryPromptError::Compile(CompileError::Git(error.to_string())))?;
-        let turn = self
-            .pins
-            .advance(
-                ProjectionAdvanceInput {
-                    repo: input.repo,
-                    session_id: input.session.id,
-                    branch: input.session.branch,
-                    head: head.clone(),
-                },
-                &|record: &ProjectionPinRecord| {
-                    let guard = self
-                        .record_pin
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let Some(recorder) = guard.as_ref() {
-                        recorder(record);
-                    }
+        let pin_input = ProjectionAdvanceInput {
+            repo: input.repo,
+            session_id: input.session.id,
+            branch: input.session.branch,
+            head: head.clone(),
+        };
+        let compile_error = |error: memory_core::git::errors::GitError| {
+            MemoryPromptError::Compile(CompileError::Git(error.to_string()))
+        };
+        let turn = if input.preview {
+            // A preview composes the real turn's bytes (same revision, same expiry instant) without
+            // touching the pin.
+            let peeked = self.pins.peek(pin_input).map_err(compile_error)?;
+            ProjectionTurn {
+                revision: peeked.revision,
+                as_of_ms: peeked.as_of_ms,
+                expiry_noticed_through_ms: peeked.as_of_ms,
+                now_ms: peeked.as_of_ms,
+                ..Default::default()
+            }
+        } else {
+            self.pins
+                .advance(pin_input, &|record: &ProjectionPinRecord| {
+                    self.record_pin_record(record)
+                })
+                .map_err(compile_error)?
+        };
+        let options = self.block_options(input.identity);
+        // Cross-lane API (memory-core lane `compile_with_expiries`, upstream `compileWithExpiries`): the
+        // block plus every declared expiry, compiled at the turn's pin instant.
+        let compiled = self
+            .cache
+            .compile_with_expiries(
+                input.repo,
+                turn.revision.as_deref(),
+                &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity),
+                &options,
+                Some(turn.as_of_ms as i64),
+            )
+            .map_err(MemoryPromptError::Compile)?;
+        let block = compiled.block;
+        let expired = if input.preview {
+            Vec::new()
+        } else {
+            newly_expired(
+                &compiled.expiries,
+                ExpiryWindow {
+                    pinned_at_ms: turn.as_of_ms,
+                    noticed_through_ms: turn.expiry_noticed_through_ms,
+                    now_ms: turn.now_ms,
                 },
             )
-            .map_err(|error| MemoryPromptError::Compile(CompileError::Git(error.to_string())))?;
-        let options = CompileMemoryBlockOptions {
-            agent_id: input.identity.to_owned(),
-            projection: None,
         };
-        let block = if turn.revision.as_deref() == head.as_deref() {
-            self.cache
-                .compile_at_head(
-                    input.repo,
-                    head.as_deref(),
-                    &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity),
-                    &options,
-                )
-                .map_err(MemoryPromptError::Compile)?
-        } else {
-            // A stale pin uses the separate pinned-revision cache entry so it never evicts the HEAD entry.
-            self.cache
-                .compile_at_revision(
-                    input.repo,
-                    turn.revision.as_deref(),
-                    &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity),
-                    &options,
-                )
-                .map_err(MemoryPromptError::Compile)?
-        };
+        if !expired.is_empty() {
+            self.pins.notice_expiries(
+                input.session.id,
+                turn.now_ms,
+                &|record: &ProjectionPinRecord| self.record_pin_record(record),
+            );
+        }
         let composed = if input.search_exposure {
             format!("{block}\n\n{MEMORY_TOOL_DISCOVERY_NOTE}")
         } else {
@@ -407,52 +453,29 @@ impl MemoryPromptHandler {
             system_prompt,
             message: MemoryPromptNotice {
                 custom_type: MEMORY_NOTICE_CUSTOM_TYPE,
-                content: render_memory_notice(
-                    input.session.prior_message_count,
-                    input.nudge_turns,
-                    input.soul_sha,
-                    &turn,
-                    input.flagged_agreements,
-                ),
+                content: render_memory_notice(&MemoryNoticeInputs {
+                    previous_message_count: input.session.prior_message_count,
+                    nudge_turns: input.nudge_turns,
+                    soul_sha: input.soul_sha,
+                    turn: &turn,
+                    expired: &expired,
+                    flagged_agreements: input.flagged_agreements,
+                }),
                 display: false,
             },
         }))
     }
 }
-pub fn render_memory_notice(
-    previous_message_count: usize,
-    nudge_turns: Option<usize>,
-    soul_sha: Option<&str>,
-    turn: &ProjectionTurn,
-    flagged_agreements: &[memory_core::agreements::AgreementItem],
-) -> String {
-    let mut lines = vec![
-        "<memory_notice>".to_owned(),
-        format!(
-            "- {previous_message_count} previous messages between you and the user are stored in recall memory"
-        ),
-    ];
-    if let Some(turns) = nudge_turns {
-        lines.push(format!("- {turns} {MEMORY_NUDGE_METADATA_TOKEN}. Save durable facts now, or decide nothing qualifies."));
+impl MemoryPromptHandler {
+    fn record_pin_record(&self, record: &ProjectionPinRecord) {
+        let guard = self
+            .record_pin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(recorder) = guard.as_ref() {
+            recorder(record);
+        }
     }
-    if let Some(sha) = soul_sha {
-        lines.push(format!(
-            "- {MEMORY_SOUL_METADATA_TOKEN} reflection {} since your last run",
-            sha.chars().take(7).collect::<String>()
-        ));
-    }
-    if let Some(changes) = &turn.changes {
-        lines.push(render_projected_changes_line(
-            changes,
-            turn.revision.as_deref(),
-            &turn.sources,
-        ));
-    }
-    for item in flagged_agreements {
-        lines.push(format!("- {MEMORY_AGREEMENT_METADATA_TOKEN} (broken x{}): \"{}\" Do not break it again this session; if the task needs it, stop and ask your person.",item.n,item.text));
-    }
-    lines.push("</memory_notice>".to_owned());
-    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -486,6 +509,7 @@ mod tests {
             nudge_turns: None,
             soul_sha: None,
             flagged_agreements: &[],
+            preview: false,
         }
     }
     fn recording_handler() -> (
@@ -757,6 +781,50 @@ mod tests {
         );
     }
     #[test]
+    fn a_configured_per_directory_limit_shows_that_many_names_and_counts_the_rest() {
+        // Given
+        let (_dir, repo) = fixture();
+        for name in ["a", "b", "c"] {
+            std::fs::write(
+                repo.dir.join(format!("note-{name}.md")),
+                format!("---\ndescription: {name}\n---\nx\n"),
+            )
+            .unwrap();
+        }
+        repo.commit_write(
+            &["note-a.md", "note-b.md", "note-c.md"],
+            "notes",
+            &GitCommitAuthor {
+                agent_id: "prompt-agent".into(),
+                author_name: "t".into(),
+                author_email: None,
+            },
+        )
+        .unwrap();
+        let handler = MemoryPromptHandler::default();
+        handler.set_projection_limits(Some(std::sync::Arc::new(|identity: &str| {
+            assert_eq!(identity, "prompt-agent");
+            memory_core::compile::external_projection::ExternalProjectionLimits {
+                max_entries_per_directory: 1,
+                max_bytes: 0,
+            }
+        })));
+        // When
+        let result = handler.inject(Some(&input(&repo))).unwrap().unwrap();
+        // Then
+        let line = result
+            .system_prompt
+            .lines()
+            .find(|line| line.starts_with("$MEMORY_DIR/: "))
+            .expect("root projection line");
+        assert!(line.starts_with("$MEMORY_DIR/: note-a"), "{line}");
+        assert!(
+            line.ends_with(" (+2 more; read $MEMORY_DIR/ to list)"),
+            "{line}"
+        );
+        assert!(!line.contains("note-b"), "{line}");
+    }
+    #[test]
     fn existing_block_is_replaced() {
         let (_dir, repo) = fixture();
         let handler = MemoryPromptHandler::default();
@@ -874,6 +942,7 @@ mod tests {
             nudge_turns: None,
             soul_sha: None,
             flagged_agreements: &[],
+            preview: false,
         };
         let expected = MemoryPromptHandler::default()
             .inject(Some(&expected_input))

@@ -12,6 +12,7 @@ pub struct QueryOptionsInput<'a> {
     pub executable: Option<&'a str>,
 }
 pub fn build_query_configuration(input: QueryOptionsInput<'_>) -> anyhow::Result<Value> {
+    crate::session_cwd::require_anthropic_subscription_cwd(Some(input.cwd))?;
     let mode = crate::settings::resolve_prompt_mode(input.settings).mode;
     let prompt = input.context["systemPrompt"].as_str();
     let system_prompt = match mode.as_str() {
@@ -64,7 +65,23 @@ pub fn build_query_configuration(input: QueryOptionsInput<'_>) -> anyhow::Result
     if let Some(executable) = input.executable.filter(|value| !value.is_empty()) {
         options.insert("pathToClaudeCodeExecutable".into(), json!(executable));
     }
-    Ok(Value::Object(options))
+    let mut options = Value::Object(options);
+    disable_auto_memory(&mut options);
+    Ok(options)
+}
+/// senpi `createAttemptMessages`: Claude Code loads auto memory independently of settingSources. Keep its private
+/// notes out of every subscription session, after all auth and caller overrides.
+pub fn disable_auto_memory(options: &mut Value) {
+    if !options["env"].is_object() {
+        options["env"] = json!({});
+    }
+    options["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = json!("1");
+    if !options["settings"].is_string() {
+        if !options["settings"].is_object() {
+            options["settings"] = json!({});
+        }
+        options["settings"]["autoMemoryEnabled"] = json!(false);
+    }
 }
 pub fn setting_sources(
     settings: &crate::settings::ProviderSettings,
@@ -239,7 +256,7 @@ mod tests {
         let options = build(&settings);
         assert_eq!(
             options["env"],
-            json!({"CLAUDE_CODE_TOTAL_TOKENS_REMINDER":"off","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","DISABLE_COMPACT":"1"})
+            json!({"CLAUDE_CODE_TOTAL_TOKENS_REMINDER":"off","CLAUDE_CODE_MAX_CONTEXT_TOKENS":"1000000","DISABLE_COMPACT":"1","CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
         );
         assert_eq!(options["model"], "claude-opus-5-5");
         let sdk = crate::settings::load(
@@ -247,7 +264,44 @@ mod tests {
             &Value::Null,
             &Default::default(),
         );
-        assert!(build(&sdk).get("env").is_none());
+        assert_eq!(
+            build(&sdk)["env"],
+            json!({"CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
+        );
+    }
+    #[test]
+    fn every_query_disables_claude_code_auto_memory_and_requires_an_absolute_cwd() {
+        let directory = tempfile::tempdir().expect("dir");
+        let settings = crate::settings::load(&json!({}), &Value::Null, &Default::default());
+        let input = |cwd| QueryOptionsInput {
+            model: &json!({"id":"claude-opus-5-5"}),
+            context: &json!({}),
+            stream_options: &json!({}),
+            settings: &settings,
+            lane: crate::auth_lane::TokenInjection::OAuthSlots,
+            cwd,
+            agent_dir: directory.path(),
+            config_directory: ".omo",
+            tools: None,
+            executable: None,
+        };
+        let options = build_query_configuration(input(directory.path())).expect("configuration");
+        assert_eq!(options["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1");
+        assert_eq!(options["settings"]["autoMemoryEnabled"], false);
+        assert_eq!(options["settings"]["autoCompactEnabled"], true);
+        assert_eq!(
+            build_query_configuration(input(std::path::Path::new("relative")))
+                .unwrap_err()
+                .to_string(),
+            crate::session_cwd::ANTHROPIC_SUBSCRIPTION_CWD_ERROR
+        );
+        let mut string_settings = json!({"settings":"/path/settings.json","env":{"KEEP":"1"}});
+        disable_auto_memory(&mut string_settings);
+        assert_eq!(string_settings["settings"], "/path/settings.json");
+        assert_eq!(
+            string_settings["env"],
+            json!({"KEEP":"1","CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
+        );
     }
     #[test]
     fn adaptive_markers_force_override_and_native_effort_mapping() {

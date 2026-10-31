@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 fn is_valid_json_escape(c: char) -> bool {
-    matches!(c, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u')
+    matches!(c, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')
 }
 
 fn escape_control_character(c: char) -> String {
@@ -295,6 +295,13 @@ mod tests {
         let value: Value = parse_json_with_repair("{\"path\":\"C:\\dir\ttab\"}").expect("repaired");
         assert_eq!(value, json!({"path": "C:\\dir\ttab"}));
         assert!(parse_json_with_repair::<Value>("{").is_err());
+    }
+
+    #[test]
+    fn repair_json_escapes_backslash_before_non_hex_u() {
+        assert_eq!(repair_json(r#"{"p": "C:\users"}"#), r#"{"p": "C:\\users"}"#);
+        let value: Value = parse_json_with_repair(r#"{"p": "C:\users"}"#).expect("repaired");
+        assert_eq!(value, json!({"p": "C:\\users"}));
     }
 
     #[test]

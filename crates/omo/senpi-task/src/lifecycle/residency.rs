@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::admission_lease::{
     AcquireAdmissionLeaseResult, AdmissionLeaseTimingOverrides, acquire_session_admission_lease,
 };
-use super::context::{LifecycleContext, is_terminal};
+use super::context::{LifecycleContext, is_terminal, reconciliation_active};
 use super::destroy::destroy_resident_task;
 use super::errors::{AgentLimitReached, LifecycleError, ResidentSummary};
 use super::port::DestroyCause;
@@ -161,11 +161,24 @@ pub type AcquireLeaseFn = Arc<
         + Sync,
 >;
 
+/// Startup may wait on a host or a lease: only its approved snapshot may be claimed afterwards.
+pub type CanClaimFn = Arc<dyn Fn(&TaskRecord) -> bool + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct BatchAdmissionOptions {
     pub timing: AdmissionLeaseTimingOverrides,
     pub acquire_lease: Option<AcquireLeaseFn>,
     pub exclude_task_ids: BTreeSet<String>,
+    pub can_claim: Option<CanClaimFn>,
+}
+
+impl BatchAdmissionOptions {
+    /// `options.canClaim?.(record) !== false`.
+    pub fn allows(&self, record: &TaskRecord) -> bool {
+        self.can_claim
+            .as_ref()
+            .is_none_or(|can_claim| can_claim(record))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +196,7 @@ pub fn claim_residency_slot(
     let mut applied = false;
     let timestamp = context.now_iso();
     let claimed = context.store.mutate(task_id, &mut |fresh| {
-        if !expect(fresh) {
+        if !reconciliation_active(context) || !expect(fresh) {
             return fresh.clone();
         }
         applied = true;
@@ -191,6 +204,7 @@ pub fn claim_residency_slot(
         next.residency_state = ResidencyState::Resident;
         next.host_pid = Some(context.host_pid);
         next.updated_at.clone_from(&timestamp);
+        next.residency_claim = Some(uuid::Uuid::new_v4().to_string());
         next
     })?;
     Ok(if claimed.is_some() && applied {
@@ -208,6 +222,11 @@ pub fn reclaim_orphaned_resident(
     claim_residency_slot(context, &observed.task_id, |fresh| {
         fresh.residency_state == ResidencyState::Resident
             && fresh.host_pid == observed.host_pid
+            && fresh.residency_claim == observed.residency_claim
+            && fresh.notification.run_epoch == observed.notification.run_epoch
+            && fresh.host_pid.is_none_or(|pid| {
+                pid == context.host_pid || !context.signaller.is_alive(pid)
+            })
             && fresh.updated_at == observed.updated_at
     })
 }
@@ -222,6 +241,15 @@ pub fn admit_suspended_batch(
         Some(acquire) => acquire(&state_dir, parent_session_id, options.timing)?,
         None => acquire_session_admission_lease(&state_dir, parent_session_id, options.timing)?,
     };
+    if !reconciliation_active(context) {
+        if let AcquireAdmissionLeaseResult::Acquired(lease) = &acquired {
+            lease.release();
+        }
+        return Ok(BatchAdmissionResult {
+            lease: BatchLeaseState::Acquired,
+            outcomes: Vec::new(),
+        });
+    }
     let AcquireAdmissionLeaseResult::Acquired(lease) = acquired else {
         return Ok(BatchAdmissionResult {
             lease: BatchLeaseState::LockContended,
@@ -249,11 +277,12 @@ fn admit_under_lease(
 ) -> Result<BatchAdmissionResult, LifecycleError> {
     let mut outcomes = Vec::new();
     let mut lease_state = BatchLeaseState::Acquired;
-    let candidates = by_revival_priority(revival_candidates(
-        context,
-        parent_session_id,
-        &options.exclude_task_ids,
-    )?);
+    let candidates = by_revival_priority(
+        revival_candidates(context, parent_session_id, &options.exclude_task_ids)?
+            .into_iter()
+            .filter(|record| options.allows(record))
+            .collect(),
+    );
     let available = match context.config.residency_max_children {
         ResidencyCap::Unlimited => candidates.len(),
         ResidencyCap::Limited(max) => {
@@ -275,6 +304,7 @@ fn admit_under_lease(
                 && is_suspended_residency(fresh.residency_state)
                 && is_revivable_status(fresh.status)
                 && fresh.killed != Some(true)
+                && options.allows(fresh)
         });
         outcomes.push(match claim {
             Ok(ResidencyClaimResult::Claimed) => BatchAdmissionOutcome::Claimed {

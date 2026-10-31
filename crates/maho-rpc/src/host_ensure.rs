@@ -44,6 +44,21 @@ pub async fn ensure_prepared_host(
                 .is_none_or(|registered| registered == socket)
         })
         .map_or(0, |owner| owner.pid);
+    // senpi `ensureHostLocked`: a registered supervisor that is gone while its host child still runs is a
+    // generation nothing may replace (IS-5).
+    if let Some(registered) = prepared.registration.as_ref().filter(|owner| {
+        owner
+            .socket
+            .as_deref()
+            .is_none_or(|registered| registered == socket)
+    }) && !crate::host_reservations::process_is_live(registered.pid)
+        && crate::host_stalled_evidence::host_child_alive(
+            &crate::host_daemon_paths::generation_paths(&prepared.paths, &registered.instance_id),
+            |line| eprintln!("{line}"),
+        ) == Some(true)
+    {
+        return Ok(EnsuredHost::Refused("host_stalled"));
+    }
     match prepared.decision {
         HostDecision::Reuse { .. } => return Ok(EnsuredHost::Reused { pid: attached_pid }),
         HostDecision::Refuse { reason, .. } => {
@@ -82,13 +97,44 @@ pub async fn ensure_prepared_host(
     }
     let owner =
         crate::host_daemon_registration::proven_owner(prepared.registration.as_ref(), socket);
+    // IS-5: a proven generation nothing reaches whose loop is measurably stalled keeps serving its sessions.
+    if let Some(owner) = owner
+        && crate::host_ensure_liveness::refuse_if_stalled(
+            &prepared.paths,
+            &owner.instance_id,
+            socket,
+            prepared.protocol.as_ref(),
+        )
+        .is_err()
+    {
+        return Ok(EnsuredHost::Refused("host_stalled"));
+    }
     let stranded = owner.is_some_and(|owner| {
         !crate::host_daemon_registration::written_by_this_process(owner.writer.as_ref())
     });
     if let Some(owner) = owner
         && !stranded
     {
-        stop_managed_host(owner, std::time::Duration::from_secs(5)).await?;
+        // senpi `stopManagedHost` (host-ensure-stop.ts): the intent goes on record before the first signal.
+        crate::host_ensure_stop::stop_managed_host(
+            &crate::host_ensure_stop::DaemonPidFile {
+                pid: owner.pid,
+                process_start_time: owner.process_start_time.clone(),
+            },
+            crate::host_ensure_stop::default_stop_timeout_ms(&std::env::vars().collect()),
+            &crate::host_ensure_stop::StopTarget {
+                daemon_dir: prepared.paths.dir.clone(),
+                generation: crate::host_daemon_paths::generation_paths(
+                    &prepared.paths,
+                    &owner.instance_id,
+                ),
+                instance_id: owner.instance_id.clone(),
+                sender: crate::host_ensure_stop::ensure_sender(),
+                reason: "replace_unreachable".into(),
+            },
+            crate::host_reservations::read_process_start_time,
+        )
+        .await?;
     }
     if stranded {
         start.settings.generation = owner.map_or(0., |owner| owner.generation + 1.);
@@ -96,13 +142,20 @@ pub async fn ensure_prepared_host(
             crate::protocol_identity::HOST_GENERATION_ENV.into(),
             start.settings.generation.to_string(),
         );
-    } else if prepared.registration.as_ref().is_some_and(|owner| {
-        owner
-            .socket
-            .as_deref()
-            .is_none_or(|registered| registered == socket)
-    }) {
-        crate::host_daemon_registration::clear_host_registration(&prepared.paths)?;
+    } else {
+        // Something no registration names still ACCEPTS at the public path and did not answer the probe: a
+        // start could only lose the bind, and the holder is not ours to remove (I1).
+        if crate::host_ensure_liveness::unregistered_endpoint_held(socket).await {
+            return Ok(EnsuredHost::Refused("endpoint_occupied"));
+        }
+        if prepared.registration.as_ref().is_some_and(|owner| {
+            owner
+                .socket
+                .as_deref()
+                .is_none_or(|registered| registered == socket)
+        }) {
+            crate::host_daemon_registration::clear_host_registration(&prepared.paths)?;
+        }
     }
     let started = start_host(&prepared, socket, launch, start).await?;
     prepared.lock.release().map_err(std::io::Error::other)?;
@@ -228,17 +281,47 @@ pub fn start_host(
         stderr_options.mode(0o600);
     }
     let stderr = stderr_options.open(&paths.stderr_log)?;
-    let mut command = tokio::process::Command::new(&launch.command);
-    command
-        .args(&launch.args)
-        .env_clear()
-        .envs(env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(stderr);
+    // senpi `startHost`: the presenter channel enrolls this initial launch, and enforcement is the deployment opt-in.
+    let bootstrap = crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
+    let args: Vec<String> = launch
+        .args
+        .iter()
+        .cloned()
+        .chain(crate::mcp_presenter_bootstrap::presenter_launch_args(
+            bootstrap.is_some(),
+            crate::mcp_presenter_bootstrap::presenter_enforcement(),
+        ))
+        .collect();
+    let configure = |command: &mut tokio::process::Command| {
+        command
+            .env_clear()
+            .envs(env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(stderr);
+        #[cfg(unix)]
+        command.process_group(0);
+    };
     #[cfg(unix)]
-    command.process_group(0);
-    let mut child = command.spawn()?;
+    let (mut child, presenter_enrollment) =
+        crate::mcp_presenter_bootstrap::spawn_with_presenter_bootstrap(
+            launch.command.as_os_str(),
+            &args,
+            configure,
+            bootstrap,
+            crate::mcp_presenter_bootstrap::PresenterLaunch {
+                kind: "initial",
+                predecessor_host_instance: Some(None),
+            },
+        )?;
+    #[cfg(not(unix))]
+    let (mut child, presenter_enrollment) = {
+        drop(bootstrap);
+        let mut command = tokio::process::Command::new(&launch.command);
+        command.args(&args);
+        configure(&mut command);
+        (command.spawn()?, None::<tokio::task::JoinHandle<()>>)
+    };
     let pid = child
         .id()
         .ok_or_else(|| std::io::Error::other("RPC socket host has no process identity"))?;
@@ -250,6 +333,7 @@ pub fn start_host(
             instance_id: settings.instance_id.clone(),
             generation: settings.generation,
             launch_profile_id,
+            build: Some(crate::host_daemon_registration::RegisteredBuild::this_engine()),
         };
         crate::host_daemon_registration::write_host_registration(&paths, &registration)
             .map_err(|error| error.source)?;
@@ -282,12 +366,21 @@ pub fn start_host(
     }
     .await;
     match result {
-        Ok(protocol) => Ok(StartedHost {
-            child,
-            protocol,
-            instance_id: settings.instance_id,
-        }),
+        Ok(protocol) => {
+            // senpi `await presenterEnrollment` once the host is ready.
+            if let Some(enrollment) = presenter_enrollment {
+                let _ = enrollment.await;
+            }
+            Ok(StartedHost {
+                child,
+                protocol,
+                instance_id: settings.instance_id,
+            })
+        }
         Err(error) => {
+            if let Some(enrollment) = presenter_enrollment {
+                enrollment.abort();
+            }
             let _ = child.kill().await;
             let _ = child.wait().await;
             crate::host_daemon_registration::release_generation(
@@ -475,47 +568,7 @@ fn is_host_start_failure(error: &std::io::Error) -> bool {
         || message.starts_with("RPC socket host did not become ready")
 }
 
-/** Whether a newer build may take the socket over from the running host (senpi `HostUpgradePolicy`). */
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HostUpgradePolicy {
-    #[default]
-    Never,
-    IfEngineDiffers,
-}
-/** One ensure request: the endpoint, what to launch, and the lifecycle policy to record. */
-#[derive(Debug, Clone)]
-pub struct EnsureHostOptions {
-    pub socket: String,
-    pub agent_dir: Option<std::path::PathBuf>,
-    pub policy: Option<crate::host_launch_spec::HostLifecyclePolicyInput>,
-    pub host_args: Vec<String>,
-    /** Extensions the spawned host loads; they form its launch profile. */
-    pub extensions: Vec<String>,
-    pub env: HashMap<String, Option<String>>,
-    pub upgrade: HostUpgradePolicy,
-    pub readiness_ms: u64,
-}
-impl Default for EnsureHostOptions {
-    fn default() -> Self {
-        Self {
-            socket: String::new(),
-            agent_dir: None,
-            policy: None,
-            host_args: vec![],
-            extensions: vec![],
-            env: HashMap::new(),
-            upgrade: HostUpgradePolicy::Never,
-            readiness_ms: 10_000,
-        }
-    }
-}
-/** The host a client ended up attached to, and whether this call started it. */
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnsuredHostInfo {
-    pub pid: u32,
-    pub socket: String,
-    pub reused: bool,
-}
+pub use crate::host_ensure_types::{EnsureHostOptions, EnsuredHostInfo, HostUpgradePolicy};
 #[derive(Debug, thiserror::Error)]
 pub enum EnsureHostError {
     #[error("host ensure refused: {0}")]
@@ -543,6 +596,28 @@ pub fn ensure_supervisor_args(socket: &str, agent_dir: &str, host_args: &[String
  * else's host (senpi `ensureHost`).
  */
 pub async fn ensure_host(options: EnsureHostOptions) -> Result<EnsuredHostInfo, EnsureHostError> {
+    let root = crate::host_probe::rpc_key_root(
+        options.key_root.as_deref(),
+        options.agent_dir.as_deref(),
+    );
+    let socket = normalize_socket_path(&options.socket).to_owned();
+    let agent_dir = options
+        .agent_dir
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()));
+    let ensured = crate::host_probe::with_rpc_key_root(root, ensure_host_in_key_root(options)).await;
+    // Off the awaited path and outside the lock: the caller gets its host first, then dead endpoint records under
+    // this agent dir are reaped in the background on `host gc`'s own evidence. A failed ensure schedules nothing.
+    if ensured.is_ok() {
+        crate::host_gc_pass::schedule_opportunistic_host_gc(
+            crate::host_gc_pass::OpportunisticGcOptions::new(agent_dir, socket),
+        );
+    }
+    ensured
+}
+async fn ensure_host_in_key_root(
+    options: EnsureHostOptions,
+) -> Result<EnsuredHostInfo, EnsureHostError> {
     let socket = normalize_socket_path(&options.socket).to_owned();
     let agent_dir = options
         .agent_dir
@@ -630,8 +705,10 @@ pub async fn ensure_host(options: EnsureHostOptions) -> Result<EnsuredHostInfo, 
         host_args: supervisor_args,
         policy: Some(host_policy),
         env: options.env.clone(),
+        expected_runtime_build_id: None,
         launch_profile_id,
         readiness_ms: options.readiness_ms,
+        launch: None,
     };
     let outcome =
         match ensure_prepared_host(prepared, &socket, &agent_dir, &launch, start, handoff).await {
@@ -738,6 +815,25 @@ mod tests {
         })
         .await;
         assert!(outcome.is_ok() || matches!(outcome, Err(EnsureHostError::Refused(_))));
+    }
+    // senpi host-ensure.ts: the gc pass is scheduled after an ensure returned its host, never after a failure.
+    // A current-thread runtime cannot run a scheduled pass before the check, so a scheduled one is still pending.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_ensure_schedules_no_gc_pass() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent_dir = temp.path().join("not-a-dir");
+        std::fs::write(&agent_dir, "").unwrap();
+        let outcome = ensure_host(EnsureHostOptions {
+            socket: temp.path().join("s.sock").to_string_lossy().into_owned(),
+            agent_dir: Some(agent_dir.clone()),
+            readiness_ms: 200,
+            ..Default::default()
+        })
+        .await;
+        assert!(outcome.is_err());
+        assert!(!crate::host_gc_pass::opportunistic_host_gc_pending(
+            &agent_dir
+        ));
     }
     #[cfg(unix)]
     #[tokio::test]

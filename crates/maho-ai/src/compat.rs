@@ -11,10 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::api;
-use crate::api_registry::{
-    ApiProviderInternal, ApiRegistryError, clear_api_providers, get_api_provider,
-    register_builtin_api_provider,
-};
+use crate::api_registry::{ApiRegistryError, clear_api_providers, register_builtin_api_provider};
 use crate::env_api_keys::get_env_api_key;
 use crate::models::{Models, ModelsError, Provider};
 use crate::tool_call_middleware::{
@@ -30,6 +27,13 @@ use crate::utils::lazy::error_stream;
 pub use crate::models_generated::{
     get_builtin_model as get_model, get_builtin_provider_models as get_models,
     get_builtin_providers as get_providers,
+};
+
+/// `export { ApiProvider, ApiProviderInternal, getApiProvider, getApiProviders,
+/// registerApiProvider, unregisterApiProviders } from "./api-registry.ts"`.
+pub use crate::api_registry::{
+    ApiProviderInternal, get_api_provider, get_api_providers, register_api_provider,
+    unregister_api_providers,
 };
 
 pub fn register_faux_provider(
@@ -172,9 +176,7 @@ fn has_resolved_cloudflare_auth(request: &ProviderRequestOptions) -> bool {
             .is_some_and(|headers| matches!(headers.get("cf-aig-authorization"), Some(Some(_))))
 }
 
-fn get_builtin_provider_for_model(
-    model: &Model,
-) -> Result<Option<Arc<dyn Provider>>, CompatError> {
+fn get_builtin_provider_for_model(model: &Model) -> Result<Option<Arc<dyn Provider>>, CompatError> {
     let current = get_api_provider(&model.api)?;
     let is_builtin_instance = {
         let instances = BUILTIN_API_PROVIDER_INSTANCES
@@ -233,7 +235,10 @@ pub fn try_stream(
             && !has_resolved_cloudflare_auth(&options.request)
         {
             return Ok(COMPAT_MODELS.as_ref().map_err(Clone::clone)?.stream(
-                model, context, Some(options), Default::default(),
+                model,
+                context,
+                Some(options),
+                Default::default(),
             ));
         }
         with_env_api_key(model, &mut options.request);
@@ -338,7 +343,6 @@ pub async fn complete_simple(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api_registry::register_api_provider;
     use crate::node::provider_scope::{ProviderScope, run_with_provider_scope};
     use crate::types::{AssistantMessageEvent, DoneReason, ProviderStreams, StopReason};
     use std::sync::Arc;
@@ -423,7 +427,9 @@ mod tests {
         );
         assert_eq!(
             missing,
-            Some(CompatError::Registry(ApiRegistryError::NoProvider("maho-missing-api".into())))
+            Some(CompatError::Registry(ApiRegistryError::NoProvider(
+                "maho-missing-api".into()
+            )))
         );
         assert_eq!(
             missing.map(|e| e.to_string()).as_deref(),
@@ -577,5 +583,15 @@ mod tests {
         assert!(prompt.contains("<tool_call>") && prompt.ends_with("base"));
         assert_eq!(message.stop_reason, StopReason::ToolUse);
         assert!(message.content.iter().any(|block| matches!(block, crate::types::ContentBlock::ToolCall(call) if call.name == "get_weather")));
+    }
+
+    #[test]
+    fn re_exports_the_api_registry_surface() {
+        let _: fn(&str) -> Result<Option<ApiProviderInternal>, ApiRegistryError> =
+            super::get_api_provider;
+        let _: fn() -> Result<Vec<ApiProviderInternal>, ApiRegistryError> =
+            super::get_api_providers;
+        let _: fn(&str) -> Result<(), ApiRegistryError> = super::unregister_api_providers;
+        let _ = super::register_api_provider;
     }
 }

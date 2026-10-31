@@ -2,10 +2,20 @@
 //!
 //! An endpoint is removed only on three-part evidence evaluated inside its ensure lock: no generation pidfile
 //! names a live process, no session-path claim has a live owner, and the socket (and every `.next-*` successor
-//! bind) refuses the connection or does not exist. Anything else is kept with the reason. It never signals a
-//! process; the stale-older-engine stop (`staleEngine`) is not ported because the engine-staleness judge is absent.
+//! bind) refuses the connection or does not exist. Anything else is kept with the reason.
+//!
+//! `stale_engine` adds the one case where gc ends a RUNNING host (senpi #3268): an endpoint kept as
+//! `live_generation` or `reachable` is judged by `host_stale_engine` inside the same lock, and a stale
+//! older-engine host is stopped through `stop_host_with` and reported under `stopped`. Its directory is
+//! collected by a later run, once the three-part evidence holds. Without the option nothing running is
+//! ever judged, and a judged host that is not stale is kept with the `stale_*` reason that saved it.
 use crate::host_endpoints::{EndpointKind, any_generation_live, list_host_endpoints};
+use crate::host_stale_engine::{
+    StaleEngineKeep, StaleEngineOptions, StaleEngineVerdict, judge_stale_engine,
+};
+use maho_core::engine_build_identity::{EngineBuildIdentity, engine_build_identity};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The budget a concurrent ensure's critical section gets before gc reports `locked`.
 pub const GC_LOCK_WAIT_MS: u64 = 2_000;
@@ -20,13 +30,22 @@ pub struct HostGcEntry {
     pub skipped: Vec<PathBuf>,
     pub error: Option<String>,
 }
+/// A running stale older-engine host this run stopped (`reason: "stale_old_engine"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostGcStopped {
+    pub entry: HostGcEntry,
+    pub pid: u32,
+}
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct HostGcResult {
     pub removed: Vec<HostGcEntry>,
+    /// Non-empty only when a run stopped a stale older-engine host (`stale_engine`).
+    pub stopped: Vec<HostGcStopped>,
     pub kept: Vec<HostGcEntry>,
 }
 impl HostGcResult {
-    /// The wire body: `{removed:[..],kept:[..]}`; `skipped` only on a removal that left a directory, `error` only on `failed`.
+    /// The wire body: `{removed:[..],kept:[..]}` plus `stopped:[..]` only when a host was stopped; `skipped` only on
+    /// a removal that left a directory, `error` only on `failed`.
     pub fn to_value(&self) -> serde_json::Value {
         let row = |entry: &HostGcEntry| {
             let mut value =
@@ -43,23 +62,109 @@ impl HostGcResult {
             }
             value
         };
-        serde_json::json!({"removed":self.removed.iter().map(row).collect::<Vec<_>>(),"kept":self.kept.iter().map(row).collect::<Vec<_>>()})
+        let mut value = serde_json::json!({"removed":self.removed.iter().map(row).collect::<Vec<_>>(),"kept":self.kept.iter().map(row).collect::<Vec<_>>()});
+        if !self.stopped.is_empty() {
+            value["stopped"] = self
+                .stopped
+                .iter()
+                .map(|stopped| {
+                    let mut value = row(&stopped.entry);
+                    value["pid"] = stopped.pid.into();
+                    value
+                })
+                .collect();
+        }
+        value
+    }
+}
+/// senpi `StaleEngineOptions`: whom a running host is judged against (this build when `client` is `None`), the
+/// clock and the grace past the host's own idle window.
+#[derive(Clone, Default)]
+pub struct StaleEngineRequest {
+    pub client: Option<EngineBuildIdentity>,
+    pub now: Option<Arc<dyn Fn() -> f64 + Send + Sync>>,
+    pub grace_ms: Option<f64>,
+}
+impl std::fmt::Debug for StaleEngineRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StaleEngineRequest")
+            .field("client", &self.client)
+            .field("now", &self.now.as_ref().map(|_| "<clock>"))
+            .field("grace_ms", &self.grace_ms)
+            .finish()
+    }
+}
+impl StaleEngineRequest {
+    /// `judgeStaleEngine(socket, agentDir, options.client ?? engineBuildIdentity(), options)`.
+    pub async fn judge(&self, socket: &str, agent_dir: &Path) -> StaleEngineVerdict {
+        let client = self
+            .client
+            .clone()
+            .unwrap_or_else(|| engine_build_identity().clone());
+        let now = self.now.clone().map(|now| {
+            let boxed: Box<dyn Fn() -> f64 + Send + Sync> = Box::new(move || now());
+            boxed
+        });
+        judge_stale_engine(
+            socket,
+            agent_dir,
+            &client,
+            StaleEngineOptions {
+                now,
+                grace_ms: self.grace_ms,
+            },
+        )
+        .await
+    }
+}
+/// The wire name of a keep reason (`stale_*`).
+pub fn stale_keep_reason(keep: StaleEngineKeep) -> &'static str {
+    match keep {
+        StaleEngineKeep::StaleUnprovenOwner => "stale_unproven_owner",
+        StaleEngineKeep::StaleUnreachable => "stale_unreachable",
+        StaleEngineKeep::StaleNotOlder => "stale_not_older",
+        StaleEngineKeep::StalePersistent => "stale_persistent",
+        StaleEngineKeep::StaleSessions => "stale_sessions",
+        StaleEngineKeep::StaleClaims => "stale_claims",
+        StaleEngineKeep::StaleYoung => "stale_young",
+        StaleEngineKeep::StaleClients => "stale_clients",
     }
 }
 #[derive(Debug, Default, Clone)]
 pub struct HostGcOptions {
     /// Only endpoints of these kinds; every kind when `None`.
     pub kinds: Option<Vec<EndpointKind>>,
+    /// Also stop running stale older-engine hosts; `Some(Default::default())` judges against this build.
+    pub stale_engine: Option<StaleEngineRequest>,
 }
-enum Judged {
+/// One endpoint's verdict (senpi `gcEndpoint`'s outcome).
+pub enum Judged {
     Removed {
         reason: &'static str,
         skipped: Vec<PathBuf>,
     },
     Kept(&'static str),
+    Stopped {
+        pid: u32,
+    },
 }
+/// The stop's own reads, kept short so the endpoint's ensure lock is not held for their default budget each.
+const STALE_STOP_TIMEOUT_MS: u64 = 2_000;
 
 pub async fn gc_host_endpoints(agent_dir: &Path, options: &HostGcOptions) -> HostGcResult {
+    // Dead launches' public key records go first (senpi `gcRpcPublicKeys`); a failure never blocks endpoint gc.
+    #[cfg(unix)]
+    {
+        let dir = agent_dir.to_path_buf();
+        let keys = tokio::task::spawn_blocking(move || {
+            crate::rpc_public_key::gc_rpc_public_keys(&dir, Default::default())
+        })
+        .await;
+        if let Ok(Err(error)) = keys {
+            eprintln!("senpi rpc host gc: key records: {error}");
+        }
+    }
     let mut result = HostGcResult::default();
     let wanted = |kind: EndpointKind| {
         options
@@ -95,10 +200,14 @@ pub async fn gc_host_endpoints(agent_dir: &Path, options: &HostGcOptions) -> Hos
                 .push(entry("unknown_identity", Vec::new(), None));
             continue;
         };
-        match gc_endpoint(socket, &endpoint.dir).await {
+        match gc_endpoint(socket, &endpoint.dir, options.stale_engine.as_ref()).await {
             Ok(Judged::Removed { reason, skipped }) => {
                 result.removed.push(entry(reason, skipped, None))
             }
+            Ok(Judged::Stopped { pid }) => result.stopped.push(HostGcStopped {
+                entry: entry("stale_old_engine", Vec::new(), None),
+                pid,
+            }),
             Ok(Judged::Kept(reason)) => result.kept.push(entry(reason, Vec::new(), None)),
             Err(error) => result
                 .kept
@@ -108,7 +217,11 @@ pub async fn gc_host_endpoints(agent_dir: &Path, options: &HostGcOptions) -> Hos
     result
 }
 /// One endpoint, judged and removed exactly as a full run does.
-async fn gc_endpoint(socket: &str, dir: &Path) -> std::io::Result<Judged> {
+pub async fn gc_endpoint(
+    socket: &str,
+    dir: &Path,
+    stale_engine: Option<&StaleEngineRequest>,
+) -> std::io::Result<Judged> {
     let paths = crate::host_daemon_paths::host_daemon_directory_paths(dir);
     let retries = crate::ownership_safe_lock::LockRetries {
         retries: u32::try_from(GC_LOCK_WAIT_MS / 100).unwrap_or(20),
@@ -119,7 +232,7 @@ async fn gc_endpoint(socket: &str, dir: &Path) -> std::io::Result<Judged> {
     else {
         return Ok(Judged::Kept("locked"));
     };
-    let judged = judge_and_remove(socket, dir, &paths).await;
+    let judged = judge_and_remove(socket, dir, &paths, stale_engine).await;
     // A removal deletes the directory holding the lock file; a release failure matters only when the endpoint stays.
     let released = lock.release();
     match (&judged, released) {
@@ -128,22 +241,26 @@ async fn gc_endpoint(socket: &str, dir: &Path) -> std::io::Result<Judged> {
         _ => judged,
     }
 }
-async fn judge_and_remove(
+/// senpi `endpointInUse`: why an endpoint is still in use, or how its socket proved silent.
+enum EndpointEvidence {
+    InUse(&'static str),
+    Silent(&'static str),
+}
+async fn endpoint_in_use(
     socket: &str,
-    dir: &Path,
     paths: &crate::host_daemon_paths::HostDaemonPaths,
-) -> std::io::Result<Judged> {
+) -> EndpointEvidence {
     if any_generation_live(paths) {
-        return Ok(Judged::Kept("live_generation"));
+        return EndpointEvidence::InUse("live_generation");
     }
     if crate::host_reservations::read_session_path_claims(&paths.reservations_dir)
         .iter()
         .any(|claim| crate::host_reservations::claim_owner_is_live(&claim.owner))
     {
-        return Ok(Judged::Kept("live_claim"));
+        return EndpointEvidence::InUse("live_claim");
     }
     let Some(silence) = socket_silence(socket).await else {
-        return Ok(Judged::Kept("reachable"));
+        return EndpointEvidence::InUse("reachable");
     };
     for successor in socket_siblings(socket)
         .into_iter()
@@ -157,14 +274,69 @@ async fn judge_and_remove(
         .await
         .is_none()
         {
-            return Ok(Judged::Kept("reachable"));
+            return EndpointEvidence::InUse("reachable");
         }
     }
-    let skipped = remove_endpoint(socket, dir)?;
-    Ok(Judged::Removed {
-        reason: silence,
-        skipped,
-    })
+    EndpointEvidence::Silent(silence)
+}
+async fn judge_and_remove(
+    socket: &str,
+    dir: &Path,
+    paths: &crate::host_daemon_paths::HostDaemonPaths,
+    stale_engine: Option<&StaleEngineRequest>,
+) -> std::io::Result<Judged> {
+    match endpoint_in_use(socket, paths).await {
+        EndpointEvidence::InUse(in_use) => match stale_engine {
+            Some(request) if in_use != "live_claim" => {
+                stop_if_stale(socket, dir, in_use, request).await
+            }
+            _ => Ok(Judged::Kept(in_use)),
+        },
+        EndpointEvidence::Silent(silence) => {
+            let skipped = remove_endpoint(socket, dir)?;
+            Ok(Judged::Removed {
+                reason: silence,
+                skipped,
+            })
+        }
+    }
+}
+/// senpi `stopIfStale`: a host that is no candidate at all (most run this very engine) keeps the evidence reason it
+/// always had; a stale one is stopped through a stop that requires both reads to answer.
+async fn stop_if_stale(
+    socket: &str,
+    dir: &Path,
+    in_use: &'static str,
+    request: &StaleEngineRequest,
+) -> std::io::Result<Judged> {
+    // `<agent dir>/rpc-host-daemon/<name>`.
+    let agent_dir = dir.parent().and_then(Path::parent).unwrap_or(Path::new(""));
+    match request.judge(socket, agent_dir).await {
+        StaleEngineVerdict::Keep(
+            StaleEngineKeep::StaleUnprovenOwner
+            | StaleEngineKeep::StaleUnreachable
+            | StaleEngineKeep::StaleNotOlder,
+        ) => Ok(Judged::Kept(in_use)),
+        StaleEngineVerdict::Keep(keep) => Ok(Judged::Kept(stale_keep_reason(keep))),
+        StaleEngineVerdict::Stale { .. } => {
+            let outcome = crate::host_stop::stop_host_with(crate::host_stop::StopHostOptions {
+                socket: socket.into(),
+                agent_dir: Some(agent_dir.into()),
+                timeout_ms: Some(STALE_STOP_TIMEOUT_MS),
+                require_answer: true,
+                ..Default::default()
+            })
+            .await?;
+            Ok(match outcome {
+                crate::host_stop::StopHostOutcome::Stopped { pid } => Judged::Stopped { pid },
+                crate::host_stop::StopHostOutcome::Refuse {
+                    reason: "unknown_owner",
+                } => Judged::Kept("stale_unproven_owner"),
+                crate::host_stop::StopHostOutcome::Refuse { .. }
+                | crate::host_stop::StopHostOutcome::Drain(_) => Judged::Kept("stale_sessions"),
+            })
+        }
+    }
 }
 fn base_name(socket: &str) -> String {
     Path::new(socket)
@@ -325,10 +497,181 @@ mod tests {
             temp.path(),
             &HostGcOptions {
                 kinds: Some(vec![EndpointKind::Tui]),
+                ..Default::default()
             },
         )
         .await;
         assert_eq!(result, HostGcResult::default());
         assert!(paths.dir.exists());
+    }
+
+    /// A fake older-engine host: the listener is inherited by a `sleep` child that owns the registration, so
+    /// the public-client count reads the child's descriptors (the listener alone) and a stop signals the child,
+    /// never this test process. This process serves the socket.
+    #[cfg(target_os = "linux")]
+    struct FakeHost {
+        child: std::process::Child,
+        socket: String,
+        paths: crate::host_daemon_paths::HostDaemonPaths,
+    }
+    #[cfg(target_os = "linux")]
+    impl Drop for FakeHost {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    async fn fake_host(temp: &Path) -> FakeHost {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let socket = temp.join("h.sock").to_string_lossy().into_owned();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        rustix::io::fcntl_setfd(&listener, rustix::io::FdFlags::empty()).expect("inheritable");
+        let child = std::process::Command::new("sleep")
+            .arg("1000")
+            .spawn()
+            .expect("sleep");
+        rustix::io::fcntl_setfd(&listener, rustix::io::FdFlags::CLOEXEC).expect("cloexec");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let (read, mut write) = stream.into_split();
+                    let mut lines = tokio::io::BufReader::new(read).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let request: serde_json::Value = serde_json::from_str(&line).expect("json");
+                        let data = match request["type"].as_str() {
+                            Some("get_protocol_info") => {
+                                serde_json::json!({"serverVersion":"old","capabilities":[],"instanceId":"g1","engineVersion":"2000.1.1","engineOrdinal":[2000,1,1,0,0]})
+                            }
+                            _ => serde_json::json!({"sessions":[]}),
+                        };
+                        let reply = serde_json::json!({"id":request["id"],"type":"response","success":true,"data":data});
+                        if write
+                            .write_all(format!("{reply}\n").as_bytes())
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let paths = endpoint(temp, &socket);
+        crate::host_daemon_registration::write_host_registration(
+            &paths,
+            &crate::host_daemon_registration::HostRegistration {
+                pid: child.id(),
+                process_start_time: crate::host_reservations::read_process_start_time(child.id()),
+                socket: socket.clone(),
+                instance_id: "g1".into(),
+                generation: 1.0,
+                launch_profile_id: "profile".into(),
+            },
+        )
+        .expect("registration");
+        FakeHost {
+            child,
+            socket,
+            paths,
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn judged_against(version: &str, grace_ms: f64) -> StaleEngineRequest {
+        StaleEngineRequest {
+            client: Some(
+                maho_core::engine_build_identity::engine_build_identity_from(
+                    &maho_core::engine_build_identity::EngineBuildInput {
+                        version: version.into(),
+                        ..Default::default()
+                    },
+                ),
+            ),
+            now: Some(Arc::new(|| 1.0e15)),
+            grace_ms: Some(grace_ms),
+        }
+    }
+    /// senpi #3268: an older-engine host with no session, reservation or client past its idle window is reported
+    /// `stale_old_engine` by `status --all` and stopped by `gc`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_stale_older_engine_host_is_reported_and_stopped() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut host = fake_host(temp.path()).await;
+        let request = judged_against("2999.1.1", 0.0);
+        let rows = crate::host_status_all::read_all_host_status_with(
+            temp.path(),
+            true,
+            Some(2_000),
+            &request,
+        )
+        .await
+        .expect("status");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["alive"], true, "{}", rows[0]);
+        assert_eq!(rows[0]["stale_old_engine"], true);
+        let result = gc_host_endpoints(
+            temp.path(),
+            &HostGcOptions {
+                stale_engine: Some(request),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(result.kept, vec![], "{:?}", result.kept);
+        assert_eq!(result.stopped.len(), 1);
+        assert_eq!(result.stopped[0].pid, host.child.id());
+        assert_eq!(result.stopped[0].entry.reason, "stale_old_engine");
+        assert_eq!(result.to_value()["stopped"][0]["pid"], host.child.id());
+        let status = host.child.wait().expect("wait");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert!(
+            host.paths.dir.exists(),
+            "a stop never removes the directory"
+        );
+    }
+    /// The same engine is no candidate (kept with its evidence reason); a host inside its idle window plus the
+    /// grace is kept as `stale_young`; without the option nothing running is judged.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn hosts_that_are_not_stale_keep_their_reason() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut host = fake_host(temp.path()).await;
+        for (request, reason) in [
+            (judged_against("2000.1.1", 0.0), "live_generation"),
+            (judged_against("2999.1.1", 1.0e16), "stale_young"),
+        ] {
+            let rows = crate::host_status_all::read_all_host_status_with(
+                temp.path(),
+                true,
+                Some(2_000),
+                &request,
+            )
+            .await
+            .expect("status");
+            assert_eq!(rows[0]["stale_old_engine"], false);
+            let result = gc_host_endpoints(
+                temp.path(),
+                &HostGcOptions {
+                    stale_engine: Some(request),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(result.stopped.is_empty());
+            assert_eq!(result.kept.len(), 1);
+            assert_eq!(result.kept[0].reason, reason);
+            assert!(result.to_value().get("stopped").is_none());
+        }
+        let plain = gc_host_endpoints(temp.path(), &HostGcOptions::default()).await;
+        assert_eq!(plain.kept[0].reason, "live_generation");
+        assert!(
+            host.child.try_wait().expect("try_wait").is_none(),
+            "the host still runs"
+        );
+        assert_eq!(host.socket, plain.kept[0].socket.clone().expect("socket"));
     }
 }

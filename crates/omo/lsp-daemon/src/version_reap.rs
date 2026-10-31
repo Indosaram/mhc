@@ -353,10 +353,17 @@ fn is_daemon_command(command: &str) -> bool {
     let has_daemon = has_word(command, "daemon", false);
     let node_cli = (has_word(command, "node", true) || has_word(command, "node.exe", true))
         && has_word(command, "cli.js", false);
-    let rust_binary = command
-        .split_whitespace()
-        .next()
-        .is_some_and(|executable| basename(executable) == "lsp-daemon");
+    let executable = if let Some(rest) = command.strip_prefix('"') {
+        rest.split_once('"').map(|(path, _)| path)
+    } else if let Some(rest) = command.strip_prefix('\'') {
+        rest.split_once('\'').map(|(path, _)| path)
+    } else {
+        command.split_whitespace().next()
+    };
+    let rust_binary = executable.is_some_and(|executable| {
+        let base = basename(executable);
+        base == "lsp-daemon" || base == "lsp-daemon.exe"
+    });
     has_daemon && (node_cli || rust_binary)
 }
 

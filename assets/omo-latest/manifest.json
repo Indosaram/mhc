@@ -116,9 +116,9 @@
       },
       {
         "path": "README.md",
-        "bytes": 7675,
-        "sha256": "eb4d54eeb38d3d2449dc1eacc89c4da4d53227c153c299afe3e599428c05cd30",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/README.md (MIT)"
+        "bytes": 7791,
+        "sha256": "e8ea5cb1b853e8220e2bed3cb3a1cfb3ca06597e4ad6c234d4d35810314af41e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/README.md (MIT)"
       },
       {
         "path": "SKILL.md",
@@ -134,15 +134,15 @@
       },
       {
         "path": "install.ps1",
-        "bytes": 7165,
-        "sha256": "e61f32729a8b54dc7bcc27adcafd91511cbbd0ea963493e1d2e79a221b683bbf",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/install.ps1 (MIT)"
+        "bytes": 7384,
+        "sha256": "af1eb0456dd5e089cfa0fa540941eb7d15c4b2f6c517ce606ec22046826fe2c8",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/install.ps1 (MIT)"
       },
       {
         "path": "install.sh",
-        "bytes": 7581,
-        "sha256": "ac2abfc4e4b5991c6aed09babd6fd1e6b87663a036949c65540542d4f6b0faa1",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/install.sh (MIT)"
+        "bytes": 7663,
+        "sha256": "440410f94fb26474d523759bfc724e51a78bd520dcddfd3a1a9074e761923695",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/install.sh (MIT)"
       },
       {
         "path": "references/cli.md",
@@ -152,9 +152,9 @@
       },
       {
         "path": "references/install.md",
-        "bytes": 5597,
-        "sha256": "0f17ac284c977d68fc4432e6013e4ce1039551a66d2bc4a374939331acbab931",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/references/install.md (MIT)"
+        "bytes": 5829,
+        "sha256": "4a6ce77b0a54ceab7d3117a0c06a2d667e02c4268f595160d03fa56433d4d973",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/references/install.md (MIT)"
       },
       {
         "path": "references/patterns.md",
@@ -188,9 +188,9 @@
       },
       {
         "path": "scripts/ast_grep_helper.py",
-        "bytes": 26972,
-        "sha256": "0ca189f5b0fe873f8d5f3de0f9ff76b13953f19ca3e51b3a744af0ab7b30fe52",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ast-grep/scripts/ast_grep_helper.py (MIT)"
+        "bytes": 27452,
+        "sha256": "645f64e4bfeeb8fe8a3a727f3b1d7e32f9c4dfdc78e2c0ca2bfc7eb57d39a3cb",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ast-grep/scripts/ast_grep_helper.py (MIT)"
       },
       {
         "path": "tests/smoke.ps1",
@@ -300,21 +300,21 @@
     "coding-agent-sessions": [
       {
         "path": "AGENTS.md",
-        "bytes": 4004,
-        "sha256": "4013b21f6d8d3c0e9a313a98e6ac0c09136c212bcca8e3f897491d9e78809375",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/AGENTS.md (MIT)"
+        "bytes": 4332,
+        "sha256": "f3db8a4b41c8d5732f038bfb52304f887052d1f8bab62f68d098e8dfd0f01f64",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/AGENTS.md (MIT)"
       },
       {
         "path": "SKILL.md",
-        "bytes": 11097,
-        "sha256": "4569988eb01c3c6aeb150100fb0dfcd7481887bff0e6c2c7959468e2f5057a70",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/SKILL.md (MIT)"
+        "bytes": 11261,
+        "sha256": "d4b7e3b7a5a83a8f4b550fc840ba0e764e75ffa1beba349711e9ba58180ed048",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/SKILL.md (MIT)"
       },
       {
         "path": "references/all-platforms.md",
-        "bytes": 6036,
-        "sha256": "a514a0be3f57d8c99086c180fc4b486400e40e9d09495a409af5ec5cc27142ad",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/references/all-platforms.md (MIT)"
+        "bytes": 6042,
+        "sha256": "8dca240189a4503241804e17ad65fe605fa7911a62df040058a1004935446b1c",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/references/all-platforms.md (MIT)"
       },
       {
         "path": "references/claude.md",
@@ -324,9 +324,9 @@
       },
       {
         "path": "references/codex.md",
-        "bytes": 1867,
-        "sha256": "23d43c81556182d7faa9a6eb96a553fca6fd55005c1b2a8bcd0110c7ff100f2e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/references/codex.md (MIT)"
+        "bytes": 1879,
+        "sha256": "3ba4bb287d57a42e79e55adf3eb98e16859d2cc34dd008ccf6bbc5992591ab4b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/references/codex.md (MIT)"
       },
       {
         "path": "references/opencode.md",
@@ -360,9 +360,9 @@
       },
       {
         "path": "scripts/agent_sessions/cli.py",
-        "bytes": 11142,
-        "sha256": "739d6c79a2a8766267893f6b763b0bef2bf7275bc113feb6b7cc37a3440ef613",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/scripts/agent_sessions/cli.py (MIT)"
+        "bytes": 11145,
+        "sha256": "cc13992ea106a3a0062256307c1e6e88058bda78e7ffbf5d47f16fbbc5e8c187",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/scripts/agent_sessions/cli.py (MIT)"
       },
       {
         "path": "scripts/agent_sessions/codex.py",
@@ -438,9 +438,9 @@
       },
       {
         "path": "scripts/find-agent-sessions.py",
-        "bytes": 785,
-        "sha256": "bbd36d197048e190d1dc466f016255454c8e172c28f6bf4cff23f8b04bd7e18d",
-        "source": "lazycodex@75b01747:plugins/omo/skills/coding-agent-sessions/scripts/find-agent-sessions.py (MIT)"
+        "bytes": 827,
+        "sha256": "eaa130a580caeff029c60626f998b1aa337ecf33de85b0f6e5bd207480741841",
+        "source": "lazycodex@e809c369:plugins/omo/skills/coding-agent-sessions/scripts/find-agent-sessions.py (MIT)"
       }
     ],
     "dag-library": [
@@ -710,15 +710,15 @@
     "frontend": [
       {
         "path": "ATTRIBUTION.md",
-        "bytes": 14407,
-        "sha256": "2526fee38c557f7f130504c8bedc6f0077ffcaa2c18fbfb3deea1c958d64ce46",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/ATTRIBUTION.md"
+        "bytes": 20891,
+        "sha256": "26c24f5a899671f46383809ed8b18df8287cf0b8afdababac66415d1c137fbdd",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/ATTRIBUTION.md"
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 9052,
-        "sha256": "08fc725319a59c675f6f4dc31abe88704d93ef185b68b58dd1892aa624efb080",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/CLEANROOM.md"
+        "bytes": 10509,
+        "sha256": "9b43e38f6aea79ec69e3b0374cc858f215d4e1a1318c550d1cd3b50f03629e9a",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/CLEANROOM.md"
       },
       {
         "path": "LICENSE-Apache-2.0.txt",
@@ -728,21 +728,21 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 25099,
-        "sha256": "c5585b72fc5daaf6f3766e515a309d3892c04fcbe58c9a24f1f0be184f3315a7",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/SKILL.md"
+        "bytes": 32673,
+        "sha256": "531c52f7446edcbdc3d27bf1c5447ca098d0c01531393afffd366b9718952988",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/SKILL.md"
       },
       {
         "path": "references/design/README.md",
-        "bytes": 23663,
-        "sha256": "a473a17f5a8f71dc0059ba8a63a8d5862e06d250f0e74680c3333fc8f92b01bc",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/README.md"
+        "bytes": 24745,
+        "sha256": "d07816d09b223d3d654aac77b0a4364dcfcaedd7f8c96a41d82f77c1bcb0f6d1",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/design/README.md"
       },
       {
         "path": "references/design/_INDEX.md",
-        "bytes": 17535,
-        "sha256": "514101add645ac16c84a781af5731acae12027724f1867c846c3907684f148aa",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/_INDEX.md"
+        "bytes": 17811,
+        "sha256": "d9bc7398dbe00eb7aec876321319d6ffbf3a2a57754bdca1e8336aa915453600",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/_INDEX.md (MIT)"
       },
       {
         "path": "references/design/airbnb.md",
@@ -842,9 +842,9 @@
       },
       {
         "path": "references/design/component-catalogs.md",
-        "bytes": 8807,
-        "sha256": "01ee071f308c87c489635fa86cc70fd4e634f6b0bf11f7ee3945671f3b5540bd",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/component-catalogs.md"
+        "bytes": 11458,
+        "sha256": "766732ce9b78757b01338b38a17ee29d6fad9db529774a919490cdab60b182bc",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/component-catalogs.md (MIT)"
       },
       {
         "path": "references/design/composio.md",
@@ -860,9 +860,9 @@
       },
       {
         "path": "references/design/design-system-architecture.md",
-        "bytes": 14806,
-        "sha256": "2556e3cb375719ed88e6ce28014ce0208d9cc088ee33ddfccb7012d896948011",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/design-system-architecture.md"
+        "bytes": 15819,
+        "sha256": "db5720856a8bc42155d9d6b855bf7fe99c85c7ab13e273ac7d12039994fd8c3b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/design/design-system-architecture.md (MIT)"
       },
       {
         "path": "references/design/elevenlabs.md",
@@ -899,6 +899,12 @@
         "bytes": 7857,
         "sha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/design/gpt-tasteskill.md"
+      },
+      {
+        "path": "references/design/grounding.md",
+        "bytes": 3822,
+        "sha256": "5bc2dbdf5b2309e81633372f6c995e288301cea8608f8a716a0d6966050beef4",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/design/grounding.md"
       },
       {
         "path": "references/design/hashicorp.md",
@@ -1591,6 +1597,18 @@
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/perfection/README.md"
       },
       {
+        "path": "references/perfection/craft-floor.md",
+        "bytes": 7283,
+        "sha256": "770e8812ce530bbfc047925ab9954afd811024ab2517969e3208a4dc771dbb9d",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/perfection/craft-floor.md"
+      },
+      {
+        "path": "references/perfection/detect.md",
+        "bytes": 4013,
+        "sha256": "525aa16cbedbf466282fd46df8dc8b649be09b5cb674edc9680d94f276f9212b",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/references/perfection/detect.md (SUL-1.0)"
+      },
+      {
         "path": "references/perfection/react-perf-tooling.md",
         "bytes": 7898,
         "sha256": "0ddf4845f9a772ea018eb6d44d46407efa3e96371e41eaecb774595412f50bf6",
@@ -1754,15 +1772,987 @@
       },
       {
         "path": "references/ui-ux-db/scripts/design_system.py",
-        "bytes": 47070,
-        "sha256": "f7a21e83739c5ac6ca3738846220f6a9eb7f3c1ae7a44989c5aaa2061ca60310",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/ui-ux-db/scripts/design_system.py"
+        "bytes": 47112,
+        "sha256": "93e9af66d94ae6bbce8771aede53fcd0d5720e587de1a83dccad9849978e3fa3",
+        "source": "lazycodex@e809c369:plugins/omo/skills/frontend/references/ui-ux-db/scripts/design_system.py (MIT)"
       },
       {
         "path": "references/ui-ux-db/scripts/search.py",
-        "bytes": 5493,
-        "sha256": "211546b262fb14d397228dbf982e32254c938d364b6386da69b62e7c3805b319",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/frontend/references/ui-ux-db/scripts/search.py"
+        "bytes": 5525,
+        "sha256": "d60109a67e11cb1cc569fcdeff68f25cffb03326dc84d1336e05dad9de821ade",
+        "source": "mhc clean-room (base lazycodex@e809c369 MIT where present): skills/frontend/references/ui-ux-db/scripts/search.py"
+      },
+      {
+        "path": "scripts/detect/LICENSE.md",
+        "bytes": 737,
+        "sha256": "d6ae929c72e72771b51333a1e999819ba3c766ee8f977e145411eb957be9277e",
+        "source": "mhc notice for the SUL-1.0 detect subtree (omo@354bcf9fc4)"
+      },
+      {
+        "path": "scripts/detect/cli.ts",
+        "bytes": 2927,
+        "sha256": "6b48ac18b98d6a6e6875ff573a3ac4e47c80424e7946cb2ef7568f8bfb48c620",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/cli.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/config.ts",
+        "bytes": 3035,
+        "sha256": "0cc8e671912561ed3afb092aee08d85225b9aabc2aef07e501810caf27a1e3a7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/config.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/characters.ts",
+        "bytes": 157,
+        "sha256": "ada286bfd5928ba0ab5a23e416e0dd7fd11fc12d7fc9634d2e825413b203ddb7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/characters.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/color.ts",
+        "bytes": 7081,
+        "sha256": "2110c32aac6a5b92a86370f9c06211b0491a5ae19e73501274e1b4ddf5c66880",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/page.ts",
+        "bytes": 3722,
+        "sha256": "b4f4b223d7018296f84a34132e96af339808f34ecd176563c58434e3e9670176",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/page.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/shadow.ts",
+        "bytes": 1472,
+        "sha256": "d0410798490d2659bee5a056655314a440569b88681f84cb3b3d5d6a32b73bdb",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/core/source.ts",
+        "bytes": 1386,
+        "sha256": "ee2f0d77a1ce9de35beb881cec47000e0b341c1d1cfd6c09fa98b7daede4f985",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/core/source.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/detect.ts",
+        "bytes": 3412,
+        "sha256": "aee961f51d9bb58e0c956a1b32cc0923e677c225057b39040da7133febe49d38",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/detect.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/index.ts",
+        "bytes": 1154,
+        "sha256": "4bab3940a1d79e03dd9b83407408bd1b76b2f68d64deadbd5ce0fbed6ce15122",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/lint.ts",
+        "bytes": 3919,
+        "sha256": "8812f241a100e5a42017d446d35a493f6fa730c0c4a80afc9d9a8d5b4e2c69fc",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/lint.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/render/renderer.ts",
+        "bytes": 1444,
+        "sha256": "6f583be783b0bf999ae115e21ccb8c7e61de801ba2256ddda784ec14059c4270",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/render/renderer.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/render/webview.ts",
+        "bytes": 3374,
+        "sha256": "3896434ce9e144bc99bc98813593170a9c4d412a0c0da2c1adfcbc598554f6a8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/render/webview.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/report.ts",
+        "bytes": 1014,
+        "sha256": "afb9ebf69b5964e625548f4e4c0e69595eaecbf4ead36c2cd4b96600f110ee09",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/report.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rule.ts",
+        "bytes": 1140,
+        "sha256": "568a864cf3a1386bd0af43e22ff5beef5a7eb264962b4bddb6ad5fc7c1e11471",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rule.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/ai-color-palette.ts",
+        "bytes": 5919,
+        "sha256": "a531fd02750ac58dc38921d626cfd4a60a94844ae0dc059f3da714a4500a08f3",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/ai-color-palette.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/cream-palette.ts",
+        "bytes": 2208,
+        "sha256": "a4310c00abbee684bf5f6d630d1a929d00374aaaa3c4fdd71c4abd6090be34c2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/cream-palette.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/dark-glow.ts",
+        "bytes": 2648,
+        "sha256": "8043ff947c4d522eb73861809c575b5e8cbd3bcaeddb886c12f09be5faef0401",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/dark-glow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/design-system-color.ts",
+        "bytes": 1720,
+        "sha256": "b1dea7c532758fe12adb0e53da90684d99e7c3b8e715bb3bd3a3259d77512f38",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/design-system-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/gradient-text.ts",
+        "bytes": 3194,
+        "sha256": "fbc74539252aab942c4774ce7e35d66eca654c74b96acbafd366defb2a8dd3cd",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/gradient-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/gray-on-color.ts",
+        "bytes": 2077,
+        "sha256": "663607fa9d59c1a98dbb59f2a7ed8b944c781179a1dfab295f81ca4fee359b0c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/gray-on-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/index.ts",
+        "bytes": 669,
+        "sha256": "7a0e4cfeb3a813c4ddbb114e9a1cb0f9c7444c6174bbae7d0b95eb6f49f18c95",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/low-contrast.ts",
+        "bytes": 4181,
+        "sha256": "e9ecf2a8d8f23eb6f957dca67452f796e03c3f732db73af199cc349730c49f6c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/low-contrast.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/radial-halo.ts",
+        "bytes": 1894,
+        "sha256": "c780def16aad2ee361f8b6eeb0a09e5fef0be52670fb535fad93a24df5985c50",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/radial-halo.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/radial-spotlight-glow.ts",
+        "bytes": 1909,
+        "sha256": "9bac5ebc3b1515a7c6f09194d3bfd0bf44733a61bddbb16b9a75a581608febd1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/radial-spotlight-glow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/animation-opacity.ts",
+        "bytes": 4190,
+        "sha256": "a3502ef93997170ecf81a19c8461dea33e636def6a86f431267fd9b835a1f71f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/animation-opacity.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/color-path.ts",
+        "bytes": 781,
+        "sha256": "b99584ad2be5818d68a6ed286ca205bf6c653d2623a7d7a96493c4ef6ab8ad47",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/color-path.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/contrast-pairs.ts",
+        "bytes": 2886,
+        "sha256": "6feaca4dd9e95d075393bfc5036cbeb3965bb755025611f22adb9a0010381c63",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/contrast-pairs.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/contrast-role.ts",
+        "bytes": 5183,
+        "sha256": "0879bb8c9e9490e358c6de41466769a610eee32914f0d727d3edd47048c104c7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/contrast-role.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/glow-forms.ts",
+        "bytes": 3249,
+        "sha256": "10172041a1ab15d50dc6cb7593df8018a7494e0852a8c4fef0fb137160709ba1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/glow-forms.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/gradient-samples.ts",
+        "bytes": 6384,
+        "sha256": "3063a723bd2f74b5a5b06e5612b61ac44e93201406b8b78fd729a332780c2ae1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/gradient-samples.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/gradients.ts",
+        "bytes": 4041,
+        "sha256": "b9aad9475c9d9d3bfb3c59881daa01efd5a4a584a2f3d4c3db8c3a59016ce750",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/gradients.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/mockup-roots.ts",
+        "bytes": 5151,
+        "sha256": "fc71293951c6f867dacfc4bb33aadaf9332c47df60702188cd240d3320f3ccfa",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/mockup-roots.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/page-ignore.ts",
+        "bytes": 432,
+        "sha256": "0003739038ff98d5126a5a7edca01150e29e47be6e46e89bc900f8d0ebb546b3",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/page-ignore.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/painted-text.ts",
+        "bytes": 7970,
+        "sha256": "550d08bd08beb9cb22966a6e3da82ad8c90a4611f4e6f43318a266b6f5df7c7c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/painted-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/palette-roles.ts",
+        "bytes": 3477,
+        "sha256": "c1e4ba09e8c9e68e134d4ec46eb9edb96a7810351976c3f4b0f72a4aef84af60",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/palette-roles.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/placeholder-contrast.ts",
+        "bytes": 1956,
+        "sha256": "acd170b63cb32a91ecccec82b3b9e4137c2a782dce4d096951d1183ca91af1cb",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/placeholder-contrast.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/stock-accent.ts",
+        "bytes": 2251,
+        "sha256": "5e09edf9487e0c7b77a17c10e74df0f374ab51ad3c25cba9f4a5a1277bb3d3b8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/stock-accent.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/color/support/text-colors.ts",
+        "bytes": 4528,
+        "sha256": "4d39f4fc91d91ffa7005c7b9829ddee851272f8f9f5367f0b90ceeb41127cf57",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/color/support/text-colors.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/aphoristic-cadence.ts",
+        "bytes": 879,
+        "sha256": "7debd91f3a13d8982ee000a12de4cd19b1db81abd8f08456faa81a0a04041d8d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/aphoristic-cadence.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/broken-image.ts",
+        "bytes": 821,
+        "sha256": "9111c5259e550b30b29f7b57935f327edc8dd9f64afb927e346edcdf389afc35",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/broken-image.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/em-dash-overuse.ts",
+        "bytes": 2577,
+        "sha256": "fead8c8ecd340b14c89a202e04fc99a342a7380139a67bf5791b293100e70bae",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/em-dash-overuse.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/index.ts",
+        "bytes": 752,
+        "sha256": "eb265da1c2e69562a857253c9bc3f1ab2ddc6477aa3aabab6089f030b3901aba",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/marketing-buzzword.ts",
+        "bytes": 1561,
+        "sha256": "832b7dbfdaa6d1cdddcab28998a6676d7d0b03e0689ad5bd4f9eb1e399eaf964",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/marketing-buzzword.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/numbered-section-labels.ts",
+        "bytes": 2213,
+        "sha256": "d9f48d17b73d2618f362e54535d07be84ec21dc3e027a076dc5e98cb960aedf3",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/numbered-section-labels.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/repeated-container-text.ts",
+        "bytes": 3213,
+        "sha256": "1f33e104d7b270ab5ddafa08bf109d6c36d633498cfe46c08797a61efa5352a8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/repeated-container-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/script-error.ts",
+        "bytes": 1583,
+        "sha256": "4061aa9ea257f42363ed80880e0ca3580915106cac0a93f496cfd0b0736a60e4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/script-error.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/skipped-heading.ts",
+        "bytes": 6538,
+        "sha256": "0e57ddd67c954ca08528afcc1178e95abd9d73c51d79a30b374e610f6c2a8e16",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/skipped-heading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/support/numbered-label.ts",
+        "bytes": 5131,
+        "sha256": "79fb6dfe9189110c5f69199f575a41414e2ab207d80cfbed7f5eef812b62cc1e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/support/numbered-label.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/support/page-text.ts",
+        "bytes": 1729,
+        "sha256": "17ae4eaaac39e3ea513b22652fb77372931d2b24f85545d2c54f87bf71208b16",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/support/page-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/copy/theater-slop-phrase.ts",
+        "bytes": 1098,
+        "sha256": "f9b670611cc9c0a192e926848268a2887a5e24ce8896fa164e4f6742703c1653",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/copy/theater-slop-phrase.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/blinking-cursor.ts",
+        "bytes": 2109,
+        "sha256": "d05d7ef68bfd8368adc63ed639defb5e3e5dbb55ec012c5f9a97d100b65aee2e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/blinking-cursor.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/border-accent-on-rounded.ts",
+        "bytes": 539,
+        "sha256": "6cf5c64d862deb9d4f8601c4abfdf4a540c7bc32640c80005658a0f37ad5f0da",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/border-accent-on-rounded.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/bounce-easing.ts",
+        "bytes": 4723,
+        "sha256": "49693fcc3d68abeec6c665cb47de0b2684d70029147ad2f724c1c72f75bd50b4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/bounce-easing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/buried-raster.ts",
+        "bytes": 3163,
+        "sha256": "fc36d5ee43abe2cd11be0a0bd100c79e180601db400ff8e83abeadac0faf2f32",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/buried-raster.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/codex-grid-background.ts",
+        "bytes": 1226,
+        "sha256": "b2f42d8f38c9af660ec4f912386da717fc9add4d3fd882d4e80fca3546d1afda",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/codex-grid-background.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/design-system-radius.ts",
+        "bytes": 1167,
+        "sha256": "754f488d8b10f4a515d9e22a042e14b367f8f8b488f629452f491bc603c6d627",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/design-system-radius.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/gpt-thin-border-wide-shadow.ts",
+        "bytes": 2732,
+        "sha256": "bbf5a69cbf159c3beddea270ee3a194e16d003c73b8c7e51f3fc86a898476477",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/gpt-thin-border-wide-shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/hard-offset-shadow.ts",
+        "bytes": 1176,
+        "sha256": "302602d1feb2a1276a0e584f733c4e8b8cc3e534b4846289ccfcc312d29490f7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/hard-offset-shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/hero-eyebrow-chip.ts",
+        "bytes": 711,
+        "sha256": "b9eeab90edfd0745c1afc5cd8ced1e5fd1bffc910572ab7843210ef26f60ebf5",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/hero-eyebrow-chip.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/icon-tile-stack.ts",
+        "bytes": 3208,
+        "sha256": "3680653360da49474d5c200e1b918e97696361f57c3b6eed42f72bd90f46f2d4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/icon-tile-stack.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/index.ts",
+        "bytes": 1358,
+        "sha256": "1faa57a4c7817dcba4311236ee71131db5bc1a60dc61e094401c2e9a6132202c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/kicker-above-heading.ts",
+        "bytes": 2534,
+        "sha256": "3f8cfe67d913d9f1040eb84abeb6b6e8ff099b569d560f1841d5ca4eed19355c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/kicker-above-heading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/marquee.ts",
+        "bytes": 2631,
+        "sha256": "17c32998dc9aad7987b24cc8d16cccd1f95729ebdf9272f14588abfb1695188d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/marquee.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/organic-clip-path.ts",
+        "bytes": 1897,
+        "sha256": "885904675bcbdce4f65d8f25eea52ddcc4e939566c47d8e63d1e4e5818c2a2f8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/organic-clip-path.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/pulsing-dot.ts",
+        "bytes": 4038,
+        "sha256": "53122a8eb365dc9c3981c2f4477726ec8d7f5aa7bd199ee505958a3c07d1836f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/pulsing-dot.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/repeating-stripes-gradient.ts",
+        "bytes": 929,
+        "sha256": "732720af18f5c19339f6eb61d4faff952593674674ca67d5b1c2e17917417d69",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/repeating-stripes-gradient.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/shape-assembled-illustration.ts",
+        "bytes": 2867,
+        "sha256": "ad1ebcc4929a6932fdb68119364771fe349f848d588f4cb9696dd73da10420eb",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/shape-assembled-illustration.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/side-tab.ts",
+        "bytes": 703,
+        "sha256": "ed395f5f8bfba21b16a3d72de6b5f88f2a252124e6060c405dd1f1188e31153b",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/side-tab.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/appearance.ts",
+        "bytes": 3880,
+        "sha256": "20d54908da639339d2cf7be4cba84b84cd887c20f4bf458296a85d7c743f7ff6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/appearance.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/assert-cases.ts",
+        "bytes": 1248,
+        "sha256": "0f2821cac3ddd1eaf17cf0ae075d36e44d3476e49524821d1136d9b77f23091d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/assert-cases.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/borders.ts",
+        "bytes": 6469,
+        "sha256": "e28c2d8bb1b616825901e154c0c1daba2806782fc68e86c3776fcb2893f18794",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/borders.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/clip-geometry.ts",
+        "bytes": 5646,
+        "sha256": "a6a984f4b3c665090e98739c875caf55798a4912738f72a40b27def22a545133",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/clip-geometry.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/css-candidates.ts",
+        "bytes": 2597,
+        "sha256": "c9c5744f080d532d3ecb2edb26a6fac5417aca7c3c1ff44d6d9edde6b3a612c6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/css-candidates.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/curve-samples.ts",
+        "bytes": 2011,
+        "sha256": "71c0ebdf4311a9202befdd21542fd9616e31b2804a905dfb60bd7bf9b55b0051",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/curve-samples.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/gradient-pattern.ts",
+        "bytes": 1597,
+        "sha256": "3b245ea85d57dff9643d738ebba7ed4df1717030d2cba4c3635abcff856cdb26",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/gradient-pattern.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/keyframes.ts",
+        "bytes": 5614,
+        "sha256": "17b07146c3cd099cab26c1058091f6eac31f229835bff21db63f208d043fdb0a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/keyframes.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/labels.ts",
+        "bytes": 4119,
+        "sha256": "b1da51c6ab6926172f6706bf0a8e9590ec3410c3fd2889eb2278c3d20ce43dc6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/labels.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/decoration/support/raster-state.ts",
+        "bytes": 3170,
+        "sha256": "6b99c72af630089340750df2b9328d9262ab7dd5089640b404b569b28aebe55d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/decoration/support/raster-state.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/index.ts",
+        "bytes": 446,
+        "sha256": "7aad8dca0f79795a06a263176a4e23c24a27aed2626bc253e37f687077dfe390",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/body-text-viewport-edge.ts",
+        "bytes": 3890,
+        "sha256": "20cecd234abec082b7b025ffbef684e888d3dd4b4a2c66de7e5dc851bb3131a4",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/body-text-viewport-edge.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/clipped-overflow-container.ts",
+        "bytes": 809,
+        "sha256": "01c59043abdb6ed48f0f9465101799a65d1ddc5c7b378f470906b9ec33069f2a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/clipped-overflow-container.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/content-hidden-at-rest.ts",
+        "bytes": 4532,
+        "sha256": "b1abeb5dac217c5227f41b105a79a3de0e3198618311923a8cbc57b219219673",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/content-hidden-at-rest.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/cramped-padding.ts",
+        "bytes": 5866,
+        "sha256": "b9e67cd862056ee55ace7a0e4b0c262acff21d1200b08b40b06ed54c8de5c3cf",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/cramped-padding.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/edge-flush-cards.ts",
+        "bytes": 2902,
+        "sha256": "0fb8dadbdf824d86667c55cbb19a71c58cd1388d7ea31c842621a163239f1803",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/edge-flush-cards.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/first-viewport-column-overflow.ts",
+        "bytes": 2731,
+        "sha256": "bafb653227f8a28d641090a1d066f8d2c9cd52afe215d03dc77fbf35a0e1a280",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/first-viewport-column-overflow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/heading-rhythm.ts",
+        "bytes": 1765,
+        "sha256": "b813e5981b7bdbace6400b414470a671b720a4e4376f101bb5d1a4d33e66861a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/heading-rhythm.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/index.ts",
+        "bytes": 1121,
+        "sha256": "24c425a8dd36bf0027f4fdd9ab537af1c7dbd854c337ee80782f98af95b14ac2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/monotonous-spacing.ts",
+        "bytes": 1863,
+        "sha256": "f7274ecd75f50b8d6590aaa96a1665a1a5df429d7fa74c734d7dbe24ad683f97",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/monotonous-spacing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/nested-cards.ts",
+        "bytes": 2396,
+        "sha256": "b8a4e71ee060c500b1ecd7436926a425ccffc029035c4201fbec0b91d6869035",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/nested-cards.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/straggler.ts",
+        "bytes": 1562,
+        "sha256": "c28b7f379fef67289384316c9e226949c6bd76fffa0d96a6e40ab4c0408233f7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/straggler.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/cards.ts",
+        "bytes": 6892,
+        "sha256": "9e9eedb500b992113b323225255ff43792b5fb9f43e11ad3abb01bb8e4238090",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/cards.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/clipping.ts",
+        "bytes": 4501,
+        "sha256": "c50ea6a0ef8086b1f6888b5eb92928d1805515c402ed3f7b4145ce7ddfeea801",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/clipping.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/declared-mockups.ts",
+        "bytes": 4298,
+        "sha256": "e690868f13a62674f822436cd7d6f8033c0166ebcb5c76a38e4003a8939b7ad7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/declared-mockups.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/geometry.ts",
+        "bytes": 4790,
+        "sha256": "2443f63b88d63d218a8fbc5524b9eaedd386f2b44942c420f037b1bd2d8549bc",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/geometry.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/hidden-interface.ts",
+        "bytes": 2274,
+        "sha256": "ffbb9f0f5973da20fb5d68ec4fc68731a311bf1d31f5ee2f0c7db4210a76a3a9",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/hidden-interface.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/layout-cases.ts",
+        "bytes": 1319,
+        "sha256": "98ce7e47ad01baad1509f9356eb57733f1eff2bbc9c8297b3fcf0a7ba8ea6df2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/layout-cases.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/line-breaks.ts",
+        "bytes": 1684,
+        "sha256": "72d8035ec24507bd5f0582508764284fb4a03dfaf1e3bfc2724b12c8a5ce6499",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/line-breaks.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/motion.ts",
+        "bytes": 3775,
+        "sha256": "f378ee8be42dc53106d6a3e5616bd24f6183e401806f75b106d699b22f8aa922",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/motion.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/padding.ts",
+        "bytes": 4815,
+        "sha256": "91644157224f98dbef4fe20684ebde702c5901f748d6de6872677248f0785420",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/padding.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/support/rhythm.ts",
+        "bytes": 8525,
+        "sha256": "808957783df37593dd00ed56869e580b195da2380b72a94b29da996043ac28bd",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/support/rhythm.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/text-occlusion.ts",
+        "bytes": 4745,
+        "sha256": "5c412cbdcc73caa4791ed1bdd49970ec2a7ec3f56975adfcda5af0de5294e86e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/text-occlusion.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/text-overflow.ts",
+        "bytes": 4557,
+        "sha256": "79a9519d405d2c8584f6d5fa1dcf6429bf86c5ffd5fb6166df8af4e79814ab55",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/text-overflow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/unbalanced-heading.ts",
+        "bytes": 1235,
+        "sha256": "d5ab7e4178c1833b29cea59185b496b90adade47ac5cf51d3fea39f5106e108a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/unbalanced-heading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/layout/viewport-reflow.ts",
+        "bytes": 1703,
+        "sha256": "76f9a442f8b493eea199c815afa79ba1d358f0c8a2319ea7a8e1a5364854ed7f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/layout/viewport-reflow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/ai-color-palette.ts",
+        "bytes": 830,
+        "sha256": "50c8877b63151cbdc0e57deb0175fce845cbd5d8fc83f2f21060116d41ecd99f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/ai-color-palette.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/aphoristic-cadence.ts",
+        "bytes": 927,
+        "sha256": "0f3bbb5dc29fc5ffa3d4c7a68fb58b911a98d0200f4d0d73987dbc432137d5d5",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/aphoristic-cadence.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/border-accent-on-rounded.ts",
+        "bytes": 1410,
+        "sha256": "02040190e862c444195fc8ac6c36f21c2666be4b9dee5b8a5b9607e3a7a2ba79",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/border-accent-on-rounded.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/bounce-easing.ts",
+        "bytes": 1589,
+        "sha256": "d9569768c00ee01ca42c962d0a56756155f414f0a2288c92d3fa21a5131d9a34",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/bounce-easing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/broken-image.ts",
+        "bytes": 1024,
+        "sha256": "7f8cf14c4ab4b1fc62394e01c9a86cec4141028fadc5dace2c066b30e7aacc6a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/broken-image.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/codex-grid-background.ts",
+        "bytes": 1379,
+        "sha256": "1ba3f7cf0bc685528110bef54d579ee6e820a0b3856925aae8b3ece1abb0c59e",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/codex-grid-background.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/dark-glow.ts",
+        "bytes": 1164,
+        "sha256": "a7deae796576098c9a77f7271a5fc94016593cbc311976dcfc841c4247e51061",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/dark-glow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/em-dash-overuse.ts",
+        "bytes": 892,
+        "sha256": "ff0de5989f149370e9afe9b49890da1602ce4c616b95364abe1534089b984458",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/em-dash-overuse.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/gradient-text.ts",
+        "bytes": 727,
+        "sha256": "d8117f2b0bfabf2d45e302b17e13d1085392eb66f141138e20d039207830acce",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/gradient-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/gray-on-color.ts",
+        "bytes": 945,
+        "sha256": "ac6a89df1d216e4969875f899bb21606bcfa4b4b29a6f7a6afd327515de14005",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/gray-on-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/index.ts",
+        "bytes": 1127,
+        "sha256": "9ed3b306405fbffd10e0b4ae3130bfd4653cce7b1cd965d9d0a73e2f6a9887fa",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/marketing-buzzword.ts",
+        "bytes": 1396,
+        "sha256": "fd06307416178263e20f629bbd643feefa7d07a1a68e882aa09d1e14a11bd9f6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/marketing-buzzword.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/marquee.ts",
+        "bytes": 707,
+        "sha256": "61b07ec5a5cef5070bf8dd0127c5b1e58e4a017520bb1326e066d6c5722fd7f9",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/marquee.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/monotonous-spacing.ts",
+        "bytes": 1633,
+        "sha256": "6dd5b8fc944bfea3a75ea444ff746c58986fe5967755eb07497ba9fdb9cea39c",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/monotonous-spacing.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/overused-font.ts",
+        "bytes": 1438,
+        "sha256": "06a5c0e3a3ed8c21459392ad35895e427b0d222a610e5419be2d2e778ae995b2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/overused-font.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/radial-halo.ts",
+        "bytes": 755,
+        "sha256": "8246aef06fd4825eb820469d03589494aab2ebb2a262b8108183026c8474c3af",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/radial-halo.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/side-tab.ts",
+        "bytes": 3824,
+        "sha256": "1920f8839ab0c30a33df6143129dfd325102902f1543fc18a1508c801e48d111",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/side-tab.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/accent-scans.ts",
+        "bytes": 4701,
+        "sha256": "a46fe790d5c4c487248221fc39034b05e83d14cb17092944006742659eda9990",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/accent-scans.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/check-source.ts",
+        "bytes": 377,
+        "sha256": "9bedad3fbf21919d60359df2cf61f033466f9ed3f324086b85618d9a58f919a7",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/check-source.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/corners.ts",
+        "bytes": 5531,
+        "sha256": "939dfa78b3d2135d481699be9d2074bc74194c0081bc4afd67a135a33343b528",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/corners.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/css-effects.ts",
+        "bytes": 3707,
+        "sha256": "4c85f0260dacc68d4001c942118d5614c5de86edca4694b907145542962f47f0",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/css-effects.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/css-scopes.ts",
+        "bytes": 5401,
+        "sha256": "4dc1c9e7101cf6cf0f60f66ae744cc8f8c5bb353c93cc8dbc41a2b36a11bd4ae",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/css-scopes.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/image-tags.ts",
+        "bytes": 3949,
+        "sha256": "a8024bd6a2e2f170e30962db77e7e0275844db12633802c1164fdf40217898e1",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/image-tags.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/js-punctuation.ts",
+        "bytes": 1077,
+        "sha256": "c4211ea1d64b6896ce1e57e34b69af322e92e4f21029de1accf36daf546e4530",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/js-punctuation.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/markup-scope.ts",
+        "bytes": 1964,
+        "sha256": "01ef1913439e853270521ef60e58dae7621aee44a26010ef6f13c432dad2f821",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/markup-scope.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/source-color.ts",
+        "bytes": 2555,
+        "sha256": "ac78b9b246ca890d29200582ccf2bdb5e1f9f74a9ea33b37fa9a403c81d2d601",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/source-color.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/source-shadow.ts",
+        "bytes": 923,
+        "sha256": "fbb970146442ee0f1c4551ab891733858606e20845b403471dba6e04c01dd62d",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/source-shadow.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/source/support/source-text.ts",
+        "bytes": 4661,
+        "sha256": "ee8f7617744722481d185c0caa98c7f90539968a4ae0ec364c530b2191a7808a",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/source/support/source-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/all-caps-body.ts",
+        "bytes": 848,
+        "sha256": "a515b9e11cdb37cb974420e42c403db6472a30d5111c13afc53706295b3244d2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/all-caps-body.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/design-system-font-size.ts",
+        "bytes": 1098,
+        "sha256": "9036c2a6e49369d88bea690a2ff62f66dd5abca31470a8ebf2413d729ff44f7f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/design-system-font-size.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/design-system-font.ts",
+        "bytes": 1185,
+        "sha256": "576ff0d7554bb81e1350721e445f4e7e7af334576141a8b46cdf4ea1f47aaba6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/design-system-font.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/extreme-negative-tracking.ts",
+        "bytes": 1053,
+        "sha256": "5b8834be2dabd0a7c49853b98a0ee60dbc5856480257b30b8b910842ddbfdf68",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/extreme-negative-tracking.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/flat-type-hierarchy.ts",
+        "bytes": 1564,
+        "sha256": "6e70e3d806825985c0183fbd9baada191418a382629a38cc2d0ec03b7cdad337",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/flat-type-hierarchy.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/index.ts",
+        "bytes": 1051,
+        "sha256": "2348938d9f5d9e739b16ffcb1d2edaca26c903b32993930033d013e2cda8a415",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/index.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/italic-serif-display.ts",
+        "bytes": 1912,
+        "sha256": "24ddb43ac52991d2f52bd159e0a2533e7543f978147025699d664de8df49d0e6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/italic-serif-display.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/justified-text.ts",
+        "bytes": 1958,
+        "sha256": "4339ad8ea5f1bf89768b217ef596fd8852ee51cb1516a90f5508cfc2d6bafde9",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/justified-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/line-length.ts",
+        "bytes": 1824,
+        "sha256": "f8e6ee5a00227ed8936680cc8c4ea99621c5c192619f4817a372c0f9915875d0",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/line-length.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/oversized-h1.ts",
+        "bytes": 1301,
+        "sha256": "d79cb30f3f4133fad1a9e18a7b2acde0f1d3adb3f4a67119f3211684b5ee63f8",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/oversized-h1.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/overused-font.ts",
+        "bytes": 2559,
+        "sha256": "ec6baf6cd4bc967c9e482c4ee19dc53f780f4e153dbf4932bccf18b2386f2b19",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/overused-font.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/drawn-enlargement.ts",
+        "bytes": 2445,
+        "sha256": "2f05361724295e302469e3d176ca0714a463c181a2186fb453ad771726542af2",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/drawn-enlargement.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/fading-text.ts",
+        "bytes": 2486,
+        "sha256": "f498bda2434475d7d35775838a4f33edfe4b72cf4b8cfae5ffbafdba5122bf01",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/fading-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/flex-runs.ts",
+        "bytes": 1232,
+        "sha256": "83f507fe6e272d4186c78b08b686c0ba62ab1620f6c421ab5c86232eba3bab50",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/flex-runs.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/font-family.ts",
+        "bytes": 1789,
+        "sha256": "f6b6f1cffc0850fab79ae5aa0d150d30c1aba386ef5c0c1e2fd984c0db3891ca",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/font-family.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/painted-text.ts",
+        "bytes": 5885,
+        "sha256": "4900bd79b3e8c57afa3268c9685a9363dbcd4c1121240859ad38f071f5a5a4a0",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/painted-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/svg-size.ts",
+        "bytes": 2691,
+        "sha256": "732b48fd74d79a410e6ff0bcbda53ad5a27951b061de9c3c65d263d16860fba6",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/svg-size.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/text-context.ts",
+        "bytes": 6600,
+        "sha256": "d18980fdf6e5061272ab943fff117ee0edfb7dc1366f832ec4f6e8ab87c07e42",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/text-context.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/text-lines.ts",
+        "bytes": 1833,
+        "sha256": "f054fa8eb1f2ff2941af9a3fda7aca3b8af4e7f3e6133b42b06fa58f69e0742f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/text-lines.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/support/type-hierarchy.ts",
+        "bytes": 1916,
+        "sha256": "55d65aea7c932dc02386c06b6c194d427a2b32ce18c78e71b4e875a5bd8ac98f",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/support/type-hierarchy.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/tight-leading.ts",
+        "bytes": 2670,
+        "sha256": "4fea257f9d19f628d197cedfc23a511e6569201d36785bc6909e47d46729b412",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/tight-leading.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/tiny-text.ts",
+        "bytes": 1441,
+        "sha256": "eee5f9c2601fbebddbce38a9b4a7ec8eb0104384631b5fb8cb1598d3580686dd",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/tiny-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/undersized-ui-text.ts",
+        "bytes": 1947,
+        "sha256": "b7e32cc73b72c6e3d12fb3e0e0a43f456c48277f0dd5901aebf3a76436c8b302",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/undersized-ui-text.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/rules/typography/wide-tracking.ts",
+        "bytes": 1697,
+        "sha256": "a5cdc314e1bcff4ce6098836c4edfcb7000ddd39fe124cf813457080a2925153",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/rules/typography/wide-tracking.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/snapshot/collect.ts",
+        "bytes": 6571,
+        "sha256": "9a47037d16ebb7705f3b5ecdaa31c6a4fd56c3b371a3c8b24cfa28211291b081",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/snapshot/collect.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/snapshot/style-props.ts",
+        "bytes": 2278,
+        "sha256": "6a5fc36d6a28d363de64d7fb3331244eaf7b22d4ab52c97026ecc1e42a31e244",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/snapshot/style-props.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/testing/build-snapshot.ts",
+        "bytes": 5314,
+        "sha256": "a894652259a2467a5bd4f193f4e8a5265cca37d58108b5cfedba727113dece51",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/testing/build-snapshot.ts (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/tsconfig.json",
+        "bytes": 522,
+        "sha256": "c1bcde2e3ad977777e0c84a3c2fe4f8fc6e9ba59d93183371d6cb97bf4c2aa82",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/tsconfig.json (SUL-1.0)"
+      },
+      {
+        "path": "scripts/detect/types.ts",
+        "bytes": 5051,
+        "sha256": "a052bf64522480343ec55f6f6c075274ae94cfa6f7d606ee622aedb3552a5a05",
+        "source": "omo@354bcf9fc4 (v5.1.52):packages/shared-skills/skills/frontend/scripts/detect/types.ts (SUL-1.0)"
       },
       {
         "path": "scripts/perfection/accent-stripes/color.ts",
@@ -2938,20 +3928,20 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 3255,
-        "sha256": "dcea6da8fd0c51adec75c47b18c51d0a62133e94973f4ff581437f9f8f298501",
+        "bytes": 3743,
+        "sha256": "87e311833a0e3496ed2c6558162460d14d48d5dcd8c3f659d1624dada7e136f7",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 11950,
-        "sha256": "9a810154497aa630d37541af5488ead7d0b6b1ca1c07b98183bdf39629b9a98a",
+        "bytes": 12061,
+        "sha256": "d1f2072bd2990c58e33a3f251ea68ed4bf6355d949a0874470bec73e2aa7353a",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/SKILL.md"
       },
       {
         "path": "engine/AGENTS.md",
-        "bytes": 10667,
-        "sha256": "009d577b82c6bbdf984200ab86d86f0cd5214b5cd7a96069616c3c70d0b3117c",
+        "bytes": 10673,
+        "sha256": "92896ff0125ac6c86f564629838619a03813f4e607dcbac317870d5778e0bf26",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/AGENTS.md"
       },
       {
@@ -2962,8 +3952,8 @@
       },
       {
         "path": "engine/__main__.py",
-        "bytes": 4922,
-        "sha256": "3201d6a2950c318677f266e67526ac859591b07bc40e5b7e5a7c2f0b29463b07",
+        "bytes": 5095,
+        "sha256": "150a39d79900aedb15bd32ee7c70bbd9b21cd6a9f6623ae212dfc48141c9896f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/__main__.py"
       },
       {
@@ -3004,8 +3994,8 @@
       },
       {
         "path": "engine/summary.py",
-        "bytes": 1198,
-        "sha256": "13e9dfe96f5204d0e206d67562584a00f7d63fd9658fae5f4b0a431f5c24a01c",
+        "bytes": 1201,
+        "sha256": "5ac2629edf3933cb9b6f9ab82ec074767ce2bae9a50994db2392df30fedef1c0",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/summary.py"
       },
       {
@@ -3037,60 +4027,6 @@
         "bytes": 5710,
         "sha256": "f2dd18cbd4b9ad5eb0fd0cd9e2611cb52b8d73b5f5311f028d7b0716526e3b8b",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/templates/playwright_real_chrome.js"
-      },
-      {
-        "path": "engine/tests/fixtures/amp_redirect_stub.html",
-        "bytes": 322,
-        "sha256": "3f0f3f3d211063323dfd6a9be95d9c1cde2263192f55c080a5f0b99d47181bd3",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/amp_redirect_stub.html"
-      },
-      {
-        "path": "engine/tests/fixtures/search_interstitial.html",
-        "bytes": 92530,
-        "sha256": "a855c2e4ad5c00359b772b3fabd59ce0e3c4f8e0581bbab64ecedb8bcfa27467",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/search_interstitial.html"
-      },
-      {
-        "path": "engine/tests/fixtures/wayback_available.json",
-        "bytes": 246,
-        "sha256": "4781b9daf4656b0b7bd25d9ef452c26e285ae2ebf5459c53718d084e0622c0cc",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/wayback_available.json"
-      },
-      {
-        "path": "engine/tests/fixtures/wayback_snapshot.html",
-        "bytes": 185773,
-        "sha256": "d75b37df9a1529bf475521da815041866859155122bf6406873061f3b96a6843",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/fixtures/wayback_snapshot.html"
-      },
-      {
-        "path": "engine/tests/test_fetch_chain.py",
-        "bytes": 2770,
-        "sha256": "1e39af47d6c36643b6f94259936f068d8a7d93af182274993c1539827373e084",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_fetch_chain.py"
-      },
-      {
-        "path": "engine/tests/test_playwright_stealth.py",
-        "bytes": 4013,
-        "sha256": "22cd8d5dedd5f2f6a038ec87702431d2be4b3fd32ba159a9ccfa32467f472d65",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_playwright_stealth.py"
-      },
-      {
-        "path": "engine/tests/test_playwright_templates.py",
-        "bytes": 10989,
-        "sha256": "9c3d2c2aa491c96b03953f0e95fd2924e60feb7d9f1f3c027a88f4290ece1331",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_playwright_templates.py"
-      },
-      {
-        "path": "engine/tests/test_surrogate.py",
-        "bytes": 11568,
-        "sha256": "762a34188d49ccf762af2c17313258a92f7cb69f3919e834968ed2df6d7df7ac",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_surrogate.py"
-      },
-      {
-        "path": "engine/tests/test_surrogate_validators.py",
-        "bytes": 3582,
-        "sha256": "9f50b3a857ee97ae402839296e2dfa46b1ab782f7ed56ffe816ef5acedf4cfe1",
-        "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/engine/tests/test_surrogate_validators.py"
       },
       {
         "path": "engine/url_transforms.py",
@@ -3166,8 +4102,8 @@
       },
       {
         "path": "references/insane-search/README.md",
-        "bytes": 19998,
-        "sha256": "c1cf3e2f3159920875a7bd70b4fa0eed20dc8cdfa9c563df90c6fdc5eff035c6",
+        "bytes": 20101,
+        "sha256": "0beb341e6d207f9031cf8e71003607d166ca3fc348cf67b9786a2091767a2ada",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/references/insane-search/README.md"
       },
       {
@@ -3262,8 +4198,8 @@
       },
       {
         "path": "scripts/extract_cookies.py",
-        "bytes": 9546,
-        "sha256": "f613d7e6b70c3b1c7c1b67844711a7ce6a6bec22242bc4f29e9066ad8af7fd73",
+        "bytes": 9662,
+        "sha256": "1f22b394752b80db6461cf1afdde2bbd1a26b18231041bc63c5a3b819b26759a",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/ultimate-browsing/scripts/extract_cookies.py"
       }
     ],
@@ -3344,9 +4280,9 @@
     "ulw-research": [
       {
         "path": "AGENTS.md",
-        "bytes": 7565,
-        "sha256": "64545bdcf74fbf740c4355e386925e78868b5edcba6ea38b711b701247fd5e85",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/AGENTS.md (MIT)"
+        "bytes": 8436,
+        "sha256": "647f12dd471757b1c92d2ab8b436cd0fe355164e8e4ed93b4996fcff9c6866a1",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/AGENTS.md (MIT), mhc-adapted"
       },
       {
         "path": "ATTRIBUTION.md",
@@ -3356,45 +4292,63 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 76529,
-        "sha256": "c915da1ee54de090c11d7edfa1054911c05f555e25aae827299e3cfd7e5c3759",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/SKILL.md (MIT)"
+        "bytes": 36346,
+        "sha256": "df748a5925ecf4437f70b08d4e03556a85c8c46510c7c2a255f22cc288075f84",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/SKILL.md (MIT), mhc-adapted"
       },
       {
         "path": "references/deliverable-phase.md",
-        "bytes": 45246,
-        "sha256": "8b3750cd5f8795fcd239fba83f600f9052dcea9218d433513e9cfe12bc9bbf25",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/deliverable-phase.md (MIT)"
+        "bytes": 50199,
+        "sha256": "32107955c08027e573632639e8803d9eeb4daba3f7f87138ff26c082d944a78e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/deliverable-phase.md (MIT)"
       },
       {
         "path": "references/fact-ledger-grammar.md",
-        "bytes": 6421,
-        "sha256": "691e56282e2aa50a3119a7ff971409c3f596c6a5f2c727efd3ab0c916f6f72df",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/fact-ledger-grammar.md (MIT)"
+        "bytes": 6934,
+        "sha256": "070518c70abe5d585ac66afac3026dc37218c0e1e0001743df320527147b2764",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger-grammar.md (MIT)"
       },
       {
         "path": "references/fact-ledger.md",
-        "bytes": 12524,
-        "sha256": "db97c200331f630df6de4d8a15bdbc0ae7da8d14425e3550684a170d5e39f61e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/fact-ledger.md (MIT)"
+        "bytes": 24940,
+        "sha256": "f4d164ea3201ca25114829a60af43a3a13a229893e77f856dc03f072edc9419b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger.md (MIT)"
       },
       {
         "path": "references/fidelity-claim-kinds.md",
-        "bytes": 3846,
-        "sha256": "47387435ae91b97293d1905deaea363f662279a6859e97050de017a5effd160d",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/fidelity-claim-kinds.md (MIT)"
+        "bytes": 5305,
+        "sha256": "b6d9d123f57cbcca13dae60dbd8bcd83803acd29f7cf09125065d6ae94f7ea2e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fidelity-claim-kinds.md (MIT)"
+      },
+      {
+        "path": "references/markdown-blocks.md",
+        "bytes": 721,
+        "sha256": "b5fdbc9a147730739249d655f3ca57b33e256c72a518f6fc98707899d23bdafc",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/markdown-blocks.md (MIT)"
       },
       {
         "path": "references/report-gates.md",
-        "bytes": 25649,
-        "sha256": "879b0e37ad284dd075a721b9067dea14afee670731374e030ac8d113218122f7",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/report-gates.md (MIT)"
+        "bytes": 32819,
+        "sha256": "57511c785cbe23da8a5baf109b9a9b5966fe769d07355b46cea2ca5e42b84006",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/report-gates.md (MIT)"
       },
       {
         "path": "references/report-visualization.md",
         "bytes": 15603,
         "sha256": "e3ea103136975c0a46c482b0ecea15640ec49988ee84b5d1de47fd9c4baee48c",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/report-visualization.md (MIT)"
+      },
+      {
+        "path": "references/research-collection.md",
+        "bytes": 27167,
+        "sha256": "8a261881b375432189d87123934a71609b9d448fbdfd93bfb016aeddc6599be6",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-collection.md (MIT), mhc-adapted"
+      },
+      {
+        "path": "references/research-delivery.md",
+        "bytes": 14622,
+        "sha256": "028c67a83b68aa994cfbf62651e82c8fa23e2a49ee2a9dc38a299986f8ebf6d2",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-delivery.md (MIT), mhc-adapted"
       },
       {
         "path": "references/unit-rules.md",
@@ -3404,9 +4358,9 @@
       },
       {
         "path": "scripts/claim-kinds.mjs",
-        "bytes": 7286,
-        "sha256": "cc38efeacf902033a4d7101e757a231356396e1b6b25e2ba459329e61b45e0ca",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/claim-kinds.mjs (MIT)"
+        "bytes": 10996,
+        "sha256": "8311e8bc6462b801861d84fba7f33f1bd3a8c6ae7ad76f8951f4b72e4615fd17",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/claim-kinds.mjs (MIT)"
       },
       {
         "path": "scripts/claims-index.mjs",
@@ -3422,15 +4376,27 @@
       },
       {
         "path": "scripts/contracts.mjs",
-        "bytes": 22580,
-        "sha256": "7bcfc195b404fcdd7f3c63327490e76828dc981a294b87df60d94fced98579bb",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/contracts.mjs (MIT)"
+        "bytes": 24803,
+        "sha256": "37a078df3bdd87f347d23c60a8f38feba67c439317766032537771ebc8cd7094",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/contracts.mjs (MIT)"
+      },
+      {
+        "path": "scripts/conversion-probe.mjs",
+        "bytes": 13444,
+        "sha256": "e29fc87e099b83bc47f305e7e733f520d95fd49cc2969dc6c2e8b73acb9011d5",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/conversion-probe.mjs (MIT)"
+      },
+      {
+        "path": "scripts/css-hiding.mjs",
+        "bytes": 8944,
+        "sha256": "18c0971489c729981c835f2b53a4e079c4a586b19bb1d994e626eb6ec0e1e585",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/css-hiding.mjs (MIT)"
       },
       {
         "path": "scripts/css-lite.mjs",
-        "bytes": 7333,
-        "sha256": "b19f7be3020ee56aeed28e858c0b681b6322b7caa2d812bab37fcb9219c885d3",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/css-lite.mjs (MIT)"
+        "bytes": 7490,
+        "sha256": "563661398a97436c153310173ccfe4dbe66195302db9dd7d6c39246c94ac0dcf",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/css-lite.mjs (MIT)"
       },
       {
         "path": "scripts/design-spec.mjs",
@@ -3440,9 +4406,9 @@
       },
       {
         "path": "scripts/entities.mjs",
-        "bytes": 1535,
-        "sha256": "e1bf29a52d6f88409503378d20fd8cc7909862e2bca662a35604845c5dac416a",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/entities.mjs (MIT)"
+        "bytes": 2395,
+        "sha256": "51a2614b7aa04f40594f48e903695e8e8abac587c4a0e96d50c4d59facc0bb59",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/entities.mjs (MIT)"
       },
       {
         "path": "scripts/entry-guard.mjs",
@@ -3452,39 +4418,39 @@
       },
       {
         "path": "scripts/fact-commands-fill.mjs",
-        "bytes": 5693,
-        "sha256": "b2858ab0b2bd15d99b5800339a988b4d82f261691fc6cbd00b6ae0b5d5d9eca0",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-fill.mjs (MIT)"
+        "bytes": 6408,
+        "sha256": "863a79d820179da430d7e58cc833f97834dd67e268def81e31b945ba394608ae",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-fill.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands-meaning.mjs",
-        "bytes": 11658,
-        "sha256": "0fbddf27d8d70f30dc0afdd749586f6cbfd2c8ca46027785778bca3c5e186800",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-meaning.mjs (MIT)"
+        "bytes": 12321,
+        "sha256": "0ac75dbca09c629dd84746366441513400045ea80dbcad60fb28d46b6d70207e",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-meaning.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands-polish.mjs",
-        "bytes": 8060,
-        "sha256": "b2912a6082e6d6f815706fa4369b736e6c593ed2fcd12487fd009c75dc696c22",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-polish.mjs (MIT)"
+        "bytes": 10128,
+        "sha256": "d94a4dc3e825a9236bf91f08916611bb4abe9cfc43e4b742bce725aa841faac4",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-polish.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands-verify.mjs",
-        "bytes": 11274,
-        "sha256": "f4374b9bd27ee8dc6a07f5dc54c320213cdd758cec543a225990e0ca2603735b",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands-verify.mjs (MIT)"
+        "bytes": 12486,
+        "sha256": "2d32d18d7f229aa135bca2e4a5b5de1657a4193a196afade1b697e21fdd74485",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands-verify.mjs (MIT)"
       },
       {
         "path": "scripts/fact-commands.mjs",
-        "bytes": 11160,
-        "sha256": "fa3e664d55d27300fa13bf9ec19467b79f21bcd3350821a5245efca08579a76e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-commands.mjs (MIT)"
+        "bytes": 13288,
+        "sha256": "3895bc7c0868a52466a9cd2a500e305856cc7f18f295bfe017a28c2bf227b7e5",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-commands.mjs (MIT)"
       },
       {
         "path": "scripts/fact-derive.mjs",
-        "bytes": 4263,
-        "sha256": "a1c64302331da074de3cb038e4e8a719e4b74431c4987cfae54bb7ffaed8da51",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-derive.mjs (MIT)"
+        "bytes": 4655,
+        "sha256": "2d0731b856381c9e4a7f00ecea3238b85ad2169c82bbf7869a51bae0959582fe",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-derive.mjs (MIT)"
       },
       {
         "path": "scripts/fact-expr.mjs",
@@ -3494,15 +4460,15 @@
       },
       {
         "path": "scripts/fact-fill.mjs",
-        "bytes": 10736,
-        "sha256": "d451780bd268544e7a260d8cd0df6a80d82726e615d38f83bcf4d5e4692ad81f",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-fill.mjs (MIT)"
+        "bytes": 11316,
+        "sha256": "17326c8abe07f5d20fb686e895b4ca426106d836f5c8f089ad78491f3542d3e3",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-fill.mjs (MIT)"
       },
       {
         "path": "scripts/fact-ledger-kinds.mjs",
-        "bytes": 15572,
-        "sha256": "4638a30da3dc1acc6a321b73e45ae0e57d80a70148f2c8ba55bba4685ee288bb",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-ledger-kinds.mjs (MIT)"
+        "bytes": 15972,
+        "sha256": "99e4083f76538216042060fe161f213a7db8278c7b8796b94be7e18f500cf3f0",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-ledger-kinds.mjs (MIT)"
       },
       {
         "path": "scripts/fact-ledger-schema.mjs",
@@ -3518,9 +4484,9 @@
       },
       {
         "path": "scripts/fact-locate.mjs",
-        "bytes": 11571,
-        "sha256": "37b559cca04543c277917c91a2787cff7b457cf504353dae5bf323c711e263b4",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fact-locate.mjs (MIT)"
+        "bytes": 11923,
+        "sha256": "358f0746e999200d6b03b6fc341586a798d790dc4404e9360f03157e709a41bf",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fact-locate.mjs (MIT)"
       },
       {
         "path": "scripts/fact-pairs.mjs",
@@ -3548,27 +4514,51 @@
       },
       {
         "path": "scripts/fidelity-claims.mjs",
-        "bytes": 4746,
-        "sha256": "415908748e46b648955b9a683ef35fd076c6fbab5f1bbddc67eca2df0f73b1ac",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-claims.mjs (MIT)"
+        "bytes": 4879,
+        "sha256": "941481a853e76dd67190b065944c81a187a7d0a5d2646c4501a8d72d8ffc2a66",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-claims.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-csv.mjs",
+        "bytes": 1095,
+        "sha256": "92350e9ebb0e6feba4b31d9eb019d2df9664fd08c178b123ea039a7c3bb012a1",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-csv.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-lexicon.mjs",
-        "bytes": 8040,
-        "sha256": "50e58d0bfa27deef632bd0bf46bbac04c88724d2eef664e368808399e065c491",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-lexicon.mjs (MIT)"
+        "bytes": 8058,
+        "sha256": "80fd0755d0624f39befa9600ef6ed015ce0691eb4a277b3d7747d4a2268f2986",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-lexicon.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-originals.mjs",
+        "bytes": 9719,
+        "sha256": "25abfa60d383f97aee2941d88d98c6b2cc10b477ec27b5f43c2e3e6b458c9137",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-originals.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-policy.mjs",
-        "bytes": 9845,
-        "sha256": "12ebc2d03984362eccd82bfa3e8a1fc20f8ca00f5764533aeeb5a60a4e4c1949",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-policy.mjs (MIT)"
+        "bytes": 9923,
+        "sha256": "06a8b00ecaec70b5ecc03ea64c4b33d240f71a71e9b50b99ca0d2265371257c3",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-policy.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-records.mjs",
-        "bytes": 9222,
-        "sha256": "a45ba812e3199756977eba04e49c17261780f5849e80842aabdea4f89b36a19c",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-records.mjs (MIT)"
+        "bytes": 13196,
+        "sha256": "d373d61e2a09330b8cabdcdd504a357bd32279aecda553bcd3f9319daf191273",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-records.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-snapshot-readability.mjs",
+        "bytes": 2165,
+        "sha256": "d2df0d79d1c40115f405b6720df85aaa7dc0294f702013e769df1b6168bcf508",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-snapshot-readability.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-sources.mjs",
+        "bytes": 3953,
+        "sha256": "76265c601ec10c7b16d44e93dd981e7ecebd810f5c7061024282827c6a5bcca7",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-sources.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-state.mjs",
@@ -3578,15 +4568,21 @@
       },
       {
         "path": "scripts/fidelity-trace.mjs",
-        "bytes": 5092,
-        "sha256": "e684c666fbd71b0a47818783e13bd916354d4f9876e34cec39a7a9262a8b994d",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-trace.mjs (MIT)"
+        "bytes": 5931,
+        "sha256": "0191350781e1a977da3709656468b944b4ad8f539cd284009107ffe0023de713",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-trace.mjs (MIT)"
+      },
+      {
+        "path": "scripts/fidelity-value-unit.mjs",
+        "bytes": 13077,
+        "sha256": "a58fea6dcc444baaa2f3eddc7e6b9dfa6f69f12ffa352f7deb371e4e7b29eaf8",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-value-unit.mjs (MIT)"
       },
       {
         "path": "scripts/fidelity-values.mjs",
-        "bytes": 14019,
-        "sha256": "5d7b28b8ad38291d19438f10556a2c4bc4c0ba4f280e2404d98ef13aa7299169",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/fidelity-values.mjs (MIT)"
+        "bytes": 15425,
+        "sha256": "f0498369baefe42fac7521c42e5d241885adaca801ea419c55392fcff509f8a9",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/fidelity-values.mjs (MIT)"
       },
       {
         "path": "scripts/format-extract-css.mjs",
@@ -3602,9 +4598,9 @@
       },
       {
         "path": "scripts/gates-fidelity.mjs",
-        "bytes": 5848,
-        "sha256": "6103e3073c324c71a0194e616e3d0fc45ce14d6238f40edb91c0226611035698",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/gates-fidelity.mjs (MIT)"
+        "bytes": 6110,
+        "sha256": "4b57cfd646b539214f054af26af3f4b6ad40f7ab54bb970a19bf6ffb3590f29b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/gates-fidelity.mjs (MIT)"
       },
       {
         "path": "scripts/gates-figures.mjs",
@@ -3620,9 +4616,9 @@
       },
       {
         "path": "scripts/gates-static.mjs",
-        "bytes": 7662,
-        "sha256": "4b1f0a42e78b2c276aaedf3b81102535ba0e11659bf17ae704fa4dfac1131397",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/gates-static.mjs (MIT)"
+        "bytes": 8100,
+        "sha256": "ac9cf4290532f0a16289be27ff2b213b029bc604ba4561d7e477299cdaa4be95",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/gates-static.mjs (MIT)"
       },
       {
         "path": "scripts/gates-structure.mjs",
@@ -3638,15 +4634,21 @@
       },
       {
         "path": "scripts/html-lite.mjs",
-        "bytes": 8915,
-        "sha256": "07b6f8956b8bdde54213e5b8d5b2e5f480db2d4aef1e5bbb2caa30c9cb8ceed5",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/html-lite.mjs (MIT)"
+        "bytes": 9068,
+        "sha256": "de21ec4c6adde62d138e9b732c43687b4429ea1cffa530a314fac5c15ed955ab",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-lite.mjs (MIT)"
       },
       {
         "path": "scripts/html-markup.mjs",
-        "bytes": 6950,
-        "sha256": "fbae393a28571b270692fff471ea683fc5c357bf0b46d896f27d47cca50dc8b0",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/html-markup.mjs (MIT)"
+        "bytes": 6948,
+        "sha256": "25d07fc79b2b3379fc318de82bb0bc265cbe87fc6565592ffbb36cdb05c0ee60",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-markup.mjs (MIT)"
+      },
+      {
+        "path": "scripts/html-text-map.mjs",
+        "bytes": 4658,
+        "sha256": "1d8d2d32149d551c5c5e2c151e46068c78dad5a76e6db287ca6a4120e5e7bc04",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/html-text-map.mjs (MIT)"
       },
       {
         "path": "scripts/layout-probe.mjs",
@@ -3661,10 +4663,16 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/lexicon.mjs (MIT)"
       },
       {
+        "path": "scripts/markdown-closers.mjs",
+        "bytes": 4860,
+        "sha256": "25061e5cdfef7fa5ff0a811972e2d4a14d6092ec12044f7f303e07a8b0913a41",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/markdown-closers.mjs (MIT)"
+      },
+      {
         "path": "scripts/md-lite.mjs",
-        "bytes": 7650,
-        "sha256": "69c41f3f3d0a1eb39a8cbec9ac0fb560d8cd06c05f4fb7cec6c48066640e3944",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/md-lite.mjs (MIT)"
+        "bytes": 7676,
+        "sha256": "e31ef5138abd8576b7d58fcf3178d3cce8620308f985c2ed0605c8840646e961",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/md-lite.mjs (MIT)"
       },
       {
         "path": "scripts/meaning-check.mjs",
@@ -3673,16 +4681,28 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/meaning-check.mjs (MIT)"
       },
       {
+        "path": "scripts/number-grammar.mjs",
+        "bytes": 2157,
+        "sha256": "25a15a5fea0907ce242443e48fc82f229494c80a86475da6d33135f3e23ee142",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/number-grammar.mjs (MIT)"
+      },
+      {
         "path": "scripts/numerals.mjs",
-        "bytes": 11085,
-        "sha256": "df9c2a5dc7b3a4ef37451e16ab96a7e1cb44b9995a2836dfaf1da7f28e61fa06",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/numerals.mjs (MIT)"
+        "bytes": 11973,
+        "sha256": "174adbfc5cb356b741a21a5a4b4c0ded3450b3efb0a1c12713d4cb60c796c449",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/numerals.mjs (MIT)"
+      },
+      {
+        "path": "scripts/outcome-start.mjs",
+        "bytes": 3766,
+        "sha256": "a186a453711d1f0b09dd831bcd9242b114c82bb368ea93fcb073bc4d047e330b",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/outcome-start.mjs (MIT)"
       },
       {
         "path": "scripts/outcome.mjs",
-        "bytes": 10784,
-        "sha256": "ac1784bb332d3940c73e4a5bcf9ab264fdbc7f7ab52d989d96d14513f1c011ff",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/outcome.mjs (MIT)"
+        "bytes": 10388,
+        "sha256": "35e7afc73d54af5c13ce7d2cbd511685896a244e8a679923df71701b72c4a85f",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/outcome.mjs (MIT)"
       },
       {
         "path": "scripts/particles-ko.mjs",
@@ -3692,15 +4712,15 @@
       },
       {
         "path": "scripts/placeholder.mjs",
-        "bytes": 8254,
-        "sha256": "00fed0879823eacd725039e6e6e0c2bc78663f764149d4c98599e6d018aab741",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/placeholder.mjs (MIT)"
+        "bytes": 9227,
+        "sha256": "bc35928aa79c6c790a280fe55436fe293461bd2204c69bd57a8f4bfb50cd9438",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/placeholder.mjs (MIT)"
       },
       {
         "path": "scripts/polish-apply.mjs",
-        "bytes": 6730,
-        "sha256": "8efd21edfde21a2479119f510601f56fd105a2801f2196ab7f4cf88235fcec0e",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/polish-apply.mjs (MIT)"
+        "bytes": 6745,
+        "sha256": "99676f73476a0b01f5a67b2e0fb4fe7d7db6042196b1f7bdbed0579388a38ea4",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/polish-apply.mjs (MIT)"
       },
       {
         "path": "scripts/polish-diff.mjs",
@@ -3727,6 +4747,18 @@
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/rational.mjs (MIT)"
       },
       {
+        "path": "scripts/raw-decode.mjs",
+        "bytes": 4454,
+        "sha256": "77013fe8be6c82ddc178e545eed751a360327a69222f104afcaa53c1154587ae",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/raw-decode.mjs (MIT)"
+      },
+      {
+        "path": "scripts/raw-locator.mjs",
+        "bytes": 2427,
+        "sha256": "338be30e7472121c0730e257a58235583e13fb645a3285010c802fb83d0b6f62",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/raw-locator.mjs (MIT)"
+      },
+      {
         "path": "scripts/repair-tracker.mjs",
         "bytes": 7508,
         "sha256": "d27afec02c37aa4c0e78dd4c563d16886f6a6fdbe83681bc87a497dfc6cf7c06",
@@ -3734,15 +4766,15 @@
       },
       {
         "path": "scripts/report-tools-commands.mjs",
-        "bytes": 12182,
-        "sha256": "0e56ae411ac4f5df2801a5ccb6af5b91f653a700d0e6bbfd204dd603e97aa995",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/report-tools-commands.mjs (MIT)"
+        "bytes": 12219,
+        "sha256": "298c6bc3e72f22bec103518fab88eb726d22524665c6bb16bf50e557d34a777a",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/report-tools-commands.mjs (MIT)"
       },
       {
         "path": "scripts/report-tools.mjs",
-        "bytes": 2224,
-        "sha256": "372876b570830dd95f170b5ae0356db42e5f5751f4d98bcae48a0db46aaefa56",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/report-tools.mjs (MIT)"
+        "bytes": 2497,
+        "sha256": "8bc5e84c16585c84a6c407e15ff42fd4ffcc78feb84e3b879f2bf49e7a1ba985",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/report-tools.mjs (MIT)"
       },
       {
         "path": "scripts/sentence-split.mjs",
@@ -3752,15 +4784,33 @@
       },
       {
         "path": "scripts/source-commands.mjs",
-        "bytes": 7912,
-        "sha256": "d86c0f3599904eabd068c7966f8d604607210d286fba50512cc6631aeae34e75",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/source-commands.mjs (MIT)"
+        "bytes": 11967,
+        "sha256": "130da49b66e06ca2f481aff8966b4d6289c128e7cae6d22cdf7529972cb9f352",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-commands.mjs (MIT)"
+      },
+      {
+        "path": "scripts/source-refresh.mjs",
+        "bytes": 4977,
+        "sha256": "82946a7d3e492a2671d8ed383f37ad25dc115ae66ae8c9157747c691334634c7",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-refresh.mjs (MIT)"
       },
       {
         "path": "scripts/source-snapshot.mjs",
-        "bytes": 8042,
-        "sha256": "3addaede866bae3f4937ba783234352a4e17801fed17ff8ef62e3a6b4cb6ffd1",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/source-snapshot.mjs (MIT)"
+        "bytes": 9797,
+        "sha256": "3020beaaa01953af35a8b5a47402b2800bc0effcdcc63477216dfeac0c58ebf8",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-snapshot.mjs (MIT)"
+      },
+      {
+        "path": "scripts/source-view.mjs",
+        "bytes": 4832,
+        "sha256": "76cf050c448b0ca9f0002a65380284dd918e816a8c2b92cdaef88f0b8cd57604",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/source-view.mjs (MIT)"
+      },
+      {
+        "path": "scripts/sources-citation.mjs",
+        "bytes": 12099,
+        "sha256": "37625d20a0edcdf7d9bf0c8d563a18a4c87e38782cfbcd949401045cf8b29240",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/sources-citation.mjs (MIT)"
       },
       {
         "path": "scripts/text-normalize.mjs",
@@ -3818,9 +4868,9 @@
       },
       {
         "path": "scripts/units.mjs",
-        "bytes": 6301,
-        "sha256": "c739a77d22d91158542861622bc94842ed3675943aa87c717b8192f68df67341",
-        "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/scripts/units.mjs (MIT)"
+        "bytes": 6995,
+        "sha256": "504250ee45ea4fa9cf44be1bbbfe0e4880b7dd97b03ec90789d2319823f797c7",
+        "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/scripts/units.mjs (MIT)"
       }
     ],
     "visual-qa": [
@@ -3832,14 +4882,14 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 2903,
-        "sha256": "ff3ae42655c2591b6149f0cb0ca468d435c625fbfc8f6e6fd117224f5508fa35",
+        "bytes": 3442,
+        "sha256": "9f3c1e921669a5b3a2ad63aae8e4e67cfab37c3f120b1222a4f6f66b9e34c2a1",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 46543,
-        "sha256": "3f12ea7cbdb71c8721eb617c7b21b1de14b0f0173156094b9792bf80177b25d8",
+        "bytes": 49837,
+        "sha256": "a691fce99b7713ab2015bb6ddf613aa4130a59aca52db9815e36a5f9e6485845",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
@@ -7006,8 +8056,8 @@
     "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding, init-deep-advisor and skill-pointers components and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
   },
   "contentBinding": {
-    "files": 640,
-    "declaredSha256": 640,
+    "files": 815,
+    "declaredSha256": 815,
     "unbound": 0,
     "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
   }

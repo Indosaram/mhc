@@ -5,7 +5,7 @@ use senpi_desktop_core::error::{ErrorCode, PermissionDeniedData, TccPermission};
 use senpi_desktop_core::protocol::MethodRejection;
 use senpi_desktop_protocol::{
     AuditEvent, DesktopCapabilities, EngineErrorData, JsonRpcErrorData, MethodRejectionData,
-    StopPathStatus, ENGINE_METHODS,
+    StopPathStatus, ENGINE_METHODS, UNKNOWN_AUDIT_VALUE,
 };
 use serde_json::Value;
 
@@ -29,13 +29,44 @@ pub fn is_stop_path_status(value: &Value) -> bool {
     serde_json::from_value::<StopPathStatus>(value.clone()).is_ok()
 }
 
-pub fn is_desktop_capabilities(value: &Value) -> bool {
-    serde_json::from_value::<DesktopCapabilities>(value.clone()).is_ok()
+/// `kind?` from upstream `matches`: absent, `null`, or the given JSON kind.
+fn optional_field(value: &Value, key: &str, kind: fn(&Value) -> bool) -> bool {
+    value.get(key).is_none_or(|field| field.is_null() || kind(field))
 }
 
-pub fn is_audit_event(value: &Value) -> bool {
-    value.get("action").and_then(Value::as_str).is_some_and(|action| ENGINE_METHODS.contains(&action))
-        && serde_json::from_value::<AuditEvent>(value.clone()).is_ok()
+pub fn is_desktop_capabilities(value: &Value) -> bool {
+    // Optional so this host still opens an engine from before or after their release (macOS
+    // shared-screen parity); checked here as well because the core struct may not carry them.
+    optional_field(value, "interventionWatch", Value::is_string)
+        && optional_field(value, "displayAsleep", Value::is_boolean)
+        && serde_json::from_value::<DesktopCapabilities>(value.clone()).is_ok()
+}
+
+/// An `audit` payload, or `None` when it is malformed. An action or code this host does not know
+/// (sent by a newer engine) reads as `"unknown"`: the event is kept, never dropped, so the audit
+/// trail stays complete.
+pub fn parse_audit_event(value: &Value) -> Option<AuditEvent> {
+    let mut shaped = value.as_object()?.clone();
+    if !shaped.get("action").is_some_and(Value::is_string)
+        || !optional_field(value, "code", Value::is_string)
+    {
+        return None;
+    }
+    if !shaped
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|action| ENGINE_METHODS.contains(&action))
+    {
+        shaped.insert("action".into(), Value::from(UNKNOWN_AUDIT_VALUE));
+    }
+    let unknown_code = shaped
+        .get("code")
+        .filter(|code| code.is_string())
+        .is_some_and(|code| serde_json::from_value::<ErrorCode>(code.clone()).is_err());
+    if unknown_code {
+        shaped.insert("code".into(), Value::from(UNKNOWN_AUDIT_VALUE));
+    }
+    serde_json::from_value::<AuditEvent>(Value::Object(shaped)).ok()
 }
 
 /// The contract fields of an `engine.hello` result, or `None` when malformed.
@@ -53,6 +84,9 @@ pub fn parse_session_opened(value: &Value) -> Option<SessionOpened> {
     let obj = value.as_object()?;
     let resume_token = obj.get("resumeToken")?.as_str()?.to_string();
     let caps_val = obj.get("capabilities")?;
+    if !is_desktop_capabilities(caps_val) {
+        return None;
+    }
     let capabilities = serde_json::from_value::<DesktopCapabilities>(caps_val.clone()).ok()?;
     Some(SessionOpened {
         capabilities,

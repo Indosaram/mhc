@@ -213,14 +213,16 @@ pub struct TransportConvertOptions {
 }
 
 pub fn dedupe_consecutive_placeholder(content: &[Value], placeholder: &str) -> Vec<Value> {
+    let is_placeholder = |block: &Value| {
+        block.get("type").and_then(Value::as_str) == Some("text")
+            && block
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.starts_with(placeholder))
+    };
     let mut out: Vec<Value> = Vec::with_capacity(content.len());
     for block in content {
-        let is_duplicate = block.get("type").and_then(Value::as_str) == Some("text")
-            && block.get("text").and_then(Value::as_str) == Some(placeholder)
-            && out.last().map(|previous| {
-                previous.get("type").and_then(Value::as_str) == Some("text")
-                    && previous.get("text").and_then(Value::as_str) == Some(placeholder)
-            }) == Some(true);
+        let is_duplicate = is_placeholder(block) && out.last().map(is_placeholder) == Some(true);
         if !is_duplicate {
             out.push(block.clone());
         }
@@ -530,6 +532,15 @@ mod tests {
         let deduped = dedupe_consecutive_placeholder(&content, IMAGE_ELISION_PLACEHOLDER);
         assert_eq!(deduped.len(), 3);
         assert_eq!(deduped[1]["text"], "other");
+    }
+
+    #[test]
+    fn dedupe_consecutive_placeholder_handles_elided_image_suffixes() {
+        let p1 = elision_placeholder(&["id1".into()]);
+        let p2 = elision_placeholder(&["id2".into()]);
+        let content = vec![p1, p2];
+        let deduped = dedupe_consecutive_placeholder(&content, IMAGE_ELISION_PLACEHOLDER);
+        assert_eq!(deduped.len(), 1);
     }
 
     fn image_message(data_len: usize, timestamp: i64) -> Value {

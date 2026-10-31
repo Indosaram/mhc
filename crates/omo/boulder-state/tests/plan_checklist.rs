@@ -406,3 +406,10 @@ fn qa_scenarios_happy_and_failure() {
         checklist(0, 2, 2, Some("2. Valid implementation"))
     );
 }
+
+#[test]
+fn in_progress_tasks_counted_in_remaining_and_total() {
+    let markdown = "## TODOs\n- [~] 1. Ongoing implementation\n";
+    let parsed = parse_plan_checklist(markdown);
+    assert_eq!(parsed, checklist(0, 1, 1, Some("1. Ongoing implementation")));
+}

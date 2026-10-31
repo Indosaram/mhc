@@ -27,15 +27,10 @@ fn normalize_yaml_content(yaml_content: &str) -> String {
         .min()
         .unwrap_or(0);
     if min_indent > 0 {
+        let prefix = " ".repeat(min_indent);
         lines
             .iter()
-            .map(|line| {
-                if line.len() >= min_indent {
-                    &line[min_indent..]
-                } else {
-                    *line
-                }
-            })
+            .map(|line| line.strip_prefix(&prefix).unwrap_or(line))
             .collect::<Vec<_>>()
             .join("\n")
     } else {
@@ -1366,6 +1361,14 @@ mod audit_whitespace_tests {
         assert_eq!(
             super::find_closing_tag_match(text, "t"),
             Some((0, text.len()))
+        );
+    }
+
+    #[test]
+    fn normalize_yaml_content_handles_ideographic_space_without_panic() {
+        assert_eq!(
+            super::normalize_yaml_content("  a: 1\n\u{3000}"),
+            "a: 1\n\u{3000}"
         );
     }
 }

@@ -145,6 +145,7 @@ mod tests {
             id: id.to_owned(),
             description: description.to_owned(),
             line: text.to_owned(),
+            human_input: false,
         }
     }
 

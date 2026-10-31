@@ -35,6 +35,8 @@ pub(crate) struct Worker {
     pub(crate) session_id: String,
     pub(crate) run_id: String,
     pub(crate) gc: ArtifactGc,
+    /// Whether this backend's watch of the user's own input was started.
+    pub(crate) watching_user_input: bool,
 }
 
 /// A mutating request's reply and the audit event it emitted.
@@ -60,6 +62,7 @@ impl Worker {
             session_id: String::new(),
             run_id: String::new(),
             gc: ArtifactGc::default(),
+            watching_user_input: false,
         };
         worker.refresh_capabilities();
         worker
@@ -69,6 +72,7 @@ impl Worker {
     /// and frame belongs to the previous backend and is dropped.
     pub(crate) fn open(&mut self, options: DesktopSessionOptions) -> DesktopCapabilities {
         self.backend = self.factory.create(&options);
+        self.watching_user_input = false;
         self.registry = AxRegistry::default();
         self.frames = FrameCache::default();
         self.options = Some(options);
@@ -105,6 +109,9 @@ impl Worker {
             ));
         }
         self.maybe_gc();
+        if crate::user_input_watch::reads_or_acts_on_an_app(&op) {
+            self.watch_user_input();
+        }
         let served = |audited: CoreResult<Audited>| audited.map(|(response, _audit)| response);
         // Every mutating request goes through `mutate`; reads bypass it.
         match op {

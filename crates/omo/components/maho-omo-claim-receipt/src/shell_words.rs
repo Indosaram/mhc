@@ -198,7 +198,7 @@ pub fn shell_segments(input: &str) -> Vec<Vec<String>> {
             index += 1;
             continue;
         }
-        if character == ' ' || character == '\t' {
+        if character == ' ' || character == '\t' || character == '\r' {
             if in_word {
                 argv.push(std::mem::take(&mut word));
             }
@@ -275,5 +275,17 @@ mod tests {
             Some("EOF".to_owned())
         );
         assert_eq!(heredoc_terminator("read a <<< foo"), None);
+    }
+
+    #[test]
+    fn crlf_line_endings_do_not_corrupt_tokens() {
+        assert_eq!(
+            shell_segments("cargo test\r\n"),
+            vec![vec!["cargo", "test"]]
+        );
+        assert_eq!(
+            shell_segments("cargo test\r\nbun test x\r\n"),
+            vec![vec!["cargo", "test"], vec!["bun", "test", "x"]]
+        );
     }
 }

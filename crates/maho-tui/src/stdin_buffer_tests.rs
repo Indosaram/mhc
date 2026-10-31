@@ -195,7 +195,11 @@ fn should_flush_an_unowned_incomplete_csi_after_timeout() {
 
 #[test]
 fn should_flush_a_lone_esc_as_escape_when_cr_arrives_after_the_timeout() {
-    let mut h = H::default_test();
+    let mut h = H::new(StdinBufferOptions {
+        timeout: Some(10),
+        escape_timeout: Some(10),
+        ..Default::default()
+    });
     // Legacy-mode Alt+Enter is ESC + CR; when the terminal/transport splits
     // the bytes further apart than the timeout, ESC is flushed alone and the
     // host sees Escape (interrupt) instead of Alt+Enter. This locks in the
@@ -224,6 +228,7 @@ fn should_merge_esc_cr_split_across_chunks_within_a_larger_timeout() {
 fn does_not_apply_the_sequence_timeout_to_a_lone_esc() {
     let mut h = H::new(StdinBufferOptions {
         timeout: Some(100),
+        escape_timeout: Some(10),
         ..Default::default()
     });
     h.input("\x1b");
@@ -481,7 +486,11 @@ fn should_handle_empty_input() {
 
 #[test]
 fn should_handle_lone_escape_character_with_timeout() {
-    let mut h = H::default_test();
+    let mut h = H::new(StdinBufferOptions {
+        timeout: Some(10),
+        escape_timeout: Some(10),
+        ..Default::default()
+    });
     h.input("\x1b");
     assert!(h.data.is_empty());
     // After timeout, should emit
@@ -490,8 +499,11 @@ fn should_handle_lone_escape_character_with_timeout() {
 }
 
 #[test]
-fn flushes_a_lone_escape_promptly_with_the_longer_default_sequence_timeout() {
-    let mut h = H::new(StdinBufferOptions::default());
+fn flushes_a_lone_escape_promptly_with_a_configured_short_escape_timeout() {
+    let mut h = H::new(StdinBufferOptions {
+        escape_timeout: Some(10),
+        ..Default::default()
+    });
     h.input("\x1b");
     h.advance(20);
     assert_eq!(h.data, ["\x1b"]);
@@ -595,7 +607,10 @@ fn should_group_unbracketed_multiline_burst_as_paste() {
 
 #[test]
 fn should_group_fast_unbracketed_multiline_input_as_paste() {
-    let mut h = H::new(StdinBufferOptions { burst_window_ms: Some(20), ..Default::default() });
+    let mut h = H::new(StdinBufferOptions {
+        burst_window_ms: Some(20),
+        ..Default::default()
+    });
     h.input("first\nsecond\n");
     assert_eq!(h.paste, ["first\nsecond\n"]);
     assert!(h.data.is_empty());
@@ -603,7 +618,10 @@ fn should_group_fast_unbracketed_multiline_input_as_paste() {
 
 #[test]
 fn should_hold_trailing_newline_after_fast_text_for_fragment_continuation() {
-    let mut h = H::new(StdinBufferOptions { burst_window_ms: Some(20), ..Default::default() });
+    let mut h = H::new(StdinBufferOptions {
+        burst_window_ms: Some(20),
+        ..Default::default()
+    });
     h.input("a");
     h.advance(5);
     h.input("b\n");
@@ -611,7 +629,6 @@ fn should_hold_trailing_newline_after_fast_text_for_fragment_continuation() {
     h.advance(20);
     assert_eq!(h.data, ["a", "b", "\n"]);
 }
-
 
 #[test]
 fn should_handle_paste_arriving_in_chunks() {
@@ -749,4 +766,233 @@ fn should_preserve_legacy_single_byte_high_bit_meta_conversion() {
     let mut h = H::default_test();
     h.input(&[0x9b_u8][..]);
     assert_eq!(h.data, ["\x1b\u{1b}"]);
+}
+
+// ---- Escape window decided by arrival gaps (#3628) ----
+// Alt+<key> arrives as ESC + key. Terminals on WSL and multiplexer relays can deliver the two
+// bytes as separate reads; whether they merge into one alt-key sequence must be decided by the
+// observed arrival gap, not by whether the flush timer callback happened to run first.
+
+/// The suite's gap `beforeEach`: `new StdinBuffer({ escapeTimeout: 50, now: () => clockNow })`.
+fn gap_buffer() -> H {
+    let h = H::new(StdinBufferOptions {
+        escape_timeout: Some(50),
+        ..Default::default()
+    });
+    h.clock.0.store(1_000, Ordering::SeqCst);
+    h
+}
+
+/// Moves the manual clock without firing timers (the upstream `clockNow += ms`).
+fn bump(h: &H, ms: u64) {
+    h.clock.0.fetch_add(ms, Ordering::SeqCst);
+}
+
+#[test]
+fn merges_esc_and_a_printable_key_arriving_within_the_escape_window() {
+    let mut h = gap_buffer();
+    h.input("\x1b");
+    bump(&h, 30);
+    h.input("q");
+    assert_eq!(h.data, ["\x1bq"]);
+    assert!(matches_key(&h.data[0], "alt+q"));
+}
+
+#[test]
+fn releases_a_stale_lone_esc_when_the_next_key_arrives_after_the_escape_window() {
+    let mut h = gap_buffer();
+    h.input("\x1b");
+    bump(&h, 100);
+    h.input("q");
+    assert_eq!(h.data, ["\x1b", "q"]);
+    assert!(matches_key(&h.data[0], "escape"));
+}
+
+#[test]
+fn keeps_the_default_escape_window_at_the_standard_50ms_for_split_alt_delivery() {
+    let mut h = H::new(StdinBufferOptions::default());
+    h.clock.0.store(1_000, Ordering::SeqCst);
+    h.input("\x1b");
+    bump(&h, 30);
+    h.input("q");
+    assert_eq!(h.data, ["\x1bq"]);
+    assert!(matches_key(&h.data[0], "alt+q"));
+    h.buffer.destroy();
+}
+
+// ---- StdinBuffer unbracketed paste bursts ----
+
+/// `new StdinBuffer({ timeout: 10, burstWindowMs: 20, now: () => now })` with `now = 1000`.
+fn burst_buffer() -> H {
+    let h = H::new(StdinBufferOptions {
+        timeout: Some(10),
+        burst_window_ms: Some(20),
+        ..Default::default()
+    });
+    h.clock.0.store(1_000, Ordering::SeqCst);
+    h
+}
+
+/// `burst.flush()`: releases a held line break; returned sequences are not emitted.
+fn burst_flush(h: &mut H) {
+    let (events, _sequences) = h.buffer.flush_with_events();
+    h.collect(events);
+}
+
+#[test]
+fn emits_a_one_chunk_multiline_burst_as_a_single_paste_and_submits_nothing() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\nline3");
+    assert_eq!(h.paste, ["line1\nline2\nline3"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn coalesces_a_burst_split_across_chunks_within_the_window_into_one_block() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\n");
+    h.input("line3\n");
+    assert_eq!(h.paste, ["line1\nline2\n"]);
+    assert_eq!(h.data, ["l", "i", "n", "e", "3"]);
+    burst_flush(&mut h);
+    assert_eq!(h.paste, ["line1\nline2\n", "\n"]);
+    assert_eq!(h.data, ["l", "i", "n", "e", "3"]);
+}
+
+#[test]
+fn submits_a_keystroke_paced_enter_immediately_without_holding() {
+    let mut h = burst_buffer();
+    h.input("a");
+    bump(&h, 1000);
+    h.input("\n");
+    assert_eq!(h.data, ["a", "\n"]);
+    assert!(h.paste.is_empty());
+}
+
+#[test]
+fn holds_a_burst_paced_trailing_newline_until_flush_then_submits_once() {
+    let mut h = burst_buffer();
+    h.input("a");
+    bump(&h, 5);
+    h.input("b\n");
+    assert_eq!(h.data, ["a", "b"]);
+    burst_flush(&mut h);
+    assert_eq!(h.data, ["a", "b", "\n"]);
+    assert!(h.paste.is_empty());
+}
+
+#[test]
+fn forwards_a_bare_enter_read_at_once_even_right_after_other_input() {
+    let mut h = burst_buffer();
+    h.input("\n");
+    h.input("\r");
+    assert_eq!(h.data, ["\n", "\r"]);
+    assert!(h.paste.is_empty());
+}
+
+#[test]
+fn emits_a_first_ever_single_line_input_immediately() {
+    let mut h = burst_buffer();
+    h.input("solo\n");
+    assert_eq!(h.data, ["s", "o", "l", "o", "\n"]);
+    assert!(h.paste.is_empty());
+}
+
+#[test]
+fn keeps_a_fast_double_enter_as_two_submits_instead_of_a_paste() {
+    let mut h = burst_buffer();
+    h.input("a");
+    h.input("\n");
+    h.input("\n");
+    assert!(h.paste.is_empty());
+    burst_flush(&mut h);
+    assert_eq!(h.data, ["a", "\n", "\n"]);
+}
+
+#[test]
+fn leaves_bracketed_pastes_on_the_existing_marker_path() {
+    let mut h = burst_buffer();
+    h.input("\x1b[200~a\nb\x1b[201~");
+    assert_eq!(h.paste, ["a\nb"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn treats_a_one_chunk_two_line_paste_as_a_paste_instead_of_submitting_its_first_line() {
+    let mut h = burst_buffer();
+    h.input("first\nsecond");
+    assert_eq!(h.paste, ["first\nsecond"]);
+    assert!(h.data.is_empty());
+}
+
+#[test]
+fn keeps_the_newline_that_ends_a_paste_split_across_reads_inside_the_paste() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\n");
+    bump(&h, 5);
+    h.input("line3\n");
+    burst_flush(&mut h);
+    assert_eq!(h.data, ["l", "i", "n", "e", "3"]);
+    assert_eq!(h.paste, ["line1\nline2\n", "\n"]);
+}
+
+#[test]
+fn submits_exactly_once_when_a_lone_enter_follows_a_paste_after_a_pause() {
+    let mut h = burst_buffer();
+    h.input("line1\nline2\nline3");
+    bump(&h, 1000);
+    h.input("\r");
+    assert_eq!(h.paste, ["line1\nline2\nline3"]);
+    assert_eq!(h.data, ["\r"]);
+}
+
+#[test]
+fn releases_a_held_newline_on_time_even_when_an_empty_read_arrives_while_it_is_held() {
+    let mut h = H::new(StdinBufferOptions {
+        timeout: Some(10),
+        burst_window_ms: Some(20),
+        ..Default::default()
+    });
+    h.input("a");
+    h.input("b\n");
+    h.input(&[0xf0_u8, 0x9f][..]);
+    // Bounded wait for the release timer (upstream: a 2000ms bound on the "\n" data event).
+    let start = h.clock.now_ms();
+    while !h.data.iter().any(|sequence| sequence == "\n") {
+        let deadline = h
+            .buffer
+            .deadline()
+            .expect("held newline was never released");
+        assert!(deadline - start <= 2000, "held newline was never released");
+        h.advance(deadline - h.clock.now_ms());
+    }
+    assert_eq!(h.data, ["a", "b", "\n"]);
+    assert!(h.paste.is_empty());
+    h.buffer.destroy();
+}
+
+#[test]
+fn does_not_glue_a_newline_held_before_an_empty_read_into_a_later_read_s_paste() {
+    let mut h = burst_buffer();
+    h.input("a");
+    bump(&h, 5);
+    h.input("b\n");
+    h.input(&[0xf0_u8, 0x9f][..]);
+    bump(&h, 1000);
+    h.input(&[0x98_u8, 0x80, 0x0a, 0x78][..]);
+    assert_eq!(h.data[..3], ["a", "b", "\n"]);
+    assert!(
+        h.paste.iter().all(|paste| !paste.starts_with('\n')),
+        "{:?}",
+        h.paste
+    );
+}
+
+#[test]
+fn treats_crlf_and_cr_only_bursts_like_lf_bursts() {
+    let mut h = burst_buffer();
+    h.input("l1\r\nl2\r\n");
+    assert_eq!(h.paste, ["l1\r\nl2\r\n"]);
+    h.input("m1\rm2\r");
+    assert_eq!(h.paste, ["l1\r\nl2\r\n", "m1\rm2\r"]);
 }

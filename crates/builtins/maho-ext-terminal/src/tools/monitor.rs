@@ -11,19 +11,7 @@ use serde_json::{Value, json};
 
 pub const DEFAULT_MONITOR_TIMEOUT_MS: u64 = 300_000;
 pub const MAX_MONITOR_TIMEOUT_MS: u64 = 3_600_000;
-pub fn monitor_schema() -> Value {
-    json!({"type":"object","properties":{
-    "action":{"type":"string","enum":["create","rearm"],"description":"Defaults to create. rearm resumes a monitor paused by the wake budget or the runaway guard."},
-    "description":{"type":"string","minLength":1,"maxLength":200,"description":"Create (required): specific label shown with every event, e.g. 'errors in deploy.log'."},
-    "command":{"type":"string","description":"Create, command branch (XOR path): shell command to run and watch in a PTY-backed monitor session."},
-    "path":{"type":"string","minLength":1,"description":"Create, file branch (XOR command): one regular file to watch natively, whose parent directory must already exist; takes no filter."},
-    "event":{"type":"string","enum":["create","modify"],"description":"File branch only: which file event fires the watch (defaults to create)."},
-    "filter":{"type":"string","description":"Only PTY output lines matching this regex become monitor events."},
-    "timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS,"description":"Watcher deadline in milliseconds (default 300000; ignored when persistent)."},
-    "persistent":{"type":"boolean","description":"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; max 5 per session; stop one with kill_bash."},
-    "bash_id":{"type":"string","description":"Rearm: paused monitor id (mon_ or bash_id) to resume; omit for all paused."},
-    "wakes_per_hour":{"type":"integer","minimum":1,"maximum":3600,"description":"Persistent command branch only: average wakes an hour for this watch (default: terminal.monitorWakesPerHour, 12). Lines matched between wakes are batched into the next one, never dropped; raise it for a chat bridge that needs quicker replies."}}})
-}
+pub use super::monitor_schema::monitor_schema;
 pub fn execute_monitor(
     manager: &mut TerminalManager,
     registry: &mut MonitorRegistry,
@@ -77,6 +65,31 @@ pub fn execute_configured_monitor(
     approved_parent: Option<&std::path::Path>,
     shell: Option<&str>,
     settings: &crate::settings::ResolvedTerminalSettings,
+) -> TerminalToolResult {
+    execute_configured_monitor_in(
+        manager,
+        registry,
+        input,
+        cwd,
+        approved_parent,
+        shell,
+        settings,
+        None,
+    )
+}
+/// `execute_configured_monitor` with the session's terminal state dir (upstream
+/// `terminalStateDir(ctx.getSessionContext())`): a persistent command watch gets its own
+/// `SENPI_MONITOR_STATE_DIR` under it, created before the spawn.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_configured_monitor_in(
+    manager: &mut TerminalManager,
+    registry: &mut MonitorRegistry,
+    input: &Value,
+    cwd: &std::path::Path,
+    approved_parent: Option<&std::path::Path>,
+    shell: Option<&str>,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    terminal_dir: Option<&std::path::Path>,
 ) -> TerminalToolResult {
     if input.get("action").and_then(Value::as_str) == Some("rearm") {
         let id = input
@@ -136,6 +149,7 @@ pub fn execute_configured_monitor(
         .get("wakes_per_hour")
         .and_then(Value::as_u64)
         .map(|value| value as u32);
+    let human_input = input.get("human_input").and_then(Value::as_bool) == Some(true);
     let description = input
         .get("description")
         .and_then(Value::as_str)
@@ -154,6 +168,11 @@ pub fn execute_configured_monitor(
     if let (Some(description), Some(path)) = (description, path) {
         if input.get("filter").is_some() {
             return error_result("Native file monitors do not support filter.");
+        }
+        if input.get("human_input").and_then(Value::as_bool) == Some(true) {
+            return error_result(
+                "human_input applies to command monitors; a file watch carries no message text.",
+            );
         }
         let persistent = input.get("persistent").and_then(Value::as_bool) == Some(true);
         let timeout = if persistent {
@@ -244,10 +263,20 @@ pub fn execute_configured_monitor(
     if !persistent {
         options = options.timeout(std::time::Duration::from_millis(timeout));
     }
+    // The stable id is allocated BEFORE the spawn so the command can see it in its environment.
     let monitor_id = match allocate_monitor_id() {
         Ok(id) => id,
         Err(error) => return error_result(error.to_string()),
     };
+    options = options.env(MONITOR_ENV_ID, monitor_id.as_str());
+    if persistent && let Some(terminal_dir) = terminal_dir {
+        match crate::monitor_state_dir::ensure_monitor_state_dir_sync(terminal_dir, &monitor_id) {
+            Ok(dir) => {
+                options = options.env(MONITOR_ENV_STATE_DIR, dir.to_string_lossy().into_owned());
+            }
+            Err(error) => return error_result(error.to_string()),
+        }
+    }
     let id = match manager.create(command, options) {
         Ok(id) => id,
         Err(error) => return error_result(error.to_string()),
@@ -278,7 +307,8 @@ pub fn execute_configured_monitor(
         },
         filter_regex,
     )
-    .with_wakes_per_hour(wakes_per_hour.map(f64::from));
+    .with_wakes_per_hour(wakes_per_hour.map(f64::from))
+    .with_human_input(human_input);
     if let Err(error) = registry.register(manager.get(&id).expect("created runtime"), record) {
         return error_result(error.to_string());
     }
@@ -290,25 +320,26 @@ pub fn execute_configured_monitor(
     result
 }
 
-/// Upstream `durableAdmissionError`: refuse a durable create once the session's bound writer
-/// already holds MAX_DURABLE_MONITORS restart-surviving monitors, before any spawn or registration.
+/// Upstream `durableAdmissionError` for a monitor tool call: only a persistent create is capped,
+/// by `terminal.maxDurableMonitors` (no cap when unset), before any spawn or registration. The
+/// count covers the bound writer's durable entries and the specs queued for a writer.
 pub fn durable_admission_error(
     input: &Value,
+    max_durable_monitors: Option<usize>,
+    session_key: Option<&str>,
     writer: Option<&crate::terminal_manifest::TerminalManifestWriter>,
 ) -> Option<TerminalToolResult> {
     let create = input.get("command").and_then(Value::as_str).is_some()
         || input.get("path").and_then(Value::as_str).is_some();
     let persistent = input.get("persistent").and_then(Value::as_bool) == Some(true);
-    if input.get("action").and_then(Value::as_str) == Some("rearm")
-        || !persistent
-        || !create
-        || writer.is_none_or(|writer| writer.durable_count() < MAX_DURABLE_MONITORS)
-    {
+    if input.get("action").and_then(Value::as_str) == Some("rearm") || !persistent || !create {
         return None;
     }
-    Some(error_result(format!(
-        "Cannot start another persistent monitor: this session already holds {MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first."
-    )))
+    super::monitor_manifest_binding::durable_admission_error(
+        max_durable_monitors,
+        session_key,
+        writer,
+    )
 }
 /// Upstream `handMonitorSpec` input: the spec captured at the monitor call site for a successful create.
 pub fn monitor_registration(
@@ -334,6 +365,8 @@ pub fn monitor_registration(
                 .get("filter")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            human_input: (input.get("human_input").and_then(Value::as_bool) == Some(true))
+                .then_some(true),
             wakes_per_hour: input
                 .get("wakes_per_hour")
                 .and_then(Value::as_u64)
@@ -368,6 +401,16 @@ pub fn monitor_registration(
     ))
 }
 
+/// Upstream `MonitorRegistration.deadlineMs`: the live record's absolute runtime deadline, recorded
+/// for an ephemeral watch so a restore can hand back exactly the time it had left.
+pub fn registration_deadline_ms(registry: &MonitorRegistry, runtime_id: &str) -> Option<f64> {
+    registry
+        .snapshot()
+        .into_iter()
+        .find(|entry| entry.id == runtime_id)
+        .and_then(|entry| entry.deadline_ms)
+}
+
 pub async fn execute_monitor_recorded(
     manager: &mut TerminalManager,
     registry: &mut MonitorRegistry,
@@ -375,6 +418,7 @@ pub async fn execute_monitor_recorded(
     cwd: &std::path::Path,
     approved_parent: Option<&std::path::Path>,
     writer: Option<&mut crate::terminal_manifest::TerminalManifestWriter>,
+    max_durable_monitors: Option<usize>,
 ) -> TerminalToolResult {
     let Some(writer) = writer else {
         return execute_configured_monitor(
@@ -387,7 +431,13 @@ pub async fn execute_monitor_recorded(
             &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
         );
     };
-    if let Some(refused) = durable_admission_error(input, Some(&*writer)) {
+    let session_key = writer.session_id().to_owned();
+    if let Some(refused) = durable_admission_error(
+        input,
+        max_durable_monitors,
+        Some(&session_key),
+        Some(&*writer),
+    ) {
         return refused;
     }
     let result = execute_configured_monitor(
@@ -406,7 +456,10 @@ pub async fn execute_monitor_recorded(
         * 1000.0;
     if let Some((registration, id)) = monitor_registration(input, &result, cwd, approved_parent) {
         let monitor_id = registration.monitor_id.clone();
-        writer.record_register(registration, now).await;
+        let deadline_ms = registration_deadline_ms(registry, &id);
+        writer
+            .record_register_with(registration.with_deadline_ms(deadline_ms), now)
+            .await;
         if let Some(checkpoint) = registry.file_checkpoint(&id) {
             writer.schedule_checkpoint(&monitor_id, checkpoint);
         }
@@ -586,6 +639,7 @@ pub(crate) mod tests {
             dir.path(),
             Some(&approved),
             Some(&mut writer),
+            None,
         )
         .await;
         assert!(result.is_error.is_none());
@@ -666,13 +720,59 @@ pub(crate) mod tests {
         registry.dispose();
         manager.teardown().unwrap();
     }
+    /// monitor.ts `createMonitor`: the stable id is allocated before the spawn and reaches the
+    /// command as SENPI_MONITOR_ID; a persistent watch also gets its own SENPI_MONITOR_STATE_DIR.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn durable_admission_rejects_before_file_registration() {
+    async fn command_watch_sees_its_monitor_id_and_persistent_state_dir() {
+        let terminal_dir = tempfile::tempdir().unwrap();
+        let tmp = std::env::temp_dir();
+        for persistent in [true, false] {
+            let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let mut registry = MonitorRegistry::new(move |event| {
+                sender.send(event).unwrap();
+            });
+            let mut manager = TerminalManager::default();
+            let result = execute_configured_monitor_in(
+                &mut manager,
+                &mut registry,
+                &json!({"description":"env","command":"printf 'env:%s:%s\\n' \"$SENPI_MONITOR_ID\" \"$SENPI_MONITOR_STATE_DIR\"","filter":"^env:","persistent":persistent}),
+                &tmp,
+                None,
+                None,
+                &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+                Some(terminal_dir.path()),
+            );
+            assert!(result.is_error.is_none(), "{:?}", result.content);
+            let details = result.details.unwrap();
+            let monitor_id = details["monitor_id"].as_str().unwrap().to_owned();
+            let state_dir =
+                crate::monitor_state_dir::monitor_state_dir(terminal_dir.path(), &monitor_id);
+            assert_eq!(state_dir.is_dir(), persistent);
+            let expected = if persistent {
+                format!("env:{monitor_id}:{}", state_dir.display())
+            } else {
+                format!("env:{monitor_id}:")
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line==expected));
+            })
+            .await
+            .unwrap();
+            registry.dispose();
+            manager.teardown().unwrap();
+        }
+    }
+    /// terminal-durable-admission.test.ts: with no `terminal.maxDurableMonitors` every persistent
+    /// create is admitted; with a cap of 3 the 4th is refused before any registration or spawn.
+    #[tokio::test]
+    async fn durable_admission_is_uncapped_by_default_and_refuses_past_the_setting() {
         let dir = tempfile::tempdir().unwrap();
         let mut manager = TerminalManager::default();
         let mut registry = MonitorRegistry::new(|_| {});
-        let mut writer = crate::terminal_manifest::TerminalManifestWriter::new(dir.path(), "s");
-        for index in 0..MAX_DURABLE_MONITORS {
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(dir.path(), "admission-uncapped");
+        for index in 0..12 {
             let result = execute_monitor_recorded(
                 &mut manager,
                 &mut registry,
@@ -680,6 +780,28 @@ pub(crate) mod tests {
                 dir.path(),
                 None,
                 Some(&mut writer),
+                None,
+            )
+            .await;
+            assert!(result.is_error.is_none(), "{:?}", result.content);
+        }
+        assert_eq!(writer.durable_count(), 12);
+        registry.dispose();
+        manager.teardown().unwrap();
+
+        let mut manager = TerminalManager::default();
+        let mut registry = MonitorRegistry::new(|_| {});
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(dir.path(), "admission-capped");
+        for index in 0..3 {
+            let result = execute_monitor_recorded(
+                &mut manager,
+                &mut registry,
+                &json!({"description":"watch","path":format!("capped-{index}"),"persistent":true}),
+                dir.path(),
+                None,
+                Some(&mut writer),
+                Some(3),
             )
             .await;
             assert!(result.is_error.is_none());
@@ -692,12 +814,30 @@ pub(crate) mod tests {
             dir.path(),
             None,
             Some(&mut writer),
+            Some(3),
         )
         .await;
         assert_eq!(result.is_error, Some(true));
+        assert!(
+            result.content[0]
+                .text
+                .contains("terminal.maxDurableMonitors")
+        );
         assert_eq!(registry.snapshot().len(), before);
-        assert_eq!(writer.durable_count(), MAX_DURABLE_MONITORS);
-        assert_eq!(manager.active_size().unwrap(), MAX_DURABLE_MONITORS);
+        assert_eq!(writer.durable_count(), 3);
+        assert_eq!(manager.active_size().unwrap(), 3);
+        // An ephemeral create is never capped.
+        let ephemeral = execute_monitor_recorded(
+            &mut manager,
+            &mut registry,
+            &json!({"description":"ephemeral","path":"ephemeral"}),
+            dir.path(),
+            None,
+            Some(&mut writer),
+            Some(3),
+        )
+        .await;
+        assert!(ephemeral.is_error.is_none());
         registry.dispose();
         assert_eq!(manager.active_size().unwrap(), 0);
     }
@@ -821,6 +961,36 @@ pub(crate) mod tests {
         }
         registry.dispose();
         manager.teardown().unwrap();
+    }
+    /// monitor-schema.ts `monitorSchema`: the exclude and human_input fields (senpi v2026.10.27-2).
+    #[test]
+    fn schema_carries_exclude_and_human_input() {
+        let schema = monitor_schema();
+        let properties = &schema["properties"];
+        assert_eq!(properties["exclude"]["type"], "array");
+        assert_eq!(properties["exclude"]["items"]["minLength"], 1);
+        assert_eq!(properties["human_input"]["type"], "boolean");
+        assert!(schema.get("anyOf").is_none() && schema.get("oneOf").is_none());
+    }
+    #[test]
+    fn human_input_on_a_file_watch_is_refused_before_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = TerminalManager::default();
+        let mut registry = MonitorRegistry::new(|_| {});
+        let result = execute_monitor(
+            &mut manager,
+            &mut registry,
+            &json!({"description":"inbox","path":"inbox.txt","human_input":true}),
+            dir.path(),
+            None,
+        );
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            result.content[0].text,
+            "human_input applies to command monitors; a file watch carries no message text."
+        );
+        assert!(registry.snapshot().is_empty());
+        assert_eq!(manager.size(), 0);
     }
     #[test]
     fn schema_is_flat_and_invalid_branch_does_not_spawn() {

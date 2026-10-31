@@ -27,6 +27,12 @@ pub enum SpoolEntry {
         name: String,
         target: String,
     },
+    Owner {
+        name: String,
+        signal: Signal,
+        pid: u32,
+        boot_id: String,
+    },
     Other {
         name: String,
     },
@@ -38,6 +44,7 @@ impl SpoolEntry {
             | Self::Batch { name, .. }
             | Self::Sending { name, .. }
             | Self::Lock { name, .. }
+            | Self::Owner { name, .. }
             | Self::Other { name } => name,
         }
     }
@@ -68,36 +75,55 @@ pub fn parse_spool_name(name: &str) -> SpoolEntry {
             .strip_prefix(&format!("active-{signal}-"))
             .and_then(|s| s.strip_suffix(".otlp"))
             && let Some((pid, boot)) = rest.split_once('-')
-                && digits(pid) && hex(boot, 32)
-                    && let Ok(pid) = pid.parse() {
-                        return SpoolEntry::Active {
-                            name: name.into(),
-                            signal,
-                            pid,
-                            boot_id: boot.into(),
-                        };
-                    }
+            && digits(pid)
+            && hex(boot, 32)
+            && let Ok(pid) = pid.parse()
+        {
+            return SpoolEntry::Active {
+                name: name.into(),
+                signal,
+                pid,
+                boot_id: boot.into(),
+            };
+        }
+        if let Some(rest) = name.strip_prefix(&format!("owner-{signal}-"))
+            && let Some((pid, boot)) = rest.split_once('-')
+            && digits(pid)
+            && hex(boot, 32)
+            && let Ok(pid) = pid.parse()
+        {
+            return SpoolEntry::Owner {
+                name: name.into(),
+                signal,
+                pid,
+                boot_id: boot.into(),
+            };
+        }
         if let Some(rest) = name.strip_prefix(&format!("batch-{signal}-")) {
             if let Some(id) = rest.strip_suffix(".otlp")
-                && uuid7(id) {
-                    return SpoolEntry::Batch {
-                        name: name.into(),
-                        signal,
-                        batch_id: id.into(),
-                    };
-                }
+                && uuid7(id)
+            {
+                return SpoolEntry::Batch {
+                    name: name.into(),
+                    signal,
+                    batch_id: id.into(),
+                };
+            }
             if let Some((id, tail)) = rest.split_once(".sending-")
                 && let Some((boot, lease)) = tail.split_once('-')
-                    && uuid7(id) && hex(boot, 32) && digits(lease)
-                        && let Ok(lease_expires_ms) = lease.parse() {
-                            return SpoolEntry::Sending {
-                                name: name.into(),
-                                signal,
-                                batch_id: id.into(),
-                                claimer: boot.into(),
-                                lease_expires_ms,
-                            };
-                        }
+                && uuid7(id)
+                && hex(boot, 32)
+                && digits(lease)
+                && let Ok(lease_expires_ms) = lease.parse()
+            {
+                return SpoolEntry::Sending {
+                    name: name.into(),
+                    signal,
+                    batch_id: id.into(),
+                    claimer: boot.into(),
+                    lease_expires_ms,
+                };
+            }
         }
     }
     if let Some(target) = name.strip_suffix(".lock") {
@@ -118,6 +144,16 @@ pub fn is_spool_file_name(name: &str) -> bool {
 }
 pub fn active_name(signal: Signal, pid: u32, boot_id: &str) -> String {
     format!("active-{signal}-{pid}-{boot_id}.otlp")
+}
+/// A writer's process marker: present from its first append until it closes, sealed batches or not.
+/// Markers live in a sibling directory, so the spool directory itself still holds only queued telemetry.
+pub fn owners_dir(spool_dir: &std::path::Path) -> std::path::PathBuf {
+    let mut name = spool_dir.as_os_str().to_owned();
+    name.push(".owners");
+    std::path::PathBuf::from(name)
+}
+pub fn owner_name(signal: Signal, pid: u32, boot_id: &str) -> String {
+    format!("owner-{signal}-{pid}-{boot_id}")
 }
 pub fn batch_name(signal: Signal, batch_id: &str) -> String {
     format!("batch-{signal}-{batch_id}.otlp")

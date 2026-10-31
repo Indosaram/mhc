@@ -3575,10 +3575,12 @@ name = "maho-boulder-state"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "hex",
  "jiff",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
@@ -3615,6 +3617,7 @@ dependencies = [
  "chrono",
  "crossterm",
  "flate2",
+ "futures",
  "icu_collator",
  "indexmap",
  "libproc",
@@ -3984,6 +3987,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-tools",
  "maho-tui",
  "serde_json",
  "tempfile",
@@ -4378,6 +4382,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "globset",
+ "hmac",
  "icu_collator",
  "maho-agent",
  "maho-ai",
@@ -4681,6 +4686,8 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4732,11 +4739,13 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-pty",
+ "maho-rpc",
  "maho-test-support",
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
  "nix 0.28.0",
+ "notify",
  "regex",
  "serde",
  "serde_json",
@@ -4982,7 +4991,9 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "futures",
  "icu_collator",
+ "libc",
  "maho-agent",
  "maho-ai",
  "maho-core",
@@ -4994,6 +5005,7 @@ dependencies = [
  "maho-tui",
  "notify",
  "regex",
+ "rustix 1.1.4",
  "semver",
  "serde",
  "serde_json",
@@ -5004,12 +5016,14 @@ dependencies = [
  "tokio",
  "two-face",
  "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]
 name = "maho-isolation"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "maho-config",
  "maho-core",
  "maho-git",
@@ -5021,6 +5035,7 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5623,9 +5638,11 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-memory-core",
+ "maho-omo-bundled-skills",
  "maho-omo-start-work-continuation",
  "maho-test-support",
  "maho-tools",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -5869,12 +5886,17 @@ dependencies = [
 name = "maho-rpc"
 version = "0.0.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "hex",
+ "hkdf",
+ "hmac",
  "libc",
  "libproc",
  "maho-agent",
@@ -6338,6 +6360,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "url",
+ "uuid",
 ]
 
 [[package]]

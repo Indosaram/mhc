@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::host::HostError;
-use crate::manager::child_handle::Unsubscribe;
+use crate::manager::child_handle::{InputIdentity, Unsubscribe};
 use crate::runners::in_process::child_handle::{ChildSession, ChildSessionListener, WorkpoolChildIdentity};
 
 #[derive(Default)]
@@ -23,6 +23,8 @@ struct FakeState {
     next_listener: usize,
     disposed: usize,
     workpool_identity: Option<WorkpoolChildIdentity>,
+    /// `kind:clientMessageId` for each identified input.
+    identities: Vec<String>,
 }
 
 pub(super) type OnPrompt = Box<dyn Fn() + Send + Sync>;
@@ -94,6 +96,10 @@ impl FakeSession {
         self.lock().abort_calls
     }
 
+    pub(super) fn identities(&self) -> Vec<String> {
+        self.lock().identities.clone()
+    }
+
     pub(super) fn follow_up_calls(&self) -> Vec<String> {
         self.lock().follow_up_calls.clone()
     }
@@ -158,6 +164,21 @@ impl ChildSession for FakeSession {
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.lock().follow_up_calls.push(text.to_string());
         Ok(())
+    }
+
+    fn prompt_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.lock().identities.push(format!("prompt:{}", identity.client_message_id));
+        self.prompt(text)
+    }
+
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.lock().identities.push(format!("steer:{}", identity.client_message_id));
+        self.steer(text)
+    }
+
+    fn follow_up_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.lock().identities.push(format!("followUp:{}", identity.client_message_id));
+        self.follow_up(text)
     }
 
     fn rebind_workpool_identity(&self, identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> {

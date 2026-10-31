@@ -12,7 +12,7 @@ pub fn build_request(ctx:&BuildContext<'_>,model:Option<&str>,search_context_siz
         let mut body=json!({"search_engine":"search-prime","search_query":append_domain_filters(ctx.query,None,ctx.blocked_domains),"count":json_count(clamp(ctx.max_results,1.,50.))});
         if let Some(domain)=ctx.allowed_domains.and_then(|domains|domains.first()).filter(|domain|!domain.is_empty()) { body["search_domain_filter"]=json!(domain); } body
     };
-    BuiltSearchRequest{url:provider_url(SearchProvider::Zai,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(body)}
+    BuiltSearchRequest{form:None,url:provider_url(SearchProvider::Zai,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("Authorization".into(),format!("Bearer {}",ctx.api_key.unwrap_or_default()))])),body:Some(body)}
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> {
     let normalize=|field|data.get(field).and_then(Value::as_array).into_iter().flatten().filter_map(|item|result(item.get("title").and_then(Value::as_str),item.get("link").and_then(Value::as_str),item.get("content").and_then(Value::as_str),item.get("media").and_then(Value::as_str),None)).take(50).collect::<Vec<_>>();

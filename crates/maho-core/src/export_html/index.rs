@@ -17,6 +17,7 @@ fn app_name() -> String {
 fn parse_color(color: &str) -> Option<(u8, u8, u8)> {
     if let Some(hex) = color.strip_prefix('#')
         && hex.len() == 6
+        && hex.is_ascii()
     {
         return Some((
             u8::from_str_radix(&hex[0..2], 16).ok()?,
@@ -484,6 +485,11 @@ pub fn export_session_to_html_with_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_color_non_ascii_hex_does_not_panic() {
+        assert_eq!(parse_color("#1é234"), None);
+    }
     #[test]
     fn tilde_path_expands_home() {
         assert!(

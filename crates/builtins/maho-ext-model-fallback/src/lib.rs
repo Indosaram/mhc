@@ -20,4 +20,6 @@ impl Extension for ModelFallback{
         })}));
     }
 }
- 
+#[cfg(test)]
+#[path = "command_tests.rs"]
+mod command_tests;

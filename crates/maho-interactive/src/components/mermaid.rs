@@ -1,9 +1,9 @@
 //! Port of `components/mermaid.ts`.
 //!
-//! The transformer replaces top-level `mermaid` code blocks with terminal diagrams. The layout
-//! engine that draws them is not ported (see `crate::grok_mermaid`), so `render` reports no art and
-//! every block keeps its original source, which is exactly what senpi does whenever it has no art
-//! to show.
+//! The transformer replaces top-level `mermaid` code blocks with terminal diagrams drawn by the
+//! `crate::grok_mermaid` layout engine (port of `grok-mermaid` 0.2.3). A block keeps its original
+//! source whenever the engine has no art to show (unsupported type, blank or oversized diagram), and
+//! a final render with parse warnings keeps the source plus a one-line warning.
 use std::rc::Rc;
 
 use maho_tui::components::markdown_lexer::Lexer;
@@ -142,4 +142,163 @@ pub fn create_live_mermaid_markdown_transformer(
         }
         Ok(Some(out))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Port of senpi `test/mermaid.test.ts`.
+    use super::*;
+    use crate::components::markdown_transform::{MarkdownTransformContext, MessageType};
+    use crate::theme::ColorMode;
+
+    struct TransformOptions {
+        max_width: usize,
+        is_streaming: bool,
+        message_type: MessageType,
+        mode: MermaidRenderingMode,
+        theme: Option<Theme>,
+    }
+
+    impl Default for TransformOptions {
+        fn default() -> Self {
+            Self {
+                max_width: 100,
+                is_streaming: false,
+                message_type: MessageType::Assistant,
+                mode: MermaidRenderingMode::Streaming,
+                theme: None,
+            }
+        }
+    }
+
+    fn transform_mermaid(markdown: &str, options: TransformOptions) -> String {
+        let mode = options.mode;
+        let transformer = create_mermaid_markdown_transformer(Rc::new(move || mode), options.theme);
+        transformer(
+            markdown,
+            MarkdownTransformContext {
+                available_width: options.max_width,
+                is_streaming: options.is_streaming,
+                message_type: options.message_type,
+            },
+        )
+        .expect("transformer never fails")
+        .expect("transformer always answers")
+    }
+
+    #[test]
+    fn replaces_mermaid_code_blocks_with_unicode_diagrams() {
+        let markdown = "Before\n\n```mermaid\nflowchart LR\n  A[Start] --> B[Done]\n```\nAfter";
+        let rendered = transform_mermaid(markdown, TransformOptions::default());
+
+        assert!(rendered.contains("Before"));
+        assert!(rendered.contains("┌───────┐"));
+        assert!(rendered.contains("│ Start ├───▶│ Done │"));
+        assert!(rendered.contains("└───────┘    └──────┘`\nAfter"), "{rendered:?}");
+        assert!(!rendered.contains("```mermaid"));
+        assert!(rendered.contains("After"));
+    }
+
+    #[test]
+    fn leaves_unsupported_and_oversized_diagrams_unchanged() {
+        let unsupported = "```mermaid\npie\n  title Pets\n  \"Dogs\" : 4\n```";
+        let oversized = "```mermaid\nflowchart LR\n  A[Start] --> B[Done]\n```";
+
+        assert_eq!(transform_mermaid(unsupported, TransformOptions::default()), unsupported);
+        assert_eq!(
+            transform_mermaid(oversized, TransformOptions { max_width: 10, ..Default::default() }),
+            oversized
+        );
+    }
+
+    #[test]
+    fn maps_semantic_spans_through_the_pi_theme() {
+        let theme = Theme::builtin("dark", ColorMode::Truecolor).expect("builtin dark theme");
+        let border = theme.get_fg_ansi(ThemeColor::BorderMuted);
+        let accent = theme.get_fg_ansi(ThemeColor::Accent);
+        let rendered = transform_mermaid(
+            "```mermaid\nflowchart LR\n  A --> B\n```",
+            TransformOptions { theme: Some(theme), ..Default::default() },
+        );
+
+        assert!(rendered.contains(&border), "{rendered:?}");
+        assert!(rendered.contains(&accent), "{rendered:?}");
+    }
+
+    #[test]
+    fn renders_incomplete_mermaid_blocks_during_streaming() {
+        let partial_markdown = "```mermaid\nflowchart LR\n  A --> B";
+
+        assert!(
+            transform_mermaid(partial_markdown, TransformOptions { is_streaming: true, ..Default::default() })
+                .contains("───▶")
+        );
+    }
+
+    #[test]
+    fn renders_diagrams_with_class_assignments() {
+        let markdown = "```mermaid\nflowchart LR\n  A[Foo]:::highlight --> B[Bar]\n```";
+        let rendered = transform_mermaid(markdown, TransformOptions::default());
+
+        assert!(!rendered.contains("```mermaid"));
+        assert!(!rendered.contains("Mermaid diagram not rendered"));
+        assert!(rendered.contains("│ Foo ├───▶│ Bar │"), "{rendered:?}");
+    }
+
+    #[test]
+    fn falls_back_to_the_code_block_with_a_warning_after_streaming() {
+        let markdown = "```mermaid\nflowchart LR\n  A[Foo] invalid\n```";
+        let final_render = transform_mermaid(markdown, TransformOptions::default());
+        let followed_by_text =
+            transform_mermaid(&format!("{markdown}\nFollowing text"), TransformOptions::default());
+        let streaming = transform_mermaid(markdown, TransformOptions { is_streaming: true, ..Default::default() });
+
+        assert!(final_render.contains(markdown));
+        assert!(final_render.contains("```\n`Mermaid diagram not rendered"), "{final_render:?}");
+        assert!(final_render.contains("dropped, expected a link: \"invalid\""));
+        assert!(!final_render.contains("more)"));
+        assert!(followed_by_text.contains("  \nFollowing text"), "{followed_by_text:?}");
+        assert!(!streaming.contains("Mermaid diagram not rendered"));
+        assert!(!streaming.contains("```mermaid"));
+        assert!(streaming.contains("│ Foo │"));
+    }
+
+    #[test]
+    fn summarizes_additional_partial_render_warnings() {
+        let markdown = "```mermaid\nflowchart LR\n  A[Foo] invalid\n  B[Bar] also-invalid\n```";
+        let rendered = transform_mermaid(markdown, TransformOptions::default());
+
+        assert!(rendered.contains(markdown));
+        assert!(rendered.contains("dropped, expected a link: \"invalid\""));
+        assert!(rendered.contains("(+1 more)"));
+        assert!(!rendered.contains("dropped, expected a link: \"also-invalid\""));
+    }
+
+    #[test]
+    fn respects_rendering_modes_and_skips_thinking_blocks() {
+        let markdown = "```mermaid\nflowchart LR\n  A --> B\n```";
+
+        assert_eq!(
+            transform_mermaid(markdown, TransformOptions { mode: MermaidRenderingMode::Off, ..Default::default() }),
+            markdown
+        );
+        assert_eq!(
+            transform_mermaid(
+                markdown,
+                TransformOptions { mode: MermaidRenderingMode::On, is_streaming: true, ..Default::default() }
+            ),
+            markdown
+        );
+        assert!(
+            !transform_mermaid(markdown, TransformOptions { mode: MermaidRenderingMode::On, ..Default::default() })
+                .contains("```mermaid")
+        );
+        assert_eq!(
+            transform_mermaid(
+                markdown,
+                TransformOptions { message_type: MessageType::AssistantThinking, ..Default::default() }
+            ),
+            markdown
+        );
+    }
 }

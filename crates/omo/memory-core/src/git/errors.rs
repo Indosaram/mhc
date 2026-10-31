@@ -26,6 +26,8 @@ pub enum GitError {
     InvalidPath(String),
     PathState(String),
     LockExhausted(String),
+    /// The commit gate refused secret-like staged content or a secret-like path (pin `git/secret.ts`).
+    Secret(super::secret::MemorySecretError),
     Io(std::io::Error),
     Other(String),
 }
@@ -85,6 +87,7 @@ impl fmt::Display for GitError {
             Self::InvalidPath(msg) => write!(f, "{msg}"),
             Self::PathState(msg) => write!(f, "{msg}"),
             Self::LockExhausted(msg) => write!(f, "{msg}"),
+            Self::Secret(err) => write!(f, "{err}"),
             Self::Io(err) => write!(f, "git I/O error: {err}"),
             Self::Other(msg) => write!(f, "{msg}"),
         }

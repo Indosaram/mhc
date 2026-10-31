@@ -13,7 +13,9 @@ impl BindingStore {
 pub fn abort_keeps_query(receipt:&Value)->bool {receipt["still_queued"].as_array().is_some_and(Vec::is_empty)}
 pub fn verify_transcript(binding:&Snapshot,messages:&[Value],auth_lane:&str)->bool {
     if auth_lane=="config-dir"||messages.is_empty()||messages.iter().any(|m|m["session_id"]!=binding.sdk_session_id) {return false;}
-    let Some(uuid)=binding.last_assistant_uuid.as_ref() else {return true;};
+    // A restored binding with no recorded assistant turn has nothing the transcript can prove, so it is
+    // rejected and the session is rebuilt instead of resumed unchecked (senpi#2858).
+    let Some(uuid)=binding.last_assistant_uuid.as_ref() else {return false;};
     let Some(anchor)=messages.iter().position(|m|m["type"]=="assistant"&&m["uuid"]==*uuid&&m.get("parent_tool_use_id").is_some_and(Value::is_null)) else {return false;};
     !messages[anchor+1..].iter().any(|m|m["type"]=="user"&&m.get("parent_tool_use_id").is_some_and(Value::is_null))
 }
@@ -30,6 +32,12 @@ mod tests {
         assert!(!verify_transcript(&binding,&[],"oauth-slots"));assert!(verify_transcript(&binding,std::slice::from_ref(&anchor),"oauth-slots"));assert!(!verify_transcript(&binding,std::slice::from_ref(&anchor),"config-dir"));
         let mut wrong=anchor.clone();wrong["session_id"]=json!("other");assert!(!verify_transcript(&binding,&[wrong],"ambient"));let mut nested=anchor.clone();nested["parent_tool_use_id"]=json!("tool");assert!(!verify_transcript(&binding,&[nested],"ambient"));
         assert!(!verify_transcript(&binding,&[anchor,json!({"type":"user","session_id":"sdk","parent_tool_use_id":null})],"ambient"));
+    }
+    #[test]
+    fn restored_binding_without_an_assistant_anchor_is_rejected_issue_2858() {
+        let binding=Snapshot {sdk_session_id:"sdk".into(),last_assistant_uuid:None,..Default::default()};
+        let assistant=json!({"type":"assistant","uuid":"a","session_id":"sdk","parent_tool_use_id":null});
+        assert!(!verify_transcript(&binding,&[assistant],"oauth-slots"));
     }
     #[test]
     fn clones_bindings_and_omits_session_id_on_reattach() {

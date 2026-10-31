@@ -9,14 +9,19 @@
 //! - [`client`]: client-supplied identity values and extra sections (RPC only).
 //! - [`reports`]: the draft store, prepare/submit and the RPC JSON entry points.
 //! - [`flow`]: the `/feedback` / `/bug` command flow over a small dialog interface.
+//! - [`signin`]: which stored sign-in token the command flow sends.
+//! - [`install`]: the reinstall step of missing-installation messages.
 //! - [`extension`]: the `<builtin:feedback>` extension wiring it into a session.
 
 pub mod client;
 pub mod collect;
+pub mod digest;
 pub mod extension;
 pub mod flow;
+pub mod install;
 pub mod model;
 pub mod reports;
+pub mod signin;
 
 pub use extension::{FeedbackExtension, PREPARE_RPC, SUBMIT_RPC, http_transport};
 pub use model::{

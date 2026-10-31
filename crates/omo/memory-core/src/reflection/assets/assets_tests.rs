@@ -50,3 +50,30 @@ fn given_reflection_persona_asset_when_trailer_keys_are_checked_then_runtime_key
     assert!(persona.markdown.contains("Generated-By:"));
     assert!(persona.markdown.contains("Agent-ID:"));
 }
+
+/// Every `expires` value the reflection persona teaches must be one the compiler reads as an
+/// expiry; an example it ignores would leave time-boxed files projected forever.
+#[test]
+fn given_reflection_persona_expires_examples_when_parsed_then_the_compiler_reads_each_as_an_expiry()
+{
+    let persona = load_reflection_persona();
+    let examples: Vec<&str> = persona
+        .markdown
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.len() >= 10 && span.as_bytes()[4] == b'-' && span.starts_with("20"))
+        .collect();
+    assert!(
+        !examples.is_empty(),
+        "the reflection persona teaches no expires example"
+    );
+    for example in examples {
+        let file = format!("---\ndescription: x\nexpires: {example}\n---\n\nbody\n");
+        let parsed = crate::memfs::parse_memory_file(&file).expect("frontmatter");
+        assert!(
+            crate::memfs::memory_expires_at_ms(&parsed.frontmatter).is_some(),
+            "{example}"
+        );
+    }
+}

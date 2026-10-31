@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub fn pty_bash_schema() -> Value {
-    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session. Returns a bash_id immediately; query it with bash_output, steer with bash_input, tear down with kill_bash."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
+    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session: returns a bash_id immediately (read with bash_output, steer with bash_input, stop with kill_bash). A plain & job dies with the call's PTY hangup (native backend), and nohup at best leaves an untracked orphan (no bash_id, no log) that the call's timeout still group-kills. This flag is the only reliable way a job outlives the call."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
 }
 struct ForegroundSessionGuard {
     manager: Arc<Mutex<TerminalManager>>,
@@ -82,6 +82,10 @@ pub async fn execute_configured_bash(
     execute_configured_bash_with_launch(manager, call, foreground_window, settings, shell, None)
         .await
 }
+/// bash.ts `sessionSpawnContext`: inherited session values a command must not see unless its own call's
+/// context sets them.
+pub const SESSION_SPAWN_DELETIONS: &[&str] =
+    &["PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "OMO_BROWSER_ENGINE"];
 /// The `PI_*` variables a spawned command sees about its session (upstream `sessionEnvOverrides`): the session id,
 /// cwd, goal store, session file, model, reasoning level and browser engine of the call's context.
 pub fn session_env_overrides(
@@ -124,6 +128,43 @@ pub fn session_env_overrides(
         env.insert("OMO_BROWSER_ENGINE".to_owned(), engine.to_owned());
     }
     env
+}
+/// setTimeout's 32-bit delay range (bash.ts `MAX_TIMEOUT_MS`).
+const MAX_TIMEOUT_MS: f64 = 2_147_483_647.0;
+/// bash.ts `scheduleDetachedSweep` deadline: the process deadline plus the kill grace, measured from
+/// the spawn; none without a timeout or beyond the setTimeout range.
+fn detached_sweep_delay(timeout_seconds: Option<f64>) -> Option<Duration> {
+    let deadline_ms =
+        (timeout_seconds? * 1000.0).trunc() + crate::shared::KILLED_SESSION_EXIT_GRACE_MS as f64;
+    if !deadline_ms.is_finite() || deadline_ms > MAX_TIMEOUT_MS {
+        return None;
+    }
+    Some(Duration::from_millis(deadline_ms.max(0.0) as u64))
+}
+/// bash.ts `scheduleDetachedSweep`: an auto-detached session keeps its process deadline; at
+/// `deadline` a session that never settled is stopped so a later teardown cannot hang on it. The
+/// sweep ends early when the session exits.
+fn spawn_detached_sweep(
+    manager: Arc<Mutex<TerminalManager>>,
+    id: &str,
+    runtime: &crate::runtime_session::TerminalRuntimeSession,
+    deadline: tokio::time::Instant,
+) {
+    if runtime.exited().unwrap_or(true) {
+        return;
+    }
+    let exit = runtime.subscribe_exit();
+    let id = id.to_owned();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = wait_exit(exit) => {}
+            () = tokio::time::sleep_until(deadline) => {
+                if let Err(error) = crate::manager::stop_shared(&manager, &id).await {
+                    maho_ext_api::diagnostic(&format!("terminal detached sweep failed: {error}"));
+                }
+            }
+        }
+    });
 }
 /// `execute_configured_bash` with the tool child's launch (senpi#3566 todo 9): the command starts behind the
 /// execution barrier, the cwd and environment are the ones the server built for the call, and the session is
@@ -182,14 +223,18 @@ pub async fn execute_configured_bash_with_launch(
         dimension("cols", settings.default_cols as u16),
         dimension("rows", settings.default_rows as u16),
     );
+    if launch.is_none() {
+        // bash.ts `sessionSpawnContext`: explicit deletions of the inherited session paths survive
+        // backends that merge overrides with the host environment; the session overrides set them again.
+        for key in SESSION_SPAWN_DELETIONS {
+            options = options.env_remove(*key);
+        }
+    }
     if let Some(context) = call.context {
         options = options.cwd(context.cwd());
         for (key, value) in session_env_overrides(Some(context)) {
             options = options.env(key, value);
         }
-    }
-    if launch.is_none() {
-        options = options.env("OMO_BROWSER_ENGINE", "");
     }
     if !background {
         for (key, value) in FOREGROUND_ENV_OVERRIDES {
@@ -205,7 +250,12 @@ pub async fn execute_configured_bash_with_launch(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = manager
-            .create_with_id_command(command, &id_command, options)
+            .create_with_runtime_options(
+                command,
+                &id_command,
+                options,
+                settings.redact_secrets_in_output,
+            )
             .map_err(|error| error.to_string())?;
         let runtime = manager.get(&id).ok_or("created terminal session missing")?;
         if launch.is_none()
@@ -217,6 +267,7 @@ pub async fn execute_configured_bash_with_launch(
         }
         (id, runtime.subscribe_exit(), runtime.pid())
     };
+    let spawned_at = tokio::time::Instant::now();
     let mut cleanup = ForegroundSessionGuard {
         manager: manager.clone(),
         id: id.clone(),
@@ -435,6 +486,7 @@ pub async fn execute_configured_bash_with_launch(
         super::foreground_detach::ForegroundOutcome::Detached => (None, false, false),
     };
     cleanup.armed = false;
+    let sweep_manager = manager.clone();
     // Interrupt is "stop now": SIGKILL the whole process group in one shot (upstream). The exited
     // session is reaped by its own exit waiter and pruned by the manager, so no blocking exit wait
     // runs on the async runtime here (upstream never calls manager.stop on the abort path).
@@ -465,27 +517,30 @@ pub async fn execute_configured_bash_with_launch(
             }
         )));
     }
-    if timed_out_grace {
-        return Ok(error_result(format!(
-            "{}\n\nCommand timed out after {} seconds",
-            formatted.text,
+    // `${output ? `${output}\n\n` : ""}`: an empty output adds no leading blank lines.
+    let output_prefix = if formatted.text.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n\n", formatted.text)
+    };
+    let timed_out_after = || {
+        error_result(format!(
+            "{output_prefix}Command timed out after {} seconds",
             call.params.get("timeout").unwrap_or(&Value::Null)
-        )));
+        ))
+    };
+    if timed_out_grace {
+        return Ok(timed_out_after());
     }
     if let Some(exit) = outcome {
         if exit.timed_out {
-            return Ok(error_result(format!(
-                "{}\n\nCommand timed out after {} seconds",
-                formatted.text,
-                call.params.get("timeout").unwrap_or(&Value::Null)
-            )));
+            return Ok(timed_out_after());
         }
         if let Some(code) = exit.exit_code
             && code != 0
         {
             return Ok(error_result(format!(
-                "{}\n\nCommand exited with code {code}",
-                formatted.text
+                "{output_prefix}Command exited with code {code}"
             )));
         }
         let mut result = noticed_result(
@@ -504,6 +559,9 @@ pub async fn execute_configured_bash_with_launch(
         );
         return Ok(result);
     }
+    if let Some(delay) = detached_sweep_delay(call.params.get("timeout").and_then(Value::as_f64)) {
+        spawn_detached_sweep(sweep_manager, &id, runtime, spawned_at + delay);
+    }
     let delta = runtime.read_delta().map_err(|error| error.to_string())?;
     let partial = format_terminal_tool_output(&delta.text).text;
     let timeout_note = call
@@ -517,7 +575,7 @@ pub async fn execute_configured_bash_with_launch(
         );
     let guidance = if let Some(wait) = &sleep_wait {
         format!(
-            "This command is a wait ({}s sleep), so it detached immediately; the wait continues in the background. Do nothing and end your turn — completion will be reported automatically with exit status and output tail. Do NOT poll bash_output({{ bash_id: \"{id}\" }}) for it. When you are waiting for a pattern in a command's output, launch it with monitor({{ command, filter }}) instead so matching lines arrive as events. Use kill_bash({{ bash_id: \"{id}\" }}) to stop this session.",
+            "This command is a wait ({}s sleep), so it detached immediately; the wait continues in the background. Do nothing and end your turn: completion will be reported automatically with exit status and output tail. Do NOT poll bash_output({{ bash_id: \"{id}\" }}) for it. When you are waiting for a pattern in a command's output, launch it with monitor({{ command, filter }}) instead so matching lines arrive as events. Use kill_bash({{ bash_id: \"{id}\" }}) to stop this session.",
             wait.seconds
         )
     } else {
@@ -623,6 +681,233 @@ mod tests {
         fn goal_store_file(&self) -> Option<&std::path::Path> {
             Some(std::path::Path::new("/tmp/goal.json"))
         }
+    }
+    fn call<'a>(params: Value) -> ToolCall<'a> {
+        ToolCall {
+            id: "call",
+            params,
+            signal: Default::default(),
+            on_update: None,
+            context: None,
+        }
+    }
+    fn text_of(result: &TerminalToolResult) -> String {
+        result
+            .content
+            .iter()
+            .map(|part| part.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    /// terminal-bash-tool-output.test.ts: foreground commands get the non-interactive environment.
+    #[tokio::test]
+    async fn foreground_commands_get_the_non_interactive_environment() {
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let result = execute_bash(manager.clone(), call(json!({"command":"printf '%s|%s|%s|%s|%s|%s' \"$NO_COLOR\" \"$TERM\" \"$PAGER\" \"$GH_PAGER\" \"$GIT_EDITOR\" \"$GIT_TERMINAL_PROMPT\"","timeout":10}))).await.unwrap();
+        assert_eq!(text_of(&result), "1|dumb|cat|cat|true|0");
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    /// ...and background sessions keep the inherited environment (no non-interactive overrides).
+    #[tokio::test]
+    async fn background_sessions_do_not_get_the_non_interactive_environment() {
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let result = execute_bash(manager.clone(), call(json!({"command":"printf 'EDITOR=%s PROMPT=%s' \"$GIT_EDITOR\" \"$GIT_TERMINAL_PROMPT\"","run_in_background":true}))).await.unwrap();
+        let id = result.details.as_ref().unwrap()["bash_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let exit = manager.lock().unwrap().get(&id).unwrap().subscribe_exit();
+        tokio::time::timeout(Duration::from_secs(5), wait_exit(exit))
+            .await
+            .unwrap()
+            .unwrap();
+        let inherited = |key: &str| maho_ext_api::process_env::var(key).unwrap_or_default();
+        assert!(
+            manager
+                .lock()
+                .unwrap()
+                .get(&id)
+                .unwrap()
+                .full_output()
+                .unwrap()
+                .contains(&format!(
+                    "EDITOR={} PROMPT={}",
+                    inherited("GIT_EDITOR"),
+                    inherited("GIT_TERMINAL_PROMPT")
+                ))
+        );
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    /// terminal-bash-session-env.test.ts: inherited session paths are cleared without a session
+    /// context, and a context without a goal store clears only that path.
+    #[tokio::test]
+    async fn inherited_session_paths_are_cleared_unless_the_context_sets_them() {
+        maho_ext_api::process_env::set("PI_SESSION_CWD", "stale-cwd");
+        maho_ext_api::process_env::set("PI_GOAL_STORE_FILE", "stale-goal.json");
+        let command = "printf '%s|%s' \"${PI_SESSION_CWD-unset}\" \"${PI_GOAL_STORE_FILE-unset}\"";
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let result = execute_bash(
+            manager.clone(),
+            call(json!({"command":command,"timeout":10})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text_of(&result), "unset|unset");
+        struct NoGoal(SessionContext);
+        impl maho_tools::definition::ToolContext for NoGoal {
+            fn cwd(&self) -> &std::path::Path {
+                &self.0.0
+            }
+            fn model(&self) -> Option<&maho_ai::model::Model> {
+                None
+            }
+            fn thinking_level(&self) -> Option<maho_ai::types::ThinkingLevel> {
+                None
+            }
+            fn session_manager(&self) -> &dyn maho_tools::definition::ToolSessionManager {
+                &self.0
+            }
+            fn goal_store_file(&self) -> Option<&std::path::Path> {
+                None
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let context = NoGoal(SessionContext(dir.path().to_path_buf()));
+        let result = execute_bash(
+            manager.clone(),
+            ToolCall {
+                context: Some(&context),
+                ..call(json!({"command":command,"timeout":10}))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(text_of(&result), format!("{}|unset", dir.path().display()));
+        maho_ext_api::process_env::delete("PI_SESSION_CWD");
+        maho_ext_api::process_env::delete("PI_GOAL_STORE_FILE");
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    /// terminal-bash-tool-output.test.ts: ANSI sequences are stripped and spinner frames collapse.
+    #[tokio::test]
+    async fn foreground_result_strips_ansi_and_collapses_spinner_frames() {
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let script = "i=0; while [ $i -lt 2000 ]; do printf '\\r\\033[K\\033[36m*\\033[0m'; i=$((i+1)); done; printf '\\r\\033[K\\033[32mOK\\033[0m finished\\n'";
+        let result = execute_bash(
+            manager.clone(),
+            call(json!({"command":script,"timeout":30})),
+        )
+        .await
+        .unwrap();
+        let text = text_of(&result);
+        assert_eq!(text, "OK finished");
+        assert!(!text.contains('\u{1b}'));
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    /// bash.ts error results add no leading blank lines when the command printed nothing.
+    #[tokio::test]
+    async fn silent_failures_and_timeouts_report_without_a_blank_prefix() {
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let failed = execute_bash(
+            manager.clone(),
+            call(json!({"command":"exit 3","timeout":10})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.is_error, Some(true));
+        assert_eq!(text_of(&failed), "Command exited with code 3");
+        let printed = execute_bash(
+            manager.clone(),
+            call(json!({"command":"printf 'partial'; exit 4","timeout":10})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text_of(&printed), "partial\n\nCommand exited with code 4");
+        // The timeout is the behavior under test: a 0.2s process deadline on a blocked read.
+        let timed_out = execute_bash(
+            manager.clone(),
+            call(json!({"command":"stty -echo; read value","timeout":0.2})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(timed_out.is_error, Some(true));
+        assert_eq!(text_of(&timed_out), "Command timed out after 0.2 seconds");
+        let completed = execute_bash(
+            manager.clone(),
+            call(json!({"command":"true","timeout":10})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text_of(&completed), "(no output)");
+        assert_eq!(completed.details.as_ref().unwrap()["status"], "completed");
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    /// "never hands a process deadline to an explicit background session": the timeout is ignored.
+    #[tokio::test]
+    async fn explicit_background_sessions_ignore_the_timeout() {
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let started = execute_bash(
+            manager.clone(),
+            call(
+                json!({"command":"stty -echo; read value; printf done","run_in_background":true,"timeout":0.01}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(text_of(&started).starts_with("Command running in background with ID: bash_1"));
+        assert_eq!(started.details.as_ref().unwrap()["background"], true);
+        // Released only after the call returned: a 10 ms process deadline would long have fired.
+        let exit = {
+            let mut manager = manager.lock().unwrap();
+            let runtime = manager.get("bash_1").unwrap();
+            runtime.write(b"go\n").unwrap();
+            runtime.subscribe_exit()
+        };
+        let exit = tokio::time::timeout(Duration::from_secs(5), wait_exit(exit))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!exit.timed_out);
+        assert_eq!(exit.exit_code, Some(0));
+        crate::manager::teardown_shared(&manager).await.unwrap();
+    }
+    #[test]
+    fn detached_sweep_waits_for_the_deadline_plus_kill_grace() {
+        assert_eq!(detached_sweep_delay(None), None);
+        assert_eq!(
+            detached_sweep_delay(Some(900.0)),
+            Some(Duration::from_millis(905_000))
+        );
+        assert_eq!(
+            detached_sweep_delay(Some(0.0015)),
+            Some(Duration::from_millis(5_001))
+        );
+        assert_eq!(detached_sweep_delay(Some(f64::INFINITY)), None);
+        assert_eq!(detached_sweep_delay(Some(3_000_000.0)), None);
+    }
+    /// "auto-detaches ... and sweeps after its native grace": at the sweep deadline a still-running
+    /// detached session is stopped (the paused clock jumps to the deadline once the runtime idles).
+    #[tokio::test(start_paused = true)]
+    async fn detached_sweep_stops_a_session_still_running_at_the_deadline() {
+        let manager = Arc::new(Mutex::new(TerminalManager::default()));
+        let id = manager
+            .lock()
+            .unwrap()
+            .create("read", crate::shared::test_sh_options("read value"))
+            .unwrap();
+        let exit = {
+            let mut guard = manager.lock().unwrap();
+            let runtime = guard.get(&id).unwrap();
+            spawn_detached_sweep(
+                manager.clone(),
+                &id,
+                runtime,
+                tokio::time::Instant::now() + Duration::from_secs(905),
+            );
+            runtime.subscribe_exit()
+        };
+        let exit = wait_exit(exit).await.unwrap();
+        assert!(exit.cancelled);
+        crate::manager::teardown_shared(&manager).await.unwrap();
     }
     #[tokio::test]
     async fn huge_foreground_output_has_model_only_truncation_notice() {

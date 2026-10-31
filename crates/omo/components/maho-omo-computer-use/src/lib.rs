@@ -13,7 +13,7 @@ pub mod telemetry;
 
 pub use index::{
     default_load_settings, ComputerUseComponent, ComputerUseComponentOptions,
-    COMPUTER_UNAVAILABLE, COMPUTER_USE_COMPONENT_NAME,
+    ComputerUnavailableReason, COMPUTER_USE_COMPONENT_NAME,
 };
 pub use runtime::{create_computer_use_runtime, ComputerUseRuntime, ComputerUseRuntimeOptions};
 pub use runtime_loader::{

@@ -18,7 +18,7 @@ use maho_ext_api::{
     AutocompleteProviderFactory, ComponentLogger, EventKind, EventResult, Extension, ExtensionApi,
     ExtensionContext, ExtensionEvent, ExtensionFailure, InputEventResult, InputSource, NotificationType,
 };
-use maho_omo_bundled_skills::{HostCommands, host_commands_from_runtime, resolve_bundled_skills_dir};
+use maho_omo_bundled_skills::{HostCommands, host_commands_from_runtime, resolve_bundled_skills_dir_logged};
 
 use crate::autocomplete::wrap_with_bare_skill_commands;
 use crate::bare_skill_command::{BareSkillCommandResolution, read_bundled_skill_names, resolve_bare_skill_command};
@@ -55,7 +55,10 @@ impl SkillCommandsComponent {
 impl Extension for SkillCommandsComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let env = self.options.env.clone().unwrap_or_else(process_env);
-        let skills_dir = self.options.skills_dir.clone().or_else(|| resolve_bundled_skills_dir(&env));
+        let skills_dir = self.options
+            .skills_dir
+            .clone()
+            .or_else(|| resolve_bundled_skills_dir_logged(&env, self.options.logger.as_deref()));
         let bundled_skill_names = match read_bundled_skill_names(skills_dir.as_deref()) {
             Ok(names) => names,
             Err(error) => {

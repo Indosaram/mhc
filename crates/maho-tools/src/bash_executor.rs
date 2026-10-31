@@ -336,4 +336,120 @@ mod tests {
         assert!(matches!(result, Err(ToolError::Message(_))));
         assert!(!caller.is_aborted());
     }
+
+    /// Streams fixed chunks, then (when `abort` is set) aborts the caller and waits for the executor's cancellation.
+    struct Chunks {
+        chunks: Vec<(&'static [u8], BashStream)>,
+        abort: Option<AbortSignal>,
+    }
+    impl BashOperations for Chunks {
+        fn exec<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a Path,
+            options: BashExecOptions,
+        ) -> ToolFuture<'a, BashExit> {
+            Box::pin(async move {
+                assert!(options.redact_secrets_in_output);
+                for &(chunk, stream) in &self.chunks {
+                    (options.on_data)(chunk, stream)?;
+                }
+                let Some(caller) = &self.abort else {
+                    return Ok(BashExit { exit_code: Some(0) });
+                };
+                caller.abort();
+                options.signal.cancelled().await;
+                Err(ToolError::Aborted)
+            })
+        }
+    }
+
+    fn recorded_chunks() -> (BashChunkCallback, Arc<Mutex<Vec<String>>>) {
+        let chunks = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&chunks);
+        let callback: BashChunkCallback = Arc::new(move |text| {
+            sink.lock().expect("chunks").push(text.to_owned());
+            Ok(())
+        });
+        (callback, chunks)
+    }
+
+    #[tokio::test]
+    async fn redacts_a_secret_split_across_chunks_before_callbacks_and_output() {
+        // Given: a prefixed token whose prefix and body arrive in three separate stdout chunks.
+        let operations = Chunks {
+            chunks: vec![
+                (&b"key: gh"[..], BashStream::Stdout),
+                (&b"p_synthetic123"[..], BashStream::Stdout),
+                (&b"synthetic123synthetic123 done\n"[..], BashStream::Stdout),
+            ],
+            abort: None,
+        };
+        let (on_chunk, chunks) = recorded_chunks();
+        // When: the executor runs with redaction on.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            execute_bash_with_operations(
+                "ignored",
+                Path::new("."),
+                &operations,
+                BashExecutorOptions {
+                    on_chunk: Some(on_chunk),
+                    redact_secrets_in_output: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .expect("bounded execution")
+        .expect("execution");
+        // Then: neither the streamed chunks nor the retained output carry any part of the secret.
+        let streamed = chunks.lock().expect("chunks").concat();
+        assert_eq!(streamed, "key: <redacted> done\n");
+        assert_eq!(result.output, "key: <redacted> done\n");
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!result.cancelled);
+    }
+
+    #[tokio::test]
+    async fn abort_flushes_each_streams_decoder_and_redactor() {
+        // Given: stdout ends inside a held prefixed token and stderr ends inside a multi-byte character when the
+        // caller aborts.
+        let caller = AbortSignal::default();
+        let operations = Chunks {
+            chunks: vec![
+                (
+                    &b"key: ghp_synthetic123synthetic123"[..],
+                    BashStream::Stdout,
+                ),
+                (&b"caf\xc3"[..], BashStream::Stderr),
+            ],
+            abort: Some(caller.clone()),
+        };
+        let (on_chunk, chunks) = recorded_chunks();
+        // When: the executor settles the cancelled command.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            execute_bash_with_operations(
+                "ignored",
+                Path::new("."),
+                &operations,
+                BashExecutorOptions {
+                    on_chunk: Some(on_chunk),
+                    signal: caller,
+                    redact_secrets_in_output: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .expect("bounded cancellation")
+        .expect("cancelled result");
+        // Then: the held token is flushed redacted and the dangling byte is flushed as U+FFFD, stream by stream.
+        assert!(result.cancelled);
+        assert_eq!(result.exit_code, None);
+        let streamed = chunks.lock().expect("chunks").concat();
+        assert_eq!(streamed, "key: <redacted>caf\u{fffd}");
+        assert_eq!(result.output, streamed);
+    }
 }

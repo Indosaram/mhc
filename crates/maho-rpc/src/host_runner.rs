@@ -63,6 +63,35 @@ pub enum HostRequest {
         root: std::path::PathBuf,
     },
 }
+/// What `run_host_request_with` runs a request under (senpi `runHostRequest`'s options): the explicit key root,
+/// and the presenter enrollment channel plus deployment enforcement an ensure or handoff carries.
+#[derive(Default)]
+pub struct RunHostRequestOptions {
+    /// `--rpc-key-root`: credential lookup only; the profile is unchanged.
+    pub key_root: Option<std::path::PathBuf>,
+    /// `--mcp-presenter-fd 4`: consumed by the one spawn it enrolls; never enrolls on reuse.
+    pub presenter_bootstrap: Option<crate::mcp_presenter_wire::BoxedPrivateStream>,
+    /// `--mcp-presenter-enforcement`: deployment opt-in, default off for a new host.
+    pub mcp_presenter_enforcement: bool,
+}
+/// senpi `runHostRequest(request, options)`: the request runs inside its key root (`host_request_key_root`) and,
+/// for ensure/handoff, with its presenter options in scope.
+pub async fn run_host_request_with(
+    request: HostRequest,
+    options: RunHostRequestOptions,
+) -> std::io::Result<HostOutcome> {
+    let root =
+        crate::host_request_key_root::host_request_key_root(&request, options.key_root.as_deref());
+    let presenter = crate::mcp_presenter_bootstrap::PresenterLaunchOptions {
+        bootstrap: std::sync::Mutex::new(options.presenter_bootstrap),
+        enforcement: options.mcp_presenter_enforcement,
+    };
+    crate::host_probe::with_rpc_key_root(
+        root,
+        crate::mcp_presenter_bootstrap::with_presenter_launch(presenter, run_host_request(request)),
+    )
+    .await
+}
 pub async fn run_host_request(request: HostRequest) -> std::io::Result<HostOutcome> {
     // A terminal control endpoint belongs to its terminal: ensure, handoff and stop refuse from disk alone.
     let guarded = match &request {
@@ -142,9 +171,15 @@ pub async fn run_host_request(request: HostRequest) -> std::io::Result<HostOutco
         },
         HostRequest::Gc { agent_dir } => Ok(HostOutcome {
             exit_code: HOST_EXIT_OK,
-            payload: crate::host_gc::gc_host_endpoints(&agent_dir, &Default::default())
-                .await
-                .to_value(),
+            payload: crate::host_gc::gc_host_endpoints(
+                &agent_dir,
+                &crate::host_gc::HostGcOptions {
+                    stale_engine: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .to_value(),
         }),
         HostRequest::ShardPath { kind, owner, root } => Ok(shard_path_outcome(kind, &owner, &root)),
     }
@@ -221,6 +256,10 @@ pub async fn ensure_outcome(
             (host.child.id().unwrap_or_default(), false)
         }
     };
+    // The CLI ensure gets the same background pass as `ensure_host`: only once it has its host.
+    crate::host_gc_pass::schedule_opportunistic_host_gc(
+        crate::host_gc_pass::OpportunisticGcOptions::new(agent_dir, socket),
+    );
     let host = crate::host_probe::probe_protocol_info(socket, 10000).await;
     if !reused {
         let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, agent_dir);
@@ -249,7 +288,7 @@ pub async fn handoff_outcome(
             serde_json::Map::from_iter([
                 ("reason".into(), upgrade_refusal(result.reason).into()),
                 ("socket".into(), socket.into()),
-                ("detail".into(), result.reason.into()),
+                ("detail".into(), result.detail.as_deref().unwrap_or(result.reason).into()),
                 ("upgradeable".into(), result.upgradeable.into()),
             ]),
         )),
@@ -269,7 +308,9 @@ pub async fn handoff_outcome(
     }
 }
 /// The registration the operator saw and authorized (senpi `HostStopGeneration`), shared with `host_stop`.
-pub use crate::host_stop_generation::{HostStopGeneration, StopGenerationMatch, compare_stop_generation};
+pub use crate::host_stop_generation::{
+    HostStopGeneration, StopGenerationMatch, compare_stop_generation,
+};
 /// The refusal reason for a binding the endpoint no longer matches; `None` when proven or bound (senpi `generationRefusal`).
 pub fn generation_refusal(matched: StopGenerationMatch) -> Option<&'static str> {
     match matched {
@@ -335,7 +376,11 @@ pub fn identity_payload(
         crate::host_decision::HostDecisionPolicy::Upgrade,
     ))
     .expect("decision has no failing serializer");
-    serde_json::json!({"socket":socket,"pid":pid,"instanceId":host.and_then(|host|host.instance_id.as_ref()),"generation":host.and_then(|host|host.generation),"engineVersion":host.and_then(|host|host.engine_version.as_ref()),"engineOrdinal":host.and_then(|host|host.engine_ordinal),"capabilities":host.map_or(&[][..],|host|host.capabilities.as_slice()),"launchProfileId":host.and_then(|host|host.launch_profile.as_ref()).map(|profile|&profile.profile_id),"upgradeable":decision["upgradeable"]})
+    let lifecycle = host.and_then(|host| host.lifecycle).map(|lifecycle| match lifecycle {
+        crate::host_protocol_info::HostLifecycle::Ready => "ready",
+        crate::host_protocol_info::HostLifecycle::Stopping => "stopping",
+    });
+    serde_json::json!({"socket":socket,"pid":pid,"lifecycle":lifecycle,"instanceId":host.and_then(|host|host.instance_id.as_ref()),"generation":host.and_then(|host|host.generation),"engineVersion":host.and_then(|host|host.engine_version.as_ref()),"engineOrdinal":host.and_then(|host|host.engine_ordinal),"capabilities":host.map_or(&[][..],|host|host.capabilities.as_slice()),"launchProfileId":host.and_then(|host|host.launch_profile.as_ref()).map(|profile|&profile.profile_id),"upgradeable":decision["upgradeable"]})
 }
 pub async fn status_outcome(
     socket: &str,
@@ -352,17 +397,26 @@ pub async fn status_outcome(
         payload,
     })
 }
-/// `status --all`: one row per endpoint under the agent directory; exit 0 whatever the rows say.
+/// `status --all`, with the exit vocabulary of one socket: 0 while anything answers, 3 when nothing does (or nothing
+/// is there). The rows are `{ endpoints }` (senpi `statusAllOutcome`).
 pub async fn status_all_outcome(
     agent_dir: &std::path::Path,
     include_workers: bool,
 ) -> std::io::Result<HostOutcome> {
     let rows =
         crate::host_status_all::read_all_host_status(agent_dir, include_workers, None).await?;
-    Ok(HostOutcome {
-        exit_code: HOST_EXIT_OK,
-        payload: serde_json::Value::Array(rows),
-    })
+    Ok(status_all_payload(rows))
+}
+fn status_all_payload(endpoints: Vec<serde_json::Value>) -> HostOutcome {
+    let reachable = endpoints.iter().any(|endpoint| endpoint["reachable"] == true);
+    HostOutcome {
+        exit_code: if reachable {
+            HOST_EXIT_OK
+        } else {
+            HOST_EXIT_REFUSED
+        },
+        payload: serde_json::json!({ "endpoints": endpoints }),
+    }
 }
 pub fn shard_path_outcome(
     kind: crate::host_endpoints::ShardKind,
@@ -550,6 +604,29 @@ mod tests {
         assert_eq!(outcome.exit_code, HOST_EXIT_REFUSED);
         assert_eq!(outcome.payload["reachable"], false);
         assert!(outcome.payload.get("action").is_none());
+    }
+    #[test]
+    fn status_all_answers_endpoints_and_refuses_when_nothing_answers() {
+        let none = status_all_payload(Vec::new());
+        assert_eq!(none.exit_code, HOST_EXIT_REFUSED);
+        assert_eq!(none.payload, serde_json::json!({"endpoints": []}));
+        let one = status_all_payload(vec![
+            serde_json::json!({"socket": "a", "reachable": false}),
+            serde_json::json!({"socket": "b", "reachable": true}),
+        ]);
+        assert_eq!(one.exit_code, HOST_EXIT_OK);
+        assert_eq!(one.payload["endpoints"].as_array().map(Vec::len), Some(2));
+    }
+    #[test]
+    fn identity_payload_names_the_host_lifecycle() {
+        let host = crate::host_protocol_info::parse_host_protocol_info(
+            &serde_json::json!({"serverVersion":"1","capabilities":[],"lifecycle":"stopping","instanceId":"i"}),
+        )
+        .unwrap();
+        let payload = identity_payload("s", 7, Some(&host));
+        assert_eq!(payload["lifecycle"], "stopping");
+        assert_eq!(payload["instanceId"], "i");
+        assert!(identity_payload("s", 7, None)["lifecycle"].is_null());
     }
     #[test]
     fn ensure_labels_distinguish_identity_replacement_from_start() {

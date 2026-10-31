@@ -2,13 +2,16 @@
 """CLI entrypoint for the insane-search engine.
 
 Usage:
-    python3 -m engine URL [--selector CSS] [--device auto|desktop|mobile]
-                          [--timeout N] [--max-attempts N] [--json] [--trace]
+    python3 -B -m engine URL [--selector CSS] [--device auto|desktop|mobile]
+                             [--timeout N] [--max-attempts N] [--json] [--trace]
+
+Always pass -B: running with -m byte-compiles the package before this module
+executes, so a flag set here would come too late to stop __pycache__ writes.
 
 Examples:
-    python3 -m engine "https://example.com/" --selector "h1"
-    python3 -m engine "https://example.com/" --json
-    python3 -m engine "https://example.com/" --device mobile --trace
+    python3 -B -m engine "https://example.com/" --selector "h1"
+    python3 -B -m engine "https://example.com/" --json
+    python3 -B -m engine "https://example.com/" --device mobile --trace
 
 Exit codes:
     0   strong_ok or weak_ok
@@ -25,7 +28,7 @@ from . import fetch
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python3 -m engine",
+    p = argparse.ArgumentParser(prog="python3 -B -m engine",
                                 description="Generic WAF-profile fetch chain.")
     p.add_argument("url", help="URL to fetch.")
     p.add_argument("--selector", "-s", action="append", default=None,

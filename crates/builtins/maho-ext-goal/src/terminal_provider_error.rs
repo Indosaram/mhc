@@ -16,6 +16,8 @@ fn is_codex_policy_rejection(message: &AssistantMessage) -> bool {
 fn terminal_auth_status(message: &AssistantMessage) -> Option<u16> {
     if message.stop_reason != StopReason::Error { return None; }
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    // A recently served credential can be refused for this request without being dead (#2491).
+    if message.credential_served_recently == Some(true) && message.provider_diagnostic.as_ref().is_some_and(|diagnostic| diagnostic.category == maho_ai::types::ProviderDiagnosticCategory::Auth) { return None; }
     let captures=PATTERN.get_or_init(||regex::Regex::new(r"\A(401|403)\b").unwrap_or_else(|error|panic!("invalid static auth status pattern: {error}"))).captures(message.error_message.as_deref().unwrap_or(""))?;
     captures.get(1)?.as_str().parse().ok()
 }
@@ -39,6 +41,11 @@ pub fn did_terminal_provider_error_end_turn(event: &AgentEndEvent) -> bool {
     use super::*;
     fn event(stop_reason: StopReason, api: &str, error: &str, text: &str) -> AgentEndEvent { let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"text","text":text}],"api":api,"provider":"faux","model":"faux","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":stop_reason,"errorMessage":error,"timestamp":0})).unwrap(); AgentEndEvent { messages: vec![message], will_retry: false, aborted: false, abort_source: None } }
     #[test] fn provider_error_is_terminal_without_retry() { let event = event(StopReason::Error, "faux", "failure", ""); let result = did_terminal_provider_error_end_turn(&event); assert!(result); }
+    #[test] fn recently_served_credential_auth_refusal_is_not_a_dead_credential() {
+        let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"anthropic","provider":"anthropic","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"403 Forbidden","credentialServedRecently":true,"providerDiagnostic":{"category":"auth","evidence":"structured_status"},"timestamp":0})).unwrap();
+        let served = AgentEndEvent { messages: vec![message], will_retry: false, aborted: false, abort_source: None };
+        assert!(terminal_provider_auth_failure(&served).is_none());
+    }
     #[test] fn auth_failure_requires_terminal_401_or_403_error() {
         for (status,expected) in [("401 Unauthorized",Some(401)),("403 Forbidden",Some(403)),("500 Internal Server Error",None)] {
             let event=event(StopReason::Error,"anthropic",status,"");

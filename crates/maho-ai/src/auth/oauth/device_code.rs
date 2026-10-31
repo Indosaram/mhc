@@ -75,11 +75,15 @@ pub async fn poll_oauth_device_code_flow<T>(options: OAuthDeviceCodePollOptions<
     );
 
     let mut slow_down_responses = 0usize;
-    if wait_before_first_poll
-        && let Some(remaining) = remaining_ms(deadline)
-            && remaining > 0 {
-                abortable_sleep(std::cmp::min(interval_ms, remaining), &signal, CANCEL_MESSAGE).await?;
-            }
+    if wait_before_first_poll {
+        let sleep_ms = match remaining_ms(deadline) {
+            Some(remaining) => std::cmp::min(interval_ms, remaining),
+            None => interval_ms,
+        };
+        if sleep_ms > 0 {
+            abortable_sleep(sleep_ms, &signal, CANCEL_MESSAGE).await?;
+        }
+    }
 
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -198,6 +202,31 @@ mod tests {
             poll_oauth_device_code_flow::<String>(OAuthDeviceCodePollOptions {
                 interval_seconds: Some(2.0),
                 expires_in_seconds: Some(30.0),
+                wait_before_first_poll: true,
+                signal: never_aborted(),
+                poll: Box::new(move || poll()),
+            })
+            .await
+        });
+
+        settle().await;
+        advance(Duration::from_millis(1999)).await;
+        settle().await;
+        assert!(times.lock().unwrap_or_else(|p| p.into_inner()).is_empty());
+        advance(Duration::from_millis(1)).await;
+        settle().await;
+        assert_eq!(handle.await.unwrap().unwrap(), "token");
+        assert_eq!(*times.lock().unwrap_or_else(|p| p.into_inner()), vec![start + Duration::from_millis(2000)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn can_wait_before_the_first_poll_without_expiry() {
+        let start = Instant::now();
+        let (times, mut poll) = recorder();
+        let handle = tokio::spawn(async move {
+            poll_oauth_device_code_flow::<String>(OAuthDeviceCodePollOptions {
+                interval_seconds: Some(2.0),
+                expires_in_seconds: None,
                 wait_before_first_poll: true,
                 signal: never_aborted(),
                 poll: Box::new(move || poll()),

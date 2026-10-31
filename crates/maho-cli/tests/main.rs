@@ -64,12 +64,16 @@ pub mod help_fast_path;
 pub mod hook_sources;
 #[path = "host_command.rs"]
 pub mod host_command;
+#[path = "host_command_handoff.rs"]
+pub mod host_command_handoff;
 #[path = "host_runtime.rs"]
 pub mod host_runtime;
 #[path = "image_convert.rs"]
 pub mod image_convert;
 #[path = "image_process.rs"]
 pub mod image_process;
+#[path = "image_processing.rs"]
+pub mod image_processing;
 #[path = "image_resize.rs"]
 pub mod image_resize;
 #[path = "import_entry.rs"]
@@ -84,6 +88,8 @@ pub mod kibitzer_child;
 #[cfg(feature = "omo")]
 #[path = "kibitzer_tools.rs"]
 pub mod kibitzer_tools;
+#[path = "list_models.rs"]
+pub mod list_models;
 #[path = "lane38_process_boundary_probe.rs"]
 pub mod lane38_process_boundary_probe;
 #[path = "management_http.rs"]
@@ -91,6 +97,10 @@ pub mod management_http;
 #[cfg(feature = "omo")]
 #[path = "memory_recall_entry.rs"]
 pub mod memory_recall_entry;
+#[path = "micro_lock_loss.rs"]
+pub mod micro_lock_loss;
+#[path = "micro_lock_loss_tool.rs"]
+pub mod micro_lock_loss_tool;
 #[path = "migrations.rs"]
 pub mod migrations;
 #[path = "mini_entry.rs"]
@@ -120,6 +130,8 @@ pub mod native_update_update;
 #[cfg(feature = "omo")]
 #[path = "omo_mount.rs"]
 pub mod omo_mount;
+#[path = "package_command_paths.rs"]
+pub mod package_command_paths;
 #[path = "package_commands.rs"]
 pub mod package_commands;
 #[path = "paths.rs"]
@@ -134,8 +146,12 @@ pub mod project_trust;
 pub mod radius_auth;
 #[path = "radius_relay.rs"]
 pub mod radius_relay;
+#[path = "radius_relay_host.rs"]
+pub mod radius_relay_host;
 #[path = "reasoning_host.rs"]
 pub mod reasoning_host;
+#[path = "rpc_entry.rs"]
+pub mod rpc_entry;
 #[path = "rpc_fast_mode.rs"]
 pub mod rpc_fast_mode;
 #[path = "session_runtime_worker.rs"]
@@ -174,6 +190,8 @@ pub mod ulw_loop_entry;
 pub mod utilities;
 #[path = "version_check.rs"]
 pub mod version_check;
+#[path = "provider_consent.rs"]
+pub mod provider_consent;
 
 // Helpers several test modules share, declared once so each file compiles once.
 #[path = "native_update_support/mod.rs"]

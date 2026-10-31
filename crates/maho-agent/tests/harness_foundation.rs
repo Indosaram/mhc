@@ -29,7 +29,8 @@ use maho_ai::types::{
 use serde_json::{Map, json};
 
 fn usage() -> Usage {
-    Usage { context_usage: None,
+    Usage {
+        context_usage: None,
         input: 100,
         output: 50,
         cache_read: 0,
@@ -53,7 +54,7 @@ fn user(text: &str) -> AgentMessage {
 }
 
 fn failed_assistant(stop_reason: StopReason, tool_call_id: &str) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { credential_served_recently: None,
         failure_source: None,
         timing: None,
         prompt_cache_breakpoint: None,
@@ -304,6 +305,83 @@ fn classifies_trailing_newline_byte_overflow_as_bytes_not_lines() {
     assert!(result.truncated);
     assert_eq!(result.content, "a");
     assert_eq!(result.truncated_by, Some(TruncatedBy::Bytes));
+}
+
+fn head(
+    content: &str,
+    max_bytes: u64,
+    max_lines: u64,
+) -> maho_agent::harness::utils::truncate::TruncationResult {
+    truncate_head(
+        content,
+        TruncationOptions {
+            max_bytes: Some(max_bytes),
+            max_lines: Some(max_lines),
+        },
+    )
+}
+
+fn assert_head(
+    result: &maho_agent::harness::utils::truncate::TruncationResult,
+    content: &str,
+    truncated_by: Option<TruncatedBy>,
+    total_lines: u64,
+    output_lines: u64,
+) {
+    assert_eq!(result.content, content);
+    assert_eq!(result.truncated, truncated_by.is_some());
+    assert_eq!(result.truncated_by, truncated_by);
+    assert_eq!(result.total_lines, total_lines);
+    assert_eq!(result.output_lines, output_lines);
+}
+
+#[test]
+fn reports_bytes_when_only_a_trailing_newline_exceeds_the_byte_limit_at_the_line_cap() {
+    assert_head(
+        &head("hello\nworld\n", 11, 2),
+        "hello\nworld",
+        Some(TruncatedBy::Bytes),
+        2,
+        2,
+    );
+}
+
+#[test]
+fn reports_bytes_when_only_a_trailing_newline_exceeds_the_byte_limit_below_the_line_cap() {
+    assert_head(
+        &head("hello\nworld\n", 11, 10),
+        "hello\nworld",
+        Some(TruncatedBy::Bytes),
+        2,
+        2,
+    );
+}
+
+#[test]
+fn reports_bytes_when_only_a_line_separator_pushes_the_output_past_the_byte_limit() {
+    assert_head(
+        &head("hello\nworld", 10, 10),
+        "hello",
+        Some(TruncatedBy::Bytes),
+        2,
+        1,
+    );
+}
+
+#[test]
+fn reports_lines_when_lines_were_omitted_even_though_the_kept_lines_fill_the_byte_limit_exactly() {
+    assert_head(
+        &head("a\nb\nc", 3, 2),
+        "a\nb",
+        Some(TruncatedBy::Lines),
+        3,
+        2,
+    );
+}
+
+#[test]
+fn returns_content_within_both_limits_unchanged() {
+    assert_head(&head("hello\nworld\n", 12, 2), "hello\nworld\n", None, 2, 2);
 }
 
 #[test]
@@ -647,6 +725,13 @@ fn parses_simple_frontmatter_and_body() {
 }
 
 #[test]
+fn parse_frontmatter_empty_frontmatter_does_not_panic() {
+    let parsed = parse_frontmatter("---\n---\nHello world").expect("parsed");
+    assert!(parsed.frontmatter.is_empty());
+    assert_eq!(parsed.body, "Hello world");
+}
+
+#[test]
 fn normalizes_timestamps_like_the_ts_helpers() {
     let message = maho_agent::harness::messages::create_branch_summary_message(
         "summary",
@@ -660,4 +745,152 @@ fn normalizes_timestamps_like_the_ts_helpers() {
         TimestampInput::Number(7),
     );
     assert_eq!(numeric.timestamp, 7);
+}
+
+// prompt-templates.test.ts: loadPromptTemplates / loadSourcedPromptTemplates.
+mod prompt_template_loaders {
+    use maho_agent::harness::context::background_context;
+    use maho_agent::harness::env::nodejs::NodeExecutionEnv;
+    use maho_agent::harness::prompt_templates::{
+        PromptTemplateDiagnosticCode, load_prompt_templates, load_sourced_prompt_templates,
+    };
+    use maho_agent::harness::types::PromptTemplate;
+
+    fn template(name: &str, description: &str, content: &str) -> PromptTemplate {
+        PromptTemplate {
+            name: name.into(),
+            description: Some(description.into()),
+            content: content.into(),
+        }
+    }
+
+    fn env(root: &tempfile::TempDir) -> NodeExecutionEnv {
+        NodeExecutionEnv::new(root.path().to_string_lossy().into_owned())
+    }
+
+    #[tokio::test]
+    async fn loads_markdown_templates_non_recursively_from_one_or_more_dirs() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(root.path().join("a/nested")).expect("dirs");
+        std::fs::create_dir_all(root.path().join("b")).expect("dirs");
+        std::fs::write(
+            root.path().join("a/one.md"),
+            "---\ndescription: One template\n---\nHello $1",
+        )
+        .expect("write");
+        std::fs::write(root.path().join("a/nested/ignored.md"), "Ignored").expect("write");
+        std::fs::write(root.path().join("b/two.md"), "First line description\nBody")
+            .expect("write");
+
+        let (templates, diagnostics) = load_prompt_templates(
+            &env(&root),
+            vec!["a".into(), "b".into()],
+            &background_context(),
+        )
+        .await;
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            templates,
+            vec![
+                template("one", "One template", "Hello $1"),
+                template(
+                    "two",
+                    "First line description",
+                    "First line description\nBody"
+                ),
+            ]
+        );
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Source {
+        Project,
+        User,
+    }
+
+    #[tokio::test]
+    async fn preserves_source_info_for_sourced_prompt_templates() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(root.path().join("prompts")).expect("dirs");
+        std::fs::write(
+            root.path().join("prompts/example.md"),
+            "---\ndescription: Example\n---\nExample body",
+        )
+        .expect("write");
+
+        let (templates, diagnostics) = load_sourced_prompt_templates(
+            &env(&root),
+            vec![("prompts".into(), Source::Project)],
+            None,
+            &background_context(),
+        )
+        .await;
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            templates,
+            vec![(
+                template("example", "Example", "Example body"),
+                Source::Project
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn attaches_source_info_to_diagnostics() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("broken.md"),
+            "---\ndescription: [unterminated\n---\nBody",
+        )
+        .expect("write");
+
+        let (templates, diagnostics) = load_sourced_prompt_templates(
+            &env(&root),
+            vec![("broken.md".into(), Source::User)],
+            None,
+            &background_context(),
+        )
+        .await;
+
+        assert!(templates.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        let (diagnostic, source) = &diagnostics[0];
+        assert_eq!(diagnostic.kind, "warning");
+        assert_eq!(diagnostic.code, PromptTemplateDiagnosticCode::ParseFailed);
+        assert_eq!(
+            diagnostic.path,
+            root.path().join("broken.md").to_string_lossy()
+        );
+        assert_eq!(*source, Source::User);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn loads_explicit_markdown_files_and_symlinked_files() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            root.path().join("target.md"),
+            "---\ndescription: Target\n---\nTarget body",
+        )
+        .expect("write");
+        std::os::unix::fs::symlink(root.path().join("target.md"), root.path().join("link.md"))
+            .expect("symlink");
+
+        let (templates, _) = load_prompt_templates(
+            &env(&root),
+            vec!["target.md".into(), "link.md".into()],
+            &background_context(),
+        )
+        .await;
+
+        assert_eq!(
+            templates,
+            vec![
+                template("target", "Target", "Target body"),
+                template("link", "Target", "Target body"),
+            ]
+        );
+    }
 }

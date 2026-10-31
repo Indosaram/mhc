@@ -499,6 +499,46 @@ pub fn get_data(response: &Value) -> RpcClientResult<Value> {
 pub fn default_rpc_socket_path(agent_dir: &std::path::Path) -> std::path::PathBuf {
     agent_dir.join("rpc").join("rpc.sock")
 }
+pub use maho_core::agent_session::PromptDisposition;
+
+/// The wire name of a prompt disposition (`started`, `queued`, `handled`).
+pub fn prompt_disposition_name(disposition: PromptDisposition) -> &'static str {
+    match disposition {
+        PromptDisposition::Started => "started",
+        PromptDisposition::Queued => "queued",
+        PromptDisposition::Handled => "handled",
+    }
+}
+
+/// senpi `QueuedInputDisposition`: what the host did with a steer or follow-up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueuedInputDisposition {
+    Handled,
+    Queued,
+}
+impl QueuedInputDisposition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Handled => "handled",
+            Self::Queued => "queued",
+        }
+    }
+}
+
+/// `list_sessions` flags (senpi `listSessions(options)`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListSessionsOptions {
+    pub observe: Option<bool>,
+    pub include_workers: Option<bool>,
+}
+
+/// senpi `detachConnection()`'s answer: `"unsupported"`, or the sessions that still count this connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetachConnectionOutcome {
+    Unsupported,
+    Detached { deferred: Vec<String> },
+}
+
 /** How a client reaches a host: an existing socket, or the endpoint `ensure_host` starts. */
 #[derive(Debug, Clone, Default)]
 pub struct RpcClientOptions {
@@ -944,11 +984,17 @@ impl RpcClient {
             Ok(response) => {
                 frames.events.clear();
                 frames.event_bytes = 0;
-                Err(std::io::Error::other(
-                    response["error"]
+                // A refusal keeps the host's typed code (senpi `getData`), so a caller can tell
+                // `host_stopping` or `invalid_path` from a lost transport.
+                Err(RpcCommandError {
+                    message: response["error"]
                         .as_str()
-                        .unwrap_or("RPC open_session failed"),
-                )
+                        .filter(|message| !message.is_empty())
+                        .unwrap_or("RPC open_session failed")
+                        .into(),
+                    error_code: response["errorCode"].as_str().map(str::to_owned),
+                    error_data: response.get("errorData").cloned(),
+                }
                 .into())
             }
             Err(error) => {
@@ -995,9 +1041,79 @@ impl RpcClient {
         Ok(())
     }
 
-    pub async fn list_sessions(&self) -> RpcClientResult<Value> {
-        self.request_value(serde_json::json!({"type": "list_sessions"}), false)
-            .await
+    /// senpi `listSessions(options)`: the host's session rows. `observe` marks the read so the host does
+    /// not count it as activity; `include_workers` lists task children too. A reply without a session
+    /// list is an error, never an empty listing.
+    pub async fn list_sessions(&self, options: ListSessionsOptions) -> RpcClientResult<Vec<Value>> {
+        let mut command = serde_json::json!({"type": "list_sessions"});
+        if let Some(observe) = options.observe {
+            command["observe"] = observe.into();
+        }
+        if let Some(include_workers) = options.include_workers {
+            command["include_workers"] = include_workers.into();
+        }
+        let data = self.request_value(command, false).await?;
+        match data.get("sessions").and_then(Value::as_array) {
+            Some(sessions) => Ok(sessions.clone()),
+            None => Err(RpcCommandError {
+                message: "list_sessions answered without a session list".into(),
+                error_code: None,
+                error_data: None,
+            }
+            .into()),
+        }
+    }
+
+    /// senpi `unloadSession`: `unload_session` for `session_id`, or this client's attached session. A
+    /// refusal is an answer (`outcome: "refused"` with `reason` and `action`), returned rather than raised.
+    /// `options` carries `interrupt`, `force`, `clearQueue`, `children` and `effectId` verbatim.
+    pub async fn unload_session(
+        &self,
+        session_id: Option<&str>,
+        mut options: Value,
+    ) -> RpcClientResult<Value> {
+        let Some(session_id) = session_id.map(str::to_owned).or_else(|| self.session_id()) else {
+            return Err(std::io::Error::other("unload_session needs a session").into());
+        };
+        if !options.is_object() {
+            options = serde_json::json!({});
+        }
+        options["type"] = "unload_session".into();
+        options["sessionId"] = session_id.into();
+        self.request_value(options, false).await
+    }
+
+    /// senpi `detachConnection` (senpi#3238): drop this connection's session attachments and wait until the
+    /// host confirms. A host without the `detach_connection` capability is left to release on socket close.
+    pub async fn detach_connection(&self) -> RpcClientResult<DetachConnectionOutcome> {
+        let info = self
+            .request_value(serde_json::json!({"type": "get_protocol_info"}), false)
+            .await?;
+        let supported = info
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .is_some_and(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|value| value == crate::host_probe::DETACH_CONNECTION_CAPABILITY)
+            });
+        if !supported {
+            return Ok(DetachConnectionOutcome::Unsupported);
+        }
+        let data = self
+            .request_value(serde_json::json!({"type": "detach_connection"}), false)
+            .await?;
+        let deferred = data
+            .get("deferred")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(DetachConnectionOutcome::Detached { deferred })
     }
     pub async fn new_session(&self, parent_session: Option<&str>) -> RpcClientResult<Value> {
         self.request_value(
@@ -1137,15 +1253,22 @@ impl RpcClient {
         .await
     }
 
-    pub async fn prompt(&self, message: &str, mut options: Value) -> RpcClientResult<()> {
+    /// senpi `prompt`: the prompt's disposition once accepted. A refusal (`streaming`, ...) is a typed
+    /// [`RpcCommandError`]; an older host that omits the disposition reads as `Handled`.
+    pub async fn prompt(
+        &self,
+        message: &str,
+        mut options: Value,
+    ) -> RpcClientResult<PromptDisposition> {
         options["type"] = "prompt".into();
         options["message"] = message.into();
         let (response, _) = self.request_marked(options, true).await?;
-        if response["success"] == true {
-            Ok(())
-        } else {
-            Err(std::io::Error::other(response["error"].as_str().unwrap_or_default()).into())
-        }
+        let data = get_data(&response)?;
+        Ok(match data.get("disposition").and_then(Value::as_str) {
+            Some("started") => PromptDisposition::Started,
+            Some("queued") => PromptDisposition::Queued,
+            _ => PromptDisposition::Handled,
+        })
     }
     pub async fn steer(
         &self,
@@ -1154,6 +1277,25 @@ impl RpcClient {
         enqueue_order: Option<f64>,
     ) -> RpcClientResult<()> {
         self.fire_and_forget(serde_json::json!({"type": "steer", "message": message, "images": images, "enqueueOrder": enqueue_order}), true).await
+    }
+    /// senpi `steer`: waits for the host's answer and returns the queued input's disposition (`Handled`
+    /// from an older host that omits it). `steer` above stays fire-and-forget for the interactive proxy.
+    pub async fn steer_with_disposition(
+        &self,
+        message: &str,
+        images: Option<Value>,
+        enqueue_order: Option<f64>,
+    ) -> RpcClientResult<QueuedInputDisposition> {
+        let data = self
+            .request_value(
+                serde_json::json!({"type": "steer", "message": message, "images": images, "enqueueOrder": enqueue_order}),
+                true,
+            )
+            .await?;
+        Ok(match data.get("disposition").and_then(Value::as_str) {
+            Some("queued") => QueuedInputDisposition::Queued,
+            _ => QueuedInputDisposition::Handled,
+        })
     }
     pub async fn follow_up(
         &self,
@@ -1170,6 +1312,12 @@ impl RpcClient {
     pub async fn abort(&self) -> RpcClientResult<()> {
         self.fire_and_forget(serde_json::json!({"type": "abort"}), true)
             .await
+    }
+    /// senpi `abortStrict`: abort with host refusals and transport loss surfaced to machine callers.
+    pub async fn abort_strict(&self) -> RpcClientResult<()> {
+        self.request_value(serde_json::json!({"type": "abort"}), true)
+            .await
+            .map(|_| ())
     }
     pub async fn abort_compaction(&self) -> RpcClientResult<()> {
         self.fire_and_forget(serde_json::json!({"type": "abort_compaction"}), true)
@@ -2288,5 +2436,163 @@ mod tests {
         }
         names.sort_unstable();
         assert_eq!(names, vec![b'A', b'B']);
+    }
+    /// A scripted host: answers each command with `reply(command)` and records every command it saw.
+    #[cfg(unix)]
+    fn scripted_host(
+        reply: impl Fn(&Value) -> Value + Send + 'static,
+    ) -> (RpcClient, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (client_stream, host) = tokio::net::UnixStream::pair().unwrap();
+        let client = RpcClient::from_stream(client_stream, RpcClientOptions::default());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        tokio::spawn(async move {
+            let (read, mut write) = host.into_split();
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let command: Value = serde_json::from_str(&line).unwrap();
+                let mut response = reply(&command);
+                response["type"] = "response".into();
+                response["id"] = command["id"].clone();
+                record.lock().unwrap().push(command);
+                let text = format!("{response}\n");
+                if write.write_all(text.as_bytes()).await.is_err() {
+                    return;
+                }
+            }
+        });
+        (client, seen)
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_and_steer_return_the_hosts_disposition_and_refusals_keep_their_code() {
+        let (client, seen) = scripted_host(|command| match command["message"].as_str() {
+            Some("busy") => {
+                serde_json::json!({"success":false,"error":"streaming","errorCode":"streaming"})
+            }
+            Some("old") => serde_json::json!({"success":true}),
+            Some("steer") => serde_json::json!({"success":true,"data":{"disposition":"queued"}}),
+            _ => serde_json::json!({"success":true,"data":{"disposition":"started"}}),
+        });
+        assert_eq!(
+            client.prompt("go", serde_json::json!({})).await.unwrap(),
+            PromptDisposition::Started
+        );
+        assert_eq!(
+            client.prompt("old", serde_json::json!({})).await.unwrap(),
+            PromptDisposition::Handled
+        );
+        let busy = client
+            .prompt("busy", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(busy.error_code(), Some("streaming"));
+        assert_eq!(
+            client
+                .steer_with_disposition("steer", None, None)
+                .await
+                .unwrap(),
+            QueuedInputDisposition::Queued
+        );
+        assert_eq!(seen.lock().unwrap()[3]["type"], "steer");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn abort_strict_surfaces_a_refusal_that_abort_swallows() {
+        let (client, seen) = scripted_host(
+            |_| serde_json::json!({"success":false,"error":"abort_refused","errorCode":"abort_refused"}),
+        );
+        let refused = client.abort_strict().await.unwrap_err();
+        assert_eq!(refused.error_code(), Some("abort_refused"));
+        assert_eq!(seen.lock().unwrap()[0]["type"], "abort");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_sessions_sends_observe_and_returns_the_rows() {
+        let (client, seen) = scripted_host(
+            |_| serde_json::json!({"success":true,"data":{"sessions":[{"sessionId":"rpc-1"}]}}),
+        );
+        let rows = client
+            .list_sessions(ListSessionsOptions {
+                observe: Some(true),
+                include_workers: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![serde_json::json!({"sessionId":"rpc-1"})]);
+        client
+            .list_sessions(ListSessionsOptions::default())
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0]["observe"], true);
+        assert!(seen[0].get("include_workers").is_none());
+        assert!(seen[1].get("observe").is_none());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unload_session_returns_a_refusal_as_an_answer_and_needs_a_session() {
+        let (client, seen) = scripted_host(
+            |_| serde_json::json!({"success":true,"data":{"outcome":"refused","reason":"turn_active"}}),
+        );
+        assert!(
+            client
+                .unload_session(None, serde_json::json!({}))
+                .await
+                .is_err()
+        );
+        let answer = client
+            .unload_session(Some("rpc-1"), serde_json::json!({"force": true}))
+            .await
+            .unwrap();
+        assert_eq!(answer["outcome"], "refused");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["type"], "unload_session");
+        assert_eq!(seen[0]["sessionId"], "rpc-1");
+        assert_eq!(seen[0]["force"], true);
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detach_connection_asks_only_a_capable_host() {
+        let capable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = capable.clone();
+        let (client, seen) = scripted_host(move |command| match command["type"].as_str() {
+            Some("get_protocol_info") => {
+                let capabilities = if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    serde_json::json!(["detach_connection"])
+                } else {
+                    serde_json::json!([])
+                };
+                serde_json::json!({"success":true,"data":{"capabilities":capabilities}})
+            }
+            _ => serde_json::json!({"success":true,"data":{"deferred":["s1",7]}}),
+        });
+        assert_eq!(
+            client.detach_connection().await.unwrap(),
+            DetachConnectionOutcome::Unsupported
+        );
+        capable.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            client.detach_connection().await.unwrap(),
+            DetachConnectionOutcome::Detached {
+                deferred: vec!["s1".into()]
+            }
+        );
+        let kinds: Vec<Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c["type"].clone())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                serde_json::json!("get_protocol_info"),
+                serde_json::json!("get_protocol_info"),
+                serde_json::json!("detach_connection")
+            ]
+        );
     }
 }

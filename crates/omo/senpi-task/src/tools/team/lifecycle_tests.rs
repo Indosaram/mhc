@@ -496,3 +496,24 @@ fn malformed_json_string_inline_spec_rejects_without_calling_service() {
     assert_eq!(result.details.kind(), "invalid_arguments");
     assert_eq!(service.calls().len(), 0);
 }
+
+#[test]
+fn null_inline_spec_rejects_without_calling_service() {
+    let service = service_returning(fake_create_result());
+
+    let result = run_team_create(
+        &service,
+        &TeamCreateInput {
+            team_name: None,
+            inline_spec: Some(Value::Null),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.details.kind(), "invalid_arguments");
+    let TeamCreateDetails::InvalidArguments { reason } = &result.details else {
+        panic!("expected invalid_arguments");
+    };
+    assert_eq!(reason, "provide team_name or inline_spec");
+    assert_eq!(service.calls().len(), 0);
+}

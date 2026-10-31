@@ -1,10 +1,17 @@
 use std::collections::BTreeMap;
 use serde_json::{Value,Map,json};
-pub const BUILTIN_SDK_TOOLS:[&str;6]=["Read","Write","Edit","Bash","Grep","Glob"];
+/// Senpi tools served to Claude Code as its built-ins. `write` and `edit` are deliberately absent: Claude
+/// Code validates read-before-write on its built-in Write/Edit before any PreToolUse hook, and its read
+/// state is always empty here, so it answered those calls itself while senpi still executed them
+/// (senpi#2401). They go through the custom-tools MCP server, where the host denial always answers.
+pub const BUILTIN_SDK_TOOLS:[&str;4]=["Read","Bash","Grep","Glob"];
 pub const CUSTOM_TOOLS_MCP_PREFIX:&str="mcp__custom-tools__";
-pub const HOST_TOOL_POLICY_FINGERPRINT:&str="host-tool-denial-v2";
-pub const TOOL_EXECUTION_DENIED_MESSAGE:&str="Senpi executes this tool on the host and returns its result as the next user message. Wait for that result; this denial is not a failure.";
-fn builtin(name:&str)->Option<&'static str> {match name {"read"=>Some("Read"),"write"=>Some("Write"),"edit"=>Some("Edit"),"bash"=>Some("Bash"),"grep"=>Some("Grep"),"find"|"glob"=>Some("Glob"),_=>None}}
+/// Hashed into `toolsetHash`; bumped when the denial copy or hooks change so a resident query reattaches.
+pub const HOST_TOOL_POLICY_FINGERPRINT:&str="host-tool-denial-v4";
+/// Claude Code labels every PreToolUse deny "PreToolUse:<Tool> hook error: <reason>", so the reason says
+/// first that it is the expected handoff and must not be reported (senpi#3417).
+pub const TOOL_EXECUTION_DENIED_MESSAGE:&str="Not an error: this is the normal host handoff, so ignore the 'hook error' label. Senpi runs this tool on the host and returns its result as the next user message. Wait for that result, and do not mention this message to the user.";
+fn builtin(name:&str)->Option<&'static str> {match name {"read"=>Some("Read"),"bash"=>Some("Bash"),"grep"=>Some("Grep"),"find"|"glob"=>Some("Glob"),_=>None}}
 pub fn map_pi_tool_name(name:&str,custom:&BTreeMap<String,String>)->String {
     let normalized=name.to_lowercase();if let Some(mapped)=custom.get(name).or_else(||custom.get(&normalized)) {return mapped.clone();}
     if let Some(mapped)=builtin(&normalized) {return mapped.into();}
@@ -43,6 +50,17 @@ mod tests {
     use super::*;
     #[test]
     fn tool_selection_and_custom_names() {let tools=[json!({"name":"read"}),json!({"name":"bash"}),json!({"name":"find"}),json!({"name":"repoSearch"})];let resolved=resolve_tools(Some(&tools));assert_eq!(resolved.sdk_tools,["Read","Bash","Glob"]);assert_eq!(map_pi_tool_name("repoSearch",&resolved.to_sdk),"mcp__custom-tools__repoSearch");assert_eq!(map_sdk_tool_name("mcp__custom-tools__repoSearch",&resolved.to_pi),"repoSearch");assert!(resolve_tools(Some(&[])).sdk_tools.is_empty());assert_eq!(resolve_tools(None).sdk_tools,BUILTIN_SDK_TOOLS);}
+    #[test]
+    fn write_and_edit_go_through_custom_tools_issue_2401() {
+        let tools=[json!({"name":"read"}),json!({"name":"write"}),json!({"name":"edit"})];
+        let resolved=resolve_tools(Some(&tools));
+        assert_eq!(resolved.sdk_tools,["Read"]);
+        assert_eq!(map_pi_tool_name("write",&resolved.to_sdk),"mcp__custom-tools__write");
+        assert_eq!(map_pi_tool_name("edit",&resolved.to_sdk),"mcp__custom-tools__edit");
+        assert_eq!(map_sdk_tool_name("mcp__custom-tools__edit",&resolved.to_pi),"edit");
+        assert_eq!(map_sdk_tool_name("Write",&BTreeMap::new()),"write");
+        assert_eq!(resolve_tools(None).sdk_tools,["Read","Bash","Grep","Glob"]);
+    }
     #[test]
     fn argument_conversion_preserves_host_contract() {for (name,input,expected) in [("Read",json!({"file_path":"src","offset":4,"limit":12}),json!({"path":"src","offset":4,"limit":12})),("Edit",json!({"file_path":"src","old_string":"before","new_string":"after","replace_all":true}),json!({"path":"src","edits":[{"oldText":"before","newText":"after"}]})),("Grep",json!({"pattern":"n","-i":true,"-C":2,"head_limit":5}),json!({"pattern":"n","ignoreCase":true,"context":2,"limit":5}))] {assert_eq!(map_tool_args(name,input.as_object()),expected.as_object().expect("expected").clone());}assert_eq!(map_tool_args("Bash",json!({"command":"test","timeout":30000}).as_object())["timeout"].as_f64(),Some(30.0));assert_eq!(deny_tool_execution()["behavior"],"deny");}
 }

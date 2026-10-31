@@ -43,3 +43,9 @@ async fn clear_disarms_both_deadlines() {
     tokio::time::advance(std::time::Duration::from_secs(20)).await;
     assert!(signal.borrow().is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn cell_deadlines_overflow_timeout_does_not_panic() {
+    let deadlines = CellDeadlines::new("c1".into(), 1e100, 1e100);
+    assert!(!deadlines.hard_limit_seconds.is_nan());
+}

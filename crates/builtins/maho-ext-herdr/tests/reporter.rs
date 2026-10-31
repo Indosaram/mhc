@@ -434,16 +434,20 @@ async fn lifecycle_transcript_reports_live_bus_and_shutdown_releases_once() {
         recorded_methods(&f.recorded),
         vec![
             "pane.report_metadata",
-            "pane.report_agent_session",
-            "pane.report_agent"
+            "pane.report_agent",
+            "pane.report_agent_session"
         ]
     );
     assert_eq!(recorded_states(&f.recorded), vec!["idle"]);
     let first = f.recorded.lock().expect("recorded").clone();
     assert_eq!(first[0]["params"]["title"], "Reporter QA");
     assert_eq!(
-        first[1]["params"]["agent_session_path"],
+        first[2]["params"]["agent_session_path"],
         "/sessions/root.jsonl"
+    );
+    assert_eq!(
+        first[2]["params"]["resume_argv"],
+        json!([maho_core::config::app_command(), "--session", "/sessions/root.jsonl"])
     );
     for request in &first {
         assert_eq!(request["params"]["source"], "custom:senpi");
@@ -621,8 +625,8 @@ async fn never_lets_a_queued_report_reclaim_a_released_pane() {
         recorded_methods(&f.recorded),
         vec![
             "pane.report_metadata",
-            "pane.report_agent_session",
             "pane.report_agent",
+            "pane.report_agent_session",
             "pane.report_agent",
             "pane.report_agent",
             "pane.release_agent"
@@ -685,8 +689,8 @@ async fn silences_the_old_runtime_on_non_quit_reasons_without_releasing() {
             recorded_methods(&f.recorded),
             vec![
                 "pane.report_metadata",
-                "pane.report_agent_session",
-                "pane.report_agent"
+                "pane.report_agent",
+                "pane.report_agent_session"
             ],
             "{reason:?}"
         );
@@ -745,8 +749,8 @@ async fn binds_lifecycle_events_to_the_first_tui_session_only() {
         recorded_methods(&f.recorded),
         vec![
             "pane.report_metadata",
-            "pane.report_agent_session",
-            "pane.report_agent"
+            "pane.report_agent",
+            "pane.report_agent_session"
         ],
         "a foreign session is never bound"
     );
@@ -894,8 +898,8 @@ async fn ignores_malformed_bus_payloads() {
         recorded_methods(&f.recorded),
         vec![
             "pane.report_metadata",
-            "pane.report_agent_session",
-            "pane.report_agent"
+            "pane.report_agent",
+            "pane.report_agent_session"
         ],
         "malformed payloads are ignored without a report"
     );

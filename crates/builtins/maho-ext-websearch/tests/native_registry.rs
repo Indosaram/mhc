@@ -19,7 +19,7 @@ async fn auto_routes_use_full_models_skip_failed_seen_route_and_prepend_availabl
     let active=model("gpt-5-denied","active.example.com");
     let registry=std::sync::Arc::new(Registry{models:vec![model("gpt-5-duplicate","active.example.com"),model("gpt-5-second","second.example.com"),model("gpt-5-third","third.example.com")],calls:Default::default()});
     let live:std::sync::Arc<dyn ModelRegistry>=registry.clone();let mut configured=SearchProviderConfig::new(SearchProvider::Exa);configured.max_results=Some(7.);
-    let config=WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:true,providers:vec![SearchProviderEntry{config:configured,priority:None,weight:None}]};
+    let config=WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:true,native_model:None,providers:vec![SearchProviderEntry{config:configured,priority:None,weight:None,fallback_model:None}]};
     let merged=config_with_native_routes(config,Some(&active),Some(&live),None).await.unwrap();
     assert_eq!(*registry.calls.lock().unwrap(),["gpt-5-denied","gpt-5-second","gpt-5-third"]);
     assert_eq!(merged.providers.len(),3);assert_eq!(merged.providers[0].config.model.as_deref(),Some("gpt-5-second"));assert_eq!(merged.providers[1].config.model.as_deref(),Some("gpt-5-third"));assert_eq!(merged.providers[2].config.max_results,Some(7.));
@@ -30,7 +30,7 @@ async fn automatic_auth_failure_preserves_configured_http_search_and_request_lim
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("HTTP fixture listener");let address=listener.local_addr().expect("listener address");
     let active=model("gpt-5-denied","active.example.com");let registry=std::sync::Arc::new(Registry{models:vec![],calls:Default::default()});let live:std::sync::Arc<dyn ModelRegistry>=registry.clone();
     let mut provider=SearchProviderConfig::new(SearchProvider::Exa);provider.base_url=Some(format!("http://{address}/search"));provider.api_key=Some("fixture".into());provider.max_results=Some(7.);
-    let config=WebsearchConfig{auto:true,fallback:true,strategy:RoutingStrategy::Priority,providers:vec![SearchProviderEntry{config:provider,priority:None,weight:None}]};
+    let config=WebsearchConfig{auto:true,fallback:true,strategy:RoutingStrategy::Priority,native_model:None,providers:vec![SearchProviderEntry{config:provider,priority:None,weight:None,fallback_model:None}]};
     let tool=maho_ext_websearch::websearch::tool::create_web_search_tool_with_registry(std::sync::Arc::new(move ||ConfigLoadResult::Ok{config:config.clone(),source:"HTTP fixture".into()}),Some(active),Some(live),Default::default());
     let server=async{
         let (mut socket,_)=listener.accept().await.expect("search connection");let mut bytes=Vec::new();let mut chunk=[0;4096];
@@ -44,4 +44,38 @@ async fn automatic_auth_failure_preserves_configured_http_search_and_request_lim
     let client=async{(tool.execute)(maho_tools::definition::ToolCall{id:"auto-http",params:serde_json::json!({"query":"configured fallback"}),signal:Default::default(),context:None,on_update:None}).await.expect("automatic search")};
     let ((),result)=tokio::time::timeout(std::time::Duration::from_secs(5),async{tokio::join!(server,client)}).await.expect("HTTP signal completion");
     assert_eq!(*registry.calls.lock().expect("auth calls"),["gpt-5-denied"]);assert_eq!(result.details.expect("search details")["results"][0]["title"],"Configured search");
+}
+/// Upstream `websearch-native-search-model.test.ts`: the active native route searches on the chosen
+/// same-route model and keeps the session model as its fallback; another provider's model is ignored.
+#[tokio::test]
+async fn active_native_route_searches_on_the_chosen_model_with_the_session_fallback(){
+    let priced=|id:&str,input:f64|{let mut model=model(id,"openai-proxy.example.com");model.cost.input=input;model.cost.output=input*5.;model};
+    let session=priced("gpt-5",5.);
+    let registry=std::sync::Arc::new(Registry{models:vec![session.clone(),priced("gpt-5-mini",1.)],calls:Default::default()});
+    let live:std::sync::Arc<dyn ModelRegistry>=registry.clone();
+    let config=|native_model:Option<&str>|WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:true,native_model:native_model.map(str::to_owned),providers:vec![]};
+    let merged=config_with_native_routes(config(Some("gpt-5-mini")),Some(&session),Some(&live),None).await.unwrap();
+    assert_eq!(merged.providers[0].config.model.as_deref(),Some("gpt-5-mini"));
+    assert_eq!(merged.providers[0].fallback_model.as_deref(),Some("gpt-5"));
+    let ignored=config_with_native_routes(config(Some("claude-haiku-4-5")),Some(&session),Some(&live),None).await.unwrap();
+    assert_eq!(ignored.providers[0].config.model.as_deref(),Some("gpt-5"));
+    assert_eq!(ignored.providers[0].fallback_model,None);
+}
+/// Upstream `tool.ts:96-101`: the "no usable provider" check runs after the native route is
+/// added, so a websearch.json holding only a login-less `chatgpt-subscription` entry still
+/// searches through the session's native route instead of failing.
+#[tokio::test]
+async fn login_less_subscription_entry_falls_through_to_the_native_route(){
+    let active=model("gpt-5","api.openai.com");
+    let registry=std::sync::Arc::new(Registry{models:vec![],calls:Default::default()});let live:std::sync::Arc<dyn ModelRegistry>=registry.clone();
+    let config=WebsearchConfig{auto:true,fallback:true,strategy:RoutingStrategy::Priority,native_model:None,providers:vec![SearchProviderEntry{config:SearchProviderConfig::new(SearchProvider::ChatgptSubscription),priority:None,weight:None,fallback_model:None}]};
+    let tool=maho_ext_websearch::websearch::tool::create_web_search_tool_with_registry(std::sync::Arc::new(move ||ConfigLoadResult::Ok{config:config.clone(),source:"fixture".into()}),Some(active),Some(live),Default::default());
+    let progress=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let captured=progress.clone();
+    // The first progress update precedes any network call; failing it stops the search there.
+    let result=(tool.execute)(maho_tools::definition::ToolCall{id:"login-less",params:serde_json::json!({"query":"native fallthrough"}),signal:Default::default(),context:None,on_update:Some(std::sync::Arc::new(move|update|{captured.lock().expect("progress lock").push(update.details.expect("progress details"));Err(maho_tools::definition::ToolError::Message("stop before network".into()))}))}).await;
+    assert!(matches!(result,Err(maho_tools::definition::ToolError::Message(ref message)) if message=="stop before network"),"{result:?}");
+    let progress=progress.lock().expect("progress lock");
+    assert_eq!(progress.len(),1);assert_eq!(progress[0]["phase"],"searching");
+    assert_eq!(progress[0]["providerLabels"].as_array().expect("labels").len(),1);
+    assert_eq!(*registry.calls.lock().expect("auth calls"),["gpt-5"]);
 }

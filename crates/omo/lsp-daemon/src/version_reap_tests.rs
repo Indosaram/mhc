@@ -326,6 +326,11 @@ fn darwin_node_cli_daemon_ps_line_is_proven() {
         Some("/opt/omo/bin/lsp-daemon daemon\n"),
         ReapPlatform::Darwin
     ));
+    assert!(attest_with(
+        None,
+        Some(r#""/Users/test/dir with spaces/lsp-daemon" daemon"#),
+        ReapPlatform::Darwin
+    ));
 }
 
 #[test]

@@ -78,6 +78,57 @@ impl ResolvedGoogleThinkingLevel {
     }
 }
 
+/// Whether this model uses Gemini's discrete `thinkingLevel` control instead of the token-based
+/// `thinkingBudget` control. Supported levels come from the model's `thinkingLevelMap`; this only
+/// selects the Google wire format.
+pub fn uses_google_thinking_level(model: &Model) -> bool {
+    static GEMINI_3_PRO_OR_FLASH: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"gemini-3(?:\.[0-9]+)?-(?:pro|flash)")
+                .unwrap_or_else(|error| panic!("invalid Gemini 3 regex: {error}"))
+        });
+    static GEMMA_4: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"gemma-?4")
+            .unwrap_or_else(|error| panic!("invalid Gemma regex: {error}"))
+    });
+    let id = model.id.to_lowercase();
+    // Match Gemini 3 Pro/Flash IDs with or without a minor version, such as
+    // gemini-3-flash-preview, gemini-3.1-pro-preview, and gemini-3.8-flash.
+    GEMINI_3_PRO_OR_FLASH.is_match(&id)
+        // Generation 4 and later only accept discrete levels; a budget is rejected with HTTP 400 (senpi#3292).
+        || crate::models::google_thinking_generation::is_google_generation_4_or_later_model_id(&id)
+        || id == "gemini-flash-latest"
+        || id == "gemini-flash-lite-latest"
+        // Match both hosted Gemma 4 naming forms: gemma-4-* and gemma4-*.
+        || GEMMA_4.is_match(&id)
+}
+
+pub fn to_google_thinking_level(level: ResolvedGoogleThinkingLevel) -> GoogleApiThinkingLevel {
+    match level {
+        ResolvedGoogleThinkingLevel::Minimal => GoogleApiThinkingLevel::Minimal,
+        ResolvedGoogleThinkingLevel::Low => GoogleApiThinkingLevel::Low,
+        ResolvedGoogleThinkingLevel::Medium => GoogleApiThinkingLevel::Medium,
+        ResolvedGoogleThinkingLevel::High => GoogleApiThinkingLevel::High,
+    }
+}
+
+/// The `thinkingConfig` for a thinking-off request: models on the level control take their lowest
+/// supported level (without `includeThoughts`), everything else a zero budget.
+pub fn get_disabled_google_thinking_config(model: &Model) -> Result<Value, String> {
+    if !uses_google_thinking_level(model) {
+        return Ok(serde_json::json!({ "thinkingBudget": 0 }));
+    }
+
+    let fallback = crate::models::clamp_thinking_level(model, ModelThinkingLevel::Off);
+    if fallback == ModelThinkingLevel::Off {
+        return Ok(serde_json::json!({ "thinkingBudget": 0 }));
+    }
+
+    let resolved_level = resolve_google_thinking_level(model, fallback)?;
+    let api_level = to_google_thinking_level(resolved_level);
+    Ok(serde_json::json!({ "thinkingLevel": api_level.as_str() }))
+}
+
 /// Resolve a supported pi level or model-specific Google mapping to a standard Google level.
 pub fn resolve_google_thinking_level(
     model: &Model,

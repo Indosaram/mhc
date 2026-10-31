@@ -721,3 +721,83 @@ fn disabled_mcp_builtins_are_a_union_across_layers() {
         vec!["context7".to_owned(), "grep_app".to_owned()]
     );
 }
+
+// ---- memory.projection defaults (config-keys.md, Delta v5.1.52 D1) -------------------------
+
+#[test]
+fn memory_without_projection_gets_the_new_projection_defaults() {
+    let t = Tree::new();
+    t.write("home/.omo/omo.jsonc", r#"{"memory": {"enabled": true}}"#);
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty());
+    let projection = &r.view["memory"]["projection"];
+    assert_eq!(projection["max_entries_per_directory"], json!(0));
+    assert_eq!(projection["max_bytes"], json!(40960));
+}
+
+#[test]
+fn written_projection_max_bytes_wins_and_entries_default_to_zero() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"memory": {"projection": {"max_bytes": 24576}}}"#,
+    );
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty());
+    let projection = &r.view["memory"]["projection"];
+    assert_eq!(projection["max_bytes"], json!(24576));
+    assert_eq!(projection["max_entries_per_directory"], json!(0));
+}
+
+#[test]
+fn written_projection_entries_win_and_max_bytes_defaults_to_40960() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"memory": {"projection": {"max_entries_per_directory": 40}}}"#,
+    );
+    let r = t.load("home");
+    assert!(r.diagnostics.is_empty());
+    let projection = &r.view["memory"]["projection"];
+    assert_eq!(projection["max_entries_per_directory"], json!(40));
+    assert_eq!(projection["max_bytes"], json!(40960));
+}
+
+#[test]
+fn negative_projection_value_is_pruned_and_the_default_applies() {
+    let t = Tree::new();
+    t.write(
+        "home/.omo/omo.jsonc",
+        r#"{"memory": {"enabled": true, "projection": {"max_bytes": -1}}}"#,
+    );
+    let r = t.load("home");
+    assert_eq!(kinds(&r), vec![DiagnosticKind::InvalidValue]);
+    assert_eq!(
+        r.diagnostics[0].issues,
+        vec!["memory.projection.max_bytes".to_string()]
+    );
+    assert_eq!(r.view["memory"]["projection"]["max_bytes"], json!(40960));
+}
+
+#[test]
+fn schema_defaults_of_projection_keys_are_0_and_40960() {
+    use maho_config::schema::{Rule, document_rule};
+    fn field<'a>(rule: &'a Rule, name: &str) -> &'a maho_config::schema::Field {
+        match rule {
+            Rule::Object(fields) => fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("field {name}")),
+            other => panic!("not an object rule: {other:?}"),
+        }
+    }
+    let projection = field(&field(document_rule(), "memory").rule, "projection");
+    assert_eq!(
+        projection.default,
+        Some(json!({"max_entries_per_directory": 0, "max_bytes": 40960}))
+    );
+    let entries = field(&projection.rule, "max_entries_per_directory");
+    let bytes = field(&projection.rule, "max_bytes");
+    assert_eq!(entries.default, Some(json!(0)));
+    assert_eq!(bytes.default, Some(json!(40960)));
+}

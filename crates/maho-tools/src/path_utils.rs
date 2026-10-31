@@ -2,6 +2,12 @@ use std::path::{Component, Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
 pub fn expand_path(path: &str) -> PathBuf {
+    expand_path_with(path, || {
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+    })
+}
+
+pub fn expand_path_with(path: &str, home: impl FnOnce() -> Option<std::ffi::OsString>) -> PathBuf {
     let normalized: String = path
         .chars()
         .map(|c| match c {
@@ -10,10 +16,17 @@ pub fn expand_path(path: &str) -> PathBuf {
         })
         .collect();
     let normalized = normalized.strip_prefix('@').unwrap_or(&normalized);
-    if (normalized == "~" || normalized.starts_with("~/"))
-        && let Some(home) = std::env::var_os("HOME")
+    let is_tilde = normalized == "~"
+        || normalized.starts_with("~/")
+        || (cfg!(windows) && normalized.starts_with("~\\"));
+    if is_tilde
+        && let Some(home) = home()
     {
-        return PathBuf::from(home).join(normalized.strip_prefix("~/").unwrap_or(""));
+        let rest = normalized
+            .strip_prefix("~/")
+            .or_else(|| normalized.strip_prefix("~\\"))
+            .unwrap_or("");
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(normalized)
 }
@@ -209,5 +222,47 @@ mod tests {
         // Then
         assert_eq!(resolved, directory.path().join("missing"));
         Ok(())
+    }
+
+    #[test]
+    fn expand_path_windows_userprofile() {
+        use std::ffi::OsString;
+
+        let untouched = super::expand_path_with("~/doc", || None);
+        assert_eq!(untouched, std::path::PathBuf::from("~/doc"));
+
+        let expanded = super::expand_path_with("~/doc", || Some(OsString::from("/fake/profile")));
+        assert_eq!(expanded, std::path::PathBuf::from("/fake/profile/doc"));
+
+        #[cfg(windows)]
+        {
+            let expanded_backslash =
+                super::expand_path_with("~\\doc", || Some(OsString::from(r"C:\Users\test")));
+            assert_eq!(
+                expanded_backslash,
+                std::path::PathBuf::from(r"C:\Users\test\doc")
+            );
+        }
+
+        let mut order = Vec::new();
+        let lookup = |home: Option<&'static str>, profile: Option<&'static str>, log: &mut Vec<&'static str>| {
+            home.map(|v| {
+                log.push("HOME");
+                OsString::from(v)
+            })
+            .or_else(|| {
+                log.push("USERPROFILE");
+                profile.map(OsString::from)
+            })
+        };
+
+        let resolved_profile = super::expand_path_with("~/doc", || lookup(None, Some("/profile"), &mut order));
+        assert_eq!(order, vec!["USERPROFILE"]);
+        assert_eq!(resolved_profile, std::path::PathBuf::from("/profile/doc"));
+
+        order.clear();
+        let resolved_home = super::expand_path_with("~/doc", || lookup(Some("/home"), Some("/profile"), &mut order));
+        assert_eq!(order, vec!["HOME"]);
+        assert_eq!(resolved_home, std::path::PathBuf::from("/home/doc"));
     }
 }

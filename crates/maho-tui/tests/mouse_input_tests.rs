@@ -1,11 +1,11 @@
 //! Port of senpi `packages/tui/test/mouse-input.test.ts`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use maho_tui::mouse_input::{
-    decode_mouse_button, is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, to_tui_mouse_event,
-    MouseClickSynthesizer, MouseTracking, SgrMouseEvent, ToTuiMouseEventExtra,
+    MouseClickSynthesizer, MouseTracking, SgrMouseEvent, ToTuiMouseEventExtra, decode_mouse_button,
+    is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, to_tui_mouse_event,
 };
 use maho_tui::stdin_buffer::{Clock, StdinBuffer, StdinBufferOptions, StdinEvent, StdinInput};
 use maho_tui::tui::{TuiMouseButton, TuiMouseEventType};
@@ -43,7 +43,8 @@ fn data_events(events: Vec<StdinEvent>) -> Vec<String> {
 }
 
 fn assert_parses(sequence: &str, button: i64, x: i64, y: i64, release: bool) {
-    let event = parse_sgr_mouse_event(sequence).unwrap_or_else(|| panic!("{sequence} did not parse"));
+    let event =
+        parse_sgr_mouse_event(sequence).unwrap_or_else(|| panic!("{sequence} did not parse"));
     assert_eq!(event.button, button, "{sequence} button");
     assert_eq!(event.x, x, "{sequence} x");
     assert_eq!(event.y, y, "{sequence} y");
@@ -82,7 +83,10 @@ fn rejects_out_of_range_protocol_values() {
 
 #[test]
 fn decodes_buttons_and_modifiers() {
-    let buttons: Vec<TuiMouseButton> = [0, 1, 2, 3].iter().map(|bit| decode_mouse_button(*bit)).collect();
+    let buttons: Vec<TuiMouseButton> = [0, 1, 2, 3]
+        .iter()
+        .map(|bit| decode_mouse_button(*bit))
+        .collect();
     assert_eq!(
         buttons,
         vec![
@@ -128,7 +132,10 @@ fn reassembles_split_reads_before_keyboard_handling() {
     let mut buffer = new_buffer(&clock);
     let mut seen: Vec<String> = Vec::new();
     seen.extend(data_events(buffer.process(StdinInput::Text("\x1b[<0;1"))));
-    assert!(seen.is_empty(), "partial fragment must not be emitted: {seen:?}");
+    assert!(
+        seen.is_empty(),
+        "partial fragment must not be emitted: {seen:?}"
+    );
     seen.extend(data_events(buffer.process(StdinInput::Text("0;5M"))));
     assert_eq!(seen, vec!["\x1b[<0;10;5M"]);
     assert_parses(&seen[0], 0, 9, 4, false);
@@ -141,7 +148,10 @@ fn keeps_owned_fragments_out_of_keyboard_handling_after_timeout_flush() {
     let mut buffer = new_buffer(&clock);
     let mut seen: Vec<String> = Vec::new();
     seen.extend(data_events(buffer.process(StdinInput::Text("\x1b[<0;1"))));
-    assert!(buffer.flush().is_empty(), "flush must not release an owned fragment");
+    assert!(
+        buffer.flush().is_empty(),
+        "flush must not release an owned fragment"
+    );
     seen.extend(data_events(buffer.process(StdinInput::Text("0;5M"))));
     assert_eq!(seen, vec!["\x1b[<0;10;5M"]);
     buffer.destroy();
@@ -156,7 +166,10 @@ fn bounds_owned_fragment_buffering_and_discards_late_tails() {
     clock.advance(750);
     data_events(buffer.fire_timer());
     assert_eq!(buffer.get_buffer(), "");
-    assert!(seen.is_empty(), "expired fragment must not be emitted: {seen:?}");
+    assert!(
+        seen.is_empty(),
+        "expired fragment must not be emitted: {seen:?}"
+    );
 
     seen.extend(data_events(buffer.process(StdinInput::Text("0;5Ma"))));
     assert_eq!(seen, vec!["a"]);
@@ -194,7 +207,10 @@ fn synthesizes_click_chains_with_explicit_time() {
     for i in 0..4i64 {
         synthesizer.press(raw, target, 1, 100 * i);
         let released = synthesizer.release(
-            SgrMouseEvent { release: true, ..raw },
+            SgrMouseEvent {
+                release: true,
+                ..raw
+            },
             target,
             1,
             100 * i + 1,
@@ -203,7 +219,15 @@ fn synthesizes_click_chains_with_explicit_time() {
     }
     synthesizer.press(raw, target, 1, 1000);
     assert_eq!(
-        synthesizer.release(SgrMouseEvent { release: true, ..raw }, target, 1, 1001),
+        synthesizer.release(
+            SgrMouseEvent {
+                release: true,
+                ..raw
+            },
+            target,
+            1,
+            1001
+        ),
         Some(1)
     );
 }
@@ -243,6 +267,118 @@ fn mouse_tracking_sequences_match_senpi() {
         MouseTracking::ALL_MOTION,
         "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h"
     );
-    assert_eq!(MouseTracking::BUTTON_MOTION, "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h");
-    assert_eq!(MouseTracking::DISABLE, "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+    assert_eq!(
+        MouseTracking::BUTTON_MOTION,
+        "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h"
+    );
+    assert_eq!(
+        MouseTracking::DISABLE,
+        "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+    );
+}
+
+// ---- tui-main-screen-mouse.test.ts: wheel yield (#3604) ----
+
+mod main_screen_yield {
+    use maho_tui::mouse_input::MouseTracking;
+    use maho_tui::terminal::{InputHandler, ResizeHandler, Terminal, TerminalError};
+    use maho_tui::tui_main_screen::{MouseTrackingSupport, TuiMainScreen};
+
+    #[derive(Default)]
+    struct RecordingTerminal {
+        out: String,
+    }
+
+    impl RecordingTerminal {
+        fn count(&self, needle: &str) -> usize {
+            self.out.matches(needle).count()
+        }
+    }
+
+    impl Terminal for RecordingTerminal {
+        fn start(&mut self, _on_input: InputHandler, _on_resize: ResizeHandler) {}
+        fn stop(&mut self) -> Result<(), TerminalError> {
+            Ok(())
+        }
+        fn drain_input(&mut self, _max_ms: u64, _idle_ms: u64) {}
+        fn write(&mut self, data: &str) {
+            self.out.push_str(data);
+        }
+        fn columns(&self) -> u16 {
+            80
+        }
+        fn rows(&self) -> u16 {
+            24
+        }
+        fn kitty_protocol_active(&self) -> bool {
+            true
+        }
+        fn move_by(&mut self, _lines: i64) {}
+        fn hide_cursor(&mut self) {}
+        fn show_cursor(&mut self) {}
+        fn clear_line(&mut self) {}
+        fn clear_from_cursor(&mut self) {}
+        fn clear_screen(&mut self) {}
+        fn set_title(&mut self, _title: &str) {}
+        fn set_progress(&mut self, _active: bool) {}
+    }
+
+    const SUPPORT: MouseTrackingSupport = MouseTrackingSupport {
+        is_tty: true,
+        is_termux: false,
+        is_windows_without_wt: false,
+    };
+
+    fn armed() -> (TuiMainScreen, RecordingTerminal) {
+        let mut screen = TuiMainScreen::new();
+        let mut terminal = RecordingTerminal::default();
+        screen.base.state.borrow_mut().stopped = false;
+        screen.acquire_mouse_capture("pending-question", &SUPPORT, &mut terminal);
+        (screen, terminal)
+    }
+
+    #[test]
+    fn yields_the_mouse_to_the_terminal_on_the_first_wheel_report_so_the_wheel_scrolls_scrollback()
+    {
+        let (mut screen, mut terminal) = armed();
+        assert_eq!(screen.mouse_capture_state(), "armed");
+        assert!(screen.handle_mouse_input("\x1b[<64;5;3M", 0, &mut terminal));
+        assert_eq!(terminal.count(MouseTracking::DISABLE), 1);
+        assert_eq!(screen.mouse_capture_state(), "yielded");
+        assert!(screen.handle_mouse_input("\x1b[<65;5;3M", 1, &mut terminal));
+        assert!(screen.handle_mouse_input("\x1b[<0;5;3M", 2, &mut terminal));
+        assert!(screen.handle_mouse_input("\x1b[<0;5;3m", 3, &mut terminal));
+        assert_eq!(terminal.count(MouseTracking::DISABLE), 1);
+    }
+
+    #[test]
+    fn stays_yielded_across_terminal_reports_and_focus_changes() {
+        let (mut screen, mut terminal) = armed();
+        screen.handle_mouse_input("\x1b[<64;5;3M", 0, &mut terminal);
+        for report in [
+            "\x1b[<35;5;3M",
+            "\x1b]11;rgb:0/0/0\x1b\\",
+            "\x1b[?1;2c",
+            "\x1b[8;24;80t",
+            "\x1b[I",
+            "\x1b[O",
+        ] {
+            screen.handle_mouse_input(report, 1, &mut terminal);
+        }
+        assert_eq!(terminal.count(MouseTracking::INLINE), 1);
+        assert_eq!(screen.mouse_capture_state(), "yielded");
+    }
+
+    #[test]
+    fn a_released_and_re_acquired_lease_arms_again_after_a_yield() {
+        let (mut screen, mut terminal) = armed();
+        screen.handle_mouse_input("\x1b[<64;5;3M", 0, &mut terminal);
+        screen.release_mouse_capture(&SUPPORT, &mut terminal);
+        assert_eq!(screen.mouse_capture_state(), "off");
+        assert!(!screen.handle_mouse_input("a", 1, &mut terminal));
+        assert_eq!(terminal.count(MouseTracking::INLINE), 1);
+        screen.acquire_mouse_capture("pending-question", &SUPPORT, &mut terminal);
+        assert_eq!(terminal.count(MouseTracking::INLINE), 2);
+        assert_eq!(screen.mouse_capture_state(), "armed");
+    }
 }

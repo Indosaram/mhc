@@ -110,7 +110,12 @@ pub fn resolve_path(base: &Path, path: &Path) -> PathBuf {
 
 fn env_paths(env: &BTreeMap<String, String>, key: &str) -> Vec<String> {
     env.get(key)
-        .map(|value| value.split(':').filter(|path| Path::new(path).is_absolute()).map(|path| resolve_path(Path::new("/"), Path::new(path)).to_string_lossy().into_owned()).collect())
+        .map(|value| {
+            std::env::split_paths(value)
+                .filter(|path| path.is_absolute())
+                .map(|path| resolve_path(Path::new("/"), &path).to_string_lossy().into_owned())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -461,5 +466,18 @@ mod tests {
         assert_eq!(repository(Some("/local/owner/repo")), Some(RemoteRepository { owners: vec![], project: "repo".into() }));
         assert_eq!(repository(Some("")), None);
         assert_eq!(repository(None), None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_env_paths_parses_windows_drive_paths() {
+        let env = BTreeMap::from([(
+            "GIT_CEILING_DIRECTORIES".to_owned(),
+            "C:\\repo\\root".to_owned(),
+        )]);
+        assert_eq!(
+            env_paths(&env, "GIT_CEILING_DIRECTORIES"),
+            vec!["C:\\repo\\root"]
+        );
     }
 }

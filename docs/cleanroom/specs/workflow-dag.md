@@ -198,3 +198,57 @@ only on Windows.
 21. On a run stopped by the user: `resume` is refused with `run_paused_by_user`; `guide` add/edit/
     remove work; `cancel_node` cancels one node and the run stays `paused`; `guide` on a run that
     is not user-paused returns `run_not_user_paused`.
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+Rows routed through `task.md` "Delta (omo v5.1.52)" D5; the full mapping table for the
+`maho-task` lane is `task.md` D6. Message wording is the implementer's.
+
+### D1. Nodes keep the parent session's model as their last candidate
+
+Behaviour: when a run starts, the `workflow` tool reads the calling session's current model
+(`provider/id`) and stores it in the run record as `parent_model` (optional string; absent when
+the session has no model). Every dispatch of a node's child — first admission (§3.3), a manual
+`retry`, an automatic infrastructure retry (§3.6), an `amend` re-run and recovery after the owner
+died (§3.7) — passes that stored value as the parent model to the task model choice
+(`task.md` §5). So a `category` node whose category models are all unavailable still falls back to
+the model the run was started from, even when a different session (after restart) or no session
+model is around at dispatch time.
+
+- `parent_model` is fixed at start; a later model change in the session does not change it.
+  `amend` keeps it. A reused run (`reused: true`) keeps the stored value.
+- Explicit `model` on a `subagent_type` node still wins (§5 order is unchanged).
+- A run record written before this field existed has no `parent_model`; dispatch then uses the
+  current session's model if any (old behaviour).
+
+Tests:
+1. Session on `p/main`, category `c` with models `[x/unavailable]`, `available` = `{p/main}` →
+   the node's child runs on `p/main`.
+2. Start on `p/main`, then switch the session to `q/other`, then `retry` a failed node → the
+   child again gets `p/main` as its parent model.
+3. Recovery of a run whose owner died re-dispatches a pending node with the stored
+   `parent_model`.
+4. A `subagent_type` node with `model: m/x` runs on `m/x` regardless of `parent_model`.
+5. Record JSON round-trip keeps `parent_model`; a record without it loads.
+
+### D2. Skills from the validated bundled root
+
+`load_skills` (§3.2) searches the bundled skills root resolved by the one shared resolver of
+`skills.md` Delta D1/D2 (validated `MAHO_SKILLS_ROOT` override with its once-per-process notice),
+not a separately computed path. An invalid override therefore produces the same single notice and
+the same fallback root as the `skill` tool.
+
+Test: with `MAHO_SKILLS_ROOT` set to a relative path, starting a run with `load_skills: ["s"]`
+where `s` exists in the executable-sibling bundled root prepends that skill, and the invalid-
+override notice appears at most once in the process.
+
+### D3. Mapping
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-26 | D1 | APPLIES | tool sends the parent model on start |
+| omo-senpi-task-b-15 | D1 | APPLIES | parent model persisted; used by admission, retry and recovery |
+| omo-components-03 | D2 | APPLIES | node skills use the shared validated resolver |
+
+Leak self-check: no SUL code or comment carried over; no constant tables; `parent_model` is a
+neutral field name of this crate's own record; no OmO-original feature.

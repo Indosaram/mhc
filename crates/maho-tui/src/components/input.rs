@@ -435,7 +435,7 @@ impl Component for Input {
         if event.event_type != TuiMouseEventType::Press || event.button != TuiMouseButton::Left || event.y != 0 {
             return None;
         }
-        let visible_column = (event.x - 2).max(0) as usize;
+        let visible_column = (event.x - visible_width(&self.prompt) as i64).max(0) as usize;
         let target_column = self.rendered_start_column + visible_column;
         let mut current_column = 0usize;
         self.cursor = self.value.len();
@@ -528,3 +528,7 @@ impl Component for Input {
         vec![format!("{}{text_with_cursor}{padding}", self.prompt)]
     }
 }
+
+#[cfg(test)]
+#[path = "input_tests.rs"]
+mod tests;

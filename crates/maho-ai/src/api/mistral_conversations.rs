@@ -52,6 +52,7 @@ fn option_value(options: &StreamOptions, key: &str) -> Option<Value> {
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -155,14 +156,7 @@ fn format_mistral_error(error: &MistralError) -> String {
 }
 
 fn truncate_error_text(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_owned();
-    }
-    format!(
-        "{}... [truncated {} chars]",
-        &text[..max_chars],
-        text.len() - max_chars
-    )
+    crate::utils::error_body::truncate_error_text(text, max_chars)
 }
 
 enum MistralError {
@@ -999,7 +993,7 @@ pub fn stream(
         supports_mid_convo_system_messages(model),
     );
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();
@@ -1668,5 +1662,18 @@ mod tests {
             map_reasoning_effort(&model, ModelThinkingLevel::Low),
             "none"
         );
+    }
+
+    #[test]
+    fn format_mistral_error_multibyte_truncation_does_not_panic() {
+        let body = format!("{}你好", "a".repeat(MAX_MISTRAL_ERROR_BODY_CHARS - 1));
+        let error = MistralError::Http(MistralHttpError {
+            status_code: 400,
+            body,
+            message: "bad request".to_owned(),
+        });
+        let formatted = format_mistral_error(&error);
+        assert!(formatted.contains("Mistral API error (400):"));
+        assert!(formatted.contains("[truncated"));
     }
 }

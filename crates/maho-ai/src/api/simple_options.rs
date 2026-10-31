@@ -197,6 +197,7 @@ pub fn build_base_options(
         timeout_ms: stream.and_then(|stream| stream.request.timeout_ms),
         max_retries: stream.and_then(|stream| stream.request.max_retries),
         max_retry_delay_ms: stream.and_then(|stream| stream.request.max_retry_delay_ms),
+        cwd: None,
     };
     Ok(StreamOptions {
         request,

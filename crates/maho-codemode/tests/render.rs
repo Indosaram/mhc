@@ -26,9 +26,8 @@ fn live_cell_clock_and_reset_badges_are_rendered() {
     let mut result=AgentToolResult::text("");
     result.details=json!({"cells":[{"language":"js","code":"1+1","status":"running","startedAt":1000,"output":"2"}]});
     let lines=render_eval_result(&result,&args,&EvalRenderContext {now:4000.0,..Default::default()},80);
-    assert_eq!(lines[0],"╭─ eval js running ⠋ · 3s · reset · timeout 5s");
-    assert!(lines.contains(&"│ 2".into()));
-    assert_eq!(lines.last().unwrap(),"╰─");
+    // Pinned upstream (senpi 903b8336 render-live.ts): fixed-height live frame, headline first, elapsed protected last.
+    assert_eq!(lines,vec!["╭─ ⠋ 1+1 · eval js running · reset · timeout 5s · 3s","│ 1+1","│ ","│ ","├─ output","│ 2","│ ","╰─"]);
 }
 
 #[test]
@@ -75,4 +74,48 @@ fn live_result_card_repaints_itself_each_second_until_terminal() {
     session.render_result(&done,&Default::default(),80).expect("eval result renderer");
     assert!(!maho_tui::ui_intervals::run_due_ui_intervals(Instant::now()+Duration::from_secs(5)));
     assert_eq!(invalidations.get(),1);
+}
+
+#[test]
+fn render_status_env_preserves_non_bmp_unicode() {
+    let mut result = AgentToolResult::text("");
+    result.details = json!({
+        "cells": [{
+            "language": "js",
+            "code": "1",
+            "status": "complete",
+            "output": "",
+            "statusEvents": [{
+                "op": "env",
+                "action": "set",
+                "key": "ICON",
+                "value": "🦀"
+            }]
+        }]
+    });
+    let lines = render_eval_result(&result, &maho_codemode::tool::types::EvalToolRequest::List, &Default::default(), 80);
+    assert!(lines.iter().any(|line| line.contains("ICON=🦀")));
+    assert!(!lines.iter().any(|line| line.contains("ICON=\u{fffd}\u{fffd}")));
+}
+
+/// senpi 903b8336 eval-display-json-bounds.test.ts: legacy stored entries render as bounded placeholders.
+#[test]
+fn legacy_oversized_display_entries_render_bounded() {
+    let render=|value:serde_json::Value,expanded:bool| {
+        let mut result=AgentToolResult::text("");
+        result.details=json!({"cells":[{"language":"js","code":"1","status":"complete","output":""}],"jsonOutputs":[value]});
+        render_eval_result(&result,&maho_codemode::tool::types::EvalToolRequest::List,&EvalRenderContext {expanded,..Default::default()},80)
+    };
+    let buffer=json!({"type":"Buffer","data":vec![0;3_000_000],"width":1,"height":1});
+    let nested=json!({"buffer":{"type":"Buffer","data":vec![0;3_000_000]},"width":1,"height":1});
+    for expanded in [false,true] {
+        let lines=render(buffer.clone(),expanded);
+        assert!(lines.join("\n").contains("<Buffer 2.9 MB>"));
+        let lines=render(nested.clone(),expanded);
+        let text=lines.join("\n");
+        assert!(text.contains("buffer: <Buffer 2.9 MB>") && text.contains("width: 1") && text.contains("height: 1"));
+        assert!(!text.contains("[0]"));
+    }
+    let lines=render(json!({"payload":"x".repeat(200_000)}),true);
+    assert!(lines.iter().any(|line|line.starts_with("… oversized display value elided ({1 keys}, ~7.8 KB+ stored)")),"{lines:?}");
 }

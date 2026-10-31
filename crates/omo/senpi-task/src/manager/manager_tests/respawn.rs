@@ -25,8 +25,8 @@ use crate::runners::RunnerOutcome;
 use crate::runners::in_process::ChildSpec;
 use crate::runners::types::{RpcRunnerSpec, RpcSwitchSessionResult};
 use crate::state::{
-    ResidencyState, ResolvedModelRecord, ResolvedModelSource, SpawnSpecV1, TaskNotification,
-    TaskRecord, TaskRecordInput, TaskSpawnSpec, TaskStatus, create_task_record,
+    ProvisionalExit, ResidencyState, ResolvedModelRecord, ResolvedModelSource, SpawnSpecV1,
+    TaskNotification, TaskRecord, TaskRecordInput, TaskSpawnSpec, TaskStatus, create_task_record,
 };
 
 const HOST_PID: i64 = 7001;
@@ -589,6 +589,38 @@ fn given_claimed_non_terminal_record_with_stale_output_when_reattached_then_outp
     assert_eq!(stored.notification.notified_epoch, 3);
     assert_eq!(stored.error_message, None);
     assert_eq!(stored.final_response, None);
+}
+
+#[test]
+fn given_claimed_non_terminal_record_with_provisional_exit_when_reattached_then_exit_clears() {
+    // manager-reattach.ts: a non-terminal reattach starts a new epoch without the old exit.
+    let record = TaskRecord {
+        status: TaskStatus::Running,
+        host_pid: Some(HOST_PID),
+        notification: TaskNotification {
+            run_epoch: 4,
+            ..TaskNotification::default()
+        },
+        provisional_exit: Some(ProvisionalExit {
+            observed_at: "2030-01-01T00:00:00.000Z".to_string(),
+            run_epoch: 4,
+            code: Some(1),
+            signal: None,
+        }),
+        ..respawn_record()
+    };
+    let (manager, project) = reattach_setup(&record);
+
+    let result = manager.reattach(&record, FakeHandle::new(&record.task_id, None));
+
+    assert_eq!(result, ReattachResult::Ok);
+    let stored = project
+        .store()
+        .load(&record.task_id)
+        .expect("load")
+        .expect("record");
+    assert_eq!(stored.notification.run_epoch, 5);
+    assert_eq!(stored.provisional_exit, None);
 }
 
 #[test]

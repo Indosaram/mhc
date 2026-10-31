@@ -225,3 +225,104 @@ OS where available, else `unknown`.
     Prepare failure → one error notification, nothing submitted.
 15. RPC session choice: no `sessionId` uses the latest live session; `null` gives a draft without
     a `session` section; after the latest session shuts down the previous one is used.
+
+---
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+Updates §5.2 (submit), §6 (command flow) and the loading-failure message.
+
+### D1. Wire changes to the report request
+
+- `redactorVersion` in the body becomes `"1.0.0"` (was `"1"`).
+- The POST carries two more headers, computed over the exact serialized body bytes sent:
+  `content-length` (byte count) and `x-omo-content-sha256` (lowercase hex SHA-256 of those bytes).
+  Existing headers are unchanged.
+
+Tests: given a captured request, then the length header equals the body's byte length (multi-byte
+description included) and the digest header equals SHA-256 of the received body; the body field
+reads `1.0.0`. The saved-locally file also uses `1.0.0`.
+
+### D2. Typed refusals for every service error code
+
+The `refused` result's `reason` set becomes `secret-detected | too-large | rate-limited |
+sign-in-required | service-rejected | service-unavailable | unavailable`. `service-rejected` and
+`service-unavailable` carry `code` (a known code, or `unknown`) and an optional `requestId`.
+`unavailable` is still only "no answer" (network failure, 2xx without id).
+
+The error code is `error.code` of the JSON answer; it is mapped as follows (service contract
+values, interface facts):
+
+| code(s) | reason |
+| --- | --- |
+| `secret_detected` | secret-detected |
+| `rate_limited` | rate-limited |
+| `unauthorized`, `forbidden`, `reauth_required`, `device_revoked`, `writer_floor_mismatch`, `account_deleted`, `anonymous_closed` | sign-in-required |
+| `not_available`, `not_configured`, `service_upgrade_required`, `internal` | service-unavailable |
+| every other code of the contract (`invalid_request`, `not_found`, `method_not_allowed`, `conflict`, `stale_base`, `quota_exceeded`, `entitlement_required`, `client_update_required`, `update_required`, `client_upgrade_required`, `unsupported_version`, `export_expired`, `step_up_required`, `access_not_open`) | service-rejected |
+
+Unknown or missing code: status 401/403 → sign-in-required; 413 → too-large; 429 → rate-limited;
+status ≥ 500 → service-unavailable with code `unknown`; otherwise service-rejected with code
+`unknown`. The 409 + `conflict` + caller-supplied valid key → `already-sent` rule of §5.2 is
+checked first.
+
+`requestId` (from `error.requestId`) is kept only if it matches 1-128 characters of
+`A-Za-z0-9_-` **and** the upload redactor finds nothing in it; otherwise it is omitted.
+
+Messages: sign-in-required tells the user to sign in; service-rejected says the service did not
+accept the report, names the code, shows the request id when present (labelled so the user can
+quote it to support) and suggests updating mhc; service-unavailable names the code, shows the
+request id when present and suggests trying again later. A refusal that reached the service is
+logged as a warning (event name free) with reason, code and request id.
+
+Tests: one case per table row group (a code from each group); 401 with no JSON body →
+sign-in-required; 500 HTML body → service-unavailable/unknown; request id `a b` or one containing a
+secret-shaped token → omitted; `conflict` without a caller key → service-rejected/conflict.
+
+### D3. Sign-in used by `/feedback` and `/bug`
+
+Where the product has a stored CLI sign-in (credential store for the service API origin), the
+command flow decides the access token for `submit` (the draft from `prepare` is built as before)
+as follows: uploads disabled (`OMO_DISABLE_FEEDBACK`) → no token, no store read. No stored
+sign-in → anonymous, silently. A stored sign-in whose access token is still valid for more than
+30 seconds and whose refresh state is not "uncertain" → send that token. The flow does not
+refresh an expiring token itself; a token that is not usable as stored is treated as unusable. A
+stored sign-in that cannot be used (expired, uncertain, or the store read fails for a reason other
+than "signed out") → anonymous send plus one warning notification, before sending, telling the
+user the report goes out without their account. In the MIT profile with no credential store
+configured, behaviour is the pre-existing "token supplied by the caller or none"; the store is an
+injectable dependency, as is the logger.
+
+Tests: valid token → bearer header; token valid for only 10 more seconds → anonymous + warning, and
+the store's refresh is never called; expired → anonymous + warning; store absent → anonymous, no
+warning; uploads off → store never read.
+
+### D4. Missing-installation message
+
+`maho-feedback` is linked into the binary and has no separately loaded part, so it has no
+loader-failure message of its own. What applies is the reinstall step used by any message of the
+product that reports a missing part of the installation (today the launcher's messages for a
+missing or unreadable installed version). Such a message states what failed, that part of the
+installation is missing, a reinstall step, and, when a running session is affected, that a new
+session is needed. The reinstall step names the exact command when the launcher/installer set
+`MAHO_REINSTALL_COMMAND` (or the legacy `OMO_REINSTALL_COMMAND`) to a non-blank value (trimmed);
+otherwise it is a plain "reinstall mhc" instruction without a command.
+
+Tests: env set to `  curl -fsSL x | sh  ` → message contains the trimmed command; blank or unset →
+no command is named; `MAHO_REINSTALL_COMMAND` wins over the legacy name when both are set.
+
+### D5. Mapping table
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-06 | D4 | APPLIES | user-visible reinstall step and env interface (no feedback loader in MIT; applies to the product's missing-installation messages) |
+| omo-components-15 | D1 | APPLIES | network payload fields |
+| omo-components-16 | D2 | APPLIES | refusal texts and codes |
+| omo-components-17 | D3 | APPLIES | user-visible fallback notice, token policy |
+
+Leak self-check:
+- No fenced SUL code: none used.
+- No paraphrase of SUL comments/prompts: messages given as required facts only.
+- Table mirrors an interface fact (service contract error codes, a public wire contract), marked as such.
+- No OmO-original identifier: product name `mhc`; legacy env name kept as an on-disk/launcher fact.
+- No OmO-original feature.
