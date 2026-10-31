@@ -218,6 +218,7 @@ pub mod session_relocation_channel;
 mod session_relocation_legacy;
 pub mod session_router_open_profile;
 pub mod session_status;
+pub mod session_status_commands;
 pub mod session_status_opened;
 pub mod session_status_source;
 pub mod session_status_stream;
