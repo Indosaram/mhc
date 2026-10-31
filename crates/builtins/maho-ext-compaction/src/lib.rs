@@ -384,6 +384,9 @@ impl maho_ext_api::Extension for CompactionExtension {
                 emergency_prune::EmergencyPruneLatch::default(),
             ));
             let tools_api = std::sync::Arc::clone(&live_api);
+            let replay_boundary = std::sync::Arc::new(std::sync::Mutex::new(
+                None::<openai_remote::OpenAiRemoteReplayBoundary>,
+            ));
             let warm = std::sync::Arc::clone(&warm);
             let generation = std::sync::Arc::clone(&generation);
             let idle_state = std::sync::Arc::clone(&state);
@@ -503,6 +506,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         });
                         logger.debug(event, fields.as_object());
                     }),
+                    replay_boundary: std::sync::Arc::clone(&replay_boundary),
                 },
             );
             // senpi session_compact: an accepted compaction restarts the frontier.
