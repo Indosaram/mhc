@@ -139,8 +139,9 @@ impl TaskLifecycle {
             return Ok(ReconcileResult::default());
         }
         // `retryDeferredHostSessions` predates this sync and is still absent.
+        // Upstream passes the base context: background retries are not fenced by this pass.
         super::deferred_owner_reconcile::retry_deferred_legacy_owners(
-            &pass,
+            &self.context,
             &outcomes,
             parent_session_id,
         );

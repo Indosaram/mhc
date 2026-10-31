@@ -404,8 +404,8 @@ fn a_deferred_retry_cannot_reclaim_after_shutdown() {
 }
 
 #[test]
-fn an_aborted_pass_stops_its_deferred_retry_although_retries_are_not_stopped() {
-    // Given a deferred retry spawned by a pass the caller can abort.
+fn an_aborted_pass_does_not_stop_its_background_owner_retry() {
+    // Given a background owner retry spawned by a pass the caller can abort.
     let f = Fixture::new(Vec::new());
     let signal = crate::manager::AbortSignal::default();
     f.lifecycle
@@ -416,12 +416,33 @@ fn an_aborted_pass_stops_its_deferred_retry_although_retries_are_not_stopped() {
     signal.abort();
     f.signaller.set_alive(OWNER_PID, false);
     f.gates.release(0);
-    f.settled();
-    // Then `!reconciliationActive` alone ends the retry without a mutation.
-    assert!(!crate::lifecycle::deferred_revival::retries_stopped(
-        f.lifecycle.context(),
-        "new-parent"
-    ));
+    // Then the retry runs on the base context, as upstream create.ts does, and still reclaims.
+    f.destroyed();
+    assert_eq!(f.record().status, TaskStatus::Lost);
+    assert!(f.events().contains(&"reconcile_lost".to_string()));
+}
+
+#[test]
+fn an_abort_during_the_startup_dead_child_retry_stops_it() {
+    // Given a dead child whose startup retry is waiting inside an abortable pass.
+    let f = Fixture::new(vec![1]);
+    let signal = crate::manager::AbortSignal::default();
+    let lifecycle = f.lifecycle.clone();
+    let pass_signal = signal.clone();
+    let startup = std::thread::spawn(move || {
+        lifecycle
+            .reconcile_on_session_start_with_signal(Some("new-parent"), Some(&pass_signal))
+            .expect("reconcile")
+            .outcomes
+    });
+    f.entered(0);
+    // When the caller aborts during that wait and owner death is then visible.
+    signal.abort();
+    f.signaller.set_alive(OWNER_PID, false);
+    f.gates.release(0);
+    let outcomes = startup.join().expect("startup thread");
+    // Then the fenced startup retry stops without a mutation and no background retry starts.
+    assert!(outcomes.is_empty());
     assert_eq!(f.gates.len(), 1);
     assert_eq!(f.record().status, TaskStatus::Running);
     assert_eq!(f.events(), vec!["transition_applied"]);
