@@ -3460,3 +3460,2021 @@ mod tui_render_and_overlays {
         assert!(changed_lines.matches.is_empty());
     }
 }
+
+// ---- tui-alt-screen.test.ts: viewport, wheel, scrollbar and keyboard navigation ----
+//
+// senpi sends input through `VirtualTerminal.sendInput` and awaits `waitForRender`; here each input
+// goes straight to `handle_mouse_input`/`handle_terminal_input` and each render is one explicit
+// `do_render`. senpi's scrollbar hide timer is `poll_timers(now_ms)` at an explicit clock reading.
+mod alt_screen_viewport {
+    use super::*;
+    use maho_tui::components::h_stack::HStack;
+    use maho_tui::components::mouse_region::MouseRegion;
+    use maho_tui::components::scroll_view::{
+        ScrollView, ScrollViewFollow, ScrollViewOptions, ScrollViewScrollbar,
+    };
+    use maho_tui::components::stack::{StackChild, StackEntryOptions, StackOptions};
+    use maho_tui::components::v_stack::VStack;
+    use maho_tui::layout_node::StackBasis;
+    use maho_tui::tui::{TuiMouseEventResult, TuiMouseEventType};
+
+    pub(super) struct AltTerminal {
+        pub(super) vt: VirtualTerminal,
+        pub(super) writes: String,
+    }
+
+    impl Terminal for AltTerminal {
+        fn start(&mut self, _on_input: InputHandler, _on_resize: ResizeHandler) {}
+        fn stop(&mut self) -> Result<(), TerminalError> {
+            Ok(())
+        }
+        fn drain_input(&mut self, _max_ms: u64, _idle_ms: u64) {}
+        fn write(&mut self, data: &str) {
+            self.writes.push_str(data);
+            self.vt.write(data);
+        }
+        fn columns(&self) -> u16 {
+            self.vt.columns()
+        }
+        fn rows(&self) -> u16 {
+            self.vt.rows()
+        }
+        fn kitty_protocol_active(&self) -> bool {
+            true
+        }
+        fn move_by(&mut self, _lines: i64) {}
+        fn hide_cursor(&mut self) {}
+        fn show_cursor(&mut self) {}
+        fn clear_line(&mut self) {}
+        fn clear_from_cursor(&mut self) {}
+        fn clear_screen(&mut self) {
+            self.write("\x1b[2J\x1b[H");
+        }
+        fn set_title(&mut self, _title: &str) {}
+        fn set_progress(&mut self, _active: bool) {}
+    }
+
+    /// A started alt screen (senpi `new TuiAltScreen(terminal)` + `tui.start()` + first render).
+    pub(super) struct Alt {
+        pub(super) tui: TuiAltScreen,
+        pub(super) terminal: AltTerminal,
+    }
+
+    impl Alt {
+        pub(super) fn new(columns: u16, rows: u16) -> Self {
+            let mut vt = VirtualTerminal::new(columns, rows);
+            vt.start();
+            Self {
+                tui: TuiAltScreen::new(),
+                terminal: AltTerminal {
+                    vt,
+                    writes: String::new(),
+                },
+            }
+        }
+        pub(super) fn start(&mut self) {
+            self.tui.base.prepare_start();
+            self.tui
+                .before_terminal_start(&mut self.terminal, true, false);
+            self.render();
+        }
+        pub(super) fn render(&mut self) {
+            self.tui.do_render(&mut self.terminal);
+        }
+        /// senpi `terminal.sendInput(mouse); await terminal.waitForRender()`.
+        pub(super) fn mouse(&mut self, data: &str) {
+            self.tui.handle_mouse_input(data, 0, &mut self.terminal);
+            self.render_if_requested();
+        }
+        /// senpi's render scheduler: paint only when the input requested a frame.
+        pub(super) fn render_if_requested(&mut self) {
+            if self.tui.base.take_due_render(u64::MAX) {
+                self.render();
+            }
+        }
+        pub(super) fn key(&mut self, data: &str) {
+            let release = maho_tui::keys::is_key_release(data);
+            self.tui.handle_terminal_input(data, release);
+            self.render();
+        }
+        pub(super) fn viewport(&self) -> Vec<String> {
+            self.terminal
+                .vt
+                .viewport()
+                .into_iter()
+                .map(|line| line.trim_end().to_owned())
+                .collect()
+        }
+    }
+
+    pub(super) fn numbered(count: usize) -> String {
+        (1..=count)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub(super) fn text(content: &str) -> Rc<RefCell<Text>> {
+        Rc::new(RefCell::new(Text::with_padding(content, 0, 0)))
+    }
+
+    fn scroll_view(
+        content: Rc<RefCell<dyn Component>>,
+        follow: ScrollViewFollow,
+        primary: bool,
+        scrollbar: ScrollViewScrollbar,
+    ) -> Rc<RefCell<ScrollView>> {
+        ScrollView::new(
+            content,
+            ScrollViewOptions {
+                follow,
+                primary,
+                scrollbar,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn entry(
+        component: Rc<RefCell<dyn Component>>,
+        basis: StackBasis,
+        grow: Option<usize>,
+        shrink: Option<usize>,
+        min_size: Option<usize>,
+    ) -> StackChild {
+        StackChild::Entry {
+            component,
+            options: StackEntryOptions {
+                basis: Some(basis),
+                grow,
+                shrink,
+                min_size,
+                max_size: None,
+            },
+        }
+    }
+
+    /// senpi `new VStack([{ transcript, basis: 0, grow: 1, minSize: 1 }, { dock, basis: "auto", minSize: 1 }])`.
+    fn transcript_over_dock(
+        transcript: Rc<RefCell<dyn Component>>,
+        dock: Rc<RefCell<dyn Component>>,
+    ) -> Rc<RefCell<dyn Component>> {
+        Rc::new(RefCell::new(VStack::new(
+            vec![
+                entry(transcript, StackBasis::Fixed(0), Some(1), None, Some(1)),
+                entry(dock, StackBasis::Auto, None, None, Some(1)),
+            ],
+            StackOptions::default(),
+        )))
+    }
+
+    #[test]
+    fn renders_a_terminal_height_viewport_and_preserves_manual_scroll_position() {
+        let mut alt = Alt::new(20, 4);
+        let content = text(&numbered(10));
+        alt.tui.base.add_child(content.clone());
+        alt.start();
+        assert_eq!(alt.viewport(), ["line 7", "line 8", "line 9", "line 10"]);
+        assert!(alt.tui.is_following_output());
+        alt.mouse("\x1b[<64;1;1M");
+        assert_eq!(alt.viewport(), ["line 6", "line 7", "line 8", "line 9"]);
+        assert_eq!(alt.tui.viewport_top(), 5);
+        assert!(!alt.tui.is_following_output());
+        content.borrow_mut().set_text(numbered(12));
+        alt.render();
+        assert_eq!(alt.viewport(), ["line 6", "line 7", "line 8", "line 9"]);
+    }
+
+    #[test]
+    fn shows_a_clickable_jump_to_end_indicator_on_the_transcripts_last_row_while_scrolled_up() {
+        let mut alt = Alt::new(30, 6);
+        alt.tui.set_scroll_to_end_indicator(Some(Rc::new(|| {
+            "\x1b[7m ↓ Jump to end \x1b[27m".to_owned()
+        })));
+        let transcript = scroll_view(
+            text(&numbered(8)),
+            ScrollViewFollow::End,
+            true,
+            ScrollViewScrollbar::Hidden,
+        );
+        alt.tui.set_layout_root(Some(transcript_over_dock(
+            transcript.clone(),
+            text("editor\nfooter"),
+        )));
+        alt.start();
+        assert!(
+            !alt.viewport()
+                .iter()
+                .any(|line| line.contains("Jump to end"))
+        );
+        alt.mouse("\x1b[<64;1;1M");
+        assert!(!transcript.borrow().is_following_end());
+        // vt100 rows come back without trailing blanks; senpi's pad to the 30 columns.
+        assert_eq!(alt.viewport()[3], "line 7  ↓ Jump to end");
+        assert_eq!(alt.viewport()[4], "editor");
+        // Pressing next to the label starts a selection instead of jumping.
+        alt.mouse("\x1b[<0;2;4M");
+        alt.mouse("\x1b[<0;2;4m");
+        assert!(!transcript.borrow().is_following_end());
+        alt.mouse("\x1b[<0;15;4M");
+        alt.mouse("\x1b[<0;15;4m");
+        assert!(transcript.borrow().is_following_end());
+        assert_eq!(
+            alt.viewport(),
+            ["line 5", "line 6", "line 7", "line 8", "editor", "footer"]
+        );
+    }
+
+    #[test]
+    fn leaves_the_scrollbar_visible_and_clickable_when_the_jump_to_end_indicator_spans_the_transcript()
+     {
+        let mut alt = Alt::new(30, 6);
+        alt.tui
+            .set_scroll_to_end_indicator(Some(Rc::new(|| "↓".repeat(30))));
+        let transcript = scroll_view(
+            text(&numbered(12)),
+            ScrollViewFollow::End,
+            true,
+            ScrollViewScrollbar::Always,
+        );
+        alt.tui.set_layout_root(Some(transcript_over_dock(
+            transcript.clone(),
+            text("editor\nfooter"),
+        )));
+        alt.start();
+        alt.mouse("\x1b[<64;1;1M");
+        assert!(!transcript.borrow().is_following_end());
+        assert_eq!(
+            alt.terminal.vt.viewport()[3],
+            format!("{}┃", "↓".repeat(29))
+        );
+        alt.mouse("\x1b[<0;30;4M");
+        alt.mouse("\x1b[<0;30;4m");
+        assert!(!transcript.borrow().is_following_end());
+    }
+
+    #[test]
+    fn never_shows_the_jump_to_end_indicator_for_a_primary_scroll_view_without_follow_end() {
+        let mut alt = Alt::new(30, 3);
+        alt.tui
+            .set_scroll_to_end_indicator(Some(Rc::new(|| " ↓ Jump to end ".to_owned())));
+        let transcript = scroll_view(
+            text("one\ntwo\nthree\nfour\nfive"),
+            ScrollViewFollow::None,
+            true,
+            ScrollViewScrollbar::Hidden,
+        );
+        alt.tui.set_layout_root(Some(transcript.clone()));
+        alt.start();
+        assert!(!transcript.borrow().is_following_end());
+        assert!(
+            !alt.viewport()
+                .iter()
+                .any(|line| line.contains("Jump to end"))
+        );
+    }
+
+    #[test]
+    fn keeps_an_explicit_dock_fixed_while_the_transcript_scrolls() {
+        let mut alt = Alt::new(20, 6);
+        let transcript_text = text(&numbered(8));
+        let transcript = scroll_view(
+            transcript_text.clone(),
+            ScrollViewFollow::End,
+            true,
+            ScrollViewScrollbar::Hidden,
+        );
+        let dock: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(VStack::new(
+            vec![
+                StackChild::Component(text("editor")),
+                StackChild::Component(text("footer")),
+            ],
+            StackOptions::default(),
+        )));
+        alt.tui
+            .set_layout_root(Some(transcript_over_dock(transcript.clone(), dock)));
+        alt.start();
+        assert_eq!(
+            alt.viewport(),
+            ["line 5", "line 6", "line 7", "line 8", "editor", "footer"]
+        );
+        // Wheel over the dock falls back to the primary transcript scroll view.
+        alt.mouse("\x1b[<64;1;6M");
+        assert_eq!(
+            alt.viewport(),
+            ["line 4", "line 5", "line 6", "line 7", "editor", "footer"]
+        );
+        assert!(!transcript.borrow().is_following_end());
+        transcript_text.borrow_mut().set_text(numbered(10));
+        alt.render();
+        assert_eq!(
+            alt.viewport(),
+            ["line 4", "line 5", "line 6", "line 7", "editor", "footer"]
+        );
+        alt.tui.scroll_to_bottom();
+        alt.render();
+        assert_eq!(
+            alt.viewport(),
+            ["line 7", "line 8", "line 9", "line 10", "editor", "footer"]
+        );
+    }
+
+    #[test]
+    fn routes_wheel_input_to_the_scroll_view_under_the_pointer() {
+        let mut alt = Alt::new(20, 4);
+        let left = scroll_view(
+            text("a1\na2\na3\na4\na5\na6\na7"),
+            ScrollViewFollow::End,
+            true,
+            ScrollViewScrollbar::Hidden,
+        );
+        let right = scroll_view(
+            text("b1\nb2\nb3\nb4\nb5\nb6\nb7"),
+            ScrollViewFollow::End,
+            false,
+            ScrollViewScrollbar::Hidden,
+        );
+        alt.tui
+            .set_layout_root(Some(Rc::new(RefCell::new(HStack::new(
+                vec![
+                    entry(left.clone(), StackBasis::Fixed(10), None, Some(0), None),
+                    entry(right.clone(), StackBasis::Fixed(10), None, Some(0), None),
+                ],
+                StackOptions::default(),
+            )))));
+        alt.start();
+        alt.mouse("\x1b[<64;15;1M");
+        assert_eq!(left.borrow().scroll_top(), 3);
+        assert_eq!(right.borrow().scroll_top(), 2);
+        assert_eq!(
+            alt.viewport(),
+            [
+                "a4        b3",
+                "a5        b4",
+                "a6        b5",
+                "a7        b6"
+            ]
+        );
+    }
+
+    #[test]
+    fn scrolls_faster_while_alt_is_held_during_wheel_input() {
+        let mut alt = Alt::new(20, 4);
+        alt.tui.base.add_child(text(&numbered(12)));
+        alt.start();
+        assert_eq!(alt.tui.viewport_top(), 8);
+        // Alt sets bit 8 on the wheel button (72 = 64 + 8).
+        alt.mouse("\x1b[<72;1;1M");
+        assert_eq!(alt.tui.viewport_top(), 3);
+    }
+
+    #[test]
+    fn reveals_an_auto_scrollbar_when_the_pointer_enters_its_hidden_track() {
+        let mut alt = Alt::new(10, 5);
+        let view = ScrollView::new(
+            text(&numbered(20)),
+            ScrollViewOptions {
+                primary: true,
+                scrollbar: ScrollViewScrollbar::Auto,
+                scrollbar_hide_delay_ms: 20,
+                ..Default::default()
+            },
+        );
+        alt.tui.set_layout_root(Some(view.clone()));
+        alt.start();
+        assert!(!view.borrow().is_scrollbar_visible());
+        alt.mouse("\x1b[<35;10;3M");
+        // The scroll view raises its own render request; the host paints it.
+        assert!(view.borrow_mut().take_render_requested());
+        alt.render();
+        assert!(view.borrow().is_scrollbar_visible());
+        assert!(view.borrow().is_scrollbar_active());
+        assert!(
+            alt.viewport()
+                .iter()
+                .any(|line| line.contains('│') || line.contains('█'))
+        );
+        alt.mouse("\x1b[<35;9;3M");
+        // senpi waits 40ms past the 20ms hide delay; the poll stands in for that timer.
+        let due = view.borrow().hide_due_at_ms().expect("hide timer armed");
+        alt.tui.poll_timers(due + 20);
+        alt.render();
+        assert!(!view.borrow().is_scrollbar_visible());
+    }
+
+    #[test]
+    fn jumps_to_a_scrollbar_track_position_and_continues_dragging_from_there() {
+        let mut alt = Alt::new(10, 10);
+        let view = scroll_view(
+            text(&numbered(50)),
+            ScrollViewFollow::None,
+            true,
+            ScrollViewScrollbar::Always,
+        );
+        alt.tui.set_layout_root(Some(view.clone()));
+        alt.start();
+        assert_eq!(view.borrow().scroll_top(), 0);
+        alt.mouse("\x1b[<0;10;6M");
+        assert_eq!(view.borrow().scroll_top(), 20);
+        alt.mouse("\x1b[<32;10;10M");
+        assert_eq!(view.borrow().scroll_top(), 40);
+        alt.mouse("\x1b[<0;10;10m");
+        assert!(!alt.terminal.writes.contains("\x1b]52;c;"));
+    }
+
+    // #9758: wheel line counts can change at runtime; Alt keeps its multiplier.
+    #[test]
+    fn applies_runtime_wheel_line_count_updates() {
+        let mut alt = Alt::new(20, 4);
+        alt.tui.set_wheel_scroll_lines(3);
+        let deltas = Rc::new(RefCell::new(Vec::new()));
+        let seen = deltas.clone();
+        alt.tui
+            .base
+            .add_child(Rc::new(RefCell::new(MouseRegion::new(
+                text("wheel target"),
+                Box::new(move |event| {
+                    if event.event_type != TuiMouseEventType::Wheel {
+                        return None;
+                    }
+                    seen.borrow_mut().push(event.wheel_delta);
+                    Some(TuiMouseEventResult {
+                        handled: true,
+                        ..Default::default()
+                    })
+                }),
+            ))));
+        alt.start();
+        alt.tui
+            .handle_mouse_input("\x1b[<64;1;1M", 0, &mut alt.terminal);
+        alt.tui.set_wheel_scroll_lines(2);
+        alt.tui
+            .handle_mouse_input("\x1b[<65;1;1M", 0, &mut alt.terminal);
+        alt.tui
+            .handle_mouse_input("\x1b[<72;1;1M", 0, &mut alt.terminal);
+        assert_eq!(*deltas.borrow(), [Some(-3), Some(2), Some(-10)]);
+    }
+
+    #[test]
+    fn chains_unused_wheel_delta_to_an_outer_scroll_view() {
+        let mut alt = Alt::new(20, 4);
+        alt.tui.set_wheel_scroll_lines(3);
+        let inner = scroll_view(
+            text("i1\ni2\ni3\ni4\ni5\ni6"),
+            ScrollViewFollow::None,
+            false,
+            ScrollViewScrollbar::Hidden,
+        );
+        let outer = scroll_view(
+            Rc::new(RefCell::new(VStack::new(
+                vec![
+                    entry(inner.clone(), StackBasis::Fixed(2), None, None, None),
+                    StackChild::Component(text("tail1\ntail2\ntail3\ntail4\ntail5")),
+                ],
+                StackOptions::default(),
+            ))),
+            ScrollViewFollow::None,
+            true,
+            ScrollViewScrollbar::Hidden,
+        );
+        alt.tui.set_layout_root(Some(outer.clone()));
+        alt.start();
+        alt.mouse("\x1b[<65;1;1M");
+        assert_eq!(inner.borrow().scroll_top(), 3);
+        assert_eq!(outer.borrow().scroll_top(), 0);
+        alt.mouse("\x1b[<65;1;1M");
+        assert_eq!(inner.borrow().scroll_top(), 4);
+        assert_eq!(outer.borrow().scroll_top(), 2);
+    }
+
+    #[test]
+    fn supports_configurable_keyboard_viewport_navigation_with_four_rows_of_page_overlap() {
+        let mut alt = Alt::new(20, 8);
+        alt.tui.base.add_child(text(&numbered(12)));
+        alt.start();
+        let top = [
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8",
+        ];
+        let bottom = [
+            "line 5", "line 6", "line 7", "line 8", "line 9", "line 10", "line 11", "line 12",
+        ];
+        alt.key("\x1b[57421u");
+        alt.key("\x1b[57421;1:3u");
+        assert_eq!(alt.viewport(), top);
+        alt.key("\x1b[57422u");
+        alt.key("\x1b[57422;1:3u");
+        assert_eq!(alt.viewport(), bottom);
+        alt.key("\x1bOH");
+        assert_eq!(alt.viewport(), top);
+        alt.key("\x1bOF");
+        assert_eq!(alt.viewport(), bottom);
+    }
+}
+
+// ---- tui-alt-screen.test.ts: links, selection, clipboard, flashes and component mouse routing ----
+//
+// senpi's `RecordingTerminal` write log is `AltTerminal::writes`; a copy hook's async answer and the
+// flash/auto-scroll timers settle through `tick(now_ms)` at explicit clock readings.
+mod alt_screen_selection {
+    use super::alt_screen_viewport::{Alt, numbered, text};
+    use super::*;
+    use maho_tui::components::mouse_region::MouseRegion;
+    use maho_tui::tui::{TuiMouseEvent, TuiMouseEventResult, TuiMouseEventType};
+
+    fn osc52(text: &str) -> String {
+        format!(
+            "\x1b]52;c;{}\x07",
+            maho_tui::terminal_image::encode_base64(text.as_bytes())
+        )
+    }
+
+    fn started(columns: u16, rows: u16, content: &str) -> Alt {
+        let mut alt = Alt::new(columns, rows);
+        alt.tui.base.add_child(text(content));
+        alt.start();
+        alt
+    }
+
+    /// Press at (1,1), drag to (4,2), release with `release_button`.
+    fn drag_select(alt: &mut Alt, release_button: u8) {
+        alt.mouse("\x1b[<0;1;1M");
+        alt.mouse("\x1b[<32;4;2M");
+        alt.mouse(&format!("\x1b[<{release_button};4;2m"));
+    }
+
+    fn handled() -> Option<TuiMouseEventResult> {
+        Some(TuiMouseEventResult {
+            handled: true,
+            ..Default::default()
+        })
+    }
+
+    fn recording_copy(alt: &mut Alt, answer: bool) -> Rc<RefCell<Vec<String>>> {
+        let copied = Rc::new(RefCell::new(Vec::new()));
+        let sink = copied.clone();
+        alt.tui
+            .set_copy_selection(Some(Rc::new(move |text: String| {
+                sink.borrow_mut().push(text);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                sender.send(answer).expect("receiver alive");
+                receiver
+            })));
+        copied
+    }
+
+    /// Settle the copy hook's answer (it resolves on a helper thread) and paint the flash.
+    fn settle_copy(alt: &mut Alt) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !alt.tui.tick(1) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the copy hook never settled"
+            );
+            std::thread::yield_now();
+        }
+        alt.render();
+    }
+
+    fn shows(alt: &Alt, needle: &str) -> bool {
+        alt.viewport().iter().any(|line| line.contains(needle))
+    }
+
+    #[test]
+    fn opens_an_osc_8_hyperlink_with_specific_or_generic_release_codes_but_not_on_drag() {
+        let url = "https://example.com/path?q=1";
+        let bel_url = "https://example.com/bel";
+        let emoji_url = "https://example.com/emoji";
+        let content = format!(
+            "{}\n\x1b]8;;{bel_url}\x07link\x1b]8;;\x07\n{}",
+            maho_tui::terminal_image::hyperlink("link", url),
+            maho_tui::terminal_image::hyperlink("🙂", emoji_url),
+        );
+        let mut alt = Alt::new(20, 3);
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        alt.tui.set_open_url(Some(Rc::new(move |url: &str| {
+            sink.borrow_mut().push(url.to_owned())
+        })));
+        alt.tui.base.add_child(text(&content));
+        alt.start();
+        alt.mouse("\x1b[<0;2;1M");
+        alt.mouse("\x1b[<3;2;1m");
+        assert_eq!(*opened.borrow(), [url]);
+        alt.mouse("\x1b[<0;2;2M");
+        alt.mouse("\x1b[<0;2;2m");
+        assert_eq!(*opened.borrow(), [url, bel_url]);
+        alt.mouse("\x1b[<0;2;3M");
+        alt.mouse("\x1b[<0;2;3m");
+        assert_eq!(*opened.borrow(), [url, bel_url, emoji_url]);
+        alt.mouse("\x1b[<0;2;1M");
+        alt.mouse("\x1b[<32;4;1M");
+        alt.mouse("\x1b[<0;4;1m");
+        assert_eq!(*opened.borrow(), [url, bel_url, emoji_url]);
+    }
+
+    #[test]
+    fn selects_visible_text_with_the_mouse_and_copies_it_with_osc_52_after_a_generic_release() {
+        let mut alt = started(20, 4, "\x1b[1mal\x1b[0mpha\nbeta\ngamma\ndelta");
+        drag_select(&mut alt, 3);
+        assert!(
+            alt.terminal.writes.contains(&osc52("alpha\nbeta")),
+            "{:?}",
+            alt.terminal.writes
+        );
+        assert!(alt.terminal.writes.contains("\x1b[7m"));
+        assert!(
+            alt.terminal.writes.contains("al\x1b[0m\x1b[7mpha"),
+            "selection inverse must be reapplied after a reset inside the selection"
+        );
+        assert!(shows(&alt, "Copied!"));
+    }
+
+    #[test]
+    fn uses_an_injected_copy_selection_handler_instead_of_osc_52_and_reports_success() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        let copied = recording_copy(&mut alt, true);
+        drag_select(&mut alt, 0);
+        settle_copy(&mut alt);
+        assert_eq!(*copied.borrow(), ["alpha\nbeta"]);
+        assert!(!alt.terminal.writes.contains("\x1b]52;c;"));
+        assert!(shows(&alt, "Copied!"));
+    }
+
+    #[test]
+    fn leaves_selections_visible_without_copying_when_copy_on_select_is_disabled() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        alt.tui.set_copy_on_select(false);
+        let copied = recording_copy(&mut alt, true);
+        drag_select(&mut alt, 0);
+        assert!(copied.borrow().is_empty());
+        assert!(alt.tui.has_active_selection());
+        assert!(alt.terminal.writes.contains("\x1b[7m"));
+        assert!(!shows(&alt, "Copied!"));
+    }
+
+    #[test]
+    fn copies_an_active_selection_programmatically() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        let copied = recording_copy(&mut alt, true);
+        assert!(!alt.tui.has_active_selection());
+        assert!(
+            !alt.tui
+                .copy_active_selection_to_clipboard(&mut alt.terminal)
+        );
+        drag_select(&mut alt, 0);
+        settle_copy(&mut alt);
+        assert_eq!(*copied.borrow(), ["alpha\nbeta"]);
+        assert!(alt.tui.has_active_selection());
+        copied.borrow_mut().clear();
+        assert!(
+            alt.tui
+                .copy_active_selection_to_clipboard(&mut alt.terminal)
+        );
+        settle_copy(&mut alt);
+        assert_eq!(*copied.borrow(), ["alpha\nbeta"]);
+        assert!(shows(&alt, "Copied!"));
+    }
+
+    #[test]
+    fn flashes_an_error_when_the_injected_copy_selection_handler_fails() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        recording_copy(&mut alt, false);
+        drag_select(&mut alt, 0);
+        settle_copy(&mut alt);
+        assert!(shows(&alt, "Copy failed"));
+        assert!(!alt.terminal.writes.contains("\x1b]52;c;"));
+    }
+
+    #[test]
+    fn flashes_a_specific_error_returned_by_the_injected_copy_selection_handler() {
+        let mut alt = started(80, 4, "alpha\nbeta\ngamma\ndelta");
+        alt.tui.set_copy_on_select(false);
+        alt.tui
+            .set_copy_selection_with_error(Some(Rc::new(|_text: String| {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                sender
+                    .send(Err("Clipboard unavailable: install wl-clipboard".to_owned()))
+                    .expect("receiver alive");
+                receiver
+            })));
+        drag_select(&mut alt, 0);
+        // senpi answers `false` once the handler reports an error; here the copy is started and
+        // its error settles on the next tick (at 1ms).
+        assert!(
+            alt.tui
+                .copy_active_selection_to_clipboard(&mut alt.terminal)
+        );
+        settle_copy(&mut alt);
+        assert!(shows(&alt, "Clipboard unavailable: install wl-clipboard"));
+        assert!(!shows(&alt, "Copy failed"));
+        // The error flash lasts senpi's 5000ms from settling at 1ms: up at 5000ms, gone at 5001ms.
+        alt.tui.tick(5000);
+        alt.render();
+        assert!(shows(&alt, "Clipboard unavailable"));
+        alt.tui.tick(5001);
+        alt.render();
+        assert!(!shows(&alt, "Clipboard unavailable"));
+    }
+
+    #[test]
+    fn does_not_append_whitespace_to_double_click_word_highlighting() {
+        let mut alt = started(20, 1, "foo  bar");
+        alt.mouse("\x1b[<0;1;1M");
+        alt.mouse("\x1b[<0;1;1m");
+        alt.mouse("\x1b[<0;3;1M");
+        assert!(
+            alt.terminal.writes.contains("foo\x1b[27m"),
+            "{:?}",
+            alt.terminal.writes
+        );
+    }
+
+    #[test]
+    fn coalesces_slash_and_hyphen_separated_segments_for_double_click_word_selection() {
+        for (line, needle) in [
+            ("extensions/starline/fixed-editor/compositor.ts", "starline"),
+            ("earendil-works/pi-tui", "works"),
+        ] {
+            let mut alt = started(80, 1, line);
+            let copied = recording_copy(&mut alt, true);
+            let column = line.find(needle).expect("needle") + 1;
+            for _ in 0..2 {
+                alt.mouse(&format!("\x1b[<0;{column};1M"));
+                alt.mouse(&format!("\x1b[<0;{column};1m"));
+            }
+            assert_eq!(*copied.borrow(), [line]);
+        }
+    }
+
+    #[test]
+    fn highlights_a_complete_whitespace_segment_during_a_word_drag() {
+        let mut alt = started(20, 1, "foo  bar");
+        alt.mouse("\x1b[<0;1;1M");
+        alt.mouse("\x1b[<0;1;1m");
+        alt.mouse("\x1b[<0;2;1M");
+        alt.mouse("\x1b[<32;4;1M");
+        assert!(
+            alt.terminal.writes.contains("foo  \x1b[27m"),
+            "{:?}",
+            alt.terminal.writes
+        );
+    }
+
+    #[test]
+    fn selects_whole_words_on_double_click_extends_word_drags_and_selects_lines_on_triple_click() {
+        let mut alt = started(20, 2, "zero alpha beta\ngamma delta");
+        for input in [
+            "\x1b[<0;6;1M",
+            "\x1b[<0;6;1m",
+            "\x1b[<0;10;1M",
+            "\x1b[<0;10;1m",
+        ] {
+            alt.mouse(input);
+        }
+        assert!(alt.terminal.writes.contains(&osc52("alpha")));
+        for input in [
+            "\x1b[<0;12;1M",
+            "\x1b[<0;12;1m",
+            "\x1b[<0;14;1M",
+            "\x1b[<32;3;2M",
+            "\x1b[<0;3;2m",
+        ] {
+            alt.mouse(input);
+        }
+        assert!(alt.terminal.writes.contains(&osc52("beta\ngamma")));
+        for input in [
+            "\x1b[<0;7;2M",
+            "\x1b[<0;7;2m",
+            "\x1b[<0;9;2M",
+            "\x1b[<0;9;2m",
+            "\x1b[<0;11;2M",
+            "\x1b[<0;11;2m",
+        ] {
+            alt.mouse(input);
+        }
+        assert!(alt.terminal.writes.contains(&osc52("gamma delta")));
+    }
+
+    #[test]
+    fn does_not_repaint_idle_or_zero_width_selections_on_focus_loss() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        let idle = alt.terminal.writes.len();
+        alt.mouse("\x1b[O");
+        alt.mouse("\x1b[I");
+        assert_eq!(alt.terminal.writes.len(), idle);
+        // A completed click leaves a zero-width anchor; orphaned drag/release events must not extend it.
+        alt.mouse("\x1b[<0;1;1M");
+        alt.mouse("\x1b[<0;1;1m");
+        alt.mouse("\x1b[<32;4;2M");
+        alt.mouse("\x1b[<0;4;2m");
+        assert!(!alt.terminal.writes.contains("\x1b]52;c;"));
+        // Losing focus after a press without a drag cancels the press without repainting.
+        alt.mouse("\x1b[<0;1;3M");
+        let pressed = alt.terminal.writes.len();
+        alt.mouse("\x1b[O");
+        alt.mouse("\x1b[I");
+        assert_eq!(alt.terminal.writes.len(), pressed);
+        alt.mouse("\x1b[<32;4;2M");
+        alt.mouse("\x1b[<0;4;2m");
+        assert!(!alt.terminal.writes.contains("\x1b]52;c;"));
+        assert!(alt.terminal.writes.contains("\x1b[?1004h"));
+        alt.tui.before_terminal_stop(&mut alt.terminal, true);
+        assert!(alt.terminal.writes.contains("\x1b[?1004l"));
+    }
+
+    #[test]
+    fn clears_an_active_visible_selection_on_focus_loss_and_ignores_orphan_events() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        alt.mouse("\x1b[<0;1;1M");
+        alt.mouse("\x1b[<32;4;2M");
+        let before = alt.terminal.writes.len();
+        alt.mouse("\x1b[O");
+        alt.mouse("\x1b[I");
+        let repaint = alt.terminal.writes[before..].to_owned();
+        assert!(
+            repaint.contains("alpha") && repaint.contains("beta"),
+            "{repaint:?}"
+        );
+        assert!(!repaint.contains("\x1b[7m"));
+        alt.mouse("\x1b[<32;4;2M");
+        alt.mouse("\x1b[<0;4;2m");
+        assert!(!alt.terminal.writes.contains("\x1b]52;c;"));
+    }
+
+    #[test]
+    fn retains_a_completed_visible_selection_across_focus_changes() {
+        let mut alt = started(20, 4, "alpha\nbeta\ngamma\ndelta");
+        alt.tui.set_copy_on_select(false);
+        drag_select(&mut alt, 0);
+        let completed = alt.terminal.writes.len();
+        alt.mouse("\x1b[O");
+        alt.mouse("\x1b[I");
+        assert_eq!(alt.terminal.writes.len(), completed);
+        // senpi `renderNow(true)`: a forced full repaint.
+        alt.tui.reset_render_state();
+        alt.render();
+        let redraw = alt.terminal.writes[completed..].to_owned();
+        assert!(
+            redraw.contains("alpha") && redraw.contains("beta"),
+            "{redraw:?}"
+        );
+        assert!(redraw.contains("\x1b[7m"));
+    }
+
+    #[test]
+    fn stacks_flash_messages_and_collapses_them_as_they_expire() {
+        let mut alt = started(20, 4, "one\ntwo\nthree\nfour");
+        alt.tui.flash("First", Some(80), 0);
+        alt.tui.flash("Second", Some(500), 0);
+        alt.render();
+        let viewport = alt.viewport();
+        assert!(viewport[0].ends_with(" First"), "{viewport:?}");
+        assert!(viewport[1].ends_with(" Second"), "{viewport:?}");
+        assert!(alt.tui.tick(100));
+        alt.render();
+        let viewport = alt.viewport();
+        assert!(viewport[0].ends_with(" Second"), "{viewport:?}");
+        assert!(!viewport.iter().any(|line| line.contains("First")));
+    }
+
+    #[test]
+    fn auto_scrolls_and_extends_a_drag_selection_held_at_the_viewport_edge() {
+        let mut alt = started(20, 4, &numbered(10));
+        assert_eq!(alt.tui.viewport_top(), 6);
+        alt.tui
+            .handle_mouse_input("\x1b[<0;1;3M", 0, &mut alt.terminal);
+        alt.tui
+            .handle_mouse_input("\x1b[<32;1;1M", 0, &mut alt.terminal);
+        // senpi holds the drag for 130ms of 50ms auto-scroll intervals.
+        for now in [50, 100, 150] {
+            alt.tui.tick(now);
+        }
+        alt.render();
+        let top = alt.tui.viewport_top();
+        assert!(top < 6, "expected auto-scroll above row 6, got {top}");
+        alt.mouse("\x1b[<0;1;1m");
+        let mut selected: Vec<String> = (top..8)
+            .map(|index| format!("line {}", index + 1))
+            .collect();
+        selected.push("l".to_owned());
+        assert!(
+            alt.terminal.writes.contains(&osc52(&selected.join("\n"))),
+            "{:?}",
+            alt.terminal.writes
+        );
+    }
+
+    #[test]
+    fn snaps_mouse_selection_to_cjk_emoji_and_combining_grapheme_boundaries() {
+        let mut alt = started(20, 2, "A界🙂éZ");
+        let wide = osc52("界🙂");
+        for input in ["\x1b[<0;3;1M", "\x1b[<32;4;1M", "\x1b[<0;4;1m"] {
+            alt.mouse(input);
+        }
+        assert_eq!(alt.terminal.writes.matches(&wide).count(), 1);
+        for input in ["\x1b[<0;5;1M", "\x1b[<32;2;1M", "\x1b[<0;2;1m"] {
+            alt.mouse(input);
+        }
+        assert_eq!(alt.terminal.writes.matches(&wide).count(), 2);
+        for input in ["\x1b[<0;6;1M", "\x1b[<32;7;1M", "\x1b[<0;7;1m"] {
+            alt.mouse(input);
+        }
+        assert!(alt.terminal.writes.contains(&osc52("éZ")));
+    }
+
+    #[test]
+    fn ignores_horizontal_trackpad_wheel_events() {
+        let mut alt = started(20, 4, &numbered(8));
+        alt.mouse("\x1b[<66;1;1M");
+        alt.mouse("\x1b[<67;1;1M");
+        assert_eq!(alt.tui.viewport_top(), 4);
+        assert_eq!(alt.viewport(), ["line 5", "line 6", "line 7", "line 8"]);
+    }
+
+    #[test]
+    fn dispatches_clicks_to_nested_mouse_regions_without_breaking_drag_selection() {
+        let mut alt = Alt::new(20, 2);
+        let clicks = Rc::new(RefCell::new(0));
+        let counted = clicks.clone();
+        alt.tui
+            .base
+            .add_child(Rc::new(RefCell::new(MouseRegion::new(
+                text("clickable\nselectable"),
+                Box::new(move |event| {
+                    if event.event_type != TuiMouseEventType::Click {
+                        return None;
+                    }
+                    *counted.borrow_mut() += 1;
+                    handled()
+                }),
+            ))));
+        alt.start();
+        alt.mouse("\x1b[<0;2;1M");
+        alt.mouse("\x1b[<0;2;1m");
+        assert_eq!(*clicks.borrow(), 1);
+        drag_select(&mut alt, 0);
+        assert_eq!(*clicks.borrow(), 1);
+        assert!(alt.terminal.writes.contains("\x1b]52;c;"));
+    }
+
+    /// A mouse-aware control: records event types and answers with `answer`.
+    struct Control {
+        events: Rc<RefCell<Vec<TuiMouseEventType>>>,
+        clicks: Rc<RefCell<Vec<u32>>>,
+        renders: Rc<RefCell<usize>>,
+        answer: fn(&TuiMouseEvent) -> Option<TuiMouseEventResult>,
+    }
+    impl Component for Control {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            *self.renders.borrow_mut() += 1;
+            vec!["control".to_owned()]
+        }
+        fn handle_mouse(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseEventResult> {
+            self.events.borrow_mut().push(event.event_type);
+            if event.event_type == TuiMouseEventType::Click {
+                self.clicks
+                    .borrow_mut()
+                    .push(event.click_count.unwrap_or(0));
+            }
+            (self.answer)(event)
+        }
+    }
+
+    fn control(
+        answer: fn(&TuiMouseEvent) -> Option<TuiMouseEventResult>,
+    ) -> (
+        Rc<RefCell<Control>>,
+        Rc<RefCell<Vec<TuiMouseEventType>>>,
+        Rc<RefCell<Vec<u32>>>,
+        Rc<RefCell<usize>>,
+    ) {
+        let (events, clicks, renders) = (Rc::default(), Rc::default(), Rc::default());
+        let control = Rc::new(RefCell::new(Control {
+            events: Rc::clone(&events),
+            clicks: Rc::clone(&clicks),
+            renders: Rc::clone(&renders),
+            answer,
+        }));
+        (control, events, clicks, renders)
+    }
+
+    struct KeyboardOwner;
+    impl Component for KeyboardOwner {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            Vec::new()
+        }
+        fn handle_input(&mut self, _data: &str) {}
+    }
+
+    #[test]
+    fn captures_drag_gestures_for_mouse_aware_components_without_taking_keyboard_focus() {
+        let mut alt = Alt::new(20, 2);
+        let (component, events, _, _) = control(|event| {
+            Some(TuiMouseEventResult {
+                handled: true,
+                capture: event.event_type == TuiMouseEventType::Press,
+                focus: event.event_type == TuiMouseEventType::Press,
+                ..Default::default()
+            })
+        });
+        alt.tui.set_layout_root(Some(component));
+        alt.start();
+        let owner: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(KeyboardOwner));
+        alt.tui.base.set_focus(Some(owner.clone()));
+        alt.mouse("\x1b[<0;1;1M");
+        alt.mouse("\x1b[<32;5;2M");
+        alt.mouse("\x1b[<0;5;2m");
+        assert_eq!(
+            *events.borrow(),
+            [
+                TuiMouseEventType::Press,
+                TuiMouseEventType::Drag,
+                TuiMouseEventType::Release
+            ]
+        );
+        // The control has no input handler: capture routes drags to it while the keyboard owner keeps focus.
+        assert!(
+            alt.tui
+                .base
+                .get_focused_component()
+                .is_some_and(|focused| Rc::ptr_eq(&focused, &owner))
+        );
+    }
+
+    #[test]
+    fn reports_consecutive_click_counts_to_component_owned_controls() {
+        let mut alt = Alt::new(20, 1);
+        let (component, _, clicks, _) = control(|event| match event.event_type {
+            TuiMouseEventType::Press | TuiMouseEventType::Click => handled(),
+            _ => None,
+        });
+        alt.tui.base.add_child(component);
+        alt.start();
+        for _ in 0..3 {
+            alt.mouse("\x1b[<0;1;1M");
+            alt.mouse("\x1b[<0;1;1m");
+        }
+        assert_eq!(*clicks.borrow(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn does_not_rerender_for_handled_no_op_pointer_motion() {
+        let mut alt = Alt::new(20, 2);
+        let (component, _, _, renders) = control(|event| {
+            (event.event_type == TuiMouseEventType::Move)
+                .then(handled)
+                .flatten()
+        });
+        alt.tui.base.add_child(component);
+        alt.start();
+        let rendered = *renders.borrow();
+        let written = alt.terminal.writes.len();
+        alt.tui
+            .handle_mouse_input("\x1b[<35;1;1M", 0, &mut alt.terminal);
+        assert!(!alt.tui.base.render_due(u64::MAX));
+        assert_eq!(*renders.borrow(), rendered);
+        assert_eq!(alt.terminal.writes.len(), written);
+    }
+
+    #[test]
+    fn lets_mouse_aware_components_consume_wheel_events_before_viewport_scrolling() {
+        let mut alt = Alt::new(20, 3);
+        let wheels = Rc::new(RefCell::new(0));
+        let counted = wheels.clone();
+        alt.tui
+            .base
+            .add_child(Rc::new(RefCell::new(MouseRegion::new(
+                text(&numbered(8)),
+                Box::new(move |event| {
+                    if event.event_type != TuiMouseEventType::Wheel {
+                        return None;
+                    }
+                    *counted.borrow_mut() += 1;
+                    handled()
+                }),
+            ))));
+        alt.start();
+        let top = alt.tui.viewport_top();
+        alt.mouse("\x1b[<64;1;1M");
+        assert_eq!(*wheels.borrow(), 1);
+        assert_eq!(alt.tui.viewport_top(), top);
+    }
+}
+
+// ---- tui-alt-screen.test.ts: find bar, key bindings, overlays, lifecycle, multiplexers and images ----
+//
+// Process-global state stays per test: environment reads go through `process_env::with_overrides`
+// (thread-local), keybinding swaps hold `common::global_keybindings_lock`, and image protocols are
+// set on the `TuiAltScreen` instance rather than in the shared capability cache.
+mod alt_screen_controls {
+    use super::alt_screen_viewport::{Alt, numbered, text};
+    use super::*;
+    use maho_tui::alt_screen_search::AltScreenSearchComponent;
+    use maho_tui::components::h_stack::HStack;
+    use maho_tui::components::scroll_view::{ScrollView, ScrollViewFollow, ScrollViewOptions};
+    use maho_tui::components::select_list::{SelectItem, SelectList, SelectListTheme};
+    use maho_tui::components::stack::{StackChild, StackEntryOptions, StackOptions};
+    use maho_tui::components::v_stack::VStack;
+    use maho_tui::image_stub::ImageProtocol;
+    use maho_tui::keybindings::{
+        KeybindingsConfig, KeybindingsManager, Keys, set_keybindings, tui_keybindings,
+    };
+    use maho_tui::layout_node::StackBasis;
+    use maho_tui::process_env::with_overrides;
+    use maho_tui::terminal_image::{
+        KittyEncodeOptions, KittyImageMetadata, encode_kitty, register_kitty_image_metadata,
+    };
+    use maho_tui::tui::OverlayOptions;
+    use maho_tui::tui_alt_screen::prefers_button_motion_mouse;
+    use maho_tui::utils::{strip_terminal_sequences, visible_width};
+
+    const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
+
+    fn started(columns: u16, rows: u16, content: &str) -> Alt {
+        let mut alt = Alt::new(columns, rows);
+        alt.tui.base.add_child(text(content));
+        alt.start();
+        alt
+    }
+
+    fn sized(
+        basis: StackBasis,
+        component: Rc<RefCell<dyn Component>>,
+        grow: Option<usize>,
+        shrink: Option<usize>,
+        min_size: Option<usize>,
+    ) -> StackChild {
+        StackChild::Entry {
+            component,
+            options: StackEntryOptions {
+                basis: Some(basis),
+                grow,
+                shrink,
+                min_size,
+                max_size: None,
+            },
+        }
+    }
+
+    fn shows(alt: &Alt, needle: &str) -> bool {
+        alt.viewport().iter().any(|line| line.contains(needle))
+    }
+
+    /// Terminal column of the byte offset `index` in a rendered (single-width) row.
+    fn column(line: &str, index: usize) -> usize {
+        line[..index].chars().count()
+    }
+
+    /// senpi's `InputOverlay` and the editor stubs: a focusable key sink rendering one row.
+    struct KeySink {
+        label: &'static str,
+        focused: bool,
+        inputs: Rc<RefCell<Vec<String>>>,
+    }
+    impl Component for KeySink {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            vec![self.label.to_owned()]
+        }
+        fn handle_input(&mut self, data: &str) {
+            self.inputs.borrow_mut().push(data.to_owned());
+        }
+        fn has_input_handler(&self) -> bool {
+            true
+        }
+        fn focusable_get(&self) -> Option<bool> {
+            Some(self.focused)
+        }
+        fn focusable_set(&mut self, focused: bool) {
+            self.focused = focused;
+        }
+    }
+
+    fn key_sink(label: &'static str) -> (Rc<RefCell<KeySink>>, Rc<RefCell<Vec<String>>>) {
+        let inputs = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::new(RefCell::new(KeySink {
+            label,
+            focused: false,
+            inputs: Rc::clone(&inputs),
+        }));
+        (sink, inputs)
+    }
+
+    /// A component that renders fixed lines (senpi's inline `{ render: () => [...] }` objects).
+    struct Lines(Vec<String>);
+    impl Component for Lines {
+        fn render(&mut self, _width: usize) -> Vec<String> {
+            self.0.clone()
+        }
+    }
+
+    fn lines(rows: Vec<String>) -> Rc<RefCell<dyn Component>> {
+        Rc::new(RefCell::new(Lines(rows)))
+    }
+
+    fn kitty_line(
+        image_id: u32,
+        columns: u32,
+        rows: u32,
+        width_px: u32,
+        height_px: u32,
+        data: &str,
+    ) -> String {
+        register_kitty_image_metadata(KittyImageMetadata {
+            image_id,
+            columns,
+            rows,
+            width_px,
+            height_px,
+        });
+        encode_kitty(
+            data,
+            &KittyEncodeOptions {
+                columns: Some(columns),
+                rows: Some(rows),
+                image_id: Some(image_id),
+                move_cursor: false,
+                virtual_placement: false,
+            },
+        )
+    }
+
+    /// Start with `protocol` in place of the probed terminal capability.
+    fn start_with_images(alt: &mut Alt, protocol: ImageProtocol) {
+        alt.tui.base.prepare_start();
+        alt.tui
+            .before_terminal_start(&mut alt.terminal, true, false);
+        alt.tui.set_image_protocol(protocol);
+        alt.render();
+    }
+
+    fn primary(content: Rc<RefCell<dyn Component>>) -> Rc<RefCell<ScrollView>> {
+        ScrollView::new(
+            content,
+            ScrollViewOptions {
+                primary: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn with_alt_bindings<R>(bindings: &[(&str, &str)], body: impl FnOnce() -> R) -> R {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_keybindings(KeybindingsManager::new(
+                    tui_keybindings(),
+                    Default::default(),
+                ));
+            }
+        }
+        let _lock = crate::common::global_keybindings_lock();
+        let mut user = KeybindingsConfig::new();
+        for (id, key) in bindings {
+            user.insert((*id).to_owned(), Some(Keys::from(*key)));
+        }
+        set_keybindings(KeybindingsManager::new(tui_keybindings(), user));
+        let _restore = Restore;
+        body()
+    }
+
+    #[test]
+    fn keeps_the_jump_to_end_indicator_centered_as_the_auto_scrollbar_hides_and_reappears() {
+        let label = " ↓ Jump to latest message · End ";
+        let mut alt = Alt::new(80, 6);
+        alt.tui
+            .set_scroll_to_end_indicator(Some(Rc::new(move || label.to_owned())));
+        let transcript = ScrollView::new(
+            text(&numbered(20)),
+            ScrollViewOptions {
+                follow: ScrollViewFollow::End,
+                primary: true,
+                scrollbar: maho_tui::components::scroll_view::ScrollViewScrollbar::Auto,
+                scrollbar_hide_delay_ms: 0,
+                ..Default::default()
+            },
+        );
+        alt.tui.set_layout_root(Some(transcript.clone()));
+        alt.start();
+        // The virtual terminal trims trailing blanks, so match the label without its own.
+        let label_column = |alt: &Alt| {
+            let row = alt.viewport()[5].clone();
+            row.find(label.trim_end()).map(|index| column(&row, index))
+        };
+        alt.mouse("\x1b[<64;80;1M");
+        alt.render();
+        assert!(transcript.borrow().is_scrollbar_visible());
+        assert!(!transcript.borrow().is_following_end());
+        let scroll_top = transcript.borrow().scroll_top();
+        let visible = label_column(&alt);
+        alt.mouse("\x1b[<35;79;1M");
+        alt.tui.poll_timers(1);
+        alt.render();
+        assert!(!transcript.borrow().is_scrollbar_visible());
+        assert_eq!(transcript.borrow().scroll_top(), scroll_top);
+        let hidden = label_column(&alt);
+        alt.mouse("\x1b[<35;80;1M");
+        alt.render();
+        assert!(transcript.borrow().is_scrollbar_visible());
+        assert_eq!(transcript.borrow().scroll_top(), scroll_top);
+        let revealed = label_column(&alt);
+        assert_eq!([visible, hidden, revealed], [Some(24), Some(24), Some(24)]);
+    }
+
+    #[test]
+    fn invalidates_overlays_with_an_explicit_layout_root() {
+        struct Probe(Rc<RefCell<bool>>);
+        impl Component for Probe {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec!["overlay".to_owned()]
+            }
+            fn invalidate(&mut self) {
+                *self.0.borrow_mut() = true;
+            }
+        }
+        let invalidated = Rc::new(RefCell::new(false));
+        let mut tui = TuiAltScreen::new();
+        tui.set_layout_root(Some(text("root")));
+        tui.base
+            .show_overlay(Rc::new(RefCell::new(Probe(invalidated.clone()))), None);
+        tui.base.invalidate();
+        assert!(*invalidated.borrow());
+    }
+
+    #[test]
+    fn does_not_vertically_redispatch_misses_through_horizontal_layout_containers() {
+        let identity: Rc<dyn Fn(&str) -> String> = Rc::new(|text: &str| text.to_owned());
+        let mut list = SelectList::new(
+            ["a", "b"]
+                .into_iter()
+                .map(|value| SelectItem {
+                    value: value.to_owned(),
+                    label: value.to_uppercase(),
+                    description: None,
+                })
+                .collect(),
+            2,
+            SelectListTheme {
+                selected_prefix: identity.clone(),
+                selected_text: identity.clone(),
+                description: identity.clone(),
+                scroll_info: identity.clone(),
+                no_match: identity,
+                render_row: None,
+            },
+            Default::default(),
+        );
+        let selections = Rc::new(RefCell::new(0));
+        let counted = selections.clone();
+        list.on_select = Some(Box::new(move |_| *counted.borrow_mut() += 1));
+        let mut alt = Alt::new(20, 2);
+        alt.tui
+            .set_layout_root(Some(Rc::new(RefCell::new(HStack::new(
+                vec![
+                    sized(
+                        StackBasis::Fixed(10),
+                        Rc::new(RefCell::new(list)),
+                        None,
+                        None,
+                        None,
+                    ),
+                    sized(StackBasis::Fixed(10), text("plain"), None, None, None),
+                ],
+                StackOptions::default(),
+            )))));
+        alt.start();
+        alt.mouse("\x1b[<0;15;1M");
+        alt.mouse("\x1b[<0;15;1m");
+        assert_eq!(*selections.borrow(), 0);
+    }
+
+    #[test]
+    fn uses_button_motion_tracking_inside_terminal_multiplexers() {
+        let start_writes = |multiplexer: bool| {
+            let mut alt = Alt::new(80, 24);
+            alt.tui
+                .before_terminal_start(&mut alt.terminal, true, multiplexer);
+            alt.terminal.writes
+        };
+        let clear = [
+            ("TMUX", None),
+            ("ZELLIJ", None),
+            ("STY", None),
+            ("TERM", Some("xterm-256color")),
+        ];
+        let direct = with_overrides(&clear, prefers_button_motion_mouse);
+        assert!(start_writes(direct).contains("\x1b[?1003h"));
+        let multiplexers: [(&str, &[(&str, Option<&str>)]); 5] = [
+            (
+                "tmux environment",
+                &[("TMUX", Some("/tmp/tmux/default,1,0"))],
+            ),
+            ("tmux TERM", &[("TERM", Some("tmux-256color"))]),
+            ("Zellij environment", &[("ZELLIJ", Some("0"))]),
+            ("Screen environment", &[("STY", Some("123.session"))]),
+            ("Screen TERM", &[("TERM", Some("screen-256color"))]),
+        ];
+        for (name, environment) in multiplexers {
+            let multiplexer = with_overrides(&clear, || {
+                with_overrides(environment, prefers_button_motion_mouse)
+            });
+            let writes = start_writes(multiplexer);
+            assert!(
+                writes.contains("\x1b[?1002h"),
+                "{name} should enable button-motion tracking"
+            );
+            assert!(
+                !writes.contains("\x1b[?1003h"),
+                "{name} should not enable all-motion tracking"
+            );
+            assert!(
+                writes.contains("\x1b[?1006h"),
+                "{name} should enable SGR mouse encoding"
+            );
+        }
+    }
+
+    /// senpi swaps `process.platform`; the Rust gate is the compile target, so each platform
+    /// checks its own half and the TERM_PROGRAM half runs everywhere.
+    #[test]
+    fn invokes_the_right_click_paste_handler_only_on_windows_outside_vs_code() {
+        let mut alt = Alt::new(80, 24);
+        let pastes = Rc::new(RefCell::new(0));
+        let counted = pastes.clone();
+        alt.tui
+            .set_on_right_click_paste(Some(Rc::new(move || *counted.borrow_mut() += 1)));
+        alt.start();
+        with_overrides(&[("TERM_PROGRAM", None)], || {
+            alt.mouse("\x1b[<2;1;1M");
+            alt.mouse("\x1b[<2;1;1m");
+        });
+        assert_eq!(*pastes.borrow(), usize::from(cfg!(windows)));
+        with_overrides(&[("TERM_PROGRAM", Some("vscode"))], || {
+            alt.mouse("\x1b[<2;1;1M")
+        });
+        assert_eq!(*pastes.borrow(), usize::from(cfg!(windows)));
+    }
+
+    #[test]
+    fn renders_transcript_search_with_a_muted_placeholder_and_right_aligned_controls() {
+        let mut component = AltScreenSearchComponent::new(Box::new(|_: &str| {}), None, false);
+        let rendered = component.render(48);
+        let lines: Vec<String> = rendered
+            .iter()
+            .map(|line| strip_terminal_sequences(line))
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|line| visible_width(line) == 48));
+        assert!(
+            lines[0].starts_with('┌')
+                && lines[0].ends_with('┐')
+                && lines[0].trim_matches(['┌', '┐', '─']).is_empty()
+        );
+        assert!(lines[1].starts_with("│ Find in transcript ") && lines[1].ends_with('│'));
+        assert!(rendered[1].contains("\x1b[2m"));
+        assert!(lines[2].starts_with("└─") && lines[2].ends_with(" ↑ Shift+Enter · ↓ Enter ─┘"));
+        let controls = &lines[2];
+        let at =
+            |index: usize| component.get_navigation_direction_at(2, column(controls, index) as i64);
+        let shift_enter = controls.find("Shift+Enter").expect("previous control");
+        assert_eq!(at(controls.find('↑').expect("up arrow")), Some(-1));
+        assert_eq!(at(shift_enter + 5), Some(-1));
+        assert_eq!(at(controls.find('·').expect("separator")), None);
+        assert_eq!(at(controls.find('↓').expect("down arrow")), Some(1));
+        assert_eq!(
+            at(controls.rfind("Enter").expect("next control") + 2),
+            Some(1)
+        );
+
+        component.handle_input("n");
+        component.set_result(0, 2);
+        let populated_render = component.render(48);
+        let populated: Vec<String> = populated_render
+            .iter()
+            .map(|line| strip_terminal_sequences(line))
+            .collect();
+        assert!(populated[1].contains('n') && populated[1].contains("1/2"));
+        assert!(populated_render[1].contains("\x1b[2m 1/2 \x1b[22m"));
+        assert!(
+            !populated
+                .iter()
+                .any(|line| line.contains("Find in transcript"))
+        );
+    }
+
+    #[test]
+    fn navigates_transcript_search_with_hoverable_arrow_buttons_and_toggles_it_with_its_shortcut() {
+        let mut alt = Alt::new(120, 6);
+        alt.tui.set_search_styles(
+            None,
+            None,
+            Some(Rc::new(|text: &str, hovered: bool| {
+                format!(
+                    "{}{text}\x1b[49m",
+                    if hovered { "\x1b[45m" } else { "\x1b[44m" }
+                )
+            })),
+        );
+        alt.tui
+            .base
+            .add_child(text("needle one\nmiddle\nneedle two\nend"));
+        alt.start();
+        alt.key("\x1b[102;6u");
+        alt.key("needle");
+        assert!(shows(&alt, "1/2"));
+        assert!(shows(&alt, "↑ Shift+Enter · ↓ Enter"));
+        let arrow = |alt: &Alt, find: fn(&str) -> Option<usize>| {
+            let viewport = alt.viewport();
+            let row = viewport
+                .iter()
+                .position(|line| line.contains('↑') && line.contains('↓'))
+                .expect("controls row");
+            let index = find(&viewport[row]).expect("control");
+            (column(&viewport[row], index) + 1, row + 1)
+        };
+        let (x, y) = arrow(&alt, |line| line.rfind("Enter"));
+        let before_hover = alt.terminal.writes.len();
+        alt.mouse(&format!("\x1b[<35;{x};{y}M"));
+        assert!(alt.terminal.writes[before_hover..].contains("\x1b[45m↓ Enter\x1b[49m"));
+        alt.mouse(&format!("\x1b[<0;{x};{y}M"));
+        alt.render();
+        assert!(shows(&alt, "2/2"));
+        let (x, y) = arrow(&alt, |line| line.find("Shift+Enter").map(|index| index + 3));
+        alt.mouse(&format!("\x1b[<0;{x};{y}M"));
+        alt.render();
+        assert!(shows(&alt, "1/2"));
+        assert!(shows(&alt, "↑ Shift+Enter · ↓ Enter"));
+        alt.key("\x1b[102;6u");
+        assert!(!shows(&alt, "↑ Shift+Enter · ↓ Enter"));
+    }
+
+    #[test]
+    fn does_not_treat_transcript_box_drawing_as_search_navigation_buttons() {
+        let content = [
+            "needle one",
+            "middle",
+            "needle two",
+            "filler",
+            "┌────────────────────────────────────────┐",
+            "│ box                                    │",
+            "└────────────────────────────────────────┘",
+            "end",
+        ]
+        .join("\n");
+        let mut alt = started(80, 10, &content);
+        alt.key("\x1b[102;6u");
+        alt.key("needle");
+        assert!(shows(&alt, "1/2") && !shows(&alt, "2/2"));
+        let bottom = alt
+            .viewport()
+            .iter()
+            .position(|line| line.starts_with('└'))
+            .expect("box bottom");
+        alt.mouse(&format!("\x1b[<0;24;{}M", bottom + 1));
+        alt.render();
+        assert!(shows(&alt, "1/2") && !shows(&alt, "2/2"));
+    }
+
+    #[test]
+    fn uses_configured_styles_for_current_and_non_current_search_matches() {
+        let mut alt = Alt::new(60, 4);
+        alt.tui.set_search_styles(
+            Some(Rc::new(|text: &str| format!("\x1b[41m{text}\x1b[49m"))),
+            Some(Rc::new(|text: &str| format!("\x1b[42m{text}\x1b[49m"))),
+            None,
+        );
+        alt.tui
+            .base
+            .add_child(text("needle first\nmiddle\nneedle second\nend"));
+        alt.start();
+        alt.key("\x1b[102;6u");
+        alt.key("needle");
+        assert!(alt.terminal.writes.contains("\x1b[42mneedle\x1b[49m"));
+        assert!(alt.terminal.writes.contains("\x1b[41mneedle\x1b[49m"));
+    }
+
+    /// The transcript-over-editor layout senpi's search and modified-key cases share.
+    fn transcript_over_editor(
+        alt: &mut Alt,
+        content: &str,
+    ) -> (Rc<RefCell<ScrollView>>, Rc<RefCell<Vec<String>>>) {
+        let transcript = ScrollView::new(
+            text(content),
+            ScrollViewOptions {
+                follow: ScrollViewFollow::End,
+                primary: true,
+                ..Default::default()
+            },
+        );
+        let (editor, inputs) = key_sink("editor");
+        alt.tui
+            .set_layout_root(Some(Rc::new(RefCell::new(VStack::new(
+                vec![
+                    sized(
+                        StackBasis::Fixed(0),
+                        transcript.clone(),
+                        Some(1),
+                        None,
+                        Some(1),
+                    ),
+                    sized(StackBasis::Fixed(1), editor.clone(), None, Some(0), None),
+                ],
+                StackOptions::default(),
+            )))));
+        alt.tui.base.set_focus(Some(editor));
+        (transcript, inputs)
+    }
+
+    #[test]
+    fn searches_the_transcript_with_ctrl_shift_f_and_restores_editor_focus_on_close() {
+        let content = (1..=12)
+            .map(|line| match line {
+                5 => "line 5 needle one".to_owned(),
+                10 => "line 10 needle two".to_owned(),
+                _ => format!("line {line}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut alt = Alt::new(60, 8);
+        let (transcript, editor_inputs) = transcript_over_editor(&mut alt, &content);
+        alt.start();
+        alt.key("\x1b[102;6u");
+        alt.key("needle");
+        assert!(!transcript.borrow().is_following_end());
+        assert!(shows(&alt, "2/2"));
+        assert!(shows(&alt, "↑ Shift+Enter · ↓ Enter"));
+        assert!(shows(&alt, "line 10 needle two"));
+        assert!(editor_inputs.borrow().is_empty());
+        assert!(alt.terminal.writes.contains("\x1b[1;7mneedle\x1b[22;27m"));
+
+        for _ in 0..6 {
+            alt.tui
+                .handle_mouse_input("\x1b[<64;1;4M", 0, &mut alt.terminal);
+        }
+        alt.render();
+        assert_eq!(transcript.borrow().scroll_top(), 0);
+        assert!(
+            alt.viewport()
+                .iter()
+                .any(|line| line.contains("needle") && line.contains("2/2"))
+        );
+
+        alt.key("\x07");
+        assert!(shows(&alt, "1/2"));
+        assert!(shows(&alt, "line 5 needle one"));
+        alt.key("\x1b[103;6u");
+        assert!(shows(&alt, "2/2"));
+        assert!(shows(&alt, "line 10 needle two"));
+        alt.key("\x1b");
+        alt.key("x");
+        assert!(!shows(&alt, "↑ Shift+Enter · ↓ Enter"));
+        assert_eq!(*editor_inputs.borrow(), ["x"]);
+    }
+
+    #[test]
+    fn scrolls_the_transcript_by_half_a_page_with_custom_bindings() {
+        with_alt_bindings(
+            &[
+                ("tui.altScreen.halfPageUp", "ctrl+u"),
+                ("tui.altScreen.halfPageDown", "ctrl+d"),
+            ],
+            || {
+                let mut alt = started(20, 10, &numbered(30));
+                assert_eq!(alt.tui.viewport_top(), 20);
+                alt.key("\x15");
+                assert_eq!(alt.tui.viewport_top(), 15);
+                alt.key("\x04");
+                assert_eq!(alt.tui.viewport_top(), 20);
+            },
+        );
+    }
+
+    #[test]
+    fn scrolls_the_transcript_by_one_line_with_custom_bindings() {
+        with_alt_bindings(
+            &[
+                ("tui.altScreen.lineUp", "ctrl+y"),
+                ("tui.altScreen.lineDown", "ctrl+e"),
+            ],
+            || {
+                let mut alt = started(20, 10, &numbered(30));
+                assert_eq!(alt.tui.viewport_top(), 20);
+                alt.key("\x19");
+                assert_eq!(alt.tui.viewport_top(), 19);
+                alt.key("\x05");
+                assert_eq!(alt.tui.viewport_top(), 20);
+            },
+        );
+    }
+
+    #[test]
+    fn routes_ctrl_modified_viewport_navigation_to_the_focused_component() {
+        let mut alt = Alt::new(20, 6);
+        let (transcript, editor_inputs) = transcript_over_editor(&mut alt, &numbered(12));
+        alt.start();
+        alt.key("\x1bOH");
+        assert_eq!(transcript.borrow().scroll_top(), 0);
+        assert!(editor_inputs.borrow().is_empty());
+        let modified = [
+            "\x1b[1;5H",
+            "\x1b[1;5F",
+            "\x1b[5;5~",
+            "\x1b[6;5~",
+            "\x1b[57423;5u",
+        ];
+        for input in modified {
+            alt.key(input);
+        }
+        alt.key("\x1b[57423;5:3u");
+        assert_eq!(transcript.borrow().scroll_top(), 0);
+        assert_eq!(*editor_inputs.borrow(), modified);
+        alt.key("\x1b[6~");
+        assert_eq!(transcript.borrow().scroll_top(), 1);
+        assert_eq!(*editor_inputs.borrow(), modified);
+    }
+
+    #[test]
+    fn jumps_between_osc_133_semantic_prompt_markers() {
+        let content = (1..=4)
+            .flat_map(|message| {
+                [
+                    format!("{OSC133_ZONE_START}message {message}"),
+                    "detail".to_owned(),
+                ]
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut alt = started(20, 3, &content);
+        assert_eq!(alt.tui.viewport_top(), 5);
+        alt.key("\x1b[57419;6u");
+        alt.key("\x1b[57419;6:3u");
+        assert_eq!(alt.tui.viewport_top(), 4);
+        assert_eq!(alt.viewport()[0], "message 3");
+        alt.key("\x1b[1;6A");
+        assert_eq!(alt.tui.viewport_top(), 2);
+        assert_eq!(alt.viewport()[0], "message 2");
+        alt.key("\x1b[57420;6u");
+        alt.key("\x1b[57420;6:3u");
+        assert_eq!(alt.tui.viewport_top(), 4);
+        assert_eq!(alt.viewport()[0], "message 3");
+        alt.key("\x1b[1;6B");
+        assert_eq!(alt.tui.viewport_top(), 5);
+        assert_eq!(alt.viewport()[1], "message 4");
+        assert!(alt.tui.is_following_output());
+    }
+
+    #[test]
+    fn clears_stale_iterm2_image_placements_when_they_leave_the_viewport() {
+        let mut alt = Alt::new(20, 3);
+        let image = "\x1b]1337;File=inline=1;width=2;height=auto:AAAA\x07".to_owned();
+        alt.tui.base.add_child(lines(vec![
+            image,
+            String::new(),
+            String::new(),
+            "after".into(),
+            "more".into(),
+            "end".into(),
+        ]));
+        start_with_images(&mut alt, ImageProtocol::Iterm2);
+        alt.tui.scroll_to_top();
+        alt.render();
+        let before = alt.terminal.writes.len();
+        alt.tui.scroll_by(1);
+        alt.render();
+        assert!(alt.terminal.writes[before..].contains("\x1b[2J"));
+    }
+
+    #[test]
+    fn crops_a_kitty_image_whose_first_line_is_above_the_viewport() {
+        let mut alt = Alt::new(20, 3);
+        let image = kitty_line(123, 2, 3, 100, 100, "AAAA");
+        alt.tui.base.add_child(lines(vec![
+            "before".into(),
+            image,
+            String::new(),
+            String::new(),
+            "after".into(),
+            "end".into(),
+        ]));
+        alt.start();
+        assert_eq!(alt.tui.viewport_top(), 3);
+        assert!(
+            alt.terminal.writes.contains("i=123") && alt.terminal.writes.contains("y=66,h=34,r=1")
+        );
+    }
+
+    /// senpi renders an `Image` here; under Kitty that component paints one transmission row plus
+    /// blank rows, which this fixture reproduces without touching the shared capability cache.
+    #[test]
+    fn reuses_moved_kitty_images_without_dropping_hstack_siblings() {
+        let mut alt = Alt::new(20, 6);
+        let label = Rc::new(RefCell::new(Text::with_padding("left", 0, 0)));
+        let header = Rc::new(RefCell::new(Text::with_padding("header", 0, 0)));
+        let image = kitty_line(130, 10, 4, 100, 100, &"A".repeat(8192));
+        let row: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(HStack::new(
+            vec![
+                sized(StackBasis::Fixed(10), label.clone(), None, None, None),
+                sized(
+                    StackBasis::Fixed(10),
+                    lines(vec![image, String::new(), String::new(), String::new()]),
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+            StackOptions::default(),
+        )));
+        alt.tui
+            .set_layout_root(Some(Rc::new(RefCell::new(VStack::new(
+                vec![
+                    sized(StackBasis::Auto, header.clone(), None, None, None),
+                    sized(StackBasis::Fixed(4), row, None, None, None),
+                ],
+                StackOptions::default(),
+            )))));
+        start_with_images(&mut alt, ImageProtocol::Kitty);
+        assert!(alt.terminal.writes.contains("\x1b_Ga=T"));
+        let before = alt.terminal.writes.len();
+        label.borrow_mut().set_text("changed");
+        header.borrow_mut().set_text("header\nsecond");
+        alt.render();
+        let redraw = alt.terminal.writes[before..].to_owned();
+        let placement = redraw.find("\x1b_Ga=p,q=2").expect("placement-only redraw");
+        assert!(redraw.contains("\x1b_Ga=d,d=a,q=2\x1b\\"));
+        assert!(placement > redraw.find("changed").expect("sibling repainted"));
+        assert!(!redraw.contains("\x1b_Ga=T"));
+        assert!(
+            redraw.len() < 2000,
+            "expected placement-only redraw, got {} bytes",
+            redraw.len()
+        );
+        assert!(alt.viewport().iter().any(|line| line == "changed"));
+    }
+
+    #[test]
+    fn retains_recently_offscreen_kitty_images_for_placement_only_reuse() {
+        let mut alt = Alt::new(20, 1);
+        let image = kitty_line(321, 2, 1, 100, 50, "AAAA");
+        alt.tui
+            .set_layout_root(Some(primary(lines(vec![image, "after".into()]))));
+        start_with_images(&mut alt, ImageProtocol::Kitty);
+        assert!(alt.terminal.writes.contains("\x1b_Ga=T"));
+        let before = alt.terminal.writes.len();
+        alt.tui.scroll_by(1);
+        alt.render();
+        alt.tui.scroll_by(-1);
+        alt.render();
+        let reentry = &alt.terminal.writes[before..];
+        assert!(reentry.contains("\x1b_Ga=p,q=2"));
+        assert!(!reentry.contains("\x1b_Ga=T"));
+        assert!(!reentry.contains("\x1b_Ga=d,d=I,i=321,q=2\x1b\\"));
+    }
+
+    #[test]
+    fn evicts_the_least_recently_visible_kitty_image_when_the_cache_is_full() {
+        let mut alt = Alt::new(20, 1);
+        let images: Vec<String> = (0..18)
+            .map(|index| kitty_line(500 + index, 2, 1, 100, 50, "AAAA"))
+            .collect();
+        let count = images.len();
+        alt.tui.set_layout_root(Some(primary(lines(images))));
+        start_with_images(&mut alt, ImageProtocol::Kitty);
+        for _ in 1..count {
+            alt.tui.scroll_by(1);
+            alt.render();
+        }
+        assert!(
+            alt.terminal
+                .writes
+                .contains("\x1b_Ga=d,d=I,i=500,q=2\x1b\\")
+        );
+        let before = alt.terminal.writes.len();
+        alt.tui.scroll_to_top();
+        alt.render();
+        assert!(alt.terminal.writes[before..].contains("\x1b_Ga=T"));
+    }
+
+    #[test]
+    fn evicts_offscreen_kitty_images_when_decoded_raster_memory_exceeds_the_cache_quota() {
+        let mut alt = Alt::new(20, 1);
+        let images: Vec<String> = (0..4)
+            .map(|index| kitty_line(600 + index, 2, 1, 3840, 2160, "AAAA"))
+            .collect();
+        let count = images.len();
+        alt.tui.set_layout_root(Some(primary(lines(images))));
+        start_with_images(&mut alt, ImageProtocol::Kitty);
+        for _ in 1..count {
+            alt.tui.scroll_by(1);
+            alt.render();
+        }
+        assert!(
+            alt.terminal
+                .writes
+                .contains("\x1b_Ga=d,d=I,i=600,q=2\x1b\\")
+        );
+    }
+
+    #[test]
+    fn restores_keyboard_state_before_leaving_alt_mode_and_prints_the_full_document() {
+        let mut alt = Alt::new(20, 3);
+        alt.tui
+            .base
+            .add_child(text("first\nsecond\nthird\nfourth\nfifth\nsixth"));
+        alt.tui.base.prepare_start();
+        alt.tui
+            .before_terminal_start(&mut alt.terminal, true, false);
+        // senpi's `terminal.start()` and `terminal.stop()` events, as offsets in the write log.
+        let start = alt.terminal.writes.len();
+        alt.render();
+        alt.tui.before_terminal_stop(&mut alt.terminal, true);
+        let stop = alt.terminal.writes.len();
+        alt.tui.after_terminal_stop(&mut alt.terminal, false);
+        let writes = &alt.terminal.writes;
+        assert!(
+            writes
+                .find("\x1b[?1049h")
+                .is_some_and(|index| index < start)
+        );
+        assert!(writes.find("\x1b[?1006l").is_some_and(|index| index < stop));
+        let restore = writes[stop..]
+            .find("\x1b[?1049l")
+            .expect("main screen restore");
+        let restore_write = &writes[stop + restore..];
+        for line in ["first", "second", "third", "fourth", "fifth", "sixth"] {
+            assert!(
+                restore_write.contains(line),
+                "{line} missing from {restore_write:?}"
+            );
+        }
+        assert!(restore_write.find("first") < restore_write.find("sixth"));
+    }
+
+    #[test]
+    fn gives_wheel_and_viewport_keys_to_a_focused_overlay() {
+        let mut alt = started(20, 6, &numbered(12));
+        let top_before = alt.tui.viewport_top();
+        let (overlay, inputs) = key_sink("overlay");
+        let handle = alt.tui.base.show_overlay(overlay.clone(), None);
+        alt.render();
+        assert!(overlay.borrow().focused);
+        let wheel = "\x1b[<64;10;3M";
+        let keys = ["\x1b[5~", "\x1b[6~", "\x1bOH", "\x1bOF", wheel];
+        for key in keys {
+            if key == wheel {
+                alt.mouse(key);
+            } else {
+                alt.key(key);
+            }
+        }
+        assert_eq!(*inputs.borrow(), keys);
+        assert_eq!(alt.tui.viewport_top(), top_before);
+        handle.hide();
+        alt.render();
+        alt.key("\x1b[5~");
+        assert!(alt.tui.viewport_top() < top_before);
+    }
+
+    #[test]
+    fn keeps_viewport_scrolling_when_an_overlay_is_not_focused() {
+        let mut alt = Alt::new(20, 6);
+        let (editor, _) = key_sink("editor");
+        alt.tui.base.add_child(text(&numbered(12)));
+        alt.tui.base.set_focus(Some(editor));
+        alt.start();
+        let top_before = alt.tui.viewport_top();
+        let (hidden, _) = key_sink("overlay");
+        alt.tui.base.show_overlay(hidden, None).set_hidden(true);
+        let (non_capturing, non_capturing_inputs) = key_sink("overlay");
+        alt.tui.base.show_overlay(
+            non_capturing.clone(),
+            Some(OverlayOptions {
+                non_capturing: true,
+                ..Default::default()
+            }),
+        );
+        let (unfocused, unfocused_inputs) = key_sink("overlay");
+        alt.tui
+            .base
+            .show_overlay(unfocused.clone(), None)
+            .unfocus(None);
+        alt.render();
+        assert!(!non_capturing.borrow().focused);
+        assert!(!unfocused.borrow().focused);
+        alt.key("\x1b[5~");
+        alt.mouse("\x1b[<64;10;3M");
+        assert!(alt.tui.viewport_top() < top_before);
+        assert!(non_capturing_inputs.borrow().is_empty());
+        assert!(unfocused_inputs.borrow().is_empty());
+    }
+
+    #[test]
+    fn keeps_viewport_scrolling_while_transcript_search_is_focused() {
+        let mut alt = started(20, 6, &numbered(12));
+        let top_before = alt.tui.viewport_top();
+        alt.key("\x1b[102;6u");
+        assert!(shows(&alt, "↑ ↓"));
+        alt.key("\x1b[5~");
+        alt.mouse("\x1b[<64;1;4M");
+        assert!(alt.tui.viewport_top() < top_before);
+        assert!(shows(&alt, "↑ ↓"));
+    }
+}

@@ -901,6 +901,8 @@ pub struct SessionManager {
     cwd: String,
     persist: bool,
     flushed: bool,
+    /// The file `persist_header_now` created in this process; only it may be discarded on close (senpi#3263).
+    owned_header_file: Option<String>,
     file_entries: Vec<Value>,
     entries_cache: EntriesCache,
     by_id: HashMap<String, usize>,
@@ -950,6 +952,39 @@ impl std::fmt::Debug for RecoveryListener {
     }
 }
 
+/// senpi `isDisposableEntry`: setup entries, startup bookkeeping and engine lifecycle bookkeeping.
+fn is_disposable_entry(entry: &Value) -> bool {
+    let kind = entry_type(entry);
+    if kind == "custom" {
+        return entry.get("startupBookkeeping").and_then(Value::as_bool) == Some(true)
+            || matches!(
+                entry.get("customType").and_then(Value::as_str),
+                Some("session-lifecycle" | "work-custody" | "child-lifecycle")
+            );
+    }
+    matches!(
+        kind,
+        "session"
+            | "model_change"
+            | "model_change_rejected"
+            | "thinking_level_change"
+            | "configuration_update"
+            | "label"
+    )
+}
+
+/// senpi `isConversationEntry`: a user or assistant message.
+fn is_conversation_entry(entry: &Value) -> bool {
+    entry_type(entry) == "message"
+        && matches!(
+            entry
+                .get("message")
+                .and_then(|message| message.get("role"))
+                .and_then(Value::as_str),
+            Some("user" | "assistant")
+        )
+}
+
 impl SessionManager {
     /// senpi's private constructor up to the session-file step: callers then load a file
     /// (`set_session_file`, which can refuse a corrupt one) or start a new session.
@@ -990,6 +1025,7 @@ impl SessionManager {
             cwd: resolve_path(cwd, cwd, &PathInputOptions::default()),
             persist,
             flushed: false,
+            owned_header_file: None,
             file_entries: Vec::new(),
             entries_cache: EntriesCache::default(),
             by_id: HashMap::new(),
@@ -1457,6 +1493,7 @@ impl SessionManager {
         session_file: &str,
         options: Option<NewSessionOptions>,
     ) -> Result<(), String> {
+        self.owned_header_file = None;
         let session_file = resolve_moved_session_path(session_file);
         let session_file = session_file.as_str();
         if self.persist {
@@ -1570,6 +1607,7 @@ impl SessionManager {
 
     pub fn new_session(&mut self, options: Option<NewSessionOptions>) -> Option<String> {
         let timestamp = self.reset_to_new_session(options);
+        self.owned_header_file = None;
         if self.persist {
             let file_timestamp = timestamp.replace([':', '.'], "-");
             let path = Path::new(&self.session_dir)
@@ -1759,7 +1797,38 @@ impl SessionManager {
             return Err(error);
         }
         self.flushed = true;
+        self.owned_header_file = self.session_file.clone();
         Ok(())
+    }
+
+    /// senpi `discardHeaderOnlyFile`: removes the session file when this process created it with
+    /// `persist_header_now` and it holds only setup entries (header, model, thinking level,
+    /// configuration, labels), `custom` entries their writer marked `startupBookkeeping` and engine
+    /// lifecycle bookkeeping (senpi#3864), then returns to buffering so a later entry cannot recreate a
+    /// header-less file (senpi#3263). Any message, delivered `custom_message`, session name, other
+    /// `custom` entry or usage record keeps the file, and a file opened from disk is never deleted here.
+    pub fn discard_header_only_file(&mut self) -> bool {
+        let Some(session_file) = self.session_file.clone() else {
+            return false;
+        };
+        if !self.persist
+            || !self.flushed
+            || self.owned_header_file.as_deref() != Some(&session_file)
+        {
+            return false;
+        }
+        if !self.file_entries.iter().all(is_disposable_entry) {
+            return false;
+        }
+        if let Err(error) = std::fs::remove_file(&session_file)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return false;
+        }
+        self.owned_header_file = None;
+        self.flushed = false;
+        self.transcript_file.reset();
+        true
     }
 
     fn rewrite_file(&mut self) {
@@ -1870,6 +1939,11 @@ impl SessionManager {
                 return Err(std::io::Error::other(error));
             }
             self.flushed = true;
+            // Lifecycle bookkeeping created this file before any conversation, so an empty session
+            // can still discard it (senpi#3864).
+            if !self.file_entries.iter().any(is_conversation_entry) {
+                self.owned_header_file = Some(session_file);
+            }
         }
         Ok(())
     }
@@ -2416,10 +2490,24 @@ impl SessionManager {
     }
 
     pub fn append_custom(&mut self, custom_type: &str, data: Option<Value>) -> Value {
+        self.append_custom_marked(custom_type, data, false)
+    }
+
+    /// senpi `appendCustomEntry(customType, data, { startupBookkeeping })`: a marked entry does not keep a
+    /// conversation-free session's file (senpi#3263).
+    pub fn append_custom_marked(
+        &mut self,
+        custom_type: &str,
+        data: Option<Value>,
+        startup_bookkeeping: bool,
+    ) -> Value {
         let mut entry = self.base_entry("custom");
         entry.insert("customType".to_owned(), Value::from(custom_type));
         if let Some(data) = data {
             entry.insert("data".to_owned(), data);
+        }
+        if startup_bookkeeping {
+            entry.insert("startupBookkeeping".to_owned(), Value::Bool(true));
         }
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());
@@ -5278,5 +5366,175 @@ mod prune_sessions_tests {
         for bad in [-1.0, 0.0, 1.5, f64::NAN, f64::INFINITY] {
             assert!(parse_retention_days(Some(bad)).is_err(), "{bad}");
         }
+    }
+}
+
+/// senpi test/suite/regressions/3263-discard-conversation-free-session.test.ts and
+/// 3864-lifecycle-only-file-discard.test.ts.
+#[cfg(test)]
+mod discard_header_only_file_tests {
+    use super::*;
+
+    fn started() -> (tempfile::TempDir, SessionManager, String) {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().to_string_lossy().into_owned();
+        let manager = SessionManager::create(&path, Some(&path), None);
+        let file = manager.session_file().expect("session file").to_owned();
+        (dir, manager, file)
+    }
+
+    fn exists(file: &str) -> bool {
+        Path::new(file).exists()
+    }
+
+    #[test]
+    fn discards_a_header_only_file_that_extensions_added_startup_bookkeeping_to() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        manager.append_custom_marked("repository-identity", Some(json!({"root": "/r"})), true);
+        assert!(exists(&file));
+        assert!(manager.discard_header_only_file());
+        assert!(!exists(&file));
+        assert!(!manager.is_flushed());
+    }
+
+    #[test]
+    fn keeps_the_file_once_the_session_has_a_user_message() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom("pi-rules.scan", Some(json!({"rules": []})));
+        manager.append_message(json!({"role": "user", "content": "hi", "timestamp": 1}));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_the_file_once_the_session_has_an_assistant_message() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_message(json!({"role": "assistant", "content": [], "timestamp": 1}));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_the_file_once_a_delivered_message_reached_the_model_context() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_message(
+            "session_control_delivery",
+            json!("from outside"),
+            true,
+            Some(json!({"delivery_id": "d1"})),
+        );
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_a_shell_command_the_user_ran_before_the_first_prompt() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_message(json!({
+            "role": "bashExecution", "command": "git status", "output": "clean", "exitCode": 0,
+            "cancelled": false, "truncated": false, "timestamp": 1
+        }));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn keeps_a_file_whose_custom_entry_was_not_marked_as_startup_bookkeeping() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom(
+            "senpi-memory.session-binding",
+            Some(json!({"agent": "test"})),
+        );
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn persists_the_startup_bookkeeping_mark_on_the_entry() {
+        let (dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        manager.append_custom("plain-state", Some(json!({"n": 1})));
+        let path = dir.path().to_string_lossy().into_owned();
+        let reopened = SessionManager::open(&file, Some(&path), None, None).expect("reopen");
+        let marks: Vec<Value> = reopened
+            .entries()
+            .iter()
+            .map(|entry| {
+                entry
+                    .get("startupBookkeeping")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
+        assert_eq!(marks, [json!(true), Value::Null]);
+    }
+
+    #[test]
+    fn keeps_a_session_the_user_named() {
+        let (_dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_session_info(Some("planning"));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn never_deletes_a_file_it_reopened_from_disk() {
+        let (dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        let path = dir.path().to_string_lossy().into_owned();
+        let mut reopened = SessionManager::open(&file, Some(&path), None, None).expect("reopen");
+        assert!(!reopened.discard_header_only_file());
+        assert!(exists(&file));
+    }
+
+    #[test]
+    fn writes_the_buffered_custom_entries_again_once_a_conversation_starts_after_the_discard() {
+        let (dir, mut manager, file) = started();
+        manager.persist_header_now().expect("header");
+        manager.append_custom_marked("pi-rules.scan", Some(json!({"rules": []})), true);
+        assert!(manager.discard_header_only_file());
+        manager.append_message(json!({"role": "user", "content": "later", "timestamp": 1}));
+        manager.append_message(json!({"role": "assistant", "content": [], "timestamp": 2}));
+        assert!(exists(&file));
+        let path = dir.path().to_string_lossy().into_owned();
+        let reopened = SessionManager::open(&file, Some(&path), None, None).expect("reopen");
+        assert_eq!(
+            reopened
+                .entries()
+                .iter()
+                .map(|entry| entry_type(entry).to_owned())
+                .collect::<Vec<_>>(),
+            ["custom", "message", "message"]
+        );
+    }
+
+    #[test]
+    fn discards_a_file_that_only_lifecycle_records_created() {
+        for custom_type in ["session-lifecycle", "work-custody", "child-lifecycle"] {
+            let (_dir, mut manager, file) = started();
+            manager.append_custom(custom_type, Some(json!({"seq": 1})));
+            assert!(exists(&file), "{custom_type}");
+            assert!(manager.discard_header_only_file(), "{custom_type}");
+            assert!(!exists(&file), "{custom_type}");
+        }
+    }
+
+    #[test]
+    fn keeps_a_lifecycle_created_file_once_the_session_has_a_user_message() {
+        let (_dir, mut manager, file) = started();
+        manager.append_custom("session-lifecycle", Some(json!({"seq": 1})));
+        manager.append_message(json!({"role": "user", "content": "hi", "timestamp": 1}));
+        assert!(!manager.discard_header_only_file());
+        assert!(exists(&file));
     }
 }

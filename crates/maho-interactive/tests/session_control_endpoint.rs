@@ -92,10 +92,28 @@ struct Fixture {
 async fn start_endpoint(
     drain: Option<maho_core::extensions::session_control_types::SessionControlDrain>,
 ) -> Fixture {
+    start_endpoint_with(drain, false, None).await
+}
+
+/// `persisted`: a session file under the fixture directory (senpi `persistSession: true`).
+async fn start_endpoint_with(
+    drain: Option<maho_core::extensions::session_control_types::SessionControlDrain>,
+    persisted: bool,
+    is_session_referenced: Option<
+        maho_core::extensions::session_control_types::IsSessionReferenced,
+    >,
+) -> Fixture {
     let (mode, directory, session) =
         crate::runtime35_native::native_mode_with_session_and_provider_retaining_session(
             None,
-            |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+            |cwd| {
+                if persisted {
+                    let sessions = format!("{cwd}/sessions");
+                    maho_core::session_manager::SessionManager::create(cwd, Some(&sessions), None)
+                } else {
+                    maho_core::session_manager::SessionManager::in_memory(cwd, None, None)
+                }
+            },
             "faux",
             "faux-1",
             false,
@@ -108,20 +126,20 @@ async fn start_endpoint(
     let seen = wakes.clone();
     let drain = drain.unwrap_or_else(|| {
         Arc::new(
-            |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
-                Box::pin(async { None })
+            |_event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
+                Box::pin(async { Ok(None) })
             },
         )
     });
     let options = RegisterControlEndpointOptions {
         inbox_dir: inbox_dir.to_string_lossy().into_owned(),
         drain: Arc::new(
-            move |event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+            move |event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
                 lock(&seen).push(event.clone());
                 drain(event)
             },
         ),
-        is_session_referenced: None,
+        is_session_referenced,
     };
     let context = TuiControlContext {
         session: session.clone(),
@@ -320,12 +338,13 @@ async fn serves_one_session_row_and_the_extended_state() {
 #[tokio::test]
 async fn wake_runs_the_drain_and_answers_its_admissions() {
     let fixture = start_endpoint(Some(Arc::new(
-        |event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+        |event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
             let admitted = event["delivery_ids"]
                 .as_array()
                 .is_some_and(|ids| ids.contains(&json!("d2")));
             Box::pin(async move {
-                admitted.then(|| json!({"admitted": [{"delivery_id": "d2", "kind": "started"}]}))
+                Ok(admitted
+                    .then(|| json!({"admitted": [{"delivery_id": "d2", "kind": "started"}]})))
             })
         },
     )))
@@ -356,7 +375,7 @@ async fn wakes_the_drain_with_reason_inbox_when_an_entry_is_created() {
     let marker_slot: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::default();
     let watched = marker_slot.clone();
     let fixture = start_endpoint(Some(Arc::new(
-        move |event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+        move |event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
             let written = lock(&watched)
                 .as_ref()
                 .is_some_and(|marker| marker.exists());
@@ -367,7 +386,7 @@ async fn wakes_the_drain_with_reason_inbox_when_an_entry_is_created() {
             {
                 drop(sender.send(event));
             }
-            Box::pin(async { None })
+            Box::pin(async { Ok(None) })
         },
     )))
     .await;
@@ -394,11 +413,13 @@ async fn a_drain_that_keeps_failing_reports_once_until_a_pass_succeeds() {
     let failing = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let drain_failing = failing.clone();
     let fixture = start_endpoint(Some(Arc::new(
-        move |_event: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+        move |_event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
             let failing = drain_failing.load(std::sync::atomic::Ordering::SeqCst);
             Box::pin(async move {
-                assert!(!failing, "inbox store unreadable");
-                None
+                if failing {
+                    return Err("inbox store unreadable".to_owned());
+                }
+                Ok(None)
             })
         },
     )))
@@ -594,5 +615,255 @@ async fn a_client_message_id_retry_replays_its_receipt_and_new_content_conflicts
     )
     .await;
     assert_eq!(unserved["errorCode"], "unsupported_field");
+    fixture.endpoint.dispose().await;
+}
+
+/// senpi `bindCurrentSessionExtensions` -> `session.setControlEndpointHost(sessionControlHost)`: once
+/// the terminal binds extensions, `pi.session.registerControlEndpoint` (the generation's
+/// `create_session_control_actions`) serves a TUI endpoint through the terminal's host; before the
+/// binding no host is offered and the registration answers `unsupported_mode`.
+#[tokio::test]
+async fn pi_session_registers_through_the_terminal_host_once_extensions_are_bound() {
+    use maho_core::extensions::session_control_types::{
+        ControlEndpointUnsupported, SessionControlActions,
+    };
+    let (mut mode, directory, session) =
+        crate::runtime35_native::native_mode_with_session_and_provider_retaining_session(
+            None,
+            |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+            "faux",
+            "faux-1",
+            false,
+        );
+    let options = || RegisterControlEndpointOptions {
+        inbox_dir: directory
+            .path()
+            .join("inbox")
+            .to_string_lossy()
+            .into_owned(),
+        drain: Arc::new(
+            |_event: Value| -> futures::future::BoxFuture<'static, Result<Option<Value>, String>> {
+                Box::pin(async { Ok(None) })
+            },
+        ),
+        is_session_referenced: None,
+    };
+    // The first extension generation's `pi.session`, before the terminal offers its host.
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::from_static(
+            Vec::new(),
+            session.extension_context(mode.extension_ui.clone()),
+        ))
+        .await;
+    let unbound = session.session_control().expect("first generation");
+    assert!(matches!(
+        unbound.register_control_endpoint(options()).await,
+        SessionControlRegistration::Unsupported {
+            reason: ControlEndpointUnsupported::UnsupportedMode
+        }
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(10), mode.bind_extensions())
+        .await
+        .expect("bounded binding");
+    let actions = session
+        .session_control()
+        .expect("the bound generation's pi.session");
+    let SessionControlRegistration::Registered { socket, dispose } =
+        actions.register_control_endpoint(options()).await
+    else {
+        panic!("the terminal host serves the registration");
+    };
+    let name = std::path::Path::new(&socket)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        maho_rpc::host_endpoints::is_tui_control_socket(&name),
+        "{name}"
+    );
+    let listing = control_data(&socket, json!({"type": "list_sessions"})).await;
+    assert_eq!(listing["sessions"][0]["sessionId"], session.session_id());
+    assert_eq!(listing["sessions"][0]["surface"], "tui");
+    dispose().await.expect("dispose");
+    assert!(!std::path::Path::new(&socket).exists());
+    mode.dispose_session_control().await;
+}
+
+/// An extension that records each `session_control_wake` it sees and fails while `failing` is set.
+struct WakeWatcher {
+    seen: Arc<Mutex<Vec<(String, Vec<String>, Option<Vec<String>>)>>>,
+    failing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl maho_ext_api::Extension for WakeWatcher {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        let seen = self.seen.clone();
+        let failing = self.failing.clone();
+        api.on(
+            maho_ext_api::EventKind::SessionControlWake,
+            Arc::new(move |event, _ctx| {
+                let seen = seen.clone();
+                let failing = failing.load(std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    if let maho_ext_api::ExtensionEvent::SessionControlWake {
+                        reason,
+                        reasons,
+                        delivery_ids,
+                    } = event
+                    {
+                        lock(&seen).push((reason.clone(), reasons.clone(), delivery_ids.clone()));
+                    }
+                    if failing {
+                        return Err(maho_ext_api::ExtensionFailure::new("wake handler broke"));
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
+    }
+}
+
+// senpi `session-control-endpoint.ts`: each wake pass emits `session_control_wake` into the session's
+// extensions before the registrant's drain; a failing handler is an extension error, not a failed pass.
+#[tokio::test]
+async fn a_wake_is_emitted_into_the_sessions_extensions_before_the_drain() {
+    let fixture = start_endpoint(None).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fixture
+        .session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::from_static(
+            vec![Box::new(WakeWatcher {
+                seen: seen.clone(),
+                failing: failing.clone(),
+            })],
+            fixture
+                .session
+                .extension_context(fixture._mode.extension_ui.clone()),
+        ))
+        .await;
+    control_data(
+        &fixture.socket,
+        json!({"type": "wake", "delivery_ids": ["d1"]}),
+    )
+    .await;
+    assert_eq!(
+        *lock(&seen),
+        [(
+            "command".to_owned(),
+            vec!["command".to_owned()],
+            Some(vec!["d1".to_owned()])
+        )]
+    );
+    assert_eq!(lock(&fixture.wakes).len(), 1, "the drain still ran");
+    // senpi's `emit` reports a handler's failure through `emitError`; the drain still runs.
+    failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    control_data(&fixture.socket, json!({"type": "wake"})).await;
+    assert_eq!(lock(&seen).len(), 2);
+    assert_eq!(
+        lock(&fixture.wakes).len(),
+        2,
+        "a failing handler does not skip the drain"
+    );
+    assert!(
+        lock(&fixture.surface.notices)
+            .iter()
+            .all(|line| !line.contains("drain failed")),
+        "{:?}",
+        lock(&fixture.surface.notices)
+    );
+    fixture.endpoint.dispose().await;
+}
+
+// senpi interactive-session-control-lifecycle.test.ts: the header-only rule at clean exit.
+#[tokio::test]
+async fn keeps_a_referenced_header_only_session_file_and_removes_an_unreferenced_one() {
+    for referenced in [true, false] {
+        let fixture = start_endpoint_with(
+            None,
+            true,
+            Some(Arc::new(
+                move || -> futures::future::BoxFuture<'static, bool> {
+                    Box::pin(async move { referenced })
+                },
+            )),
+        )
+        .await;
+        let file = fixture.session.session_file().expect("session file");
+        let header = std::fs::read_to_string(&file).expect("header written");
+        assert_eq!(header.trim().lines().count(), 1, "{header}");
+        fixture.endpoint.dispose().await;
+        assert_eq!(std::path::Path::new(&file).exists(), referenced);
+    }
+}
+
+#[tokio::test]
+async fn keeps_the_file_after_a_delivery_was_applied_even_when_unreferenced() {
+    let fixture = start_endpoint_with(
+        None,
+        true,
+        Some(Arc::new(|| -> futures::future::BoxFuture<'static, bool> {
+            Box::pin(async { false })
+        })),
+    )
+    .await;
+    fixture.session.with_session_manager_mut(|manager| {
+        manager.append_custom_message(
+            "session_control_delivery",
+            json!("m1"),
+            true,
+            Some(json!({"delivery_id": "d1"})),
+        )
+    });
+    let file = fixture.session.session_file().expect("session file");
+    fixture.endpoint.dispose().await;
+    assert!(
+        std::fs::read_to_string(&file)
+            .expect("kept")
+            .contains(r#""delivery_id":"d1""#)
+    );
+}
+
+// senpi 4267-observing-reads-terminal-parity (the terminal half): the terminal's `abort` runs the host's
+// `runAbort` over the session's effect ledger, so an `effectId` gets a receipt that `get_effect_status`
+// reads back, and `awaitIdle`/`clearQueue` answer like a host.
+#[tokio::test]
+async fn abort_effects_and_effect_status_are_served_from_the_sessions_ledger() {
+    let fixture = start_endpoint(None).await;
+    let aborted = control_data(
+        &fixture.socket,
+        json!({"type": "abort", "effectId": "e-abort-1"}),
+    )
+    .await;
+    assert_eq!(aborted["effectId"], "e-abort-1");
+    assert_eq!(aborted["state"], "done");
+    assert_eq!(aborted["effect"]["disposition"], "no_active_turn");
+    let status = control_data(
+        &fixture.socket,
+        json!({"type": "get_effect_status", "effectId": "e-abort-1"}),
+    )
+    .await;
+    assert_eq!(status["found"], true, "{status}");
+    assert_eq!(status["effect"]["effectId"], "e-abort-1");
+    let replay = control_data(
+        &fixture.socket,
+        json!({"type": "abort", "effectId": "e-abort-1"}),
+    )
+    .await;
+    assert_eq!(replay["replayed"], true, "{replay}");
+    let quiesced = control_data(
+        &fixture.socket,
+        json!({"type": "abort", "awaitIdle": true, "clearQueue": true}),
+    )
+    .await;
+    assert_eq!(quiesced["idle"], true, "{quiesced}");
+    assert_eq!(quiesced["cleared"], 0);
+    let missing = control_data(
+        &fixture.socket,
+        json!({"type": "get_effect_status", "effectId": "never-sent"}),
+    )
+    .await;
+    assert_eq!(missing, json!({"found": false, "searched": "complete"}));
     fixture.endpoint.dispose().await;
 }
