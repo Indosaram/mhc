@@ -140,6 +140,8 @@ pub mod project_trust;
 pub mod radius_auth;
 #[path = "radius_relay.rs"]
 pub mod radius_relay;
+#[path = "radius_relay_host.rs"]
+pub mod radius_relay_host;
 #[path = "reasoning_host.rs"]
 pub mod reasoning_host;
 #[path = "rpc_fast_mode.rs"]
