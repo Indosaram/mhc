@@ -4401,7 +4401,7 @@ impl AgentSession {
                     // the next run pins each full original message while the session idles.
                     state.message_replacements = Vec::new();
                 }
-                AgentEvent::MessageStart { message } => {
+                AgentEvent::MessageStart { message, .. } => {
                     if message.as_assistant().is_some() {
                         state.assistant_generation += 1;
                     }
@@ -4415,7 +4415,7 @@ impl AgentSession {
                 | AgentEvent::ToolExecutionEnd { .. } => {}
             }
         }
-        if let AgentEvent::MessageStart { message } = &event
+        if let AgentEvent::MessageStart { message, .. } = &event
             && let Ok(value) = session_message_to_value(message) {
                 if let Some(id) = value
                     .pointer("/details/heldInputId")
@@ -4480,7 +4480,7 @@ impl AgentSession {
         {
             self.emit_server_fallback_aborted(assistant);
         }
-        if let AgentEvent::MessageStart { message } = &event
+        if let AgentEvent::MessageStart { message, .. } = &event
             && message.role() == "user"
         {
             self.state().overflow_recovery_rungs = 0;
@@ -4886,7 +4886,7 @@ impl AgentSession {
                 message: message.clone(),
                 tool_results: tool_results.clone(),
             },
-            AgentEvent::MessageStart { message } => ExtensionEvent::MessageStart {
+            AgentEvent::MessageStart { message, .. } => ExtensionEvent::MessageStart {
                 message: message.clone(),
             },
             AgentEvent::MessageUpdate {
@@ -18434,6 +18434,7 @@ impl AgentSession {
         self.emit(AgentSessionEvent::Agent(
             maho_agent::types::AgentEvent::MessageStart {
                 message: message.clone(),
+                streaming: None,
             },
         ));
         self.emit(AgentSessionEvent::Agent(
@@ -23678,16 +23679,16 @@ mod tests {
             .agent
             .set_model(provider.get_model(Some("faux-1")).expect("model"));
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let _subscription =
-            session.subscribe(Arc::new(move |event| {
-                if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageStart {
-                    message,
-                }) = event
-                    && message.role() == "user"
-                {
-                    let _ = sender.send(user_message_text(message));
-                }
-            }));
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageStart {
+                message,
+                ..
+            }) = event
+                && message.role() == "user"
+            {
+                let _ = sender.send(user_message_text(message));
+            }
+        }));
         SessionExtensionActions(Arc::downgrade(&session.inner))
             .send_user_message(
                 maho_ext_api::UserMessageContent::Blocks(vec![
@@ -24156,6 +24157,7 @@ mod tests {
             .process_agent_event(
                 maho_agent::types::AgentEvent::MessageStart {
                     message: make_user_message("queued", None),
+                    streaming: None,
                 },
                 maho_ai::utils::abort::AbortController::new().signal(),
             )
@@ -30128,7 +30130,7 @@ mod tests {
         let _subscription = session.subscribe(Arc::new(move |event| {
             if let AgentSessionEvent::Agent(event) = event {
                 match event {
-                    maho_agent::types::AgentEvent::MessageStart { message } | maho_agent::types::AgentEvent::MessageEnd { message } => {
+                    maho_agent::types::AgentEvent::MessageStart { message, .. } | maho_agent::types::AgentEvent::MessageEnd { message } => {
                         assert_eq!(message.role(), "custom");
                         assert_eq!(captured.messages().as_slice(), std::slice::from_ref(message));
                         assert_eq!(captured.with_session_manager(|manager| manager.entries())[0]["customType"], "idle-notice");
@@ -31478,6 +31480,7 @@ mod tests {
             .process_agent_event(
                 maho_agent::types::AgentEvent::MessageStart {
                     message: pending_assistant.clone(),
+                    streaming: None,
                 },
                 maho_ai::utils::abort::AbortController::new().signal(),
             )
