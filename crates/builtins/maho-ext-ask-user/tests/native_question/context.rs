@@ -52,6 +52,7 @@ impl ModelRegistry for Registry {
 pub struct DecisionUi {
     pub opened: tokio::sync::mpsc::UnboundedSender<QuestionRequest>,
     pub responses: tokio::sync::watch::Receiver<Option<QuestionResponse>>,
+    pub notices: std::sync::Mutex<Vec<String>>,
 }
 impl ExtensionUi for DecisionUi {
     fn select<'a>(
@@ -118,7 +119,12 @@ impl ExtensionUi for DecisionUi {
             }
         })
     }
-    fn notify(&self, _: &str, _: NotificationType) {}
+    fn notify(&self, message: &str, _: NotificationType) {
+        self.notices
+            .lock()
+            .expect("notices")
+            .push(message.to_owned());
+    }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
     fn set_header(&self, _: Option<ComponentFactory>) {}

@@ -187,7 +187,8 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     let mut responses = Some(responses);
     let ui = Arc::new(context::DecisionUi {
         opened,
-        responses: response_rx,
+        responses: response_rx.clone(),
+        notices: Default::default(),
     });
     let mut event_context = context::create(&session, ui.clone());
     event_context.mode = ExtensionMode::Tui;
@@ -338,13 +339,16 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         if !loaded.errors.is_empty() { return Err(format!("Reload factory errors: {:?}",loaded.errors).into()); }
         let captured = settlements.clone();
         let subscription = loaded.events.on_native::<AskUserSettledEvent>("ask-user:settled",Arc::new(move |value|captured.lock().expect("settlements").push(value.clone())));
-        let runner = ExtensionRunner::new(loaded.extensions,loaded.runtime,loaded.events,context::create(&session,ui.clone()));
+        // A disabled reload binds a distinct UI so the loss notice must follow the re-bound owner.
+        let (reloaded_opened, mut reloaded_opened_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reloaded_ui = if disable_on_reload { Arc::new(context::DecisionUi {opened:reloaded_opened,responses:response_rx.clone(),notices:Default::default()}) } else { ui.clone() };
+        let runner = ExtensionRunner::new(loaded.extensions,loaded.runtime,loaded.events,context::create(&session,reloaded_ui.clone()));
         if disable_on_reload {
             session.with_settings_manager_mut(|manager| manager.apply_overrides(&serde_json::Map::from_iter([("askUser".to_owned(), json!({"enabled":false}))])));
         }
         session.set_extension_runner(runner).await;
-        session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
-        session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
+        session.bind_extensions(ExtensionBindings {ui_context:Some(reloaded_ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
+        session.bind_extensions(ExtensionBindings {ui_context:Some(reloaded_ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
         if late_rebind {
             let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), opened_rx.recv()).await?.ok_or("Replacement UI did not open")?;
             if reopened != request || pending[0].owner.borrow().is_none() || completion.borrow().is_some() || !settlements.lock().expect("settlements").is_empty() {
@@ -361,9 +365,14 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
                 loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
                 Ok::<(), tokio::sync::watch::error::RecvError>(())
             }).await??;
-            if opened_rx.try_recv().is_ok() { return Err("Disabled reload reopened the question UI".into()); }
+            if opened_rx.try_recv().is_ok() || reloaded_opened_rx.try_recv().is_ok() { return Err("Disabled reload reopened the question UI".into()); }
             if session.get_active_tool_names().iter().any(|name| ["request_user_input", "ask_user_question"].contains(&name.as_str())) {
                 return Err("Disabled reload left the question tool active".into());
+            }
+            let lost = "The pending question was cancelled because ask-user is disabled.";
+            let count = |ui: &context::DecisionUi| ui.notices.lock().expect("notices").iter().filter(|notice| notice.as_str() == lost).count();
+            if count(&reloaded_ui) != 1 || count(&ui) != 0 {
+                return Err(format!("Loss notice did not reach the re-bound owner UI: new={:?}, old={:?}", reloaded_ui.notices.lock().expect("notices"), ui.notices.lock().expect("notices")).into());
             }
         }
         Some(subscription)
