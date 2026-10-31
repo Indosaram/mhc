@@ -11,7 +11,7 @@ use crate::git::repo_types::GitCommitAuthor;
 use crate::support::paths::to_git_path;
 use crate::support::time::now_iso;
 
-use super::agreements_write_guard::refuse_agreements_violation;
+use super::agreements_write_guard::{refuse_agreements_violation, restore_paths};
 use super::claim_frontmatter::{
     ClaimReceipt, claim_receipt_trailers, provenance_stripped_trailers, restamp_content,
     stamp_receipt, stripped_legacy_user_header,
@@ -133,6 +133,19 @@ fn err(msg: impl Into<String>) -> MemoryToolError {
     MemoryToolError::new(format!("memory: {}", msg.into()))
 }
 
+/// A refused write must leave the repo as clean as `clean_check` found it, or every later
+/// memory write fails on the leftover file. Rolls `paths` back to HEAD and returns `error`,
+/// noting a rollback that itself failed.
+fn rolled_back(repo: &GitMemoryRepo, paths: &[String], error: MemoryToolError) -> MemoryToolError {
+    match restore_paths(repo, paths) {
+        Ok(()) => error,
+        Err(restore_error) => MemoryToolError::new(format!(
+            "{}\nRolling back the written paths also failed: {restore_error}",
+            error.message
+        )),
+    }
+}
+
 fn require_str<'a>(
     command: &str,
     field_name: &str,
@@ -236,6 +249,9 @@ fn run_memory_tool_inner(
     }
 
     let root = &repo.dir;
+    // Pin `memory.ts:69`: unrelated dirty files fail before anything is written, so a refused
+    // write never leaves its own file behind to make the next write fail too.
+    repo.clean_check().map_err(|e| err(e.to_string()))?;
     let mut affected_relative_paths: Vec<String> = Vec::new();
     let mut stripped_paths = Vec::new();
     let claim = params.provenance.as_ref().and_then(|p| p.claim.as_ref());
@@ -479,7 +495,9 @@ fn run_memory_tool_inner(
         }
     };
 
-    execute_command()?;
+    if let Err(error) = execute_command() {
+        return Err(rolled_back(repo, &affected_relative_paths, error));
+    }
 
     if writer == MemoryWriter::MemoryTool
         && let Some(violation) = refuse_agreements_violation(repo, &affected_relative_paths)
@@ -504,7 +522,13 @@ fn run_memory_tool_inner(
         Err(GitError::NoEffectiveChanges { .. }) => {
             return Err(err(format!("{command_str} made no effective changes")));
         }
-        Err(err_val) => return Err(err(err_val.to_string())),
+        Err(err_val) => {
+            return Err(rolled_back(
+                repo,
+                &affected_relative_paths,
+                err(err_val.to_string()),
+            ));
+        }
     };
 
     let has_remote = has_configured_remote(repo);
