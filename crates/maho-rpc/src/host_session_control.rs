@@ -148,7 +148,7 @@ impl HostSessionControl {
         let inbox_wake = wake("inbox");
         let inbox = match watch_inbox(
             inbox_dir,
-            Arc::new(move |_: &[std::path::PathBuf]| inbox_wake()),
+            Arc::new(move |_: &notify::Event| inbox_wake()),
             {
                 let report = self.report.clone();
                 Arc::new(move |error: String| {
@@ -256,10 +256,10 @@ fn inbox_entry_changed(kind: &notify::EventKind) -> bool {
 }
 
 /// One watch on the inbox directory (senpi `watchInbox`): any change to an entry that is not the engine's own wakes
-/// the drain; `on_change` gets the event's paths.
+/// the drain; `on_change` gets the event.
 fn watch_inbox(
     inbox_dir: &std::path::Path,
-    on_change: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync>,
+    on_change: Arc<dyn Fn(&notify::Event) + Send + Sync>,
     on_error: Arc<dyn Fn(String) + Send + Sync>,
 ) -> std::io::Result<notify::RecommendedWatcher> {
     use notify::Watcher;
@@ -279,7 +279,7 @@ fn watch_inbox(
                             .is_some_and(|name| name.starts_with(INBOX_ENGINE_ENTRY_PREFIX))
                     });
                 if !engine_only {
-                    on_change(&event.paths);
+                    on_change(&event);
                 }
             }
             Err(error) => on_error(error.to_string()),
@@ -376,29 +376,49 @@ mod tests {
     }
 
     /// The drain opens the entries it reads: an open (and its close) must not wake, or the drain re-wakes itself.
-    /// inotify delivers one watch's events in order, so a wake on the open would arrive before the create's.
+    /// The backend delivers one watch's events in order, so a wake on the open would arrive before the create's.
+    /// Portable: macOS reports canonical paths (`/private/var/...`), so the dir is canonicalized and events are
+    /// compared by file name; FSEvents may replay the pre-watch creation (and write) of `held`, which is skipped - only
+    /// an access to `held` reaching `on_change` is the regression.
     #[tokio::test]
     async fn opening_an_inbox_entry_does_not_wake() {
         let temp = tempfile::tempdir().unwrap();
         let inbox = temp.path().join("inbox");
         std::fs::create_dir_all(&inbox).unwrap();
+        let inbox = std::fs::canonicalize(&inbox).unwrap();
         std::fs::write(inbox.join("held"), "{}").unwrap();
         let (woke_tx, mut woke) = tokio::sync::mpsc::unbounded_channel();
         let _watch = watch_inbox(
             &inbox,
-            Arc::new(move |paths: &[std::path::PathBuf]| {
-                let _ = woke_tx.send(paths.to_vec());
+            Arc::new(move |event: &notify::Event| {
+                let _ = woke_tx.send(event.clone());
             }),
             Arc::new(|error: String| panic!("inbox watch failed: {error}")),
         )
         .unwrap();
         std::fs::read_to_string(inbox.join("held")).unwrap();
         std::fs::write(inbox.join("arrived"), "{}").unwrap();
-        let first = tokio::time::timeout(std::time::Duration::from_secs(10), woke.recv())
-            .await
-            .expect("the created entry wakes")
-            .unwrap();
-        assert_eq!(first, [inbox.join("arrived")]);
+        let names = |event: &notify::Event| -> Vec<String> {
+            event
+                .paths
+                .iter()
+                .filter_map(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect()
+        };
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let event = woke.recv().await.expect("the watch stays armed");
+                let replayed = !matches!(event.kind, notify::EventKind::Access(_))
+                    && names(&event) == ["held"];
+                if !replayed {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("the created entry wakes");
+        assert_eq!(names(&first), ["arrived"], "{first:?}");
     }
 
     #[test]
