@@ -41,6 +41,8 @@ mod grok_mermaid_edges;
 mod keybinding_hints_global;
 #[path = "mermaid_golden.rs"]
 mod mermaid_golden;
+#[path = "mermaid_transformer.rs"]
+mod mermaid_transformer;
 #[path = "presentation.rs"]
 mod presentation;
 #[path = "runtime35_external_editor.rs"]
