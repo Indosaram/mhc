@@ -1,0 +1,89 @@
+st_01a18d4b [completed] transcript via event-log:
+assistant: I read this as a change ask - implement two spec deltas in two crates and commit each. I'll stop when both commits exist and I've reported shas.
+tool: bash
+tool: bash
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Now I have enough context. Writing the feedback changes: model refusals, response mapping, digest headers, sign-in, reinstall step.
+tool: bash
+assistant: Now reports.rs: version, headers, typed mapping, logger.
+tool: bash
+tool: bash
+tool: bash
+assistant: Now flow.rs: new refusal parsing/notices, sign-in decision.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Now append delta tests to tests/spec.rs (reusing its fixtures).
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Feedback first: provenance + review diff, then commit.
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Feedback committed (94b0c7a). Now skills: rewriting root.rs with a validated resolver and threading it through the three consumers.
+tool: write
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Ask: implement the v5.1.52 deltas of the feedback and skills specs in maho-feedback and maho-skills under clean-room rules, one commit per crate - wanted: two commits, plus shas, tests and the ambiguities I resolved. For you: both commits are in, each touching only its own crate and appending its PROVENANCE.md (method C, spec da2b172b, units feedback-5152 / skills-5152). Nothing has been compiled or tested: no cargo was allowed, so the code has not been type-checked and some compile errors are possible. Changed files were run through rustfmt only. Now: done. Next: none; the first build and test run is still open for you.
+
+**Commits**
+- `94b0c7a` feat(maho-feedback): feedback behavior from omo v5.1.52 spec (clean room)
+- `8bb0309` feat(maho-skills): skills behavior from omo v5.1.52 spec (clean room)
+
+**maho-feedback**
+- **D1:** `redactorVersion` is now `1.0.0`. The POST adds `content-length` and `x-omo-content-sha256`, both computed from the exact body bytes sent. SHA-256 is written locally in `src/digest.rs` so the crate needs no new dependency.
+- **D2:** refusals are typed per the code table. `service-rejected` and `service-unavailable` carry `code` and an optional `requestId`. When the code is unknown, the status decides. A request id is kept only if it is well formed and the redactor finds nothing in it. Each refusal gets its own message, and refusals that reached the service are logged as a warning when a logger is present.
+- **D3:** `src/signin.rs` adds an injectable sign-in store and the token decision. The flow shows the warning before sending and never calls the store's refresh.
+- **D4:** `src/install.rs` builds the reinstall step from `MAHO_REINSTALL_COMMAND` (or the legacy name) and the missing-installation message.
+
+**maho-skills**
+- `RootResolver` in `src/root.rs` validates the override: it must be absolute and a directory this process can open and list. The legacy variable is read only when `MAHO_SKILLS_ROOT` is unset or empty.
+- An invalid value falls back to the skills folder beside the executable. It is logged once and shown once per distinct message, using a ledger shared by the whole process.
+- A directory passed in by code always wins and never triggers a notice.
+- `/skill`, the `skill` tool and `resources_discover` all resolve through `SkillsExtension::root_for(ctx)`. It logs through the context's logger and shows a UI notice only when the session has a UI.
+
+**Tests (written, not run)**
+- `crates/maho-feedback/tests/spec.rs`, new module `delta_5152`: SHA-256 known vectors; D1 headers and version; D2 code groups, status fallbacks, request-id filtering, conflict without a caller key, warning log, messages; D3 valid, 10-seconds-left, expired/uncertain/store failure, no store or signed out, uploads off; D4 trimmed command, blank or unset, new name beats legacy, message parts.
+- Existing feedback tests were updated: t09 and t13 expect `1.0.0`; t10 expects `service-rejected`/`conflict`; t11 expects 500 + HTML to give `service-unavailable`; t14 covers the new refusal kinds.
+- `crates/maho-skills/tests/root_override.rs` covers delta cases 1-5. It also checks the no-UI path and that an unset or empty value gives no notice. The `EACCES` case skips its assertion when running as root, because root can read the directory.
+
+**Ambiguities resolved**
+- **Draft kept or removed after a refusal:** the delta doesn't say. I keep the draft for every refusal except `secret-detected` and `too-large`, so sign-in, rejected and unavailable refusals can be retried.
+- **Mapping order:** the 409 + `conflict` + caller key → `already-sent` check runs first, as the spec says. A known code then beats the status, so a 413 with `invalid_request` is `service-rejected`; the status fallback applies only when the code is unknown or missing.
+- **Where D3 applies:** only the `/feedback` and `/bug` flow, through `ReportsBackend.sign_in` and the new `FeedbackExtension.sign_in`. It defaults to `None`, which keeps the old "caller's token or none" behaviour. The RPCs are unchanged.
+- **Sign-in edge cases:** a token with exactly 30 seconds left counts as unusable (the spec says "more than 30"). A store that reads as "nothing stored" behaves like "signed out": anonymous, no warning.
+- **D4:** I only added the helper. The launcher's existing messages in maho-cli were not changed, because that is outside the two crates I was allowed to touch.
+- **Duplicate `content-length`:** `http_transport` skips the `content-length` header when building the reqwest request, because reqwest sets one from the same body and the header would otherwise be sent twice.
+- **Skills "unreadable":** a directory counts as unreadable when it can't be opened or its first entry errors. The OS error names map as NotFound → `ENOENT`, PermissionDenied → `EACCES`, NotADirectory → `ENOTDIR`; anything else uses the error text.
+- **Old skills entry point:** `bundled_skills_root_from` keeps its signature but now also requires an absolute path and gives no notice. The process-level `bundled_skills_root()` logs through the diagnostic sink only (no UI), as it does for maho-cli's delegation and app-server callers.
+- **The `skill` tool:** it resolves the root only so the shared notice also fires there; the tool's results don't use the root.

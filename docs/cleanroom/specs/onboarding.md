@@ -95,11 +95,11 @@ validation (unknown provider/model, missing `--yes` without TTY); apply writes a
 No behaviour of §1-§6 changes. The upstream changes concern (a) the wording of a loader failure
 for a separately packaged session-history scanner, and (b) the path of a bundled tour skill used
 by the OmO first-run tour. The MIT setup (§1-§6) has no session-history scan at all and no tour
-step, so neither change has anything to act on.
+step, so neither change has anything to act on. The bundled-skill-root row is mapped once, in
+`skills.md` D4; its tour-skill half has nothing to act on here.
 
 | census row | delta § | APPLIES/N-A | reason |
 | --- | --- | --- | --- |
 | omo-components-07 | - | N-A | N-A reason: message wording of a loader for a session-history scanner; MIT onboarding has no session-history scan (and nothing loaded separately); the shared reinstall-step rule is feedback.md D4 |
-| omo-components-02 (onboarding half; the skill-command half is skills.md D2) | - | N-A | N-A reason: MIT onboarding has no bundled tour skill, so it resolves no bundled skill root |
 
 Leak self-check: no code, no SUL wording, no tables, no OmO-original names or features were added.

@@ -306,6 +306,11 @@ Tests:
 | --- | --- | --- | --- |
 | omo-components-27 | D1 | APPLIES | members record root and depth from the lead's ancestry |
 | omo-senpi-task-b-14 | D1 | APPLIES | nested team members record the tree root |
+| omo-cores-31 | - | N-A | N-A reason: a pane here runs a read-only follower of the task's files (§4.3), never a client that attaches to a password-protected server, so there is no server password to keep out of the multiplexer's argument list |
+| omo-cores-32 | - | N-A | N-A reason: there is no attach or placeholder command that would need a password-file prefix (§4.3 follower only) |
+| omo-cores-33 | - | N-A | N-A reason: `maho-team` probes no server health URL; a member is a child process whose liveness is its exit (task.md §2) |
+| omo-cores-34 | - | N-A | N-A reason: team panes reuse the §4.3 follower and pass no credentials to the multiplexer |
 
 Leak self-check: no SUL code or comment carried over; no constant tables; env names are the
-existing MIT ones plus `task.md` Delta D1; neutral names; no OmO-original feature.
+existing MIT ones plus `task.md` Delta D1; neutral names; no OmO-original feature. The four
+omo-cores rows (added 2026-11-01) are N-A against this spec's own §4 design.
