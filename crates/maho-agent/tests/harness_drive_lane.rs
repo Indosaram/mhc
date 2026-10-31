@@ -2680,3 +2680,31 @@ async fn memory_session_repo_creation_also_remains_branchless() {
     session.close(&BACKGROUND_CONTEXT).await;
     repo.close(&BACKGROUND_CONTEXT).await;
 }
+
+/// Pinned `harness.lanes(context)` returns `LaneInfo { name, tipId, operation }` per loaded lane
+/// (harness.test.ts: `toMatchObject([{ name: "main", tipId: null }])`).
+#[tokio::test]
+async fn lane_infos_report_name_tip_and_current_operation() {
+    let harness = fixture().await;
+    assert!(
+        harness
+            .lane_infos(&BACKGROUND_CONTEXT)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    harness
+        .lane("main", None, &BACKGROUND_CONTEXT)
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.lane_infos(&BACKGROUND_CONTEXT).await.unwrap(),
+        vec![maho_agent::harness::agent_harness::LaneInfo {
+            name: "main".into(),
+            tip_id: None,
+            operation: None,
+        }]
+    );
+    harness.close(&BACKGROUND_CONTEXT).await;
+    assert!(harness.lane_infos(&BACKGROUND_CONTEXT).await.is_err());
+}
