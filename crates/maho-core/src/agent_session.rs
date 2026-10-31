@@ -661,6 +661,9 @@ struct AgentSessionState {
     pending_model_switch: Option<PendingModelSwitch>,
     /// senpi `_compactionModelFallbackNotice`: the last `compaction_model_fallback` logged, so it logs once.
     compaction_model_fallback_notice: Option<String>,
+    /// The retry controller's spent accounts, copied wherever it notes or clears one, so the synchronous
+    /// compaction-model resolver reads them without contending for the controller's async lock.
+    spent_accounts: crate::retry_fallback::unusable::SpentAccounts,
     compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
     /// senpi `_autoCompactionAbortController`: the active controller belongs to post-turn auto compaction.
     auto_compaction_owned: bool,
@@ -4133,6 +4136,7 @@ impl AgentSession {
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
             compaction_model_fallback_notice: None,
+            spent_accounts: Default::default(),
             compaction_abort_controller: None,
             auto_compaction_owned: false,
             compaction_signal_bridge: None,
@@ -4631,6 +4635,7 @@ impl AgentSession {
                         error_message,
                     },
                 );
+                self.state().spent_accounts = controller.spent_accounts();
             }
         }
         if let AgentEvent::MessageStart { message, .. } = &event
@@ -10661,6 +10666,7 @@ impl AgentSession {
         {
             let had_active_fallback = controller.state.is_some();
             controller.clear_for_manual_model_change(&model);
+            self.state().spent_accounts = controller.spent_accounts();
             if had_active_fallback {
                 self.abort_retry();
             }
@@ -19766,13 +19772,11 @@ impl AgentSession {
             .filter(|(provider, _)| !provider.is_empty());
         let configured = split.and_then(|(provider, id)| runtime.get_model(provider, id));
         let has_provider = split.is_some();
-        let mut controller = self.retry_fallback.try_lock().ok();
-        let mut usable = |model: &Model| {
-            !controller
-                .as_mut()
-                .and_then(|controller| controller.as_mut())
-                .is_some_and(|controller| controller.is_provider_spent(&model.provider))
-        };
+        // The snapshot the controller's writers publish: unlike a `try_lock` on the controller, it cannot
+        // read a spent provider as usable while another task holds the lock.
+        let spent = self.state().spent_accounts.clone();
+        let now = self.fallback_now();
+        let usable = |model: &Model| !spent.is_spent(&model.provider, now);
         // Preserve the explicit override and original-model geometry on healthy sessions.
         // A held downswitch uses its target only when the original account cannot serve.
         if usable(session_model) {
@@ -19793,7 +19797,6 @@ impl AgentSession {
                 }
                 Some(_) => None,
             };
-            drop(controller);
             let Some(reason) = fallback_reason else {
                 self.state().compaction_model_fallback_notice = None;
                 return Ok(configured.expect("usable override"));
@@ -19843,10 +19846,7 @@ impl AgentSession {
         }) {
             return Ok(available);
         }
-        let raw = controller
-            .as_mut()
-            .and_then(|controller| controller.as_mut())
-            .and_then(|controller| controller.account_error(&session_model.provider));
+        let raw = spent.account_error(&session_model.provider, now);
         Err(crate::retry_fallback::usage_limit::account_usage_limit_error(
             &session_model.provider,
             raw.as_deref(),
@@ -29170,6 +29170,23 @@ mod tests {
                 "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model"
             ),
             "compaction_end errorMessage: {last_end}"
+        );
+    }
+
+    /// The resolver reads the spent accounts the controller publishes, so a task holding the controller lock
+    /// cannot make a spent provider look usable.
+    #[tokio::test]
+    async fn spent_account_stays_spent_while_the_controller_lock_is_held() {
+        let (session, _provider) =
+            spent_account_session(&[], serde_json::json!({"keepRecentTokens":1})).await;
+        let held = session.retry_fallback.lock().await;
+        let error = session
+            .resolve_compaction_model(&session.model())
+            .expect_err("spent account under contention");
+        drop(held);
+        assert_eq!(
+            error,
+            "The faux account usage limit has been reached (resets in 5 hours). Switch to another provider with /model, or configure another provider in retry.fallbackChains."
         );
     }
 
