@@ -2613,12 +2613,19 @@ impl RpcConnectionHandler {
     }
 }
 
+/// A bare in-memory session for tests outside this module.
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub(crate) fn session() -> super::AgentSession {
+        super::new_session_tests::session()
+    }
+}
 #[cfg(test)]
 mod new_session_tests {
     use super::*;
     use std::sync::Arc;
 
-    fn session() -> AgentSession {
+    pub(super) fn session() -> AgentSession {
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
             maho_core::model_runtime::CreateModelRuntimeOptions {
                 providers: Some(vec![]),

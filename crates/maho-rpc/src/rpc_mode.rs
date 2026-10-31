@@ -250,12 +250,22 @@ pub async fn run_rpc_mode(
     session: &maho_core::agent_session::AgentSession,
     tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
     input: impl tokio::io::AsyncRead + Unpin,
+    output: impl tokio::io::AsyncWrite + Unpin,
+) -> std::io::Result<i32> {
+    run_rpc_mode_until(session, tool_runtime, input, output, termination_signal()).await
+}
+/// [`run_rpc_mode`] ended by `termination` (the process's SIGTERM/SIGHUP outside tests).
+async fn run_rpc_mode_until(
+    session: &maho_core::agent_session::AgentSession,
+    tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+    input: impl tokio::io::AsyncRead + Unpin,
     mut output: impl tokio::io::AsyncWrite + Unpin,
+    termination: impl std::future::Future<Output = i32>,
 ) -> std::io::Result<i32> {
     use tokio::io::AsyncWriteExt;
     // senpi's signal handler kills the tracked detached children before the shared shutdown runs.
     let mut signal = Box::pin(async {
-        let code = termination_signal().await;
+        let code = termination.await;
         maho_tools::shell::kill_tracked_detached_children();
         code
     });
@@ -287,6 +297,8 @@ pub async fn run_rpc_mode(
 #[cfg(test)]
 mod drain_tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
     use std::{
         pin::Pin,
         task::{Context, Poll},
@@ -376,5 +388,36 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert!(value.get("message").is_none());
         assert_eq!(value["assistantMessageEvent"]["delta"], "a");
+    }
+
+    /// senpi rpc-mode.ts signal handler: a termination kills the tracked detached process groups before the
+    /// shutdown, and answers 143 for SIGTERM.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_termination_kills_tracked_detached_children_before_shutdown() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        maho_tools::shell::track_detached_child_pid(pid);
+        let session = crate::connection_handler::test_support::session();
+        let (_client, input) = tokio::io::duplex(64);
+        let code = run_rpc_mode_until(&session, None, input, tokio::io::sink(), async { 143 })
+            .await
+            .unwrap();
+        assert_eq!(code, 143);
+        assert!(
+            !maho_tools::shell::list_tracked_detached_children()
+                .iter()
+                .any(|entry| entry.pid == pid)
+        );
+        // SIGKILL reached the group: the child is reaped as killed by the signal.
+        let status = child.wait().unwrap();
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(9)
+        );
     }
 }
