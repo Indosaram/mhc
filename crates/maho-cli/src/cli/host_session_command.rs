@@ -373,6 +373,13 @@ fn into_action(
     }))
 }
 
+/// The key root a host session command uses: an explicit root is resolved against the cwd,
+/// as upstream `resolve(keyRoot)`.
+fn host_session_key_root(explicit: Option<&str>, agent_dir: &Path) -> PathBuf {
+    let explicit_root = explicit.map(resolve);
+    maho_rpc::host_probe::rpc_key_root(explicit_root.as_deref().map(Path::new), Some(agent_dir))
+}
+
 /// senpi `runHostSessionCommand`: one JSON line on stdout and the outcome's exit code.
 pub async fn run_host_session_command(args: &[String]) -> Result<i32, String> {
     let parsed = match parse_host_session_args(args) {
@@ -386,12 +393,7 @@ pub async fn run_host_session_command(args: &[String]) -> Result<i32, String> {
     };
     let agent_dir = PathBuf::from(maho_core::config::get_agent_dir());
     let socket = super::host_command::resolve_host_socket(parsed.socket.as_deref(), &agent_dir);
-    // An explicit root is resolved against the cwd, as upstream `resolve(keyRoot)`.
-    let explicit_root = parsed.key_root.as_deref().map(resolve);
-    let key_root = maho_rpc::host_probe::rpc_key_root(
-        explicit_root.as_deref().map(Path::new),
-        Some(&agent_dir),
-    );
+    let key_root = host_session_key_root(parsed.key_root.as_deref(), &agent_dir);
     let request = HostSessionRequest {
         target: HostTarget { socket, agent_dir },
         action,
@@ -593,8 +595,8 @@ mod tests {
     #[test]
     fn an_explicit_key_root_is_made_absolute() {
         let parsed = parse(&["list", "--rpc-key-root", "relative-keys"]);
-        let resolved = resolve(parsed.key_root.as_deref().unwrap());
-        assert!(Path::new(&resolved).is_absolute());
+        let resolved = host_session_key_root(parsed.key_root.as_deref(), Path::new("/agent"));
+        assert!(resolved.is_absolute());
         assert!(resolved.ends_with("relative-keys"));
     }
 
