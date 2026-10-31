@@ -418,6 +418,28 @@ impl BindingAcceptance {
         lane.accept(record, carrier.as_ref());
     }
 }
+/// senpi `createRpcSessionBinding.writeRecord`: a record produced after the entry's provider scope closed is
+/// dropped instead of reaching the writer, with one stderr line per binding (senpi#2871: a late record from an
+/// unawaited prompt must not resurrect a closed session's stream).
+pub fn closed_scope_record_sink(
+    session_id: String,
+    scope: maho_ai::node::provider_scope::ProviderScope,
+    sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+) -> std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> {
+    let dropped_after_close = std::sync::atomic::AtomicBool::new(false);
+    std::sync::Arc::new(move |record| {
+        if scope.state() == maho_ai::node::provider_scope::ScopeState::Closed {
+            if !dropped_after_close.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "senpi rpc host: dropped a record for closed session {session_id} at {}",
+                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                );
+            }
+            return;
+        }
+        sink(record);
+    })
+}
 pub struct BindingRecords {
     tools: ToolAttributionSpans,
 }
@@ -775,6 +797,22 @@ mod tests {
         assert_eq!(published, 1);
         binding.dispose();
         assert!(activity.since(activity.mark()).is_none());
+    }
+    #[test]
+    fn a_record_after_the_scope_closed_is_dropped_not_written() {
+        let scope = maho_ai::node::provider_scope::ProviderScope::new();
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let into = written.clone();
+        let sink = closed_scope_record_sink(
+            "s".into(),
+            scope.clone(),
+            std::sync::Arc::new(move |record| into.lock().unwrap().push(record)),
+        );
+        sink(serde_json::json!({"type":"agent_start"}));
+        scope.close();
+        sink(serde_json::json!({"type":"agent_end"}));
+        sink(serde_json::json!({"type":"agent_end"}));
+        assert_eq!(*written.lock().unwrap(), vec![serde_json::json!({"type":"agent_start"})]);
     }
     #[test]
     fn malformed_record_stops_stream_before_later_publication() {

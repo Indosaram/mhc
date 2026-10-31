@@ -961,6 +961,48 @@ impl ClientInner {
     }
 }
 impl SessionWorkerClient {
+    /// A client with no worker process behind it, its outbox observable (tests of the registries that own one).
+    #[cfg(test)]
+    pub(crate) fn detached_for_test() -> (Self, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            output: Box::new(|_: Value, _: Option<String>| {}),
+            request_close: Box::new(|| {}),
+            failure: Box::new(|_: &str| {}),
+            exit: Box::new(|| {}),
+            security: None,
+            presenters: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: false,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: None,
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(None),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: None,
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: None,
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
+        });
+        (Self { inner }, outbox)
+    }
     /// Starts the worker process and its pipe pumps; only the process's actual exit releases ownership.
     pub fn spawn(
         spawn: &SpawnSessionWorker,
@@ -1087,6 +1129,36 @@ impl SessionWorkerClient {
             _ => Err("Invalid worker prepare response".into()),
         }
     }
+    /// senpi `setPromptSurface`: the attach that names another surface moves the live session to it.
+    pub async fn set_prompt_surface(&self, surface: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"prompt_surface","surface":surface}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker prompt_surface response".into());
+        }
+        Ok(())
+    }
+    /// senpi `setBrowserEngine`.
+    pub async fn set_browser_engine(&self, engine: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"browser_engine","engine":engine}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker browser_engine response".into());
+        }
+        Ok(())
+    }
+    /// senpi `setPermissionPreset`.
+    pub async fn set_permission_preset(&self, preset: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"permission_preset","preset":preset}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker permission_preset response".into());
+        }
+        Ok(())
+    }
     pub async fn commit(&self) -> Result<WorkerSnapshot, String> {
         let nonce = uuid::Uuid::new_v4().to_string();
         let request = match &self.inner.acceptance {
@@ -1198,6 +1270,10 @@ impl SessionWorkerClient {
             lock(&self.inner.requests).active_count(),
             lock(&self.inner.state).snapshot.as_ref(),
         )
+    }
+    /// senpi `bindingReady`: the worker's routing binding is installed, so an attach may join it.
+    pub fn binding_ready(&self) -> bool {
+        lock(&self.inner.state).binding_ready
     }
     pub fn is_stopped(&self) -> bool {
         lock(&self.inner.state).stopped
@@ -1423,6 +1499,156 @@ mod tests {
         assert_eq!(grants.accept_response("ui-1", Some("peer-a")), None);
     }
 
+    /// senpi 4348-worker-grant-answer: a bound client whose grant dialog `grant` went to `grant-client`, with the
+    /// worker's outbox observable; only the binding's command gate is under test, no worker process is spawned.
+    fn grant_gate_client() -> (
+        SessionWorkerClient,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let grants = grants(
+            &["question-only", "grant-client", "grant-other"],
+            &["grant-client", "grant-other"],
+            false,
+        );
+        let route = grants.route("s", "grant", Some("grant-client"), &[], || {});
+        assert_eq!(
+            route,
+            WorkerGrantRoute {
+                accepted: true,
+                connection: Some("grant-client".to_owned())
+            }
+        );
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            output: Box::new(|_: Value, _: Option<String>| {}),
+            request_close: Box::new(|| {}),
+            failure: Box::new(|_: &str| {}),
+            exit: Box::new(|| {}),
+            security: None,
+            presenters: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: true,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: Some("s".into()),
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(None),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: Some(grants),
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: None,
+            expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
+        });
+        (SessionWorkerClient { inner }, outbox)
+    }
+
+    /// Sends one `extension_ui_response` from `connection` and returns how many commands reached the worker's outbox.
+    /// The command is polled once: a dropped answer settles at once, a forwarded one waits on the worker's reply.
+    fn answer(
+        client: &SessionWorkerClient,
+        outbox: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        connection: &str,
+        frame: Value,
+    ) -> usize {
+        use futures::FutureExt;
+        let mut command = serde_json::json!({"type":"extension_ui_response","value":"Grant and save permanently"});
+        for (key, value) in frame.as_object().into_iter().flatten() {
+            command[key] = value.clone();
+        }
+        let _ = client
+            .command(command, Some(connection.to_owned()), None)
+            .now_or_never();
+        let mut forwarded = 0;
+        while let Ok(line) = outbox.try_recv() {
+            if serde_json::from_str::<Value>(line.trim_end())
+                .is_ok_and(|message| message["type"] == "command")
+            {
+                forwarded += 1;
+            }
+        }
+        forwarded
+    }
+
+    #[tokio::test]
+    async fn attach_setters_post_their_upstream_requests_and_settle_on_the_result() {
+        let (client, mut outbox) = grant_gate_client();
+        for (kind, field, value) in [
+            ("prompt_surface", "surface", "app"),
+            ("browser_engine", "engine", "builtin"),
+            ("permission_preset", "preset", "guarded"),
+        ] {
+            let call = async {
+                match kind {
+                    "prompt_surface" => client.set_prompt_surface(value).await,
+                    "browser_engine" => client.set_browser_engine(value).await,
+                    _ => client.set_permission_preset(value).await,
+                }
+            };
+            let reply = async {
+                let line = outbox.recv().await.expect("the request is posted");
+                let sent: Value = serde_json::from_str(line.trim_end()).expect("json");
+                assert_eq!(sent["type"], kind);
+                assert_eq!(sent[field], value);
+                client
+                    .inner
+                    .receive(crate::session_worker_protocol::SessionWorkerWire::Result {
+                        request: sent["request"].as_u64().expect("request id"),
+                        error: None,
+                    });
+            };
+            let (result, ()) = tokio::join!(call, reply);
+            assert_eq!(result, Ok(()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_long_form_grant_answer_from_a_connection_without_grant_select_is_not_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let long = serde_json::json!({"id":"synthetic-answer-a","uiRequestId":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "question-only", long), 0);
+        let short = serde_json::json!({"id":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", short), 1);
+    }
+
+    #[tokio::test]
+    async fn a_long_form_grant_answer_from_another_grant_select_connection_is_not_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let long = serde_json::json!({"id":"synthetic-answer-b","uiRequestId":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-other", long), 0);
+        let short = serde_json::json!({"id":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", short), 1);
+    }
+
+    #[tokio::test]
+    async fn the_short_form_answer_of_the_grant_recipient_is_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let short = serde_json::json!({"id":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", short), 1);
+    }
+
+    #[tokio::test]
+    async fn the_long_form_answer_of_the_grant_recipient_is_forwarded() {
+        let (client, mut outbox) = grant_gate_client();
+        let long = serde_json::json!({"id":"synthetic-answer-d","uiRequestId":"grant"});
+        assert_eq!(answer(&client, &mut outbox, "grant-client", long), 1);
+    }
+
     #[test]
     fn only_a_readable_security_notice_snapshot_crosses_the_worker_wire() {
         for snapshot in [
@@ -1492,6 +1718,7 @@ mod tests {
             failure: Box::new(move |error: &str| lock(&failed).push(error.to_owned())),
             exit: Box::new(|| {}),
             security: None,
+            presenters: None,
         };
         let inner = Arc::new(ClientInner {
             state: std::sync::Mutex::new(ClientState {
@@ -1517,6 +1744,7 @@ mod tests {
             limit_mirror: std::sync::Mutex::new(None),
             acceptance: Some(Arc::clone(&lane)),
             expected_ordinal: std::sync::Mutex::new(0),
+            private_forms: std::sync::Mutex::default(),
         });
         OrderedClient {
             inner,

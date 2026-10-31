@@ -464,19 +464,13 @@ impl SessionEventFanout {
                 for record in self
                     .snapshots
                     .snapshots
-                    .get(&session)
+                    .get_mut(&session)
                     .into_iter()
                     .flatten()
                     .filter(|record| record.rendered)
                 {
                     let line = if placeholders {
-                        match &record.source {
-                            Some(source) => crate::jsonl::serialize_json_line(
-                                &crate::media_placeholders::omit_inline_media(source),
-                            )
-                            .map_err(|error| error.to_string())?,
-                            None => record.line.clone(),
-                        }
+                        snapshot_placeholder_line(record).map_err(|error| error.to_string())?
                     } else {
                         record.line.clone()
                     };
@@ -648,14 +642,11 @@ impl SessionEventFanout {
             } else {
                 std::borrow::Cow::Borrowed(&wire)
             };
-            // `omit_inline_media` returns any other record as-is, so its placeholder replay is
-            // `line` itself; keep a source copy only for a record the snapshot list will retain.
-            let source = (crate::media_placeholders::carries_inline_media(&wire)
-                && self.snapshots.retains(session, &wire))
-            .then(|| wire.clone());
+            // `omit_inline_media` returns any other record as-is, so its placeholder replay is `line` itself.
+            let may_carry_media = crate::media_placeholders::carries_inline_media(&wire);
             self.note_latest(session, &wire, &line);
             self.snapshots
-                .remember(session, &tagged, line.clone(), None, source);
+                .remember(session, &tagged, line.clone(), None, may_carry_media);
         }
         let mut failed = Vec::new();
         let mut stdio = Vec::new();
@@ -947,11 +938,30 @@ impl ConnectionTargets {
         self.connections.is_empty()
     }
 }
+/// senpi `SnapshotRecord`: the frozen line, its memoized placeholder variant, and the type gate taken at
+/// acceptance. A record whose type cannot carry media replays `line` with no parse; only a media-bearing one
+/// parses its frozen line, once, on the first capable replay. No source object is retained.
 struct SnapshotRecord {
     line: String,
     placeholder_line: Option<String>,
-    source: Option<Value>,
+    may_carry_media: bool,
     rendered: bool,
+}
+/// senpi `snapshotPlaceholderLine`: the placeholder variant of a remembered record, derived and memoized on first use.
+fn snapshot_placeholder_line(record: &mut SnapshotRecord) -> Result<String, serde_json::Error> {
+    if let Some(line) = &record.placeholder_line {
+        return Ok(line.clone());
+    }
+    if !record.may_carry_media {
+        return Ok(record.line.clone());
+    }
+    let source: Value = serde_json::from_str(&record.line)?;
+    let line = match crate::media_placeholders::omit_inline_media(&source) {
+        std::borrow::Cow::Borrowed(_) => record.line.clone(),
+        std::borrow::Cow::Owned(redacted) => crate::jsonl::serialize_json_line(&redacted)?,
+    };
+    record.placeholder_line = Some(line.clone());
+    Ok(line)
 }
 /// `record` with `message` and `assistantMessageEvent.partial` nulled, built by copying the small
 /// entries instead of deep-cloning the cumulative snapshots first. Key order matches assigning
@@ -1034,7 +1044,7 @@ impl SessionSnapshots {
         value: &Value,
         line: String,
         placeholder_line: Option<String>,
-        source: Option<Value>,
+        may_carry_media: bool,
     ) {
         let kind = value["type"].as_str();
         if kind == Some("session_lifecycle") {
@@ -1076,7 +1086,7 @@ impl SessionSnapshots {
         let record = SnapshotRecord {
             line,
             placeholder_line,
-            source,
+            may_carry_media,
             rendered: value[RENDERED_COMPONENT_RECORD] == true,
         };
         if kind == Some("message_start")
@@ -1115,20 +1125,8 @@ impl SessionSnapshots {
             if record.rendered && !rendered {
                 continue;
             }
-            if placeholders && record.placeholder_line.is_none() {
-                record.placeholder_line = Some(match &record.source {
-                    Some(source) => crate::jsonl::serialize_json_line(
-                        &crate::media_placeholders::omit_inline_media(source),
-                    )?,
-                    None => record.line.clone(),
-                });
-            }
             lines.push(if placeholders {
-                record
-                    .placeholder_line
-                    .as_ref()
-                    .unwrap_or(&record.line)
-                    .clone()
+                snapshot_placeholder_line(record)?
             } else {
                 record.line.clone()
             });
@@ -1181,7 +1179,7 @@ mod tests {
                 &record,
                 crate::jsonl::serialize_json_line(&record).unwrap(),
                 None,
-                None,
+                false,
             );
         }
         let replay = snapshots.replay("s", false, false, 0.).unwrap();
@@ -1194,7 +1192,7 @@ mod tests {
         );
     }
     #[test]
-    fn source_is_kept_only_for_retained_media_records() {
+    fn only_media_bearing_records_are_gated_for_a_placeholder_parse() {
         let mut fanout = SessionEventFanout::default();
         fanout
             .deliver("s", None, false, &json!({"type":"agent_end","messages":[]}))
@@ -1219,13 +1217,41 @@ mod tests {
         fanout
             .deliver("s", None, false, &json!({"type":"turn_end","message":{}}))
             .unwrap();
-        let sources = fanout.snapshots.snapshots["s"]
+        let gates = fanout.snapshots.snapshots["s"]
             .iter()
-            .map(|record| record.source.is_some())
+            .map(|record| record.may_carry_media)
             .collect::<Vec<_>>();
-        assert_eq!(sources, vec![true, false, true]);
+        assert_eq!(gates, vec![true, false, true]);
         let full = fanout.snapshots.replay("s", false, false, 0.).unwrap();
         assert_eq!(fanout.snapshots.replay("s", false, true, 0.).unwrap(), full);
+        // Only the derived line is memoized; a non-media record never derives one.
+        let memoized = fanout.snapshots.snapshots["s"]
+            .iter()
+            .map(|record| record.placeholder_line.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(memoized, vec![true, false, true]);
+    }
+    #[test]
+    fn a_late_capable_replay_redacts_the_frozen_line_of_a_media_record() {
+        let mut snapshots = SessionSnapshots::default();
+        let start = json!({"type":"message_start","message":{"role":"toolResult","toolCallId":"t1","content":[
+            {"type":"image","data":"QUJD","mimeType":"image/png"}
+        ]}});
+        let line = crate::jsonl::serialize_json_line(&start).unwrap();
+        snapshots.remember("s", &start, line.clone(), None, true);
+        let plain = snapshots.replay("s", false, false, 0.).unwrap();
+        assert_eq!(plain, vec![line.clone()]);
+        let redacted = snapshots.replay("s", false, true, 0.).unwrap();
+        assert_eq!(
+            redacted,
+            vec![
+                crate::jsonl::serialize_json_line(&crate::media_placeholders::omit_inline_media(
+                    &start
+                ))
+                .unwrap()
+            ]
+        );
+        assert_ne!(redacted[0], line);
     }
     #[test]
     fn demoted_snapshot_matches_clone_then_null_bytes() {
@@ -1259,7 +1285,7 @@ mod tests {
                 &json!({"type":"extension_ui_request","method":"question","id":id}),
                 String::new(),
                 None,
-                None,
+                false,
             );
         }
         snapshots.remember(
@@ -1267,7 +1293,7 @@ mod tests {
             &json!({"type":"extension_ui_request","method":"question","id":"z","deadlineAtMs":100}),
             String::new(),
             None,
-            None,
+            false,
         );
         let frames = snapshots
             .replay("s", false, false, 0.)
@@ -1313,7 +1339,7 @@ mod tests {
     fn message_end_discards_replay_and_rendered_requires_capability() {
         let mut snapshots = SessionSnapshots::default();
         let value = json!({"type":"message_start","__senpiRenderedComponent":true});
-        snapshots.remember("s", &value, "start\n".into(), None, None);
+        snapshots.remember("s", &value, "start\n".into(), None, false);
         assert!(snapshots.replay("s", false, false, 0.).unwrap().is_empty());
         assert_eq!(
             snapshots.replay("s", true, false, 0.).unwrap(),
@@ -1324,7 +1350,7 @@ mod tests {
             &json!({"type":"message_end"}),
             "end\n".into(),
             None,
-            None,
+            false,
         );
         assert!(snapshots.replay("s", true, false, 0.).unwrap().is_empty());
     }
@@ -1336,14 +1362,14 @@ mod tests {
             &json!({"type":"extension_ui_request","method":"question","id":"q","deadlineAtMs":100}),
             String::new(),
             None,
-            None,
+            false,
         );
         snapshots.remember(
             "s",
             &json!({"type":"question_updated","id":"q","deadlineAtMs":200,"remainingMs":150}),
             String::new(),
             None,
-            None,
+            false,
         );
         let line = snapshots.replay("s", false, false, 150.).unwrap().remove(0);
         let value: Value = serde_json::from_str(&line).unwrap();
@@ -1353,7 +1379,7 @@ mod tests {
             &json!({"type":"question_resolved","id":"q"}),
             String::new(),
             None,
-            None,
+            false,
         );
         assert!(
             snapshots
