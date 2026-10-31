@@ -164,6 +164,9 @@ pub struct SummaryRequestOptions<'a> {
     pub omit_reasoning_options: bool,
     pub forbid_tool_calls: bool,
     pub stream_runner: Option<&'a SummaryStreamRunner>,
+    /// senpi `summarizationStream`: `{ ...options, cwd: context.cwd }`, the absolute session directory
+    /// subprocess-backed providers (Claude SDK) need before they accept a summary request.
+    pub cwd: Option<String>,
 }
 
 pub async fn generate_summary_message(
@@ -220,6 +223,7 @@ pub async fn generate_summary_message(
             api_key: options.api_key,
             headers: options.headers,
             signal: Some(controller.signal()),
+            cwd: options.cwd,
             on_payload: Some(std::sync::Arc::new(|payload, model, _| {
                 if model.api == "anthropic-messages" {
                     payload.as_object().map(|payload| {

@@ -144,6 +144,7 @@ async fn summary_dispatch_uses_native_messages_and_supplied_runtime_runner() {
         assert_eq!(context.messages.len(), 2);
         assert_eq!(options.max_tokens, Some(5000));
         assert_eq!(options.extra["toolChoice"], "none");
+        assert_eq!(options.request.cwd.as_deref(), Some("/work/session"));
         let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
         let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
         response.stop_reason = maho_ai::types::StopReason::Stop;
@@ -179,6 +180,7 @@ async fn summary_dispatch_uses_native_messages_and_supplied_runtime_runner() {
             omit_reasoning_options: false,
             forbid_tool_calls: true,
             stream_runner: Some(&runner),
+            cwd: Some("/work/session".into()),
         },
         &|_| {},
     )
@@ -267,6 +269,7 @@ async fn summary_request_drops_conversation_bound_thinking_blocks() {
             omit_reasoning_options: false,
             forbid_tool_calls: false,
             stream_runner: Some(&runner),
+            cwd: None,
         },
         &|_| {},
     )

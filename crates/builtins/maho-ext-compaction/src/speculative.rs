@@ -405,6 +405,7 @@ async fn run_extension_compaction_with_body(
                         omit_reasoning_options: reasoning_retry_spent,
                         forbid_tool_calls: tool_retry_spent,
                         stream_runner,
+                        cwd: None,
                     },
                     on_progress,
                 )
