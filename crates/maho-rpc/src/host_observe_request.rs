@@ -35,6 +35,14 @@ pub fn origin_host_instance(env: &std::collections::HashMap<String, String>) -> 
         .filter(|instance| !instance.is_empty())
         .map(str::to_owned)
 }
+/// `origin_host_instance` of this process's environment (senpi `originHostInstance()` with its `process.env`
+/// default): what a socket client stamps on its requests so the host can tell its own children's traffic.
+pub fn process_origin_host_instance() -> Option<String> {
+    std::env::var(crate::protocol_identity::HOST_INSTANCE_ID_ENV)
+        .ok()
+        .map(|instance| instance.trim().to_owned())
+        .filter(|instance| !instance.is_empty())
+}
 /// The generation a request line says its client runs in; `None` when unmarked or not JSON.
 pub fn request_origin_host_instance(line: &str) -> Option<String> {
     let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
