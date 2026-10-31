@@ -17,6 +17,26 @@ pub type Backgrounds = Arc<Mutex<indexmap::IndexMap<String, BackgroundSession>>>
 /// The session's manifest recorder (upstream `state.manifestWriter`), bound while a lifecycle owns it.
 pub type Lifecycle = Arc<tokio::sync::Mutex<Option<crate::terminal_state::TerminalStateLifecycle>>>;
 
+/// Upstream `state.recordedBackgroundIds`: the background ids already recorded into the current
+/// manifest writer; cleared whenever the writer is swapped or detached.
+pub type RecordedBackgroundIds = Arc<Mutex<BTreeSet<String>>>;
+
+/// Install `next` as the manifest recorder (or detach it with `None`) and hand back the previous
+/// one. Upstream clears `recordedBackgroundIds` at every writer swap (the reload rebind, `own`,
+/// `detachPersistence`), so the next background state re-records every live session into the new
+/// writer.
+pub fn replace_lifecycle(
+    slot: &mut Option<crate::terminal_state::TerminalStateLifecycle>,
+    recorded: &RecordedBackgroundIds,
+    next: Option<crate::terminal_state::TerminalStateLifecycle>,
+) -> Option<crate::terminal_state::TerminalStateLifecycle> {
+    recorded
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    std::mem::replace(slot, next)
+}
+
 /// Upstream `TerminalExtensionState`, the part the sinks and the tool context read at call time:
 /// every field is shared, so a notifier or context swap needs no re-bind.
 #[derive(Clone)]
@@ -34,7 +54,7 @@ pub struct TerminalExtensionState {
     pub notifier: Arc<Mutex<crate::notify::TerminalNotifier>>,
     /// The completion delivery the notifier reads (`getMode` resolved for the session's mode).
     pub delivery: Arc<Mutex<Option<crate::notify::NotificationDelivery>>>,
-    pub recorded_background_ids: Arc<Mutex<BTreeSet<String>>>,
+    pub recorded_background_ids: RecordedBackgroundIds,
 }
 
 pub fn manifest_now_ms() -> f64 {
@@ -155,18 +175,42 @@ pub fn emit_monitor_state(
     sender.events.emit(crate::shared::WAKE_SOURCE_STATE_EVENT,&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.monitor_id.as_ref().unwrap_or(&entry.id),"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
 }
 
-/// Drives `onMonitorState` from the registry's state channel: each snapshot is emitted, then the
+/// Whether `next` differs from `previous` only by fire bookkeeping (fire count, last fire, fire
+/// window): the registry's `onFire`, as opposed to its `onChange` transition. A coalesced change
+/// still reads as a transition.
+fn is_fire_only(previous: &[MonitorSnapshotEntry], next: &[MonitorSnapshotEntry]) -> bool {
+    let unfired = |entry: &MonitorSnapshotEntry| MonitorSnapshotEntry {
+        fire_count: None,
+        last_fired_at_ms: None,
+        fire_window: None,
+        ..entry.clone()
+    };
+    previous.len() == next.len()
+        && previous
+            .iter()
+            .zip(next)
+            .all(|(previous, next)| unfired(previous) == unfired(next))
+}
+
+/// Drives `onMonitorState` from the registry's state channel. The first snapshot (upstream
+/// `bundle.bind`) and every transition (`onChange`) are emitted with `transition = true`, then the
 /// manifest mirrors mute state and burned fire windows and prunes monitors that ended, in order.
+/// A fire (`onFire`) emits the state event only: no wake-source state, no manifest observe.
 pub fn bind_monitor_events(
     mut state: tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>>,
     sender: Arc<ExtensionApi>,
     lifecycle: Lifecycle,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut previous: Option<Vec<MonitorSnapshotEntry>> = None;
         loop {
             let snapshot = state.borrow_and_update().clone();
-            emit_monitor_state(&sender, &snapshot, true);
-            if let Some(lifecycle) = lifecycle.lock().await.as_mut()
+            let transition = previous
+                .as_deref()
+                .is_none_or(|previous| !is_fire_only(previous, &snapshot));
+            emit_monitor_state(&sender, &snapshot, transition);
+            if transition
+                && let Some(lifecycle) = lifecycle.lock().await.as_mut()
                 && let Err(error) = lifecycle
                     .writer
                     .observe_monitor_state(&snapshot, manifest_now_ms())
@@ -176,6 +220,7 @@ pub fn bind_monitor_events(
                     "terminal manifest monitor sync failed: {error}"
                 ));
             }
+            previous = Some(snapshot);
             if state.changed().await.is_err() {
                 return;
             }
@@ -275,28 +320,7 @@ pub fn bundle_sinks(state: &TerminalExtensionState) -> TerminalEventSinks {
                 snapshot.to_vec(),
             );
             handle.spawn(async move {
-                let mut lifecycle = lifecycle.lock().await;
-                let Some(lifecycle) = lifecycle.as_mut() else {
-                    return;
-                };
-                for entry in snapshot {
-                    if !recorded
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(entry.id.clone())
-                    {
-                        continue;
-                    }
-                    lifecycle
-                        .writer
-                        .record_background_start(
-                            &entry.id,
-                            &entry.description,
-                            entry.started_at_ms,
-                            manifest_now_ms(),
-                        )
-                        .await;
-                }
+                record_background_starts(&lifecycle, &recorded, snapshot).await;
             });
         }),
         on_background_exit: Arc::new(move |id: &str, view: &TerminalExitView| {
@@ -319,6 +343,37 @@ pub fn bundle_sinks(state: &TerminalExtensionState) -> TerminalEventSinks {
             }
             send_completion_notice(id, view, &state.sender, &state.delivery, &state.notifier);
         }),
+    }
+}
+
+/// Upstream `onBackgroundState` `record()`: each live background session is recorded once per
+/// manifest writer; nothing is recorded while no writer is bound.
+pub async fn record_background_starts(
+    lifecycle: &Lifecycle,
+    recorded: &RecordedBackgroundIds,
+    snapshot: Vec<BackgroundSession>,
+) {
+    let mut lifecycle = lifecycle.lock().await;
+    let Some(lifecycle) = lifecycle.as_mut() else {
+        return;
+    };
+    for entry in snapshot {
+        if !recorded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(entry.id.clone())
+        {
+            continue;
+        }
+        lifecycle
+            .writer
+            .record_background_start(
+                &entry.id,
+                &entry.description,
+                entry.started_at_ms,
+                manifest_now_ms(),
+            )
+            .await;
     }
 }
 
@@ -571,6 +626,129 @@ mod tests {
         let reservation = manager.reserve().unwrap();
         assert!(reservation.is_some());
         assert!(manager.reserve().unwrap().is_none());
+    }
+
+    /// restore-session.ts `own` / extension.ts reload rebind: a background id recorded into
+    /// writer A is recorded again into writer B once the writer is swapped.
+    #[tokio::test]
+    async fn a_swapped_writer_re_records_live_background_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        let writer = |name: &str| {
+            crate::terminal_state::TerminalStateLifecycle::new(&dir.path().join(name), "bg-swap")
+        };
+        let live = vec![BackgroundSession {
+            id: "bash_1".to_owned(),
+            description: "serve".to_owned(),
+            started_at_ms: 1.0,
+        }];
+        async fn recorded_ids(
+            lifecycle: &crate::terminal_state::TerminalStateLifecycle,
+        ) -> Vec<String> {
+            lifecycle
+                .writer
+                .read_restore_state()
+                .await
+                .unwrap()
+                .map(|manifest| {
+                    manifest
+                        .background_sessions
+                        .into_iter()
+                        .map(|entry| entry.id)
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        assert!(
+            replace_lifecycle(
+                &mut *state.lifecycle.lock().await,
+                &state.recorded_background_ids,
+                Some(writer("a")),
+            )
+            .is_none()
+        );
+        record_background_starts(
+            &state.lifecycle,
+            &state.recorded_background_ids,
+            live.clone(),
+        )
+        .await;
+        let a = replace_lifecycle(
+            &mut *state.lifecycle.lock().await,
+            &state.recorded_background_ids,
+            Some(writer("b")),
+        )
+        .unwrap();
+        assert_eq!(recorded_ids(&a).await, ["bash_1"]);
+        assert!(state.recorded_background_ids.lock().unwrap().is_empty());
+        record_background_starts(&state.lifecycle, &state.recorded_background_ids, live).await;
+        let b = replace_lifecycle(
+            &mut *state.lifecycle.lock().await,
+            &state.recorded_background_ids,
+            None,
+        )
+        .unwrap();
+        assert_eq!(recorded_ids(&b).await, ["bash_1"]);
+        assert!(state.recorded_background_ids.lock().unwrap().is_empty());
+    }
+
+    /// session-bundle.ts: `onChange` is a transition and `onFire` is not, so a fire re-emits only
+    /// the state event, never the wake-source state.
+    #[tokio::test]
+    async fn a_monitor_fire_is_not_a_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        let (seen, mut received) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
+        let _subscriptions = [
+            crate::shared::TERMINAL_MONITOR_STATE_EVENT,
+            crate::shared::WAKE_SOURCE_STATE_EVENT,
+        ]
+        .map(|channel: &'static str| {
+            let seen = seen.clone();
+            state.sender.events.on(
+                channel,
+                Arc::new(move |_: &Value| {
+                    let _ = seen.send(channel);
+                }),
+            )
+        });
+        let watch = MonitorSnapshotEntry {
+            id: "bash_1".to_owned(),
+            monitor_id: Some("mon_FIRE".to_owned()),
+            description: "watch".to_owned(),
+            ..Default::default()
+        };
+        let fired = MonitorSnapshotEntry {
+            fire_count: Some(1),
+            last_fired_at_ms: Some(5.0),
+            ..watch.clone()
+        };
+        let paused = MonitorSnapshotEntry {
+            paused: true,
+            ..fired.clone()
+        };
+        let (publish, subscribe) = tokio::sync::watch::channel(vec![watch]);
+        let task = bind_monitor_events(subscribe, state.sender.clone(), state.lifecycle.clone());
+        async fn next(
+            received: &mut tokio::sync::mpsc::UnboundedReceiver<&'static str>,
+        ) -> &'static str {
+            tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        }
+        let state_event = crate::shared::TERMINAL_MONITOR_STATE_EVENT;
+        let wake_event = crate::shared::WAKE_SOURCE_STATE_EVENT;
+        assert_eq!(next(&mut received).await, state_event);
+        assert_eq!(next(&mut received).await, wake_event);
+        publish.send_replace(vec![fired]);
+        assert_eq!(next(&mut received).await, state_event);
+        publish.send_replace(vec![paused]);
+        assert_eq!(next(&mut received).await, state_event);
+        assert_eq!(next(&mut received).await, wake_event);
+        drop(publish);
+        task.await.unwrap();
+        assert!(received.try_recv().is_err());
     }
 
     #[test]
