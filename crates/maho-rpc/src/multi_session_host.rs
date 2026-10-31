@@ -728,6 +728,7 @@ impl HostCore {
             SESSION_KIND_CAPABILITY,
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
+            crate::host_capabilities::UNLOAD_SESSION_CAPABILITY,
         ])
         .chain(std::iter::once(
             crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY,
@@ -1074,6 +1075,51 @@ impl HostCore {
                 session_id: session_id.into(),
                 reason: Some("released".into()),
                 session_path: Some(session_path.to_owned()),
+            })
+        {
+            self.route(session_id, None, value);
+        }
+        self.forget_session(session_id);
+        true
+    }
+    /// The park teardown of `unload_session` (senpi `tearDownUnloaded`): claimed while still open, every attachment
+    /// drained, the runtime disposed and the path reservation freed, sealed `session_parked { reason: "unloaded" }`.
+    /// `false` when another close already owns the entry.
+    async fn tear_down_unloaded(&self, session_id: &str, session_path: &str) -> bool {
+        if let Some(workers) = &self.workers {
+            if workers.force_close(session_id).is_none() {
+                return false;
+            }
+            if let Some(worker) = workers.worker(session_id) {
+                worker.cancel_pending_extension_ui_requests();
+            }
+            let _ = workers.close_marked(session_id).await;
+        } else {
+            {
+                let mut registry = self.registry.lock().await;
+                let Some(entry) = registry.get_mut(session_id) else {
+                    return false;
+                };
+                if entry.close.state != crate::session_registry::RpcSessionState::Open {
+                    return false;
+                }
+                entry.close.attachments = 0;
+                entry.close.state = crate::session_registry::RpcSessionState::Closing;
+            }
+            if let Some(binding) = self.bindings.lock().await.remove(session_id) {
+                binding.cancel_pending_extension_ui_requests();
+                binding.dispose().await;
+            }
+            let mut registry = self.registry.lock().await;
+            let _ = registry
+                .close_marked(session_id, self.options.close_grace_ms)
+                .await;
+        }
+        if let Ok(value) =
+            serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionParked {
+                session_id: session_id.into(),
+                session_path: session_path.to_owned(),
+                reason: Some("unloaded".into()),
             })
         {
             self.route(session_id, None, value);
@@ -1770,6 +1816,26 @@ impl HostCore {
                     connection,
                 };
                 let response = crate::session_release::release_session(&port, &release).await;
+                self.respond_value(connection, &session_id, response);
+            }
+            crate::rpc_types::RpcCommandBody::UnloadSession { .. } => {
+                let Some(session_id) = command.session_id.clone() else {
+                    self.error(
+                        connection,
+                        command.id.clone(),
+                        "unload_session",
+                        crate::rpc_types::RPC_ERROR_MISSING_SESSION_ID,
+                        None,
+                    );
+                    return Ok(());
+                };
+                let port = HostUnloadPort {
+                    release: HostReleasePort {
+                        core: self,
+                        connection,
+                    },
+                };
+                let response = crate::session_unload::unload_session(&port, &value).await;
                 self.respond_value(connection, &session_id, response);
             }
             crate::rpc_types::RpcCommandBody::SubscribeSessions => {
@@ -3150,6 +3216,7 @@ impl HostCore {
                 serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionParked {
                     session_id: session_id.into(),
                     session_path,
+                    reason: Some("idle".into()),
                 })
             }
             None => {
@@ -3944,6 +4011,99 @@ impl crate::session_release::SessionReleasePort for HostReleasePort<'_> {
     async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
         self.core.tear_down_released(session_id, session_path).await
     }
+}
+/// The router's side of `unload_session` (senpi `unloadSession(port, command)` wiring in `handle`): the release port's
+/// request and attachment counts, plus the unload's own lookup, child count and park teardown.
+struct HostUnloadPort<'a> {
+    release: HostReleasePort<'a>,
+}
+#[async_trait::async_trait]
+impl crate::session_release_interrupt::ReleaseSettlePort for HostUnloadPort<'_> {
+    async fn other_requests_settled(&self, session_id: &str) {
+        crate::session_release_interrupt::ReleaseSettlePort::other_requests_settled(
+            &self.release,
+            session_id,
+        )
+        .await;
+    }
+    fn pending_prompts(
+        &self,
+        session_id: &str,
+    ) -> Vec<crate::session_release_interrupt::BoxFuture<'static, ()>> {
+        crate::session_release_interrupt::ReleaseSettlePort::pending_prompts(
+            &self.release,
+            session_id,
+        )
+    }
+}
+#[async_trait::async_trait]
+impl crate::session_unload::SessionUnloadPort for HostUnloadPort<'_> {
+    fn draining(&self) -> bool {
+        self.release.core.is_draining()
+    }
+    fn by(&self) -> crate::effect_record::EffectActor {
+        crate::effect_record::EffectActor {
+            connection_id: self.release.connection.unwrap_or("host").to_owned(),
+        }
+    }
+    async fn lookup(&self, session_id: &str) -> Result<crate::session_unload::UnloadEntry, String> {
+        let now = crate::connection_handler::now_ms();
+        if let Some(workers) = &self.release.core.workers {
+            workers
+                .get_for_command(session_id, "unload_session", now)
+                .map_err(|error| error.code)?;
+            return workers
+                .with_entry(session_id, |entry| crate::session_unload::UnloadEntry {
+                    open: entry.close.state == crate::session_registry::RpcSessionState::Open,
+                    session: None,
+                    session_path: entry.session_path.clone(),
+                })
+                .ok_or_else(|| crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION.to_owned());
+        }
+        let mut registry = self.release.core.registry.lock().await;
+        let entry = registry
+            .get_for_command(session_id, "unload_session", now)
+            .map_err(|error| error.code)?;
+        let session = entry.runtime.as_ref().map(|runtime| {
+            std::sync::Arc::new(crate::session_release_adapter::AgentSessionRelease::new(
+                runtime.session().clone(),
+            )) as std::sync::Arc<dyn crate::session_unload::UnloadableSession>
+        });
+        Ok(crate::session_unload::UnloadEntry {
+            open: entry.close.state == crate::session_registry::RpcSessionState::Open,
+            session,
+            session_path: entry.session_path.clone(),
+        })
+    }
+    fn other_requests(&self, session_id: &str) -> usize {
+        crate::session_release::SessionReleasePort::other_requests(&self.release, session_id)
+    }
+    fn other_attachments(&self, session_id: &str) -> u64 {
+        crate::session_release::SessionReleasePort::other_attachments(&self.release, session_id)
+    }
+    async fn open_child_sessions(&self, durable_session_id: &str) -> usize {
+        let rows = match &self.release.core.workers {
+            Some(workers) => workers.list_sessions(true),
+            None => self.release.core.registry.lock().await.list_sessions(true),
+        };
+        open_child_session_count(&rows, durable_session_id)
+    }
+    async fn tear_down(&self, session_id: &str, session_path: &str) -> bool {
+        self.release
+            .core
+            .tear_down_unloaded(session_id, session_path)
+            .await
+    }
+}
+/// Listed sessions other than `durable_session_id` itself whose context names it as parent or root.
+fn open_child_session_count(rows: &[serde_json::Value], durable_session_id: &str) -> usize {
+    rows.iter()
+        .filter(|row| {
+            row["durableSessionId"] != durable_session_id
+                && (row["context"]["parent_session_id"] == durable_session_id
+                    || row["context"]["root_session_id"] == durable_session_id)
+        })
+        .count()
 }
 tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
 /// The presenter control endpoint's view of this host's writer (senpi `SessionEventWriter` presenter getters).
@@ -4744,6 +4904,108 @@ mod handoff_tests {
             .expect("the deferred release ends the session once its turn settles")
             .expect("the runtime reports its disposal");
         let _ = turn.await.unwrap();
+    }
+    // senpi session-router-routing.ts `unload_session`: the router answers through `unloadSession`; a session with
+    // no file yet is refused (nothing to reopen it by) and stays open.
+    #[tokio::test]
+    async fn unload_session_is_routed_and_a_fileless_session_is_refused_and_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd}).to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut client, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"u","type":"unload_session","sessionId":session_id,"children":"maybe"})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let invalid = reply_to(&mut client, "u").await;
+        assert_eq!(invalid["success"], false);
+        assert_eq!(
+            invalid["error"],
+            "children must be \"refuse\" or \"detach\"."
+        );
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"u2","type":"unload_session","sessionId":session_id})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let refused = reply_to(&mut client, "u2").await;
+        assert_eq!(refused["success"], true);
+        assert_eq!(refused["data"]["outcome"], "refused");
+        assert_eq!(refused["data"]["reason"], "unsupported");
+        assert!(core.has_session(&session_id).await);
+        assert!(
+            core.advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "unload_session")
+        );
+    }
+    // senpi session-router-close.ts `tearDownUnloaded`: an idle session with a file unloads, its attached client
+    // receives `session_parked { reason: "unloaded" }` naming the file, and the handle is gone.
+    #[tokio::test]
+    async fn an_idle_session_with_a_file_unloads_and_parks_as_unloaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, _gate, _calls, _disposed) = gated_core(temp.path());
+        let mut client = peer(&core, "c");
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let path = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"o","type":"open_session","cwd":cwd,"sessionPath":path})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let session_id = reply_to(&mut client, "o").await["data"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        core.handle(
+            Some("c"),
+            &serde_json::json!({"id":"u","type":"unload_session","sessionId":session_id})
+                .to_string(),
+        )
+        .await
+        .unwrap();
+        let mut parked = None;
+        let answer = loop {
+            let record = next(&mut client).await;
+            if record["type"] == "session_parked" {
+                parked = Some(record);
+            } else if record["id"] == "u" {
+                break record;
+            }
+        };
+        assert_eq!(answer["data"]["outcome"], "unloaded", "{answer}");
+        assert_eq!(answer["data"]["sessionPath"], path.as_str());
+        let parked = parked.expect("the park is sealed before the answer");
+        assert_eq!(parked["reason"], "unloaded");
+        assert_eq!(parked["sessionPath"], path.as_str());
+        assert!(!core.has_session(&session_id).await);
+    }
+    #[test]
+    fn open_child_sessions_count_rows_naming_the_session_as_parent_or_root() {
+        let rows = [
+            serde_json::json!({"durableSessionId":"p","context":{}}),
+            serde_json::json!({"durableSessionId":"c1","context":{"parent_session_id":"p"}}),
+            serde_json::json!({"durableSessionId":"c2","context":{"root_session_id":"p"}}),
+            serde_json::json!({"durableSessionId":"x","context":{"parent_session_id":"q"}}),
+        ];
+        assert_eq!(open_child_session_count(&rows, "p"), 2);
     }
     // senpi-rpc-session-13 (`connectionLeft`): a connection that stops attaching ends the relocation request that
     // was asked of it, through the session binding.
