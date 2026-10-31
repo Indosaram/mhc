@@ -14133,6 +14133,15 @@ impl AgentSession {
         self.state().flag_values.get(name).cloned()
     }
 
+    /// senpi `extensionRunner.setFlagValue(name, value)`: the bound runner's extensions read it from
+    /// their next call, and the session keeps it for a runner that binds later.
+    pub async fn set_extension_flag_value(&self, name: &str, value: FlagValue) {
+        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+            runner.runtime.set_flag(name, value.clone());
+        }
+        self.state().flag_values.insert(name.to_owned(), value);
+    }
+
     pub(crate) fn replacement_custom_tools(&self) -> Vec<ToolDefinition> {
         self.state().custom_tools.clone()
     }
