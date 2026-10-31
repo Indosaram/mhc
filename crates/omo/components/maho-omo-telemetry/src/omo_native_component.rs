@@ -606,8 +606,27 @@ impl Extension for OmoNativeTelemetryComponent {
                                             &format!("omo-native category config failed: {error}"),
                                         ),
                                     }
-                                    *shared_client.lock().unwrap_or_else(PoisonError::into_inner) =
-                                        session;
+                                    // The client teardown runs on another thread and may have landed after the
+                                    // `closed` check above: re-check under the slot's lock (the teardown sets
+                                    // `closed` before taking it), and shut a client built for a closed session
+                                    // down here instead of leaving it installed and never shut down.
+                                    {
+                                        let mut slot = shared_client
+                                            .lock()
+                                            .unwrap_or_else(PoisonError::into_inner);
+                                        if !closed.load(std::sync::atomic::Ordering::SeqCst) {
+                                            *slot = session;
+                                        } else {
+                                            drop(slot);
+                                            state.clear_capture();
+                                            if let Some(session) = session {
+                                                tokio::spawn(async move {
+                                                    session.shutdown().await;
+                                                });
+                                            }
+                                            return;
+                                        }
+                                    }
                                     // The first capture is when recovery runs: the capture path is installed by
                                     // now, so a recovered window can actually be published.
                                     if let Some(summary) = summary.as_ref() {
@@ -1677,6 +1696,64 @@ mod tests {
         }
         assert!(messages.lock().unwrap().is_empty());
         assert_eq!(clients.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    struct SignalOnShutdown(Arc<tokio::sync::Notify>);
+    impl TelemetryTransport for SignalOnShutdown {
+        fn capture(&self, _: &TelemetryCaptureMessage) -> Result<(), TelemetryError> {
+            Ok(())
+        }
+        fn flush(&self) -> Option<BoxFuture<'_, Result<(), TelemetryError>>> {
+            None
+        }
+        fn shutdown(&self) -> BoxFuture<'_, Result<(), TelemetryError>> {
+            self.0.notify_one();
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_landing_while_the_deferred_tick_builds_the_client_shuts_that_client_down() {
+        let t = tempfile::tempdir().unwrap();
+        let (mut component, _messages) = component(t.path());
+        let shut_down = Arc::new(tokio::sync::Notify::new());
+        // Armed after registration: the shutdown handlers and the context the factory fires them with.
+        let trigger: Arc<
+            Mutex<
+                Option<(
+                    Vec<maho_ext_api::ExtensionHandler>,
+                    maho_ext_api::ExtensionContext,
+                )>,
+            >,
+        > = Arc::default();
+        let armed = Arc::clone(&trigger);
+        let signal = Arc::clone(&shut_down);
+        // The factory runs inside the tick after its `closed` check and before the client is stored: firing the
+        // session shutdown here lands it exactly in that window.
+        component.options.transport_factory = Some(Arc::new(move |_, _| {
+            if let Some((handlers, ctx)) = armed.lock().unwrap().take() {
+                let mut event = shutdown();
+                for handler in &handlers {
+                    drop(handler(&mut event, &ctx));
+                }
+            }
+            Ok(Box::new(SignalOnShutdown(Arc::clone(&signal))))
+        }));
+        let mut api = api();
+        component.register(&mut api);
+        let (ctx, queue) = deferring_context(t.path(), "racing");
+        *trigger.lock().unwrap() = Some((
+            api.registered.handlers[&EventKind::SessionShutdown].clone(),
+            ctx.clone(),
+        ));
+        dispatch(&api, start(), &ctx).await;
+        for task in std::mem::take(&mut *queue.lock().unwrap()) {
+            task();
+        }
+        assert!(trigger.lock().unwrap().is_none(), "the tick built a client");
+        tokio::time::timeout(std::time::Duration::from_secs(5), shut_down.notified())
+            .await
+            .expect("the client built for the closed session is shut down");
     }
 
     #[test]
