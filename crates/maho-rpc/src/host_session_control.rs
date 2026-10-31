@@ -145,10 +145,17 @@ impl HostSessionControl {
         };
         let idle = self.session.on_idle(wake("idle"));
         let emitted = self.session.on_emitted(wake("emitted"));
-        let inbox = match watch_inbox(inbox_dir, wake("inbox"), {
-            let report = self.report.clone();
-            Arc::new(move |error: String| report(format!("control inbox watch failed: {error}")))
-        }) {
+        let inbox_wake = wake("inbox");
+        let inbox = match watch_inbox(
+            inbox_dir,
+            Arc::new(move |_: &[std::path::PathBuf]| inbox_wake()),
+            {
+                let report = self.report.clone();
+                Arc::new(move |error: String| {
+                    report(format!("control inbox watch failed: {error}"))
+                })
+            },
+        ) {
             Ok(inbox) => inbox,
             Err(error) => {
                 drop((idle, emitted));
@@ -241,11 +248,22 @@ impl HostSessionControl {
     }
 }
 
-/// One watch on the inbox directory (senpi `watchInbox`): a created or removed entry that is not the engine's own
-/// wakes the drain.
+/// Whether an inbox event is an entry appearing or leaving (senpi `fs.watch` "rename"). inotify also reports opens,
+/// reads and closes; the drain opens the entries it reads, so waking on those would re-wake the drain forever.
+fn inbox_entry_changed(kind: &notify::EventKind) -> bool {
+    matches!(
+        kind,
+        notify::EventKind::Create(_)
+            | notify::EventKind::Remove(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    )
+}
+
+/// One watch on the inbox directory (senpi `watchInbox`): a created, removed or renamed entry that is not the
+/// engine's own wakes the drain; `on_change` gets the event's paths.
 fn watch_inbox(
     inbox_dir: &std::path::Path,
-    on_change: Arc<dyn Fn() + Send + Sync>,
+    on_change: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync>,
     on_error: Arc<dyn Fn(String) + Send + Sync>,
 ) -> std::io::Result<notify::RecommendedWatcher> {
     use notify::Watcher;
@@ -256,6 +274,7 @@ fn watch_inbox(
     builder.create(inbox_dir)?;
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            Ok(event) if !inbox_entry_changed(&event.kind) => {}
             Ok(event) => {
                 let engine_only = !event.paths.is_empty()
                     && event.paths.iter().all(|path| {
@@ -264,7 +283,7 @@ fn watch_inbox(
                             .is_some_and(|name| name.starts_with(INBOX_ENGINE_ENTRY_PREFIX))
                     });
                 if !engine_only {
-                    on_change();
+                    on_change(&event.paths);
                 }
             }
             Err(error) => on_error(error.to_string()),
@@ -358,6 +377,51 @@ mod tests {
                 "control drain failed: gone"
             ]
         );
+    }
+
+    /// The drain opens the entries it reads: an open (and its close) must not wake, or the drain re-wakes itself.
+    /// inotify delivers one watch's events in order, so a wake on the open would arrive before the create's.
+    #[tokio::test]
+    async fn opening_an_inbox_entry_does_not_wake() {
+        let temp = tempfile::tempdir().unwrap();
+        let inbox = temp.path().join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("held"), "{}").unwrap();
+        let (woke_tx, mut woke) = tokio::sync::mpsc::unbounded_channel();
+        let _watch = watch_inbox(
+            &inbox,
+            Arc::new(move |paths: &[std::path::PathBuf]| {
+                let _ = woke_tx.send(paths.to_vec());
+            }),
+            Arc::new(|error: String| panic!("inbox watch failed: {error}")),
+        )
+        .unwrap();
+        std::fs::read_to_string(inbox.join("held")).unwrap();
+        std::fs::write(inbox.join("arrived"), "{}").unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), woke.recv())
+            .await
+            .expect("the created entry wakes")
+            .unwrap();
+        assert_eq!(first, [inbox.join("arrived")]);
+    }
+
+    #[test]
+    fn only_entries_appearing_or_leaving_wake() {
+        use notify::EventKind;
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode,
+        };
+        assert!(inbox_entry_changed(&EventKind::Create(CreateKind::File)));
+        assert!(inbox_entry_changed(&EventKind::Remove(RemoveKind::File)));
+        assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::To
+        ))));
+        assert!(!inbox_entry_changed(&EventKind::Access(AccessKind::Open(
+            AccessMode::Any
+        ))));
+        assert!(!inbox_entry_changed(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
     }
 
     #[tokio::test]

@@ -52,6 +52,9 @@ struct State {
 #[derive(Clone)]
 pub struct WakeScheduler {
     state: Arc<Mutex<State>>,
+    /// Edges arrive on threads with no runtime (the inbox watch runs on `notify`'s own thread), so passes are
+    /// spawned through the runtime the scheduler was created on.
+    runtime: tokio::runtime::Handle,
     pass: WakePass,
     on_error: WakeError,
 }
@@ -80,9 +83,11 @@ fn wake_event(batch: &WakeBatch) -> Value {
 }
 
 impl WakeScheduler {
+    /// Must be called within a tokio runtime; every pass runs on it, whichever thread requests the wake.
     pub fn new(pass: WakePass, on_error: WakeError) -> Self {
         Self {
             state: Arc::default(),
+            runtime: tokio::runtime::Handle::current(),
             pass,
             on_error,
         }
@@ -113,7 +118,7 @@ impl WakeScheduler {
             !std::mem::replace(&mut state.running, true)
         };
         if start {
-            tokio::spawn(self.clone().run());
+            self.runtime.spawn(self.clone().run());
         }
         Box::pin(async move { receiver.await.unwrap_or_else(|_| empty_result()) })
     }
@@ -213,5 +218,24 @@ mod tests {
         assert_eq!(*errors.lock().unwrap(), ["boom"]);
         scheduler.dispose();
         assert_eq!(scheduler.request("command", &[]).await, empty_result());
+    }
+
+    /// The inbox watch requests wakes from `notify`'s thread, which has no runtime context.
+    #[tokio::test]
+    async fn a_wake_requested_from_a_thread_without_a_runtime_runs_its_pass() {
+        let scheduler = WakeScheduler::new(
+            Arc::new(|event: Value| {
+                Box::pin(async move { Ok(json!({"admitted": [event["reason"]]})) })
+            }),
+            Arc::new(|_| {}),
+        );
+        let requester = scheduler.clone();
+        let covered = std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            requester.request("inbox", &[])
+        })
+        .join()
+        .unwrap();
+        assert_eq!(covered.await, json!({"admitted": ["inbox"]}));
     }
 }
