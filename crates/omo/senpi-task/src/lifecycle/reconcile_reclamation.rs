@@ -189,6 +189,9 @@ pub fn revive_claimed(
             Some(claimed),
         ));
     }
+    if claimed.provisional_exit.is_some() && !is_terminal(claimed.status) {
+        return super::provisional_exit::settle_provisional_exit_loss(context, claimed);
+    }
     let fresh = context.store.load(&claimed.task_id)?;
     let Some(fresh) = fresh.filter(|fresh| {
         is_claim_held(context, fresh, &claimed.parent_session_id)

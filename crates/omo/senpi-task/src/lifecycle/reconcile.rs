@@ -12,6 +12,7 @@ use super::destroy::{destroy_resident_task, term_then_kill_claimed};
 use super::host_session::host_session_identity;
 use super::host_session_revive::reconcile_host_session_orphan;
 use super::errors::LifecycleError;
+use super::provisional_exit::{reconcile_provisional_exit, settle_provisional_exit_loss};
 use super::port::{
     DestroyCause, ReattachFailureKind, ReattachResult, RespawnResult, get_lifecycle_reattach_ports,
 };
@@ -155,6 +156,18 @@ fn reconcile_records(
             outcomes.push(outcome(&record.task_id, Resumed, "owned by this process"));
             continue;
         }
+        if record.provisional_exit.is_some()
+            && !is_terminal(record.status)
+            && !(parent_session_id.is_some_and(|parent| record.parent_session_id != parent)
+                && record.host_pid == Some(context.host_pid))
+        {
+            outcomes.push(reconcile_provisional_exit(context, &record)?);
+            if !reconciliation_active(context) {
+                return Ok(ReconcileResult { outcomes });
+            }
+            excluded.insert(record.task_id.clone());
+            continue;
+        }
         candidates.push(record);
     }
     let Some(parent_session_id) = parent_session_id else {
@@ -260,7 +273,7 @@ fn reclaim_isolations(context: &LifecycleContext) {
     let _ = sweep_isolations(runtime, &records, std::sync::Arc::clone(&context.isolation_probe));
 }
 
-fn reconcile_legacy_record(
+pub(crate) fn reconcile_legacy_record(
     context: &LifecycleContext,
     observed: &TaskRecord,
 ) -> Result<ReconcileOutcome, LifecycleError> {
@@ -317,6 +330,9 @@ fn reconcile_legacy_exclusive(
     }
     if is_terminal(record.status) {
         return reconcile_legacy_terminal(context, &record);
+    }
+    if record.provisional_exit.is_some() {
+        return settle_provisional_exit_loss(context, &record);
     }
     // A daemon-hosted child has no pid at all. Its liveness is the daemon plus its session path,
     // and "the daemon is gone" parks it - the pid-shaped path below would mark it lost.

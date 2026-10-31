@@ -79,6 +79,7 @@ impl TaskLifecycle {
     /// Parent shutdown: every startup pass in flight is invalidated for good.
     pub fn dispose(&self) {
         self.disposed.store(true, Ordering::Release);
+        super::deferred_revival::dispose_scoped_retries(&self.context);
     }
 
     pub fn reconcile_on_session_start(
@@ -118,17 +119,32 @@ impl TaskLifecycle {
         let mut pass = self.context.clone();
         pass.reconcile_active = Some(Arc::clone(&active));
         if let Some(parent) = parent_session_id {
+            super::deferred_revival::resume_scoped_retries(&self.context, parent);
             self.context
                 .live_parents
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(parent.to_string());
         }
-        let result = super::reconcile::reconcile_on_session_start(&pass, parent_session_id)?;
+        let initial = super::reconcile::reconcile_on_session_start(&pass, parent_session_id)?;
         if !active() {
             return Ok(ReconcileResult::default());
         }
-        Ok(result)
+        let outcomes = super::deferred_owner_reconcile::reconcile_deferred_dead_children(
+            &pass,
+            initial.outcomes,
+            parent_session_id,
+        )?;
+        if !active() {
+            return Ok(ReconcileResult::default());
+        }
+        // `retryDeferredHostSessions` predates this sync and is still absent.
+        super::deferred_owner_reconcile::retry_deferred_legacy_owners(
+            &pass,
+            &outcomes,
+            parent_session_id,
+        );
+        Ok(ReconcileResult { outcomes })
     }
 
     pub fn cleanup_expired_records(&self) -> Result<CleanupResult, LifecycleError> {
@@ -149,6 +165,7 @@ impl TaskLifecycle {
                 .or_insert(0) += 1;
             *generations.entry(None).or_insert(0) += 1;
         }
+        super::deferred_revival::stop_scoped_retries(&self.context, &input.parent_session_id);
         self.context
             .live_parents
             .lock()

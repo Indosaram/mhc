@@ -3,6 +3,8 @@
 pub mod admission_lease;
 pub mod context;
 pub mod create;
+pub mod deferred_owner_reconcile;
+pub mod deferred_revival;
 pub mod deferred_revival_reasons;
 pub mod destroy;
 pub mod errors;
@@ -18,6 +20,7 @@ pub mod host_session_close;
 pub mod host_session_default;
 pub mod pending_cancel;
 pub mod port;
+pub mod provisional_exit;
 pub mod reconcile;
 pub mod reconcile_crashed_resident;
 pub mod reconcile_reclamation;
