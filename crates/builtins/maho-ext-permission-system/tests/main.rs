@@ -3,10 +3,16 @@
 
 #[path = "arity.rs"]
 mod arity;
+#[path = "bash_command_segments.rs"]
+mod bash_command_segments;
+#[path = "canonical_identity.rs"]
+mod canonical_identity;
 #[path = "cli_source.rs"]
 mod cli_source;
 #[path = "config.rs"]
 mod config;
+#[path = "denial_is_final.rs"]
+mod denial_is_final;
 #[path = "events.rs"]
 mod events;
 #[path = "external.rs"]

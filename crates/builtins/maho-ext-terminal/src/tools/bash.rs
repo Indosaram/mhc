@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 pub fn pty_bash_schema() -> Value {
-    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session. Returns a bash_id immediately; query it with bash_output, steer with bash_input, tear down with kill_bash."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
+    json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session: returns a bash_id immediately (read with bash_output, steer with bash_input, stop with kill_bash). A plain & job dies with the call's PTY hangup (native backend), and nohup at best leaves an untracked orphan (no bash_id, no log) that the call's timeout still group-kills. This flag is the only reliable way a job outlives the call."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]})
 }
 struct ForegroundSessionGuard {
     manager: Arc<Mutex<TerminalManager>>,
@@ -205,7 +205,12 @@ pub async fn execute_configured_bash_with_launch(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = manager
-            .create_with_id_command(command, &id_command, options)
+            .create_with_runtime_options(
+                command,
+                &id_command,
+                options,
+                settings.redact_secrets_in_output,
+            )
             .map_err(|error| error.to_string())?;
         let runtime = manager.get(&id).ok_or("created terminal session missing")?;
         if launch.is_none()
