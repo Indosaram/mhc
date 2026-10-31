@@ -94,6 +94,8 @@ pub struct SessionHeaderLine {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 pub async fn read_session_cwd(session_file: impl AsRef<Path>) -> Result<Option<String>, std::io::Error> {
@@ -256,5 +258,24 @@ mod tests {
         let content = tokio::fs::read_to_string(&dst).await.expect("read");
         assert!(content.contains("\"cwd\":\"/new\""));
         assert!(content.contains("\"content\":\"hi\""));
+    }
+
+    #[tokio::test]
+    async fn move_session_file_preserves_header_metadata_and_fork_provenance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("source.jsonl");
+        let dst = dir.path().join("sub").join("target.jsonl");
+        let original_header = r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-10-16T00:00:00.000Z","cwd":"/old","parentSession":"/p.jsonl","forkedFromLeafId":"leaf-1"}"#;
+        tokio::fs::write(&src, format!("{original_header}\n{{\"type\":\"message\",\"content\":\"hi\"}}\n")).await.expect("write");
+        let result = move_session_file(&src, &dst, "/new").await.expect("move");
+        assert_eq!(result, dst);
+        let content = tokio::fs::read_to_string(&dst).await.expect("read");
+        let first_line = content.lines().next().expect("first line");
+        let parsed: serde_json::Value = serde_json::from_str(first_line).expect("json");
+        assert_eq!(parsed["cwd"], "/new");
+        assert_eq!(parsed["version"], 3);
+        assert_eq!(parsed["timestamp"], "2026-10-16T00:00:00.000Z");
+        assert_eq!(parsed["parentSession"], "/p.jsonl");
+        assert_eq!(parsed["forkedFromLeafId"], "leaf-1");
     }
 }
