@@ -64,3 +64,8 @@
   facts from the spec.
 - Tests (`tests/delta_5152.rs` and unit tests in the files above) were written from the delta's
   numbered tests; no fixtures were reused.
+- task-b (spec copied at 0c0e537, task.md Delta D2 "Matching rules (clarified 2026-11-01)" and
+  D4 test 7): an expiry text counts as `rejected` only when the sentence directly after it
+  mentions `/login`; "model/models" is matched as a whole word; the final background delivery
+  happens before waiters are woken. Tests `d2_test_10_*`, `d2_test_11_*` in
+  `src/credentials.rs` and the D4 test 7 assertions in `tests/delta_5152.rs` follow the spec.

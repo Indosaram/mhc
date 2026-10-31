@@ -60,8 +60,9 @@ const REJECTED: &[&str] = &[
     "requires an active subscription",
 ];
 
-/// Session expiry texts; `rejected` only together with a `/login` mention (the engine's meta
-/// "session expired ... /login" text), so a stray log line is not evidence.
+/// Session expiry texts; `rejected` only when the sentence directly after the expiry statement
+/// tells the user to run `/login` (the engine's meta "session expired ... /login" text), so a
+/// stray log line or a `/login` hint elsewhere is not evidence.
 const SESSION_EXPIRED: &[&str] = &["session expired", "session has expired"];
 
 /// Words that tie a 403 to the account or its credentials.
@@ -102,11 +103,32 @@ fn has_word(text: &str, word: &str) -> bool {
 
 /// Whether `text` (lower case) names a model: the word model/models or the failed model id.
 fn names_model(text: &str, model_id: Option<&str>) -> bool {
-    text.contains("model")
+    has_word(text, "model")
         || model_id
             .map(str::trim)
             .filter(|id| !id.is_empty())
             .is_some_and(|id| text.contains(&id.to_lowercase()))
+}
+
+fn ends_sentence(c: char) -> bool {
+    matches!(c, '.' | '!' | '?' | '\n')
+}
+
+/// Whether `text` (lower case) has a session expiry statement whose directly following sentence
+/// mentions `/login`.
+fn expiry_followed_by_login(text: &str) -> bool {
+    SESSION_EXPIRED.iter().any(|needle| {
+        text.match_indices(needle).any(|(start, _)| {
+            let after = &text[start + needle.len()..];
+            let Some(end) = after.find(ends_sentence) else {
+                return false;
+            };
+            let next =
+                after[end..].trim_start_matches(|c: char| ends_sentence(c) || c.is_whitespace());
+            let next = next.find(ends_sentence).map_or(next, |stop| &next[..stop]);
+            next.contains("/login")
+        })
+    })
 }
 
 /// Classifies a failure `text` (record error plus log tail) of a run on `model_id` (the model
@@ -117,7 +139,7 @@ pub fn classify(text: &str, model_id: Option<&str>) -> CredentialFailure {
     let forbidden = has_status(&text, "403") || text.contains("forbidden");
     let rejected = has_status(&text, "401")
         || REJECTED.iter().any(|needle| text.contains(needle))
-        || (text.contains("/login") && SESSION_EXPIRED.iter().any(|needle| text.contains(needle)))
+        || expiry_followed_by_login(&text)
         || (forbidden && !names_model && ACCOUNT_WORDS.iter().any(|word| has_word(&text, word)));
     if rejected {
         return CredentialFailure::Rejected;
@@ -287,6 +309,53 @@ mod tests {
         );
         assert_eq!(classify("csrf token has expired", None), NoFailure);
         assert_eq!(classify("OAuth token was rejected by zeta", None), Rejected);
+    }
+
+    // task.md Delta D2 test 10 (matching rules clarified 2026-11-01: whole words, plurals).
+    #[test]
+    fn d2_test_10_account_words_are_whole_words() {
+        assert_eq!(
+            classify("403 forbidden: invalid credentials", None),
+            Rejected
+        );
+        assert_eq!(classify("403: tokens revoked", None), Rejected);
+        assert_eq!(classify("403: invalid keyword in request", None), NoFailure);
+    }
+
+    // task.md Delta D2 test 11 (expiry counts only with `/login` in the next sentence).
+    #[test]
+    fn d2_test_11_expiry_needs_login_in_the_next_sentence() {
+        assert_eq!(classify("session expired", None), NoFailure);
+        assert_eq!(classify("token expired", None), NoFailure);
+        assert_eq!(
+            classify(
+                "Session expired. Please contact support. Run /login zeta",
+                None
+            ),
+            NoFailure
+        );
+        assert_eq!(classify("Session expired. Run /login zeta", None), Rejected);
+        assert_eq!(
+            classify("session expired\nRun /login zeta to sign in again.", None),
+            Rejected
+        );
+        assert_eq!(
+            classify("Run /login zeta. Later: session expired.", None),
+            NoFailure
+        );
+    }
+
+    // task.md Delta D2: "the word model/models" is a whole word as well.
+    #[test]
+    fn model_is_matched_as_a_word() {
+        assert_eq!(
+            classify("zeta authentication is required for remodeling", Some("m1")),
+            Missing
+        );
+        assert_eq!(
+            classify("zeta authentication is required for all models", Some("m1")),
+            NoFailure
+        );
     }
 
     #[test]
