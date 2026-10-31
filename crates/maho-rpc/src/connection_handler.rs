@@ -485,10 +485,40 @@ async fn handle_input_line_with_login_state(
         }
     };
     // Boxed: this command future is very large and would otherwise sit on the caller's stack.
-    dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source)
-    .await
-    .map(|response| crate::jsonl::serialize_json_line(&response))
-    .transpose()
+    let dispatch =
+        dispatch_session_command(session, &command, sink, active_logins, ui, last_abort_source);
+    // senpi client-input-handler.ts `clientInputContext.run(clientMessageIdentity(command), ...)`: the records a
+    // client input produces (`skill_invocation`, `command_invocation`) name the input that caused them.
+    let response = match client_input_identity(&value) {
+        Some(identity) => {
+            crate::client_message_events::CLIENT_INPUT_CONTEXT
+                .scope(identity, dispatch)
+                .await
+        }
+        None => dispatch.await,
+    };
+    response
+        .map(|response| crate::jsonl::serialize_json_line(&response))
+        .transpose()
+}
+/// The identity of a client input command (senpi `clientMessageIdentity(command)`): `clientMessageId` and
+/// `clientTurnId` of a `prompt`, `steer` or `follow_up`, when it carries either.
+fn client_input_identity(value: &serde_json::Value) -> Option<serde_json::Value> {
+    if !matches!(
+        value["type"].as_str(),
+        Some("prompt" | "steer" | "follow_up")
+    ) {
+        return None;
+    }
+    let identity = maho_core::client_message_identity::read_client_message_identity(value);
+    let mut fields = serde_json::Map::new();
+    if let Some(id) = identity.client_message_id {
+        fields.insert("clientMessageId".into(), id.into());
+    }
+    if let Some(id) = identity.client_turn_id {
+        fields.insert("clientTurnId".into(), id.into());
+    }
+    (!fields.is_empty()).then_some(serde_json::Value::Object(fields))
 }
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
@@ -2927,6 +2957,24 @@ mod new_session_tests {
             .filter(|kind| kind.starts_with("bash_") && kind != "bash_execution_update")
             .collect::<Vec<_>>();
         assert_eq!(kinds, ["bash_start", "bash_end"]);
+    }
+    // senpi client-input-handler.ts `clientInputContext.run(clientMessageIdentity(command), ...)`.
+    #[test]
+    fn only_client_input_commands_with_an_identity_open_an_input_context() {
+        assert_eq!(
+            client_input_identity(
+                &serde_json::json!({"type":"prompt","message":"hi","clientMessageId":"m1","clientTurnId":"t1"})
+            ),
+            Some(serde_json::json!({"clientMessageId":"m1","clientTurnId":"t1"}))
+        );
+        assert_eq!(
+            client_input_identity(&serde_json::json!({"type":"steer","message":"hi"})),
+            None
+        );
+        assert_eq!(
+            client_input_identity(&serde_json::json!({"type":"get_state","clientMessageId":"m1"})),
+            None
+        );
     }
     // senpi session-record-stream.ts: an aborted `agent_end` and `session_abort` name the client that aborted, read
     // from the admission ledger of the session's route.

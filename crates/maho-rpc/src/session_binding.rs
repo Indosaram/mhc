@@ -536,6 +536,20 @@ pub struct RpcSessionBinding {
 /// Writes one private `mcp_form_reply` raw to the sending connection, outside every session queue.
 pub type PresenterReply = std::sync::Arc<dyn Fn(Option<&str>, &serde_json::Value) + Send + Sync>;
 /// The connection roles one host (or one worker isolate) keeps, shared with every binding it creates (senpi#3811).
+/// The correlation stage a binding's records pass through (senpi `new ClientMessageEvents(output, () =>
+/// ClientAdmissions.forSession(session).hasIdentities)`). Only a ledger that already exists is read.
+fn new_client_message_events(
+    sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    route: String,
+) -> crate::client_message_events::ClientMessageEvents {
+    crate::client_message_events::ClientMessageEvents::new(
+        move |record, _carrier| sink(record),
+        move || {
+            crate::client_admissions::ClientAdmissions::existing(&route)
+                .is_some_and(|admissions| admissions.has_identities())
+        },
+    )
+}
 pub type SharedConnectionRoles =
     std::sync::Arc<std::sync::Mutex<crate::connection_roles::ConnectionRoles>>;
 /// Builds an RPC binding for one live session: input lines route through the handler and every
@@ -566,6 +580,12 @@ pub async fn create_rpc_session_binding(
     let (event_session, event_abort_source) = (session.weak_accessor(), last_abort_source.clone());
     // The routing handle is the key this session's admission ledger is published under.
     let event_route = session_id.clone();
+    // senpi session-record-stream.ts: records go through client-message correlation, enabled once the session's
+    // admission ledger has seen a client identity.
+    let correlated = std::sync::Mutex::new(new_client_message_events(
+        event_sink.clone(),
+        event_route.clone(),
+    ));
     let subscription = session.subscribe(std::sync::Arc::new(move |event| {
         let record = match event_session() {
             Some(session) => crate::connection_handler::rpc_session_event_record_routed(
@@ -577,7 +597,10 @@ pub async fn create_rpc_session_binding(
             None => session_event_record(event),
         };
         match record {
-            Ok(record) => event_sink(record),
+            Ok(record) => correlated
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .accept(record, None),
             Err(error) => {
                 event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))
             }
@@ -800,6 +823,48 @@ impl RpcSessionBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // senpi session-record-stream.ts: correlation runs once the route's admission ledger has a client identity; a
+    // turn's records then carry the input that caused them.
+    #[tokio::test]
+    async fn binding_records_are_correlated_once_the_route_has_client_identities() {
+        use crate::client_admissions::ClientAdmissions;
+        use crate::effect_session::EffectSession;
+        let route = "binding-correlation";
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink_written = written.clone();
+        let sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
+            std::sync::Arc::new(move |record| sink_written.lock().unwrap().push(record));
+        let mut events = new_client_message_events(sink, route.into());
+        let user = serde_json::json!({"type":"message_start","message":{"role":"user","clientMessageId":"m1"}});
+        let turn = serde_json::json!({"type":"turn_end"});
+        // No ledger yet: records pass through untouched.
+        events.accept(user.clone(), None);
+        events.accept(turn.clone(), None);
+        assert_eq!(*written.lock().unwrap(), vec![user.clone(), turn.clone()]);
+        written.lock().unwrap().clear();
+        let session: std::sync::Arc<dyn EffectSession> = std::sync::Arc::new(
+            crate::client_admissions::test_session::FakeSession::new(route),
+        );
+        let ledger = ClientAdmissions::for_session(&session).await;
+        ledger
+            .admit(
+                &serde_json::json!({"type":"prompt","message":"hi","clientMessageId":"m1"}),
+                |_| -> futures::future::BoxFuture<
+                    'static,
+                    Result<crate::client_admission_record::AdmissionDisposition, String>,
+                > {
+                    Box::pin(async {
+                        Ok(crate::client_admission_record::AdmissionDisposition::Started)
+                    })
+                },
+            )
+            .await
+            .unwrap();
+        events.accept(user, None);
+        events.accept(turn, None);
+        assert_eq!(written.lock().unwrap()[1]["clientMessageId"], "m1");
+        ClientAdmissions::forget(route);
+    }
     #[test]
     fn attribution_commits_before_event_publication_and_dispose_closes_spans() {
         let activity = SessionActivityRegistry::default();
