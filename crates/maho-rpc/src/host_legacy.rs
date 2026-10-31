@@ -129,7 +129,7 @@ async fn judge_legacy_host(
     match record_matches(&host.record, probe) {
         Some(false) => return Ok(LegacyHostVerdict::Absent),
         None => {
-            log_unknown_host_identity("legacy_host.pid", pid);
+            crate::host_supervisor_log::log_unknown_host_identity("legacy_host.pid", pid);
             return Ok(LegacyHostVerdict::Held(format!(
                 "{place} cannot be proven to be the process its record names; stop it by hand"
             )));
@@ -181,24 +181,6 @@ pub fn describe_sessions(sessions: Option<usize>) -> String {
     match sessions {
         None => "an unknown number of sessions".into(),
         Some(count) => format!("{count} open session{}", if count == 1 { "" } else { "s" }),
-    }
-}
-
-/// One `{"event":"legacy_host_identity_unknown"}` line per record and pid per process.
-fn log_unknown_host_identity(record: &str, pid: u32) {
-    static LOGGED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    let key = format!("{record}:{pid}");
-    let first = LOGGED
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key);
-    if first {
-        eprintln!(
-            "{}",
-            serde_json::json!({"event": "legacy_host_identity_unknown", "record": record, "pid": pid})
-        );
     }
 }
 
