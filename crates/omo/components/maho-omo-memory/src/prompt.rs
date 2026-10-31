@@ -70,6 +70,9 @@ pub struct MemoryPromptHandler {
     pub pins: NativeProjectionPins,
     pub record_pin: std::sync::Mutex<Option<PromptPinRecorder>>,
     pub agreements: std::sync::Mutex<Option<AgreementsNoticeInput>>,
+    /// Upstream `resolveProjectionLimits`: the identity's `<external_projection>` limits; `None`
+    /// keeps memory-core's default limits.
+    pub projection_limits: std::sync::Mutex<Option<PromptProjectionLimits>>,
 }
 /// The optional agreements notice input (pin `resolveAgreementsNotice` + `onNoticeInputFailed`): the
 /// resolver is skipped in a preview, and a failure is reported with input `"agreements"`.
@@ -78,7 +81,32 @@ pub struct AgreementsNoticeInput {
     pub resolve: PromptAgreementsResolver,
     pub on_failed: Option<PromptNoticeInputFailed>,
 }
+/// Resolves an identity's `<external_projection>` limits (pin `resolveProjectionLimits`).
+pub type PromptProjectionLimits = std::sync::Arc<
+    dyn Fn(&str) -> memory_core::compile::external_projection::ExternalProjectionLimits
+        + Send
+        + Sync,
+>;
 impl MemoryPromptHandler {
+    pub fn set_projection_limits(&self, resolve: Option<PromptProjectionLimits>) {
+        *self
+            .projection_limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resolve;
+    }
+    /// Upstream `blockOptions(context)`: the compile options of the identity's block.
+    fn block_options(&self, identity: &str) -> CompileMemoryBlockOptions {
+        let projection = self
+            .projection_limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|resolve| resolve(identity));
+        CompileMemoryBlockOptions {
+            agent_id: identity.to_owned(),
+            projection,
+        }
+    }
     pub fn prebuild(&self, context: &crate::context::MemoryIdentityContext) -> Result<(), String> {
         let repo = GitMemoryRepo::open(&context.identity_paths.repo, &context.identity)
             .map_err(|error| error.to_string())?;
@@ -86,10 +114,7 @@ impl MemoryPromptHandler {
             .compile(
                 &repo,
                 MEMORY_PROMPT_TEMPLATE,
-                &CompileMemoryBlockOptions {
-                    agent_id: context.identity.clone(),
-                    projection: None,
-                },
+                &self.block_options(&context.identity),
             )
             .map(|_| ())
             .map_err(|error| error.to_string())
@@ -381,10 +406,7 @@ impl MemoryPromptHandler {
                 })
                 .map_err(compile_error)?
         };
-        let options = CompileMemoryBlockOptions {
-            agent_id: input.identity.to_owned(),
-            projection: None,
-        };
+        let options = self.block_options(input.identity);
         // Cross-lane API (memory-core lane `compile_with_expiries`, upstream `compileWithExpiries`): the
         // block plus every declared expiry, compiled at the turn's pin instant.
         let compiled = self
@@ -757,6 +779,50 @@ mod tests {
                 .content
                 .contains(crate::projection_pin::MEMORY_CHANGES_METADATA_TOKEN)
         );
+    }
+    #[test]
+    fn a_configured_per_directory_limit_shows_that_many_names_and_counts_the_rest() {
+        // Given
+        let (_dir, repo) = fixture();
+        for name in ["a", "b", "c"] {
+            std::fs::write(
+                repo.dir.join(format!("note-{name}.md")),
+                format!("---\ndescription: {name}\n---\nx\n"),
+            )
+            .unwrap();
+        }
+        repo.commit_write(
+            &["note-a.md", "note-b.md", "note-c.md"],
+            "notes",
+            &GitCommitAuthor {
+                agent_id: "prompt-agent".into(),
+                author_name: "t".into(),
+                author_email: None,
+            },
+        )
+        .unwrap();
+        let handler = MemoryPromptHandler::default();
+        handler.set_projection_limits(Some(std::sync::Arc::new(|identity: &str| {
+            assert_eq!(identity, "prompt-agent");
+            memory_core::compile::external_projection::ExternalProjectionLimits {
+                max_entries_per_directory: 1,
+                max_bytes: 0,
+            }
+        })));
+        // When
+        let result = handler.inject(Some(&input(&repo))).unwrap().unwrap();
+        // Then
+        let line = result
+            .system_prompt
+            .lines()
+            .find(|line| line.starts_with("$MEMORY_DIR/: "))
+            .expect("root projection line");
+        assert!(line.starts_with("$MEMORY_DIR/: note-a"), "{line}");
+        assert!(
+            line.ends_with(" (+2 more; read $MEMORY_DIR/ to list)"),
+            "{line}"
+        );
+        assert!(!line.contains("note-b"), "{line}");
     }
     #[test]
     fn existing_block_is_replaced() {
