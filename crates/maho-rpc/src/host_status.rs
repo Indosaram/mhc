@@ -39,6 +39,10 @@ async fn read_session_counts_within(
     include_workers: bool,
     timeout_ms: u64,
 ) -> HostSessionCounts {
+    session_counts(&read_session_listing(socket, include_workers, timeout_ms).await)
+}
+/// One observing `list_sessions` read; `null` when the socket did not answer.
+async fn read_session_listing(socket: &str, include_workers: bool, timeout_ms: u64) -> Value {
     let mut command = serde_json::json!({
         "type": "list_sessions",
         crate::host_observe_request::OBSERVE_REQUEST_FIELD: true,
@@ -46,11 +50,9 @@ async fn read_session_counts_within(
     if include_workers {
         command["include_workers"] = true.into();
     }
-    session_counts(
-        &crate::host_probe::request_on_socket(socket, &command, timeout_ms)
-            .await
-            .unwrap_or(Value::Null),
-    )
+    crate::host_probe::request_on_socket(socket, &command, timeout_ms)
+        .await
+        .unwrap_or(Value::Null)
 }
 pub fn host_summary(host: Option<&HostProtocolInfo>) -> Value {
     match host {
@@ -135,11 +137,13 @@ async fn read_host_status_in_key_root(
     let silent_or_stopping = host.as_ref().is_none_or(|host| {
         host.lifecycle == Some(crate::host_protocol_info::HostLifecycle::Stopping)
     });
-    let sessions = if silent_or_stopping {
-        HostSessionCounts::default()
+    let listing = if silent_or_stopping {
+        Value::Null
     } else {
-        read_session_counts_within(socket, include_workers, timeout_ms).await
+        read_session_listing(socket, include_workers, timeout_ms).await
     };
+    let sessions = session_counts(&listing);
+    let claims = crate::host_status_rows::read_claim_rows(&paths, &generations);
     let env_keys = crate::host_daemon_env::read_daemon_env_keys(&paths)?;
     let identity = answered.as_ref().zip(host.as_ref());
     let mut report = serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_rss_mb":metrics.host_rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer});
@@ -154,6 +158,27 @@ async fn read_host_status_in_key_root(
         .and_then(|host| host.handover.clone())
         .unwrap_or(Value::Null);
     report["memory_pressure"] = host.as_ref().and_then(|host| host.memory_pressure).into();
+    // senpi: supervised host children that DIED (not stopped), the owner-keyed shard the socket names, and the
+    // session-path claims; the per-row listings only when workers were asked for.
+    report["crashes"] = crate::host_crash_record::read_host_crash_records(&paths.dir)
+        .iter()
+        .filter(|record| crate::host_crash_record::is_host_crash(record))
+        .count()
+        .into();
+    report["shard"] = crate::host_endpoints::parse_shard_socket(socket).map_or(
+        Value::Null,
+        |(kind, key)| serde_json::json!({"kind": kind.as_str(), "key": key}),
+    );
+    report["claims_live"] = claims.iter().filter(|claim| claim.live).count().into();
+    if include_workers {
+        report["session_rows"] =
+            serde_json::to_value(crate::host_status_rows::parse_session_rows(&listing))
+                .unwrap_or_else(|_| serde_json::json!([]));
+        report["claims"] = serde_json::to_value(&claims).unwrap_or_else(|_| serde_json::json!([]));
+    } else {
+        report["session_rows"] = serde_json::json!([]);
+        report["claims"] = serde_json::json!([]);
+    }
     Ok(report)
 }
 /// The answering host's lifecycle (`ready` / `stopping`); `None` when nothing answers or it predates the field.
@@ -199,9 +224,17 @@ mod tests {
     /// returns every request it received once the reader is done with it.
     #[cfg(unix)]
     async fn status_of_fake_host(info: Value) -> (Value, Vec<Value>) {
+        status_of_fake_host_named(info, "host.sock", false).await
+    }
+    #[cfg(unix)]
+    async fn status_of_fake_host_named(
+        info: Value,
+        name: &str,
+        include_workers: bool,
+    ) -> (Value, Vec<Value>) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("host.sock");
+        let path = temp.path().join(name);
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
         let serve = tokio::spawn(async move {
@@ -230,7 +263,7 @@ mod tests {
                 }
             }
         });
-        let report = read_host_status(path.to_str().unwrap(), temp.path(), false)
+        let report = read_host_status(path.to_str().unwrap(), temp.path(), include_workers)
             .await
             .unwrap();
         stop.send(()).unwrap();
@@ -259,6 +292,24 @@ mod tests {
         );
         assert!(seen.iter().all(|request| request["observe"] == true));
     }
+    // senpi host-status.ts: the shard comes from the socket name, and asking for workers publishes the rows.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worker_status_names_its_shard_and_lists_its_rows() {
+        let info = serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[],"instanceId":"i"});
+        let (report, seen) = status_of_fake_host_named(info, "p-0123456789abcdef.sock", true).await;
+        assert_eq!(
+            report["shard"],
+            serde_json::json!({"kind":"p","key":"0123456789abcdef"})
+        );
+        assert_eq!(report["session_rows"][0]["kind"], "interactive");
+        assert_eq!(report["claims"], serde_json::json!([]));
+        assert_eq!(report["claims_live"], 0);
+        assert!(
+            seen.iter()
+                .any(|request| request["include_workers"] == true)
+        );
+    }
     #[tokio::test]
     async fn absent_endpoint_has_complete_nullable_status() {
         let temp = tempfile::tempdir().unwrap();
@@ -276,6 +327,11 @@ mod tests {
         assert!(report["host_footprint_mb"].is_null());
         assert_eq!(report["sessions"]["total"], 0);
         assert_eq!(report["env_keys"], serde_json::json!([]));
+        assert_eq!(report["crashes"], 0);
+        assert!(report["shard"].is_null());
+        assert_eq!(report["claims_live"], 0);
+        assert_eq!(report["session_rows"], serde_json::json!([]));
+        assert_eq!(report["claims"], serde_json::json!([]));
         assert_eq!(
             report["pointer"],
             serde_json::json!({"state":"missing","instanceId":null,"candidates":[]})
