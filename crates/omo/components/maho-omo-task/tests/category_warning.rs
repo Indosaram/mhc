@@ -123,6 +123,7 @@ async fn registered_engine_delivers_real_category_failure_without_starting_child
         assert!(runtime.ui().is_some());
     }
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

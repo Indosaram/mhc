@@ -144,6 +144,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         excluded_tool_names: None,
         base_tools_override: None,
         session_start_event: recovering.then_some(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Resume,
             initial_model_provenance: None,
             previous_session_file: None,

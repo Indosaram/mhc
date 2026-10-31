@@ -1924,6 +1924,7 @@ mod tests {
         {
             (handler)(
                 &mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,
@@ -2021,6 +2022,7 @@ mod tests {
         {
             (handler)(
                 &mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,
@@ -2082,6 +2084,7 @@ mod tests {
         {
             (handler)(
                 &mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,

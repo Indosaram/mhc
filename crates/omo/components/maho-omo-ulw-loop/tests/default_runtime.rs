@@ -24,6 +24,7 @@ async fn default_registration_executes_status_in_process() -> Result<(), Box<dyn
     let mut ctx = support::context();
     ctx.cwd = root.path().into();
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

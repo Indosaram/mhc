@@ -282,6 +282,7 @@ mod tests {
         let mut api = api();
         SenpiTelemetryComponent { options: o }.register(&mut api);
         let event = maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason: maho_ext_api::SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

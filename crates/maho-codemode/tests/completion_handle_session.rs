@@ -342,6 +342,7 @@ async fn real_eval_completion_handle_survives_cells_but_not_session_switch() {
     let session_a = root.path().join("session-a.jsonl");
     let ctx_a = context(root.path(), &session_a);
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -432,6 +433,7 @@ async fn real_eval_completion_handle_survives_cells_but_not_session_switch() {
     let session_b = root.path().join("session-b.jsonl");
     let ctx_b = context(root.path(), &session_b);
     let mut restart = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Resume,
         initial_model_provenance: None,
         previous_session_file: Some(session_a.display().to_string()),

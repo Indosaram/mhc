@@ -92,7 +92,11 @@ pub fn register_mcp_lifecycle_with_tool_search(
     );
     api.on(
         EventKind::SessionStart,
-        Arc::new(move |_, ctx| {
+        Arc::new(move |event, ctx| {
+            // index.ts: a sizes-only diagnostic startup skips the built-in MCP attach entirely.
+            if matches!(event, ExtensionEvent::SessionStart(start) if start.sizes_only) {
+                return Box::pin(async { Ok(EventResult::None) });
+            }
             let start_binding = binding.clone();
             let service_handle = start.clone();
             let registrar = start_registrar.clone();

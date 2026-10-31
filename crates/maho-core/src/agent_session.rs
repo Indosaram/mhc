@@ -4041,6 +4041,7 @@ impl AgentSession {
             published_eval_only_hint_names: BTreeSet::new(),
             requested_active_tool_names: None,
             session_start_event: config.session_start_event.unwrap_or(SessionStartEvent {
+                sizes_only: false,
                 reason: SessionReason::Startup,
                 initial_model_provenance: None,
                 previous_session_file: None,
@@ -10966,6 +10967,7 @@ impl AgentSession {
         self.renew_extension_runtime(reason).await?;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(
             maho_ext_api::SessionStartEvent {
+                sizes_only: false,
                 reason,
                 initial_model_provenance: None,
                 previous_session_file: previous,
@@ -12738,6 +12740,7 @@ impl AgentSession {
         if has_bindings {
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(
                 maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Reload,
                     initial_model_provenance: None,
                     previous_session_file: self.session_file(),
@@ -16808,7 +16811,14 @@ impl AgentSession {
         }
         self.apply_extension_bindings().await;
         lock(&self.engine_turn_hold).start();
-        let event = self.state().session_start_event.clone();
+        let event = {
+            let state = self.state();
+            maho_ext_api::SessionStartEvent {
+                // agent-session.ts: `...(this._sizesOnlyStartup ? { sizesOnly: true } : {})`.
+                sizes_only: state.session_start_event.sizes_only || state.sizes_only_startup,
+                ..state.session_start_event.clone()
+            }
+        };
         let reason = if event.reason == maho_ext_api::SessionReason::Reload {
             maho_ext_api::SessionReason::Reload
         } else {

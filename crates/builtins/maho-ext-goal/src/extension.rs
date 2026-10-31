@@ -363,6 +363,7 @@ mod tests {
         let mut context = crate::test_context::context();
         let session = crate::test_context::bind_session(&mut context);
         let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
