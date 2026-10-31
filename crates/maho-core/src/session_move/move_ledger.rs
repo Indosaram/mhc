@@ -8,8 +8,14 @@
 use super::move_landing::{Landing, LandingOutcome, lands_at, parse_landing, settled_landing};
 use super::move_ledger_lock::MoveRecordLocks;
 use super::move_steps::{MoveStep, move_step};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+
+/// Reads what the session file at a landing target records for the move; it may wait on I/O.
+pub type LandedReader<'a> =
+    &'a (dyn Fn(String) -> Pin<Box<dyn Future<Output = LandingOutcome> + Send>> + Send + Sync);
 
 use serde_json::{Value, json};
 
@@ -337,25 +343,28 @@ impl MoveLedger {
         move_id: &str,
         moved_in: bool,
         revoked: bool,
-        landed: Option<&dyn Fn(&str) -> LandingOutcome>,
+        landed: Option<LandedReader<'_>>,
     ) -> Result<MoveStatus, MoveLedgerError> {
-        self.locked(move_id, || {
+        self.locked_async(move_id, async {
             let mut record = self.current(move_id)?;
             let landing = self.landing(move_id)?;
-            if let (Some(read), Some(target)) = (landed, landing.target.as_deref())
-                && let Some(next) =
-                    settled_landing(record.as_ref(), landing.committing, read(target))
-                {
-                    self.write_landing(
-                        move_id,
-                        &next,
-                        &Landing {
-                            target: Some(target.into()),
-                            committing: false,
-                        },
-                    )?;
-                    record = Some(next);
-                }
+            let outcome = match (landed, landing.target.as_deref()) {
+                (Some(read), Some(target)) => Some(read(target.to_owned()).await),
+                _ => None,
+            };
+            if let (Some(outcome), Some(target)) = (outcome, landing.target.as_deref())
+                && let Some(next) = settled_landing(record.as_ref(), landing.committing, outcome)
+            {
+                self.write_landing(
+                    move_id,
+                    &next,
+                    &Landing {
+                        target: Some(target.into()),
+                        committing: false,
+                    },
+                )?;
+                record = Some(next);
+            }
             if revoked {
                 return Ok(MoveStatus::AcceptedRevoked);
             }
@@ -416,15 +425,16 @@ impl MoveLedger {
         &self,
         move_id: &str,
         target: &str,
-        rename: impl FnOnce() -> Result<T, String>,
-        prepare: impl FnOnce() -> Result<(), String>,
+        rename: impl Future<Output = Result<T, String>>,
+        prepare: impl Future<Output = Result<(), String>>,
     ) -> Result<T, MoveLedgerError> {
-        self.locked(move_id, || {
+        self.locked_async(move_id, async {
             let record = self.read(move_id)?;
             if !lands_at(record.as_ref(), &self.landing(move_id)?, target) {
                 return Err(self.fenced(move_id, record));
             }
-            prepare().map_err(MoveLedgerError::Failed)?;
+            // `prepare` runs before the stamp: whatever it does or refuses lands nothing.
+            prepare.await.map_err(MoveLedgerError::Failed)?;
             self.write_landing(
                 move_id,
                 &MoveRecord::Status(MoveStatus::Receiving),
@@ -434,7 +444,7 @@ impl MoveLedger {
                 },
             )?;
             move_step(MoveStep::ImportStamped).map_err(MoveLedgerError::Failed)?;
-            let result = rename().map_err(MoveLedgerError::Failed)?;
+            let result = rename.await.map_err(MoveLedgerError::Failed)?;
             move_step(MoveStep::ImportRenamed).map_err(MoveLedgerError::Failed)?;
             self.write_landing(
                 move_id,
@@ -521,10 +531,10 @@ impl MoveLedger {
         &self,
         move_id: &str,
         reason: FailReason,
-        landed: impl FnOnce() -> bool,
+        landed: impl Future<Output = bool>,
     ) -> Result<Option<MoveRecord>, MoveLedgerError> {
-        self.locked(move_id, || {
-            if landed() {
+        self.locked_async(move_id, async {
+            if landed.await {
                 return self.current(move_id);
             }
             self.settle_locked(
@@ -666,17 +676,27 @@ impl MoveLedger {
         move_id: &str,
         work: impl FnOnce() -> Result<T, MoveLedgerError>,
     ) -> Result<T, MoveLedgerError> {
+        self.locked_async(move_id, async { work() }).await
+    }
+
+    async fn locked_async<T>(
+        &self,
+        move_id: &str,
+        work: impl Future<Output = Result<T, MoveLedgerError>>,
+    ) -> Result<T, MoveLedgerError> {
         let file = self.path(move_id)?;
         let key = file.to_string_lossy().into_owned();
         serialize_by_key(&key, async {
-            std::fs::create_dir_all(&self.dir)?;
+            tokio::fs::create_dir_all(&self.dir).await?;
             let _guard = self
                 .locks
                 .hold(&file)
                 .await
                 .map_err(MoveLedgerError::Failed)?;
-            self.locks.assert_held(&file).map_err(MoveLedgerError::Failed)?;
-            work()
+            self.locks
+                .assert_held(&file)
+                .map_err(MoveLedgerError::Failed)?;
+            work.await
         })
         .await
     }
@@ -826,7 +846,7 @@ mod tests {
                 .expect("receive");
             assert_eq!(
                 ledger
-                    .commit("m1", "/target", || Ok(7), || Ok(()))
+                    .commit("m1", "/target", async { Ok(7) }, async { Ok(()) })
                     .await
                     .expect("commit"),
                 7
@@ -840,7 +860,9 @@ mod tests {
                 .await
                 .expect("decline");
             assert!(matches!(
-                ledger.commit("m4", "/target", || Ok(()), || Ok(())).await,
+                ledger
+                    .commit("m4", "/target", async { Ok(()) }, async { Ok(()) })
+                    .await,
                 Err(MoveLedgerError::Fenced(_))
             ));
         });

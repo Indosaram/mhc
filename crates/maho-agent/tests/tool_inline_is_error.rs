@@ -13,7 +13,7 @@ use support::{
 
 fn tool_result_from(events: &[AgentEvent]) -> ToolResultMessage {
     for event in events {
-        if let AgentEvent::MessageStart { message } = event
+        if let AgentEvent::MessageStart { message, .. } = event
             && let AgentMessage::Llm(Message::ToolResult(result)) = message
         {
             return result.clone();

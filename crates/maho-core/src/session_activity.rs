@@ -7,10 +7,19 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::lifecycle_wait_items::{WaitSourceItems, normalize_wait_items, wake_source_items};
+
+#[derive(Debug, Clone)]
+struct WakeSourceRecord {
+    active_count: f64,
+    children: bool,
+    detail: WaitSourceItems,
+}
+
 /// Live counts of extension-published wake sources, keyed by source name.
 #[derive(Debug, Clone, Default)]
 pub struct WakeSourceTracker {
-    counts: BTreeMap<String, (f64, bool)>,
+    counts: BTreeMap<String, WakeSourceRecord>,
 }
 
 impl WakeSourceTracker {
@@ -37,10 +46,11 @@ impl WakeSourceTracker {
         if active_count > 0.0 {
             self.counts.insert(
                 source.to_owned(),
-                (
+                WakeSourceRecord {
                     active_count,
-                    object.get("kind").and_then(Value::as_str) == Some("children"),
-                ),
+                    children: object.get("kind").and_then(Value::as_str) == Some("children"),
+                    detail: normalize_wait_items(wake_source_items(data), None),
+                },
             );
         } else {
             self.counts.remove(source);
@@ -49,11 +59,11 @@ impl WakeSourceTracker {
 
     pub fn active_counts(&self) -> ActiveCounts {
         let mut counts = ActiveCounts::default();
-        for &(count, children) in self.counts.values() {
-            if children {
-                counts.children += count;
+        for record in self.counts.values() {
+            if record.children {
+                counts.children += record.active_count;
             } else {
-                counts.background += count;
+                counts.background += record.active_count;
             }
         }
         counts
@@ -65,6 +75,11 @@ impl WakeSourceTracker {
 
     pub fn active_sources(&self) -> Vec<&str> {
         self.counts.keys().map(String::as_str).collect()
+    }
+
+    /// The named items a live source last published (normalized: deduped, sorted, capped).
+    pub fn source_items(&self, source: &str) -> Option<&WaitSourceItems> {
+        self.counts.get(source).map(|record| &record.detail)
     }
 }
 
@@ -147,6 +162,30 @@ mod tests {
             }
         );
         tracker.observe(&json!({"source":"monitor", "activeCount":0}));
+        assert_eq!(tracker.active_counts().background, 3.0);
+    }
+
+    #[test]
+    fn named_items_are_kept_next_to_the_count() {
+        let mut tracker = WakeSourceTracker::default();
+        tracker.observe(&json!({"source":"terminal","activeCount":2,"items":[{"id":"b"},{"id":"a","description":"tail"}]}));
+        tracker.observe(&json!({"source":"legacy","activeCount":1,"monitors":[{"id":"m"}]}));
+        let items = tracker
+            .source_items("terminal")
+            .and_then(|d| d.items.clone())
+            .expect("items");
+        assert_eq!(
+            items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(items[0].description.as_deref(), Some("tail"));
+        assert_eq!(
+            tracker
+                .source_items("legacy")
+                .and_then(|d| d.items.as_ref())
+                .map(Vec::len),
+            Some(1)
+        );
         assert_eq!(tracker.active_counts().background, 3.0);
     }
 

@@ -5,6 +5,7 @@ pub mod cooldown;
 pub mod expansion;
 pub mod hint_policy;
 pub mod log;
+pub mod model_config_error;
 pub mod probe_scheduler;
 pub mod profile_override;
 pub mod request_shape;

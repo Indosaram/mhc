@@ -741,7 +741,9 @@ pub trait Kind {
 }
 #[derive(Clone, Debug)]
 pub struct RequestOptions { pub messages:Vec<StoredMessage>, pub thinking_level:ThinkingLevel }
-pub type AssistantStream = Pin<Box<dyn futures::Stream<Item=AssistantMessageEvent>>>;
+/// TS `AsyncIterable<AssistantMessageEvent>`: an `Err` item is the iterator rejecting (a thrown
+/// provider error), carrying `String(error)`.
+pub type AssistantStream = Pin<Box<dyn futures::Stream<Item=std::result::Result<AssistantMessageEvent,String>>>>;
 pub enum DeferredResult { Message(Box<AssistantMessage>), Deferred(DeferredHandle) }
 pub trait Models {
     fn resolve(&self,r#ref:&ModelRef)->Option<Model>;

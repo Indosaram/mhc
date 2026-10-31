@@ -29,7 +29,7 @@ pub const DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS: u64 = 10_000;
 /// Total wait across every `session_shutdown` handler when the process quits (senpi#3711).
 pub const DEFAULT_SESSION_SHUTDOWN_QUIT_BUDGET_MS: u64 = 2_000;
 /// senpi `MAX_ENGINE_TURNS_PER_USER_INPUT`.
-pub const MAX_ENGINE_TURNS_PER_USER_INPUT: i64 = 150;
+pub const MAX_ENGINE_TURNS_PER_USER_INPUT: i64 = 0;
 /// senpi `MAX_ENGINE_TURNS_PER_RESUME_WINDOW`.
 pub const MAX_ENGINE_TURNS_PER_RESUME_WINDOW: i64 = 8;
 /// senpi `MAX_TOOL_FREE_ENGINE_TURNS_PER_WINDOW`.
@@ -1187,6 +1187,16 @@ impl SettingsManager {
         self.get_bash_env_scrub().then(|| self.get_bash_env_passthrough())
     }
 
+    /// senpi `getBashRedactSecretsInOutput`: `tools.bash.redactSecretsInOutput === true` (default false).
+    pub fn get_bash_redact_secrets_in_output(&self) -> bool {
+        self.settings
+            .get("tools")
+            .and_then(|tools| tools.get("bash"))
+            .and_then(|bash| bash.get("redactSecretsInOutput"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
     /// The agent dir this manager was created for (the process default for storages without one).
     pub fn agent_dir(&self) -> String {
         self.storage.agent_dir().unwrap_or_else(crate::config::get_agent_dir)
@@ -2260,6 +2270,31 @@ mod tests {
         let parsed = settings("{\"defaultModel\":\"x\",\"tips\":true}");
         assert_eq!(parsed["defaultModel"], "x");
         assert_eq!(parsed["tips"], true);
+    }
+
+    #[test]
+    fn bash_redact_secrets_in_output_is_true_only_for_boolean_true() {
+        for (json_text, expected) in [
+            ("{}", false),
+            (r#"{"tools":{"bash":{}}}"#, false),
+            (r#"{"tools":{"bash":{"redactSecretsInOutput":true}}}"#, true),
+            (
+                r#"{"tools":{"bash":{"redactSecretsInOutput":false}}}"#,
+                false,
+            ),
+            (
+                r#"{"tools":{"bash":{"redactSecretsInOutput":"true"}}}"#,
+                false,
+            ),
+            (r#"{"tools":{"bash":{"redactSecretsInOutput":1}}}"#, false),
+        ] {
+            let manager = SettingsManager::in_memory(settings(json_text), false);
+            assert_eq!(
+                manager.get_bash_redact_secrets_in_output(),
+                expected,
+                "{json_text}"
+            );
+        }
     }
 
     #[test]

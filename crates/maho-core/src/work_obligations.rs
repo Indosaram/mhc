@@ -3,6 +3,9 @@ use crate::work_custody_record::{
     CustodyPayload, CustodyState as State, ObligationKind, WorkCustodyRecord, custody_is_open,
     read_work_custody,
 };
+pub use maho_ext_api::{
+    ENGINE_CUSTODY_KEY_PREFIXES, ENGINE_DELIVERY_KEY_PREFIX, WAKE_SOURCE_KEY_PREFIX,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,11 +17,30 @@ pub enum TicketAdmission {
     Consumed,
     Delivering,
 }
+/// Why a send's ticket was refused: its admission, or a re-send whose items differ from the queued message's
+/// (senpi `DeliveryTicketRefusal`, senpi#4106).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryTicketRefusal {
+    Admission(TicketAdmission),
+    DifferentItems,
+}
+impl std::fmt::Display for DeliveryTicketRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Admission(TicketAdmission::Admitted) => "admitted",
+            Self::Admission(TicketAdmission::Unknown) => "unknown",
+            Self::Admission(TicketAdmission::Closed) => "closed",
+            Self::Admission(TicketAdmission::Consumed) => "consumed",
+            Self::Admission(TicketAdmission::Delivering) => "delivering",
+            Self::DifferentItems => "different_items",
+        })
+    }
+}
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Delivery ticket {ticket_id} was refused: {reason:?}")]
+#[error("Delivery ticket {ticket_id} was refused: {reason}")]
 pub struct DeliveryTicketRefused {
     pub ticket_id: String,
-    pub reason: TicketAdmission,
+    pub reason: DeliveryTicketRefusal,
 }
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Work custody is no longer owned: {key}")]
@@ -45,10 +67,12 @@ impl SessionWorkObligations {
     pub fn new(store: Box<dyn CustodyStore>) -> Self {
         let mut records = BTreeMap::new();
         for entry in store.entries() {
-            if entry["type"] == "custom" && entry["customType"] == "work-custody"
-                && let Some(record) = read_work_custody(&entry["data"]) {
-                    records.insert(record.id.clone(), record);
-                }
+            if entry["type"] == "custom"
+                && entry["customType"] == "work-custody"
+                && let Some(record) = read_work_custody(&entry["data"])
+            {
+                records.insert(record.id.clone(), record);
+            }
         }
         Self {
             records,
@@ -89,8 +113,16 @@ impl SessionWorkObligations {
         self.store.changed();
         ObligationToken { id }
     }
-    pub fn sync_source(&mut self, source: &str, kind: ObligationKind, active_count: f64) {
-        let key = format!("wake-source:{source}");
+    /// `items`: the producer's named items (`items`, else legacy `monitors`, senpi#4106); a change in ids,
+    /// descriptions or omitted count republishes even when the count holds.
+    pub fn sync_source(
+        &mut self,
+        source: &str,
+        kind: ObligationKind,
+        active_count: f64,
+        items: Option<&Value>,
+    ) {
+        let key = format!("{WAKE_SOURCE_KEY_PREFIX}{source}");
         self.published_sources.insert(key.clone());
         let current = self.active().into_iter().find(|r| r.key == key).cloned();
         if active_count <= 0. {
@@ -100,16 +132,26 @@ impl SessionWorkObligations {
             }
             return;
         }
-        if current
-            .as_ref()
-            .is_some_and(|r| r.active_count == Some(active_count) && r.kind == kind)
-        {
+        let detail = crate::lifecycle_wait_items::normalize_wait_items(items, None);
+        let signature = crate::lifecycle_wait_items::wait_item_signature(&detail);
+        if current.as_ref().is_some_and(|r| {
+            r.active_count == Some(active_count)
+                && r.kind == kind
+                && crate::lifecycle_wait_items::wait_item_signature(
+                    &crate::lifecycle_wait_items::WaitSourceItems {
+                        items: r.items.clone(),
+                        omitted_items: r.omitted_items,
+                    },
+                ) == signature
+        }) {
             return;
         }
         let mut record = current.unwrap_or_else(|| fresh(&key, kind));
         record.kind = kind;
         record.source = Some(source.into());
         record.active_count = Some(active_count);
+        record.items = detail.items;
+        record.omitted_items = detail.omitted_items;
         self.install(record);
         self.store.changed();
     }
@@ -118,7 +160,8 @@ impl SessionWorkObligations {
             .active()
             .into_iter()
             .filter(|r| {
-                r.key.starts_with("wake-source:") && !self.published_sources.contains(&r.key)
+                r.key.starts_with(WAKE_SOURCE_KEY_PREFIX)
+                    && !self.published_sources.contains(&r.key)
             })
             .map(|r| r.id.clone())
             .collect();
@@ -156,6 +199,11 @@ impl SessionWorkObligations {
             _ => return Ok(false),
         }
         let mut r = self.ticket_record(ticket)?;
+        // A restored queued ticket is re-sent plain; it keeps the item ids its batch was recorded with (senpi#4106).
+        let mut payload = payload;
+        if payload.item_ids.is_none() && r.state == State::Queued {
+            payload.item_ids = r.payload.as_ref().and_then(|p| p.item_ids.clone());
+        }
         r.state = State::Queued;
         r.payload = Some(payload);
         r.delivery = None;
@@ -163,6 +211,17 @@ impl SessionWorkObligations {
         self.delivering.insert(ticket.into());
         self.store.changed();
         Ok(true)
+    }
+    /// The item ids a queued ticket's batch was recorded with, if any.
+    pub fn queued_item_ids(&self, ticket: &str) -> Option<Vec<String>> {
+        let record = self
+            .records
+            .values()
+            .find(|r| r.ticket_id.as_deref() == Some(ticket))?;
+        if record.state != State::Queued {
+            return None;
+        }
+        record.payload.as_ref()?.item_ids.clone()
     }
     pub fn end_delivery(&mut self, ticket: &str) {
         self.delivering.remove(ticket);
@@ -357,6 +416,8 @@ fn fresh(key: &str, kind: ObligationKind) -> WorkCustodyRecord {
         state: State::Open,
         source: None,
         active_count: None,
+        items: None,
+        omitted_items: None,
         detail: None,
         ticket_id: None,
         payload: None,
@@ -406,6 +467,7 @@ mod tests {
         CustodyPayload {
             message: serde_json::json!({"customType":"work","content":"done","display":false}),
             deliver_as: None,
+            item_ids: None,
         }
     }
     #[test]
@@ -453,14 +515,60 @@ mod tests {
     #[test]
     fn restored_sources_retire_only_if_not_republished() {
         let (mut r, data) = registry();
-        r.sync_source("a", ObligationKind::Children, 2.);
-        r.sync_source("b", ObligationKind::Background, 3.);
+        r.sync_source("a", ObligationKind::Children, 2., None);
+        r.sync_source("b", ObligationKind::Background, 3., None);
         let mut restored = SessionWorkObligations::new(Box::new(Store(data)));
-        restored.sync_source("a", ObligationKind::Children, 2.);
+        restored.sync_source("a", ObligationKind::Children, 2., None);
         restored.retire_restored_sources();
         assert_eq!(restored.active_count(), 2.);
-        restored.sync_source("a", ObligationKind::Children, 0.);
+        restored.sync_source("a", ObligationKind::Children, 0., None);
         assert_eq!(restored.active_count(), 0.);
+    }
+    /// senpi test/suite/regressions/4106-named-waits.test.ts: an item change republishes at the same count and
+    /// survives a restart.
+    #[test]
+    fn source_items_republish_and_restore() {
+        let (mut r, data) = registry();
+        r.sync_source(
+            "m",
+            ObligationKind::Background,
+            1.,
+            Some(&serde_json::json!([{"id": "a"}])),
+        );
+        let before = data.lock().unwrap().entries.len();
+        r.sync_source(
+            "m",
+            ObligationKind::Background,
+            1.,
+            Some(&serde_json::json!([{"id": "a"}])),
+        );
+        assert_eq!(data.lock().unwrap().entries.len(), before);
+        r.sync_source(
+            "m",
+            ObligationKind::Background,
+            1.,
+            Some(&serde_json::json!([{"id": "b", "description": "d"}])),
+        );
+        assert_eq!(data.lock().unwrap().entries.len(), before + 1);
+        let restored = SessionWorkObligations::new(Box::new(Store(data)));
+        assert_eq!(
+            restored.active()[0].items.as_ref().expect("items")[0].id,
+            "b"
+        );
+    }
+    /// senpi test/suite/regressions/4106-itemized-resend.test.ts: a plain re-send keeps the queued item ids.
+    #[test]
+    fn a_plain_resend_keeps_the_queued_item_ids() {
+        let (mut r, _) = registry();
+        let token = r.open("work", ObligationKind::Background, None);
+        let ticket = token.ticket(&mut r).unwrap();
+        let mut itemized = payload();
+        itemized.item_ids = Some(vec!["i1".into()]);
+        r.queue(&ticket, itemized).unwrap();
+        assert_eq!(r.queued_item_ids(&ticket), Some(vec!["i1".to_owned()]));
+        r.end_delivery(&ticket);
+        r.queue(&ticket, payload()).unwrap();
+        assert_eq!(r.queued_item_ids(&ticket), Some(vec!["i1".to_owned()]));
     }
     #[test]
     fn retirement_and_notices_close_the_expected_states() {

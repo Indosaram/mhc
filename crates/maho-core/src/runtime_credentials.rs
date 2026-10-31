@@ -63,6 +63,31 @@ impl CredentialStore for RuntimeCredentials {
         self.store.read(provider_id, options).await
     }
 
+    fn has_read_slot(&self) -> bool {
+        true
+    }
+
+    /// senpi `RuntimeCredentials.readSlot` (senpi#3858): a runtime override projects as the slot; else the
+    /// store's own slot read, or a projection of its flat read.
+    async fn read_slot(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        use maho_ai::auth::pool::slots::{PooledCredential, project_slot};
+        throw_if_aborted(&options)?;
+        if let Some(key) = self.override_for(provider_id) {
+            let flat = PooledCredential::from(Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None, ..Default::default() }));
+            return Ok(project_slot(Some(&flat), slot_name));
+        }
+        if self.store.has_read_slot() {
+            return self.store.read_slot(provider_id, slot_name, options).await;
+        }
+        let stored = self.store.read(provider_id, options).await?;
+        Ok(stored.map(PooledCredential::from).and_then(|pooled| project_slot(Some(&pooled), slot_name)))
+    }
+
     async fn list(&self, options: Option<AuthOperationOptions>) -> anyhow::Result<Vec<CredentialInfo>> {
         let mut entries: BTreeMap<String, CredentialInfo> = self
             .store
@@ -249,5 +274,16 @@ mod tests {
         credentials.set_runtime_api_key("p", "k");
         credentials.delete("p", None).await.expect("delete");
         assert!(!credentials.has_runtime_api_key("p"));
+    }
+
+    /// senpi test/suite/regressions/3858-reference-auth.test.ts: a runtime override wins a slot read.
+    #[tokio::test]
+    async fn a_runtime_override_projects_as_the_slot() {
+        let runtime = RuntimeCredentials::new(Arc::new(MemoryStore::default()));
+        runtime.set_runtime_api_key("p", "runtime-key");
+        let slot = runtime.read_slot("p", "default", None).await.expect("read");
+        let Some(Credential::ApiKey(credential)) = slot else { panic!("api key") };
+        assert_eq!(credential.key.as_deref(), Some("runtime-key"));
+        assert!(runtime.read_slot("absent", "default", None).await.expect("read").is_none());
     }
 }

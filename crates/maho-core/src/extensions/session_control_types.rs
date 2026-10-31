@@ -36,6 +36,17 @@ pub fn relocation_not_offered() -> Value {
     json!({"status":"unavailable","reason":"not_offered","detail":"no app connected to this session offers moving it to another computer"})
 }
 pub trait SessionControlActions: Send + Sync {
+    /// Interactive sessions only; any mode without an endpoint host answers `unsupported` and registers nothing.
+    fn register_control_endpoint(
+        &self,
+        _options: RegisterControlEndpointOptions,
+    ) -> BoxFuture<'_, SessionControlRegistration> {
+        Box::pin(async {
+            SessionControlRegistration::Unsupported {
+                reason: ControlEndpointUnsupported::UnsupportedMode,
+            }
+        })
+    }
     fn admission_gate(&self) -> Value;
     fn admit_external_message(&self, input: Value) -> Result<Value, String>;
     fn list_admitted_deliveries(&self) -> Value;
@@ -55,5 +66,66 @@ pub trait SessionControlActions: Send + Sync {
         _signal: Option<AbortSignal>,
     ) -> BoxFuture<'_, Result<Value, String>> {
         Box::pin(async { Ok(relocation_not_offered()) })
+    }
+}
+
+/// One `session_control_wake` pass's drain; resolves to the pass's `SessionControlDrainResult`, if any.
+pub type SessionControlDrain =
+    std::sync::Arc<dyn Fn(Value) -> BoxFuture<'static, Option<Value>> + Send + Sync>;
+/// Asked once at clean exit: whether anything outside the transcript still names this session.
+pub type IsSessionReferenced = std::sync::Arc<dyn Fn() -> BoxFuture<'static, bool> + Send + Sync>;
+/// Releases a registered endpoint.
+pub type DisposeControlEndpoint =
+    std::sync::Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+
+/// senpi `RegisterControlEndpointOptions`.
+#[derive(Clone)]
+pub struct RegisterControlEndpointOptions {
+    /// Directory whose entry creations/deletions wake the drain (`reason: "inbox"`). Created 0700 when missing.
+    pub inbox_dir: String,
+    pub drain: SessionControlDrain,
+    pub is_session_referenced: Option<IsSessionReferenced>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlEndpointUnsupported {
+    UnsupportedPlatform,
+    UnsupportedMode,
+}
+
+impl ControlEndpointUnsupported {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsupportedPlatform => "unsupported_platform",
+            Self::UnsupportedMode => "unsupported_mode",
+        }
+    }
+}
+
+/// senpi `SessionControlRegistration`.
+#[derive(Clone)]
+pub enum SessionControlRegistration {
+    Registered {
+        socket: String,
+        dispose: DisposeControlEndpoint,
+    },
+    Unsupported {
+        reason: ControlEndpointUnsupported,
+    },
+    Failed {
+        reason: String,
+    },
+}
+
+impl SessionControlRegistration {
+    /// The wire shape (`dispose` is not serializable and is omitted).
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Registered { socket, .. } => json!({"status":"registered","socket":socket}),
+            Self::Unsupported { reason } => {
+                json!({"status":"unsupported","reason":reason.as_str()})
+            }
+            Self::Failed { reason } => json!({"status":"failed","reason":reason}),
+        }
     }
 }
