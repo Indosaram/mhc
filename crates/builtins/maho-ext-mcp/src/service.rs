@@ -537,6 +537,7 @@ impl McpService {
                     name,
                     config_hash: hash,
                     config: server_config.clone(),
+                    declared: server.config.as_ref(),
                     agent_dir,
                     env: Some(env.clone()),
                     elicitation_ui: self.elicitation_ui.clone(),
