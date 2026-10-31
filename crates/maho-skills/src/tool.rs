@@ -145,7 +145,7 @@ pub fn run_skill_tool(skills: &[Skill], disabled: &[String], params: &Value) -> 
     else {
         return SkillToolOutcome::error("skill: `name` is required");
     };
-    let (name, relative) = match requested.split_once('/') {
+    let (name, relative) = match requested.split_once(['/', '\\']) {
         Some((name, relative)) => (name, Some(relative)),
         None => (requested, None),
     };
