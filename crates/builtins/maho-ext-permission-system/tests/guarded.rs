@@ -7,7 +7,7 @@ use std::path::Path;
 fn context() -> PresetContext { PresetContext { agent_dir: "/home/u/.mhc/agent".into(), temp_dir: "/tmp".into() } }
 fn guarded() -> Ruleset { rules_for_preset_in(PermissionPresetName::Guarded, &context()) }
 fn request(permission: &str, pattern: &str) -> Request {
-    Request { id: "g-1".into(), session_id: "s".into(), permission: permission.into(), patterns: vec![pattern.into()], always: vec![], metadata: Default::default(), tool: None }
+    Request { id: "g-1".into(), session_id: "s".into(), permission: permission.into(), patterns: vec![pattern.into()], always: vec![], original_paths: None, metadata: Default::default(), tool: None }
 }
 
 #[test]
@@ -37,24 +37,24 @@ fn credential_files_are_detected_even_when_cwd_is_the_agent_dir() {
     assert!(is_credential_path("/home/u/.mhc/agent/auth.json", Path::new("/work"), home, agent));
     assert!(!is_credential_path("settings.json", agent, home, agent));
     assert!(!is_credential_path("auth.json", Path::new("/work"), home, agent));
-    // Headless: the credential request is refused, not silently allowed.
-    let rules = guarded();
-    let outcome = handle_no_ui(&request("credential_file", "auth.json"), (&rules, &[]), &PermissionEventEmitter::default()).expect("emit").expect("rejection");
+    // Headless: the credential request is asked, so it is refused, not silently allowed.
+    assert_eq!(evaluate("credential_file", "/home/u/.mhc/agent/auth.json", &[&guarded()]).action, Action::Ask);
+    let outcome = handle_no_ui(&request("credential_file", "auth.json"), false, &PermissionEventEmitter::default()).expect("emit");
     assert_eq!(outcome.reply, Reply::Reject);
 }
 
 #[test]
 fn headless_external_access_is_rejected_with_actionable_message() {
-    let rules = guarded();
-    let outcome = handle_no_ui(&request("external_directory", "/etc/passwd"), (&rules, &[]), &PermissionEventEmitter::default()).expect("emit").expect("rejection");
+    let outcome = handle_no_ui(&request("external_directory", "/etc/passwd"), false, &PermissionEventEmitter::default()).expect("emit");
     assert_eq!(outcome.message.as_deref(), Some("Permission required to access /etc/passwd outside the working directory. Allow it with --permission external_directory=allow, set permissionPreset to \"full-access\", or add a permission rule."));
 }
 
 #[test]
 fn headless_cli_override_allows_external_access() {
-    let rules = guarded();
-    let cli = [Rule { permission: "external_directory".into(), pattern: "*".into(), action: Action::Allow }];
-    assert!(handle_no_ui(&request("external_directory", "/etc/passwd"), (&rules, &cli), &PermissionEventEmitter::default()).expect("emit").is_none());
+    // The CLI override is merged into the session rules, so the service never asks and no-UI is not reached.
+    let mut rules = guarded();
+    rules.push(Rule { permission: "external_directory".into(), pattern: "*".into(), action: Action::Allow });
+    assert_eq!(evaluate("external_directory", "/etc/passwd", &[&rules]).action, Action::Allow);
 }
 
 #[test]
@@ -65,7 +65,8 @@ fn read_of_auth_json_with_cwd_equal_to_agent_dir_is_refused_headlessly_through_t
     let requests = registry.parse("read", &serde_json::json!({ "path": "auth.json" }), (agent.path(), home));
     let credential = requests.iter().find(|request| request.permission == "credential_file").expect("credential_file request for auth.json");
     let rules = rules_for_preset_in(PermissionPresetName::Guarded, &PresetContext { agent_dir: agent.path().into(), temp_dir: "/tmp".into() });
-    let outcome = handle_no_ui(&request("credential_file", &credential.patterns[0]), (&rules, &[]), &PermissionEventEmitter::default()).expect("emit").expect("rejection");
+    assert_eq!(evaluate("credential_file", &credential.patterns[0], &[&rules]).action, Action::Ask);
+    let outcome = handle_no_ui(&request("credential_file", &credential.patterns[0]), false, &PermissionEventEmitter::default()).expect("emit");
     assert_eq!(outcome.reply, Reply::Reject);
     // The same file is not a credential under a different session agent dir.
     let other = tempfile::tempdir().expect("other dir");

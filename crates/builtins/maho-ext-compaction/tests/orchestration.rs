@@ -134,3 +134,46 @@ fn single_result_split_surrogate_keeps_upstream_lengths() {
     assert_eq!(head.encode_utf16().count(), 19659);
     assert!(rest.starts_with("[tool result projected: kept 6554 of ~10001 tokens]\n"));
 }
+#[test]
+fn reminder_alone_becomes_a_hidden_before_prompt_message() {
+    let message = resolve_before_agent_start_message(
+        None,
+        Some("[context budget] x"),
+        Some(true),
+        Some("initial"),
+    )
+    .expect("message");
+    assert_eq!(
+        message,
+        json!({"customType":"compaction-token-budget","display":false,"content":"[context budget] x","placement":"before-prompt","details":{"tokenBudgetReminderEpoch":"initial"}})
+    );
+}
+#[test]
+fn reminder_joins_an_existing_message_and_keeps_its_details() {
+    let base = json!({"customType":"restore","display":true,"content":"restore","details":{"a":1}});
+    let message = resolve_before_agent_start_message(Some(&base), Some("budget"), None, Some("c1"))
+        .expect("message");
+    assert_eq!(message["content"], "restore\n\nbudget");
+    assert_eq!(message["placement"], "before-prompt");
+    assert_eq!(
+        message["details"],
+        json!({"a":1,"tokenBudgetReminderEpoch":"c1"})
+    );
+    assert_eq!(message["display"], true);
+}
+#[test]
+fn disabled_or_missing_reminder_returns_the_message_unchanged() {
+    let base = json!({"customType":"restore","content":"restore"});
+    assert_eq!(
+        resolve_before_agent_start_message(Some(&base), Some("budget"), Some(false), Some("c1")),
+        Some(base.clone())
+    );
+    assert_eq!(
+        resolve_before_agent_start_message(Some(&base), None, Some(true), Some("c1")),
+        Some(base)
+    );
+    assert_eq!(
+        resolve_before_agent_start_message(None, Some("budget"), Some(false), Some("c1")),
+        None
+    );
+}

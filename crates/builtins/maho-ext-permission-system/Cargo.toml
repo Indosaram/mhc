@@ -14,6 +14,8 @@ tokio = { workspace = true, features = ["sync"] }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-core = { path = "../../maho-core" }
 maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
+maho-tools = { path = "../../maho-tools" }
+unicode-normalization = "=0.1.25"
 
 [dev-dependencies]
 tempfile.workspace = true

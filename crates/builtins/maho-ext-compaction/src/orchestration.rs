@@ -79,33 +79,45 @@ pub fn inject_token_budget_reminder(messages: &[Value], reminder: Option<&str>) 
     }
     output
 }
+/// The token-budget reminder never touches the system prompt (cache prefix): it always rides a message placed
+/// before the prompt, a hidden `compaction-token-budget` custom message when there is no other one, tagged with
+/// `details.tokenBudgetReminderEpoch` so a reload inside the same epoch does not deliver it again.
 pub fn resolve_before_agent_start_message(
     message: Option<&Value>,
     reminder: Option<&str>,
     enabled: Option<bool>,
+    reminder_epoch: Option<&str>,
 ) -> Option<Value> {
-    let mut message = message?.clone();
-    if let Some(reminder) = reminder.filter(|r| !r.is_empty())
-        && enabled != Some(false)
-    {
-        message["content"] = json!(format!(
+    let Some(reminder) = reminder
+        .filter(|r| !r.is_empty())
+        .filter(|_| enabled != Some(false))
+    else {
+        return message.cloned();
+    };
+    let mut output = message
+        .cloned()
+        .unwrap_or_else(|| json!({"customType":"compaction-token-budget","display":false}));
+    output["content"] = json!(match message {
+        Some(message) => format!(
             "{}\n\n{reminder}",
             message
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-        ));
+        ),
+        None => reminder.to_owned(),
+    });
+    output["placement"] = json!("before-prompt");
+    let mut details = message
+        .and_then(|message| message.get("details"))
+        .filter(|details| details.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if let Some(epoch) = reminder_epoch {
+        details["tokenBudgetReminderEpoch"] = json!(epoch);
     }
-    Some(message)
-}
-pub fn resolve_reminder_system_prompt(
-    prompt: &str,
-    reminder: Option<&str>,
-    enabled: Option<bool>,
-) -> Option<String> {
-    reminder
-        .filter(|r| !r.is_empty() && enabled != Some(false))
-        .map(|r| format!("{prompt}\n\n{r}"))
+    output["details"] = details;
+    Some(output)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdleWarmAction {

@@ -21,6 +21,9 @@ pub const DEFAULT_MAX_SESSIONS: usize = 32;
 pub const MAX_SESSION_OUTPUT_CHARS: usize = 1_000_000;
 pub const BACKGROUND_START_GRACE_MS: u64 = 250;
 pub const KILLED_SESSION_EXIT_GRACE_MS: u64 = 5000;
+/// Upstream `RESTORE_GRACE_MS`: a restored command watch counts as restored only if it is still
+/// running when this window closes; an exit inside it is `completed` (0) or `lost` (non-zero).
+pub const RESTORE_GRACE_MS: u64 = 2_000;
 pub const MAX_DURABLE_MONITORS: usize = 5;
 pub const DURABLE_MONITOR_EXPIRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const FIRE_BUDGET_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;

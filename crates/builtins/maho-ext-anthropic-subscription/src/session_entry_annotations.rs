@@ -21,9 +21,16 @@ pub async fn switch_entry_model(
     entry.set_model(model, sdk_model, now).await?;
     Ok(true)
 }
-pub fn annotate_pending_fork(entry: Option<&mut SessionEntry>, reason: &str, now: u64) {
+pub fn annotate_pending_fork(
+    entry: Option<&mut SessionEntry>,
+    reason: &str,
+    diverged_path: Option<&str>,
+    now: u64,
+) {
     if let Some(entry) = entry {
         entry.pending_fork_reason = Some(reason.into());
+        // A fork recorded without a path (compaction, tree change) must not inherit an earlier rewrite's path.
+        entry.pending_fork_diverged_path = diverged_path.map(str::to_owned);
         entry.last_used_at = now;
     }
 }
