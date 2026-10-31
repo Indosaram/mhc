@@ -18,7 +18,7 @@ use crate::rpc_client::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// A model named by provider and id.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,18 +137,37 @@ fn stop_wait_budget_ms() -> u64 {
 
 /// Perform one `host session` request. Never fails: every error becomes an outcome.
 pub async fn run_host_session_request(request: HostSessionRequest) -> HostOutcome {
-    let deadline = Instant::now() + Duration::from_millis(stop_wait_budget_ms());
+    let retry = matches!(request.action, HostSessionAction::Open { .. });
+    let budget = Duration::from_millis(stop_wait_budget_ms());
+    match retry_while_host_stopping(retry, budget, || run_host_session_request_once(&request)).await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => map_error(&error, &request.target.socket),
+    }
+}
+
+/// senpi `runHostSessionRequest`: an `open` that meets a stopping generation tries again until the
+/// stop budget runs out; every other error, and any error from another action, is returned at once.
+async fn retry_while_host_stopping<F, Fut>(
+    retry: bool,
+    budget: Duration,
+    mut once: F,
+) -> Result<HostOutcome, RpcClientError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<HostOutcome, RpcClientError>>,
+{
+    let deadline = tokio::time::Instant::now() + budget;
     loop {
-        match run_host_session_request_once(&request).await {
-            Ok(outcome) => return outcome,
+        match once().await {
             Err(error)
-                if matches!(request.action, HostSessionAction::Open { .. })
+                if retry
                     && error.error_code() == Some("host_stopping")
-                    && Instant::now() < deadline =>
+                    && tokio::time::Instant::now() < deadline =>
             {
                 continue;
             }
-            Err(error) => return map_error(&error, &request.target.socket),
+            result => return result,
         }
     }
 }
@@ -703,6 +722,7 @@ mod tests {
         messages: Vec<Value>,
         seen: Vec<Value>,
         refuse_abort: bool,
+        refuse_open: bool,
         unload_answer: Value,
         next: u64,
     }
@@ -756,6 +776,12 @@ mod tests {
                     vec![ok(json!({ "sessions": rows }))]
                 }
                 "open_session" => {
+                    if self.refuse_open {
+                        return vec![refuse(
+                            "Session path is not a session file",
+                            Some("invalid_path"),
+                        )];
+                    }
                     let index = match command["sessionPath"].as_str() {
                         Some(path) => self.sessions.iter().position(|s| s.path == path),
                         None => {
@@ -765,7 +791,7 @@ mod tests {
                         }
                     };
                     let Some(index) = index else {
-                        return vec![refuse("invalid_path", Some("invalid_path"))];
+                        return vec![refuse("No session at that path", Some("invalid_path"))];
                     };
                     let session = &mut self.sessions[index];
                     session.attachments += 1;
@@ -1303,6 +1329,68 @@ mod tests {
         .await;
         assert_eq!(outcome.exit_code, 3);
         assert_eq!(outcome.payload["reason"], "unsupported_endpoint_kind");
+    }
+
+    // A refused open_session keeps the host's errorCode: a prose message still maps by code, not by text.
+    #[tokio::test]
+    async fn a_refused_open_session_exits_with_its_error_code_as_a_usage_error() {
+        let rig = Rig::new(|fake| {
+            fake.seed("rpc-1", None, 0);
+            fake.refuse_open = true;
+        });
+        let outcome = rig
+            .run(HostSessionAction::State {
+                reference: reference("rpc-1"),
+            })
+            .await;
+        assert_eq!(outcome.exit_code, 2);
+        assert_eq!(outcome.payload["action"], "error");
+        assert_eq!(outcome.payload["reason"], "invalid_path");
+        assert_eq!(
+            outcome.payload["detail"],
+            "Session path is not a session file"
+        );
+        assert_eq!(rig.seen("open_session").len(), 1);
+        assert_eq!(rig.with(|fake| fake.sessions[0].attachments), 0);
+    }
+
+    fn stopping() -> RpcClientError {
+        RpcClientError::Command(crate::rpc_client::RpcCommandError {
+            message: "host_stopping".into(),
+            error_code: Some("host_stopping".into()),
+            error_data: None,
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_open_retries_a_stopping_host_until_it_succeeds() {
+        let attempts = std::cell::Cell::new(0);
+        let result = retry_while_host_stopping(true, Duration::from_secs(60), || {
+            attempts.set(attempts.get() + 1);
+            let attempt = attempts.get();
+            async move {
+                if attempt < 3 {
+                    Err(stopping())
+                } else {
+                    Ok(ok(json!({"action": "open"})))
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap().payload["action"], "open");
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_an_open_retries_a_stopping_host() {
+        let attempts = std::cell::Cell::new(0);
+        let result = retry_while_host_stopping(false, Duration::from_secs(60), || {
+            attempts.set(attempts.get() + 1);
+            async { Err(stopping()) }
+        })
+        .await;
+        assert_eq!(result.unwrap_err().error_code(), Some("host_stopping"));
+        assert_eq!(attempts.get(), 1);
     }
 
     #[test]
