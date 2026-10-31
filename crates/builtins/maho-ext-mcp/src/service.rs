@@ -136,6 +136,12 @@ impl McpSessionBinding {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         lifetime.abort();
         *lifetime = maho_ext_api::AbortSignal::default();
+        drop(lifetime);
+        // Upstream gives a renewed binding a fresh presentation from `ctx.ui`; the previous session's is never kept.
+        *self
+            .presentation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
     fn release(&self) {
         self.lifetime().abort();
