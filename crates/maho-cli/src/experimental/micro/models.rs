@@ -1,15 +1,31 @@
-//! Port of senpi `experimental/micro/models.ts` (pin 903b8336): the request-shape adapter from
-//! Pico3's durable request to `ModelRuntime`'s pi-ai `Context`, and the models/accounts view.
+//! Port of senpi `experimental/micro/models.ts` (pin 903b8336): `createPicoModels` (Pico3's
+//! `Models` over `ModelRuntime`), the request-shape adapter from Pico3's durable request to the
+//! pi-ai `Context`, and the models/accounts view.
 //!
-//! senpi's `createPicoModels` (the `Models` trait object over `ModelRuntime`) is not here: Pico3's
-//! `Models::stream` returns `AssistantStream = Pin<Box<dyn futures::Stream>>`, and maho-cli has no
-//! direct `futures` dependency to implement that trait (registry request). `to_ai_context` below is
-//! the request half it would call.
+//! Divergences in `createPicoModels`:
+//! - senpi passes `cwd` in the request options for subprocess-backed providers. maho-ai's
+//!   `ProviderRequestOptions` has no `cwd` field and no Rust provider reads one, so it is held but
+//!   not forwarded.
+//! - senpi's stream throws the abort reason when an aborted error event arrives under an aborted
+//!   context. A Pico3 `AssistantStream` yields events only, so the stream ends there instead; the
+//!   generation kind treats the missing terminal event as an error and the scheduler drops it
+//!   because the context is aborted.
+//! - `ModelRuntime` has no deferred fetch/cancel of its own here; both go through its `Models`
+//!   collection (`ModelRuntime::models`), the same path the harness lane uses.
 
 use std::collections::BTreeMap;
 
-use maho_agent::harness::pico3::types::{Message as PicoMessage, RequestOptions};
-use maho_ai::types::{ConstrainedSampling, Context as AiContext, Message, Tool};
+use futures::StreamExt;
+use maho_agent::harness::context::Context;
+use maho_agent::harness::pico3::types::{
+    AssistantStream, DeferredResult, Error, LocalBoxFuture, Message as PicoMessage, Model,
+    ModelRef, Models, RequestOptions, Result as PicoResult, ThinkingLevel,
+};
+use maho_ai::types::{
+    AssistantMessageEvent, ConstrainedSampling, Context as AiContext, DeferredFetchOptions,
+    DeferredHandle, ErrorReason, Message, ProviderRequestOptions, SimpleStreamOptions, StopReason,
+    StreamOptions, Tool,
+};
 use maho_core::model_runtime::ModelRuntime;
 
 use super::api::{MicroAuthType, MicroModelSummary, MicroModelsView, MicroProviderAccount};
@@ -18,6 +34,155 @@ use super::api::{MicroAuthType, MicroModelSummary, MicroModelsView, MicroProvide
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelToolMetadata {
     pub constrained_sampling: Option<ConstrainedSampling>,
+}
+
+/// senpi `createPicoModels`.
+pub struct PicoModels {
+    runtime: ModelRuntime,
+    tool_metadata: BTreeMap<String, ModelToolMetadata>,
+    /// Held for parity; see the module note on `cwd`.
+    pub cwd: String,
+}
+
+/// senpi `createPicoModels(runtime, toolMetadata, cwd)`.
+pub fn create_pico_models(
+    runtime: ModelRuntime,
+    tool_metadata: BTreeMap<String, ModelToolMetadata>,
+    cwd: impl Into<String>,
+) -> PicoModels {
+    PicoModels {
+        runtime,
+        tool_metadata,
+        cwd: cwd.into(),
+    }
+}
+
+fn reasoning(level: ThinkingLevel) -> Option<maho_ai::types::ThinkingLevel> {
+    use maho_ai::types::ThinkingLevel as Reasoning;
+    match level {
+        ThinkingLevel::Off => None,
+        ThinkingLevel::Minimal => Some(Reasoning::Minimal),
+        ThinkingLevel::Low => Some(Reasoning::Low),
+        ThinkingLevel::Medium => Some(Reasoning::Medium),
+        ThinkingLevel::High => Some(Reasoning::High),
+        ThinkingLevel::Xhigh => Some(Reasoning::Xhigh),
+        ThinkingLevel::Max => Some(Reasoning::Max),
+    }
+}
+
+fn request_options(ctx: &Context) -> ProviderRequestOptions {
+    ProviderRequestOptions {
+        signal: ctx.abort_signal(),
+        ..ProviderRequestOptions::default()
+    }
+}
+
+fn provider_error(message: String) -> Error {
+    Error::Chord(message.into())
+}
+
+impl Models for PicoModels {
+    fn resolve(&self, r#ref: &ModelRef) -> Option<Model> {
+        self.runtime.get_model(&r#ref.provider, &r#ref.model_id)
+    }
+
+    fn stream(&self, model: &Model, request: RequestOptions, ctx: &Context) -> AssistantStream {
+        let context = match to_ai_context(&request, &self.tool_metadata) {
+            Ok(context) => context,
+            Err(error) => {
+                let error = maho_ai::utils::lazy::setup_error_message(model, &error);
+                return futures::stream::iter([AssistantMessageEvent::Error {
+                    reason: ErrorReason::Error,
+                    error,
+                }])
+                .boxed_local();
+            }
+        };
+        let source = self.runtime.stream_simple(
+            model,
+            &context,
+            Some(SimpleStreamOptions {
+                stream: StreamOptions {
+                    request: request_options(ctx),
+                    ..StreamOptions::default()
+                },
+                reasoning: reasoning(request.thinking_level),
+                ..SimpleStreamOptions::default()
+            }),
+        );
+        let (model, ctx) = (model.clone(), ctx.clone());
+        futures::stream::unfold(Some(source), move |source| {
+            let (model, ctx) = (model.clone(), ctx.clone());
+            async move {
+                let source = source?;
+                match source.next().await {
+                    Ok(Some(AssistantMessageEvent::Error {
+                        reason: ErrorReason::Aborted,
+                        ..
+                    })) if ctx.is_aborted() => None,
+                    Ok(Some(event)) => Some((event, Some(source))),
+                    Ok(None) => None,
+                    Err(error) => {
+                        let error =
+                            maho_ai::utils::lazy::setup_stream_error_message(&model, &error);
+                        Some((
+                            AssistantMessageEvent::Error {
+                                reason: ErrorReason::Error,
+                                error,
+                            },
+                            None,
+                        ))
+                    }
+                }
+            }
+        })
+        .boxed_local()
+    }
+
+    fn fetch_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        ctx: &'a Context,
+    ) -> LocalBoxFuture<'a, PicoResult<DeferredResult>> {
+        Box::pin(async move {
+            let options = DeferredFetchOptions {
+                request: request_options(ctx),
+                wait: None,
+            };
+            let message = self
+                .runtime
+                .models()
+                .fetch_deferred(model, handle, Some(options), Default::default())
+                .await
+                .map_err(|error| provider_error(error.message))?;
+            Ok(
+                match message
+                    .deferred
+                    .clone()
+                    .filter(|_| message.stop_reason == StopReason::Deferred)
+                {
+                    Some(deferred) => DeferredResult::Deferred(deferred),
+                    None => DeferredResult::Message(Box::new(message)),
+                },
+            )
+        })
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        ctx: &'a Context,
+    ) -> LocalBoxFuture<'a, PicoResult<()>> {
+        Box::pin(async move {
+            self.runtime
+                .models()
+                .cancel_deferred(model, handle, Some(request_options(ctx)))
+                .await
+                .map_err(provider_error)
+        })
+    }
 }
 
 /// senpi `toAiContext`: system messages become the joined system prompt and the running tool set
@@ -210,5 +375,130 @@ mod tests {
         assert_eq!(context.system_prompt, None);
         assert!(context.messages.is_empty());
         assert_eq!(context.tools, None);
+    }
+
+    fn faux_runtime() -> (maho_ai::providers::faux::FauxProviderHandle, ModelRuntime) {
+        use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider};
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            ..Default::default()
+        })
+        .expect("faux provider");
+        let mut runtime =
+            ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(Vec::new()),
+                ..Default::default()
+            })
+            .expect("model runtime");
+        runtime.register_native_provider(provider.provider.clone());
+        runtime
+            .credentials
+            .set(
+                "faux",
+                Some(serde_json::json!({"type": "api_key", "key": "fixture-key"})),
+            )
+            .expect("faux auth");
+        (provider, runtime)
+    }
+
+    #[tokio::test]
+    async fn pico_models_resolve_and_stream_through_the_runtime() {
+        use maho_ai::providers::faux::faux_assistant_message;
+        let (provider, runtime) = faux_runtime();
+        provider.set_responses(vec![
+            faux_assistant_message("hello", Default::default()).into(),
+        ]);
+        let metadata = BTreeMap::from([(
+            "read".to_owned(),
+            ModelToolMetadata {
+                constrained_sampling: Some(ConstrainedSampling::Disabled(false)),
+            },
+        )]);
+        let models = create_pico_models(runtime, metadata, "/work");
+        assert!(
+            models
+                .resolve(&ModelRef {
+                    provider: "faux".into(),
+                    model_id: "missing".into(),
+                })
+                .is_none()
+        );
+        let model = models
+            .resolve(&ModelRef {
+                provider: "faux".into(),
+                model_id: "faux-1".into(),
+            })
+            .expect("resolved model");
+        let user = to_stored(&PicoMessage::User(UserMessage {
+            content: UserContent::Text("hi".to_owned()),
+            timestamp: 2,
+        }))
+        .expect("user message");
+        let request = RequestOptions {
+            messages: vec![system("base", vec![tool("read")], vec![]), user],
+            thinking_level: ThinkingLevel::Off,
+        };
+        let ctx = maho_agent::harness::context::background_context();
+        let events: Vec<AssistantMessageEvent> = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            models.stream(&model, request, &ctx).collect(),
+        )
+        .await
+        .expect("bounded stream");
+        let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+            panic!("stream ends with done: {events:?}");
+        };
+        assert_eq!(message.stop_reason, StopReason::Stop);
+        let log = provider.get_call_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].context.system_prompt.as_deref(), Some("base"));
+        let tools = log[0].context.tools.as_ref().expect("tools");
+        assert_eq!(tools[0].name, "read");
+        assert_eq!(
+            tools[0].constrained_sampling,
+            Some(ConstrainedSampling::Disabled(false))
+        );
+    }
+
+    #[tokio::test]
+    async fn pico_models_forward_deferred_fetch_and_cancel() {
+        let (provider, runtime) = faux_runtime();
+        let models = create_pico_models(runtime, BTreeMap::new(), "/work");
+        let model = models
+            .resolve(&ModelRef {
+                provider: "faux".into(),
+                model_id: "faux-1".into(),
+            })
+            .expect("resolved model");
+        let handle = DeferredHandle {
+            provider: model.provider.clone(),
+            model_id: model.id.clone(),
+            api: model.api.clone(),
+            id: "unknown".into(),
+            expires_at: None,
+            poll_after_ms: None,
+            data: None,
+        };
+        let ctx = maho_agent::harness::context::background_context();
+        let fetched = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            models.fetch_deferred(&model, &handle, &ctx),
+        )
+        .await
+        .expect("bounded fetch")
+        .expect("fetch settles with a message");
+        let DeferredResult::Message(message) = fetched else {
+            panic!("an unknown handle settles instead of staying deferred");
+        };
+        assert_eq!(message.stop_reason, StopReason::Error);
+        assert_eq!(provider.state().deferred_fetch_count, 1);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            models.cancel_deferred(&model, &handle, &ctx),
+        )
+        .await
+        .expect("bounded cancel")
+        .expect("cancel forwarded");
+        assert_eq!(provider.state().cancelled_deferred, vec![handle]);
     }
 }
