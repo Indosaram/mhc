@@ -408,3 +408,35 @@ async fn kernel_tools_stay_reachable_and_a_tool_call_keeps_the_kernel_from_being
     assert_eq!(error.code.as_deref(), Some("tools_unavailable"));
     parked.close().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_dropped_run_waiting_for_the_fresh_kernel_leaves_no_queued_cell() {
+    let first = FakeKernel::new(1);
+    let (release, gate) = watch::channel(false);
+    *first.close_gate.lock().unwrap() = Some(gate);
+    let (restart, calls) = restarts(vec![]);
+    let parked = Arc::new(IdleParkingKernel::new(
+        EvalLanguage::Js,
+        1.0,
+        first.clone(),
+        restart,
+        None,
+    ));
+
+    tokio::time::sleep(MINUTE).await;
+    let submitted = tokio::spawn({
+        let parked = parked.clone();
+        async move { parked.run(cell("abandoned")).await }
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(parked.queue_snapshot().1, ["abandoned"]);
+
+    submitted.abort();
+    assert!(submitted.await.unwrap_err().is_cancelled());
+    assert!(parked.queue_snapshot().1.is_empty());
+
+    release.send_replace(true);
+    first.wait_closed().await;
+    parked.close().await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

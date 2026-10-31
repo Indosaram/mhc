@@ -29,6 +29,8 @@ struct State {
     kernel: Option<Arc<dyn EvalKernel>>,
     in_flight: usize,
     timer: Option<tokio::task::AbortHandle>,
+    /// Bumped on every arm and disarm; a timer whose generation is stale must not touch `timer` or park.
+    timer_gen: u64,
     /// Present while a parked kernel is closing; flips to true once the close finished.
     parking: Option<watch::Receiver<bool>>,
     park_failure: Option<String>,
@@ -128,19 +130,33 @@ impl Inner {
         if state.closed || state.in_flight > 0 || state.kernel.is_none() || state.timer.is_some() {
             return;
         }
+        state.timer_gen += 1;
+        let generation = state.timer_gen;
         let me = self.me.clone();
         let idle = Duration::from_secs_f64(self.idle_minutes * 60.0);
         let task = tokio::spawn(async move {
             tokio::time::sleep(idle).await;
             if let Some(inner) = me.upgrade() {
-                inner.lock().timer = None;
-                inner.park();
+                inner.on_timer(generation);
             }
         });
         state.timer = Some(task.abort_handle());
     }
 
+    /// `abort()` cannot stop a timer task already past its sleep, so a disarmed timer can still get
+    /// here; its generation tells it apart from the current timer, which it must neither clear nor
+    /// pre-empt by parking early.
+    fn on_timer(&self, generation: u64) {
+        let mut state = self.lock();
+        if state.timer_gen != generation {
+            return;
+        }
+        state.timer = None;
+        self.park(state);
+    }
+
     fn disarm(state: &mut State) {
+        state.timer_gen += 1;
         if let Some(timer) = state.timer.take() {
             timer.abort();
         }
@@ -152,8 +168,7 @@ impl Inner {
         InFlight(self.clone())
     }
 
-    fn park(&self) {
-        let mut state = self.lock();
+    fn park(&self, mut state: std::sync::MutexGuard<'_, State>) {
         let Some(kernel) = state.kernel.clone() else {
             return;
         };
@@ -298,13 +313,18 @@ impl Inner {
         }
         let cell_id = input.cell_id.clone();
         let mut cancelled = cancelled.expect("waiting cell");
+        // Dropping this future while it waits must not leave a phantom queued cell behind.
+        let waiting = WaitingCell {
+            inner: &**self,
+            cell_id: &cell_id,
+        };
         let current = tokio::select! {
             reason = &mut cancelled => {
                 return Ok(unstarted_result(&cell_id, &reason.unwrap_or_else(|_| CLOSED.into())));
             }
             current = self.current() => current,
         };
-        self.lock().waiting.retain(|(id, _)| id != &cell_id);
+        drop(waiting);
         if let Ok(reason) = cancelled.try_recv() {
             return Ok(unstarted_result(&cell_id, &reason));
         }
@@ -350,6 +370,21 @@ impl Inner {
             Some(tools) if !state.closed => Ok((tools, self.begin(&mut state))),
             _ => Err(self.tools_unavailable()),
         }
+    }
+}
+
+/// Removes a cell's entry from `waiting` however its wait ends, including the future being dropped.
+struct WaitingCell<'a> {
+    inner: &'a Inner,
+    cell_id: &'a str,
+}
+
+impl Drop for WaitingCell<'_> {
+    fn drop(&mut self) {
+        self.inner
+            .lock()
+            .waiting
+            .retain(|(id, _)| id != self.cell_id);
     }
 }
 
@@ -496,5 +531,83 @@ impl EvalKernel for IdleParkingKernel {
     fn list_kernel_tool_names(&self) -> Vec<String> {
         let kernel = self.inner.lock().kernel.clone();
         kernel.map_or_else(Vec::new, |kernel| kernel.list_kernel_tool_names())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fake(watch::Sender<bool>);
+
+    impl EvalKernel for Fake {
+        fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, Value> {
+            Box::pin(async move { Ok(json!({"type":"result","cellId":input.cell_id,"ok":true})) })
+        }
+        fn cancel_queued<'a>(&'a self, _: &'a str, _: &'a str) -> EvalKernelFuture<'a, bool> {
+            Box::pin(async { Ok(false) })
+        }
+        fn interrupt<'a>(
+            &'a self,
+            _: &'a str,
+            _: Option<&'a str>,
+        ) -> EvalKernelFuture<'a, KernelInterruptHandle> {
+            Box::pin(async {
+                Ok(KernelInterruptHandle {
+                    state_retained: Box::pin(async { Ok(true) }),
+                    note: None,
+                })
+            })
+        }
+        fn queue_snapshot(&self) -> (Option<String>, Vec<String>) {
+            (None, Vec::new())
+        }
+        fn deliver_tool_reply(&self, _: Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn reset(&self) -> EvalKernelFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&self) -> EvalKernelFuture<'_, ()> {
+            Box::pin(async {
+                self.0.send_replace(true);
+                Ok(())
+            })
+        }
+    }
+
+    /// The race needs a multi-threaded runtime (the timer task is past its sleep when `abort()` runs),
+    /// so the stale timer's wake is delivered directly with the generation it captured.
+    #[tokio::test(start_paused = true)]
+    async fn a_timer_that_wakes_after_a_re_arm_neither_parks_nor_clears_the_new_timer() {
+        let (closed, mut watch_closed) = watch::channel(false);
+        let restart: RestartParkedKernel =
+            Arc::new(|| -> EvalKernelFuture<'static, Arc<dyn EvalKernel>> {
+                Box::pin(async { Err("no restart expected".to_owned()) })
+            });
+        let kernel =
+            IdleParkingKernel::new(EvalLanguage::Js, 1.0, Arc::new(Fake(closed)), restart, None);
+        let stale = kernel.inner.lock().timer_gen;
+
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let input = EvalKernelRunInput {
+            cell_id: "re-arm".into(),
+            ..Default::default()
+        };
+        kernel.run(input).await.unwrap();
+        kernel.inner.on_timer(stale);
+        {
+            let state = kernel.inner.lock();
+            assert!(state.kernel.is_some(), "the stale timer parked the kernel");
+            assert!(
+                state.timer.is_some(),
+                "the stale timer cleared the new timer"
+            );
+        }
+        assert!(!*watch_closed.borrow());
+
+        let rearmed_at = tokio::time::Instant::now();
+        watch_closed.wait_for(|closed| *closed).await.unwrap();
+        assert_eq!(rearmed_at.elapsed(), Duration::from_secs(60));
     }
 }
