@@ -16,9 +16,11 @@ use std::time::Instant;
 
 use regex::Regex;
 
+use crate::escape_window::is_stale_escape;
+
 const ESC: &str = "\x1b";
 const DEFAULT_SEQUENCE_TIMEOUT_MS: u64 = 50;
-const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 10;
+const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 50;
 const BRACKETED_PASTE_START: &str = "\x1b[200~";
 const BRACKETED_PASTE_END: &str = "\x1b[201~";
 const MOUSE_FRAGMENT_MAX_LEN: usize = 64;
@@ -228,7 +230,7 @@ fn extract_complete_sequences(buffer: &str) -> Extracted {
 pub struct StdinBufferOptions {
     /// Max wait for an incomplete sequence such as CSI or mouse (default 50ms).
     pub timeout: Option<u64>,
-    /// Max wait after a lone ESC before treating it as Escape (default 10ms).
+    /// Max wait after a lone ESC before treating it as Escape (default 50ms).
     pub escape_timeout: Option<u64>,
     pub burst_window_ms: Option<u64>,
 }
@@ -362,7 +364,9 @@ impl StdinBuffer {
             self.release_held_newline(&mut events);
             if !self.buffer.is_empty() {
                 let flushed = self.flush();
-                for sequence in flushed { self.emit_data_sequence(sequence, &mut events); }
+                for sequence in flushed {
+                    self.emit_data_sequence(sequence, &mut events);
+                }
             }
             return events;
         }
@@ -388,6 +392,14 @@ impl StdinBuffer {
     }
 
     fn process_into(&mut self, data: StdinInput<'_>, events: &mut Vec<StdinEvent>) {
+        // The held line break's release timer (senpi `burstTimer`) survives a read that adds no
+        // input (an empty decode of half a multibyte character, a dropped mouse fragment); the
+        // sequence timer is cleared by every read.
+        let held_release_deadline = if self.held_newline.is_empty() {
+            None
+        } else {
+            self.deadline
+        };
         self.deadline = None;
 
         let mut decoded_from_buffer = false;
@@ -413,6 +425,7 @@ impl StdinBuffer {
             if !decoded_from_buffer {
                 self.emit_data_sequence(String::new(), events);
             }
+            self.restore_held_release_deadline(held_release_deadline);
             return;
         }
 
@@ -422,25 +435,40 @@ impl StdinBuffer {
             match (escape_index, terminator) {
                 (Some(e), t) if t.is_none_or(|t| e < t) => s = s[e..].to_string(),
                 (_, Some(t)) => s = s[t + 1..].to_string(),
-                (_, None) => return,
+                (_, None) => {
+                    self.restore_held_release_deadline(held_release_deadline);
+                    return;
+                }
             }
             self.discarding_mouse_fragment = false;
         }
         let chunk_at = (!s.is_empty()).then(|| self.clock.now_ms());
-        let burst_gap = chunk_at.zip(self.last_input_at).map(|(now, last)| now.saturating_sub(last));
+        let burst_gap = chunk_at
+            .zip(self.last_input_at)
+            .map(|(now, last)| now.saturating_sub(last));
         if let Some(now) = chunk_at {
             self.last_input_at = Some(now);
         }
+        if is_stale_escape(
+            &self.buffer,
+            burst_gap.map(|gap| gap as f64),
+            self.escape_timeout_ms as f64,
+        ) {
+            self.buffer.clear();
+            self.emit_data_sequence(ESC.to_string(), events);
+        }
+        self.buffer.push_str(&s);
         if !self.held_newline.is_empty() {
+            // The clock decides, not timer delivery: a read outside the window means the held line
+            // break was an Enter, even when its release timer has not fired yet (a stalled loop).
             if burst_gap.is_some_and(|gap| gap >= self.burst_window_ms) {
                 self.release_held_newline(events);
             } else {
-                self.buffer.push_str(&self.held_newline);
+                self.buffer = format!("{}{}", self.held_newline, self.buffer);
                 self.held_newline.clear();
                 self.held_newline_ends_paste = false;
             }
         }
-        self.buffer.push_str(&s);
 
         if self.paste_mode {
             let previous_len = self.paste_buffer.len();
@@ -474,7 +502,6 @@ impl StdinBuffer {
         if self.consume_unbracketed_burst(burst_gap, events) {
             return;
         }
-
 
         let result = extract_complete_sequences(&self.buffer);
         self.buffer = result.remainder;
@@ -510,26 +537,44 @@ impl StdinBuffer {
         while let Some(ch) = chars.next() {
             if ch == '\r' {
                 count += 1;
-                if chars.peek() == Some(&'\n') { chars.next(); }
-            } else if ch == '\n' { count += 1; }
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            } else if ch == '\n' {
+                count += 1;
+            }
         }
         count
     }
 
-    fn consume_unbracketed_burst(&mut self, burst_gap: Option<u64>, events: &mut Vec<StdinEvent>) -> bool {
+    fn consume_unbracketed_burst(
+        &mut self,
+        burst_gap: Option<u64>,
+        events: &mut Vec<StdinEvent>,
+    ) -> bool {
         let text = &self.buffer;
-        if text.is_empty() || text.contains(ESC) || text.contains(BRACKETED_PASTE_START) { return false; }
+        if text.is_empty() || text.contains(ESC) || text.contains(BRACKETED_PASTE_START) {
+            return false;
+        }
         let breaks = Self::line_break_count(text);
-        if breaks == 0 { return false; }
+        if breaks == 0 {
+            return false;
+        }
         let has_text = text.chars().any(|ch| ch != '\r' && ch != '\n');
         let mut seen_break = false;
         let mut newline_before_text = false;
         let mut previous_cr = false;
         for ch in text.chars() {
             if ch == '\r' || ch == '\n' {
-                if ch == '\n' && previous_cr { previous_cr = false; continue; }
+                if ch == '\n' && previous_cr {
+                    previous_cr = false;
+                    continue;
+                }
                 seen_break = true;
-            } else if seen_break { newline_before_text = true; break; }
+            } else if seen_break {
+                newline_before_text = true;
+                break;
+            }
             previous_cr = ch == '\r';
         }
         if (breaks >= 2 || newline_before_text) && has_text {
@@ -538,13 +583,26 @@ impl StdinBuffer {
             events.push(StdinEvent::Paste(paste));
             return true;
         }
-        let trailing_start = text.char_indices().rev().find(|(_, ch)| *ch != '\r' && *ch != '\n').map_or(0, |(i,ch)| i + ch.len_utf8());
-        if trailing_start == text.len() || burst_gap.is_none_or(|gap| gap >= self.burst_window_ms) { return false; }
+        let trailing_start = text
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| *ch != '\r' && *ch != '\n')
+            .map_or(0, |(i, ch)| i + ch.len_utf8());
+        if trailing_start == text.len() || burst_gap.is_none_or(|gap| gap >= self.burst_window_ms) {
+            return false;
+        }
         let head = self.buffer[..trailing_start].to_string();
         let trailing = self.buffer[trailing_start..].to_string();
-        let ends_paste = self.last_burst_paste_at.zip(self.last_input_at).is_some_and(|(paste, now)| now.saturating_sub(paste) < self.burst_window_ms);
-        if head.is_empty() && !ends_paste { return false; }
-        for ch in head.chars() { self.emit_data_sequence(ch.to_string(), events); }
+        let ends_paste = self
+            .last_burst_paste_at
+            .zip(self.last_input_at)
+            .is_some_and(|(paste, now)| now.saturating_sub(paste) < self.burst_window_ms);
+        if head.is_empty() && !ends_paste {
+            return false;
+        }
+        for ch in head.chars() {
+            self.emit_data_sequence(ch.to_string(), events);
+        }
         self.buffer.clear();
         self.held_newline = trailing;
         self.held_newline_ends_paste = ends_paste;
@@ -552,12 +610,35 @@ impl StdinBuffer {
         true
     }
 
+    fn restore_held_release_deadline(&mut self, deadline: Option<u64>) {
+        if deadline.is_some() && !self.held_newline.is_empty() {
+            self.deadline = deadline;
+            self.deadline_flushes_only = true;
+        }
+    }
+
+    /// senpi `flush()`: releases a held line break (as a paste when it ends a burst paste,
+    /// otherwise as data) and returns the remaining buffered sequences for the caller to emit.
+    pub fn flush_with_events(&mut self) -> (Vec<StdinEvent>, Vec<String>) {
+        let mut events = Vec::new();
+        self.release_held_newline(&mut events);
+        let sequences = self.flush();
+        (events, sequences)
+    }
+
     fn release_held_newline(&mut self, events: &mut Vec<StdinEvent>) {
-        if self.held_newline.is_empty() { return; }
+        if self.held_newline.is_empty() {
+            return;
+        }
         let held = std::mem::take(&mut self.held_newline);
         let ends_paste = std::mem::replace(&mut self.held_newline_ends_paste, false);
-        if ends_paste { events.push(StdinEvent::Paste(held)); }
-        else { for ch in held.chars() { self.emit_data_sequence(ch.to_string(), events); } }
+        if ends_paste {
+            events.push(StdinEvent::Paste(held));
+        } else {
+            for ch in held.chars() {
+                self.emit_data_sequence(ch.to_string(), events);
+            }
+        }
     }
 
     /// `searched_len` bytes of `paste_buffer` were already searched without finding the end

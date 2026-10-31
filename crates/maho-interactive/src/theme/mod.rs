@@ -1,6 +1,8 @@
 pub mod detection;
 pub mod highlight;
 pub mod registry;
+pub mod reserved_keyword_rainbow; // ledger sync-5152
+pub mod system_theme; // ledger sync-5152
 pub mod terminal_theme_cache;
 pub use highlight::{get_language_from_path, highlight_code};
 #[path = "theme.rs"]

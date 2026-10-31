@@ -5,9 +5,13 @@
 
 pub mod alt_screen_search; // todo 7
 pub mod autocomplete; // todo 8
+pub mod colors; // ledger sync-5152
 pub mod components; // todo 7-9
 pub mod dollar_invocation_autocomplete; // todo 8
 pub mod editor_component; // todo 8
+pub mod escape_window; // ledger sync-5152
+#[cfg(unix)]
+pub mod fd_redirect; // ledger sync-5152
 pub mod fuzzy; // todo 6
 pub mod image_markers; // todo 8
 pub mod image_stub; // todo 9 facade over terminal_image.rs, kept for the todo 7 renderer call sites
@@ -28,6 +32,7 @@ pub mod native_platform_darwin;
 pub mod native_platform_linux_x11;
 #[cfg(windows)]
 pub mod native_platform_win32;
+pub mod oklab; // ledger sync-5152
 pub mod paste_markers; // todo 8
 pub mod process_env; // todo 6
 pub mod process_stdio; // todo 6
@@ -50,4 +55,8 @@ pub mod ui_intervals;
 pub mod undo_stack; // todo 8
 pub mod unicode_tables; // todo 6
 pub mod utils; // todo 6
+pub mod viewport_insert_scroll; // ledger sync-5152
+pub mod viewport_shift; // ledger sync-5152
+pub mod wezterm_windows_images; // ledger sync-5152
 pub mod word_navigation; // todo 6
+pub mod wsl_session; // ledger sync-5152
