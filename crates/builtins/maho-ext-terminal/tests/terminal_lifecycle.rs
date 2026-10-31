@@ -102,7 +102,8 @@ impl ExtensionUi for Ui {
 fn context(dir: &Path) -> ExtensionContext {
     ExtensionContext {
         ui: Arc::new(Ui),
-        mode: ExtensionMode::Print,
+        // Rpc: a long-lived host. A one-shot print/json turn keeps no durable terminal state.
+        mode: ExtensionMode::Rpc,
         has_ui: false,
         cwd: dir.into(),
         agent_dir: dir.into(),
@@ -456,4 +457,26 @@ async fn a_spec_queued_while_unbound_is_recorded_after_a_reload_session_start() 
         "a reload shutdown detaches the recorder"
     );
     queued_spec_is_recorded_after_session_start(id, SessionReason::Reload, dir).await;
+}
+
+/// terminal-restore-session.test.ts (g): a print-mode (one-shot) start restores nothing and takes
+/// no lease; json likewise (upstream `terminalStateDir` skips both).
+#[tokio::test]
+async fn a_print_or_json_start_takes_no_lease_and_records_no_manifest() {
+    for mode in [ExtensionMode::Print, ExtensionMode::Json] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = context(dir.path());
+        ctx.mode = mode;
+        let api = api(dir.path());
+        start(&api, &ctx, SessionReason::Startup).await;
+        assert!(
+            !state_dir(dir.path()).exists(),
+            "{mode:?}: no lease is taken"
+        );
+        shutdown(&api, &ctx, SessionReason::Quit).await;
+        assert!(
+            !state_dir(dir.path()).exists(),
+            "{mode:?}: no manifest is recorded"
+        );
+    }
 }

@@ -229,14 +229,14 @@ fn spill_monitor_overflow(
         }
     }
 }
+/// Upstream `terminalStateDir`: no durable terminal state for a context without an absolute session
+/// dir, or for a one-shot `print`/`json` turn, which has no later generation to restore into.
 fn terminal_state_dir(
     ctx: &maho_ext_api::types::ExtensionContext,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let terminal_dir = crate::monitor_state_dir::terminal_state_dir(Some(ctx))?;
     let session_dir = ctx.session_manager.get_session_dir()?;
-    if session_dir.as_os_str().is_empty() || !session_dir.is_absolute() {
-        return None;
-    }
-    Some((session_dir.clone(), session_dir.join("extensions/terminal")))
+    Some((session_dir, terminal_dir))
 }
 /// The per-generation restore digest slot (upstream `PersistenceState.digestSlot`/`generation`):
 /// one decided digest per generation, held until a model is bound to hear it.
