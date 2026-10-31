@@ -327,7 +327,10 @@ impl EffectLedger {
             .await
             .map_err(EffectLedgerError::Persist)?;
         let fingerprint = effect_fingerprint(command, payload);
-        if let Some(existing) = self.lock().get(effect_id) {
+        // The check and the reservation share one guard, so two same-id begins cannot both apply: the
+        // second one finds the reserved `accepted` record and replays it.
+        let mut records = self.lock();
+        if let Some(existing) = records.get(effect_id) {
             if existing.fingerprint != fingerprint {
                 return Err(EffectIdConflict {
                     effect_id: effect_id.to_owned(),
@@ -358,6 +361,8 @@ impl EffectLedger {
             durable_session_id: self.durable_session_id.clone(),
             fingerprint,
         };
+        records.insert(record.effect_id.clone(), record.clone());
+        drop(records);
         self.append(record.clone());
         Ok(EffectBegin::Record(record))
     }
@@ -472,6 +477,40 @@ mod tests {
         assert!(matches!(conflict, Err(EffectLedgerError::Conflict(_))));
         assert_eq!(fake.custom(RPC_EFFECT_ENTRY).len(), 1);
         forget("el-begin");
+    }
+
+    #[tokio::test]
+    async fn a_same_id_begin_during_the_first_append_replays() {
+        let (fake, session) = session("el-race");
+        let ledger = EffectLedger::for_session(&session).await;
+        let payload = json!({"provider":"anthropic","modelId":"claude"});
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *fake.append_gate.lock().unwrap() = Some((entered_tx, release_rx));
+        // The first begin parks inside its `accepted` append, the window where a second check used to pass.
+        let first = std::thread::spawn({
+            let (ledger, payload) = (ledger.clone(), payload.clone());
+            move || {
+                futures::executor::block_on(ledger.begin(
+                    EffectCommandKind::SetModel,
+                    "e1",
+                    &payload,
+                    actor(),
+                ))
+                .unwrap()
+            }
+        });
+        entered.recv().unwrap();
+        let second = ledger
+            .begin(EffectCommandKind::SetModel, "e1", &payload, actor())
+            .await
+            .unwrap();
+        release.send(()).unwrap();
+        let first = first.join().unwrap();
+        assert!(matches!(first, EffectBegin::Record(_)));
+        assert!(matches!(second, EffectBegin::Replay(ref status) if status.effect_id == "e1"));
+        assert_eq!(fake.custom(RPC_EFFECT_ENTRY).len(), 1);
+        forget("el-race");
     }
 
     #[tokio::test]

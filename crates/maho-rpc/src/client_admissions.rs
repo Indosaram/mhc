@@ -89,6 +89,32 @@ struct LedgerState {
     next_abort_token: u64,
 }
 
+/// The owner's reservation of one `clientMessageId`. Dropping it (the owner finished, or its future was
+/// cancelled) frees the id; a cancelled owner publishes a failure so its joiners do not wait forever.
+struct PendingAdmission {
+    admissions: Arc<ClientAdmissions>,
+    client_message_id: String,
+    publish: tokio::sync::watch::Sender<PendingResult>,
+}
+
+impl Drop for PendingAdmission {
+    fn drop(&mut self) {
+        self.publish.send_if_modified(|result| {
+            if result.is_some() {
+                return false;
+            }
+            *result = Some(Err(AdmitError::Failed(
+                "RPC input admission was cancelled".into(),
+            )));
+            true
+        });
+        self.admissions
+            .lock()
+            .pending
+            .remove(&self.client_message_id);
+    }
+}
+
 pub struct ClientAdmissions {
     session: Arc<dyn EffectSession>,
     durable_session_id: String,
@@ -491,8 +517,10 @@ impl ClientAdmissions {
                 client_message_id: client_message_id.clone(),
             })
         };
-        let joined = {
-            let state = self.lock();
+        // The check and the pending reservation share one guard, so two same-id admits cannot both
+        // reach `admit_new`.
+        let reserved = {
+            let mut state = self.lock();
             let known = state
                 .pending
                 .get(&client_message_id)
@@ -507,28 +535,35 @@ impl ClientAdmissions {
                 return Err(conflict());
             }
             if let Some((_, pending)) = state.pending.get(&client_message_id) {
-                Some(pending.clone())
+                Err(pending.clone())
             } else if let Some(existing) = state.records.get(&client_message_id) {
                 return Ok(Some(admission_snapshot(existing)));
             } else {
-                None
+                let (publish, pending) = tokio::sync::watch::channel::<PendingResult>(None);
+                state
+                    .pending
+                    .insert(client_message_id.clone(), (fingerprint.clone(), pending));
+                Ok(PendingAdmission {
+                    admissions: self.clone(),
+                    client_message_id: client_message_id.clone(),
+                    publish,
+                })
             }
         };
-        if let Some(mut pending) = joined {
-            // The guard above is gone; joiners wait on the owner's published result.
-            let result = pending
-                .wait_for(Option::is_some)
-                .await
-                .map_err(|_| AdmitError::Failed("RPC input admission was dropped".into()))?
-                .clone();
-            return result
-                .expect("wait_for returned a published result")
-                .map(Some);
-        }
-        let (publish, pending) = tokio::sync::watch::channel::<PendingResult>(None);
-        self.lock()
-            .pending
-            .insert(client_message_id.clone(), (fingerprint.clone(), pending));
+        let pending = match reserved {
+            Ok(pending) => pending,
+            Err(mut pending) => {
+                // The guard above is gone; joiners wait on the owner's published result.
+                let result = pending
+                    .wait_for(Option::is_some)
+                    .await
+                    .map_err(|_| AdmitError::Failed("RPC input admission was dropped".into()))?
+                    .clone();
+                return result
+                    .expect("wait_for returned a published result")
+                    .map(Some);
+            }
+        };
         let result = self
             .admit_new(
                 &client_message_id,
@@ -538,8 +573,8 @@ impl ClientAdmissions {
                 invoke,
             )
             .await;
-        publish.send_replace(Some(result.clone()));
-        self.lock().pending.remove(&client_message_id);
+        pending.publish.send_replace(Some(result.clone()));
+        drop(pending);
         let snapshot = result?;
         Ok((!host_minted).then_some(snapshot))
     }
@@ -619,7 +654,11 @@ pub(crate) mod test_session {
         pub thinking_levels: Vec<String>,
         pub thinking: Mutex<Vec<(String, bool, Option<String>)>>,
         pub cleared: std::sync::atomic::AtomicUsize,
+        /// When set, the next `append_custom_entry` reports on the first channel and parks until the second fires.
+        pub append_gate: Mutex<Option<AppendGate>>,
     }
+
+    pub type AppendGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
     impl FakeSession {
         pub fn new(route: &str) -> Self {
@@ -638,6 +677,7 @@ pub(crate) mod test_session {
                 thinking_levels: vec!["low".into(), "high".into()],
                 thinking: Mutex::default(),
                 cleared: 0.into(),
+                append_gate: Mutex::default(),
             }
         }
         pub fn custom(&self, custom_type: &str) -> Vec<Value> {
@@ -662,6 +702,11 @@ pub(crate) mod test_session {
             self.entries.lock().unwrap().clone()
         }
         fn append_custom_entry(&self, custom_type: &str, data: Value) {
+            let gate = self.append_gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
             self.entries
                 .lock()
                 .unwrap()
@@ -942,5 +987,98 @@ mod tests {
         ledger.forget_abort(&second);
         assert_eq!(ledger.aborted_by(), None);
         ClientAdmissions::forget("ca-abort");
+    }
+
+    /// Hooks that count deliveries and hold the owner inside `invoke` until `release` fires.
+    fn held(
+        delivered: Arc<std::sync::atomic::AtomicUsize>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) -> impl FnOnce(AdmissionHooks) -> BoxFuture<'static, Result<AdmissionDisposition, String>>
+    {
+        move |hooks| {
+            delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                let _ = release.await;
+                hooks.accepted(AdmissionDisposition::Started);
+                Ok(AdmissionDisposition::Started)
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_same_id_admit_during_delivery_joins_the_owner() {
+        let (fake, session) = session("ca-join");
+        let ledger = ClientAdmissions::for_session(&session).await;
+        let command = json!({"type":"prompt","message":"hi","clientMessageId":"m1"});
+        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, held_owner) = tokio::sync::oneshot::channel();
+        let (_unused, held_second) = tokio::sync::oneshot::channel();
+        // Explicit polls fix the order: the owner parks inside `invoke`, then the second admit finds the id
+        // taken and waits on the owner, and only then is the owner released.
+        let mut owner = Box::pin(ledger.admit(&command, held(delivered.clone(), held_owner)));
+        assert!(futures::poll!(&mut owner).is_pending());
+        let mut joiner = Box::pin(ledger.admit(&command, held(delivered.clone(), held_second)));
+        assert!(futures::poll!(&mut joiner).is_pending());
+        release.send(()).unwrap();
+        let (first, second) = (owner.await, joiner.await);
+        assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(first.unwrap(), second.unwrap());
+        assert_eq!(fake.custom(CLIENT_ADMISSION_ENTRY).len(), 1);
+        ClientAdmissions::forget("ca-join");
+    }
+
+    #[tokio::test]
+    async fn same_id_admits_from_two_threads_deliver_once() {
+        let (fake, session) = session("ca-threads");
+        let ledger = ClientAdmissions::for_session(&session).await;
+        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let answers: Vec<Value> = std::thread::scope(|scope| {
+            let admits: Vec<_> = (0..2)
+                .map(|_| {
+                    let (ledger, delivered, barrier) =
+                        (ledger.clone(), delivered.clone(), barrier.clone());
+                    scope.spawn(move || {
+                        let command =
+                            json!({"type":"prompt","message":"hi","clientMessageId":"m1"});
+                        barrier.wait();
+                        futures::executor::block_on(ledger.admit(&command, |hooks| {
+                            delivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            start(hooks)
+                        }))
+                        .unwrap()
+                        .unwrap()
+                    })
+                })
+                .collect();
+            admits
+                .into_iter()
+                .map(|admit| admit.join().unwrap())
+                .collect()
+        });
+        assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(answers[0], answers[1]);
+        assert_eq!(fake.custom(CLIENT_ADMISSION_ENTRY).len(), 1);
+        ClientAdmissions::forget("ca-threads");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_owner_frees_its_id_and_fails_its_joiners() {
+        let (_fake, session) = session("ca-cancel");
+        let ledger = ClientAdmissions::for_session(&session).await;
+        let command = json!({"type":"prompt","message":"hi","clientMessageId":"m1"});
+        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (_never, held_owner) = tokio::sync::oneshot::channel();
+        let mut owner = Box::pin(ledger.admit(&command, held(delivered.clone(), held_owner)));
+        assert!(futures::poll!(&mut owner).is_pending());
+        let mut joiner = Box::pin(ledger.admit(&command, start));
+        assert!(futures::poll!(&mut joiner).is_pending());
+        drop(owner);
+        assert!(matches!(joiner.await, Err(AdmitError::Failed(_))));
+        let retried = ledger.admit(&command, start).await.unwrap().unwrap();
+        assert_eq!(retried["state"], "running");
+        assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 1);
+        ClientAdmissions::forget("ca-cancel");
     }
 }
