@@ -113,6 +113,11 @@ fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
         path: optional(raw, "path")?,
         event,
         filter: optional(raw, "filter")?,
+        human_input: if raw.contains_key("humanInput") {
+            Some(boolean(raw, "humanInput")?)
+        } else {
+            None
+        },
         wakes_per_hour: if raw.contains_key("wakesPerHour") {
             Some(wake_rate(raw, "wakesPerHour")?)
         } else {
@@ -133,6 +138,11 @@ fn parse_monitor(value: &Value) -> Result<ManifestMonitor> {
         fire_window: ManifestFireWindow {
             start_ms: num(window, "startMs")?,
             count: num(window, "count")?,
+        },
+        deadline_ms: if raw.contains_key("deadlineMs") {
+            Some(num(raw, "deadlineMs")?)
+        } else {
+            None
         },
     })
 }

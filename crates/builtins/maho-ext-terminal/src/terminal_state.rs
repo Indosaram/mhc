@@ -134,6 +134,7 @@ mod tests {
                         description: "watch".to_owned(),
                         command: "stty -echo; printf 'restored\\n'".to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some(tmp_str),
                         persistent: true,

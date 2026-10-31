@@ -44,6 +44,14 @@ impl TerminalManifestWriter {
         }
     }
     pub async fn record_register(&mut self, registration: MonitorRegistration, now: f64) {
+        self.record_register_with(registration.into(), now).await;
+    }
+    /// `recordRegister` with the registration's optional ephemeral `deadlineMs`.
+    pub async fn record_register_with(&mut self, recorded: RecordedRegistration, now: f64) {
+        let RecordedRegistration {
+            registration,
+            deadline_ms,
+        } = recorded;
         let (
             description,
             runtime_kind,
@@ -51,6 +59,7 @@ impl TerminalManifestWriter {
             path,
             event,
             filter,
+            human_input,
             wakes_per_hour,
             cwd,
             approved_parent,
@@ -60,6 +69,7 @@ impl TerminalManifestWriter {
                 description,
                 command,
                 filter,
+                human_input,
                 wakes_per_hour,
                 cwd,
                 persistent,
@@ -70,6 +80,7 @@ impl TerminalManifestWriter {
                 None,
                 None,
                 filter,
+                human_input.filter(|human_input| *human_input),
                 wakes_per_hour,
                 cwd,
                 None,
@@ -89,6 +100,7 @@ impl TerminalManifestWriter {
                 None,
                 Some(path),
                 Some(event),
+                None,
                 None,
                 None,
                 Some(cwd),
@@ -115,6 +127,7 @@ impl TerminalManifestWriter {
                 path,
                 event,
                 filter,
+                human_input,
                 wakes_per_hour,
                 cwd,
                 approved_parent,
@@ -128,6 +141,7 @@ impl TerminalManifestWriter {
                     start_ms: now,
                     count: 0.0,
                 },
+                deadline_ms: deadline_ms.filter(|_| !persistent),
             },
         );
         self.persist(now).await;
@@ -210,16 +224,48 @@ impl TerminalManifestWriter {
         };
         // Upstream `restoreTerminalState`: the downtime is an upper bound measured from the
         // manifest's last write, never an exact gap.
-        let restore_environment = crate::durable_command::RestoreEnvironment {
-            downtime_ms: (now - state.updated_at).max(0.0),
-            terminal_dir: self.terminal_dir().map(std::path::Path::to_path_buf),
-        };
+        let downtime_ms = (now - state.updated_at).max(0.0);
+        let terminal_dir = self.terminal_dir().map(std::path::Path::to_path_buf);
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry| expiry <= now) {
                 digest.expired += 1;
                 continue;
             }
+            // An ephemeral watch whose runtime deadline has not passed comes back with exactly the
+            // time it had left (upstream `RestoreContext.remainingMs`); otherwise it is lost.
+            let remaining_ms = monitor
+                .deadline_ms
+                .filter(|deadline| *deadline > now)
+                .map(|deadline| deadline - now);
+            let restore_environment = crate::durable_command::RestoreEnvironment {
+                downtime_ms,
+                terminal_dir: terminal_dir.clone(),
+                remaining_ms,
+            };
             let outcome = match monitor.durability_class {
+                MonitorDurabilityClass::Ephemeral
+                    if remaining_ms.is_some()
+                        && monitor.runtime_kind == MonitorRuntimeKind::Command =>
+                {
+                    crate::durable_command::restore_configured_command_in(
+                        &monitor,
+                        manager,
+                        shell,
+                        settings,
+                        &restore_environment,
+                        |_, runtime, record| registry.register(runtime, record),
+                    )
+                }
+                MonitorDurabilityClass::Ephemeral if remaining_ms.is_some() => {
+                    crate::durable_file::restore_file_in(
+                        &monitor,
+                        registry,
+                        manager,
+                        None,
+                        now,
+                        remaining_ms,
+                    )
+                }
                 MonitorDurabilityClass::Ephemeral => RestoreOutcome::Lost,
                 MonitorDurabilityClass::RestartableCommand => {
                     crate::durable_command::restore_configured_command_in(
@@ -497,6 +543,7 @@ mod tests {
                             description: id.to_owned(),
                             command: "read value".to_owned(),
                             filter: None,
+                            human_input: None,
                             wakes_per_hour: None,
                             cwd: Some(dir.path().to_string_lossy().into_owned()),
                             persistent,
@@ -533,6 +580,60 @@ mod tests {
         assert!(next.entries.is_empty());
         registry.dispose();
     }
+    /// restore.ts: an ephemeral command watch with time left on its recorded `deadlineMs` is handed
+    /// to the command handler (and adopted); `humanInput` and `deadlineMs` survive the round-trip.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ephemeral_command_with_time_left_is_restored_with_its_deadline_and_human_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = TerminalManifestWriter::new(dir.path(), "s");
+        writer
+            .record_register_with(
+                MonitorRegistration {
+                    monitor_id: "mon_ephemeral".to_owned(),
+                    spec: MonitorSpec::Command {
+                        description: "inbox".to_owned(),
+                        command: "read value".to_owned(),
+                        filter: None,
+                        human_input: Some(true),
+                        wakes_per_hour: None,
+                        cwd: Some(dir.path().to_string_lossy().into_owned()),
+                        persistent: false,
+                    },
+                }
+                .with_deadline_ms(Some(100_000.0)),
+                1.0,
+            )
+            .await;
+        let saved = writer.store.read().await.unwrap().unwrap();
+        assert_eq!(saved["monitors"][0]["humanInput"], true);
+        assert_eq!(saved["monitors"][0]["deadlineMs"], 100_000.0);
+        let mut next = TerminalManifestWriter::new(dir.path(), "s");
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = next
+            .restore_live(&mut manager, &mut registry, 40_000.0)
+            .await;
+        assert_eq!((digest.restored, digest.lost), (1, 0));
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].monitor_id.as_deref(), Some("mon_ephemeral"));
+        assert_eq!(snapshot[0].persistent, Some(false));
+        assert!(snapshot[0].deadline_ms.is_some());
+        assert_eq!(next.entries["mon_ephemeral"].human_input, Some(true));
+        registry.dispose();
+        manager.teardown().unwrap();
+        // Past its deadline the same entry is lost and never spawns.
+        let mut late = TerminalManifestWriter::new(dir.path(), "s");
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let digest = late
+            .restore_live(&mut manager, &mut registry, 100_001.0)
+            .await;
+        assert_eq!((digest.restored, digest.lost), (0, 1));
+        assert_eq!(manager.size(), 0);
+        registry.dispose();
+    }
     #[tokio::test]
     async fn registration_checkpoint_shutdown_and_adoption_preserve_deadline() {
         let dir = tempfile::tempdir().unwrap();
@@ -545,6 +646,7 @@ mod tests {
                         description: "watch".to_owned(),
                         command: "true".to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some("/tmp".to_owned()),
                         persistent: true,
@@ -603,6 +705,7 @@ mod tests {
                             "stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\""
                                 .to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some(dir.path().to_string_lossy().into_owned()),
                         persistent: true,
@@ -674,6 +777,7 @@ mod debounce_tests {
                         description: "watch".to_owned(),
                         command: "true".to_owned(),
                         filter: None,
+                        human_input: None,
                         wakes_per_hour: None,
                         cwd: Some("/tmp".to_owned()),
                         persistent: true,

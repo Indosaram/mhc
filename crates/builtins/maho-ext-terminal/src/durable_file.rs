@@ -10,13 +10,20 @@ pub fn classify_detached_change(saved:&TerminalManifestCheckpoint,live:&Terminal
 }
 pub fn remaining_ms(monitor:&ManifestMonitor,now:f64)->f64 {monitor.expires_at.map_or(300_000.0,|expiry|(expiry-now).max(1.0))}
 pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_registry::MonitorRegistry,manager:&mut crate::manager::TerminalManager,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>,now:f64)->crate::restore::RestoreOutcome {
-    use crate::{restore::RestoreOutcome,terminal_manifest_model::MonitorRuntimeKind};
+    restore_file_in(monitor,registry,manager,writer,now,None)
+}
+/// `createCheckpointedFileRestoreHandler` with `RestoreContext.remainingMs`: an ephemeral watch
+/// resumes with only the time it had left, and one without time left is lost.
+pub fn restore_file_in(monitor:&ManifestMonitor,registry:&mut crate::monitor_registry::MonitorRegistry,manager:&mut crate::manager::TerminalManager,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>,now:f64,remaining_ms:Option<f64>)->crate::restore::RestoreOutcome {
+    use crate::{restore::RestoreOutcome,terminal_manifest_model::{MonitorDurabilityClass,MonitorRuntimeKind}};
     if monitor.runtime_kind!=MonitorRuntimeKind::File {return RestoreOutcome::Lost;}
+    let ephemeral=monitor.durability_class==MonitorDurabilityClass::Ephemeral;
+    if ephemeral&&remaining_ms.is_none() {return RestoreOutcome::Lost;}
     let (Some(path),Some(cwd),Some(saved))=(&monitor.path,&monitor.cwd,&monitor.last_checkpoint) else {return RestoreOutcome::Lost;};
     let target=std::path::Path::new(cwd).join(path);
     if saved.present&&!target.is_file() {return RestoreOutcome::Lost;}
     let Ok(Some(reservation))=manager.reserve() else {return RestoreOutcome::Lost;};
-    let registered=registry.restore_persistent_file(monitor,&target,now);
+    let registered=registry.restore_file_with_lifetime(monitor,&target,now,remaining_ms.filter(|_|ephemeral));
     let Ok((id,_))=registered else {return RestoreOutcome::Lost;};
     registry.reserve_file_capacity(&id,reservation);
     let Some(live)=registry.file_checkpoint(&id) else {return RestoreOutcome::Lost;};
@@ -75,6 +82,19 @@ pub fn file_checkpoint_with_identity(path:&std::path::Path,identity:Option<(f64,
 #[cfg(all(test,unix))]
 mod filesystem_tests {
     use super::*;
+    /// durable-file.ts `lifetime`: an ephemeral file watch resumes with only the time it had left (a
+    /// live deadline, not persistent); without time left it is lost and registers nothing.
+    #[tokio::test]
+    async fn ephemeral_file_watch_resumes_only_with_time_left()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"same")?;let saved=file_checkpoint(&path)?;
+        let manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_eph","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"ephemeral","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":false,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0},"deadlineMs":50_000}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
+        let monitor=&manifest.monitors[0];assert_eq!(monitor.deadline_ms,Some(50_000.0));
+        let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let mut manager=crate::manager::TerminalManager::default();
+        assert_eq!(restore_file_in(monitor,&mut registry,&mut manager,None,20.0,None),crate::restore::RestoreOutcome::Lost);assert!(registry.snapshot().is_empty());
+        assert_eq!(restore_file_in(monitor,&mut registry,&mut manager,None,20.0,Some(30_000.0)),crate::restore::RestoreOutcome::Restored);
+        let snapshot=registry.snapshot();assert_eq!(snapshot.len(),1);assert_eq!(snapshot[0].persistent,Some(false));assert!(snapshot[0].deadline_ms.is_some());assert_eq!(snapshot[0].monitor_id.as_deref(),Some("mon_eph"));
+        registry.dispose();Ok(())
+    }
     #[tokio::test]
     async fn restored_mute_and_fire_window_use_fresh_file_runtime_id()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"unchanged")?;let saved=file_checkpoint(&path)?;

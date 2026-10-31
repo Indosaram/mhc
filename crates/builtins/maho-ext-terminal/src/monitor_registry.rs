@@ -27,6 +27,9 @@ pub enum MonitorEvent {
         id: String,
         description: String,
         line: String,
+        /// Output lines are a person's words (a chat bridge); goal continuation counts them as new
+        /// input. Only a command watch registered with `human_input: true` sets it.
+        human_input: bool,
     },
     Summary {
         id: String,
@@ -142,6 +145,8 @@ pub struct CommandMonitor {
     pub runaway: Option<RunawayWindow>,
     /// Per-monitor wake-rate override of a persistent watch; `None` uses terminal.monitorWakesPerHour.
     pub wakes_per_hour: Option<f64>,
+    /// Output lines are a person's words; every delivered line is tagged `human_input`.
+    pub human_input: bool,
     filter: Option<fancy_regex::Regex>,
     lines: crate::monitor_line_buffer::MonitorLineBuffer,
     settled: bool,
@@ -155,6 +160,7 @@ impl CommandMonitor {
             muted_dropped: 0,
             runaway: None,
             wakes_per_hour: None,
+            human_input: false,
             filter,
             lines: Default::default(),
             settled: false,
@@ -162,6 +168,10 @@ impl CommandMonitor {
     }
     pub fn with_wakes_per_hour(mut self, wakes_per_hour: Option<f64>) -> Self {
         self.wakes_per_hour = wakes_per_hour;
+        self
+    }
+    pub fn with_human_input(mut self, human_input: bool) -> Self {
+        self.human_input = human_input;
         self
     }
     /// Count one matched line into the minute bucket. A minute with more lines than the guard allows is a
@@ -228,6 +238,7 @@ impl CommandMonitor {
                 id: self.snapshot.id.clone(),
                 description: self.snapshot.description.clone(),
                 line,
+                human_input: self.human_input,
             });
             if let Some(window) = &mut self.snapshot.fire_window {
                 if now - window.start_ms >= crate::shared::FIRE_BUDGET_WINDOW_MS as f64 {
@@ -504,13 +515,28 @@ impl MonitorRegistry {
         path: &std::path::Path,
         now: f64,
     ) -> std::io::Result<(String, String)> {
+        self.restore_file_with_lifetime(monitor, path, now, None)
+    }
+    /// `restore_persistent_file`, or (with `ephemeral_time_left`) an ephemeral watch resumed with
+    /// only the time it had left and a live deadline (upstream durable-file.ts `lifetime`).
+    pub fn restore_file_with_lifetime(
+        &mut self,
+        monitor: &crate::terminal_manifest_model::ManifestMonitor,
+        path: &std::path::Path,
+        now: f64,
+        ephemeral_time_left: Option<f64>,
+    ) -> std::io::Result<(String, String)> {
+        let lifetime = match ephemeral_time_left {
+            Some(time_left) => (time_left.max(1.0) as u64, false),
+            None => (crate::durable_file::remaining_ms(monitor, now) as u64, true),
+        };
         let registered = self.register_file_lifetime(
             &monitor.description,
             path,
             monitor
                 .event
                 .unwrap_or(crate::terminal_manifest_model::FileEvent::Create),
-            (crate::durable_file::remaining_ms(monitor, now) as u64, true),
+            lifetime,
             Some(&monitor.monitor_id),
             monitor.approved_parent.as_deref().map(std::path::Path::new),
         )?;
@@ -750,6 +776,7 @@ impl MonitorRegistry {
                 id: file.id.clone(),
                 description: file.description.clone(),
                 line,
+                human_input: false,
             }
         };
         if let Some(snapshot) = self
@@ -961,6 +988,32 @@ impl Drop for MonitorRegistry {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    /// command-monitor-source.ts: a watch registered with humanInput tags every delivered line.
+    #[test]
+    fn a_human_input_watch_tags_its_lines() {
+        let guard = crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor_runaway;
+        let snapshot = MonitorSnapshotEntry {
+            id: "bash_1".to_owned(),
+            description: "inbox".to_owned(),
+            ..Default::default()
+        };
+        let mut human = CommandMonitor::new(snapshot.clone(), None).with_human_input(true);
+        assert!(matches!(
+            human.consume("hi\n", 0.0, &guard).as_slice(),
+            [MonitorEvent::Line {
+                human_input: true,
+                ..
+            }]
+        ));
+        let mut machine = CommandMonitor::new(snapshot, None);
+        assert!(matches!(
+            machine.consume("ok\n", 0.0, &guard).as_slice(),
+            [MonitorEvent::Line {
+                human_input: false,
+                ..
+            }]
+        ));
+    }
     #[tokio::test]
     async fn disposed_registry_rejects_new_file_and_command_watches() {
         let dir = tempfile::tempdir().unwrap();
@@ -1003,6 +1056,7 @@ mod registry_tests {
                 id: "bash_1".to_owned(),
                 description: "watch".to_owned(),
                 line: index.to_string(),
+                human_input: false,
             });
         }
         let (sender, receiver) = std::sync::mpsc::channel();
