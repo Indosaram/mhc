@@ -67,7 +67,7 @@ pub fn create_mcp_resource_tools(
                                 .and_then(Value::as_str)
                                 .filter(|mime| !mime.is_empty())
                                 .map_or_else(String::new, |mime| format!(" ({mime})"));
-                            format!("- @mcp:{}/{uri} — {name}{mime}", entry.server)
+                            format!("- @mcp:{}/{uri} - {name}{mime}", entry.server)
                         })
                     })
                     .collect::<Vec<_>>();
@@ -323,12 +323,43 @@ pub async fn expand_mcp_resource_mentions(
                     1,
                 )
             }
-            Err(error) => notices.push(format!("@mcp mention left as-is: {error}")),
+            Err(error) => notices.push(mcp_mention_failure_notice(&error)),
         }
     }
+    let redacted = maho_core::config_reference_redaction::redact_resolved_reference_values(
+        &expanded,
+        "<redacted>",
+    );
+    let notices = notices
+        .iter()
+        .map(|notice| {
+            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                notice,
+                "<redacted>",
+            )
+        })
+        .collect();
     Ok(McpMentionExpansion {
-        changed: expanded != text,
-        text: expanded,
+        changed: redacted != text,
+        text: redacted,
         notices,
     })
+}
+/// resources.ts: a mention whose read was canceled, outlived its context, or timed out stays unchanged with a
+/// payload-free notice; any other failure names its error.
+pub fn mcp_mention_failure_notice(error: &McpError) -> String {
+    use crate::modern::errors::McpMrtrErrorCode;
+    match crate::modern::errors::as_mcp_mrtr_error(error) {
+        Some(mrtr)
+            if matches!(
+                mrtr.code,
+                McpMrtrErrorCode::Cancelled
+                    | McpMrtrErrorCode::ContextChanged
+                    | McpMrtrErrorCode::Timeout
+            ) =>
+        {
+            "MCP resource request canceled; mention left unchanged.".into()
+        }
+        _ => format!("@mcp mention left as-is: {error}"),
+    }
 }
