@@ -363,6 +363,7 @@ mod tests {
             "supervisor_drain"
         );
     }
+    #[cfg(unix)]
     fn supervisor_relay(temp: &tempfile::TempDir) -> DrainRelay {
         DrainRelay {
             file: temp.path().join("host-drain-request.json"),
