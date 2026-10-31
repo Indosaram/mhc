@@ -93,7 +93,11 @@ pub struct RpcSessionRegistry {
     pub worker_isolate: bool,
     /// The compact-updates flag as this registry sees it; `None` reads the process environment.
     pub compact_updates: Option<bool>,
+    /// senpi `onSizeChange`: told the entry count after every open admits or a teardown removes an entry.
+    pub on_size_change: Option<SizeChangeHook>,
 }
+/// senpi `RpcSessionRegistryOptions.onSizeChange`.
+pub type SizeChangeHook = Arc<dyn Fn(usize) + Send + Sync>;
 pub enum OpenAdmission {
     Create(String),
     Attached(String),
@@ -115,6 +119,11 @@ pub fn seal_ledgers_on_replace(route: String) -> Arc<dyn Fn() + Send + Sync> {
 impl RpcSessionRegistry {
     pub fn size(&self) -> usize {
         self.entries.len()
+    }
+    fn size_changed(&self) {
+        if let Some(hook) = &self.on_size_change {
+            hook(self.entries.len());
+        }
     }
     pub fn get(&self, handle: &str) -> Option<&RpcSessionEntry> {
         self.entries.get(handle)
@@ -382,6 +391,7 @@ impl RpcSessionRegistry {
             .as_ref()
             .map(|event| event.reason);
         self.entries.insert(handle.clone(), opening.entry);
+        self.size_changed();
         self.open_completions.insert(
             handle.clone(),
             (opening.settle_open, opening.open_completion),
@@ -494,6 +504,7 @@ impl RpcSessionRegistry {
         }
         if let Some(entry) = self.entries.remove(handle) {
             self.release_reservation(entry.close.reservation_key.as_deref());
+            self.size_changed();
         }
         self.settle_open(handle, false);
     }
@@ -555,6 +566,7 @@ impl RpcSessionRegistry {
         };
         if let Some(entry) = self.entries.remove(handle) {
             self.release_reservation(entry.close.reservation_key.as_deref());
+            self.size_changed();
         }
         Ok(completion)
     }
@@ -725,6 +737,21 @@ mod tests {
         entry.close.state = state;
         entry.close.attachments = attachments;
         registry
+    }
+    /// senpi `onSizeChange`: an admitted open and a rolled-back one each tell the hook the entry count.
+    #[tokio::test]
+    async fn every_admit_and_removal_reports_the_entry_count() {
+        let sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = RpcSessionRegistry::default();
+        let seen = Arc::clone(&sizes);
+        registry.on_size_change = Some(Arc::new(move |size| seen.lock().unwrap().push(size)));
+        let mut profile = RpcSessionLaunchProfile::default();
+        profile.runtime.cwd = if cfg!(windows) { "C:\\cwd" } else { "/cwd" }.into();
+        let OpenAdmission::Create(handle) = registry.admit_open(profile, true, 0.).unwrap() else {
+            panic!("a fresh open creates");
+        };
+        registry.rollback_open(&handle).await;
+        assert_eq!(*sizes.lock().unwrap(), vec![1, 0]);
     }
     // senpi `getForCommand`: a closing session still takes control commands, `host_response` included.
     #[test]
