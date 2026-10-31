@@ -44,3 +44,13 @@ fn description_truncation_counts_utf16_units() {
     assert_eq!(description.encode_utf16().count(), 81);
     assert_eq!(description.chars().filter(|character| *character == '😀').count(), 40);
 }
+
+#[test]
+fn schema_hint_long_tool_name_does_not_panic() {
+    let tool_name = "a".repeat(1200);
+    let rendered = render_schema_hint(&tool_name, &json!({"properties":{"k":{"type":"string"}}}));
+    assert!(rendered.is_some());
+    let rendered = rendered.unwrap();
+    assert!(rendered.contains(&tool_name));
+    assert!(rendered.contains("[truncated; call tool_schema("));
+}
