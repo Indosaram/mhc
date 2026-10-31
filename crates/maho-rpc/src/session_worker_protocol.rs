@@ -82,6 +82,21 @@ pub fn within_frame_limit(
         })
         .collect()
 }
+/// A worker's refusal crosses the process boundary as text. An `open_failed: <reason>` refusal is rebuilt as the
+/// typed registry error, so a worker host answers `open_session` exactly as the in-process registry does
+/// (senpi#2898); any other text is returned as it stands.
+pub fn typed_worker_refusal(
+    cause: String,
+) -> Result<crate::session_registry::RpcSessionRegistryError, String> {
+    match cause.strip_prefix("open_failed: ") {
+        Some(reason) => Ok(crate::session_registry::RpcSessionRegistryError::new(
+            "open_failed",
+            Some(reason),
+            None,
+        )),
+        None => Err(cause),
+    }
+}
 /// Whether an open step failed only because its worker died: the worker's request channel rejects what is pending
 /// with a plain `session_closing` / `session_worker_exited`, and the claims and grants it held report a typed
 /// `session_closing` (senpi#4037).
@@ -212,6 +227,21 @@ pub enum HostToSessionWorker {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         roles: Option<Vec<String>>,
         display: WorkerDisplay,
+    },
+    /// An attach that names another surface moves the live session to it (senpi `prompt_surface`).
+    PromptSurface {
+        request: u64,
+        surface: String,
+    },
+    /// An attach that names another browser engine moves the live session to it (senpi `browser_engine`).
+    BrowserEngine {
+        request: u64,
+        engine: String,
+    },
+    /// Sent even when the record already names it: only the worker sees its live session (senpi#2842).
+    PermissionPreset {
+        request: u64,
+        preset: String,
     },
     Display {
         display: WorkerDisplay,
@@ -652,6 +682,48 @@ mod tests {
         })
         .unwrap();
         assert_eq!(enforced["mcpFormsEnforced"], true);
+    }
+    #[test]
+    fn attach_setters_cross_in_their_upstream_shape() {
+        for (wire, message) in [
+            (
+                serde_json::json!({"type":"prompt_surface","request":3,"surface":"app"}),
+                HostToSessionWorker::PromptSurface {
+                    request: 3,
+                    surface: "app".into(),
+                },
+            ),
+            (
+                serde_json::json!({"type":"browser_engine","request":4,"engine":"builtin"}),
+                HostToSessionWorker::BrowserEngine {
+                    request: 4,
+                    engine: "builtin".into(),
+                },
+            ),
+            (
+                serde_json::json!({"type":"permission_preset","request":5,"preset":"guarded"}),
+                HostToSessionWorker::PermissionPreset {
+                    request: 5,
+                    preset: "guarded".into(),
+                },
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&message).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<HostToSessionWorker>(wire).unwrap(),
+                message
+            );
+        }
+    }
+    #[test]
+    fn an_open_failed_refusal_is_rebuilt_as_the_typed_registry_error() {
+        let typed = typed_worker_refusal("open_failed: no model".into()).unwrap();
+        assert_eq!(typed.code, "open_failed");
+        assert_eq!(typed.to_string(), "open_failed: no model");
+        assert_eq!(
+            typed_worker_refusal("session_worker_exited".into()).unwrap_err(),
+            "session_worker_exited"
+        );
     }
     #[test]
     fn worker_death_is_a_closing_channel_not_a_generic_failure() {
