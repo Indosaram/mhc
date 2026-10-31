@@ -134,6 +134,9 @@ pub struct McpSessionBinding {
     /// The connection each server the binding's config declares maps to, with its credential check
     /// (upstream `declares(binding.config, entry.name, entry.configHash)` and `entry.credentialsCurrent`).
     declared: std::sync::Mutex<BTreeMap<String, McpDeclaredServer>>,
+    /// The id of the session this binding serves (upstream `binding.context.sessionManager`), once a
+    /// session context bound it.
+    session_id: std::sync::Mutex<Option<String>>,
 }
 /// One declared server as of the binding's last sync.
 struct McpDeclaredServer {
@@ -141,6 +144,19 @@ struct McpDeclaredServer {
     credentials_current: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 impl McpSessionBinding {
+    /// Record the session this binding serves; its MCP calls must come from that session.
+    pub fn bind_session(&self, session_id: &str) {
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session_id.to_owned());
+    }
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
     pub fn bind_presentation(&self, ui: &Arc<dyn maho_ext_api::ExtensionUi>) {
         if let Some(presentation) = maho_core::mcp_mrtr_presentations::get_mcp_mrtr_presentation(ui)
         {
