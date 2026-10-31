@@ -64,6 +64,8 @@ pub mod help_fast_path;
 pub mod hook_sources;
 #[path = "host_command.rs"]
 pub mod host_command;
+#[path = "host_command_handoff.rs"]
+pub mod host_command_handoff;
 #[path = "host_runtime.rs"]
 pub mod host_runtime;
 #[path = "image_convert.rs"]
