@@ -47,6 +47,41 @@ pub fn require_codemode_runtime_asset(
 /// recorded in `assets/UPSTREAM.json`; `scripts/codemode-upstream-diff.py` reports upstream drift.
 const EMBEDDED_RUNTIME_ASSETS: &[(&str, &str)] = &[
     (
+        "kernels/js/cell-run-context.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/cell-run-context.js"
+        )),
+    ),
+    (
+        "kernels/js/webview-host.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/webview-host.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-relay.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-relay.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-webview-client.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-webview-client.js"
+        )),
+    ),
+    (
+        "kernels/js/worker-webview.js",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/kernels/js/worker-webview.js"
+        )),
+    ),
+    (
         "kernels/js/process-entry.js",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

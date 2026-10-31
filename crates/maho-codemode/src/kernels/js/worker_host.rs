@@ -1,4 +1,7 @@
-use crate::kernels::shared::subprocess_process::{ProcessError, SubprocessProcess};
+use crate::kernels::shared::{
+    runtime_asset::require_codemode_runtime_asset,
+    subprocess_process::{ProcessError, SubprocessProcess},
+};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 
@@ -109,18 +112,23 @@ impl WorkerHost {
         mode: JavaScriptKernelMode,
         env_passthrough: Option<&[String]>,
     ) -> Result<Self, ProcessError> {
-        let relay = format!(
-            "import {{ Worker }} from 'node:worker_threads'; import {{ createInterface }} from 'node:readline'; const worker = new Worker({}, {{ workerData: {{ cwd: {}, parallelPoolWidth: {} }} }}); worker.on('message', message => process.stdout.write(JSON.stringify(message)+'\\n')); worker.on('error', error => {{ process.stdout.write(JSON.stringify({{type:'init-failed',error:{{message:error.message,name:error.name,stack:error.stack}}}})+'\\n'); process.exitCode=1; }}); worker.on('exit', code => process.stdout.write('', () => process.exit(code))); const input=createInterface({{input:process.stdin}}); input.on('line', line => worker.postMessage(JSON.parse(line))); input.on('close', () => worker.terminate());",
-            serde_json::to_string(&entry.to_string_lossy())?,
-            serde_json::to_string(&cwd.to_string_lossy())?,
-            parallel_pool_width,
-        );
+        // senpi worker-slot.ts runs the kernel worker on the host main thread, which also serves Chrome-backed
+        // Bun.WebViews (webview-host.ts). Here that main thread is the bun relay process: worker-relay.js forwards the
+        // worker's frames and answers its `webview-connect` requests itself.
+        let relay = require_codemode_runtime_asset(None, Path::new("kernels/js/worker-relay.js"))
+            .map_err(|error| ProcessError::Startup(error.to_string()))?;
+        let args = [
+            relay.to_string_lossy().into_owned(),
+            entry.to_string_lossy().into_owned(),
+            cwd.to_string_lossy().into_owned(),
+            parallel_pool_width.to_string(),
+        ];
         // A senpi worker thread inherits the host `process.env`, extension writes included.
         let mut env = maho_ext_api::process_env::vars()
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
         scrub_host_env(&mut env, env_passthrough);
-        let process = SubprocessProcess::spawn("bun", &["-e".into(), relay], cwd, &env)?;
+        let process = SubprocessProcess::spawn("bun", &args, cwd, &env)?;
         Ok(Self { mode, process })
     }
 
