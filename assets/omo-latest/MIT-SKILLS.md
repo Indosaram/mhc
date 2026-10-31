@@ -53,9 +53,23 @@ Written by implementers who were given only a functional spec and the MIT base
 
 ## Still SUL-1.0
 
-No skill under `assets/omo-latest/skills` is SUL-1.0 any more. Out of scope
+No whole skill under `assets/omo-latest/skills` is SUL-1.0. One subtree is: `frontend/scripts/detect/**` and `frontend/references/perfection/detect.md` (the detect SDK) are copied unchanged from oh-my-openagent v5.1.52 (`354bcf9fc4`) and stay SUL-1.0 (`frontend/scripts/detect/LICENSE.md`, `frontend/ATTRIBUTION.md` section 7). The MIT profile (`package-native --mit`) stages no skills, so they never ship there. Out of scope
 for this file: the runtime crates under `crates/omo/**` (for example
 `maho-omo-mass-ulw`, `maho-omo-ultrawork`, `maho-omo-skill-pointers`,
 `maho-omo-onboarding`, `maho-omo-init-deep-advisor`) remain
 `LicenseRef-SUL-1.0`, as does the pool-root developer doc
 `assets/omo-latest/skills/AGENTS.md` (`poolDocs`), which is not a skill.
+
+## Sync to omo v5.1.52 (2026-10-30)
+
+Skills updated from `code-yeongyu/lazycodex` @ `e809c369053cd5eba7c6008c3dcdde8ac672f505`
+(2026-10-28, "sync Codex marketplace v5.1.51"; before the v5.1.52 tag, and its
+`plugins/omo/skills/<name>` files are byte-equal to the v5.1.52 contract). Changed
+files carry the manifest source `lazycodex@e809c369:plugins/omo/skills/<name>/<path> (MIT)`;
+mhc adaptations listed above are kept.
+
+| Skill | lazycodex SHA | Notes |
+| --- | --- | --- |
+| ast-grep | e809c369 | downloaded `sg` goes to the user cache (`OMO_AST_GREP_BIN_DIR`, else XDG/LOCALAPPDATA `omo-ast-grep/bin`), never the skill dir |
+| coding-agent-sessions | e809c369 | finder runs with `python3 -B` and sets `sys.dont_write_bytecode` before importing its package |
+| ulw-research | e809c369 | scripts and references byte-equal to lazycodex@e809c369; `SKILL.md` follows the new router + `references/research-collection.md` / `research-delivery.md` split with the mhc tool notes (`task`/`team_create`/`workflow`, `mhc ulw-loop`) re-applied in those references; `AGENTS.md` keeps the mhc single-copy notes |

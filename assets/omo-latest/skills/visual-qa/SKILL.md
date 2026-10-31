@@ -42,6 +42,24 @@ The verdict is per page. One failing page fails the whole surface, so "most page
 
 Every gate runs on captures produced AFTER the last edit to the rendered source. If any screenshot, PDF, capture, or QA JSON is older than the source file it claims to verify, it is stale and invalid - regenerate it before trusting it. Never report a PASS from an artifact you did not just produce against the current build. Between review rounds, re-capture only the pages a fix touched; the final approving round always judges a complete fresh set. The one deliberately old artifact is the `before` set of Step 6, which is dated to the pre-edit build on purpose.
 
+### Machine pre-check - run the detect SDK before any reviewer
+
+Web surfaces only. Before a single reviewer is dispatched, run the `frontend` skill's detect SDK on every enumerated page (documented in `frontend/references/perfection/detect.md`):
+
+```
+detectPage({ kind: "url", url }, { reflow: true })
+```
+
+or from a shell:
+
+```
+bun <frontend skill dir>/scripts/detect/cli.ts --reflow --json <url>
+```
+
+What it inspects is the page as the browser painted it, never the source files: contrast measured against the background that is really painted behind the text; the type scale and the order of headings; overflow at every width from 320 to 1440 px with an unbroken stress string injected; and decoration and copy tells.
+
+Every error or warning is a FAIL on the matching checklist item before any reviewer sees the page: contrast maps to E2, type scale to B8, layout to A9 or A13, surfaces and scaffolds to F8/F9, wrapping to C4. Fix the source and run it again. Keep the JSON output beside the captures and paste it into both reviewer prompts as evidence. Advisories are not FAILs; carry them into the verdict as taste findings.
+
 ### Capture hygiene - validate before dispatching reviewers
 
 Before any reviewer sees an image, verify each capture yourself: the file signature matches its extension (a JPEG named `.png` is invalid), the frame is fully composited (no black or missing regions from the screenshot compositor), dimensions match the requested viewport, and the frame holds only the page - a capture showing the browser's tabs or address bar, or the capture tool's own UI, is a window grab, not evidence. A defective capture wastes an entire review round on the pipeline instead of the product - fix the capture tooling and re-shoot before dispatch, and record the tooling defect in the QA log instead of looping the reviewer on it.
@@ -183,7 +201,7 @@ This is the platform baseline, distilled from Apple's Human Interface Guidelines
 **A. Layout and alignment**
 - A1 Content is anchored by intent, centred or on the layout grid; nothing sits in the top-left of an otherwise empty canvas.
 - A2 Backgrounds and scrolling layouts run full-bleed to the display edges; no stray inset margin.
-- A3 Margins are symmetric; prose sits in a 45-75 character measure.
+- A3 Margins are symmetric; line length for prose is 65-75 characters at desktop widths, with 45 characters as the phone minimum.
 - A4 (phone) Safe areas respected: bars and content inset for the home indicator, notch and status bar.
 - A5 (phone) Scrollbars are overlay; no reserved right-hand gutter.
 - A6 One scroll owner per region, no nested same-direction scrolling; a sticky or floating bar stays legible over whatever scrolls under it.
@@ -193,6 +211,7 @@ This is the platform baseline, distilled from Apple's Human Interface Guidelines
 - A10 Content that continues out of view shows a cue (partial item, fade, chevron).
 - A11 (mac) Nothing important lives only at the window's bottom edge; the minimum window size keeps toolbar and content legible; the sidebar collapses when the window narrows.
 - A12 (web and app screens; N/A for a TUI, a printed page, or a figure) Layout contract: every changed screen or region has a `Layout:` line (in `DESIGN.md`, or in the change description when the project has none; the `frontend` skill's Brief step); the capture shows that pattern's structure; the logged owner is the region's main scroller in the probe output, every other scroller listed is nested inside it for its own content (a code block, a dropdown, a composer) or is named in the line too; none of the line's anti-patterns appear. A missing line, a different main scroller, an unexplained sibling scroller, or a present anti-pattern is a FAIL; a logged skip still owes the scroll-owner check.
+- A13 Vertical rhythm, judged on computed styles. Compare each heading's top spacing with its bottom spacing: the ratio must reach 1.5x. Compare spacing between groups with spacing among one group's items: that ratio must reach 2x. Thresholds come from `references/perfection/craft-floor.md` in the `frontend` skill.
 
 **B. Hierarchy**
 - B1 One primary action per view, in the prominent style (accent on its background, not its glyph); peers differ by style, never by size.
@@ -202,6 +221,7 @@ This is the platform baseline, distilled from Apple's Human Interface Guidelines
 - B5 One or two accents per screen; toolbars and tab bars stay monochrome over colourful content; nothing decorative carries accent.
 - B6 Type hierarchy comes from weight, size and colour, holds in both themes, and uses at most two typefaces.
 - B7 (web and app screens; N/A for a TUI, a printed page, or a figure) The screen matches its brief (the `frontend` skill's Brief step): the named primary action is the single prominent control, priorities 1-3 appear in that order in reading order on the first viewport, and nothing listed under "left out on purpose" is on the screen. A screen built or changed in this session with no brief is a FAIL; a pre-existing screen under audit with no brief is N/A.
+- B8 Type scale, judged on computed styles. Each pair of neighbouring heading levels present on the page, from display down through h3 and then from the last heading level to body, differs in size by 1.25x or more; body-family roles that sit closer (caption, label, small, body, lead) also differ in weight, colour or case; display is at most 6rem; `letter-spacing` is no tighter than -0.04em. When the brief's chosen style route defines its own display scale or tracking, judge against that value instead.
 
 **C. Text and copy**
 - C1 Body text is at least 17 pt-equivalent at 390 (15 pt for secondary text) and 14 px on desktop; no thin weights at small sizes.
@@ -226,6 +246,7 @@ This is the platform baseline, distilled from Apple's Human Interface Guidelines
 - E4 One colour never means two things; status colours are consistent across the surface.
 - E5 Translucent surfaces keep text legible over any scrolled content: blur or vibrancy, not a plain alpha fill.
 - E6 The theme follows the system; an in-app theme control also offers "system".
+- E7 Two checks. (a) On a tinted or coloured surface, muted text takes a darker or lighter tone of the surface hue, or the foreground colour with lowered opacity; plain neutral gray there is a FAIL. (b) Shadows need a vertical offset plus a soft blur. A coloured glow with zero offset FAILs, except where the brief requested glowing-border cards through the ambience route of the `frontend` skill.
 
 **F. Consistency and brand**
 - F1 One icon set with one stroke, weight and size; icon weight matches adjacent text; no emoji used as an icon.
@@ -235,6 +256,10 @@ This is the platform baseline, distilled from Apple's Human Interface Guidelines
 - F5 Selected or active state is a wash plus a glyph; focus is a focus-visible ring on fields and a row highlight in lists; no coloured accent side-border marks state.
 - F6 Standard glyphs for standard actions (share, close, back, search, more) in their standard places.
 - F7 Windows, sheets and popovers use system shapes; one sheet or popover at a time; a popover's arrow points at its source; only an alert may appear over a popover.
+- F8 In both themes nothing is left at the browser default: the caret, the selection highlight, the focus ring, every visible scrollbar, the link-underline offset, and tabular figures on numbers that update or line up are all driven by the palette. The capture set must include a text selection and a focused field to prove it.
+- F9 None of these scaffold tells: a kicker over a heading; an icon tile over a heading in a grid of equal cards; an oversized hero number that drives no decision; a card nested in a card; monospace worn as a "technical" costume. Exception: the brief or its selected route asked for it, and that request is logged.
+
+Items A13, B8, E7, F8 and F9 adapt Impeccable's craft-floor reference (Apache-2.0, (c) 2025 Paul Bakaus, https://github.com/pbakaus/impeccable); the licence and the change list are in the `frontend` skill's `ATTRIBUTION.md` section 6.
 
 **G. Motion and feedback**
 - G1 Every animation has a cause - an interaction, a state change, an arrival; no motion on non-interactive elements, no hover that changes nothing, no permanent loop.

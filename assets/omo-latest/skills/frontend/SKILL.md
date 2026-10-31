@@ -5,7 +5,7 @@ description: "Builds, styles, and polishes anything drawn with HTML, CSS, or SVG
 
 # Frontend
 
-This file routes a request to the rules under `references/`; the rules themselves live there. Treat the surface as a deliverable in its own right. "Clean and correct" is where the work starts, not where it ends: the target is what a top-tier product design team would put in front of customers, and a render that is tidy but visually plain does not pass. Design is never settled once and frozen; every pass over a surface is a chance to raise it. The working flow is gate -> brief -> build -> subtract -> verify, and the brief and subtraction steps exist to aim that craft, not to cap it.
+This file routes a request to the rules under `references/`; the rules themselves live there. Treat the surface as a deliverable in its own right. "Clean and correct" is where the work starts, not where it ends: the target is what a top-tier product design team would put in front of customers, and a render that is tidy but visually plain does not pass. Design is never settled once and frozen; every pass over a surface is a chance to raise it. The working flow is ground -> brief -> build -> subtract -> verify, and the brief and subtraction steps exist to aim that craft, not to cap it.
 
 Implementation work always loads the design ruleset and the perfection ruleset together, and both have to pass. A beautiful page that ships a heavy bundle fails. A perfect Lighthouse run on a page that looks generic fails too.
 
@@ -19,12 +19,13 @@ Stack each of these on top of the first read when the request touches it:
 
 | When the request involves | Also read |
 |---|---|
+| A new screen or flow, a redesign request, or building or reworking a design system | `references/design/grounding.md` first (step 0, Ground below) |
 | Spatial structure: a new or reshaped region, shell, panel, split, list or grid, sticky bar, scroll container, "what goes where", "this breaks at X" | `references/design/layout-skill.md` for the mechanics, then `references/design/stylegallery.md` for the pattern contract and its `Layout:` line |
 | Paged output: a PDF report, print stylesheet, headless-Chrome print pipeline, a deck printed to paper | `references/design/print-paged-media.md` |
 | Interaction or motion: micro-interactions, transitions, gestures, hover/press/state feedback | `references/design/interaction-skill.md`; the beui.dev catalog is required reading for the nearest pattern |
 | Hero atmosphere, an animated background, a typographic reveal, scroll storytelling, or card surface effects (spotlight, tilt, glow) | `references/design/ambience-skill.md`; the react-bits catalog is required, its retrofit checklist runs every time, and its code is never vendored |
 | A tone neither catalog covers (AI-agent UI, charts, landing sections, brutalist or Tailwind-only builds) | `references/design/component-catalogs.md` |
-| Writing, changing, or auditing frontend code | `references/perfection/README.md` (+ `react-perf-tooling.md` before a React audit): Lighthouse 100 on real Playwright Chromium, never the Lighthouse CLI, won through architecture |
+| Writing, changing, or auditing frontend code | `references/perfection/README.md` + `references/perfection/craft-floor.md` + `references/perfection/detect.md` (+ `react-perf-tooling.md` before a React audit): Lighthouse 100 on real Playwright Chromium, never the Lighthouse CLI, won through architecture |
 | A concrete palette, font, chart, landing-structure, or UX lookup, or a design system generated from keywords | `references/ui-ux-db/README.md` and its CLI; a lookup tool, never the posture |
 | Any work that creates or updates `DESIGN.md`, or an explicit ask about personas, critique, design debt, handoff, or synthetic user testing | `references/designpowers/README.md` + `lane-c-review.md`. Lane C is the final reviewer for flatness and critique, and it fills the accessibility-constraint and accepted-debt sections. Other lanes load only when their phase applies |
 
@@ -86,6 +87,10 @@ Every implementation picks exactly one branch before the first UI edit (the near
 
 **`DESIGN.md` is the implementation contract.** Tokens, type, spacing, primitives, motion, responsive behaviour, accessibility constraints, and accepted debt are named there before any code uses them. Primitives, states, and screens are verified with real `/visual-qa` evidence, and for significant work the decisions, evidence, and open debt go to `/review-work`.
 
+## 0. Ground: measure the gap before deciding anything
+
+Triggers: a new screen or flow, a redesign request, or building or reworking a design system. On any of them, run `references/design/grounding.md` before every other step. Read the guideline source end to end, not in slices. Write down the ideal state for the personas and journeys the surface serves. Record each gap between that ideal and today's surface as a row in a gap ledger. The brief and the build exist to close ledger rows. A small change skips grounding, but when `DESIGN.md` already carries a ledger, read it first.
+
 ## 1. Brief: decide what the screen is for before drawing it
 
 Write this for every screen you build or change, into `DESIGN.md` section 5 beside the screen's components (the `Layout:` line goes under section 4, as `references/design/stylegallery.md` says), or into the change description when the project has no `DESIGN.md`. The build follows it; `/visual-qa` checks the rendered screen against it.
@@ -102,20 +107,31 @@ Write this for every screen you build or change, into `DESIGN.md` section 5 besi
 
 Build against `DESIGN.md` (or, under the nearest-sibling shortcut, the sibling) and the shared axioms. These rules are what `/visual-qa` will check afterwards; build to them so it finds nothing new.
 
-- **Hit targets.** Touch layouts: at least 44x44 pt (44 CSS px) per interactive element, 8-12 pt between neighbours. Pointer-only: about 10 px beyond the glyph. Grow the hit area with padding or a pseudo-element, never the glyph; adjacent bar buttons share continuous hit areas.
+- **Order for a new system.** Colour roles first, for both themes; then type and spacing; then components. Every component starts from shadcn/ui structure, or the equivalent in the project's own kit, and is re-skinned through tokens. Never invent a component shape from nothing.
+
+- **Hit targets.** Touch layouts: at least 44x44 pt (44 CSS px) per interactive element, 8-12 pt between neighbours. Pointer-only: about 10 px beyond the glyph, and never under 24x24 CSS px (WCAG 2.5.8). Grow the hit area with padding or a pseudo-element, never the glyph; adjacent bar buttons share continuous hit areas.
+- **Controls hold their size across states.** A control occupies the same box in every state. Labels, icons and spinners swap inside slots that exist in every state: `min-width` fits the longest label, and the spinner sits over the hidden label rather than beside it. Width, height and padding never change between states, and an arrow or spinner that appears adds no padding.
 - **Hierarchy.** The brief's primary action is the one prominent control; the most important content sits top-leading in reading order; each screen's title says what it is; neither a destructive action nor Cancel is the Enter default.
 - **States.** A control ships with hover, pressed, focus-visible, and disabled states beside its default. A data view ships empty (offering the next action), loading (a placeholder at once, a spinner only past about a second), error (cause beside the object), and offline.
-- **Keyboard.** Every action reachable in reading order with a visible focus ring; Escape closes the topmost overlay; Enter triggers the non-destructive default; standard shortcuts keep their meaning; icon-only controls carry an accessible name and a tooltip.
+- **Keyboard.** Every action reachable in reading order with a visible focus ring; Escape closes the topmost overlay; Enter triggers the non-destructive default; standard shortcuts keep their meaning; icon-only controls carry an accessible name and a tooltip; a sticky bar or overlay never covers the focus ring.
 - **Motion.** Per the axioms: caused, compositor-only, interruptible, never gating input, a cross-fade under `prefers-reduced-motion`.
+- **Browser-drawn surfaces.** The caret, text selection, focus ring, any scrollbar that shows, the link-underline offset and tabular figures are themed from the palette in both themes, never left at the browser default. `references/perfection/craft-floor.md` lists the CSS property for each.
+- **Type and spacing floor.** Heading steps (display to h3, and the smallest heading to body) are at least 1.25x apart; body-family roles that sit closer differ in weight, colour or case. Vertical rhythm: a heading's top margin to its bottom margin is 1.5:1 or more, and spacing between groups to spacing within a group is 2:1 or more. Desktop line length for body copy: 65-75 characters. Display stays at or under 6rem, tracking no tighter than -0.04em. A selected style route may substitute its own numbers. Verify against computed styles.
 - **Surface.** The hero focal object and the background carry depth (see the design README's focal-object doctrine); a flat fill is a floor, not a finish.
 
 ### Draft guard: tells kept out of the first draft
 
 Some tells regenerate by default, so they are kept out of the first draft rather than left for QA to find.
 
-- **No coloured bar on one side of a box, rounded or square, and no accent outline on a rounded card, decorative or state.** A card, callout, warning, cover block, stat tile, testimonial, alert, or list row never carries a coloured stripe on one side: `border-left: 4px solid <accent>` or `border-l-4 border-indigo-500`, a coloured `::before`/`::after` bar inside it, an inset `box-shadow` stripe, or a hard-stop gradient band or gradient `border-image` along one edge. A rounded card never wears a 2px-or-wider accent outline either (`border: 2px solid var(--primary)`, `ring-2 ring-indigo-500`, an inset ring). Both read as generated whether they decorate the box or mark it selected, focused, or active, and an accent underline under a heading, tab, or link counts too: use a neutral 1px rule, or set the text itself in the accent ink. Give the card its identity another way: a tonal surface, an eyebrow or heading in the accent ink, a leading glyph, or more space between groups. Encode state with one ink at many alphas, a check glyph for selection, and tonal layering for focus. Still allowed: keyboard `focus-visible` rings, validation states on form inputs, neutral 1px hairlines and dividers, table rules, and a blockquote's neutral rule. This covers pre-existing instances on any surface you touch.
+- **No coloured bar on one side of a box, rounded or square, and no accent outline on a rounded card, decorative or state.** A card, callout, warning, cover block, stat tile, testimonial, alert, or list row never carries a coloured stripe on one side: `border-left: 4px solid <accent>` or `border-l-4 border-indigo-500`, a coloured `::before`/`::after` bar inside it, an inset `box-shadow` stripe, or a hard-stop gradient band or gradient `border-image` along one edge. A rounded card never wears a 2px-or-wider accent outline either (`border: 2px solid var(--primary)`, `ring-2 ring-indigo-500`, an inset ring). Both read as generated whether they decorate the box or mark it selected, focused, or active, and an accent underline under a heading, tab, or link counts too: use a neutral 1px rule, or set the text itself in the accent ink. Give the card its identity another way: a tonal surface, a heading in the accent ink, a leading glyph, or more space between groups. Encode state with one ink at many alphas, a check glyph for selection, and tonal layering for focus. Still allowed: keyboard `focus-visible` rings, validation states on form inputs, neutral 1px hairlines and dividers, table rules, and a blockquote's neutral rule. This covers pre-existing instances on any surface you touch.
 - **Lint before visual QA (required).** Run `bun $SKILL_DIR/scripts/perfection/check-accent-stripes.ts <changed files or dirs>` on every stylesheet, component, and HTML file you wrote, including a report or figure you will print, screenshot, or render. Exit codes: 0 clean, 1 findings, 2 usage error or unreadable target. Exit 1 means a stripe or outline is in the draft: remove it, do not argue with the finding.
 - **Broader draft lint (also run).** `bun $SKILL_DIR/scripts/perfection/check-draft-guard.ts <changed files or dirs>` covers the stripes plus promotional filler copy, emoji used as icons, hype badges, and hard-coded vanity numbers in stat tiles. Treat its findings the same way.
+- **Detect after lint, once the page renders (required).** Run the detect SDK at 1440 and at 390 with reflow on: `detectPage({ kind: "url", url }, { reflow: true })`, or `bun $SKILL_DIR/scripts/detect/cli.ts --reflow <url-or-html-files>`; `references/perfection/detect.md` documents it. It reports contrast against the backdrop that is actually painted, the heading sequence, type ratios, overflow, and decorative and copywriting tells. Clear every error and warning before `/visual-qa`, and write down a decision for each advisory. The order is lint -> detect -> `/visual-qa`.
+- **No invented proof.** Testimonials, quotes, logos, ratings, user counts and prices come from the project or not at all. With no real proof, cut the section or ship an empty, labelled slot for the owner to fill. A "sample" testimonial is a fabricated one.
+- **No props.** Tilted devices, floating reassurance cards, decorative coordinates, sparkles and ornaments that mean nothing are out. A product preview shows a real state of the product, with text legible at the size it renders.
+- **No repeated formula.** A heading treatment (serif with an italic accent phrase, a gradient word, a headline-and-subtitle pair) or an image is used once, where it means something; it does not repeat section after section.
+- **No dated or borrowed surface.** Heavy drop shadows, neumorphism, glass or blur panels (they read as lifted from a popular open-source chat UI), mesh-gradient heroes and 2019-era SaaS illustrations stay out. `DESIGN.md` section 7 defines the materials; any material beyond it needs the brief or a concrete reference to supply it.
+- **No generated scaffold.** No kicker over a heading, no icon tile over a heading in a grid of equal cards, no hero metric, no card inside a card, no neutral gray on colour, no monospace costume, no zero-offset coloured glow used as a shadow. `references/perfection/craft-floor.md` gives the replacements and the rules for a brief or route to switch one back on.
 - **No decorative badge without a state behind it.** A pill, chip, or tag appears only when it carries a value that can change: a status, a count, a category the user filters by.
 - **No stat tile without a decision behind it.** A number earns a tile when someone acts on it.
 - **No subtitle under every heading.** Keep a subtitle only where the heading alone would be misread.
@@ -126,9 +142,28 @@ Some tells regenerate by default, so they are kept out of the first draft rather
 
 After the draft renders and the lints exit 0, walk every element and ask what the user could not do or know without it. No answer: delete it, whatever the reference or the previous version showed. Then open the brief's required-content list and confirm every item is still on the screen by name, with its own control or field. Subtraction that merges two required inputs, drops a datum, or shortens required copy is a regression, not a cleanup. Record removals under "Left out on purpose". Subtraction removes elements without a job; it never strips depth or material from elements that keep one.
 
+Then count the controls. Secondary actions that are rarely needed move into a menu or onto the object they act on. Separate groups with whitespace, not boxes or borders. The goal is fewer controls with room to breathe.
+
+**Fix passes stay scoped.** Once the first build exists, every fix declares one change and the regions it owns (a token fix may own every region); everything outside those regions stays untouched. A pass that tries to improve the whole page regresses the parts that were already right.
+
 ## 4. Verify
 
 Done is the `/visual-qa` gate, not your own glance. Hand it the brief (primary action and priorities), the `Layout:` line (layout contract), the required-content list, and, for a changed surface, the `before` set so the before/after pair shows what improved. Its review loop is bounded (its own step sets the round budget); within that budget, defects **and** flatness both earn another round on every brief, not only expressive ones. A bug-free render that still looks generic is not done. Report done only when visual QA passed on fresh evidence through its dual-reviewer gate and nothing on the surface is still at minimum-effort quality; if the budget runs out first, report the remaining flatness or defects as open debt rather than as done. A concrete reference runs reference-fidelity mode. Decisions, evidence, and unresolved debt go to `/review-work` for significant work.
+
+**WCAG 2.2 AA result (required for every UI or design-system deliverable).** Probe each row in a real browser and put the table in the PR body, the change description, or the reply: one row per item, each PASS, FAIL or N/A with its evidence. A FAIL is fixed, or, once the user signs off, logged as accepted debt in `DESIGN.md` section 8.
+
+| Row | Probe |
+|---|---|
+| Contrast [WCAG 1.4.3, 1.4.11] | Normal text 4.5:1, large text 3:1, icons and control borders 3:1; placeholders count; both themes. |
+| Focus [WCAG 2.4.7, 2.4.11] | Tab through every control and capture each ring. None missing, none fully hidden by a sticky bar or overlay (AA); aim for none partly covered either. |
+| Target size [WCAG 2.5.8] | At least 24x24 CSS px. A smaller target passes only if a 24 px circle centred on it touches no other target and no other small target's circle. Exempt: inline links inside sentences, unstyled browser-drawn targets, a passing equivalent with the same function, and a size the information itself requires. |
+| Keyboard [WCAG 2.1.1, 2.1.2] | Every action works from the keyboard; focus is never trapped. |
+| Reflow and text spacing [WCAG 1.4.10, 1.4.12] | At 320 CSS px wide nothing scrolls sideways, except content that is inherently two-dimensional (a map, a data table, a diagram). With word-spacing 0.16em, letter-spacing 0.12em, line-height 1.5 and paragraph spacing 2em forced, nothing clips or overlaps. |
+| Dragging, auth, help, entry [WCAG 2.5.7, 3.3.8, 3.2.6, 3.3.7] | Every drag has a single-pointer alternative. Sign-in poses no cognitive test without an alternative (paste and password managers work, or recognition of objects or personal content is used). Help sits in the same place on every page. Nothing is asked twice within one flow. N/A only when none of these is present. |
+| State-stable controls | `getBoundingClientRect()` on each control in idle, disabled, hover, success and loading returns the same size. |
+| System and surfaces | Colour roles are in `DESIGN.md` before any component; each component names its shadcn/ui or project-kit source; a grep of the built CSS finds no mesh gradient, no `backdrop-filter` and no neumorphic two-shadow pair, unless the brief or a reference supplied it. |
+
+On the grounded route, close every ledger row on its own, each with before and after captures and the check that proves the fix.
 
 ## The reference library (`references/`): four rulesets
 
@@ -140,7 +175,7 @@ Layer 0, architecture:
 
 | File | Read when |
 |---|---|
-| `design-system-architecture.md` | No `DESIGN.md` exists yet, or a system is being extracted from existing code (8 sections plus the greenfield Research Log) |
+| `design-system-architecture.md` | No `DESIGN.md` exists yet, or a system is being extracted from existing code (8 sections plus the greenfield Research Log and the grounding gap ledger) |
 
 Layer A, style skills (pick AT MOST ONE; they encode opposing philosophies):
 
@@ -190,13 +225,12 @@ Always run both the mobile and desktop presets, 3-5 runs each, report the median
 
 ### ui-ux-db
 
-A lookup tool for palettes, type, charts, landing structures, and UX rules; `README.md` documents the CLI and the master-plus-overrides persistence pattern. Run from the ruleset directory so it finds `data/`:
+A lookup tool for palettes, type, charts, landing structures, and UX rules; `README.md` documents the CLI and the master-plus-overrides persistence pattern. The script finds `data/` relative to its own location, so run it from the user's project directory: `--persist` writes `design-system/` into the current directory, and the skill directory may live inside a signed, read-only app bundle. `-B` stops Python from writing bytecode there.
 
 ```bash
-cd $SKILL_DIR/references/ui-ux-db
-python3 scripts/search.py "<query>" --design-system -p "Project"   # generate a design system
-python3 scripts/search.py "<query>" --domain <domain>              # one domain
-python3 scripts/search.py "<query>" --stack <stack>                # stack-specific guidance
+python3 -B $SKILL_DIR/references/ui-ux-db/scripts/search.py "<query>" --design-system -p "Project"   # generate a design system
+python3 -B $SKILL_DIR/references/ui-ux-db/scripts/search.py "<query>" --domain <domain>              # one domain
+python3 -B $SKILL_DIR/references/ui-ux-db/scripts/search.py "<query>" --stack <stack>                # stack-specific guidance
 ```
 
 Domains: `product style typography color landing chart ux react web prompt`
