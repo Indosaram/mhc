@@ -1,7 +1,6 @@
 //! Tests ported faithfully from ~/.cache/sync-5152/senpi-target/packages/coding-agent/test/mcp/modern-mrtr-consent.test.ts
 //! covering private MRTR consent form validation and elicitation collection.
 
-use maho_ai::utils::abort::AbortSignal as HostSignal;
 use maho_core::mcp_mrtr_presentations::McpMrtrPresentation;
 use maho_ext_api::AbortSignal;
 use maho_ext_api::*;
@@ -148,7 +147,7 @@ async fn run_elicitation_form(
     let schema = Value::Object(schema_map);
     let presentation = McpMrtrPresentation {
         ui,
-        signal: HostSignal::default(),
+        signal: maho_ai::utils::abort::AbortController::new().signal(),
         admit: None,
         presented: None,
         private_forms: None,
