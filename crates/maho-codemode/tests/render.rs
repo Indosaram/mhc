@@ -76,3 +76,25 @@ fn live_result_card_repaints_itself_each_second_until_terminal() {
     assert!(!maho_tui::ui_intervals::run_due_ui_intervals(Instant::now()+Duration::from_secs(5)));
     assert_eq!(invalidations.get(),1);
 }
+
+#[test]
+fn render_status_env_preserves_non_bmp_unicode() {
+    let mut result = AgentToolResult::text("");
+    result.details = json!({
+        "cells": [{
+            "language": "js",
+            "code": "1",
+            "status": "complete",
+            "output": "",
+            "statusEvents": [{
+                "op": "env",
+                "action": "set",
+                "key": "ICON",
+                "value": "🦀"
+            }]
+        }]
+    });
+    let lines = render_eval_result(&result, &maho_codemode::tool::types::EvalToolRequest::List, &Default::default(), 80);
+    assert!(lines.iter().any(|line| line.contains("ICON=🦀")));
+    assert!(!lines.iter().any(|line| line.contains("ICON=\u{fffd}\u{fffd}")));
+}
