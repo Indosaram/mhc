@@ -590,7 +590,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         paths: paths.clone(),
         instance_id: instance_id.clone(),
         internal_dir: internal.dir.clone(),
-        hard_exit: None,
+        _hard_exit: None,
         #[cfg(unix)]
         public_endpoint: public_endpoint.clone(),
     };
@@ -980,7 +980,8 @@ struct GenerationTeardown {
     paths: crate::host_daemon_paths::HostDaemonPaths,
     instance_id: String,
     internal_dir: Option<std::path::PathBuf>,
-    hard_exit: Option<ShutdownHardExit>,
+    /// Held only for its Drop: the win32 hard-exit bound stays armed until the teardown is dropped.
+    _hard_exit: Option<ShutdownHardExit>,
     #[cfg(unix)]
     public_endpoint: Option<std::sync::Arc<crate::rpc_public_key::RpcPublicEndpoint>>,
 }
@@ -1038,7 +1039,7 @@ impl crate::host_lifecycle_shutdown::SupervisorTeardown for GenerationTeardown {
     async fn release(&mut self, exit_code: i32) -> std::io::Result<()> {
         // Named-pipe handles can outlive cleanup; the bound (armed once the child is gone) guarantees the
         // supervisor never stays resident. Inert off win32.
-        self.hard_exit = Some(ShutdownHardExit::arm(self.platform, exit_code));
+        self._hard_exit = Some(ShutdownHardExit::arm(self.platform, exit_code));
         if let Some(dir) = self.internal_dir.take() {
             let _ = std::fs::remove_dir_all(dir);
         }
