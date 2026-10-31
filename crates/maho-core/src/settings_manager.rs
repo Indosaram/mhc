@@ -1062,6 +1062,26 @@ impl SettingsManager {
         .unwrap_or(DEFAULT_SESSION_SHUTDOWN_QUIT_BUDGET_MS))
     }
 
+    /// senpi `getExtensionEventHandlerWarnMs`: how long one agent lifecycle event handler may run before
+    /// the host reports it as stalled. 0 disables.
+    pub fn get_extension_event_handler_warn_ms(&self) -> Result<u64, String> {
+        Ok(parse_timeout_setting(
+            self.get_value("extensionEventHandlerWarnMs"),
+            "extensionEventHandlerWarnMs",
+        )?
+        .unwrap_or(maho_ext_host::runner::handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_WARN_MS))
+    }
+
+    /// senpi `getExtensionEventHandlerTimeoutMs`: hard cap on one agent lifecycle event handler; past it
+    /// the session's event queue moves on. 0 disables.
+    pub fn get_extension_event_handler_timeout_ms(&self) -> Result<u64, String> {
+        Ok(parse_timeout_setting(
+            self.get_value("extensionEventHandlerTimeoutMs"),
+            "extensionEventHandlerTimeoutMs",
+        )?
+        .unwrap_or(maho_ext_host::runner::handler_budget::DEFAULT_EXTENSION_EVENT_HANDLER_TIMEOUT_MS))
+    }
+
     /// `getEngineTurnSettings`: non-negative integer overrides of the engine-turn bounds (senpi#2967).
     pub fn get_engine_turn_settings(&self) -> EngineTurnSettings {
         let configured = self.get_value("engineTurns");
@@ -2983,6 +3003,21 @@ mod tests {
         assert_eq!(migrated["enableSkillCommands"], false);
         assert_eq!(migrated["skills"], json!(["/s"]));
         assert_eq!(migrated["retry"], json!({"provider":{"maxRetryDelayMs":5}}));
+    }
+
+    #[test]
+    fn extension_event_handler_budget_defaults_and_rejects_invalid_values() {
+        let mut manager = SettingsManager::in_memory(Settings::new(), true);
+        assert_eq!(manager.get_extension_event_handler_warn_ms(), Ok(60_000));
+        assert_eq!(manager.get_extension_event_handler_timeout_ms(), Ok(1_200_000));
+        manager.apply_overrides(&settings(
+            r#"{"extensionEventHandlerWarnMs":0,"extensionEventHandlerTimeoutMs":"soon"}"#,
+        ));
+        assert_eq!(manager.get_extension_event_handler_warn_ms(), Ok(0));
+        assert_eq!(
+            manager.get_extension_event_handler_timeout_ms(),
+            Err("Invalid extensionEventHandlerTimeoutMs setting: soon".to_owned())
+        );
     }
 
     #[test]

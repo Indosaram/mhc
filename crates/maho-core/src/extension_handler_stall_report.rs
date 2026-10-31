@@ -1,7 +1,7 @@
 //! Port of senpi `packages/coding-agent/src/core/extension-handler-stall-report.ts`.
 //!
-//! `ExtensionHandlerStall` (senpi `extensions/handler-budget.ts`) is defined here: the Rust handler
-//! budget does not publish stall events yet, so this is the report half its watcher will call.
+//! `ExtensionHandlerStall` mirrors the maho-ext-host handler budget's stall (senpi
+//! `extensions/handler-budget.ts`); AgentSession converts each published stall and reports it here.
 
 use std::path::Path;
 
@@ -36,6 +36,25 @@ pub struct ExtensionHandlerStall {
     pub elapsed_ms: u64,
     pub timeout_ms: u64,
     pub error: Option<String>,
+}
+
+impl From<&maho_ext_host::runner::handler_budget::ExtensionHandlerStall> for ExtensionHandlerStall {
+    fn from(stall: &maho_ext_host::runner::handler_budget::ExtensionHandlerStall) -> Self {
+        use maho_ext_host::runner::handler_budget::ExtensionHandlerStallStage as Stage;
+        Self {
+            extension_path: stall.extension_path.clone(),
+            event: stall.event.clone(),
+            stage: match stall.stage {
+                Stage::Warn => ExtensionHandlerStallStage::Warn,
+                Stage::Timeout => ExtensionHandlerStallStage::Timeout,
+                Stage::Released => ExtensionHandlerStallStage::Released,
+                Stage::LateFailure => ExtensionHandlerStallStage::LateFailure,
+            },
+            elapsed_ms: stall.elapsed_ms,
+            timeout_ms: stall.timeout_ms,
+            error: stall.error.clone(),
+        }
+    }
 }
 
 fn seconds(ms: u64) -> String {
