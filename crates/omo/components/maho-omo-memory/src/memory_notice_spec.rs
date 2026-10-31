@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::worker::entry_renderers::{NoticeExtraLine, NoticeSpec, join_fields, normalize_renderer_text};
+use crate::worker::entry_renderers::{
+    NoticeExtraLine, NoticeSpec, join_fields, normalize_renderer_text,
+};
 
 /// Title of a committed write.
 pub const REMEMBERED_TITLE: &str = "Remembered";
@@ -139,7 +141,10 @@ pub fn memory_failure_notice_spec(message: &str, args: &MemoryNoticeArgs) -> Not
 /// The pending call line while the write runs.
 pub fn memory_pending_line(args: &MemoryNoticeArgs) -> String {
     if args.command.as_deref() == Some("delete") {
-        return join_fields(&[Some("◌ Letting go"), optional(args.file_path.as_deref()).as_deref()]);
+        return join_fields(&[
+            Some("◌ Letting go"),
+            optional(args.file_path.as_deref()).as_deref(),
+        ]);
     }
     if args.command.as_deref() == Some("rename") {
         let from = optional(args.old_path.as_deref());
@@ -151,7 +156,10 @@ pub fn memory_pending_line(args: &MemoryNoticeArgs) -> String {
         };
         return join_fields(&[Some("◌ Moving"), target.as_deref()]);
     }
-    join_fields(&[Some("◌ Remembering"), optional(args.file_path.as_deref()).as_deref()])
+    join_fields(&[
+        Some("◌ Remembering"),
+        optional(args.file_path.as_deref()).as_deref(),
+    ])
 }
 
 fn title_line(notice: &MemoryWriteNotice, args: &MemoryNoticeArgs) -> String {
@@ -162,7 +170,10 @@ fn title_line(notice: &MemoryWriteNotice, args: &MemoryNoticeArgs) -> String {
     };
     let entries = notice.timeline.entries_today.filter(|entries| *entries > 0);
     match entries {
-        Some(entries) => join_fields(&[Some(title), Some(&format!("{} entry today", ordinal(entries)))]),
+        Some(entries) => join_fields(&[
+            Some(title),
+            Some(&format!("{} entry today", ordinal(entries))),
+        ]),
         None => title.to_string(),
     }
 }
@@ -191,9 +202,8 @@ fn why_line(notice: &MemoryWriteNotice, args: &MemoryNoticeArgs) -> String {
         None
     };
     if args.command.as_deref() == Some("delete") {
-        let path = optional(args.file_path.as_deref()).or_else(|| {
-            only.map(|entry| normalize_renderer_text(&entry.path))
-        });
+        let path = optional(args.file_path.as_deref())
+            .or_else(|| only.map(|entry| normalize_renderer_text(&entry.path)));
         let cleared = match path {
             None => "a memory".to_string(),
             Some(path) => lines(&path, only.map(|entry| entry.deletions).unwrap_or(0)),
@@ -307,10 +317,7 @@ fn description_failure(message: &str) -> Option<String> {
         return Some("The memory call arrived garbled, so nothing was saved.".to_string());
     }
     if let Some(rest) = message.split_once("'description' exceeds ") {
-        let numbers: Vec<&str> = rest
-            .1
-            .split(" characters (")
-            .collect();
+        let numbers: Vec<&str> = rest.1.split(" characters (").collect();
         if let (Some(limit), Some(actual)) = (
             numbers.first(),
             numbers.get(1).and_then(|tail| tail.split(')').next()),
@@ -333,7 +340,10 @@ fn size_line(notice: &MemoryWriteNotice) -> Option<String> {
     let size = notice.size.as_ref()?;
     let plural = if size.file_count == 1 { "" } else { "s" };
     Some(join_fields(&[
-        Some(&format!("system {} injected", format_bytes(size.system_bytes))),
+        Some(&format!(
+            "system {} injected",
+            format_bytes(size.system_bytes)
+        )),
         Some(&format!("{} total", format_bytes(size.total_bytes))),
         Some(&format!("{} file{plural}", size.file_count)),
     ]))
@@ -362,7 +372,14 @@ fn timeline_line(notice: &MemoryWriteNotice, now_ms: f64) -> Option<NoticeExtraL
     let backlogged = steps.is_some_and(|steps| steps >= UNREFLECTED_WARN_STEPS);
     Some(NoticeExtraLine {
         text,
-        tone: Some(if stale || backlogged { "warning" } else { "dim" }.to_string()),
+        tone: Some(
+            if stale || backlogged {
+                "warning"
+            } else {
+                "dim"
+            }
+            .to_string(),
+        ),
     })
 }
 
@@ -454,10 +471,8 @@ fn count_of(value: &str) -> u64 {
     value.parse::<u64>().unwrap_or(0)
 }
 
-/// Raw post-commit facts for one committed memory write (pin `tools.ts` `gatherMemoryWriteNotice`).
-///
-/// The affected-file walk is ported; the size and timeline probes read the RPC snapshot builder and
-/// are not ported yet, so those two optional fields stay absent and their fragments drop out.
+/// Raw post-commit facts for one committed memory write (pin `tools.ts` `gatherMemoryWriteNotice`)
+/// without a bound session: the affected-file walk only, so size and timeline drop out.
 pub fn gather_write_notice(
     repo: &memory_core::git::GitMemoryRepo,
     sha: &str,
@@ -474,7 +489,61 @@ pub fn gather_write_notice(
     }
 }
 
-fn read_affected_files(repo: &memory_core::git::GitMemoryRepo, sha: &str) -> Vec<MemoryWriteAffectedFile> {
+/// Pin `gatherMemoryWriteNotice(context, commit, { sessionId })`: the affected files plus the size and
+/// timeline numbers read through the same snapshot readers the RPC bridge publishes, so the numbers cannot
+/// drift. Every source is probed independently and omits only its own field when it fails; without a
+/// session id the snapshot is not read at all.
+pub fn gather_write_notice_for_session(
+    context: &crate::context::MemoryIdentityContext,
+    repo: &memory_core::git::GitMemoryRepo,
+    sha: &str,
+    subject: &str,
+    session_id: Option<&str>,
+) -> MemoryWriteNotice {
+    let mut notice = gather_write_notice(repo, sha, subject, &context.identity);
+    let Some(session_id) = session_id.filter(|session| !session.is_empty()) else {
+        return notice;
+    };
+    let snapshot_repo = memory_core::git::GitMemoryRepo::new(
+        memory_core::git::GitMemoryRepoOptions::new(&context.identity_paths.repo, "omo-memory-rpc"),
+    )
+    .ok();
+    let repo_state = snapshot_repo.as_ref().and_then(|repo| {
+        crate::memory_rpc_snapshot_state::read_memory_rpc_repo_state(
+            repo,
+            &mut std::collections::BTreeMap::new(),
+        )
+        .ok()
+    });
+    if let Some(state) = &repo_state
+        && let (Some(system_bytes), Some(total_bytes), Some(file_count)) =
+            (state.system_bytes, state.total_bytes, state.file_count)
+    {
+        notice.size = Some(MemoryWriteNoticeSize {
+            system_bytes,
+            total_bytes,
+            file_count,
+        });
+    }
+    let journal =
+        crate::memory_rpc_snapshot_state::read_memory_rpc_journal_state(context, session_id);
+    notice.timeline = MemoryWriteNoticeTimeline {
+        entries_today: repo_state.as_ref().and_then(|state| state.entries_today),
+        previous_entry_at_iso: repo_state
+            .as_ref()
+            .and_then(|state| state.previous_entry_at_iso.clone()),
+        last_consolidation_at_iso: crate::memory_rpc_snapshot_state::read_last_consolidation_at(
+            context,
+        ),
+        unreflected_steps: (journal.backlog_steps > 0.0).then_some(journal.backlog_steps as u64),
+    };
+    notice
+}
+
+fn read_affected_files(
+    repo: &memory_core::git::GitMemoryRepo,
+    sha: &str,
+) -> Vec<MemoryWriteAffectedFile> {
     let argv = [
         "show".to_string(),
         "--numstat".to_string(),
@@ -482,7 +551,10 @@ fn read_affected_files(repo: &memory_core::git::GitMemoryRepo, sha: &str) -> Vec
         "--format=".to_string(),
         sha.to_string(),
     ];
-    match repo.exec().run_in(&repo.dir, &argv.iter().map(String::as_str).collect::<Vec<_>>()) {
+    match repo.exec().run_in(
+        &repo.dir,
+        &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+    ) {
         Ok(result) if result.code == 0 => parse_numstat(&result.stdout),
         _ => Vec::new(),
     }

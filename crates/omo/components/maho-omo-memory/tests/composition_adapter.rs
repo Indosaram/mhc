@@ -47,6 +47,7 @@ fn static_options() -> MemoryStaticOptions {
         skills_trackers: None,
         prompt_handler: None,
         write_notice: None,
+        write_notice_session: None,
         tool_exposure: None,
         prompt: MemoryPromptInjectionOptions {
             resolve_context: resolve.clone(),
