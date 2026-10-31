@@ -47,6 +47,8 @@ mod parser_contract_source;
 mod parsers;
 #[path = "preset_source.rs"]
 mod preset_source;
+#[path = "read_permission.rs"]
+mod read_permission;
 #[path = "registration.rs"]
 mod registration;
 #[path = "resume_parsers.rs"]
