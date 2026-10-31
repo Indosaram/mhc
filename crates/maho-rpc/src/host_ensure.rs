@@ -704,6 +704,7 @@ async fn ensure_host_in_key_root(
         env: options.env.clone(),
         launch_profile_id,
         readiness_ms: options.readiness_ms,
+        launch: None,
     };
     let outcome =
         match ensure_prepared_host(prepared, &socket, &agent_dir, &launch, start, handoff).await {

@@ -185,6 +185,7 @@ fn ensure_request(
         env: overrides.into_iter().collect(),
         launch_profile_id,
         readiness_ms: DEFAULT_READINESS_MS,
+        launch: None,
     };
     let env_keys = daemon_env_keys(&process_env(), &spec.env, platform());
     Ok(EnsureRequest {
@@ -251,6 +252,7 @@ pub fn build_host_request(
                 env: overrides.into_iter().collect(),
                 launch_profile_id: String::new(),
                 readiness_ms: DEFAULT_READINESS_MS,
+                launch: None,
             };
             let env_keys = daemon_env_keys(&process_env(), &spec.env, platform());
             let handover = parsed.handover.as_ref().map(|terms| {
