@@ -96,6 +96,39 @@ impl ObservedHostTurns {
         }
     }
 }
+/// The observer connection's event stream: every line feeds both the idle decision's turn count and the owner
+/// check's run activity (senpi `observeHostEvent`).
+#[cfg(any(unix, windows))]
+async fn observe_host_events(
+    mut input: impl tokio::io::AsyncRead + Unpin,
+    observed: &mut ObservedHostTurns,
+    busy: &std::sync::atomic::AtomicU64,
+    activity: &std::sync::Mutex<crate::host_lifecycle_activity::SupervisorActivity>,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut lines = crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS)
+        .map_err(std::io::Error::other)?;
+    let mut buffer = [0; 8192];
+    loop {
+        let size = input.read(&mut buffer).await?;
+        let records = if size == 0 {
+            lines.finish()
+        } else {
+            lines.push(&buffer[..size])
+        };
+        for record in records {
+            if let crate::jsonl::LineRecord::Line(line) = record {
+                crate::host_lifecycle_activity::lock_activity(activity).observe_host_event(&line);
+                if observed.observe(&line) {
+                    busy.store(observed.busy_turns(), std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+        if size == 0 {
+            return Ok(());
+        }
+    }
+}
 pub async fn wait_for_idle_exit(
     idle_exit_ms: f64,
     mut activity: tokio::sync::watch::Receiver<HostActivity>,
@@ -728,7 +761,31 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let turns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (activity_tx, activity_rx) = tokio::sync::watch::channel(HostActivity::default());
     let (connections_tx, connections_rx) = tokio::sync::watch::channel(0usize);
-    let connections_watch = connections_rx.clone();
+    // senpi `SupervisorActivity`: the owner check reads quiescence from the same observer connection and clients the
+    // idle decision does. The public proxy does not classify clients, so every live client is attached here: owner
+    // quiescence still needs zero clients.
+    let activity = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::host_lifecycle_activity::SupervisorActivity::new(
+            if policy.cold_start == "persistent" {
+                f64::INFINITY
+            } else {
+                policy.idle_exit_ms
+            },
+        ),
+    ));
+    // senpi `SupervisorOwner`: an ensured generation (or a launch carrying `--owner-fd`) binds its lifetime owner;
+    // a direct launch without an owner record has none. The owner leaving a quiescent host ends this generation.
+    let mut owner =
+        (launch.owner_fd.is_some() || generation_files.settings_file.exists()).then(|| {
+            let mut owner =
+                crate::host_lifecycle_activity::SupervisorOwner::new(generation_files.dir.clone());
+            owner.start(launch.owner_fd, owner_clock_ms());
+            crate::host_lifecycle_activity::OwnerCheck::new(owner, activity.clone())
+        });
+    let on_activity: crate::host_lifecycle_activity::OnActivity = match &owner {
+        Some(owner) => owner.on_activity(),
+        None => std::sync::Arc::new(|| {}),
+    };
     // win32: a child whose identity changed or vanished has exited even when no exit event came.
     let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     #[cfg(windows)]
@@ -767,8 +824,11 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let observer_secret = internal_secret.clone();
     #[cfg(unix)]
     let observer_key = internal_key;
+    let observer_activity = activity.clone();
+    let observer_held = on_activity.clone();
     let observer = tokio::spawn(async move {
         let mut observed = ObservedHostTurns::default();
+        let mut socket = 0u64;
         loop {
             if *observer_draining.borrow() {
                 return;
@@ -795,13 +855,19 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
                 Some(stream)
             }
             .await;
-            if let Some(mut stream) = connected {
-                let busy = observer_busy.clone();
-                let _ = observed
-                    .read_events(&mut stream, |observed| {
-                        busy.store(observed.busy_turns(), std::sync::atomic::Ordering::SeqCst);
-                    })
-                    .await;
+            if let Some(stream) = connected {
+                socket += 1;
+                crate::host_lifecycle_activity::lock_activity(&observer_activity)
+                    .observer_opened(socket);
+                let _ =
+                    observe_host_events(stream, &mut observed, &observer_busy, &observer_activity)
+                        .await;
+                crate::host_lifecycle_activity::lock_activity(&observer_activity).observer_lost(
+                    socket,
+                    *observer_draining.borrow(),
+                    owner_clock_ms(),
+                );
+                observer_held();
             }
             if *observer_draining.borrow() {
                 return;
@@ -811,6 +877,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     });
     let activity_turns = turns.clone();
     let activity_draining = draining_rx.clone();
+    let publisher_activity = activity.clone();
+    let publisher_held = on_activity.clone();
     let publisher = tokio::spawn(async move {
         let mut connections_rx = connections_rx;
         let mut draining_watch = activity_draining.clone();
@@ -820,12 +888,16 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             }
             let connections = *connections_rx.borrow_and_update() as u64;
             let active_turns = activity_turns.load(std::sync::atomic::Ordering::SeqCst);
+            crate::host_lifecycle_activity::lock_activity(&publisher_activity)
+                .set_clients(connections, 0);
             activity_tx.send_replace(HostActivity {
                 connections,
                 active_turns,
             });
             tokio::select! {
-                changed=connections_rx.changed()=>{if changed.is_err(){return;}},
+                // Every admission publishes a new count: senpi `onAdmit` resets the owner grace even for a client
+                // that is admitted and gone before the next tick.
+                changed=connections_rx.changed()=>{if changed.is_err(){return;}publisher_held();},
                 ()=tokio::time::sleep(std::time::Duration::from_millis(250))=>{},
                 changed=draining_watch.changed()=>{if changed.is_err()||*activity_draining.borrow(){return;}},
             }
@@ -863,15 +935,6 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     let mut draining = false;
     let mut signal_code: Option<i32> = None;
     let mut owner_gone = false;
-    // senpi `SupervisorOwner`: an ensured generation (or a launch carrying `--owner-fd`) binds its lifetime owner;
-    // a direct launch without an owner record has none. The owner leaving a quiescent host ends this generation.
-    let mut owner =
-        (launch.owner_fd.is_some() || generation_files.settings_file.exists()).then(|| {
-            let mut owner =
-                crate::host_lifecycle_activity::SupervisorOwner::new(generation_files.dir.clone());
-            owner.start(launch.owner_fd, owner_clock_ms());
-            owner
-        });
     let mut owner_ticker = tokio::time::interval(std::time::Duration::from_millis(
         crate::host_lifecycle_ticker::tick_interval_ms(policy.idle_exit_ms),
     ));
@@ -918,12 +981,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             },
             _changed=shutdown_rx.changed()=>{if let Some(code)=*shutdown_rx.borrow(){signal_code=Some(code);break;}},
             _=owner_ticker.tick(),if owner.is_some()&&!draining=>{
-                let busy=turns.load(std::sync::atomic::Ordering::SeqCst);let attached=*connections_watch.borrow();
-                let quiescent=||busy==0&&attached==0;
-                if let Some(owner)=owner.as_mut(){
-                    if attached>0||busy>0{owner.activity(owner_clock_ms());}
-                    if owner.should_exit(quiescent,owner_clock_ms(),crate::host_lifecycle_activity::host_owner_gone){owner_gone=true;break;}
-                }
+                if let Some(owner)=owner.as_mut()
+                    && owner.should_exit(owner_clock_ms(),crate::host_lifecycle_activity::host_owner_gone){owner_gone=true;break;}
             },
             changed=drain_rx.changed()=>{
                 if changed.is_ok()&&*drain_rx.borrow()&&!draining{
@@ -951,7 +1010,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         .watchers
         .push(Box::new(move || identity_watch.abort()));
     if let Some(mut owner) = owner {
-        owner.stop();
+        owner.owner.stop();
     }
     let reason = match signal_code {
         Some(code) => crate::host_lifecycle_shutdown::signal_shutdown_reason(code),
