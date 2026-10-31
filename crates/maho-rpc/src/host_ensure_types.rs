@@ -35,6 +35,8 @@ pub struct EnsureHostOptions {
     /// Whether a newer build may take the socket over from the running host. Defaults to `Never`.
     pub upgrade: HostUpgradePolicy,
     pub readiness_ms: u64,
+    /// Credential lookup only (`--rpc-key-root`); endpoint keys come from here, the profile is unchanged.
+    pub key_root: Option<std::path::PathBuf>,
 }
 impl Default for EnsureHostOptions {
     fn default() -> Self {
@@ -47,6 +49,7 @@ impl Default for EnsureHostOptions {
             env: HashMap::new(),
             upgrade: HostUpgradePolicy::Never,
             readiness_ms: 10_000,
+            key_root: None,
         }
     }
 }
@@ -69,7 +72,9 @@ mod tests {
         assert_eq!(options.upgrade, HostUpgradePolicy::Never);
         assert_eq!(HostUpgradePolicy::default(), HostUpgradePolicy::Never);
         assert_eq!(options.readiness_ms, 10_000);
-        assert!(options.agent_dir.is_none() && options.policy.is_none());
+        assert!(
+            options.agent_dir.is_none() && options.policy.is_none() && options.key_root.is_none()
+        );
         assert!(options.host_args.is_empty() && options.env.is_empty());
     }
 }
