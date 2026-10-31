@@ -119,7 +119,7 @@ impl Trace {
             snoop,
             page_events: page.cdp().subscribe({
                 let session = page.session().to_owned();
-                move |event| {
+                move |event: &crate::cdp::Event| {
                     event.session_id.as_deref() == Some(session.as_str())
                         && matches!(
                             event.method.as_str(),
