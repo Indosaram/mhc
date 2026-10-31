@@ -33,13 +33,9 @@ impl ChildReaperSyscalls for KernelChildReaperSyscalls {
     fn list_direct_children(&mut self) -> Vec<i32> {
         libproc::processes::pids_by_type(libproc::processes::ProcFilter::ByParentProcess{ppid:std::process::id()}).map(|pids|pids.into_iter().filter_map(|pid|i32::try_from(pid).ok()).filter(|pid|*pid>0).take(4096).collect()).unwrap_or_default()
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     fn any_waitable(&mut self) -> bool {
         matches!(waitid(WaitId::All,WaitIdOptions::EXITED|WaitIdOptions::NOHANG|WaitIdOptions::NOWAIT),Ok(Some(_)))
-    }
-    #[cfg(target_os = "macos")]
-    fn any_waitable(&mut self) -> bool {
-        true
     }
     #[cfg(unix)]
     fn is_waitable(&mut self,pid:i32) -> bool {
@@ -89,12 +85,4 @@ mod tests {
         assert!(!sys.list_direct_children().contains(&pid));assert!(!sys.reap_exited(pid));assert!(child.try_wait().is_err());
     }
     #[test] fn unsupported_platform_does_not_load() { assert!(load_child_reaper_syscalls("win32").is_none()); }
-    #[test]
-    fn any_waitable_forces_scan_on_macos() {
-        #[cfg(target_os = "macos")]
-        {
-            let mut sys = KernelChildReaperSyscalls;
-            assert!(sys.any_waitable());
-        }
-    }
 }
