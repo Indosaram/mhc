@@ -890,6 +890,16 @@ pub fn rewrite_openai_payload_with_remote_compaction(
             !expected.is_empty()
                 && payload_input.len() >= checkpoint_start + expected.len()
                 && payload_input[checkpoint_start..checkpoint_start + expected.len()] == **expected
+                // senpi `allBoundaries.length !== expectedOrdinals.length`: no sealed item may be
+                // carried a second time past the replaced prefix. senpi tells copies apart by
+                // object identity; here only an item with its own `id` or `call_id` is provably
+                // the same item, since two user turns with equal text convert to equal items.
+                && !payload_input[checkpoint_start + expected.len()..]
+                    .iter()
+                    .any(|item| {
+                        (item.get("id").is_some() || item.get("call_id").is_some())
+                            && expected.contains(item)
+                    })
         })
     else {
         fallback(UNPROVEN_REMOTE_REPLAY_BOUNDARY_REASON);
@@ -1084,6 +1094,37 @@ mod replay_boundary_tests {
         let (rewritten, events) = rewrite(&sealed_payload(&boundary), Some(&origin()), None);
         assert_eq!(rewritten, None);
         assert_eq!(events[0]["reason"], "unproven-remote-replay-boundary");
+    }
+
+    #[test]
+    fn a_sealed_item_repeated_after_the_boundary_is_unproven() {
+        let call =
+            json!({"type":"function_call","call_id":"call_1","name":"read","arguments":"{}"});
+        let boundary = OpenAiRemoteReplayBoundary {
+            compaction_entry_id: "c".into(),
+            expected_ordinals: vec![0, 1],
+            expected_items: vec![
+                json!({"role":"user","content":[{"type":"input_text","text":"continue"}]}),
+                call.clone(),
+            ],
+        };
+        let mut payload = sealed_payload(&boundary);
+        payload["input"]
+            .as_array_mut()
+            .expect("payload input")
+            .push(call);
+        let (rewritten, events) = rewrite(&payload, Some(&origin()), Some(&boundary));
+        assert_eq!(rewritten, None);
+        assert_eq!(events[0]["reason"], "unproven-remote-replay-boundary");
+        // An equal user turn with no item identity is a new turn, not a copy.
+        let mut payload = sealed_payload(&boundary);
+        payload["input"]
+            .as_array_mut()
+            .expect("payload input")
+            .push(boundary.expected_items[0].clone());
+        let (rewritten, events) = rewrite(&payload, Some(&origin()), Some(&boundary));
+        assert!(rewritten.is_some());
+        assert_eq!(events[0]["action"], "remote_payload_rewritten");
     }
 
     #[test]
