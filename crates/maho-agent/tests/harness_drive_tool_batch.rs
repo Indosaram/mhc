@@ -490,6 +490,7 @@ async fn create_fixture(options: FixtureOptions) -> Fixture {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         storage,
         StorageBackedSessionOptions::default(),
