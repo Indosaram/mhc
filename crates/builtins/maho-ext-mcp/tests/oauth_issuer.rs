@@ -478,3 +478,203 @@ fn does_not_declare_a_redirect_application_type_without_redirects() {
     provider.redirect_url = Some("https://app.example/callback".into());
     assert_eq!(provider.client_metadata()["application_type"], "web");
 }
+
+// Port of senpi test/mcp/2940-oauth-issuer-binding.test.ts (GHSA-6qxp-vccf-f47h): stored credentials are bound to
+// the authorization server that issued them. A refresh token is never posted to another authorization server, and a
+// mismatch is a continuity break: the credentials are discarded and the user signs in again.
+const OTHER_AS: &str = "https://other-authorization-server.invalid";
+
+fn now_ms() -> f64 {
+    chrono::Utc::now().timestamp_millis() as f64
+}
+fn token_hits(fixture: &Fixture) -> usize {
+    fixture
+        .requests()
+        .iter()
+        .filter(|(path, _)| path.ends_with("/token"))
+        .count()
+}
+fn refresh_requests(fixture: &Fixture) -> usize {
+    fixture
+        .requests()
+        .iter()
+        .filter(|(_, body)| body.contains("grant_type=refresh_token"))
+        .count()
+}
+fn refresh_manager(fixture: &Fixture) -> McpRefreshManager {
+    McpRefreshManager::new(
+        Arc::new(fixture.provider(Some("static-client"))),
+        fixture.client.clone(),
+    )
+}
+async fn sign_in(fixture: &Fixture) {
+    let mut provider = fixture.provider(Some("static-client"));
+    let begin = begin_authorization(&mut provider, &fixture.client)
+        .await
+        .unwrap();
+    let state = begin
+        .authorization_url
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    complete_authorization(
+        &mut provider,
+        &format!("http://127.0.0.1:8123/callback?code=code&state={state}"),
+        &fixture.client,
+    )
+    .await
+    .unwrap();
+}
+fn expire_soon(fixture: &Fixture, change: impl FnOnce(&mut McpStoredAuth)) {
+    fixture
+        .store()
+        .update(|current| {
+            let mut record = current.unwrap();
+            record.expires_at = Some(now_ms() + 60_000.0);
+            change(&mut record);
+            Some(record)
+        })
+        .unwrap();
+}
+fn unattributed_grant(fixture: &Fixture) -> McpStoredAuth {
+    McpStoredAuth {
+        access_token: Some("AT_older".into()),
+        refresh_token: Some("RT_older".into()),
+        expires_at: Some(now_ms() + 60_000.0),
+        resource: Some(fixture.resource.clone()),
+        ..Default::default()
+    }
+}
+fn terminal_needs_auth<T>(result: Result<T, OAuthRequestError>) {
+    match result {
+        Err(OAuthRequestError::Flow(error)) => {
+            assert_eq!(error.oauth_kind, OAuthFailureKind::NeedsAuth);
+            assert!(error.terminal);
+        }
+        Err(other) => panic!("expected needs_auth, got {other:?}"),
+        Ok(_) => panic!("expected needs_auth, got success"),
+    }
+}
+
+#[tokio::test]
+async fn binding_a_sign_in_records_the_issuer_and_hands_the_refresh_token_out() {
+    let fixture = fixture().await;
+    sign_in(&fixture).await;
+    let record = fixture.store().read().unwrap().unwrap();
+    assert_eq!(record.issuer.as_deref(), Some(fixture.issuer.as_str()));
+    let tokens = fixture.provider(None).tokens(now_ms()).unwrap().unwrap();
+    assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+}
+
+#[tokio::test]
+async fn binding_tokens_from_another_issuer_are_discarded_without_sending_the_refresh_token() {
+    let fixture = fixture().await;
+    sign_in(&fixture).await;
+    expire_soon(&fixture, |record| record.issuer = Some(OTHER_AS.into()));
+    let before = token_hits(&fixture);
+    terminal_needs_auth(refresh_manager(&fixture).ensure_fresh().await);
+    assert_eq!(token_hits(&fixture), before);
+    assert!(fixture.store().read().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn binding_a_refresh_at_the_issuing_server_keeps_the_issuer_stamp() {
+    let fixture = fixture().await;
+    sign_in(&fixture).await;
+    expire_soon(&fixture, |_| {});
+    refresh_manager(&fixture).ensure_fresh().await.unwrap();
+    let record = fixture.store().read().unwrap().unwrap();
+    assert_eq!(record.issuer.as_deref(), Some(fixture.issuer.as_str()));
+}
+
+#[tokio::test]
+async fn binding_a_legacy_discovery_record_attributes_the_grant_and_refreshes_there() {
+    let fixture = fixture().await;
+    sign_in(&fixture).await;
+    let issuer = fixture.issuer.clone();
+    expire_soon(&fixture, |record| {
+        record.issuer = None;
+        record.extra.insert(
+            "discoveryState".into(),
+            json!({"authorizationServerUrl": issuer}),
+        );
+    });
+    let before = token_hits(&fixture);
+    refresh_manager(&fixture).ensure_fresh().await.unwrap();
+    assert_eq!(token_hits(&fixture), before + 1);
+    let record = fixture.store().read().unwrap().unwrap();
+    assert_eq!(record.issuer.as_deref(), Some(fixture.issuer.as_str()));
+}
+
+#[tokio::test]
+async fn binding_an_unattributed_legacy_grant_sends_nothing_and_requires_sign_in() {
+    let fixture = fixture().await;
+    fixture.store().write(unattributed_grant(&fixture)).unwrap();
+    let tokens = fixture.provider(None).tokens(now_ms()).unwrap().unwrap();
+    assert!(tokens.refresh_token.is_none());
+    terminal_needs_auth(refresh_manager(&fixture).ensure_fresh().await);
+    assert_eq!(token_hits(&fixture), 0);
+    assert!(fixture.store().read().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn binding_discovery_never_sends_an_unattributed_refresh_token() {
+    for run in ["begin_authorization", "client_credentials_grant"] {
+        let fixture = fixture().await;
+        fixture.store().write(unattributed_grant(&fixture)).unwrap();
+        let provider = fixture.provider(Some("static-client"));
+        if run == "begin_authorization" {
+            let mut provider = provider;
+            begin_authorization(&mut provider, &fixture.client)
+                .await
+                .unwrap();
+        } else {
+            client_credentials_grant(&provider, &fixture.client)
+                .await
+                .unwrap();
+        }
+        assert_eq!((run, refresh_requests(&fixture)), (run, 0));
+        // A client_credentials grant may legitimately mint a new refresh token; the old one is gone either way.
+        let record = fixture.store().read().unwrap().unwrap();
+        assert_ne!(
+            record.refresh_token.as_deref(),
+            Some("RT_older"),
+            "{run} kept the unattributed refresh token"
+        );
+    }
+}
+
+// Upstream asserts the stamp survives the SDK's rediscovery because its persisted discovery record is reused; mhc
+// has no persisted discovery, so the grant is attributed from the legacy record and dropped by the mismatch instead.
+// Either way nothing is sent and the grant is never re-attributed to the server discovered now.
+#[tokio::test]
+async fn binding_a_grant_whose_sign_in_discovered_another_server_stays_bound_to_it() {
+    let fixture = fixture().await;
+    let mut grant = unattributed_grant(&fixture);
+    grant.extra.insert(
+        "discoveryState".into(),
+        json!({"authorizationServerUrl": OTHER_AS}),
+    );
+    fixture.store().write(grant).unwrap();
+    let record = fixture.store().read().unwrap().unwrap();
+    assert_eq!(record.issuer.as_deref(), Some(OTHER_AS));
+
+    begin_authorization(
+        &mut fixture.provider(Some("static-client")),
+        &fixture.client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(refresh_requests(&fixture), 0);
+    assert!(
+        fixture
+            .store()
+            .read()
+            .unwrap()
+            .is_none_or(|record| record.refresh_token.is_none()
+                && record.issuer.as_deref() != Some(fixture.issuer.as_str()))
+    );
+}
