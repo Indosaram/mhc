@@ -1971,6 +1971,17 @@ impl RpcConnectionHandler {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_millis() as u64);
+            if value["type"] == "extension_ui_progress" {
+                if let Some(record) = self
+                    .questions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .progress(value, now)
+                {
+                    self.out_record(record);
+                }
+                return Ok(None);
+            }
             let (kind, resolved) = self
                 .questions
                 .lock()
@@ -3375,6 +3386,66 @@ mod connection_events_tests {
         );
         rendered.release().await;
         plain.release().await;
+    }
+
+    #[tokio::test]
+    async fn test_extension_ui_progress_does_not_settle_question() {
+        let session = session();
+        let (capable, records) = handler(
+            &session,
+            &[crate::custom_capability::QUESTION_CAPABILITY],
+        )
+        .await;
+        let ui = capable.ui().clone();
+        let question_task = tokio::spawn(async move {
+            maho_ext_api::ExtensionUi::question(
+                ui.as_ref(),
+                maho_ext_api::QuestionRequest {
+                    request_id: "req1".into(),
+                    questions: vec![maho_ext_api::Question {
+                        id: "q1".into(),
+                        header: "h".into(),
+                        question: "prompt".into(),
+                        options: vec![],
+                        multi_select: false,
+                    }],
+                    wait_for_answer: true,
+                    timeout_ms: 10_000,
+                },
+                Default::default(),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let requests = of_type(&records, "question_request");
+        assert_eq!(requests.len(), 1);
+        let id = requests[0]["id"].as_str().expect("id").to_owned();
+
+        let progress_line = serde_json::json!({
+            "type": "extension_ui_progress",
+            "id": id,
+            "answers": {"q1": {"selected": ["A"]}}
+        })
+        .to_string();
+        let outcome = capable.handle_input_line(&progress_line).await.expect("handle line");
+        assert!(outcome.is_none());
+
+        assert!(!question_task.is_finished());
+        let updates = of_type(&records, "question_updated");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["id"], id);
+
+        let response_line = serde_json::json!({
+            "type": "extension_ui_response",
+            "id": id,
+            "answers": {"q1": {"selected": ["B"]}}
+        })
+        .to_string();
+        capable.handle_input_line(&response_line).await.expect("handle line");
+
+        let response = question_task.await.expect("task join").expect("response ok");
+        assert_eq!(response.answers.get("q1").unwrap().selected, vec!["B".to_string()]);
+        capable.release().await;
     }
 }
 #[cfg(test)]
