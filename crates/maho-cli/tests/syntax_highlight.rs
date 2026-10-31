@@ -30,7 +30,7 @@ fn upstream_eager_languages_answer_and_uncommon_ones_do_not() {
     for language in EAGER_HIGHLIGHT_LANGUAGES {
         assert!(supports_language(language), "{language}");
     }
-    for alias in ["TS", "py", "sh", "rs", "c#"] {
+    for alias in ["TS", "py", "sh", "rs", "c#", "jsonc", "JSON5"] {
         assert!(supports_language(alias), "{alias}");
     }
     assert!(!supports_language("ada"));
