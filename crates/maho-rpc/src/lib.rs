@@ -206,6 +206,7 @@ pub mod session_path_key;
 pub mod session_path_reservations;
 pub mod session_record_stream;
 pub mod session_registry;
+pub mod session_registry_claims;
 pub mod session_registry_moved_path;
 pub mod session_release;
 pub mod session_release_adapter;
