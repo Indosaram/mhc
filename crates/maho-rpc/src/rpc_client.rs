@@ -1283,6 +1283,31 @@ impl RpcClient {
         )
         .await
     }
+    /// senpi `listEvalCells`: the session's eval cells.
+    pub async fn list_eval_cells(&self) -> RpcClientResult<Value> {
+        self.request_value(serde_json::json!({"type": "eval_cells.list"}), true)
+            .await
+    }
+    /// senpi `peekEvalCell`: a bounded UTF-8 output tail; the host caps `tail_bytes` at 64 KiB.
+    pub async fn peek_eval_cell(
+        &self,
+        cell_id: &str,
+        tail_bytes: Option<u64>,
+    ) -> RpcClientResult<Value> {
+        let mut command = serde_json::json!({"type": "eval_cells.peek", "cellId": cell_id});
+        if let Some(tail_bytes) = tail_bytes {
+            command["tailBytes"] = tail_bytes.into();
+        }
+        self.request_value(command, true).await
+    }
+    /// senpi `stopEvalCell`: stops a session-owned cell and answers its confirmed terminal snapshot.
+    pub async fn stop_eval_cell(&self, cell_id: &str) -> RpcClientResult<Value> {
+        self.request_value(
+            serde_json::json!({"type": "eval_cells.stop", "cellId": cell_id}),
+            true,
+        )
+        .await
+    }
     pub async fn remove_provider_account(&self, provider: &str, name: &str) -> RpcClientResult<()> {
         self.fire_and_forget(
             serde_json::json!({"type": "account_remove", "provider": provider, "name": name}),
@@ -2245,7 +2270,7 @@ mod tests {
             let (read, mut write) = host.into_split();
             let mut lines = BufReader::new(read).lines();
             let mut seen = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let request: Value =
                     serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
                 let data = match request["type"].as_str() {
@@ -2266,6 +2291,8 @@ mod tests {
             let level = client.get_model_thinking_level("p", "m").await.unwrap();
             let path = client.resolve_path("/x").await.unwrap();
             client.continue_from_leaf().await.unwrap();
+            client.peek_eval_cell("cell", Some(10)).await.unwrap();
+            client.peek_eval_cell("cell", None).await.unwrap();
             (level, path)
         };
         let ((level, path), seen) = tokio::join!(requests, serve);
@@ -2274,6 +2301,9 @@ mod tests {
         assert_eq!(seen[0]["modelId"], "m");
         assert_eq!(seen[1]["path"], "/x");
         assert_eq!(seen[2]["type"], "continue_from_leaf");
+        assert_eq!(seen[3]["type"], "eval_cells.peek");
+        assert_eq!(seen[3]["tailBytes"], 10);
+        assert!(seen[4].get("tailBytes").is_none());
     }
     #[cfg(unix)]
     #[tokio::test]
