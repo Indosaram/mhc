@@ -2,6 +2,7 @@
 
 use crate::grammar::{normalize_model, parse_variant, provider_of};
 use crate::matching::match_available;
+use crate::profile::is_launch_gated;
 use crate::transforms::{strip_provider, transform_for};
 
 /// One rung of a built-in fallback chain.
@@ -74,12 +75,21 @@ fn log(message: &str) {
     maho_support::log(message, None);
 }
 
-/// Picks the model for a delegated task (first match wins).
+/// Picks the model for a delegated task (first match wins), with the launch gate's release flag
+/// of `maho-ext-recommended-models`.
 pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
+    resolve_delegate_model_gated(input, maho_ext_recommended_models::FABLE55_RELEASED)
+}
+
+/// [`resolve_delegate_model`] with an explicit release flag for the launch-gated model. While
+/// `released` is false, a cold cache with known connected providers skips a non-user-configured
+/// category default and chain rungs that name the gated model.
+pub fn resolve_delegate_model_gated(input: &DelegateInput, released: bool) -> DelegateChoice {
     let available = &input.available;
     let warm = !available.is_empty();
     let connected: Option<&Vec<String>> =
         input.connected_providers.as_ref().filter(|c| !c.is_empty());
+    let gate_built_in = !released && !warm && connected.is_some();
     let is_connected = |model: &str| match (connected, provider_of(model)) {
         (Some(list), Some(provider)) => list.iter().any(|p| p == provider),
         _ => true,
@@ -116,12 +126,17 @@ pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
             return resolved(model, variant, None, false);
         }
         if !warm {
-            if is_connected(&model) {
+            if gate_built_in && is_launch_gated(&model) {
+                log(&format!(
+                    "skipping the category default {model}: the model is not released yet"
+                ));
+            } else if is_connected(&model) {
                 return resolved(model, variant, None, false);
+            } else {
+                log(&format!(
+                    "skipping the category default {model}: its provider is not connected"
+                ));
             }
-            log(&format!(
-                "skipping the category default {model}: its provider is not connected"
-            ));
         } else if let Some(found) = matches(&model, available) {
             let last = model.rsplit('/').next().unwrap_or(&model);
             if last.len() > "-high".len() && last.ends_with("-high") && found != model {
@@ -142,7 +157,7 @@ pub fn resolve_delegate_model(input: &DelegateInput) -> DelegateChoice {
         }
     }
 
-    if let Some(choice) = resolve_chain(input, warm, connected) {
+    if let Some(choice) = resolve_chain(input, warm, connected, gate_built_in) {
         return choice;
     }
 
@@ -156,6 +171,7 @@ fn resolve_chain(
     input: &DelegateInput,
     warm: bool,
     connected: Option<&Vec<String>>,
+    gate_built_in: bool,
 ) -> Option<DelegateChoice> {
     let chain = &input.chain;
     if !warm {
@@ -171,6 +187,13 @@ fn resolve_chain(
                 ))
             }
             Some(list) => chain.iter().enumerate().find_map(|(index, rung)| {
+                if gate_built_in && is_launch_gated(&rung.model) {
+                    log(&format!(
+                        "skipping chain rung {}: the model is not released yet",
+                        rung.model
+                    ));
+                    return None;
+                }
                 let provider = rung.providers.iter().find(|p| list.contains(p))?;
                 log(&format!(
                     "using chain rung {} through the connected provider {provider}",
