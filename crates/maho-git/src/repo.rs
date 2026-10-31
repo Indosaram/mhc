@@ -258,7 +258,13 @@ impl Git {
     /// # Errors
     /// See [`Self::run`].
     pub fn diff_text(&self, cached: bool, binary: bool, files: &[&str]) -> GitResult<String> {
-        let mut args = vec!["diff", "--no-color", "--no-ext-diff"];
+        let mut args = vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+        ];
         if cached {
             args.push("--cached");
         }
@@ -281,6 +287,8 @@ impl Git {
             "diff",
             "--no-color",
             "--no-ext-diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             "--binary",
             "--full-index",
             from,
