@@ -75,6 +75,9 @@ pub mod skill_discovery;
 pub mod skill_source_cache;
 pub mod skill_invocation;
 pub mod skills;
+#[cfg(test)]
+#[path = "skill_stat_once_tests.rs"]
+mod skill_stat_once_tests;
 pub mod source_info;
 pub mod system_prompt;
 pub mod text;
