@@ -9,6 +9,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub const TODO_WAITING_STATUS_KEY: &str = "todo-waiting";
+
 pub struct GoalDelivery {
     runtime: Arc<GoalRuntime>,
     reference: crate::accounting_hooks::GoalStoreReference,
@@ -372,7 +374,21 @@ impl GoalDelivery {
         ctx: &ExtensionContext,
         goal: Option<&Goal>,
     ) -> Result<(), ExtensionFailure> {
+        // Pin goal/index.ts session_start/session_tree/agent_start: the todo-waiting footer status
+        // describes only the turn that just ended, so every new turn or branch change clears it.
+        if matches!(
+            event,
+            ExtensionEvent::SessionStart(_)
+                | ExtensionEvent::SessionTree { .. }
+                | ExtensionEvent::AgentStart
+        ) {
+            ctx.ui.set_status(TODO_WAITING_STATUS_KEY, None);
+        }
         match event {
+            ExtensionEvent::SessionTree { .. } => {
+                self.todo_backstop.lock().map_err(failure)?.reset_chain();
+                return Ok(());
+            }
             ExtensionEvent::SessionStart(start) => {
                 let neutral = maho_ext_api::goal_lifecycle::goal_lifecycle_service(
                     ctx.session_manager.session_id(),

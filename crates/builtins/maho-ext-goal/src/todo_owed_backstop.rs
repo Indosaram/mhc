@@ -112,7 +112,7 @@ impl TodoOwedBackstop {
                 let mut seen = BTreeSet::new();
                 on_duty.retain(|source| seen.insert(source.clone()));
                 ctx.ui.set_status(
-                    "todo-waiting",
+                    crate::delivery::TODO_WAITING_STATUS_KEY,
                     Some(&format!("waiting: {}", on_duty.join(", "))),
                 );
                 pi.events.emit(TODO_OWED_REMINDER_EVENT,&serde_json::json!({"sessionId":ctx.session_manager.session_id(),"chainCount":self.reminders,"openTasks":open.len(),"now":now,"next":next,"reason":"waiting","sources":on_duty}));
