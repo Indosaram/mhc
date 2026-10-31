@@ -54,16 +54,29 @@ fn resource_updated(id: &Value, uri: Option<&str>) -> Value {
     json!({"jsonrpc": "2.0", "method": "notifications/resources/updated", "params": params})
 }
 
-/// Every sent message with the virtual instant it was handed to the transport.
-type Sent = Arc<Mutex<Vec<(Instant, Value)>>>;
+#[derive(Default)]
+struct SentInner {
+    messages: Mutex<Vec<(Instant, Value)>>,
+    recorded: tokio::sync::Notify,
+}
+/// Every sent message with the virtual instant it was handed to the transport; `recorded` fires on each send.
+#[derive(Clone, Default)]
+struct Sent(Arc<SentInner>);
+impl std::ops::Deref for Sent {
+    type Target = Mutex<Vec<(Instant, Value)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0.messages
+    }
+}
 type Respond = Box<dyn Fn(&Value) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 fn recording(respond: Respond) -> (Sent, SubscriptionSend) {
-    let sent: Sent = Arc::default();
+    let sent = Sent::default();
     let seen = sent.clone();
     let send: SubscriptionSend = Arc::new(move |message: Value| {
         let reply = respond(&message);
         seen.lock().unwrap().push((Instant::now(), message));
+        seen.0.recorded.notify_waiters();
         reply
     });
     (sent, send)
@@ -99,16 +112,34 @@ fn cancellations(sent: &Sent) -> Vec<Value> {
 fn last(sent: &Sent) -> Value {
     messages(sent).last().cloned().expect("nothing sent")
 }
-/// Lets the spawned stream, cancel, and retry tasks run. Paused time never advances while tasks are ready,
-/// so this only drains already-runnable work on the current-thread runtime.
-async fn settle() {
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
-    }
+/// Waits on the recorded-send notification until `expected` messages were handed to the transport (bounded; a
+/// shortfall fails the test), then yields once so the work those sends started (stream completion, retry timers
+/// registering their sleep) runs: the current-thread scheduler drains every runnable task before it resumes this
+/// one. Paused time never auto-advances while tasks are runnable, so the bound only elapses on failure. The
+/// final check rejects extra sends.
+async fn settle(sent: &Sent, expected: usize) {
+    tokio::time::timeout(Duration::from_millis(100), async {
+        loop {
+            let recorded = sent.0.recorded.notified();
+            if sent.lock().unwrap().len() >= expected {
+                break;
+            }
+            recorded.await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("expected {expected} recorded sends"));
+    tokio::task::yield_now().await;
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        expected,
+        "unexpected extra sends"
+    );
 }
-async fn advance(ms: u64) {
+/// Advances paused time, then settles on the send count the timers that fired must have produced.
+async fn advance(sent: &Sent, ms: u64, expected: usize) {
     tokio::time::advance(Duration::from_millis(ms)).await;
-    settle().await;
+    settle(sent, expected).await;
 }
 
 /// Upstream "%s correlates acknowledgments, honors the accepted subset, and cancels on close". `completes`
@@ -134,7 +165,7 @@ async fn correlates_acknowledgments(completes: bool) {
         }
     };
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
     let id = listen_id(&sent);
     let other = json!("other");
     incoming(notification("notifications/tools/list_changed", &id, None)); // Before acknowledgment.
@@ -167,7 +198,7 @@ async fn correlates_acknowledgments(completes: bool) {
         vec![notification("notifications/tools/list_changed", &id, None)]
     );
     subscriptions.dispose();
-    settle().await;
+    settle(&sent, 2).await;
     assert_eq!(cancellations(&sent), vec![id]);
 }
 
@@ -187,8 +218,8 @@ async fn http_completion_without_a_graceful_response_retries_instead_of_retainin
     let subscriptions = ModernSubscriptions::new(send, capabilities(), true);
     let start = Instant::now();
     subscriptions.outgoing(&list(1));
-    settle().await;
-    advance(1000).await;
+    settle(&sent, 1).await;
+    advance(&sent, 1000, 2).await;
     let sent_at: Vec<Duration> = sent
         .lock()
         .unwrap()
@@ -197,13 +228,13 @@ async fn http_completion_without_a_graceful_response_retries_instead_of_retainin
         .collect();
     assert_eq!(sent_at, vec![Duration::ZERO, Duration::from_millis(1000)]);
     subscriptions.dispose();
-    settle().await;
+    settle(&sent, 2).await;
     let before = messages(&sent)
         .into_iter()
         .filter(|message| is_method(message, "subscriptions/listen"))
         .count();
     // No timer survives dispose: no further listen is ever opened.
-    advance(120_000).await;
+    advance(&sent, 120_000, 2).await;
     let after = messages(&sent)
         .into_iter()
         .filter(|message| is_method(message, "subscriptions/listen"))
@@ -215,7 +246,7 @@ async fn graceful_response_ends_the_stream(with_meta: bool) {
     let (sent, send) = recording(ok());
     let subscriptions = ModernSubscriptions::new(send, capabilities(), false);
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
     let id = listen_id(&sent);
     let mut result = json!({"resultType": "complete"});
     if with_meta {
@@ -224,10 +255,10 @@ async fn graceful_response_ends_the_stream(with_meta: bool) {
     assert!(!subscriptions.incoming(&json!({"jsonrpc": "2.0", "id": id, "result": result})));
     assert!(!subscriptions.incoming(&notification("notifications/tools/list_changed", &id, None)));
     // Neither a retry nor a cancellation follows a graceful end.
-    advance(120_000).await;
+    advance(&sent, 120_000, 1).await;
     assert_eq!(messages(&sent).len(), 1);
     subscriptions.dispose();
-    settle().await;
+    settle(&sent, 1).await;
     assert_eq!(messages(&sent).len(), 1);
 }
 
@@ -249,19 +280,19 @@ async fn abrupt_http_failure_uses_bounded_exponential_backoff_and_dispose_cancel
     }));
     let subscriptions = ModernSubscriptions::new(send, capabilities(), false);
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
     assert_eq!(messages(&sent).len(), 1);
-    advance(999).await;
+    advance(&sent, 999, 1).await;
     assert_eq!(messages(&sent).len(), 1);
-    advance(1).await;
+    advance(&sent, 1, 2).await;
     assert_eq!(messages(&sent).len(), 2);
-    advance(1999).await;
+    advance(&sent, 1999, 2).await;
     assert_eq!(messages(&sent).len(), 2);
-    advance(1).await;
+    advance(&sent, 1, 3).await;
     assert_eq!(messages(&sent).len(), 3);
     subscriptions.dispose();
-    settle().await;
-    advance(120_000).await;
+    settle(&sent, 3).await;
+    advance(&sent, 120_000, 3).await;
     assert_eq!(messages(&sent).len(), 3);
 }
 
@@ -270,7 +301,7 @@ async fn paginated_resource_lists_hand_over_delivery_only_after_replacement_ackn
     let (sent, send) = recording(ok());
     let subscriptions = ModernSubscriptions::new(send, capabilities(), false);
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
     let first = listen_id(&sent);
     subscriptions.incoming(&notification(
         "notifications/subscriptions/acknowledged",
@@ -279,11 +310,11 @@ async fn paginated_resource_lists_hand_over_delivery_only_after_replacement_ackn
     ));
     subscriptions.outgoing(&resources_list(2, None));
     subscriptions.incoming(&resources_page(2, &["test://a"], Some("next")));
-    settle().await;
+    settle(&sent, 1).await;
     assert_eq!(listen_id(&sent), first);
     subscriptions.outgoing(&resources_list(3, Some("next")));
     subscriptions.incoming(&resources_page(3, &["test://b"], None));
-    settle().await;
+    settle(&sent, 2).await;
     let second = listen_id(&sent);
     assert_ne!(second, first);
     assert_eq!(
@@ -306,7 +337,7 @@ async fn paginated_resource_lists_hand_over_delivery_only_after_replacement_ackn
         &second,
         Some(json!({"toolsListChanged": true, "resourceSubscriptions": ["test://b", "test://unrequested"]})),
     ));
-    settle().await;
+    settle(&sent, 3).await;
     let cancelled = last(&sent);
     assert!(is_method(&cancelled, "notifications/cancelled"));
     assert_eq!(cancelled["params"]["requestId"], first);
@@ -335,7 +366,8 @@ async fn resource_updates_reach_refresh_handlers_only_for_an_accepted_uri() {
     let subscriptions = ModernSubscriptions::new(send, capabilities(), false);
     subscriptions.outgoing(&resources_list(1, None));
     subscriptions.incoming(&resources_page(1, &["test://a", "test://b"], None));
-    settle().await;
+    // The first listen task is replaced before it runs: one cancellation and the replacement listen.
+    settle(&sent, 2).await;
     let id = listen_id(&sent);
     subscriptions.incoming(&notification(
         "notifications/subscriptions/acknowledged",
@@ -361,21 +393,21 @@ async fn acknowledgment_missing_the_required_notifications_object_cancels_and_re
     let (sent, send) = recording(ok());
     let subscriptions = ModernSubscriptions::new(send, capabilities(), false);
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
     let id = listen_id(&sent);
     subscriptions.incoming(&notification(
         "notifications/subscriptions/acknowledged",
         &id,
         None,
     ));
-    settle().await;
+    settle(&sent, 2).await;
     let cancelled = last(&sent);
     assert!(is_method(&cancelled, "notifications/cancelled"));
     assert_eq!(cancelled["params"]["requestId"], id);
     assert!(!subscriptions.incoming(&notification("notifications/tools/list_changed", &id, None)));
-    advance(999).await;
+    advance(&sent, 999, 2).await;
     assert_eq!(listen_id(&sent), id);
-    advance(1).await;
+    advance(&sent, 1, 3).await;
     assert_ne!(listen_id(&sent), id);
     subscriptions.dispose();
 }
@@ -404,7 +436,8 @@ async fn quick_acknowledged_disconnects_grow_backoff_until_an_accepted_notificat
         }
     };
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
+    let mut expected = 1;
     for delay in [1000, 2000, 4000] {
         let id = listen_id(&sent);
         subscriptions.incoming(&notification(
@@ -413,10 +446,11 @@ async fn quick_acknowledged_disconnects_grow_backoff_until_an_accepted_notificat
             Some(json!({"toolsListChanged": true})),
         ));
         drop_latest();
-        settle().await;
-        advance(delay - 1).await;
+        settle(&sent, expected).await;
+        advance(&sent, delay - 1, expected).await;
         assert_eq!(listen_id(&sent), id, "reopened before {delay}ms");
-        advance(1).await;
+        expected += 1;
+        advance(&sent, 1, expected).await;
         assert_ne!(listen_id(&sent), id, "not reopened after {delay}ms");
     }
     let healthy = listen_id(&sent);
@@ -431,10 +465,10 @@ async fn quick_acknowledged_disconnects_grow_backoff_until_an_accepted_notificat
         None
     )));
     drop_latest();
-    settle().await;
-    advance(999).await;
+    settle(&sent, 4).await;
+    advance(&sent, 999, 4).await;
     assert_eq!(listen_id(&sent), healthy);
-    advance(1).await;
+    advance(&sent, 1, 5).await;
     assert_ne!(listen_id(&sent), healthy);
     subscriptions.dispose();
 }
@@ -443,7 +477,7 @@ async fn concurrent_resource_sweeps(latest_first: bool) {
     let (sent, send) = recording(ok());
     let subscriptions = ModernSubscriptions::new(send, capabilities(), false);
     subscriptions.outgoing(&list(1));
-    settle().await;
+    settle(&sent, 1).await;
     let initial = listen_id(&sent);
     subscriptions.outgoing(&resources_list(2, None));
     subscriptions.outgoing(&resources_list(3, None));
@@ -455,11 +489,11 @@ async fn concurrent_resource_sweeps(latest_first: bool) {
     let latest = resources_page(5, &["test://new-b"], None);
     if !latest_first {
         subscriptions.incoming(&old);
-        settle().await;
+        settle(&sent, 1).await;
         assert_eq!(listen_id(&sent), initial);
     }
     subscriptions.incoming(&latest);
-    settle().await;
+    settle(&sent, 3).await;
     let published = listen_id(&sent);
     assert_eq!(
         last(&sent)["params"]["notifications"]["resourceSubscriptions"],
@@ -467,7 +501,7 @@ async fn concurrent_resource_sweeps(latest_first: bool) {
     );
     if latest_first {
         subscriptions.incoming(&old);
-        settle().await;
+        settle(&sent, 3).await;
         assert_eq!(listen_id(&sent), published);
     }
     subscriptions.dispose();

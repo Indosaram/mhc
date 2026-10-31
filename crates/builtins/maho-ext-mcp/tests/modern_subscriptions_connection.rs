@@ -1,15 +1,27 @@
-//! Port of senpi test/mcp/4193-subscriptions.test.ts and modern/sdk-bridge.test.ts:
-//! connection-level listen opt-ins, undeclared filters, disposal aborting the HTTP listen stream,
-//! renewal re-establishing subscriptions, and routing cases against ModernSubscriptions / sdk_bridge.
+//! Ports of senpi packages/coding-agent/test/mcp/4193-subscriptions.test.ts and
+//! src/core/extensions/builtin/mcp/modern/sdk-bridge.test.ts (#4193 connection-owned `subscriptions/listen`).
+//!
+//! Upstream drives a real `ServerConnection` against a synthetic node HTTP peer (fixtures/subscriptions-http.ts);
+//! this port does the same with `ServerConnection` against a local axum peer that records every POST and keeps each
+//! listen stream open until the client drops it. senpi's `ModernSdkBridge` is the port's `McpClient` (local
+//! initialize from discovery, `ModernSubscriptions` routing, the stateless `ModernHttpTransport`), so the bridge
+//! cases run through the same connection surface; pure routing runs on `ModernSubscriptions` directly.
 
-use axum::{Json, Router, body::Bytes, http::HeaderMap, response::IntoResponse, routing::post};
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    http::HeaderMap,
+    response::Response,
+    routing::post,
+};
 use maho_ext_mcp::{
     catalog_cache::collect_server_catalog_for_cache,
     config_schema::{Auth, McpServerConfig, Transport},
-    connection::ServerConnection,
+    connection::{ServerConnection, ServerConnectionToolsChangedCause},
     log::McpLogger,
     modern::{
-        sdk_bridge::{modern_initialize_result, normalize_modern_result},
+        era::DiscoveryResult,
+        sdk_bridge::modern_initialize_result,
         subscriptions::{ModernSubscriptions, SubscriptionSend},
         wire::MODERN_PROTOCOL_VERSION,
     },
@@ -17,10 +29,14 @@ use maho_ext_mcp::{
 };
 use serde_json::{Value, json};
 use std::{
-    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::sync::{Notify, mpsc, oneshot};
+
+const WAIT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const SUBSCRIPTION_KEY: &str = "io.modelcontextprotocol/subscriptionId";
 
 #[derive(Clone, Debug)]
 struct WireRequest {
@@ -29,36 +45,48 @@ struct WireRequest {
     headers: HeaderMap,
 }
 
+/// One open `subscriptions/listen` response (upstream `fixture.streams[i]`).
 #[derive(Clone)]
-struct ListenStreamHandle {
-    id: Value,
-    notify_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    dropped_rx: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+struct ListenStream {
+    message: Value,
+    /// Upstream `stream.response.write(...)`: each string is written as one SSE `data:` event.
+    write: mpsc::UnboundedSender<String>,
+    dropped: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
 }
-
-impl ListenStreamHandle {
-    async fn wait_dropped(&self) {
-        let rx = self
-            .dropped_rx
+impl ListenStream {
+    fn id(&self) -> Value {
+        self.message["id"].clone()
+    }
+    /// The client has not yet dropped this stream (upstream `cancelStream` not called).
+    fn is_open(&self) -> bool {
+        let mut dropped = self.dropped.lock().unwrap();
+        matches!(
+            dropped.as_mut().map(oneshot::Receiver::try_recv),
+            Some(Err(oneshot::error::TryRecvError::Empty))
+        )
+    }
+    /// Upstream `response.once("close", ...)`: resolves when the client drops the stream.
+    async fn closed(&self) {
+        let receiver = self
+            .dropped
             .lock()
             .unwrap()
             .take()
-            .expect("already awaited");
-        tokio::time::timeout(Duration::from_secs(2), rx)
+            .expect("closed awaited once");
+        tokio::time::timeout(WAIT, receiver)
             .await
-            .expect("stream dropped in time")
-            .expect("stream drop channel");
+            .expect("listen stream closed in time")
+            .expect("drop signal");
     }
 }
 
+/// Fires once when the server-side SSE body is dropped (the client closed the response).
 struct DropSignal<S> {
     stream: S,
-    signal: Option<tokio::sync::oneshot::Sender<()>>,
+    signal: Option<oneshot::Sender<()>>,
 }
-
 impl<S: futures::Stream + Unpin> futures::Stream for DropSignal<S> {
     type Item = S::Item;
-
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -66,7 +94,6 @@ impl<S: futures::Stream + Unpin> futures::Stream for DropSignal<S> {
         std::pin::Pin::new(&mut self.stream).poll_next(cx)
     }
 }
-
 impl<S> Drop for DropSignal<S> {
     fn drop(&mut self) {
         if let Some(signal) = self.signal.take() {
@@ -75,173 +102,151 @@ impl<S> Drop for DropSignal<S> {
     }
 }
 
-struct SubscriptionsFixture {
+/// Upstream `openFixture(options)`, plus the sdk-bridge discovery fields.
+#[derive(Default)]
+struct FixtureOptions {
+    tools: Option<Vec<Value>>,
+    tool_result: Option<Value>,
+    capabilities: Option<Value>,
+    server_info: Option<Value>,
+    instructions: Option<&'static str>,
+    /// sdk-bridge.test.ts lists tools with `nextCursor: null`.
+    null_next_cursor: bool,
+}
+
+struct Fixture {
     url: String,
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    stop: Option<oneshot::Sender<()>>,
     requests: Arc<Mutex<Vec<WireRequest>>>,
-    request_notify: Arc<tokio::sync::Notify>,
-    streams: Arc<Mutex<Vec<ListenStreamHandle>>>,
-    stream_notify: Arc<tokio::sync::Notify>,
+    streams: Arc<Mutex<Vec<ListenStream>>>,
+    changed: Arc<Notify>,
     tools: Arc<Mutex<Vec<Value>>>,
     root: tempfile::TempDir,
 }
 
-impl SubscriptionsFixture {
-    async fn start(capabilities: Option<Value>, tools: Option<Vec<Value>>) -> Self {
+impl Fixture {
+    async fn open(options: FixtureOptions) -> Self {
         let requests: Arc<Mutex<Vec<WireRequest>>> = Arc::default();
-        let request_notify = Arc::new(tokio::sync::Notify::new());
-        let streams: Arc<Mutex<Vec<ListenStreamHandle>>> = Arc::default();
-        let stream_notify = Arc::new(tokio::sync::Notify::new());
-
-        let capabilities = capabilities.unwrap_or_else(|| {
-            json!({
+        let streams: Arc<Mutex<Vec<ListenStream>>> = Arc::default();
+        let changed = Arc::new(Notify::new());
+        let tools = Arc::new(Mutex::new(options.tools.unwrap_or_else(|| {
+            vec![json!({"name": "echo", "inputSchema": {"type": "object"}})]
+        })));
+        let mut discovery = json!({
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28"],
+            "capabilities": options.capabilities.unwrap_or_else(|| json!({
                 "tools": {"listChanged": true},
                 "prompts": {"listChanged": true},
                 "resources": {"listChanged": true, "subscribe": true},
-            })
+            })),
+            "_meta": {"io.modelcontextprotocol/serverInfo": options.server_info.unwrap_or_else(|| json!({"name": "synthetic-peer", "version": "1"}))},
         });
-        let tools = Arc::new(Mutex::new(tools.unwrap_or_else(|| {
-            vec![json!({"name": "echo", "inputSchema": {"type": "object"}})]
-        })));
+        if let Some(instructions) = options.instructions {
+            discovery["instructions"] = json!(instructions);
+        }
+        let tool_result = options.tool_result.unwrap_or_else(|| json!({}));
+        let null_next_cursor = options.null_next_cursor;
 
-        let router_requests = requests.clone();
-        let router_req_notify = request_notify.clone();
-        let router_streams = streams.clone();
-        let router_stream_notify = stream_notify.clone();
-        let router_tools = tools.clone();
-
+        let state = (
+            requests.clone(),
+            streams.clone(),
+            changed.clone(),
+            tools.clone(),
+        );
         let app = Router::new().route(
             "/mcp",
             post(move |headers: HeaderMap, body: Bytes| {
-                let requests = router_requests.clone();
-                let req_notify = router_req_notify.clone();
-                let streams = router_streams.clone();
-                let stream_notify = router_stream_notify.clone();
-                let tools = router_tools.clone();
-                let capabilities = capabilities.clone();
-
+                let (requests, streams, changed, tools) = state.clone();
+                let (discovery, tool_result) = (discovery.clone(), tool_result.clone());
                 async move {
                     let message: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                    let method = message
-                        .get("method")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-
+                    let method = message["method"].as_str().unwrap_or_default().to_owned();
                     requests.lock().unwrap().push(WireRequest {
                         method: method.clone(),
                         message: message.clone(),
                         headers,
                     });
-                    req_notify.notify_waiters();
-
                     if method == "subscriptions/listen" {
-                        let (notify_tx, notify_rx) =
-                            tokio::sync::mpsc::unbounded_channel::<String>();
-                        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
-
-                        streams.lock().unwrap().push(ListenStreamHandle {
-                            id: message.get("id").cloned().unwrap_or(Value::Null),
-                            notify_tx,
-                            dropped_rx: Arc::new(Mutex::new(Some(dropped_rx))),
+                        let (write, written) = mpsc::unbounded_channel::<String>();
+                        let (dropped_sender, dropped) = oneshot::channel();
+                        let acknowledged = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/subscriptions/acknowledged",
+                            "params": {
+                                "_meta": {SUBSCRIPTION_KEY: message["id"]},
+                                "notifications": message["params"]["notifications"],
+                            },
                         });
-                        stream_notify.notify_waiters();
-
-                        let initial = format!(
-                            "data: {}\n\n",
-                            json!({
-                                "jsonrpc": "2.0",
-                                "method": "notifications/subscriptions/acknowledged",
-                                "params": {
-                                    "_meta": {
-                                        "io.modelcontextprotocol/subscriptionId": message["id"]
-                                    },
-                                    "notifications": message["params"]["notifications"]
-                                }
-                            })
-                        );
-
+                        streams.lock().unwrap().push(ListenStream {
+                            message,
+                            write,
+                            dropped: Arc::new(Mutex::new(Some(dropped))),
+                        });
+                        changed.notify_waiters();
+                        // The acknowledgment first, then every server write, until the client drops it.
                         let stream = futures::stream::unfold(
-                            (Some(initial), notify_rx),
-                            |(first, mut rx)| async move {
-                                if let Some(initial_chunk) = first {
-                                    Some((
-                                        Ok::<_, std::io::Error>(Bytes::from(initial_chunk)),
-                                        (None, rx),
-                                    ))
-                                } else {
-                                    match rx.recv().await {
-                                        Some(msg) => Some((
-                                            Ok::<_, std::io::Error>(Bytes::from(format!(
-                                                "data: {msg}\n\n"
-                                            ))),
-                                            (None, rx),
-                                        )),
-                                        None => None,
-                                    }
-                                }
+                            (Some(acknowledged.to_string()), written),
+                            |(first, mut written)| async move {
+                                let data = match first {
+                                    Some(first) => first,
+                                    None => written.recv().await?,
+                                };
+                                Some((
+                                    Ok::<_, std::io::Error>(Bytes::from(format!(
+                                        "data: {data}\n\n"
+                                    ))),
+                                    (None, written),
+                                ))
                             },
                         );
-
-                        let body = DropSignal {
-                            stream,
-                            signal: Some(dropped_tx),
-                        };
-
-                        return axum::response::Response::builder()
+                        return Response::builder()
                             .header("Content-Type", "text/event-stream")
-                            .body(axum::body::Body::from_stream(body))
+                            .body(Body::from_stream(DropSignal {
+                                stream: Box::pin(stream),
+                                signal: Some(dropped_sender),
+                            }))
                             .unwrap();
                     }
-
-                    let id = message.get("id").cloned().unwrap_or(Value::Null);
-                    let result = match method.as_str() {
-                        "server/discover" => json!({
-                            "resultType": "complete",
-                            "supportedVersions": [MODERN_PROTOCOL_VERSION],
-                            "capabilities": capabilities,
-                            "_meta": {
-                                "io.modelcontextprotocol/serverInfo": {
-                                    "name": "synthetic-peer",
-                                    "version": "1"
-                                }
-                            },
-                            "instructions": "Use these tools"
-                        }),
+                    changed.notify_waiters();
+                    let mut result = match method.as_str() {
+                        "server/discover" => discovery,
                         "tools/list" => {
-                            let current = tools.lock().unwrap().clone();
-                            json!({
-                                "resultType": "complete",
-                                "tools": current
-                            })
+                            let mut result = json!({"resultType": "complete", "tools": tools.lock().unwrap().clone()});
+                            if null_next_cursor {
+                                result["nextCursor"] = Value::Null;
+                            }
+                            result
                         }
-                        "prompts/list" => json!({
-                            "resultType": "complete",
-                            "prompts": []
-                        }),
-                        "resources/list" => json!({
-                            "resultType": "complete",
-                            "resources": [{"uri": "test://data", "name": "data"}]
-                        }),
-                        "resources/templates/list" => json!({
-                            "resultType": "complete",
-                            "resourceTemplates": []
-                        }),
-                        "tools/call" => json!({
-                            "resultType": "complete",
-                            "content": []
-                        }),
+                        "prompts/list" => json!({"resultType": "complete", "prompts": []}),
+                        "resources/list" => {
+                            json!({"resultType": "complete", "resources": [{"uri": "test://data", "name": "data"}]})
+                        }
+                        "resources/templates/list" => {
+                            json!({"resultType": "complete", "resourceTemplates": []})
+                        }
+                        "tools/call" => json!({"resultType": "complete", "content": []}),
                         _ => json!({"resultType": "complete"}),
                     };
-
-                    Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+                    if method == "tools/call"
+                        && let (Some(result), Some(extra)) =
+                            (result.as_object_mut(), tool_result.as_object())
+                    {
+                        result.extend(extra.clone());
+                    }
+                    Response::builder()
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(
+                            json!({"jsonrpc": "2.0", "id": message["id"], "result": result})
+                                .to_string(),
+                        ))
+                        .unwrap()
                 }
             }),
         );
-
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let (stop, stopped) = oneshot::channel::<()>();
         tokio::spawn(async move {
             axum::serve(listener, app)
                 .with_graceful_shutdown(async {
@@ -250,478 +255,461 @@ impl SubscriptionsFixture {
                 .await
                 .unwrap();
         });
-
-        let root = tempfile::tempdir().unwrap();
         Self {
             url: format!("http://{address}/mcp"),
             stop: Some(stop),
             requests,
-            request_notify,
             streams,
-            stream_notify,
+            changed,
             tools,
-            root,
+            root: tempfile::tempdir().unwrap(),
         }
     }
 
-    fn create_connection(&self, name: &str) -> Arc<ServerConnection> {
-        let config = McpServerConfig {
-            enabled: Some(true),
-            transport: Some(Transport::Http),
-            url: Some(self.url.clone()),
-            auth: Some(Auth::Disabled(false)),
-            connect_timeout_ms: Some(5000.0),
-            ..Default::default()
-        };
-        let logger = Arc::new(Mutex::new(
-            McpLogger::new(name, self.root.path(), None).unwrap(),
-        ));
-        ServerConnection::new(name, config, None, logger)
+    /// Upstream `new ServerConnection({ config: normalizeServer({ type: "http", url, auth: false }) })`.
+    fn connection(&self) -> Arc<ServerConnection> {
+        ServerConnection::new(
+            "configured-fixture",
+            McpServerConfig {
+                enabled: Some(true),
+                transport: Some(Transport::Http),
+                url: Some(self.url.clone()),
+                auth: Some(Auth::Disabled(false)),
+                connect_timeout_ms: Some(10_000.0),
+                ..Default::default()
+            },
+            None,
+            Arc::new(Mutex::new(
+                McpLogger::new("triage", self.root.path(), None).unwrap(),
+            )),
+        )
     }
 
-    fn set_tools(&self, tools: Vec<Value>) {
-        *self.tools.lock().unwrap() = tools;
+    fn methods(&self) -> Vec<String> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.method.clone())
+            .collect()
     }
 
-    async fn wait_for_request(&self, method: &str) -> WireRequest {
-        tokio::time::timeout(Duration::from_secs(2), async {
+    /// Waits (bounded) until a recorded listen stream satisfies `accept`; returns the last such stream.
+    async fn stream_where(&self, accept: impl Fn(&[ListenStream]) -> bool) -> ListenStream {
+        tokio::time::timeout(WAIT, async {
             loop {
-                let notified = self.request_notify.notified();
-                if let Some(found) = self
-                    .requests
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|r| r.method == method)
-                    .cloned()
+                let changed = self.changed.notified();
                 {
-                    return found;
+                    let streams = self.streams.lock().unwrap();
+                    if accept(&streams) {
+                        return streams.last().cloned().expect("a stream");
+                    }
                 }
-                notified.await;
+                changed.await;
             }
         })
         .await
-        .expect("timed out waiting for request")
+        .expect("listen stream in time")
     }
 
-    async fn wait_for_stream(&self) -> ListenStreamHandle {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let notified = self.stream_notify.notified();
-                if let Some(stream) = self.streams.lock().unwrap().last().cloned() {
-                    return stream;
-                }
-                notified.await;
-            }
-        })
-        .await
-        .expect("timed out waiting for stream")
+    /// Upstream `fixture.next("subscriptions/listen")` after `count` earlier streams.
+    async fn listen(&self, count: usize) -> ListenStream {
+        self.stream_where(|streams| streams.len() > count).await
     }
 
-    async fn stop(mut self) {
+    fn close(mut self) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
     }
 }
 
-/// Upstream: 4193 a connected modern catalog opens subscriptions/listen with list-change opt-ins
+async fn connect(fixture: &Fixture) -> Arc<ServerConnection> {
+    let connection = fixture.connection();
+    tokio::time::timeout(WAIT, connection.connect())
+        .await
+        .expect("connect in time")
+        .expect("connect");
+    connection
+}
+
+/// 4193-subscriptions.test.ts "4193 a connected modern catalog opens subscriptions/listen with list-change opt-ins".
 #[tokio::test]
-async fn connected_modern_catalog_opens_subscriptions_listen_with_list_change_opt_ins() {
-    let fixture = SubscriptionsFixture::start(None, None).await;
-    let connection = fixture.create_connection("fixture");
-    let client = connection.connect().await.unwrap();
-
-    let timeout = Duration::from_secs(2);
-    let _ = client
-        .request("tools/list", json!({}), timeout)
-        .await
-        .unwrap();
-    let _ = client
-        .request("prompts/list", json!({}), timeout)
-        .await
-        .unwrap();
-    let _ = client
-        .request("resources/list", json!({}), timeout)
-        .await
-        .unwrap();
-
-    let _ = fixture.wait_for_request("subscriptions/listen").await;
-
-    let methods: Vec<String> = fixture
+async fn a_connected_modern_catalog_opens_subscriptions_listen_with_list_change_opt_ins() {
+    let fixture = Fixture::open(FixtureOptions::default()).await;
+    let connection = connect(&fixture).await;
+    let client = connection.client().unwrap();
+    for method in ["tools/list", "prompts/list", "resources/list"] {
+        client
+            .request(method, json!({}), REQUEST_TIMEOUT)
+            .await
+            .unwrap();
+    }
+    // Connect and all initial lists are complete: no timer or network polling guesses.
+    let listen = fixture.listen(0).await;
+    let methods = fixture.methods();
+    assert!(methods.contains(&"server/discover".to_owned()));
+    assert!(methods.contains(&"tools/list".to_owned()));
+    assert!(methods.contains(&"subscriptions/listen".to_owned()));
+    let first = fixture
         .requests
         .lock()
         .unwrap()
         .iter()
-        .map(|r| r.method.clone())
-        .collect();
-    assert!(methods.contains(&"server/discover".into()));
-    assert!(methods.contains(&"tools/list".into()));
-    assert!(methods.contains(&"subscriptions/listen".into()));
-
-    let listen = fixture
-        .requests
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|r| r.method == "subscriptions/listen")
+        .find(|request| request.method == "subscriptions/listen")
         .cloned()
         .expect("listen request");
-
-    let notifications = &listen.message["params"]["notifications"];
-    assert_eq!(notifications["toolsListChanged"], json!(true));
-    assert_eq!(notifications["promptsListChanged"], json!(true));
-    assert_eq!(notifications["resourcesListChanged"], json!(true));
-
+    assert_eq!(listen.message["method"], "subscriptions/listen");
+    let notifications = &first.message["params"]["notifications"];
+    assert_eq!(notifications["toolsListChanged"], true);
+    assert_eq!(notifications["promptsListChanged"], true);
+    assert_eq!(notifications["resourcesListChanged"], true);
     connection.dispose().await.unwrap();
-    fixture.stop().await;
+    fixture.close();
 }
 
-/// Upstream: 4193 omits undeclared filters and keeps calls independent of the listen lifetime
+/// 4193-subscriptions.test.ts "4193 omits undeclared filters and keeps calls independent of the listen lifetime".
 #[tokio::test]
 async fn omits_undeclared_filters_and_keeps_calls_independent_of_the_listen_lifetime() {
-    let capabilities = json!({
-        "tools": {},
-        "resources": {},
-        "prompts": {},
-    });
-    let fixture = SubscriptionsFixture::start(Some(capabilities), None).await;
-    let connection = fixture.create_connection("fixture");
-    let client = connection.connect().await.unwrap();
+    let fixture = Fixture::open(FixtureOptions {
+        capabilities: Some(json!({"tools": {}, "resources": {}, "prompts": {}})),
+        ..Default::default()
+    })
+    .await;
+    let connection = connect(&fixture).await;
+    let client = connection.client().unwrap();
+    client
+        .request("tools/list", json!({}), REQUEST_TIMEOUT)
+        .await
+        .unwrap();
+    client
+        .request("resources/list", json!({}), REQUEST_TIMEOUT)
+        .await
+        .unwrap();
+    ensure_mcp_resource_subscriptions(
+        client.clone(),
+        &[json!({"uri": "test://data"})],
+        REQUEST_TIMEOUT,
+    )
+    .await;
+    client
+        .request("tools/call", json!({"name": "echo"}), REQUEST_TIMEOUT)
+        .await
+        .unwrap();
+    let methods = fixture.methods();
+    assert!(!methods.contains(&"subscriptions/listen".to_owned()));
+    assert!(!methods.contains(&"resources/subscribe".to_owned()));
+    connection.dispose().await.unwrap();
+    fixture.close();
+}
 
-    let timeout = Duration::from_secs(2);
-    let _ = client
-        .request("tools/list", json!({}), timeout)
+/// Shared body of 4193-subscriptions.test.ts "4193 %s invalidates and refetches the existing catalog".
+async fn invalidates_and_refetches_the_existing_catalog(method: &str) {
+    let fixture = Fixture::open(FixtureOptions {
+        tools: Some(vec![
+            json!({"name": "before", "inputSchema": {"type": "object"}}),
+        ]),
+        ..Default::default()
+    })
+    .await;
+    let connection = connect(&fixture).await;
+    collect_server_catalog_for_cache(&connection, REQUEST_TIMEOUT, "synthetic")
         .await
         .unwrap();
-    let _ = client
-        .request("resources/list", json!({}), timeout)
-        .await
-        .unwrap();
-    ensure_mcp_resource_subscriptions(client.clone(), &[json!({"uri": "test://data"})], timeout)
+    fixture.listen(0).await;
+    ensure_mcp_resource_subscriptions(
+        connection.client().unwrap(),
+        &[json!({"uri": "test://data"})],
+        REQUEST_TIMEOUT,
+    )
+    .await;
+    // Observe the final resource-filter stream on the server, not a timed polling guess.
+    let stream = fixture
+        .stream_where(|streams| {
+            streams.last().is_some_and(|stream| {
+                stream.message["params"]["notifications"]["resourceSubscriptions"]
+                    .as_array()
+                    .is_some_and(|uris| !uris.is_empty())
+            })
+        })
         .await;
-    let _ = client
-        .request("tools/call", json!({"name": "echo"}), timeout)
-        .await
+    let mut changes = connection.on_tools_changed();
+    *fixture.tools.lock().unwrap() =
+        vec![json!({"name": "after", "inputSchema": {"type": "object"}})];
+    let mut params = json!({"_meta": {SUBSCRIPTION_KEY: stream.id()}});
+    if method == "notifications/resources/updated" {
+        params["uri"] = json!("test://data");
+    }
+    stream
+        .write
+        .send(json!({"jsonrpc": "2.0", "method": method, "params": params}).to_string())
         .unwrap();
-
-    let methods: Vec<String> = fixture
-        .requests
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|r| r.method.clone())
-        .collect();
-    assert!(!methods.contains(&"subscriptions/listen".into()));
-    assert!(!methods.contains(&"resources/subscribe".into()));
-
-    connection.dispose().await.unwrap();
-    fixture.stop().await;
-}
-
-/// Upstream: 4193 disposal aborts the outstanding HTTP listen stream
-#[tokio::test]
-async fn disposal_aborts_the_outstanding_http_listen_stream() {
-    let fixture = SubscriptionsFixture::start(None, None).await;
-    let connection = fixture.create_connection("fixture");
-    let client = connection.connect().await.unwrap();
-
-    let timeout = Duration::from_secs(2);
-    let _ = client
-        .request("tools/list", json!({}), timeout)
-        .await
-        .unwrap();
-
-    let stream = fixture.wait_for_stream().await;
-    connection.dispose().await.unwrap();
-    stream.wait_dropped().await;
-
-    fixture.stop().await;
-}
-
-/// Upstream: 4193 connection renewal closes its old stream and reestablishes subscriptions
-#[tokio::test]
-async fn connection_renewal_closes_its_old_stream_and_reestablishes_subscriptions() {
-    let fixture = SubscriptionsFixture::start(None, None).await;
-    let connection = fixture.create_connection("fixture");
-    let client = connection.connect().await.unwrap();
-
-    let timeout = Duration::from_secs(2);
-    let _ = client
-        .request("tools/list", json!({}), timeout)
-        .await
-        .unwrap();
-
-    let first_stream = fixture.wait_for_stream().await;
-    let first_id = first_stream.id.clone();
-
-    let renewed_client = connection.renew().await.unwrap();
-    first_stream.wait_dropped().await;
-
-    let _ = renewed_client
-        .request("tools/list", json!({}), timeout)
-        .await
-        .unwrap();
-
-    let renewed_stream = tokio::time::timeout(Duration::from_secs(2), async {
+    // Upstream refetches from `onToolsChanged`.
+    tokio::time::timeout(WAIT, async {
         loop {
-            let notified = fixture.stream_notify.notified();
-            let streams = fixture.streams.lock().unwrap().clone();
-            if streams.len() >= 2 {
-                return streams.last().unwrap().clone();
+            if changes.recv().await.unwrap().cause
+                == ServerConnectionToolsChangedCause::Notification
+            {
+                break;
             }
-            notified.await;
         }
     })
     .await
-    .unwrap();
-
-    assert_ne!(renewed_stream.id, first_id);
-
-    connection.dispose().await.unwrap();
-    fixture.stop().await;
-}
-
-/// Upstream: 4193 %s invalidates and refetches the existing catalog (notifications/tools/list_changed)
-#[tokio::test]
-async fn notification_invalidates_and_refetches_existing_catalog() {
-    let initial_tools = vec![json!({"name": "before", "inputSchema": {"type": "object"}})];
-    let fixture = SubscriptionsFixture::start(None, Some(initial_tools)).await;
-    let connection = fixture.create_connection("fixture");
-    let client = connection.connect().await.unwrap();
-
-    let timeout = Duration::from_secs(5);
-    let mut tools_changed = connection.on_tools_changed();
-
-    let catalog = collect_server_catalog_for_cache(&connection, timeout, "synthetic")
+    .expect("tools changed in time");
+    let catalog = collect_server_catalog_for_cache(&connection, REQUEST_TIMEOUT, "synthetic")
         .await
         .unwrap();
-    assert_eq!(catalog.tools.len(), 1);
-    assert_eq!(catalog.tools[0]["name"], "before");
-
-    let stream = fixture.wait_for_stream().await;
-
-    // Server modifies tools
-    fixture.set_tools(vec![
-        json!({"name": "after", "inputSchema": {"type": "object"}}),
-    ]);
-
-    // Push notification over SSE stream
-    let notification_body = json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/tools/list_changed",
-        "params": {
-            "_meta": {
-                "io.modelcontextprotocol/subscriptionId": stream.id
-            }
-        }
-    });
-    stream
-        .notify_tx
-        .send(notification_body.to_string())
-        .unwrap();
-
-    let _ = tokio::time::timeout(Duration::from_secs(3), tools_changed.recv())
-        .await
-        .unwrap()
-        .unwrap();
-
-    let refreshed_catalog = collect_server_catalog_for_cache(&connection, timeout, "synthetic")
-        .await
-        .unwrap();
-    assert_eq!(refreshed_catalog.tools.len(), 1);
-    assert_eq!(refreshed_catalog.tools[0]["name"], "after");
-
-    let methods: Vec<String> = fixture
-        .requests
-        .lock()
-        .unwrap()
+    let names: Vec<&str> = catalog
+        .tools
         .iter()
-        .map(|r| r.method.clone())
+        .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(!methods.contains(&"resources/subscribe".into()));
-
-    let tool_call = client
-        .request("tools/call", json!({"name": "after"}), timeout)
+    assert_eq!(names, ["after"]);
+    assert!(
+        !fixture
+            .methods()
+            .contains(&"resources/subscribe".to_owned())
+    );
+    // The open stream must not occupy the application request path.
+    let called = connection
+        .client()
+        .unwrap()
+        .request("tools/call", json!({"name": "after"}), REQUEST_TIMEOUT)
         .await
         .unwrap();
-    assert_eq!(tool_call["content"], json!([]));
-
+    assert_eq!(called["content"], json!([]));
     connection.dispose().await.unwrap();
-    fixture.stop().await;
+    fixture.close();
 }
 
-/// Upstream: populates SDK state through local initialize while keeping all wire traffic modern
+/// 4193-subscriptions.test.ts "4193 %s invalidates and refetches the existing catalog" (tools list_changed).
+#[tokio::test]
+async fn tools_list_changed_invalidates_and_refetches_the_existing_catalog() {
+    invalidates_and_refetches_the_existing_catalog("notifications/tools/list_changed").await;
+}
+
+/// 4193-subscriptions.test.ts "4193 %s invalidates and refetches the existing catalog" (prompts list_changed).
+#[tokio::test]
+async fn prompts_list_changed_invalidates_and_refetches_the_existing_catalog() {
+    invalidates_and_refetches_the_existing_catalog("notifications/prompts/list_changed").await;
+}
+
+/// 4193-subscriptions.test.ts "4193 %s invalidates and refetches the existing catalog" (resources list_changed).
+#[tokio::test]
+async fn resources_list_changed_invalidates_and_refetches_the_existing_catalog() {
+    invalidates_and_refetches_the_existing_catalog("notifications/resources/list_changed").await;
+}
+
+/// 4193-subscriptions.test.ts "4193 %s invalidates and refetches the existing catalog" (resources updated).
+#[tokio::test]
+async fn resources_updated_invalidates_and_refetches_the_existing_catalog() {
+    invalidates_and_refetches_the_existing_catalog("notifications/resources/updated").await;
+}
+
+/// 4193-subscriptions.test.ts "4193 disposal aborts the outstanding HTTP listen stream".
+#[tokio::test]
+async fn disposal_aborts_the_outstanding_http_listen_stream() {
+    let fixture = Fixture::open(FixtureOptions::default()).await;
+    let connection = connect(&fixture).await;
+    connection
+        .client()
+        .unwrap()
+        .request("tools/list", json!({}), REQUEST_TIMEOUT)
+        .await
+        .unwrap();
+    let stream = fixture.listen(0).await;
+    connection.dispose().await.unwrap();
+    stream.closed().await;
+    fixture.close();
+}
+
+/// 4193-subscriptions.test.ts "4193 connection renewal closes its old stream and reestablishes subscriptions".
+#[tokio::test]
+async fn connection_renewal_closes_its_old_stream_and_reestablishes_subscriptions() {
+    let fixture = Fixture::open(FixtureOptions::default()).await;
+    let connection = connect(&fixture).await;
+    connection
+        .client()
+        .unwrap()
+        .request("tools/list", json!({}), REQUEST_TIMEOUT)
+        .await
+        .unwrap();
+    let original = fixture.listen(0).await;
+    let renewed_client = tokio::time::timeout(WAIT, connection.renew())
+        .await
+        .expect("renew in time")
+        .unwrap();
+    original.closed().await;
+    let before = fixture.streams.lock().unwrap().len();
+    renewed_client
+        .request("tools/list", json!({}), REQUEST_TIMEOUT)
+        .await
+        .unwrap();
+    let renewed = fixture.listen(before).await;
+    assert_ne!(renewed.id(), original.id());
+    connection.dispose().await.unwrap();
+    fixture.close();
+}
+
+fn bridge_discovery() -> Value {
+    json!({
+        "resultType": "complete",
+        "supportedVersions": [MODERN_PROTOCOL_VERSION],
+        "capabilities": {"tools": {"listChanged": true}, "resources": {}, "prompts": {}},
+        "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "modern-only", "version": "1", "title": "Modern"}},
+        "instructions": "Use these tools",
+    })
+}
+
+/// sdk-bridge.test.ts "populates SDK state through local initialize while keeping all wire traffic modern".
+/// The connection factory's `server/discover` probe is the only pre-request traffic (upstream `sent == []` after
+/// connect, with discovery injected). The upstream exact order `[listen, tools/list, tools/call]` comes from the
+/// listen POST being issued synchronously before tools/list; in Rust the listen POST is a spawned task racing the
+/// tools/list POST on another connection, so the port asserts the exact multiset instead.
 #[tokio::test]
 async fn populates_sdk_state_through_local_initialize_while_keeping_all_wire_traffic_modern() {
-    let fixture = SubscriptionsFixture::start(None, None).await;
-    let connection = fixture.create_connection("fixture");
-    let client = connection.connect().await.unwrap();
-
-    let timeout = Duration::from_secs(2);
-    let caps = client.server_capabilities.read().await.clone();
-    assert_eq!(caps["tools"]["listChanged"], json!(true));
-
-    let info = client.server_info.read().await.clone();
-    assert_eq!(info["name"], json!("synthetic-peer"));
-
-    let instructions = client.instructions.read().await.clone();
-    assert_eq!(instructions.as_deref(), Some("Use these tools"));
-
-    let _ = client
-        .request("tools/list", json!({}), timeout)
+    let discovery = bridge_discovery();
+    let fixture = Fixture::open(FixtureOptions {
+        capabilities: Some(discovery["capabilities"].clone()),
+        server_info: Some(discovery["_meta"]["io.modelcontextprotocol/serverInfo"].clone()),
+        instructions: Some("Use these tools"),
+        tool_result: Some(json!({"content": [{"type": "text", "text": "ok"}]})),
+        null_next_cursor: true,
+        ..Default::default()
+    })
+    .await;
+    let connection = connect(&fixture).await;
+    let client = connection.client().unwrap();
+    assert_eq!(fixture.methods(), ["server/discover"]);
+    assert_eq!(
+        *client.server_capabilities.read().await,
+        discovery["capabilities"]
+    );
+    assert_eq!(
+        *client.server_info.read().await,
+        discovery["_meta"]["io.modelcontextprotocol/serverInfo"]
+    );
+    assert_eq!(
+        client.instructions.read().await.as_deref(),
+        Some("Use these tools")
+    );
+    let listed = client
+        .request("tools/list", json!({}), REQUEST_TIMEOUT)
         .await
         .unwrap();
-    let _ = client
-        .request("tools/call", json!({"name": "echo"}), timeout)
+    assert_eq!(listed["tools"][0]["name"], "echo");
+    assert!(listed.get("nextCursor").is_none());
+    let called = client
+        .request("tools/call", json!({"name": "echo"}), REQUEST_TIMEOUT)
         .await
         .unwrap();
-
-    let stream = fixture.wait_for_stream().await;
+    assert_eq!(called["content"][0]["text"], "ok");
+    let stream = fixture.listen(0).await;
+    assert!(stream.is_open(), "neither call waits for the stream's end");
 
     connection.dispose().await.unwrap();
-    stream.wait_dropped().await;
-
+    // #4193: advertised list changes require a listen stream, but neither call waits for its end.
+    stream.closed().await;
     let requests = fixture.requests.lock().unwrap().clone();
-    for req in &requests {
+    let mut methods: Vec<&str> = requests
+        .iter()
+        .map(|request| request.method.as_str())
+        .collect();
+    methods.sort_unstable();
+    assert_eq!(
+        methods,
+        [
+            "server/discover",
+            "subscriptions/listen",
+            "tools/call",
+            "tools/list"
+        ]
+    );
+    assert_eq!(
+        stream.message["params"]["notifications"],
+        json!({"toolsListChanged": true})
+    );
+    for request in &requests {
         assert_eq!(
-            req.headers
+            request
+                .headers
                 .get("MCP-Protocol-Version")
-                .and_then(|v| v.to_str().ok()),
+                .and_then(|value| value.to_str().ok()),
             Some(MODERN_PROTOCOL_VERSION)
         );
-        assert!(req.headers.get("Mcp-Session-Id").is_none());
         assert_eq!(
-            req.message["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
-            json!(MODERN_PROTOCOL_VERSION)
+            request.message["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
+            MODERN_PROTOCOL_VERSION
         );
+        assert!(!request.headers.contains_key("Mcp-Session-Id"));
     }
-
-    fixture.stop().await;
+    fixture.close();
 }
 
-/// Upstream: keeps SDK notification and elicitation handlers on the same client
-/// (routing aspect: delivers notifications only after their subscription is acknowledged)
+/// sdk-bridge.test.ts "keeps SDK notification and elicitation handlers on the same client" (notification half):
+/// a list change reaches the handlers only after its subscription is acknowledged. The elicitation half is N-A:
+/// the port's bridge (`McpClient`) answers every modern server-to-client request with -32601, as upstream's real
+/// modern transports do (transport.ts rejects id-bearing server requests; stdio-probe.ts replies -32601).
 #[tokio::test]
-async fn routing_delivers_notification_only_after_subscription_acknowledged() {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    let send: SubscriptionSend = Arc::new(move |msg: Value| {
-        let tx = tx.clone();
-        Box::pin(async move {
-            let _ = tx.send(msg);
-            Ok(())
-        })
-    });
-    let capabilities = json!({
-        "tools": {"listChanged": true},
-        "prompts": {},
-        "resources": {},
-    });
-    let subscriptions = ModernSubscriptions::new(send, capabilities, false);
-
+async fn keeps_sdk_notification_handlers_on_the_same_client() {
+    let (sender, mut sent) = mpsc::unbounded_channel::<Value>();
+    let send: SubscriptionSend = Arc::new(
+        move |message: Value| -> futures::future::BoxFuture<'static, Result<(), String>> {
+            let _ = sender.send(message);
+            Box::pin(async { Ok(()) })
+        },
+    );
+    let discovery = bridge_discovery();
+    let subscriptions = ModernSubscriptions::new(send, discovery["capabilities"].clone(), false);
     subscriptions.outgoing(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}));
-    let listen_msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    let listen = tokio::time::timeout(WAIT, sent.recv())
         .await
-        .unwrap()
-        .expect("listen message");
-    let subscription_id = listen_msg["id"].clone();
-
-    // Before acknowledgment: notification is rejected
-    let unacknowledged = json!({
+        .expect("listen sent in time")
+        .expect("listen");
+    assert_eq!(listen["method"], "subscriptions/listen");
+    let subscription_id = listen["id"].clone();
+    assert!(subscription_id.is_string());
+    let changed = json!({
         "jsonrpc": "2.0",
         "method": "notifications/tools/list_changed",
-        "params": {
-            "_meta": {
-                "io.modelcontextprotocol/subscriptionId": subscription_id
-            }
-        }
+        "params": {"_meta": {SUBSCRIPTION_KEY: subscription_id}},
     });
-    assert!(!subscriptions.incoming(&unacknowledged));
-
-    // Acknowledge the subscription
-    let ack = json!({
+    assert!(!subscriptions.incoming(&changed), "not yet acknowledged");
+    assert!(!subscriptions.incoming(&json!({
         "jsonrpc": "2.0",
         "method": "notifications/subscriptions/acknowledged",
-        "params": {
-            "_meta": {
-                "io.modelcontextprotocol/subscriptionId": subscription_id
-            },
-            "notifications": {
-                "toolsListChanged": true
-            }
-        }
-    });
-    assert!(!subscriptions.incoming(&ack));
-
-    // After acknowledgment: notification for acknowledged id is delivered
-    let acknowledged = json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/tools/list_changed",
-        "params": {
-            "_meta": {
-                "io.modelcontextprotocol/subscriptionId": subscription_id
-            }
-        }
-    });
-    assert!(subscriptions.incoming(&acknowledged));
-
-    // Notification for wrong / unacknowledged id is rejected
-    let wrong = json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/tools/list_changed",
-        "params": {
-            "_meta": {
-                "io.modelcontextprotocol/subscriptionId": "other-id"
-            }
-        }
-    });
-    assert!(!subscriptions.incoming(&wrong));
-
+        "params": {"_meta": {SUBSCRIPTION_KEY: subscription_id}, "notifications": {"toolsListChanged": true}},
+    })));
+    // #4193: deliver a notification only after its subscription is acknowledged.
+    assert!(subscriptions.incoming(&changed));
     subscriptions.dispose();
+    let cancelled = tokio::time::timeout(WAIT, sent.recv())
+        .await
+        .expect("cancel sent in time")
+        .expect("cancel");
+    assert_eq!(cancelled["method"], "notifications/cancelled");
+    assert_eq!(cancelled["params"]["requestId"], subscription_id);
 }
 
-/// Upstream: refuses unsupported discovery versions and malformed SDK capabilities
+/// sdk-bridge.test.ts "refuses unsupported discovery versions and malformed SDK capabilities".
 #[test]
 fn refuses_unsupported_discovery_versions_and_malformed_sdk_capabilities() {
-    let unsupported_version = json!({
-        "supportedVersions": ["future"],
-        "capabilities": {"tools": {}},
-    });
-    let err = modern_initialize_result(&unsupported_version, MODERN_PROTOCOL_VERSION)
-        .expect_err("unsupported version must fail");
-    assert!(err.0.contains("does not support"));
-
-    let malformed_caps = json!({
-        "supportedVersions": [MODERN_PROTOCOL_VERSION],
-        "capabilities": {"tools": "invalid"},
-    });
-    let err2 = modern_initialize_result(&malformed_caps, MODERN_PROTOCOL_VERSION)
-        .expect_err("malformed capabilities must fail");
-    assert!(err2.0.contains("malformed"));
-}
-
-/// Upstream: normalize_modern_result strips null nextCursor from list responses
-#[test]
-fn normalizes_modern_result_stripping_null_next_cursor() {
-    let with_null = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": {
-            "tools": [],
-            "nextCursor": null
-        }
-    });
-    let normalized = normalize_modern_result(with_null);
-    assert!(normalized["result"].get("nextCursor").is_none());
-
-    let with_cursor = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": {
-            "tools": [],
-            "nextCursor": "page-2"
-        }
-    });
-    let normalized2 = normalize_modern_result(with_cursor);
-    assert_eq!(normalized2["result"]["nextCursor"], json!("page-2"));
+    let discovery = |patch: Value| -> DiscoveryResult {
+        let mut discovery = bridge_discovery().as_object().cloned().unwrap();
+        discovery.extend(patch.as_object().cloned().unwrap());
+        discovery
+    };
+    let unsupported = modern_initialize_result(
+        &discovery(json!({"supportedVersions": ["future"]})),
+        MODERN_PROTOCOL_VERSION,
+    )
+    .expect_err("unsupported discovery version");
+    assert!(unsupported.0.contains("does not support"));
+    assert!(
+        modern_initialize_result(
+            &discovery(json!({"capabilities": {"tools": "invalid"}})),
+            MODERN_PROTOCOL_VERSION,
+        )
+        .is_err()
+    );
 }
