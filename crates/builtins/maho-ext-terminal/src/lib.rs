@@ -35,6 +35,7 @@ pub mod rpc_monitor_coalesce;
 pub mod rpc_monitor_render;
 pub mod rpc_monitor_targets;
 pub mod runtime_session;
+pub mod screen;
 pub mod screen_text;
 pub mod session_activity;
 pub mod session_bundle;

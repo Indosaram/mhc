@@ -149,7 +149,7 @@ type OutputObservers = Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>
 fn deliver(
     state: &mut OutputState,
     text: String,
-    screen: &Mutex<Option<vt100::Parser>>,
+    screen: &Mutex<Option<crate::screen::TerminalScreen>>,
     listeners: &OutputObservers,
 ) {
     if text.is_empty() {
@@ -160,7 +160,7 @@ fn deliver(
     if let Ok(mut screen) = screen.lock()
         && let Some(screen) = screen.as_mut()
     {
-        screen.process(decoded.as_bytes());
+        screen.feed(&decoded);
     }
     if !decoded.is_empty()
         && let Ok(mut listeners) = listeners.lock()
@@ -199,7 +199,7 @@ type Redaction = Arc<(Mutex<RedactionState>, Condvar)>;
 fn spawn_redaction_flusher(
     redaction: Redaction,
     output: Arc<Mutex<OutputState>>,
-    screen: Arc<Mutex<Option<vt100::Parser>>>,
+    screen: Arc<Mutex<Option<crate::screen::TerminalScreen>>>,
     listeners: OutputObservers,
 ) {
     std::thread::spawn(move || {
@@ -257,7 +257,7 @@ fn ingest_chunk(
     state: &mut OutputState,
     chunk: &[u8],
     redaction: Option<&Redaction>,
-    screen: &Mutex<Option<vt100::Parser>>,
+    screen: &Mutex<Option<crate::screen::TerminalScreen>>,
     listeners: &OutputObservers,
 ) {
     let decoded = state.decode(chunk);
@@ -283,7 +283,7 @@ fn ingest_chunk(
 fn finish_redaction(
     state: &mut OutputState,
     redaction: &Redaction,
-    screen: &Mutex<Option<vt100::Parser>>,
+    screen: &Mutex<Option<crate::screen::TerminalScreen>>,
     listeners: &OutputObservers,
 ) {
     let tail = state.decode_end();
@@ -329,28 +329,6 @@ fn settle_exit(
     exit.1.notify_all();
 }
 
-fn parser_snapshot(parser: &mut vt100::Parser) -> Option<TerminalScreenSnapshot> {
-    let screen = parser.screen_mut();
-    let (rows, cols) = screen.size();
-    let visible_grid = screen.rows(0, cols).collect();
-    let cursor = screen.cursor_position();
-    screen.set_scrollback(usize::MAX);
-    let count = screen.scrollback();
-    let mut scrollback = Vec::with_capacity(count);
-    for offset in (1..=count).rev() {
-        screen.set_scrollback(offset);
-        scrollback.push(screen.rows(0, cols).next().unwrap_or_default());
-    }
-    screen.set_scrollback(0);
-    Some(TerminalScreenSnapshot {
-        cols,
-        rows,
-        visible_grid,
-        scrollback,
-        cursor,
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalScreenSnapshot {
     pub cols: u16,
@@ -375,9 +353,8 @@ pub struct TerminalRuntimeSession {
     exit_signal: tokio::sync::watch::Receiver<Option<Result<PtyExit, String>>>,
     exit_sender: tokio::sync::watch::Sender<Option<Result<PtyExit, String>>>,
     observers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
-    screen: Arc<Mutex<Option<vt100::Parser>>>,
+    screen: Arc<Mutex<Option<crate::screen::TerminalScreen>>>,
     final_screen: Arc<Mutex<Option<TerminalScreenSnapshot>>>,
-    scrollback: usize,
     redaction: Option<Redaction>,
 }
 
@@ -405,9 +382,9 @@ impl TerminalRuntimeSession {
         let sink = Arc::clone(&output);
         let observers: OutputObservers = Arc::new(Mutex::new(vec![]));
         let listeners = observers.clone();
-        let screen = Arc::new(Mutex::new(Some(vt100::Parser::new(
-            options.rows,
+        let screen = Arc::new(Mutex::new(Some(crate::screen::TerminalScreen::new(
             options.cols,
+            options.rows,
             scrollback,
         ))));
         let projection = screen.clone();
@@ -484,13 +461,7 @@ impl TerminalRuntimeSession {
             if let Ok(mut guard) = release_screen.lock()
                 && let Some(mut parser) = guard.take()
             {
-                let mut snapshot = parser_snapshot(&mut parser).unwrap_or(TerminalScreenSnapshot {
-                    cols: 0,
-                    rows: 0,
-                    visible_grid: vec![],
-                    scrollback: vec![],
-                    cursor: (0, 0),
-                });
+                let mut snapshot = parser.snapshot();
                 snapshot.scrollback.clear();
                 if let Ok(mut final_guard) = released_snapshot.lock() {
                     *final_guard = Some(snapshot);
@@ -510,7 +481,6 @@ impl TerminalRuntimeSession {
             observers,
             screen,
             final_screen,
-            scrollback,
             redaction,
         })
     }
@@ -643,7 +613,7 @@ impl TerminalRuntimeSession {
     pub fn snapshot(&self) -> Result<TerminalScreenSnapshot, RuntimeError> {
         let mut parser = self.screen.lock().map_err(|_| RuntimeError::Poisoned)?;
         if let Some(parser) = parser.as_mut() {
-            return parser_snapshot(parser).ok_or(RuntimeError::Poisoned);
+            return Ok(parser.snapshot());
         }
         Ok(self
             .final_screen
@@ -659,8 +629,8 @@ impl TerminalRuntimeSession {
             }))
     }
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), RuntimeError> {
-        // The PTY resize is best-effort and meaningless once the process is gone: upstream's
-        // The pipe fallback rejects the resize with a note but the screen projection still resizes.
+        // The PTY resize is best-effort and meaningless once the process is gone. The pipe fallback
+        // rejects the resize with a note but the screen projection still resizes.
         let session_resize = if self.exited()? {
             Ok(())
         } else {
@@ -669,33 +639,15 @@ impl TerminalRuntimeSession {
                 TerminalSessionBackend::PipeFallback(session) => session.resize(cols, rows),
             }
         };
-        let retained = lossy_utf16(
-            self.output
-                .lock()
-                .map_err(|_| RuntimeError::Poisoned)?
-                .buffer
-                .iter()
-                .copied(),
-        );
-        let replay_limit = crate::screen_text::normalize_replay_history_length(
-            usize::from(cols),
-            usize::from(rows),
-            self.scrollback,
-        );
-        let retained = if retained.encode_utf16().count() > replay_limit {
-            crate::screen_text::sanitized_tail(&retained, replay_limit)
-        } else {
-            retained
-        };
-        let mut screen = self.screen.lock().map_err(|_| RuntimeError::Poisoned)?;
-        if let Some(screen) = screen.as_mut() {
-            if retained.is_empty() {
-                screen.screen_mut().set_size(rows, cols);
-            } else {
-                let mut rebuilt = vt100::Parser::new(rows, cols, self.scrollback);
-                rebuilt.process(retained.as_bytes());
-                *screen = rebuilt;
-            }
+        // runtime-session.ts `resizeScreen`: the screen replays its own operation history at the new
+        // geometry (pi-pty screen.ts), independent of the log buffer and its read cursor.
+        if let Some(screen) = self
+            .screen
+            .lock()
+            .map_err(|_| RuntimeError::Poisoned)?
+            .as_mut()
+        {
+            screen.resize(cols, rows);
         }
         session_resize?;
         Ok(())
@@ -1147,7 +1099,7 @@ mod tests {
     struct SyntheticRuntime {
         state: OutputState,
         redaction: Option<Redaction>,
-        screen: Mutex<Option<vt100::Parser>>,
+        screen: Mutex<Option<crate::screen::TerminalScreen>>,
         listeners: OutputObservers,
         observed: tokio::sync::mpsc::UnboundedReceiver<String>,
     }
@@ -1158,7 +1110,7 @@ mod tests {
                 state: OutputState::default(),
                 redaction: redact
                     .then(|| Arc::new((Mutex::new(RedactionState::default()), Condvar::new()))),
-                screen: Mutex::new(Some(vt100::Parser::new(40, 120, 0))),
+                screen: Mutex::new(Some(crate::screen::TerminalScreen::new(120, 40, 0))),
                 listeners: Arc::new(Mutex::new(vec![sender])),
                 observed,
             }
@@ -1211,8 +1163,10 @@ mod tests {
         }
         fn screen_text(&self) -> String {
             let mut screen = self.screen.lock().unwrap();
-            parser_snapshot(screen.as_mut().unwrap())
+            screen
+                .as_mut()
                 .unwrap()
+                .snapshot()
                 .visible_grid
                 .join("\n")
                 .trim_end()
