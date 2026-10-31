@@ -43,12 +43,22 @@ pub enum TokenStoreError {
 pub fn hash_server_url(url: &str) -> String {
     format!("{:x}", Sha256::digest(url))
 }
+/// Upstream `hashServerKey`: credentials are keyed by server name and URL, so two servers sharing a URL
+/// (a work and a personal account) never share or sign out each other's grant.
+pub fn hash_server_key(server_name: &str, server_url: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(format!("{server_name}\0{server_url}"))
+    )
+}
+const LEGACY_LOCK_STALE_MS: u64 = 30_000;
 #[derive(Clone)]
 pub struct McpTokenStore {
     pub server_name: String,
     pub server_url: String,
     agent_dir: PathBuf,
     hash: String,
+    legacy_hash: String,
     pub lock_retries: usize,
     pub disable_lock: bool,
 }
@@ -58,7 +68,8 @@ impl McpTokenStore {
             server_name: server_name.into(),
             server_url: server_url.into(),
             agent_dir: agent_dir.into(),
-            hash: hash_server_url(server_url),
+            hash: hash_server_key(server_name, server_url),
+            legacy_hash: hash_server_url(server_url),
             lock_retries: 50,
             disable_lock: false,
         }
@@ -75,22 +86,51 @@ impl McpTokenStore {
     pub fn lock_path(&self) -> PathBuf {
         self.dir().join("tokens.json.lock")
     }
-    pub fn read(&self) -> Result<Option<McpStoredAuth>, TokenStoreError> {
-        let mut record: Option<McpStoredAuth> = read_json(&self.tokens_path())?;
-        // Discovery state is no longer persisted; drop the key from legacy records. A record saved before the
-        // issuer stamp existed is first attributed to the authorization server its sign-in discovered (senpi#2940
-        // `storedGrantIssuer`), so the legacy key is read before it is stripped.
-        if let Some(record) = record.as_mut()
-            && let Some(state) = record.extra.remove("discoveryState")
-            && record.issuer.is_none()
-        {
-            record.issuer = state
-                .get("authorizationServerUrl")
-                .and_then(Value::as_str)
-                .filter(|url| !url.is_empty())
-                .map(str::to_owned);
+    /// The directory an older build stored this URL's record in (keyed by URL alone).
+    pub fn legacy_dir(&self) -> PathBuf {
+        self.root_dir().join(&self.legacy_hash)
+    }
+    fn legacy_lock_file(&self) -> PathBuf {
+        self.root_dir()
+            .join(format!("{}.migrate.lock", self.legacy_hash))
+    }
+    fn migration(&self) -> super::legacy_migration::LegacyMigration<McpStoredAuth> {
+        let store = self.clone();
+        let lock_path = self.legacy_lock_file();
+        super::legacy_migration::LegacyMigration {
+            root_dir: self.root_dir(),
+            lock_path: lock_path.clone(),
+            legacy_tokens: self.legacy_dir().join("tokens.json"),
+            tokens_path: self.tokens_path(),
+            stale_ms: LEGACY_LOCK_STALE_MS,
+            disable_lock: self.disable_lock,
+            read: Box::new(|path: &Path| read_json(path).ok().flatten()),
+            write: Box::new(move |record: &McpStoredAuth| {
+                store
+                    .write_unlocked(Some(record))
+                    .map_err(std::io::Error::other)
+            }),
+            lock_error: Box::new(move |cause: std::io::Error| {
+                std::io::Error::other(format!(
+                    "Could not acquire MCP auth lock at {}: {cause}",
+                    lock_path.display()
+                ))
+            }),
         }
-        Ok(record)
+    }
+    /// A record stored by URL alone moves to the first server that reads it.
+    pub fn read(&self) -> Result<Option<McpStoredAuth>, TokenStoreError> {
+        let record = match read_json(&self.tokens_path())? {
+            Some(record) => Some(record),
+            None => super::legacy_migration::adopt_legacy_record(&self.migration())?,
+        };
+        Ok(attribute_legacy_issuer(record))
+    }
+    /// Upstream `readAsync`: the legacy claim waits on the migration lock without blocking the runtime.
+    pub async fn read_async(&self) -> Result<Option<McpStoredAuth>, TokenStoreError> {
+        Ok(attribute_legacy_issuer(
+            super::legacy_migration::read_record_async(&self.migration()).await?,
+        ))
     }
     fn ensure_dir(&self) -> Result<(), TokenStoreError> {
         fs::create_dir_all(self.dir())?;
@@ -175,6 +215,8 @@ impl McpTokenStore {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Err(e) => return Err(e.into()),
             };
+            // Signing out also removes the URL-keyed record this server would otherwise take over.
+            remove_file(&store.legacy_dir().join("tokens.json"))?;
             Ok(())
         })?;
         self.write_index(true)
@@ -201,6 +243,22 @@ impl McpTokenStore {
         }
         atomic_json(&path, &index)
     }
+}
+/// Discovery state is no longer persisted; drop the key from legacy records. A record saved before the
+/// issuer stamp existed is first attributed to the authorization server its sign-in discovered (senpi#2940
+/// `storedGrantIssuer`), so the legacy key is read before it is stripped.
+fn attribute_legacy_issuer(mut record: Option<McpStoredAuth>) -> Option<McpStoredAuth> {
+    if let Some(record) = record.as_mut()
+        && let Some(state) = record.extra.remove("discoveryState")
+        && record.issuer.is_none()
+    {
+        record.issuer = state
+            .get("authorizationServerUrl")
+            .and_then(Value::as_str)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned);
+    }
+    record
 }
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, TokenStoreError> {
     let text = match fs::read_to_string(path) {
