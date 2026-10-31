@@ -83,7 +83,14 @@ impl TerminalManifestWriter {
             let respawned = monitor.runtime_kind == MonitorRuntimeKind::Command
                 && monitor.expires_at.is_none_or(|expiry| expiry > now)
                 && (monitor.persistent
-                    || monitor.deadline_ms.is_some_and(|deadline| deadline > now));
+                    || monitor.deadline_ms.is_some_and(|deadline| deadline > now))
+                // durable-command.ts:136-138: the lost checks run before reapOrphan, so a watch
+                // the restore reports lost (no command, no absolute or existing cwd) is never
+                // reaped and carries no orphan.
+                && monitor.command.as_deref().is_some_and(|command| !command.is_empty())
+                && monitor.cwd.as_deref().is_some_and(|cwd| {
+                    std::path::Path::new(cwd).is_absolute() && std::path::Path::new(cwd).is_dir()
+                });
             if !respawned {
                 continue;
             }
@@ -1233,6 +1240,55 @@ mod orphan_tests {
         registry.dispose();
         manager.teardown().unwrap();
         let _ = (crashed.teardown(), crashed_again.teardown());
+    }
+
+    /// durable-command.ts:136-140: a watch the restore reports lost (empty command, relative or
+    /// missing cwd) is never handed to the reaper and carries no orphan.
+    #[tokio::test]
+    async fn a_lost_watch_is_never_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(dir.path()).unwrap();
+        let missing = dir.join("gone").to_string_lossy().into_owned();
+        let present = dir.to_string_lossy().into_owned();
+        // The last case is the control: a restorable watch IS handed to the reaper.
+        for (command, cwd, reaps) in [
+            ("", Some(present.clone()), 0),
+            ("cat", Some("relative/dir".to_owned()), 0),
+            ("cat", Some(missing), 0),
+            ("cat", None, 0),
+            ("cat", Some(present.clone()), 1),
+        ] {
+            let mut state = crate::restore::parse_terminal_manifest(
+                &serde_json::json!({"monitors":[{"monitorId":"mon_LOSTWATCH00001","sessionId":"orphans","description":"lost","runtimeKind":"command","durabilityClass":"restartable-command","command":"cat","cwd":present,"createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),
+                "orphans",
+            )
+            .unwrap();
+            let monitor = &mut state.monitors[0];
+            monitor.command = Some(command.to_owned());
+            monitor.cwd = cwd.clone();
+            monitor.runtime = Some(crate::process_identity::ChildProcessIdentity {
+                pid: std::process::id(),
+                process_group_id: None,
+                started_at_ms: 0.0,
+                boot_at_ms: 0.0,
+                argv: vec!["cat".to_owned()],
+            });
+            let mut writer = TerminalManifestWriter::new(&dir, "orphans");
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = calls.clone();
+            writer.reap_orphan = Some(std::sync::Arc::new(move |_, _| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(crate::orphan_reaper::ReapResult {
+                        action: crate::orphan_reaper::ReapAction::Killed,
+                        reason: None,
+                    })
+                })
+            }));
+            writer.reap_orphans(&state, now_ms()).await;
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), reaps, "{command:?} {cwd:?}");
+            assert_eq!(writer.reaped.len(), reaps, "an orphan only for a reaped watch");
+        }
     }
 
     /// A recorded pid that is no longer this watcher (dead) reports no orphan; a reaper that cannot
