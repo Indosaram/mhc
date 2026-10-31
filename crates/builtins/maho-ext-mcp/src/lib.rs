@@ -27,6 +27,7 @@ pub mod idle;
 pub mod index;
 pub mod instructions;
 pub mod log;
+pub mod manager_view;
 pub mod logging;
 pub mod modern;
 pub mod needs_auth;
