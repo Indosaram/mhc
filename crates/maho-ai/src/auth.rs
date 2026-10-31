@@ -2,6 +2,7 @@
 // ported by todo 13
 
 pub mod context;
+pub mod credential_read;
 pub mod credential_store;
 pub mod headers;
 pub mod helpers;

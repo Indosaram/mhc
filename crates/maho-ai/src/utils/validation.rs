@@ -278,11 +278,70 @@ pub fn validate_tool_arguments_value(
     validate_value(&tool.parameters, tool_name, received)
 }
 
+pub use super::tool_argument_validator::register_tool_argument_validator;
+
+/// `formatValidationPath` for a protocol validator's Ajv-shaped error: `required` names the
+/// missing property from `requiredProperties` or `missingProperty`.
+fn format_protocol_validation_path(
+    error: &super::tool_argument_validator::ToolArgumentValidationError,
+) -> String {
+    let base = error
+        .instance_path
+        .strip_prefix('/')
+        .unwrap_or(&error.instance_path)
+        .replace('/', ".");
+    if error.keyword == "required" {
+        let property = error
+            .required_properties()
+            .and_then(|properties| properties.first().map(|p| (*p).to_owned()))
+            .or_else(|| error.missing_property().map(str::to_owned))
+            .filter(|property| !property.is_empty());
+        if let Some(property) = property {
+            return if base.is_empty() {
+                property
+            } else {
+                format!("{base}.{property}")
+            };
+        }
+    }
+    if base.is_empty() { "root".into() } else { base }
+}
+
 fn validate_value(
     parameters: &Value,
     tool_name: &str,
     received: &Value,
 ) -> Result<Value, ValidationError> {
+    // A protocol-owned validator bypasses local coercion and null normalization and returns the
+    // original arguments.
+    if let Some(protocol_validator) =
+        super::tool_argument_validator::get_tool_argument_validator(parameters)
+    {
+        return match protocol_validator(received) {
+            Ok(()) => Ok(received.clone()),
+            Err(errors) => {
+                let lines: Vec<String> = errors
+                    .iter()
+                    .map(|error| {
+                        format!(
+                            "  - {}: {} ({})",
+                            format_protocol_validation_path(error),
+                            error.message.as_deref().unwrap_or(&error.keyword),
+                            error.keyword
+                        )
+                    })
+                    .collect();
+                let body = if lines.is_empty() {
+                    "Unknown validation error".to_owned()
+                } else {
+                    lines.join("\n")
+                };
+                Err(ValidationError::Invalid(format!(
+                    "Validation failed for tool \"{tool_name}\":\n{body}"
+                )))
+            }
+        };
+    }
     let mut args = received.clone();
     normalize_optional_nulls(&mut args, parameters);
     let coerced = coerce_with_json_schema(args.clone(), parameters);
@@ -315,6 +374,47 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    // tool-argument-validator.ts: protocol-owned validators keep the original arguments.
+    #[test]
+    fn protocol_owned_validator_bypasses_coercion_and_reports_missing_property() {
+        let parameters = json!({
+            "type": "object",
+            "properties": { "count": { "type": "number" }, "note": { "type": "string" } },
+            "required": ["count"],
+            "x-protocol-validator-fixture": true
+        });
+        register_tool_argument_validator(
+            &parameters,
+            std::sync::Arc::new(|value: &Value| {
+                if value.get("count").is_some() {
+                    return Ok(());
+                }
+                Err(vec![
+                    super::super::tool_argument_validator::ToolArgumentValidationError {
+                        instance_path: String::new(),
+                        keyword: "required".into(),
+                        message: Some("must have required property 'count'".into()),
+                        params: [("missingProperty".to_owned(), json!("count"))]
+                            .into_iter()
+                            .collect(),
+                    },
+                ])
+            }),
+        );
+        let protocol_tool = tool(parameters);
+        let original = json!({ "count": "5", "note": null });
+        assert_eq!(
+            validate_tool_arguments(&protocol_tool, &call(original.clone())).expect("valid"),
+            original
+        );
+        let error = validate_tool_arguments(&protocol_tool, &call(json!({ "note": "x" })))
+            .expect_err("invalid");
+        assert_eq!(
+            error.to_string(),
+            "Validation failed for tool \"echo\":\n  - count: must have required property 'count' (required)"
+        );
+    }
 
     fn tool(parameters: Value) -> Tool {
         serde_json::from_value(
@@ -359,7 +459,13 @@ mod tests {
 
         // Then: exact engine errors survive, and the input remains untouched.
         assert_eq!(errors, expected);
-        assert_eq!(errors.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(), ["/count", "/label"]);
+        assert_eq!(
+            errors
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["/count", "/label"]
+        );
         assert_eq!(value, original);
     }
 

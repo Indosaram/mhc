@@ -9,33 +9,54 @@ use crate::utils::server_fallback_receipt::{
 };
 
 use super::stream_wrapper_shared::StreamMessageProjection;
+use crate::utils::assistant_capture::CaptureHint;
 
-fn discard_superseded_tools(message: &mut AssistantMessage) -> bool {
-    let boundary =
-        message
-            .content
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, block)| match block {
-                ContentBlock::ProviderNative(native)
-                    if parse_server_fallback_receipt(&native.raw).is_some() =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            });
-    let Some(boundary) = boundary else {
-        return false;
-    };
-    let mut kept = Vec::with_capacity(message.content.len());
-    for (index, block) in message.content.drain(..).enumerate() {
-        if index > boundary || !matches!(block, ContentBlock::ToolCall(_)) {
-            kept.push(block);
+/// Removes the tool calls `removes` selects and returns the first index whose block vanished or
+/// moved, if any.
+pub fn remove_tool_calls(
+    message: &mut AssistantMessage,
+    removes: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let from = message
+        .content
+        .iter()
+        .enumerate()
+        .position(|(index, block)| matches!(block, ContentBlock::ToolCall(_)) && removes(index))?;
+    let mut index = 0;
+    message.content.retain(|block| {
+        let keep = !matches!(block, ContentBlock::ToolCall(_)) || !removes(index);
+        index += 1;
+        keep
+    });
+    Some(from)
+}
+
+fn superseded_boundary(message: &AssistantMessage) -> Option<usize> {
+    message.content.iter().rposition(|block| match block {
+        ContentBlock::ProviderNative(native) => {
+            parse_server_fallback_receipt(&native.raw).is_some()
         }
+        _ => false,
+    })
+}
+
+/// A server fallback receipt supersedes every client tool call before it.
+fn discard_superseded_tools(message: &mut AssistantMessage) -> Option<usize> {
+    let boundary = superseded_boundary(message)?;
+    remove_tool_calls(message, |index| index < boundary)
+}
+
+fn first_index(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (left, right) => left.or(right),
     }
-    message.content = kept;
-    true
+}
+
+/// The capture hint that marks a terminal whose content no longer matches the announced blocks
+/// from an index on.
+pub fn rewrite_hint(rewritten_from: Option<usize>) -> CaptureHint {
+    CaptureHint::rewritten_from(rewritten_from)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +97,8 @@ impl RecoveryStreamTerminal {
         }
         projection.finalize_dangling_tool_calls();
         let mut message = projection.finalize(source, saw_tool_call);
-        let superseded = discard_superseded_tools(&mut message);
+        let superseded = superseded_boundary(&message).is_some();
+        let rewritten_from = discard_superseded_tools(&mut message);
         let recovered = (!superseded && saw_tool_call)
             || message
                 .content
@@ -101,7 +123,7 @@ impl RecoveryStreamTerminal {
             DoneReason::ToolUse => StopReason::ToolUse,
             DoneReason::Deferred => StopReason::Deferred,
         };
-        self.emit_done(final_reason, message);
+        self.emit_done(final_reason, message, rewritten_from);
     }
 
     pub fn source_error(
@@ -123,30 +145,34 @@ impl RecoveryStreamTerminal {
                 AbortedOrError::Aborted => ErrorReason::Aborted,
                 AbortedOrError::Error => ErrorReason::Error,
             };
-            self.emit_error(error_reason, source.clone());
+            // The forwarded source holds source indices, not the projected ones the stream
+            // announced: no index is provable.
+            self.emit_error(error_reason, source.clone(), Some(0));
             return;
         }
-        discard_superseded_tools(&mut projection.message);
+        let rewritten_from = discard_superseded_tools(&mut projection.message);
         projection.finalize_dangling_tool_calls();
         let mut message = projection.finalize(source, saw_tool_call);
         if reason == AbortedOrError::Aborted {
-            message
-                .content
-                .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+            let aborted = remove_tool_calls(&mut message, |_| true);
             message.stop_reason = StopReason::Aborted;
             message
                 .error_message
                 .get_or_insert_with(|| "Request was aborted".to_string());
-            self.emit_error(ErrorReason::Aborted, message);
+            self.emit_error(
+                ErrorReason::Aborted,
+                message,
+                first_index(rewritten_from, aborted),
+            );
             return;
         }
         if projection.has_finalized_tool_call_content() {
             message.stop_reason = StopReason::ToolUse;
-            self.emit_done(DoneReason::ToolUse, message);
+            self.emit_done(DoneReason::ToolUse, message, rewritten_from);
             return;
         }
         message.stop_reason = StopReason::Error;
-        self.emit_error(ErrorReason::Error, message);
+        self.emit_error(ErrorReason::Error, message, rewritten_from);
     }
 
     pub fn iterator_failure(
@@ -172,7 +198,7 @@ impl RecoveryStreamTerminal {
         } else {
             text
         });
-        self.emit_error(ErrorReason::Error, message);
+        self.emit_error(ErrorReason::Error, message, None);
     }
 
     pub fn exhausted(&mut self, projection: Option<&mut StreamMessageProjection>) {
@@ -192,7 +218,7 @@ impl RecoveryStreamTerminal {
         message.stop_reason = StopReason::Error;
         message.error_message =
             Some("Assistant message stream ended without a terminal event".to_string());
-        self.emit_error(ErrorReason::Error, message);
+        self.emit_error(ErrorReason::Error, message, None);
     }
 
     pub fn cancelled(&mut self, projection: Option<&mut StreamMessageProjection>) {
@@ -209,36 +235,50 @@ impl RecoveryStreamTerminal {
         projection.finalize_dangling_tool_calls();
         let message_snapshot = projection.message.clone();
         let mut message = projection.finalize(&message_snapshot, false);
-        message
-            .content
-            .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+        let rewritten_from = remove_tool_calls(&mut message, |_| true);
         message.stop_reason = StopReason::Error;
         message.error_message =
             Some("Assistant message stream consumption was cancelled".to_string());
-        self.emit_error(ErrorReason::Error, message);
+        self.emit_error(ErrorReason::Error, message, rewritten_from);
     }
 
-    fn emit_done(&mut self, reason: DoneReason, message: AssistantMessage) {
+    fn emit_done(
+        &mut self,
+        reason: DoneReason,
+        message: AssistantMessage,
+        rewritten_from: Option<usize>,
+    ) {
         if self.emitted {
             return;
         }
         self.emitted = true;
-        self.stream.push(AssistantMessageEvent::Done {
-            reason,
-            message: message.clone(),
-        });
+        self.stream.push_with_hint(
+            AssistantMessageEvent::Done {
+                reason,
+                message: message.clone(),
+            },
+            rewrite_hint(rewritten_from),
+        );
         self.stream.end(Some(message));
     }
 
-    fn emit_error(&mut self, reason: ErrorReason, error: AssistantMessage) {
+    fn emit_error(
+        &mut self,
+        reason: ErrorReason,
+        error: AssistantMessage,
+        rewritten_from: Option<usize>,
+    ) {
         if self.emitted {
             return;
         }
         self.emitted = true;
-        self.stream.push(AssistantMessageEvent::Error {
-            reason,
-            error: error.clone(),
-        });
+        self.stream.push_with_hint(
+            AssistantMessageEvent::Error {
+                reason,
+                error: error.clone(),
+            },
+            rewrite_hint(rewritten_from),
+        );
         self.stream.end(Some(error));
     }
 }
@@ -275,6 +315,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }

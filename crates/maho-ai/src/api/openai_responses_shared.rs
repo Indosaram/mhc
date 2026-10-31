@@ -1122,6 +1122,7 @@ pub async fn process_responses_stream(
     model: &Model,
     options: &ResponsesStreamOptions<'_>,
 ) -> Result<(), ResponsesStreamError> {
+    crate::utils::assistant_capture::enable_assistant_capture(stream);
     let mut state = StreamState::new();
 
     let mut buffer = String::new();
@@ -1297,6 +1298,26 @@ fn push_tool_call_delta(
     });
 }
 
+/// `pushAssistantProgress(stream, { type: "message_block_state", contentIndex, phase, block })`
+/// for the provider-native block at `content_index`.
+fn push_native_block_state(
+    stream: &AssistantMessageEventStream,
+    output: &AssistantMessage,
+    content_index: usize,
+    phase: crate::utils::assistant_capture::BlockPhase,
+) {
+    if let Some(block) = output.content.get(content_index) {
+        crate::utils::assistant_capture::push_assistant_progress(
+            stream,
+            crate::utils::assistant_capture::AssistantProgress::block_state(
+                content_index,
+                phase,
+                block,
+            ),
+        );
+    }
+}
+
 fn create_slot(
     output_index: usize,
     item: &Value,
@@ -1354,10 +1375,18 @@ fn create_slot(
             slot.partial_json = Some(field_str(item, "arguments").unwrap_or_default().to_owned());
             state.output_slots.insert(output_index, slot);
             state.partial_json_blocks.insert(content_index);
-            stream.push(AssistantMessageEvent::ToolcallStart {
-                content_index,
-                partial: output.clone(),
-            });
+            stream.push_with_hint(
+                AssistantMessageEvent::ToolcallStart {
+                    content_index,
+                    partial: output.clone(),
+                },
+                crate::utils::assistant_capture::CaptureHint {
+                    raw_argument_prefix: Some(
+                        field_str(item, "arguments").unwrap_or_default().to_owned(),
+                    ),
+                    ..Default::default()
+                },
+            );
         }
         "custom_tool_call" => {
             let input_property = options
@@ -1417,6 +1446,12 @@ fn create_slot(
             state.output_slots.insert(
                 output_index,
                 Slot::new(SlotKind::ProviderNative, content_index),
+            );
+            push_native_block_state(
+                stream,
+                output,
+                content_index,
+                crate::utils::assistant_capture::BlockPhase::Insert,
             );
         }
     }
@@ -1616,11 +1651,20 @@ fn handle_event(
                     .cloned()
                     .unwrap_or_default();
             }
-            if let Some(delta) = arguments.strip_prefix(previous_partial_json.as_str())
-                && !delta.is_empty()
-            {
-                let slot = state.output_slots.get(&output_index).expect("checked");
-                push_tool_call_delta(slot, Some(delta.to_owned()), output, stream);
+            if let Some(delta) = arguments.strip_prefix(previous_partial_json.as_str()) {
+                if !delta.is_empty() {
+                    let slot = state.output_slots.get(&output_index).expect("checked");
+                    push_tool_call_delta(slot, Some(delta.to_owned()), output, stream);
+                }
+            } else {
+                crate::utils::assistant_capture::push_assistant_progress(
+                    stream,
+                    crate::utils::assistant_capture::AssistantProgress::MessageToolArgumentsReset {
+                        content_index,
+                        parsed_through: crate::utils::assistant_capture::utf16_len(&arguments),
+                        raw_argument_prefix: arguments.clone(),
+                    },
+                );
             }
         }
         "response.custom_tool_call_input.delta" => {
@@ -1689,6 +1733,12 @@ fn handle_event(
                     output,
                     state,
                 )?;
+                push_native_block_state(
+                    stream,
+                    output,
+                    content_index,
+                    crate::utils::assistant_capture::BlockPhase::End,
+                );
                 state
                     .finalized_native_image_output_indexes
                     .insert(output_index);
@@ -1873,6 +1923,12 @@ fn handle_event(
                     block.subtype = item_type;
                     block.raw = item;
                 }
+                push_native_block_state(
+                    stream,
+                    output,
+                    content_index,
+                    crate::utils::assistant_capture::BlockPhase::End,
+                );
                 state.output_slots.remove(&output_index);
             }
             state.open_items = state.open_items.saturating_sub(1);
@@ -1880,7 +1936,7 @@ fn handle_event(
         }
         "response.completed" | "response.incomplete" => {
             let response = event.get("response").cloned().unwrap_or(Value::Null);
-            finalize_response(&response, output, model, options, state)?;
+            finalize_response(&response, output, stream, model, options, state)?;
         }
         "error" => {
             let nested = event.get("error");
@@ -1926,6 +1982,7 @@ fn handle_event(
 fn finalize_response(
     response: &Value,
     output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
     model: &Model,
     options: &ResponsesStreamOptions<'_>,
     state: &mut StreamState,
@@ -1937,7 +1994,7 @@ fn finalize_response(
         .cloned()
         .unwrap_or_default();
     backfill_reasoning_signatures(&response_output, output, state);
-    backfill_native_image_generation_calls(&response_output, output, state)?;
+    backfill_native_image_generation_calls(&response_output, output, stream, options, state)?;
 
     if let Some(id) = field_str(response, "id") {
         output.response_id = Some(id.to_owned());
@@ -2066,6 +2123,8 @@ fn backfill_reasoning_signatures(
 fn backfill_native_image_generation_calls(
     response_output: &[Value],
     output: &mut AssistantMessage,
+    stream: &AssistantMessageEventStream,
+    options: &ResponsesStreamOptions<'_>,
     state: &mut StreamState,
 ) -> Result<(), ResponsesStreamError> {
     for (output_index, output_item) in response_output.iter().enumerate() {
@@ -2078,13 +2137,15 @@ fn backfill_native_image_generation_calls(
         let Some(image_item) = read_native_image_generation_call(output_item) else {
             continue;
         };
-        match state
+        // `existingSlot ?? createSlot(outputIndex, outputItem)`: a missing slot is created (and
+        // its insert recorded) before the end record.
+        let existing = state
             .output_slots
             .get(&output_index)
             .filter(|slot| slot.kind == SlotKind::ProviderNative)
-        {
-            Some(slot) => {
-                let content_index = slot.content_index;
+            .map(|slot| slot.content_index);
+        let content_index = match existing {
+            Some(content_index) => {
                 reconcile_native_image_slot(
                     output_index,
                     content_index,
@@ -2092,29 +2153,20 @@ fn backfill_native_image_generation_calls(
                     output,
                     state,
                 )?;
+                content_index
             }
             None => {
                 let content_index = output.content.len();
-                let raw = reconcile_native_image_generation_call(&image_item);
-                reconcile_native_image_slot(
-                    output_index,
-                    content_index,
-                    &image_item,
-                    output,
-                    state,
-                )?;
-                output
-                    .content
-                    .push(ContentBlock::ProviderNative(ProviderNativeContent {
-                        subtype: String::from("image_generation_call"),
-                        raw,
-                    }));
-                state.output_slots.insert(
-                    output_index,
-                    Slot::new(SlotKind::ProviderNative, content_index),
-                );
+                create_slot(output_index, output_item, output, stream, options, state)?;
+                content_index
             }
-        }
+        };
+        push_native_block_state(
+            stream,
+            output,
+            content_index,
+            crate::utils::assistant_capture::BlockPhase::End,
+        );
         state.output_slots.remove(&output_index);
     }
     Ok(())

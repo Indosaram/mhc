@@ -52,6 +52,7 @@ fn option_value(options: &StreamOptions, key: &str) -> Option<Value> {
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -992,7 +993,7 @@ pub fn stream(
         supports_mid_convo_system_messages(model),
     );
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();

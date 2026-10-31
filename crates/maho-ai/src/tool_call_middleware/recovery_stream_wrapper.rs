@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
 use crate::tool_call_middleware::protocols::antml::recovery_stream::create_antml_invoke_recovery_stream_parser;
 use crate::types::{AssistantMessage, AssistantMessageEvent, DoneReason, ErrorReason, Tool};
+use crate::utils::assistant_capture::{CaptureHint, Captured};
 use crate::utils::event_stream::AssistantMessageEventStream;
 
 use super::recovery_content_lifecycle::{RecoveryContentKind, RecoveryContentLifecycle};
@@ -56,7 +57,7 @@ pub fn wrap_stream_with_invoke_recovery(
     tools: Vec<Tool>,
     options: InvokeRecoveryOptions,
 ) -> AssistantMessageEventStream {
-    let outer_stream = AssistantMessageEventStream::assistant();
+    let outer_stream = AssistantMessageEventStream::with_capture_blocks(true);
     let outer_for_task = outer_stream.clone();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
     let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
@@ -166,356 +167,425 @@ pub fn wrap_stream_with_invoke_recovery(
                     }
                     return;
                 }
-                event = inner_stream.next() => event,
+                record = inner_stream.next_record() => record,
+            };
+            // Progress records cross as they are read (TS `assistantEvents(innerStream, ...)`):
+            // the native projection relays a source control to the outer block that copies it.
+            let next = match next {
+                Ok(Some(crate::utils::assistant_capture::Record::Progress(progress))) => {
+                    if let Some(current_native) = &mut native_projection {
+                        current_native.relay_progress(progress);
+                    }
+                    continue;
+                }
+                Ok(Some(crate::utils::assistant_capture::Record::Event(event))) => Ok(Some(event)),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
             };
             match next {
-                Ok(Some(event)) => match event {
-                    AssistantMessageEvent::Start { partial } => {
-                        let new_projection = StreamMessageProjection::new(
-                            outer_for_task.clone(),
-                            partial.clone(),
-                            StreamMessageProjectionOptions {
-                                preserve_source_metadata: true,
-                            },
-                        );
-                        let mut new_native =
-                            RecoveryNativeProjection::new(outer_for_task.clone(), protocol);
-                        new_native.reserve_visible_ids(&partial);
-                        outer_for_task.push(AssistantMessageEvent::Start {
-                            partial: new_projection.message.clone(),
-                        });
-                        projection = Some(new_projection);
-                        native_projection = Some(new_native);
-                    }
-                    AssistantMessageEvent::TextStart {
-                        content_index,
-                        partial,
-                    } => {
-                        if content_index >= partial.content.len()
-                            || !matches!(
-                                partial.content.get(content_index),
-                                Some(crate::types::ContentBlock::Text(_))
-                            )
-                            || !content_lifecycle.can_start(content_index)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidContentEventOrder
+                Ok(Some(captured)) => {
+                    let source_kind = std::mem::discriminant(&captured.value);
+                    let source_capture = captured.capture.clone();
+                    match captured.value {
+                        AssistantMessageEvent::Start { partial } => {
+                            let new_projection = StreamMessageProjection::new(
+                                outer_for_task.clone(),
+                                partial.clone(),
+                                StreamMessageProjectionOptions {
+                                    preserve_source_metadata: true,
+                                },
                             );
+                            let mut new_native =
+                                RecoveryNativeProjection::new(outer_for_task.clone(), protocol);
+                            new_native.reserve_visible_ids(&partial);
+                            outer_for_task.push(AssistantMessageEvent::Start {
+                                partial: new_projection.message.clone(),
+                            });
+                            projection = Some(new_projection);
+                            native_projection = Some(new_native);
                         }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let (Some(current_projection), Some(current_native)) =
-                            (&mut projection, &mut native_projection)
-                        else {
-                            return;
-                        };
-                        let next_text = RecoveryTextProjection::new(
-                            tools.clone(),
+                        AssistantMessageEvent::TextStart {
                             content_index,
-                            RecoveryTextProjectionOptions {
-                                create_parser: Some(Arc::clone(&create_parser)),
-                                protocol,
-                            },
-                        );
-                        if !next_text.start(current_projection, current_native, &partial) {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
-                            );
-                        }
-                        text_projection = Some(next_text);
-                        content_lifecycle.start(content_index, RecoveryContentKind::Text);
-                    }
-                    AssistantMessageEvent::TextDelta {
-                        content_index,
-                        delta,
-                        partial,
-                    } => {
-                        if !content_lifecycle.is_active(content_index, RecoveryContentKind::Text) {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidContentEventOrder
-                            );
-                        }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let (Some(current_projection), Some(current_native), Some(current_text)) = (
-                            &mut projection,
-                            &mut native_projection,
-                            &mut text_projection,
-                        ) else {
-                            continue;
-                        };
-                        saw_tool_call =
-                            current_text.feed(current_projection, current_native, &delta)
-                                || saw_tool_call;
-                    }
-                    AssistantMessageEvent::TextEnd {
-                        content_index,
-                        content: _,
-                        partial,
-                    } => {
-                        if !content_lifecycle.is_active(content_index, RecoveryContentKind::Text) {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidContentEventOrder
-                            );
-                        }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        saw_tool_call = finish_text!() || saw_tool_call;
-                        content_lifecycle.end(content_index, RecoveryContentKind::Text);
-                    }
-                    AssistantMessageEvent::ThinkingStart {
-                        content_index,
-                        partial,
-                    } => {
-                        if content_index >= partial.content.len()
-                            || !matches!(
-                                partial.content.get(content_index),
-                                Some(crate::types::ContentBlock::Thinking(_))
-                            )
-                            || !content_lifecycle.can_start(content_index)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidContentEventOrder
-                            );
-                        }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let (Some(current_projection), Some(current_native)) =
-                            (&mut projection, &mut native_projection)
-                        else {
-                            return;
-                        };
-                        let outer_index =
-                            current_projection.start_thinking(content_index, &partial);
-                        if !current_native.record_projected_block(content_index, outer_index) {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
-                            );
-                        }
-                        content_lifecycle.start(content_index, RecoveryContentKind::Thinking);
-                    }
-                    AssistantMessageEvent::ThinkingDelta {
-                        content_index,
-                        delta,
-                        partial,
-                    } => {
-                        if !content_lifecycle
-                            .is_active(content_index, RecoveryContentKind::Thinking)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidContentEventOrder
-                            );
-                        }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let Some(current_projection) = &mut projection else {
-                            continue;
-                        };
-                        current_projection.project_thinking_delta(content_index, &delta, &partial);
-                    }
-                    AssistantMessageEvent::ThinkingEnd {
-                        content_index,
-                        content,
-                        partial,
-                    } => {
-                        if !content_lifecycle
-                            .is_active(content_index, RecoveryContentKind::Thinking)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidContentEventOrder
-                            );
-                        }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let Some(current_projection) = &mut projection else {
-                            continue;
-                        };
-                        current_projection.finish_thinking(content_index, &content, &partial);
-                        content_lifecycle.end(content_index, RecoveryContentKind::Thinking);
-                    }
-                    AssistantMessageEvent::ToolcallStart {
-                        content_index,
-                        partial,
-                    } => {
-                        if content_index >= partial.content.len()
-                            || !matches!(
-                                partial.content.get(content_index),
-                                Some(crate::types::ContentBlock::ToolCall(_))
-                            )
-                            || !content_lifecycle.can_start(content_index)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
-                            );
-                        }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let (Some(current_projection), Some(current_native)) =
-                            (&mut projection, &mut native_projection)
-                        else {
-                            return;
-                        };
-                        match current_native.project_native_start(
-                            &mut current_projection.message,
-                            &partial,
-                            content_index,
-                        ) {
-                            ProjectNativeStartResult::Projected => {}
-                            ProjectNativeStartResult::Collision => {
-                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision)
+                            partial,
+                        } => {
+                            if content_index >= partial.content.len()
+                                || !matches!(
+                                    partial.content.get(content_index),
+                                    Some(crate::types::ContentBlock::Text(_))
+                                )
+                                || !content_lifecycle.can_start(content_index)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidContentEventOrder
+                                );
                             }
-                            ProjectNativeStartResult::Invalid => terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
-                            ),
-                        }
-                        content_lifecycle.start(content_index, RecoveryContentKind::ToolCall);
-                        saw_tool_call = true;
-                    }
-                    AssistantMessageEvent::ToolcallDelta {
-                        content_index,
-                        delta,
-                        partial,
-                    } => {
-                        if !content_lifecycle
-                            .is_active(content_index, RecoveryContentKind::ToolCall)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let (Some(current_projection), Some(current_native)) =
+                                (&mut projection, &mut native_projection)
+                            else {
+                                return;
+                            };
+                            let next_text = RecoveryTextProjection::new(
+                                tools.clone(),
+                                content_index,
+                                RecoveryTextProjectionOptions {
+                                    create_parser: Some(Arc::clone(&create_parser)),
+                                    protocol,
+                                },
                             );
+                            if !next_text.start(current_projection, current_native, &partial) {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                            text_projection = Some(next_text);
+                            content_lifecycle.start(content_index, RecoveryContentKind::Text);
                         }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
-                        }
-                        let (Some(current_projection), Some(current_native)) =
-                            (&mut projection, &mut native_projection)
-                        else {
-                            continue;
-                        };
-                        if !current_native.project_native_delta(
-                            &mut current_projection.message,
-                            &partial,
+                        AssistantMessageEvent::TextDelta {
                             content_index,
-                            &delta,
-                        ) {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
+                            delta,
+                            partial,
+                        } => {
+                            if !content_lifecycle
+                                .is_active(content_index, RecoveryContentKind::Text)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidContentEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let (
+                                Some(current_projection),
+                                Some(current_native),
+                                Some(current_text),
+                            ) = (
+                                &mut projection,
+                                &mut native_projection,
+                                &mut text_projection,
+                            )
+                            else {
+                                continue;
+                            };
+                            saw_tool_call =
+                                current_text.feed(current_projection, current_native, &delta)
+                                    || saw_tool_call;
+                        }
+                        AssistantMessageEvent::TextEnd {
+                            content_index,
+                            content: _,
+                            partial,
+                        } => {
+                            if !content_lifecycle
+                                .is_active(content_index, RecoveryContentKind::Text)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidContentEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            saw_tool_call = finish_text!() || saw_tool_call;
+                            content_lifecycle.end(content_index, RecoveryContentKind::Text);
+                        }
+                        AssistantMessageEvent::ThinkingStart {
+                            content_index,
+                            partial,
+                        } => {
+                            if content_index >= partial.content.len()
+                                || !matches!(
+                                    partial.content.get(content_index),
+                                    Some(crate::types::ContentBlock::Thinking(_))
+                                )
+                                || !content_lifecycle.can_start(content_index)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidContentEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let (Some(current_projection), Some(current_native)) =
+                                (&mut projection, &mut native_projection)
+                            else {
+                                return;
+                            };
+                            let outer_index = outer_for_task.relaying(
+                                source_kind,
+                                source_capture.clone(),
+                                || current_projection.start_thinking(content_index, &partial),
                             );
+                            if !current_native.record_projected_block(content_index, outer_index) {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                            content_lifecycle.start(content_index, RecoveryContentKind::Thinking);
                         }
-                    }
-                    AssistantMessageEvent::ToolcallEnd {
-                        content_index,
-                        tool_call,
-                        partial,
-                    } => {
-                        if !content_lifecycle
-                            .is_active(content_index, RecoveryContentKind::ToolCall)
-                        {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
-                            );
+                        AssistantMessageEvent::ThinkingDelta {
+                            content_index,
+                            delta,
+                            partial,
+                        } => {
+                            if !content_lifecycle
+                                .is_active(content_index, RecoveryContentKind::Thinking)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidContentEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let Some(current_projection) = &mut projection else {
+                                continue;
+                            };
+                            outer_for_task.relaying(source_kind, source_capture.clone(), || {
+                                current_projection.project_thinking_delta(
+                                    content_index,
+                                    &delta,
+                                    &partial,
+                                )
+                            });
                         }
-                        if !prepare_content_event!(&partial, content_index) {
-                            terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                        AssistantMessageEvent::ThinkingEnd {
+                            content_index,
+                            content,
+                            partial,
+                        } => {
+                            if !content_lifecycle
+                                .is_active(content_index, RecoveryContentKind::Thinking)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidContentEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let Some(current_projection) = &mut projection else {
+                                continue;
+                            };
+                            outer_for_task.relaying(source_kind, source_capture.clone(), || {
+                                current_projection.finish_thinking(
+                                    content_index,
+                                    &content,
+                                    &partial,
+                                )
+                            });
+                            content_lifecycle.end(content_index, RecoveryContentKind::Thinking);
                         }
-                        let (Some(current_projection), Some(current_native)) =
-                            (&mut projection, &mut native_projection)
-                        else {
-                            continue;
-                        };
-                        if !current_native.project_native_end(
-                            &mut current_projection.message,
+                        AssistantMessageEvent::ToolcallStart {
+                            content_index,
+                            partial,
+                        } => {
+                            if content_index >= partial.content.len()
+                                || !matches!(
+                                    partial.content.get(content_index),
+                                    Some(crate::types::ContentBlock::ToolCall(_))
+                                )
+                                || !content_lifecycle.can_start(content_index)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let (Some(current_projection), Some(current_native)) =
+                                (&mut projection, &mut native_projection)
+                            else {
+                                return;
+                            };
+                            match outer_for_task.relaying(
+                                source_kind,
+                                source_capture.clone(),
+                                || {
+                                    current_native.project_native_start(
+                                        &mut current_projection.message,
+                                        &partial,
+                                        content_index,
+                                    )
+                                },
+                            ) {
+                                ProjectNativeStartResult::Projected => {}
+                                ProjectNativeStartResult::Collision => {
+                                    terminate_for_failure!(
+                                        &partial,
+                                        RecoveryStreamFailure::Collision
+                                    )
+                                }
+                                ProjectNativeStartResult::Invalid => terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                ),
+                            }
+                            content_lifecycle.start(content_index, RecoveryContentKind::ToolCall);
+                            saw_tool_call = true;
+                        }
+                        AssistantMessageEvent::ToolcallDelta {
+                            content_index,
+                            delta,
+                            partial,
+                        } => {
+                            if !content_lifecycle
+                                .is_active(content_index, RecoveryContentKind::ToolCall)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let (Some(current_projection), Some(current_native)) =
+                                (&mut projection, &mut native_projection)
+                            else {
+                                continue;
+                            };
+                            if !outer_for_task.relaying(source_kind, source_capture.clone(), || {
+                                current_native.project_native_delta(
+                                    &mut current_projection.message,
+                                    &partial,
+                                    content_index,
+                                    &delta,
+                                )
+                            }) {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                        }
+                        AssistantMessageEvent::ToolcallEnd {
                             content_index,
                             tool_call,
-                        ) {
-                            terminate_for_failure!(
-                                &partial,
-                                RecoveryStreamFailure::InvalidNativeEventOrder
+                            partial,
+                        } => {
+                            if !content_lifecycle
+                                .is_active(content_index, RecoveryContentKind::ToolCall)
+                            {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                            if !prepare_content_event!(&partial, content_index) {
+                                terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
+                            }
+                            let (Some(current_projection), Some(current_native)) =
+                                (&mut projection, &mut native_projection)
+                            else {
+                                continue;
+                            };
+                            if !outer_for_task.relaying(source_kind, source_capture.clone(), || {
+                                current_native.project_native_end(
+                                    &mut current_projection.message,
+                                    content_index,
+                                    tool_call,
+                                )
+                            }) {
+                                terminate_for_failure!(
+                                    &partial,
+                                    RecoveryStreamFailure::InvalidNativeEventOrder
+                                );
+                            }
+                            content_lifecycle.end(content_index, RecoveryContentKind::ToolCall);
+                            saw_tool_call = true;
+                        }
+                        AssistantMessageEvent::Done { reason, message } => {
+                            if !synchronize_terminal(
+                                &mut projection,
+                                &mut native_projection,
+                                &outer_for_task,
+                                &mut text_projection,
+                                &mut saw_tool_call,
+                                &message,
+                                protocol,
+                            ) {
+                                return;
+                            }
+                            let Some(current_projection) = &mut projection else {
+                                return;
+                            };
+                            match done_reason_to_stop_family(reason) {
+                                Some(family) => terminal.done(
+                                    current_projection,
+                                    &message,
+                                    saw_tool_call,
+                                    family,
+                                ),
+                                None => {
+                                    outer_for_task.push_captured(
+                                        Captured {
+                                            value: AssistantMessageEvent::Done {
+                                                reason,
+                                                message: message.clone(),
+                                            },
+                                            capture: source_capture.clone(),
+                                        },
+                                        CaptureHint::default(),
+                                    );
+                                    outer_for_task.end(Some(message));
+                                }
+                            }
+                            return;
+                        }
+                        AssistantMessageEvent::Error { reason, error } => {
+                            if projection.is_none() {
+                                outer_for_task.push_captured(
+                                    Captured {
+                                        value: AssistantMessageEvent::Error {
+                                            reason,
+                                            error: error.clone(),
+                                        },
+                                        capture: source_capture.clone(),
+                                    },
+                                    CaptureHint::default(),
+                                );
+                                outer_for_task.end(Some(error));
+                                return;
+                            }
+                            if !synchronize_terminal(
+                                &mut projection,
+                                &mut native_projection,
+                                &outer_for_task,
+                                &mut text_projection,
+                                &mut saw_tool_call,
+                                &error,
+                                protocol,
+                            ) {
+                                return;
+                            }
+                            let Some(current_projection) = &mut projection else {
+                                return;
+                            };
+                            terminal.source_error(
+                                current_projection,
+                                &error,
+                                saw_tool_call,
+                                error_reason_to_aborted_family(reason),
                             );
+                            return;
                         }
-                        content_lifecycle.end(content_index, RecoveryContentKind::ToolCall);
-                        saw_tool_call = true;
                     }
-                    AssistantMessageEvent::Done { reason, message } => {
-                        if !synchronize_terminal(
-                            &mut projection,
-                            &mut native_projection,
-                            &outer_for_task,
-                            &mut text_projection,
-                            &mut saw_tool_call,
-                            &message,
-                            protocol,
-                        ) {
-                            return;
-                        }
-                        let Some(current_projection) = &mut projection else {
-                            return;
-                        };
-                        match done_reason_to_stop_family(reason) {
-                            Some(family) => {
-                                terminal.done(current_projection, &message, saw_tool_call, family)
-                            }
-                            None => {
-                                outer_for_task.push(AssistantMessageEvent::Done {
-                                    reason,
-                                    message: message.clone(),
-                                });
-                                outer_for_task.end(Some(message));
-                            }
-                        }
-                        return;
-                    }
-                    AssistantMessageEvent::Error { reason, error } => {
-                        if projection.is_none() {
-                            outer_for_task.push(AssistantMessageEvent::Error {
-                                reason,
-                                error: error.clone(),
-                            });
-                            outer_for_task.end(Some(error));
-                            return;
-                        }
-                        if !synchronize_terminal(
-                            &mut projection,
-                            &mut native_projection,
-                            &outer_for_task,
-                            &mut text_projection,
-                            &mut saw_tool_call,
-                            &error,
-                            protocol,
-                        ) {
-                            return;
-                        }
-                        let Some(current_projection) = &mut projection else {
-                            return;
-                        };
-                        terminal.source_error(
-                            current_projection,
-                            &error,
-                            saw_tool_call,
-                            error_reason_to_aborted_family(reason),
-                        );
-                        return;
-                    }
-                },
+                }
                 Ok(None) => {
                     let _ = finish_text!();
                     terminal.exhausted(projection.as_mut());
@@ -626,6 +696,7 @@ mod tests {
             end_turn: None,
             timestamp: 0,
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }
