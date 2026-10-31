@@ -376,8 +376,26 @@ fn into_action(
 /// The key root a host session command uses: an explicit root is resolved against the cwd,
 /// as upstream `resolve(keyRoot)`.
 fn host_session_key_root(explicit: Option<&str>, agent_dir: &Path) -> PathBuf {
-    let explicit_root = explicit.map(resolve);
-    maho_rpc::host_probe::rpc_key_root(explicit_root.as_deref().map(Path::new), Some(agent_dir))
+    host_session_key_root_with(
+        explicit,
+        std::env::var("SENPI_RPC_KEY_ROOT").ok().as_deref(),
+        agent_dir,
+    )
+}
+
+/// [`host_session_key_root`] with the environment value passed in. Upstream reads
+/// `process.env.SENPI_RPC_KEY_ROOT ?? agentDir`, so a set-but-blank value is kept as the root (it
+/// names the cwd) rather than falling through to the agent dir.
+fn host_session_key_root_with(
+    explicit: Option<&str>,
+    env_root: Option<&str>,
+    agent_dir: &Path,
+) -> PathBuf {
+    match (explicit, env_root) {
+        (Some(explicit), _) => PathBuf::from(resolve(explicit)),
+        (None, Some(env_root)) => PathBuf::from(env_root),
+        (None, None) => agent_dir.to_path_buf(),
+    }
 }
 
 /// senpi `runHostSessionCommand`: one JSON line on stdout and the outcome's exit code.
@@ -598,6 +616,22 @@ mod tests {
         let resolved = host_session_key_root(parsed.key_root.as_deref(), Path::new("/agent"));
         assert!(resolved.is_absolute());
         assert!(resolved.ends_with("relative-keys"));
+    }
+
+    #[test]
+    fn the_environment_key_root_is_kept_even_when_blank() {
+        let agent = Path::new("/agent");
+        assert_eq!(
+            host_session_key_root_with(None, Some("/env-keys"), agent),
+            Path::new("/env-keys")
+        );
+        assert_eq!(
+            host_session_key_root_with(None, Some(""), agent),
+            PathBuf::new()
+        );
+        assert_eq!(host_session_key_root_with(None, None, agent), agent);
+        let explicit = host_session_key_root_with(Some("keys"), Some(""), agent);
+        assert!(explicit.is_absolute() && explicit.ends_with("keys"));
     }
 
     #[test]
