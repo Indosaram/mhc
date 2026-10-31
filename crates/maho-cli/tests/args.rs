@@ -423,7 +423,12 @@ fn spawned_by_rejects_malformed_ancestry() {
         .map(str::to_owned)
         .to_vec();
     for key in ["parentSessionId", "rootSessionId", "taskId"] {
-        for bad in [None, Some(serde_json::json!("")), Some(serde_json::json!(1)), Some(serde_json::Value::Null)] {
+        for bad in [
+            None,
+            Some(serde_json::json!("")),
+            Some(serde_json::json!(1)),
+            Some(serde_json::Value::Null),
+        ] {
             let mut ancestry = serde_json::json!({"parentSessionId":"parent","rootSessionId":"root","taskId":"task"});
             match bad {
                 None => {
@@ -484,4 +489,13 @@ fn spawned_by_is_ignored_with_a_warning_when_resuming_or_forking() {
         );
     }
     assert_eq!(spawned_by_ignored_warning(&parse(&["--resume"])), None);
+}
+// senpi v2026.10.27-2: the TUI has no presenter authority yet, so enforcement is refused, not dropped.
+#[test]
+fn tui_refuses_mcp_presenter_enforcement() {
+    assert_eq!(
+        tui_presenter_enforcement_refusal(&parse(&["--mcp-presenter-enforcement"])),
+        Some("--mcp-presenter-enforcement is not supported by this build's interactive mode yet")
+    );
+    assert_eq!(tui_presenter_enforcement_refusal(&parse(&[])), None);
 }
