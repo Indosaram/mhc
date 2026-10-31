@@ -17,18 +17,15 @@ use crate::effect_session::{EffectSession, QueuedChangeStatus, SetModelError};
 use crate::effect_transcript_lookup::{
     EffectLookup, TranscriptUnreadable, lookup_effect_in_transcript,
 };
+use crate::rpc_types::{
+    RPC_ERROR_CONTEXT_BUDGET, RPC_ERROR_EFFECT_ID_CONFLICT, RPC_ERROR_INVALID_ARGUMENT,
+    RPC_ERROR_MODEL_NOT_FOUND, RPC_ERROR_PROVIDER_UNAVAILABLE, RPC_ERROR_TRANSCRIPT_UNREADABLE,
+};
 use crate::session_control_actions_data::unsupported_thinking_level;
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-
-pub const RPC_ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
-pub const RPC_ERROR_MODEL_NOT_FOUND: &str = "model_not_found";
-pub const RPC_ERROR_EFFECT_ID_CONFLICT: &str = "effect_id_conflict";
-pub const RPC_ERROR_TRANSCRIPT_UNREADABLE: &str = "transcript_unreadable";
-pub const RPC_ERROR_PROVIDER_UNAVAILABLE: &str = "provider_unavailable";
-pub const RPC_ERROR_CONTEXT_BUDGET: &str = "context_budget";
 
 pub struct EffectCommandContext {
     pub session: Arc<dyn EffectSession>,
@@ -622,7 +619,7 @@ pub async fn run_get_effect_status(ctx: &EffectCommandContext, command: &Value) 
     if let Some(path) = command["sessionPath"].as_str()
         && Some(path) != ctx.session.session_file().as_deref()
     {
-        return answer_effect_from_transcript(&command["id"], path, effect_id);
+        return answer_effect_from_transcript(&command["id"], path, effect_id).await;
     }
     let status = EffectLedger::for_session(&ctx.session)
         .await
@@ -637,9 +634,21 @@ pub async fn run_get_effect_status(ctx: &EffectCommandContext, command: &Value) 
     )
 }
 
-/// `get_effect_status { sessionPath }` for a session that is not loaded: an authoritative disk read.
-pub fn answer_effect_from_transcript(id: &Value, path: &str, effect_id: &str) -> Value {
-    match lookup_effect_in_transcript(std::path::Path::new(path), effect_id) {
+/// `get_effect_status { sessionPath }` for a session that is not loaded: an authoritative disk read, run
+/// on the blocking pool.
+pub async fn answer_effect_from_transcript(id: &Value, path: &str, effect_id: &str) -> Value {
+    let (owned_path, owned_effect_id) = (std::path::PathBuf::from(path), effect_id.to_owned());
+    let lookup = tokio::task::spawn_blocking(move || {
+        lookup_effect_in_transcript(&owned_path, &owned_effect_id)
+    })
+    .await
+    .unwrap_or_else(|join| {
+        Err(TranscriptUnreadable {
+            path: path.into(),
+            reason: join.to_string(),
+        })
+    });
+    match lookup {
         Ok(EffectLookup::Found(effect)) => respond(
             id,
             "get_effect_status",
