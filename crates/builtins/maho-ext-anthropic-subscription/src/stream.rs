@@ -306,8 +306,13 @@ pub fn stream_anthropic_subscription(
                 let lane_name = lane_name(lane);
                 let mut registry = deps.registry.lock().await;
                 let mut saw_stream = false;
+                // senpi checks `compact_boundary` in the loop both lanes share; the resident turn delivers through a
+                // callback, so the boundary is recorded here and the turn is stopped once the registry returns it.
+                let mut native_compaction = false;
                 let result = registry.turn(crate::session_stream::ResidentInput { session, account: &account, model: &model.id, context: &context_json, options: &configuration, executable: &deps.executable, environment: &environment, auth_lane: lane_name, custom: &resolved.to_sdk, tool_note: tool_note.as_deref(), now: (deps.now)() as u64, transcript_available: true, signal: signal.as_ref(), credential_digest: credential_digest.as_deref(), context_window }, |message| {
                     crate::auth_attempt::record_limit_windows(&message, &account);
+                    if native_compaction { return; }
+                    if senpi_owns_compaction && message["type"] == "system" && message["subtype"] == "compact_boundary" { native_compaction = true; return; }
                     if !started { events.push(Event::Start { partial: mapper.output.clone() }); started = true; }
                     if message["type"] == "stream_event" { saw_stream = true; visible |= matches!(message["event"]["type"].as_str(), Some("content_block_start" | "content_block_delta" | "content_block_stop")); if let Some(event) = mapper.apply_stream_event(&message["event"]) { events.push(event); } }
                     else if message["type"] == "assistant" { mapper.note_response_id(message["message"]["id"].as_str()); if !saw_stream && message["message"]["usage"].is_object() { crate::stream_protocol::update_usage(&model, &mut mapper.output, &message["message"]["usage"], crate::stream_protocol::UsageScope::RequestStart); } }
@@ -317,6 +322,15 @@ pub fn stream_anthropic_subscription(
                         if !saw_stream { mapper.output.content.push(ContentBlock::Text(TextContent { text: message["result"].as_str().unwrap_or_default().into(), ..Default::default() })); }
                     }
                 }).await;
+                if native_compaction {
+                    // Nothing after the boundary reached the turn. Close the process that compacted, so the next turn
+                    // rebuilds the session from senpi's history instead of resuming the compacted transcript.
+                    native_compaction_stopped = true;
+                    if let Err(error) = registry.close(session).await {
+                        maho_ext_api::diagnostic(&format!("Anthropic Subscription could not close the natively compacted session: {error}"));
+                    }
+                    anyhow::bail!(NATIVE_COMPACTION_WHILE_SENPI_OWNS);
+                }
                 if let Some(shape) = registry.dispatch_shapes.get(session) {
                     cold_seed_attempt = shape.cold_seed;
                     cold_seed_estimate = shape.estimated_tokens;
