@@ -2135,18 +2135,28 @@ async fn drive(
                             let provenance = provenance.clone();
                             let provider = target.provider.clone();
                             async move {
-                                let response = request
-                                    .timeout(Duration::from_millis(timeout_ms))
-                                    .send()
-                                    .await
-                                    .map_err(|error| {
-                                        provenance.lock().unwrap_or_else(|poison| poison.into_inner()).diagnostic =
-                                            crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(&error);
-                                        crate::utils::tool_choice_fallback::HttpFailure {
-                                            status: error.status().map(|status| status.as_u16()),
-                                            message: error.to_string(),
-                                        }
-                                    })?;
+                                // Bound only the wait for response headers. reqwest's
+                                // `RequestBuilder::timeout` would also cap the body read, cutting a
+                                // stream that is still delivering events (long reasoning turns ran
+                                // past 300s and died mid-thinking); stream silence is the agent
+                                // loop's idle watchdog's job.
+                                let response = tokio::time::timeout(
+                                    Duration::from_millis(timeout_ms),
+                                    request.send(),
+                                )
+                                .await
+                                .map_err(|_| crate::utils::tool_choice_fallback::HttpFailure {
+                                    status: None,
+                                    message: "Request timed out.".to_owned(),
+                                })?
+                                .map_err(|error| {
+                                    provenance.lock().unwrap_or_else(|poison| poison.into_inner()).diagnostic =
+                                        crate::utils::provider_diagnostic_carrier::diagnostic_from_transport(&error);
+                                    crate::utils::tool_choice_fallback::HttpFailure {
+                                        status: error.status().map(|status| status.as_u16()),
+                                        message: error.to_string(),
+                                    }
+                                })?;
                                 if response.status().is_success() {
                                     let metadata = ProviderResponse {
                                         status: response.status().as_u16(),
