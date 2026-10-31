@@ -790,6 +790,73 @@ fn session_switch_failure(
         },
     }
 }
+fn coded_error(command: &RpcCommand, kind: &str, error: String, code: &str) -> RpcResponse {
+    RpcResponse {
+        id: command.id.clone(),
+        record_type: ResponseRecordType::Response,
+        command: kind.into(),
+        session_id: command.session_id.clone(),
+        result: RpcResponseResult::Error {
+            error,
+            error_code: Some(code.to_owned()),
+            error_data: None,
+        },
+    }
+}
+/// senpi `ResolvedMessagePath` on the wire.
+fn resolved_message_path_json(
+    resolved: maho_core::message_path_resolution::ResolvedMessagePath,
+) -> serde_json::Value {
+    use maho_core::message_path_resolution::{
+        MessagePathBase, MessagePathKind, ResolvedMessagePath,
+    };
+    match resolved {
+        ResolvedMessagePath::Found {
+            realpath,
+            kind,
+            base,
+        } => serde_json::json!({
+            "status": "found",
+            "realpath": realpath,
+            "kind": match kind {
+                MessagePathKind::File => "file",
+                MessagePathKind::Directory => "directory",
+            },
+            "base": match base {
+                MessagePathBase::Absolute => "absolute",
+                MessagePathBase::Cwd => "cwd",
+                MessagePathBase::ProjectRoot => "project-root",
+            },
+        }),
+        ResolvedMessagePath::NotFound { tried } => {
+            serde_json::json!({"status": "not_found", "tried": tried})
+        }
+    }
+}
+/// senpi `ApiKeyVerification` on the wire.
+fn api_key_verification_json(
+    verification: maho_core::verify_api_key::ApiKeyVerification,
+) -> serde_json::Value {
+    use maho_core::verify_api_key::{ApiKeyFailure, ApiKeyVerification};
+    match verification {
+        ApiKeyVerification::Ok => serde_json::json!({"ok": true}),
+        ApiKeyVerification::Failed { reason, status } => {
+            let mut value = serde_json::json!({
+                "ok": false,
+                "reason": match reason {
+                    ApiKeyFailure::Rejected => "rejected",
+                    ApiKeyFailure::Unreachable => "unreachable",
+                    ApiKeyFailure::Unsupported => "unsupported",
+                    ApiKeyFailure::UnknownProvider => "unknown-provider",
+                },
+            });
+            if let Some(status) = status {
+                value["status"] = status.into();
+            }
+            value
+        }
+    }
+}
 fn edit_response(
     session: &AgentSession,
     result: Result<maho_core::agent_session::AssistantEditResult, String>,
@@ -1037,6 +1104,36 @@ async fn handle_session_command_with_sink(
         })))),
         RpcCommandBody::GetForkMessages=>{let messages=session.get_user_messages_for_forking().into_iter().map(|(entry_id,text)|serde_json::json!({"entryId":entry_id,"text":text})).collect::<Vec<_>>();("get_fork_messages",Ok(Some(serde_json::json!({"messages":messages}))))},
         RpcCommandBody::Wake{..}=>("wake",Ok(Some(serde_json::json!({"admitted":[]})))),
+        RpcCommandBody::ContinueFromLeaf=>{
+            // senpi: a refusal answers with the `ContinueFromLeafError` code; any other failure is a plain error.
+            if let Some(refusal)=session.continue_from_leaf_refusal(){return Some(coded_error(command,"continue_from_leaf",refusal.to_string(),refusal.code.as_str()));}
+            ("continue_from_leaf",session.continue_from_leaf().await.map(|()|None))
+        },
+        RpcCommandBody::Interrupt{turn_id,..}=>{
+            let outcome=crate::session_control_actions_data::interrupt_running_turn(session,turn_id.as_ref(),||session.abort()).await;
+            ("interrupt",serde_json::to_value(outcome).map(Some).map_err(|error|error.to_string()))
+        },
+        RpcCommandBody::RequestSelfSettle=>("request_self_settle",Ok(Some(session.request_self_settle()))),
+        RpcCommandBody::GetModelThinkingLevel{provider,model_id}=>{
+            let (Some(provider),Some(model_id))=(provider.as_ref().and_then(serde_json::Value::as_str),model_id.as_ref().and_then(serde_json::Value::as_str)) else{return Some(coded_error(command,"get_model_thinking_level","get_model_thinking_level requires 'provider' and 'modelId'.".into(),crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT));};
+            let Some(model)=session.model_registry().get_available().into_iter().find(|model|model.provider==provider&&model.id==model_id) else{return Some(coded_error(command,"get_model_thinking_level",format!("Model not found: {provider}/{model_id}"),crate::rpc_types::RPC_ERROR_MODEL_NOT_FOUND));};
+            let (level,source,available)=session.thinking_level_for_model(&model);
+            ("get_model_thinking_level",Ok(Some(serde_json::json!({"level":level,"source":source,"availableLevels":available}))))
+        },
+        RpcCommandBody::ResolvePath{path}=>{
+            let cwd=session.cwd();
+            let root=maho_core::message_path_resolution::message_path_project_root(&cwd);
+            ("resolve_path",Ok(Some(resolved_message_path_json(maho_core::message_path_resolution::resolve_message_path(path,&cwd,root.as_deref())))))
+        },
+        RpcCommandBody::GetSubscriptionLimits=>("get_subscription_limits",serde_json::to_value(maho_core::subscription_limits::limit_store::subscription_limits().snapshot()).map(|accounts|Some(serde_json::json!({"accounts":accounts}))).map_err(|error|error.to_string())),
+        RpcCommandBody::VerifyApiKey{provider,key}=>{
+            let verification=maho_core::verify_api_key::verify_api_key(&session.model_registry().get_all(),provider,key,maho_core::verify_api_key::fetch_probe_status).await;
+            ("verify_api_key",Ok(Some(api_key_verification_json(verification))))
+        },
+        RpcCommandBody::AccountOrder{provider,names}=>{
+            let result=session.model_registry().order_credential_accounts(provider,names.as_deref(),&session.agent_dir()).await;
+            ("account_order",result.map(|()|None))
+        },
         RpcCommandBody::MemoryReport=>("memory_report",crate::memory_report_command::answer_memory_report(session.memory_report_owner()).await.map(Some)),
         RpcCommandBody::GetSessionStats=>{let stats=session.get_session_stats();let mut value=serde_json::json!({"sessionId":stats.session_id,"userMessages":stats.user_messages,"assistantMessages":stats.assistant_messages,"toolCalls":stats.tool_calls,"toolResults":stats.tool_results,"totalMessages":stats.total_messages,"tokens":{"input":stats.tokens.input,"output":stats.tokens.output,"cacheRead":stats.tokens.cache_read,"cacheWrite":stats.tokens.cache_write,"total":stats.tokens.total},"cost":stats.cost});
             if let Some(file)=stats.session_file{value["sessionFile"]=file.into();}
@@ -2798,6 +2895,75 @@ mod new_session_tests {
         assert_eq!(
             response["error"],
             "memory_report_disabled: start the host with SENPI_MEMORY_REPORT=1"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_plain_session_commands_answer_with_senpis_wire_shapes() {
+        let session = &session();
+        let answer = move |line: serde_json::Value| async move {
+            let command: RpcCommand = serde_json::from_value(line).expect("command");
+            serde_json::to_value(
+                handle_session_command(session, &command)
+                    .await
+                    .expect("response"),
+            )
+            .expect("wire")
+        };
+        let leaf = answer(serde_json::json!({"type":"continue_from_leaf"})).await;
+        assert_eq!(leaf["success"], false);
+        assert_eq!(leaf["errorCode"], "nothing_to_continue");
+        let interrupt = answer(serde_json::json!({"type":"interrupt","turnId":"t"})).await;
+        assert_eq!(interrupt["data"], serde_json::json!({"interrupted":false}));
+        let settle = answer(serde_json::json!({"type":"request_self_settle"})).await;
+        assert_eq!(settle["success"], true);
+        assert!(settle["data"]["recorded"].is_boolean());
+        let missing = answer(serde_json::json!({"type":"get_model_thinking_level"})).await;
+        assert_eq!(missing["errorCode"], "invalid_argument");
+        let unknown = answer(
+            serde_json::json!({"type":"get_model_thinking_level","provider":"nope","modelId":"x"}),
+        )
+        .await;
+        assert_eq!(unknown["errorCode"], "model_not_found");
+        assert_eq!(unknown["error"], "Model not found: nope/x");
+        let path =
+            answer(serde_json::json!({"type":"resolve_path","path":"/definitely/not/here"})).await;
+        assert_eq!(path["data"]["status"], "not_found");
+        let limits = answer(serde_json::json!({"type":"get_subscription_limits"})).await;
+        assert!(limits["data"]["accounts"].is_array());
+        // An unknown provider is answered before any probe goes out.
+        let verify =
+            answer(serde_json::json!({"type":"verify_api_key","provider":"nope","key":"k"})).await;
+        assert_eq!(
+            verify["data"],
+            serde_json::json!({"ok":false,"reason":"unknown-provider"})
+        );
+    }
+
+    #[test]
+    fn a_found_path_and_a_failed_verification_keep_their_wire_fields() {
+        use maho_core::message_path_resolution::{
+            MessagePathBase, MessagePathKind, ResolvedMessagePath,
+        };
+        use maho_core::verify_api_key::{ApiKeyFailure, ApiKeyVerification};
+        assert_eq!(
+            resolved_message_path_json(ResolvedMessagePath::Found {
+                realpath: "/r".into(),
+                kind: MessagePathKind::Directory,
+                base: MessagePathBase::ProjectRoot,
+            }),
+            serde_json::json!({"status":"found","realpath":"/r","kind":"directory","base":"project-root"})
+        );
+        assert_eq!(
+            api_key_verification_json(ApiKeyVerification::Failed {
+                reason: ApiKeyFailure::Rejected,
+                status: Some(401),
+            }),
+            serde_json::json!({"ok":false,"reason":"rejected","status":401})
+        );
+        assert_eq!(
+            api_key_verification_json(ApiKeyVerification::Ok),
+            serde_json::json!({"ok":true})
         );
     }
 

@@ -20685,6 +20685,113 @@ impl AgentSession {
         )
     }
 
+    /// senpi `getThinkingLevelForModel(model)`: the level a switch to `model` would run at, where it comes from, and
+    /// the levels the model supports. The candidates are senpi `_getThinkingForModelSwitch`'s: this session's memory,
+    /// the global per-model level, the model's own default, then the configured default.
+    ///
+    /// ADAPTATION: senpi answers the current model with its tracked `_thinkingLevelSource`; this session does not
+    /// track the source of the level in force, so the current model reports its live level with the source the same
+    /// candidate chain names.
+    pub fn thinking_level_for_model(
+        &self,
+        model: &Model,
+    ) -> (
+        ModelThinkingLevel,
+        crate::session_thinking_memory::ThinkingLevelSource,
+        Vec<ModelThinkingLevel>,
+    ) {
+        use crate::session_thinking_memory::ThinkingLevelSource as Source;
+        let available = crate::thinking_levels::get_supported_thinking_levels(model);
+        let parse = |level: &str| {
+            ModelThinkingLevel::ALL
+                .into_iter()
+                .find(|candidate| candidate.as_str() == level)
+        };
+        let candidates = [
+            (
+                self.get_session_model_thinking_level(&model.provider, &model.id)
+                    .and_then(|level| parse(&level)),
+                Source::Session,
+            ),
+            (
+                self.with_settings_manager(|manager| {
+                    manager
+                        .get_value("modelThinkingLevels")
+                        .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
+                        .and_then(Value::as_str)
+                        .and_then(parse)
+                }),
+                Source::Global,
+            ),
+            (model.default_thinking_level, Source::ModelDefault),
+            (
+                self.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel"))
+                    .and_then(|level| parse(&level)),
+                Source::Default,
+            ),
+        ];
+        let (requested, source) = candidates
+            .into_iter()
+            .find_map(|(level, source)| level.map(|level| (level, source)))
+            .unwrap_or((ModelThinkingLevel::Medium, Source::Default));
+        let current = self.model();
+        if models_are_equal(Some(&current), Some(model)) {
+            return (self.thinking_level(), source, available);
+        }
+        let level = clamp_thinking_level(requested, &available);
+        let source = if level != requested && source != Source::Default {
+            Source::Clamped
+        } else {
+            source
+        };
+        (level, source, available)
+    }
+
+    /// Why `continue_from_leaf` would refuse now (senpi's `ContinueFromLeafError` checks), so a caller can answer
+    /// with the error's code.
+    pub fn continue_from_leaf_refusal(
+        &self,
+    ) -> Option<crate::continue_from_leaf::ContinueFromLeafError> {
+        use crate::continue_from_leaf::{ContinueFromLeafCode, ContinueFromLeafError};
+        if self.is_streaming() {
+            return Some(ContinueFromLeafError::new(ContinueFromLeafCode::Streaming));
+        }
+        let messages = self.messages();
+        let Some(leaf) = messages.last() else {
+            return Some(ContinueFromLeafError::new(
+                ContinueFromLeafCode::NothingToContinue,
+            ));
+        };
+        // Only an answer can be continued; a prompt left as the leaf (an edited one) is retried, not continued.
+        (leaf.role() != "assistant")
+            .then(|| ContinueFromLeafError::new(ContinueFromLeafCode::LeafNotAssistant))
+    }
+
+    /// senpi `continueFromLeaf()`: continues the conversation from its last answer with no new prompt, as a hidden
+    /// `continue-from-leaf` custom message that triggers a turn.
+    ///
+    /// ADAPTATION: senpi answers once the turn was admitted (its `agent_start`, or a delegation). The native custom
+    /// message starts its turn on a spawned task and reports a start-time failure from the send itself, so this
+    /// answers once the send accepted the turn; a later failure is a normal turn error event, as upstream.
+    pub async fn continue_from_leaf(&self) -> Result<(), String> {
+        if let Some(refusal) = self.continue_from_leaf_refusal() {
+            return Err(refusal.to_string());
+        }
+        self.send_custom_message_content(
+            crate::continue_from_leaf::CONTINUE_FROM_LEAF_CUSTOM_TYPE.to_owned(),
+            maho_agent::harness::messages::CustomMessageContent::Text(
+                crate::continue_from_leaf::CONTINUE_FROM_LEAF_DIRECTIVE.to_owned(),
+            ),
+            false,
+            None,
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: None,
+            },
+        )
+        .await
+    }
+
     // Relocation API (senpi session-relocation.ts, session-control-actions.ts)
     pub fn set_relocation_host(
         &self,
@@ -25889,6 +25996,66 @@ mod tests {
                 ModelThinkingLevel::Off,
                 Some(explicit_thinking_selection(ModelThinkingLevel::Off))
             )
+        );
+    }
+
+    #[test]
+    fn a_models_thinking_level_names_the_candidate_it_came_from() {
+        use crate::session_thinking_memory::ThinkingLevelSource;
+        let session = test_session();
+        let mut reasoning = test_model();
+        reasoning.id = "faux-other".into();
+        reasoning.reasoning = true;
+        let mut plain = test_model();
+        plain.id = "faux-plain".into();
+        let (level, source, _) = session.thinking_level_for_model(&reasoning);
+        assert_eq!(
+            (level, source),
+            (ModelThinkingLevel::Medium, ThinkingLevelSource::Default)
+        );
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "modelThinkingLevels".into(),
+                serde_json::json!({"faux/faux-other": "low", "faux/faux-plain": "high"}),
+            )]));
+        });
+        let (level, source, _) = session.thinking_level_for_model(&reasoning);
+        assert_eq!(
+            (level, source),
+            (ModelThinkingLevel::Low, ThinkingLevelSource::Global)
+        );
+        // A remembered level the model cannot run is clamped, and says so.
+        let (level, source, available) = session.thinking_level_for_model(&plain);
+        assert_eq!(
+            (level, source, available),
+            (
+                ModelThinkingLevel::Off,
+                ThinkingLevelSource::Clamped,
+                vec![ModelThinkingLevel::Off]
+            )
+        );
+    }
+
+    #[test]
+    fn continue_from_leaf_refuses_an_empty_session_and_a_prompt_leaf() {
+        use crate::continue_from_leaf::ContinueFromLeafCode;
+        let session = test_session();
+        assert_eq!(
+            session
+                .continue_from_leaf_refusal()
+                .map(|refusal| refusal.code),
+            Some(ContinueFromLeafCode::NothingToContinue)
+        );
+        let prompt: AgentMessage = serde_json::from_value(
+            serde_json::json!({"role": "user", "content": "hi", "timestamp": 0}),
+        )
+        .expect("message");
+        session.agent.set_messages(vec![prompt]);
+        assert_eq!(
+            session
+                .continue_from_leaf_refusal()
+                .map(|refusal| refusal.code),
+            Some(ContinueFromLeafCode::LeafNotAssistant)
         );
     }
 
