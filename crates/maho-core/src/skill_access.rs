@@ -58,13 +58,23 @@ pub type RealpathFn = std::sync::Arc<dyn Fn(&Path) -> std::io::Result<PathBuf> +
 /// A realpath that remembers each answer for the life of the returned closure: authority scans are linear
 /// in the number of directories instead of canonicalizing a path once per probe.
 pub fn memoized_realpath() -> RealpathFn {
-    let memo: std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>> = std::sync::Mutex::default();
+    memoize_realpath(|path: &Path| std::fs::canonicalize(path))
+}
+
+/// Wraps `canonicalize` so each distinct path reaches it at most once (errors are not remembered).
+fn memoize_realpath(
+    canonicalize: impl Fn(&Path) -> std::io::Result<PathBuf> + Send + Sync + 'static,
+) -> RealpathFn {
+    let memo: std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>> =
+        std::sync::Mutex::default();
     std::sync::Arc::new(move |path: &Path| {
-        let mut memo = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut memo = memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(canonical) = memo.get(path) {
             return Ok(canonical.clone());
         }
-        let canonical = std::fs::canonicalize(path)?;
+        let canonical = canonicalize(path)?;
         memo.insert(path.to_path_buf(), canonical.clone());
         Ok(canonical)
     })
@@ -309,18 +319,30 @@ mod tests {
     }
 
     #[test]
-    fn allowed_set_dedupes_sources_and_memoizes_realpath() {
+    fn memoized_realpath_canonicalizes_each_path_once() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("skills");
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let allowed = build_skill_allowed_set(&[root.clone(), root.clone()]);
-        assert_eq!(allowed.roots.len(), 1);
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-        let realpath = memoized_realpath();
-        for _ in 0..3 {
-            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            assert_eq!(realpath(&root).expect("realpath"), std::fs::canonicalize(&root).expect("canonical"));
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).expect("mkdir");
+        std::fs::create_dir_all(&second).expect("mkdir");
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<PathBuf>::new()));
+        let counted = calls.clone();
+        let realpath = memoize_realpath(move |path: &Path| {
+            counted.lock().expect("calls").push(path.to_path_buf());
+            std::fs::canonicalize(path)
+        });
+        for path in [&first, &second, &first, &second, &first] {
+            assert_eq!(
+                realpath(path).expect("realpath"),
+                std::fs::canonicalize(path).expect("canonical")
+            );
         }
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(
+            *calls.lock().expect("calls"),
+            [first.clone(), second.clone()]
+        );
+        assert!(realpath(&dir.path().join("missing")).is_err());
+        assert!(realpath(&dir.path().join("missing")).is_err());
+        assert_eq!(calls.lock().expect("calls").len(), 4);
     }
 }

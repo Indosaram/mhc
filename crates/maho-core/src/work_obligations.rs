@@ -3,8 +3,10 @@ use crate::work_custody_record::{
     CustodyPayload, CustodyState as State, ObligationKind, WorkCustodyRecord, custody_is_open,
     read_work_custody,
 };
+pub use maho_ext_api::{
+    ENGINE_CUSTODY_KEY_PREFIXES, ENGINE_DELIVERY_KEY_PREFIX, WAKE_SOURCE_KEY_PREFIX,
+};
 use serde_json::Value;
-pub use maho_ext_api::{ENGINE_CUSTODY_KEY_PREFIXES, ENGINE_DELIVERY_KEY_PREFIX, WAKE_SOURCE_KEY_PREFIX};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,10 +67,12 @@ impl SessionWorkObligations {
     pub fn new(store: Box<dyn CustodyStore>) -> Self {
         let mut records = BTreeMap::new();
         for entry in store.entries() {
-            if entry["type"] == "custom" && entry["customType"] == "work-custody"
-                && let Some(record) = read_work_custody(&entry["data"]) {
-                    records.insert(record.id.clone(), record);
-                }
+            if entry["type"] == "custom"
+                && entry["customType"] == "work-custody"
+                && let Some(record) = read_work_custody(&entry["data"])
+            {
+                records.insert(record.id.clone(), record);
+            }
         }
         Self {
             records,
@@ -156,7 +160,8 @@ impl SessionWorkObligations {
             .active()
             .into_iter()
             .filter(|r| {
-                r.key.starts_with(WAKE_SOURCE_KEY_PREFIX) && !self.published_sources.contains(&r.key)
+                r.key.starts_with(WAKE_SOURCE_KEY_PREFIX)
+                    && !self.published_sources.contains(&r.key)
             })
             .map(|r| r.id.clone())
             .collect();
@@ -524,14 +529,32 @@ mod tests {
     #[test]
     fn source_items_republish_and_restore() {
         let (mut r, data) = registry();
-        r.sync_source("m", ObligationKind::Background, 1., Some(&serde_json::json!([{"id": "a"}])));
+        r.sync_source(
+            "m",
+            ObligationKind::Background,
+            1.,
+            Some(&serde_json::json!([{"id": "a"}])),
+        );
         let before = data.lock().unwrap().entries.len();
-        r.sync_source("m", ObligationKind::Background, 1., Some(&serde_json::json!([{"id": "a"}])));
+        r.sync_source(
+            "m",
+            ObligationKind::Background,
+            1.,
+            Some(&serde_json::json!([{"id": "a"}])),
+        );
         assert_eq!(data.lock().unwrap().entries.len(), before);
-        r.sync_source("m", ObligationKind::Background, 1., Some(&serde_json::json!([{"id": "b", "description": "d"}])));
+        r.sync_source(
+            "m",
+            ObligationKind::Background,
+            1.,
+            Some(&serde_json::json!([{"id": "b", "description": "d"}])),
+        );
         assert_eq!(data.lock().unwrap().entries.len(), before + 1);
         let restored = SessionWorkObligations::new(Box::new(Store(data)));
-        assert_eq!(restored.active()[0].items.as_ref().expect("items")[0].id, "b");
+        assert_eq!(
+            restored.active()[0].items.as_ref().expect("items")[0].id,
+            "b"
+        );
     }
     /// senpi test/suite/regressions/4106-itemized-resend.test.ts: a plain re-send keeps the queued item ids.
     #[test]
