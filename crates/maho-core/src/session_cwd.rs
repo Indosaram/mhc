@@ -110,7 +110,7 @@ pub async fn read_recorded_repository_identity(
     session_file: &Path,
 ) -> Option<crate::session_move::bundle::RepositoryIdentity> {
     let mut recorded = None;
-    for entry in crate::session_entry_file::load_entries_from_file_async(session_file).await {
+    for entry in crate::session_entry_file::load_entries_from_file_async(session_file, None).await {
         if entry.get("type").and_then(serde_json::Value::as_str) == Some("custom")
             && entry.get("customType").and_then(serde_json::Value::as_str)
                 == Some("repository-identity")

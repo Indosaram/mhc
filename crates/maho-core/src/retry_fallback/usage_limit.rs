@@ -9,6 +9,52 @@ pub fn usage_limit_scope(message: &AssistantMessage) -> Option<UsageLimitScope> 
     })
 }
 
+// Subscription limit prose that carries no quota/billing keyword, e.g. Claude's "You've hit your session
+// limit · resets 3pm" and the SDK terminal reasons.
+static SUBSCRIPTION_LIMIT_PATTERN: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\bhit\s+your\b[^.]*\blimit\b|\b(?:session|weekly|monthly|daily|hourly|\d+[- ]hour|usage)\s+limit\b|\bblocking_limit\b|\brapid_refill_breaker\b").ok()
+});
+// A plan cap that tells the user to switch models (senpi#2660). An ordinary "rate limit exceeded" stays transient.
+static PLAN_MODEL_LIMIT_PATTERN: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\breached\b[^.]*\b(?:free|plan|tier|model)\b[^.]*\blimit\b[\s\S]*\bswitch to (?:a |an )?(?:different|another) model\b").ok()
+});
+static MODEL_SCOPE_PATTERN: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\bmodels?\b|\bpremium\b|\b(?:opus|sonnet|haiku|fable|mythos)\b").ok()
+});
+
+fn pattern_matches(pattern: &std::sync::LazyLock<Option<regex::Regex>>, text: &str) -> bool {
+    pattern.as_ref().is_some_and(|pattern| pattern.is_match(text))
+}
+
+/// senpi `usageLimitScope(errorMessage)`: who a usage limit named only in prose binds. `Model`: the provider
+/// refused this model only; `Account`: the credential itself is spent.
+pub fn usage_limit_scope_text(error_message: Option<&str>) -> Option<UsageLimitScope> {
+    let error_message = error_message?;
+    // Claude Code's "You've reached your Fable limit. Switch to another model" names the family it binds.
+    if crate::credential_pool::model_scope::rate_limit_model_family(error_message).is_some() {
+        return Some(UsageLimitScope::Model);
+    }
+    let limited = super::circuit_probes::is_quota_exhaustion_message(Some(error_message))
+        || super::billing::is_billing_error_message(Some(error_message))
+        || pattern_matches(&SUBSCRIPTION_LIMIT_PATTERN, error_message)
+        || pattern_matches(&PLAN_MODEL_LIMIT_PATTERN, error_message);
+    if !limited {
+        return None;
+    }
+    Some(if pattern_matches(&MODEL_SCOPE_PATTERN, error_message) { UsageLimitScope::Model } else { UsageLimitScope::Account })
+}
+
+/// The notice clause naming what hit the limit, or `None` when no usage limit caused the switch.
+pub fn usage_limit_cause(from: &str, limit: Option<UsageLimitScope>) -> Option<String> {
+    match limit? {
+        UsageLimitScope::Model => Some(format!("{from} hit its usage limit")),
+        UsageLimitScope::Account => {
+            let provider = from.split_once('/').map(|(provider, _)| provider).filter(|p| !p.is_empty()).unwrap_or(from);
+            Some(format!("the {provider} account hit its usage limit, so its other models were skipped"))
+        }
+    }
+}
+
 pub fn describe_usage_limit_message(message: &AssistantMessage) -> AssistantMessage {
     let mut projected = message.clone();
     match usage_limit_scope(message) {
@@ -50,6 +96,29 @@ pub fn describe_usage_limit_entry(mut entry: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_usage_limit_prose_by_scope() {
+        assert_eq!(usage_limit_scope_text(Some("You've hit your session limit · resets 3pm")), Some(UsageLimitScope::Account));
+        assert_eq!(usage_limit_scope_text(Some("insufficient_quota")), Some(UsageLimitScope::Account));
+        assert_eq!(usage_limit_scope_text(Some("Premium models are not included: usage limit reached")), Some(UsageLimitScope::Model));
+        assert_eq!(
+            usage_limit_scope_text(Some("Reached free model rate limit. Upgrade, or switch to a different model.")),
+            Some(UsageLimitScope::Model)
+        );
+        assert_eq!(usage_limit_scope_text(Some("429 rate limit exceeded")), None);
+        assert_eq!(usage_limit_scope_text(None), None);
+    }
+
+    #[test]
+    fn names_what_hit_the_limit() {
+        assert_eq!(usage_limit_cause("openai/gpt-5", Some(UsageLimitScope::Model)).as_deref(), Some("openai/gpt-5 hit its usage limit"));
+        assert_eq!(
+            usage_limit_cause("openai/gpt-5", Some(UsageLimitScope::Account)).as_deref(),
+            Some("the openai account hit its usage limit, so its other models were skipped")
+        );
+        assert_eq!(usage_limit_cause("openai/gpt-5", None), None);
+    }
 
     #[test]
     fn usage_projection_preserves_cause_and_identity_without_classifying_text() {

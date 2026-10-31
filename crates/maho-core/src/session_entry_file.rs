@@ -9,6 +9,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::event_loop_slicer::{EventLoopSlicer, EventLoopSlicerOptions};
 use crate::paths::{PathInputOptions, normalize_path};
 use crate::session_file_identity::{FileIdentity, capture_and_close_file_identity};
 use crate::session_write_recovery::{SessionRecovery, SessionRecoveryCause, backup_torn_bytes};
@@ -72,13 +73,19 @@ pub fn load_entries_from_file_with_identity(file_path: &str) -> (Vec<Value>, Opt
 }
 
 /// `loadEntriesFromFileAsync`: the same accepted entries as `load_entries_from_file`, read with asynchronous
-/// I/O so a move or rebind never blocks the runtime on a whole-file read (senpi#3518, no-sync move path).
-pub async fn load_entries_from_file_async(file_path: &std::path::Path) -> Vec<Value> {
+/// I/O so a move or rebind never blocks the runtime on a whole-file read (senpi#3518, no-sync move path),
+/// and parsed in slices that yield once `slicer`'s budget is spent (a default slicer when `None`).
+pub async fn load_entries_from_file_async(
+    file_path: &std::path::Path,
+    slicer: Option<EventLoopSlicer>,
+) -> Vec<Value> {
     use tokio::io::AsyncBufReadExt;
     let resolved = normalize_path(&file_path.to_string_lossy(), &PathInputOptions::default());
     let Ok(file) = tokio::fs::File::open(&resolved).await else {
         return Vec::new();
     };
+    let mut slicer =
+        slicer.unwrap_or_else(|| EventLoopSlicer::new(EventLoopSlicerOptions::default()));
     let mut reader = tokio::io::BufReader::with_capacity(SESSION_READ_BUFFER_SIZE, file);
     let mut entries = Vec::new();
     let mut buffer: Vec<u8> = Vec::new();
@@ -92,6 +99,9 @@ pub async fn load_entries_from_file_async(file_path: &std::path::Path) -> Vec<Va
                     line.trim_end_matches(['\n', '\r']),
                 ) {
                     entries.push(entry);
+                }
+                if slicer.due() {
+                    slicer.yield_now().await;
                 }
             }
         }
@@ -315,7 +325,7 @@ mod tests {
             "s.jsonl",
             "{\"type\":\"session\",\"id\":\"s\"}\nnot json\n{\"type\":\"message\",\"id\":\"a\"}",
         );
-        let loaded = load_entries_from_file_async(&headed).await;
+        let loaded = load_entries_from_file_async(&headed, None).await;
         assert_eq!(
             loaded,
             crate::session_manager::load_entries_from_file(&headed.to_string_lossy())
@@ -326,9 +336,13 @@ mod tests {
             "h.jsonl",
             "{\"type\":\"message\",\"id\":\"a\"}\n",
         );
-        assert!(load_entries_from_file_async(&headerless).await.is_empty());
         assert!(
-            load_entries_from_file_async(&dir.path().join("missing"))
+            load_entries_from_file_async(&headerless, None)
+                .await
+                .is_empty()
+        );
+        assert!(
+            load_entries_from_file_async(&dir.path().join("missing"), None)
                 .await
                 .is_empty()
         );
