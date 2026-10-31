@@ -209,6 +209,9 @@ impl GitMemoryRepo {
     }
 
     pub fn head(&self) -> Result<Option<String>, GitError> {
+        if let Some(head) = super::repo_head::read_head_from_files(&self.dir) {
+            return Ok(Some(head));
+        }
         let res = self.git_result(&[
             "rev-parse".to_string(),
             "--verify".to_string(),

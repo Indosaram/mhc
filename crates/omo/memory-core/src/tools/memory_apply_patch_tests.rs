@@ -57,3 +57,20 @@ fn test_handles_final_line_without_newline() {
     let content = repo.show("HEAD", "system/tail.md").expect("show");
     assert_eq!(content, "---\ndescription: Tail\n---\nchanged");
 }
+
+#[test]
+fn chained_moves_through_an_absent_intermediate_commit_only_real_paths() {
+    let memory = "---\ndescription: Notes\n---\nold";
+    let (_temp, repo) = create_patch_fixture(&[("system/a.md", memory)]);
+    let patch = "*** Begin Patch\n*** Update File: system/a.md\n*** Move to: system/c.md\n@@\n-old\n+middle\n*** Update File: system/c.md\n*** Move to: system/d.md\n@@\n-middle\n+final\n*** End Patch";
+
+    memory_apply_patch(&repo, &test_params("chain moves", patch)).expect("apply");
+
+    let ls = repo.ls_tree(None, None).expect("ls_tree");
+    assert_eq!(ls, vec!["system/d.md".to_string()]);
+    assert!(
+        repo.show("HEAD", "system/d.md")
+            .expect("show")
+            .contains("final")
+    );
+}

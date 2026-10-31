@@ -1,6 +1,7 @@
 //! Reading and rendering `system/agreements.md` in the worktree and at a revision.
 
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use crate::git::{GitError, GitMemoryRepo};
 use crate::memfs::{FrontmatterError, MemoryFrontmatter, parse_memory_file, render_memory_file};
@@ -18,19 +19,67 @@ pub fn read_agreements_worktree(repo_dir: &Path) -> std::io::Result<Option<Strin
     }
 }
 
-/// The ledger at `revision`, or `None` when that tree has no ledger.
-pub fn read_agreements_at(
-    repo: &GitMemoryRepo,
-    revision: &str,
-) -> Result<Option<String>, GitError> {
+const LEDGER_CACHE_SIZE: usize = 32;
+
+type LedgerCache = Vec<(String, Option<String>)>;
+
+fn committed_ledgers() -> &'static Mutex<LedgerCache> {
+    static CACHE: OnceLock<Mutex<LedgerCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Symbolic and abbreviated revisions can move; only full object ids are immutable.
+fn is_full_object_id(revision: &str) -> bool {
+    matches!(revision.len(), 40 | 64)
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn read_committed(repo: &GitMemoryRepo, revision: &str) -> Result<Option<String>, GitError> {
     if !repo
-        .ls_tree(Some(revision), None)?
+        .ls_tree(Some(revision), Some(AGREEMENTS_PATH))?
         .iter()
         .any(|path| path == AGREEMENTS_PATH)
     {
         return Ok(None);
     }
     repo.show(revision, AGREEMENTS_PATH).map(Some)
+}
+
+/// The ledger at `revision`, or `None` when that tree has no ledger. Reads of a full object id
+/// are memoized per (repo dir, id) in a 32-entry LRU; failed reads are never cached.
+pub fn read_agreements_at(
+    repo: &GitMemoryRepo,
+    revision: &str,
+) -> Result<Option<String>, GitError> {
+    if !is_full_object_id(revision) {
+        return read_committed(repo, revision);
+    }
+    let dir = std::path::absolute(&repo.dir).unwrap_or_else(|_| repo.dir.clone());
+    let key = format!("{}\0{revision}", dir.display());
+    {
+        let mut cache = committed_ledgers()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(index) = cache.iter().position(|(entry, _)| *entry == key) {
+            let hit = cache.remove(index);
+            let value = hit.1.clone();
+            cache.push(hit);
+            return Ok(value);
+        }
+    }
+    let value = read_committed(repo, revision)?;
+    let mut cache = committed_ledgers()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !cache.iter().any(|(entry, _)| *entry == key) {
+        cache.push((key, value.clone()));
+        if cache.len() > LEDGER_CACHE_SIZE {
+            cache.remove(0);
+        }
+    }
+    Ok(value)
 }
 
 /// Items of a ledger file; an unparseable file reads as empty.
