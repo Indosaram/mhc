@@ -30,6 +30,9 @@ pub struct McpToolCatalogEntry {
     pub output_guard: Option<crate::config_schema::OutputGuardSettings>,
     /// The binding-issued request origin (service.ts `#requestOrigin`), absent for unbound callers.
     pub request_origin: Option<crate::request_origin::McpRequestOriginFactory>,
+    /// invocation.ts resolver: re-resolves the call against the live session and its permission
+    /// fence before each send. Absent for catalogs built outside a session registration.
+    pub invocation: Option<Arc<crate::invocation::McpInvocationResolver>>,
 }
 pub type McpCatalogCallback = Arc<
     dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), McpError>> + Send>>
@@ -169,6 +172,7 @@ pub fn cached_tools_to_catalog_entries(
             artifacts: None,
             output_guard: None,
             request_origin: None,
+            invocation: None,
         })
         .collect()
 }
@@ -220,6 +224,7 @@ pub fn cached_mcp_catalog_entries(
             artifacts: None,
             output_guard: None,
             request_origin: None,
+            invocation: None,
         })
         .collect()
 }
@@ -245,6 +250,7 @@ mod tests {
             artifacts: None,
             output_guard: None,
             request_origin: None,
+            invocation: None,
         }
     }
     #[test]

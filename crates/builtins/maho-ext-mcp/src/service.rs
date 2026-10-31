@@ -136,6 +136,9 @@ pub struct McpSessionBinding {
     /// The connection each server the binding's config declares maps to, with its credential check
     /// (upstream `declares(binding.config, entry.name, entry.configHash)` and `entry.credentialsCurrent`).
     declared: std::sync::Mutex<BTreeMap<String, McpDeclaredServer>>,
+    /// The id of the session this binding serves (upstream `binding.context.sessionManager`), once a
+    /// session context bound it.
+    session_id: std::sync::Mutex<Option<String>>,
 }
 /// One declared server as of the binding's last sync.
 struct McpDeclaredServer {
@@ -143,6 +146,19 @@ struct McpDeclaredServer {
     credentials_current: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 impl McpSessionBinding {
+    /// Record the session this binding serves; its MCP calls must come from that session.
+    pub fn bind_session(&self, session_id: &str) {
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session_id.to_owned());
+    }
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
     pub fn bind_presentation(&self, ui: &Arc<dyn maho_ext_api::ExtensionUi>) {
         if let Some(presentation) = maho_core::mcp_mrtr_presentations::get_mcp_mrtr_presentation(ui)
         {
@@ -198,6 +214,15 @@ impl McpSessionBinding {
                 || Arc::new(|| true) as Arc<dyn Fn() -> bool + Send + Sync>,
                 |server| server.credentials_current.clone(),
             )
+    }
+    /// invocation.ts `scope.isCurrent`: the binding is live, still declares `name` on exactly this
+    /// connection, and the credentials it was admitted under are current.
+    pub(crate) fn offers(
+        &self,
+        name: &str,
+        connection: &Arc<crate::connection::ServerConnection>,
+    ) -> bool {
+        !self.lifetime().is_aborted() && self.declares(name, connection)
     }
     /// The binding's config still declares `name` on exactly this connection, and its credentials are the ones
     /// the connection was keyed by (upstream request-origin `isCurrent`).

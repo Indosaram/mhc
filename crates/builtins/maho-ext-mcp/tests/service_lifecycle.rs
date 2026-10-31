@@ -331,6 +331,7 @@ fn registration_identity_tracks_tool_contracts_resources_and_prompts() {
         artifacts: None,
         output_guard: None,
         request_origin: None,
+        invocation: None,
     };
     // catalog.ts: JSON.stringify([[tool, description, schema, outputSchema, modern, annotations]], resources, prompts).
     assert_eq!(

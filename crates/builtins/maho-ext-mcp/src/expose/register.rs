@@ -49,61 +49,94 @@ pub fn build_mcp_tool_definitions(
         let entry=named.entry;let label=format!("{}/{}",entry.server,entry.tool);
         let description=entry.description.clone().unwrap_or_else(||format!("MCP tool {label}"));
         let schema=super::schema_compat::convert_json_schema_to_type_box_with(&entry.schema,entry.modern).schema;
-        let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
+        let defaults=McpGuardDefaults {agent_dir:agent_dir.clone(),artifacts:artifacts.clone(),output_guard:output_guard.clone()};
+        let identity_entry=entry.clone();let name=named.name.clone();
         let mut tool=ToolDefinition::new(&named.name,&description,schema,Arc::new(move |call|{
-            let entry=entry.clone();let agent_dir=agent_dir.clone();let artifacts=artifacts.clone();let output_guard=output_guard.clone();
+            let entry=entry.clone();let defaults=defaults.clone();let name=name.clone();
             Box::pin(async move {
                 call.signal.check()?;
-                // invocation.ts: a modern tool's arguments validate against its exact 2020-12 schema; an
-                // unusable schema refuses the call as schema_changed.
-                if entry.modern {
-                    let refusal=match crate::modern::tool_schema::compile_modern_schema(&entry.schema) {
-                        Err(error)=>Some(format!("{}: {}",error.code.as_str(),error.message)),
-                        Ok(validator) if !validator.validate(&call.params)=>Some("Arguments do not match the current MCP tool schema.".to_owned()),
-                        Ok(_)=>None,
-                    };
-                    if let Some(message)=refusal {
-                        return Ok(refused_result(&entry,"schema_changed",&message,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref())));
-                    }
-                }
-                let params=if call.params.is_object() || entry.modern {call.params}else{json!({})};
-                let result=super::call::call_mcp_tool(&entry,params,call.id,&call.signal,call.on_update.as_deref()).await?;
-                mapped_guarded_result(&entry,&result,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref()))
+                let params=if call.params.is_object() || entry.modern {call.params.clone()}else{json!({})};
+                // register.ts: the invocation input is the definition's own (record) arguments.
+                let invocation=crate::invocation::McpInvocation::from_call(&call,&name,params.clone());
+                execute_mcp_catalog_entry(&entry,params,&call,&invocation,&defaults).await
             })
         }));
+        // register.ts `registerDispatchIdentity(schema, () => entry.invocation?.identity(entry))`.
+        maho_ext_permission_system::dispatch_metadata::register_dispatch_identity(&mut tool,move |_|identity_entry.invocation.as_ref().map(|resolver|resolver.identity(&identity_entry)));
         tool.label=label;tool.execution_mode=Some(ToolExecutionMode::Parallel);tool
     }).collect()
 }
-/// register.ts `executeMcpCatalogEntry` refused branch: a refusal is a result the model can read, not a thrown
-/// error; it carries `{ error: { kind, message, server, tool, currentDefinition } }`.
-fn refused_result(
+
+/// The output-guard settings a definition falls back to when its catalog entry carries none.
+#[derive(Clone)]
+pub struct McpGuardDefaults {
+    pub agent_dir: PathBuf,
+    pub artifacts: Arc<McpOutputArtifacts>,
+    pub output_guard: Option<OutputGuardSettings>,
+}
+
+/// register.ts `executeMcpCatalogEntry`: the guarded call path for one catalog entry, shared by the direct and
+/// searchable definitions and the Tier-C proxy. A resolver refusal is a guarded `{error}` result; the call's
+/// dispatch approval never outlives it.
+pub async fn execute_mcp_catalog_entry(
     entry: &McpToolCatalogEntry,
-    kind: &str,
-    message: &str,
-    agent_dir: &std::path::Path,
-    artifacts: &McpOutputArtifacts,
-    output_guard: Option<&OutputGuardSettings>,
-) -> ToolResult {
-    let error = json!({"kind":kind,"message":message,"server":entry.server,"tool":entry.tool,"currentDefinition":entry.schema});
-    let guarded = apply_mcp_output_guard(
-        &[json!({"type":"text","text":json!({"error":error}).to_string()})],
-        McpOutputGuardOptions {
-            agent_dir,
-            artifacts: Some(artifacts),
-            server: &entry.server,
-            output_guard,
-        },
-    );
-    ToolResult {
-        content: guarded
-            .iter()
-            .map(|block| ToolContent::text(block.get("text").and_then(Value::as_str).unwrap_or("")))
-            .collect(),
-        details: Some(maho_core::config_reference_redaction::redact_resolved_reference_data(
-            &json!({"error":error,"preview":kind,"server":entry.server,"tool":entry.tool}),
-        )),
-        structured_content: None,
-        is_error: None,
+    params: Value,
+    call: &maho_ext_api::ToolCall<'_>,
+    invocation: &crate::invocation::McpInvocation<'_>,
+    defaults: &McpGuardDefaults,
+) -> Result<ToolResult, ToolError> {
+    struct Forget(Option<maho_ext_api::invocation_input::InvocationInput>);
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            if let Some(input) = &self.0 {
+                maho_ext_permission_system::dispatch::forget_dispatch_approval(input);
+            }
+        }
+    }
+    let _forget = Forget(invocation.input_identity.clone());
+    // invocation.ts validates against the current schema; without a resolver the offered modern schema is
+    // checked here, and an unusable schema refuses the call as schema_changed.
+    // A refusal is a result the model can read, not a thrown error (senpi-mcp-34/35).
+    let refusal=if entry.invocation.is_none() && entry.modern {
+        match crate::modern::tool_schema::compile_modern_schema(&entry.schema) {
+            Err(error)=>Some(format!("{}: {}",error.code.as_str(),error.message)),
+            Ok(validator) if !validator.validate(&params)=>Some("Arguments do not match the current MCP tool schema.".to_owned()),
+            Ok(_)=>None,
+        }
+    } else {None};
+    let outcome=match refusal {
+        Some(message)=>super::call::McpCallOutcome::Refused(crate::invocation::McpInvocationError {
+            kind:crate::invocation::McpInvocationErrorKind::SchemaChanged,
+            message,
+            server:entry.server.clone(),
+            tool:entry.tool.clone(),
+            current_definition:Some(entry.schema.clone()),
+        }),
+        None=>super::call::call_mcp_tool_for(entry,params,call.id,&call.signal,call.on_update.as_deref(),Some(invocation)).await?,
+    };
+    match outcome {
+        super::call::McpCallOutcome::Refused(error) => {
+            let block=json!({"type":"text","text":json!({"error":error}).to_string()});
+            let guarded=apply_mcp_output_guard(std::slice::from_ref(&block),McpOutputGuardOptions {
+                agent_dir:entry.agent_dir.as_deref().unwrap_or(&defaults.agent_dir),
+                artifacts:Some(entry.artifacts.as_deref().unwrap_or(&defaults.artifacts)),
+                server:&entry.server,
+                output_guard:entry.output_guard.as_ref().or(defaults.output_guard.as_ref()),
+            });
+            let content=guarded.iter().map(|block|ToolContent::text(block.get("text").and_then(Value::as_str).unwrap_or(""))).collect();
+            Ok(ToolResult {
+                content,
+                details:Some(maho_core::config_reference_redaction::redact_resolved_reference_data(&json!({"error":error,"preview":error.kind.as_str(),"server":entry.server,"tool":entry.tool}))),
+                structured_content:None,
+                is_error:None,
+            })
+        }
+        super::call::McpCallOutcome::Called {entry:current,result} => {
+            let mut details_entry=(*current).clone();
+            // The details name the offered tool (`server`/`tool` of `entry`), as upstream.
+            details_entry.server=entry.server.clone();details_entry.tool=entry.tool.clone();
+            mapped_guarded_result(&details_entry,&result,current.agent_dir.as_deref().or(entry.agent_dir.as_deref()).unwrap_or(&defaults.agent_dir),current.artifacts.as_ref().or(entry.artifacts.as_ref()).unwrap_or(&defaults.artifacts),current.output_guard.as_ref().or(entry.output_guard.as_ref()).or(defaults.output_guard.as_ref()))
+        }
     }
 }
 pub fn mapped_guarded_result(

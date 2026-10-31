@@ -79,6 +79,49 @@ async fn embedded_skill_is_used_by_default() {
     assert_eq!(paths.len(), 1);
     let text = std::fs::read_to_string(&paths[0].0).expect("skill file");
     assert!(text.starts_with("---\nname: x-search\n"));
+    // Materialized in the agent dir, not the shared temp dir.
+    assert_eq!(
+        PathBuf::from(&paths[0].0),
+        maho_x_search::skill::embedded_skill_dir(dir.path()).join("SKILL.md")
+    );
+}
+
+#[test]
+fn embedded_skill_lives_in_a_private_agent_dir_folder() {
+    let agent_dir = tempfile::tempdir().expect("agent dir");
+    let path = maho_x_search::skill::embedded_skill_path(agent_dir.path()).expect("skill path");
+    let skill_dir = maho_x_search::skill::embedded_skill_dir(agent_dir.path());
+    assert_eq!(path, skill_dir.join("SKILL.md"));
+    assert!(skill_dir.starts_with(agent_dir.path().join("cache")));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("skill"),
+        maho_x_search::skill::SKILL_TEXT
+    );
+    #[cfg(unix)]
+    for dir in [
+        skill_dir.parent().expect("version dir"),
+        skill_dir.as_path(),
+    ] {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "{}", dir.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn embedded_skill_refuses_a_symlinked_skill_folder() {
+    let agent_dir = tempfile::tempdir().expect("agent dir");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let skill_dir = maho_x_search::skill::embedded_skill_dir(agent_dir.path());
+    std::fs::create_dir_all(skill_dir.parent().expect("version dir")).expect("version dir");
+    std::os::unix::fs::symlink(elsewhere.path(), &skill_dir).expect("symlink");
+    assert!(maho_x_search::skill::embedded_skill_path(agent_dir.path()).is_none());
+    assert!(!elsewhere.path().join("SKILL.md").exists());
 }
 
 #[tokio::test]
