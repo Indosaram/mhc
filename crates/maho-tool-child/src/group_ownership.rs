@@ -233,7 +233,9 @@ fn signal_group(_pgid: i64, _signal: GroupSignal) {}
 pub fn default_group_probes() -> GroupProbes {
     GroupProbes {
         group_has_members: Arc::new(group_has_members),
-        is_alive: Arc::new(|pid| u32::try_from(pid).is_ok_and(process_is_live)),
+        // An exited, unreaped leader (state Z) has no start identity left to compare, so it must read as exited:
+        // its orphaned members keep the group, and the group is swept (senpi#3020, senpi#4119).
+        is_alive: Arc::new(|pid| u32::try_from(pid).is_ok_and(process_is_running)),
         start_of: Arc::new(|pid| {
             Box::pin(async move {
                 match u32::try_from(pid) {
@@ -279,6 +281,68 @@ pub fn process_is_live(pid: u32) -> bool {
                 .any(|word| word == pid.to_string())
         })
         .unwrap_or(false)
+}
+
+/// Local copy of `processIsRunning`: live, and not an exited-but-unreaped zombie (state Z). Linux reads the kernel
+/// state in process; other unixes ask `ps -o stat=` like upstream, where exit status 1 means the pid is gone and any
+/// other probe failure on a live pid answers running. Windows has no zombie state.
+pub fn process_is_running(pid: u32) -> bool {
+    process_is_live(pid) && !process_is_zombie(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_zombie(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(") ")
+                .and_then(|(_, rest)| rest.chars().next())
+        })
+        .is_some_and(|state| state == 'Z')
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_is_zombie(pid: u32) -> bool {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    // Upstream runs the probe with a 2 s timeout; a probe that times out is a failure, which answers running.
+    let Ok(mut child) = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    };
+    if status.code() == Some(1) {
+        return true;
+    }
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .is_some_and(|mut pipe| pipe.read_to_string(&mut stdout).is_ok())
+        && stdout.trim().starts_with('Z')
+}
+
+#[cfg(not(unix))]
+fn process_is_zombie(_pid: u32) -> bool {
+    false
 }
 
 /// Local copy of `readProcessStartTime`: Linux reads the `starttime` field of `/proc/<pid>/stat` (clock ticks since
@@ -645,6 +709,63 @@ mod tests {
             assert_eq!(outcomes[0].verdict, GroupVerdict::Sweep);
             assert_eq!(outcomes[0].survived, Some(false));
             assert!(!(probes.group_has_members)(pgid));
+        }
+
+        /// group-ownership.test.ts "kills an owned group whose leader exited but is not reaped yet": the zombie leader
+        /// reads as exited, so the owned group is swept and its live member killed (senpi#4119).
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn kills_an_owned_group_whose_leader_exited_but_is_not_reaped_yet() {
+            let mut leader = Command::new("sh")
+                .args(["-c", "sleep 300 & echo $!; read _"])
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let pgid = i64::from(leader.id());
+            let mut line = String::new();
+            std::io::BufRead::read_line(
+                &mut std::io::BufReader::new(leader.stdout.take().unwrap()),
+                &mut line,
+            )
+            .unwrap();
+            let member: u32 = line.trim().parse().unwrap();
+            let leader_start = read_process_start_time(leader.id()).await;
+            drop(leader.stdin.take());
+            // Wait for the exit without reaping it: the leader stays a zombie until `leader.wait()` below.
+            rustix::process::waitid(
+                rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&leader)),
+                rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+            )
+            .unwrap();
+            let probes = default_group_probes();
+            assert!(process_is_live(leader.id()));
+            assert!(!(probes.is_alive)(pgid));
+            assert!((probes.group_has_members)(pgid));
+            let outcomes = sweep_groups(
+                &[LedgeredGroup {
+                    launch_id: "z".to_owned(),
+                    pgid,
+                    leader_start,
+                    lifetime: GroupLifetime::Owned,
+                }],
+                SweepOptions {
+                    grace_ms: 3_000,
+                    kill_wait_ms: 3_000,
+                    poll_ms: None,
+                },
+                &probes,
+            )
+            .await;
+            let member_running = process_is_running(member);
+            (probes.signal_group)(pgid, GroupSignal::Kill);
+            leader.wait().unwrap();
+            // The unreaped leader stays in the group until it is waited, so `survived` reflects it; what the sweep
+            // owes is the live member.
+            assert_eq!(outcomes[0].verdict, GroupVerdict::Sweep);
+            assert!(!member_running);
         }
 
         #[tokio::test]
