@@ -1311,8 +1311,30 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         }
         let calls = provider.get_call_log();
         assert_eq!(calls.len(), 2);
-        assert_ne!(
+        // senpi v2026.10.27-2: the reminder never touches the system prompt (cache prefix); it rides a hidden
+        // before-prompt message once per epoch, so the second request carries the first notice and no new one.
+        assert_eq!(
             calls[0].context.system_prompt, calls[1].context.system_prompt,
+            "reminder must not change the system prompt"
+        );
+        let notices = |index: usize| {
+            serde_json::to_string(&calls[index].context.messages)
+                .expect("serialized request messages")
+                .matches("[context budget]")
+                .count()
+        };
+        assert!(
+            !calls[0]
+                .context
+                .system_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("[context budget]")
+        );
+        assert_eq!(notices(0), 1, "first request carries the reminder message");
+        // The first notice may replay from the transcript; a second, new one must not be added.
+        assert!(
+            notices(1) <= 1,
             "reminder lease must not repeat on the next request"
         );
         assert!(
