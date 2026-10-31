@@ -481,17 +481,21 @@ fn decode_string(raw: &str) -> String {
                 let unit = u32::from_str_radix(hex, 16).unwrap_or(0xfffd);
                 if (0xd800..0xdc00).contains(&unit) {
                     let low_start = start + 6;
+                    let is_escaped_low = body.get(start + 4..start + 6) == Some(r"\u");
                     let low_hex = body.get(low_start..low_start + 4).unwrap_or("");
                     let low = u32::from_str_radix(low_hex, 16).unwrap_or(0);
-                    if (0xdc00..0xe000).contains(&low) {
+                    if is_escaped_low && (0xdc00..0xe000).contains(&low) {
                         let combined = 0x10000 + ((unit - 0xd800) << 10) + (low - 0xdc00);
                         out.push(char::from_u32(combined).unwrap_or('\u{fffd}'));
-                        for _ in 0..6 {
+                        for _ in 0..10 {
                             chars.next();
                         }
                         continue;
                     }
                     out.push('\u{fffd}');
+                    for _ in 0..4 {
+                        chars.next();
+                    }
                     continue;
                 }
                 out.push(char::from_u32(unit).unwrap_or('\u{fffd}'));
