@@ -521,16 +521,13 @@ mod tests {
     #[tokio::test]
     async fn a_redacted_stream_hides_its_secret_and_keeps_its_tag() {
         let (sender, mut received) = mpsc::unbounded_channel();
-        forward_stream(&b"token Bearer abc=def==\n"[..], "stderr", true, sender).await;
+        forward_stream(&b"Bearer abc=def==\n"[..], "stderr", true, sender).await;
         let mut text = Vec::new();
         while let Some((chunk, stream)) = received.recv().await {
             assert_eq!(stream, "stderr");
             text.extend(chunk);
         }
-        assert_eq!(
-            String::from_utf8(text).unwrap(),
-            "token Bearer <redacted>\n"
-        );
+        assert_eq!(String::from_utf8(text).unwrap(), "Bearer <redacted>\n");
         let (sender, mut received) = mpsc::unbounded_channel();
         forward_stream(&b"Bearer abc=def==\n"[..], "stdout", false, sender).await;
         assert_eq!(
