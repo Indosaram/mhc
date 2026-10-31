@@ -149,6 +149,22 @@ impl TerminalManifestWriter {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+    /// Upstream SF-2 `seedFromDisk`: a reload generation's fresh writer starts from the manifest
+    /// the previous generation wrote (its unsuspended entries and background sessions), so the
+    /// first post-reload write keeps the pre-reload watches. An unreadable manifest seeds nothing.
+    pub async fn seed_from_disk(&mut self) {
+        let Ok(Some(state)) = self.read_restore_state().await else {
+            return;
+        };
+        for entry in state.monitors {
+            if !entry.suspended {
+                self.entries.insert(entry.monitor_id.clone(), entry);
+            }
+        }
+        for background in state.background_sessions {
+            self.backgrounds.insert(background.id.clone(), background);
+        }
+    }
     /// The session's terminal state dir (`<sessionDir>/extensions/terminal`) the store lives in.
     pub fn terminal_dir(&self) -> Option<&std::path::Path> {
         std::path::Path::new(self.store.file_path()).parent()

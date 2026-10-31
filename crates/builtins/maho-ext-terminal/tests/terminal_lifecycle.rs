@@ -289,9 +289,31 @@ async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit
     let owner = api(dir.path());
     start(&owner, &ctx, SessionReason::Startup).await;
     assert!(lease.is_file());
+    // A pre-reload persistent watch: recorded at once, so the manifest exists before the reload.
+    let monitor = owner
+        .registered
+        .tools
+        .iter()
+        .find(|tool| tool.definition.name == "monitor")
+        .expect("monitor tool");
+    let result = (monitor.definition.execute)(maho_tools::definition::ToolCall {
+        id: "pre-reload",
+        params: serde_json::json!({"description":"pre-reload watch","command":"cat","persistent":true}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect("persistent monitor starts");
+    let monitor_id = result
+        .details
+        .as_ref()
+        .and_then(|details| details["monitor_id"].as_str())
+        .expect("monitor id")
+        .to_owned();
+    assert!(manifest.is_file(), "the registration is recorded at once");
     shutdown(&owner, &ctx, SessionReason::Reload).await;
     assert!(lease.is_file(), "a reload keeps the lease");
-    assert!(!manifest.exists(), "a reload records nothing");
     let reloaded = api(dir.path());
     start(&reloaded, &ctx, SessionReason::Reload).await;
     assert!(lease.is_file());
@@ -304,6 +326,19 @@ async fn a_reload_generation_inherits_the_lease_and_records_and_releases_on_quit
         manifest.is_file(),
         "the reload generation records the manifest"
     );
+    // SF-2 seedFromDisk: the reload writer started from the pre-reload manifest, so the watch
+    // that survived the reload is still recorded (suspended) after quit.
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).expect("manifest written"))
+            .expect("manifest json");
+    let monitors = saved["monitors"].as_array().expect("monitors");
+    assert_eq!(
+        monitors.len(),
+        1,
+        "the pre-reload watch survives the reload: {saved}"
+    );
+    assert_eq!(monitors[0]["monitorId"], monitor_id);
+    assert_eq!(monitors[0]["suspended"], true);
 }
 
 #[tokio::test]

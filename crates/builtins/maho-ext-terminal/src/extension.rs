@@ -1154,6 +1154,9 @@ impl Extension for TerminalExtension {
                 // Bound at once: the specs queued before this generation's writer drain into it.
                 // The state lock is held across bind and install, so a monitor call cannot see the
                 // session bound while no lifecycle is installed (its spec would be dropped).
+                // SF-2: seeded from disk first, so the first post-reload write keeps the pre-reload
+                // entries instead of rewriting the manifest from an empty writer.
+                lifecycle.writer.seed_from_disk().await;
                 let mut slot=state.lock().await;
                 crate::tools::monitor_manifest_binding::bind_and_drain(&session_id,&mut lifecycle.writer,now).await;
                 *slot=Some(lifecycle);
