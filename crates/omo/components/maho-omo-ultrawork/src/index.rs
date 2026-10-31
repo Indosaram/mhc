@@ -34,7 +34,6 @@ static INLINE_CODE:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::
 static RELAY_HEADER:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"^\s*(?:\[(?:[A-Z][A-Z0-9_-]{2,}|[\w.-]+ -> [\w.-]+)\]|[A-Z][\w.-]{0,30} \([^()\s]{1,40}\)(?:, | to )[\w.-]{1,40}:)"));
 static BLOCK_QUOTE_LINE:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?m)^ {0,3}>[^\n]*"));
 static DOUBLE_QUOTED:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy("\"[^\"\\n]*\"|\u{201C}[^\u{201D}\\n]*\u{201D}"));
-static SINGLE_QUOTED:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?<![A-Za-z0-9_'])'[^'\n]{1,200}'(?![A-Za-z0-9_])|‘[^’\n]{1,200}’"));
 static URL_SPAN:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r#"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s<>"'`]+"#));
 static NEGATED_INVOCATION:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy("(?i)\\b(?:do\\s+not|don['\u{2019}]t|dont|never)\\s+(?:load|use|run|invoke|start|trigger|arm|enable)\\b[^.;:!?\\n]*?(?=[.;:!?\\n]|\\s(?:but|then|instead|however)\\b|\\s[\u{2014}\u{2013}-]\\s|$)"));
 static FENCE_START:std::sync::LazyLock<fancy_regex::Regex>=std::sync::LazyLock::new(||fancy(r"(?m)^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)"));
@@ -62,7 +61,7 @@ fn strip_quoted_spans(text:&str)->String{
         from=end;
     }
     let visible=mask_all(&visible,&INLINE_CODE);let visible=mask_all(&visible,&BLOCK_QUOTE_LINE);
-    let visible=mask_all(&visible,&DOUBLE_QUOTED);let visible=mask_all(&visible,&SINGLE_QUOTED);mask_all(&visible,&URL_SPAN)
+    let visible=mask_all(&visible,&DOUBLE_QUOTED);mask_all(&visible,&URL_SPAN)
 }
 /// Every visible keyword invocation as (start, end, is_full_word) byte offsets into `text`.
 fn visible_invocations(text:&str)->Vec<(usize,usize,bool)>{
