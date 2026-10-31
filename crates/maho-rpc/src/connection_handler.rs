@@ -1686,59 +1686,70 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi {
         {
             let ui = self as &dyn maho_ext_api::ExtensionUi;
             return Box::pin(crate::connection_question_bridge::degrade_question(
-                ui,
-                request,
-                options.dialog,
+                ui, request, options,
             ));
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_millis() as u64);
-        let (frame, receiver) = self
+        let now_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as u64)
+        };
+        // senpi `opts?.timeout ?? request.timeoutMs`.
+        let timeout = options.dialog.timeout_ms;
+        let signal = options.dialog.signal.clone();
+        let (frame, mut receiver) = self
             .questions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ask(request.clone(), None, now);
+            .ask_with(
+                request,
+                timeout,
+                options.on_progress.clone(),
+                options.deliver,
+                now_ms(),
+            );
+        let id = frame["id"].as_str().unwrap_or_default().to_owned();
         (self.out)(frame);
         let questions = self.questions.clone();
         let out = self.out.clone();
         Box::pin(async move {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(request.timeout_ms),
-                receiver,
-            )
-            .await
-            {
-                Ok(Ok(response)) => Ok(response),
-                _ => {
-                    let deadline = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or_else(
-                            |_| now.saturating_add(request.timeout_ms),
-                            |elapsed| elapsed.as_millis() as u64,
-                        );
-                    let resolved = questions
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .expire(deadline);
-                    for record in resolved {
-                        (out)(record);
+            let mut abort = signal.as_ref().map(|signal| Box::pin(signal.cancelled()));
+            loop {
+                // A draft re-arms the idle deadline, so each wait reads the current one.
+                let Some(deadline) = questions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .deadline(&id)
+                else {
+                    break;
+                };
+                let idle = std::time::Duration::from_millis(deadline.saturating_sub(now_ms()));
+                let aborted = async {
+                    match abort.as_mut() {
+                        Some(abort) => abort.as_mut().await,
+                        None => std::future::pending().await,
                     }
-                    Ok(maho_ext_api::QuestionResponse {
-                        status: maho_ext_api::QuestionStatus::TimedOut,
-                        answers: Default::default(),
-                        comment: None,
-                        unanswered: request
-                            .questions
-                            .iter()
-                            .map(|question| question.id.clone())
-                            .collect(),
-                        auto_resolved_after_ms: Some(request.timeout_ms),
-                        cancel_origin: None,
-                        resolved_by: None,
-                    })
+                };
+                let resolved = tokio::select! {
+                    biased;
+                    response = &mut receiver => {
+                        return response.map_err(|_| maho_ext_api::ExtensionFailure::new("question bridge closed"));
+                    }
+                    () = aborted => {
+                        let timed_out = signal.as_ref().is_some_and(crate::connection_question_bridge::signal_timed_out);
+                        questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).abort(&id, timed_out, now_ms())
+                    }
+                    () = tokio::time::sleep(idle) => {
+                        questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).time_out(&id, deadline, now_ms())
+                    }
+                };
+                if let Some(record) = resolved {
+                    (out)(record);
                 }
             }
+            receiver
+                .await
+                .map_err(|_| maho_ext_api::ExtensionFailure::new("question bridge closed"))
         })
     }
     fn select<'a>(
@@ -2335,7 +2346,7 @@ impl RpcConnectionHandler {
                 .questions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .respond(value, now);
+                .respond_with(value, now, || self.session.admit_human_answer());
             let error = match kind {
                 crate::connection_question_bridge::QuestionReply::Incomplete => {
                     Some("question_incomplete")
