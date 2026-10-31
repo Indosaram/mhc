@@ -936,12 +936,7 @@ impl Extension for Task {
                             }).collect()).unwrap_or_default(),
                             task: Some(senpi_task::tools::task::execute_spec::TaskOmoTaskConfig {
                                 default_execution_mode: engine.config["task"]["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse),
-                                isolation: engine.config.get("task").and_then(|task| task.get("isolation")).map(|isolation| senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
-                                    enabled: isolation.get("enabled").and_then(serde_json::Value::as_bool),
-                                    backend: isolation.get("backend").and_then(serde_json::Value::as_str).map(str::to_owned),
-                                    merge: isolation.get("merge").and_then(serde_json::Value::as_str).map(|merge| if merge == "branch" { senpi_task::state::IsolationMergeMode::Branch } else { senpi_task::state::IsolationMergeMode::Patch }),
-                                    apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
-                                }),
+                                isolation: task_omo_isolation_config(&engine.config),
                             }),
                         },
                     };
@@ -1032,6 +1027,27 @@ impl Extension for Task {
             })
         }));
     }
+}
+/// The RESOLVED `task.isolation` block (enabled/backend/merge/apply) of the omo config, as the task
+/// tool's `omoConfig.task.isolation` (omo-config-core `OmoTaskIsolationSchema`; the resolved config
+/// already carries the schema defaults, so an absent key stays absent here).
+#[cfg(feature = "omo")]
+pub fn task_omo_isolation_config(
+    config: &serde_json::Value,
+) -> Option<senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig> {
+    let isolation = config.get("task")?.get("isolation")?;
+    Some(senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
+        enabled: isolation.get("enabled").and_then(serde_json::Value::as_bool),
+        backend: isolation.get("backend").and_then(serde_json::Value::as_str).map(str::to_owned),
+        merge: isolation.get("merge").and_then(serde_json::Value::as_str).map(|merge| {
+            if merge == "branch" {
+                senpi_task::state::IsolationMergeMode::Branch
+            } else {
+                senpi_task::state::IsolationMergeMode::Patch
+            }
+        }),
+        apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
+    })
 }
 #[cfg(feature = "omo")]
 pub(super) struct TaskActions(pub(super) TaskParent);

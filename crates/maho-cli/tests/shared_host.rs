@@ -1,18 +1,5 @@
-use maho_cli::cli::shared_host::{
-    is_truthy_env_flag, session_profile, should_join_shared_host, shared_host_setting_enabled, shared_host_socket,
-    SHARED_HOST_ENABLE_ENV_SUFFIX,
-};
+use maho_cli::cli::shared_host::{is_truthy_env_flag, session_profile};
 use maho_core::project_trust::AppMode;
-
-#[test]
-fn shared_host_is_off_unless_interactive_and_opted_in() {
-    assert!(!should_join_shared_host(AppMode::Print, true, true));
-    assert!(!should_join_shared_host(AppMode::Rpc, true, true));
-    assert!(!should_join_shared_host(AppMode::Json, true, true));
-    assert!(!should_join_shared_host(AppMode::Interactive, false, false));
-    assert!(should_join_shared_host(AppMode::Interactive, true, false));
-    assert!(should_join_shared_host(AppMode::Interactive, false, true));
-}
 
 #[test]
 fn truthy_env_flag_matches_the_pinned_values() {
@@ -25,31 +12,26 @@ fn truthy_env_flag_matches_the_pinned_values() {
     assert!(!is_truthy_env_flag(None));
 }
 
+/// senpi shared-host-join-removed.test.ts "interactive launch never joins a shared host": for every
+/// retired `experimental.sharedHost` value, the profile a launch hands its extensions never enables
+/// a shared host, in any app mode. The env half is not varied: `DISABLE_SHARED_HOST` is read only
+/// for the obsolete-flag notice (`cli/runtime.rs`), never for the launch profile.
 #[test]
-fn socket_falls_back_to_the_agent_rpc_socket() {
-    let env = maho_core::config::current_env();
-    let configured = maho_core::brand::env_value("RPC_SOCKET", &env).filter(|value| !value.is_empty());
-    let resolved = shared_host_socket("/tmp/agent");
-    match configured {
-        Some(value) => assert_eq!(resolved, value),
-        None => assert_eq!(resolved, std::path::Path::new("/tmp/agent").join("rpc").join("rpc.sock").to_string_lossy()),
+fn no_launch_profile_enables_a_shared_host_whatever_the_retired_setting_says() {
+    for setting in [Some(true), Some(false), None] {
+        let settings = match setting {
+            Some(value) => serde_json::json!({"experimental": {"sharedHost": value}}),
+            None => serde_json::json!({}),
+        };
+        let settings = maho_core::settings_manager::SettingsManager::in_memory(
+            serde_json::from_value(settings).expect("settings object"),
+            false,
+        );
+        for mode in [AppMode::Interactive, AppMode::Print, AppMode::Rpc, AppMode::Json] {
+            let profile = session_profile(mode, &settings, None, None);
+            assert!(!profile.shared_host_enabled, "{setting:?} {mode:?}");
+        }
     }
-}
-
-#[test]
-fn shared_host_constants_match_the_pinned_names() {
-    assert_eq!(SHARED_HOST_ENABLE_ENV_SUFFIX, "ENABLE_SHARED_HOST");
-}
-
-#[test]
-fn shared_host_setting_reads_the_nested_experimental_key() {
-    let enabled = |settings: serde_json::Value| {
-        let settings = serde_json::from_value(settings).expect("settings object");
-        shared_host_setting_enabled(&maho_core::settings_manager::SettingsManager::in_memory(settings, false))
-    };
-    assert!(enabled(serde_json::json!({"experimental": {"sharedHost": true}})));
-    assert!(!enabled(serde_json::json!({"experimental": {"sharedHost": "true"}})));
-    assert!(!enabled(serde_json::json!({"experimentalSharedHost": true})));
 }
 
 #[test]

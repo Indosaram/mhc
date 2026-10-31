@@ -64,6 +64,8 @@ pub mod help_fast_path;
 pub mod hook_sources;
 #[path = "host_command.rs"]
 pub mod host_command;
+#[path = "host_command_handoff.rs"]
+pub mod host_command_handoff;
 #[path = "host_runtime.rs"]
 pub mod host_runtime;
 #[path = "image_convert.rs"]
@@ -86,6 +88,8 @@ pub mod kibitzer_child;
 #[cfg(feature = "omo")]
 #[path = "kibitzer_tools.rs"]
 pub mod kibitzer_tools;
+#[path = "list_models.rs"]
+pub mod list_models;
 #[path = "lane38_process_boundary_probe.rs"]
 pub mod lane38_process_boundary_probe;
 #[path = "management_http.rs"]
@@ -122,6 +126,8 @@ pub mod native_update_update;
 #[cfg(feature = "omo")]
 #[path = "omo_mount.rs"]
 pub mod omo_mount;
+#[path = "package_command_paths.rs"]
+pub mod package_command_paths;
 #[path = "package_commands.rs"]
 pub mod package_commands;
 #[path = "paths.rs"]
@@ -138,6 +144,8 @@ pub mod radius_auth;
 pub mod radius_relay;
 #[path = "reasoning_host.rs"]
 pub mod reasoning_host;
+#[path = "rpc_entry.rs"]
+pub mod rpc_entry;
 #[path = "rpc_fast_mode.rs"]
 pub mod rpc_fast_mode;
 #[path = "session_runtime_worker.rs"]
