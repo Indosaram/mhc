@@ -36,7 +36,7 @@ pub async fn start_successor_gated(context:&crate::host_handoff::HandoffContext,
     let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
     let launch_profile_id=options.launch_profile_id;
     let result:std::io::Result<Option<HostProtocolInfo>>=async{
-        let process_start_time=wait_for_start_time(pid,SUCCESSOR_START_TIME_WAIT_MS,crate::host_reservations::read_process_start_time,crate::host_reservations::process_is_live).await.ok().flatten();
+        let process_start_time=wait_for_start_time(pid,SUCCESSOR_START_TIME_WAIT_MS,read_start_time_off_runtime,crate::host_reservations::process_is_live).await.ok().flatten();
         // No build yet: until the successor answers, its record claims no engine version rather than this process's.
         let mut registration=crate::host_daemon_registration::HostRegistration{pid,process_start_time,socket:socket.into(),instance_id:options.instance_id.clone(),generation:options.generation as f64,launch_profile_id,build:None};
         // The successor is running from this instant: its own record says so, so `host gc` never judges the
@@ -79,15 +79,19 @@ pub async fn start_successor_gated(context:&crate::host_handoff::HandoffContext,
 const SUCCESSOR_START_TIME_WAIT_MS:u64=10_000;
 /// senpi `waitForStartTime`: the process start time once it is readable; `None` when the process is live but its
 /// start time never became readable in `timeout_ms`; an error when the process is gone without one.
-pub async fn wait_for_start_time(pid:u32,timeout_ms:u64,read_start_time:impl Fn(u32)->Option<String>,is_live:impl Fn(u32)->bool)->std::io::Result<Option<String>>{
+pub async fn wait_for_start_time<F:std::future::Future<Output=Option<String>>>(pid:u32,timeout_ms:u64,read_start_time:impl Fn(u32)->F,is_live:impl Fn(u32)->bool)->std::io::Result<Option<String>>{
     let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(timeout_ms);
     loop{
-        if let Some(start)=read_start_time(pid).filter(|start|!start.is_empty()){return Ok(Some(start));}
+        if let Some(start)=read_start_time(pid).await.filter(|start|!start.is_empty()){return Ok(Some(start));}
         if tokio::time::Instant::now()>=deadline{break;}
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     if is_live(pid){return Ok(None);}
     Err(std::io::Error::other(format!("spawned daemon pid {pid} had no process start time")))
+}
+/// The start-time read runs on the blocking pool: on Windows it spawns powershell synchronously.
+async fn read_start_time_off_runtime(pid:u32)->Option<String>{
+    tokio::task::spawn_blocking(move||crate::host_reservations::read_process_start_time(pid)).await.ok().flatten()
 }
 fn restore_boot_settings(paths:&crate::host_daemon_paths::HostDaemonPaths,boot_settings:Option<&Option<String>>)->Option<String>{
     let result=match boot_settings{
@@ -149,10 +153,10 @@ pub fn abort_reason(socket:&std::path::Path,replaced:SocketFileIdentity)->&'stat
     async fn start_time_is_waited_for_and_a_gone_process_without_one_is_an_error(){
         let reads=std::cell::Cell::new(0);
         let read=|_pid:u32|{reads.set(reads.get()+1);(reads.get()>=3).then(||"t".to_owned())};
-        assert_eq!(wait_for_start_time(1,10_000,read,|_|true).await.unwrap().as_deref(),Some("t"));
+        assert_eq!(wait_for_start_time(1,10_000,|pid|std::future::ready(read(pid)),|_|true).await.unwrap().as_deref(),Some("t"));
         assert_eq!(reads.get(),3);
-        assert_eq!(wait_for_start_time(1,100,|_|None,|_|true).await.unwrap(),None);
-        let error=wait_for_start_time(7,100,|_|None,|_|false).await.unwrap_err();
+        assert_eq!(wait_for_start_time(1,100,|_|std::future::ready(None),|_|true).await.unwrap(),None);
+        let error=wait_for_start_time(7,100,|_|std::future::ready(None),|_|false).await.unwrap_err();
         assert_eq!(error.to_string(),"spawned daemon pid 7 had no process start time");
     }
 }
