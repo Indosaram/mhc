@@ -73,7 +73,13 @@ pub struct OpenMicroDeps {
     pub model_runtime: ModelRuntime,
     /// Called with the opened harness before `resume` (senpi tests spy on `Harness.open`).
     pub on_harness: Option<Box<dyn FnOnce(&Rc<Harness>)>>,
+    /// Where `(header, detail)` debug entries go (senpi `appendDebugLogEntry`, which the tests
+    /// mock); `None` is the brand debug log.
+    pub debug_log: Option<DebugLog>,
 }
+
+/// senpi `appendDebugLogEntry(header, detail)`.
+pub type DebugLog = Rc<dyn Fn(&str, &str)>;
 
 /// senpi `OpenMicroResult`.
 pub struct OpenMicroResult {
@@ -103,6 +109,7 @@ pub async fn open_micro(options: OpenMicroOptions) -> Result<OpenMicroResult, St
             agent_dir: PathBuf::from(agent_dir),
             model_runtime,
             on_harness: None,
+            debug_log: None,
         },
     )
     .await
@@ -132,6 +139,7 @@ pub struct MicroRuntime {
     refresh_controllers: RefCell<Vec<AbortController>>,
     login_controller: RefCell<Option<AbortController>>,
     pending_auth: RefCell<Option<PendingAuth>>,
+    debug_log: DebugLog,
     myself: std::rc::Weak<MicroRuntime>,
 }
 
@@ -144,7 +152,13 @@ pub async fn open_micro_with(
         agent_dir,
         model_runtime,
         on_harness,
+        debug_log,
     } = deps;
+    let debug_log = debug_log.unwrap_or_else(|| {
+        Rc::new(|header: &str, detail: &str| {
+            maho_core::hidden_stdout_log::append_debug_log_entry(header, detail)
+        })
+    });
     // `stopOnLostLock` runs on this thread; the lock heartbeat only flags the loss and wakes it.
     let lost = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(tokio::sync::Notify::new());
@@ -174,7 +188,7 @@ pub async fn open_micro_with(
     .await;
     match opened {
         Ok(parts) => {
-            let runtime = finish_open(parts, location, env);
+            let runtime = finish_open(parts, location, env, debug_log);
             if let Err(error) = runtime.harness.resume(&BACKGROUND_CONTEXT).await {
                 runtime.fail(error.to_string(), matches!(error, Error::Faulted(_)));
             }
@@ -414,6 +428,7 @@ fn finish_open(
     parts: OpenParts,
     location: MicroSessionLocation,
     env: Arc<NodeExecutionEnv>,
+    debug_log: DebugLog,
 ) -> Rc<MicroRuntime> {
     let OpenParts {
         harness,
@@ -458,6 +473,7 @@ fn finish_open(
         refresh_controllers: RefCell::new(Vec::new()),
         login_controller: RefCell::new(None),
         pending_auth: RefCell::new(None),
+        debug_log,
         myself: myself.clone(),
     });
     runtime.attach_watch();
@@ -700,7 +716,7 @@ impl MicroRuntime {
         self.notice(MicroNoticeLevel::Error, LOST_LOCK_MESSAGE.to_owned());
         self.abort_all(LOST_LOCK_MESSAGE);
         if let Err(error) = self.harness.suspend(&BACKGROUND_CONTEXT).await {
-            log_lost_lock_stop_failure(&error);
+            log_lost_lock_stop_failure(&self.debug_log, &error);
         }
     }
 
@@ -1107,17 +1123,17 @@ impl MicroController for MicroRuntime {
     }
 }
 
-/// Names only: error messages can carry absolute session paths.
-fn log_lost_lock_stop_failure(error: &Error) {
+/// senpi `logLostLockStopFailure`. Names only: error messages can carry absolute session paths.
+fn log_lost_lock_stop_failure(debug_log: &DebugLog, error: &Error) {
     let name = match error {
         Error::Storage(_) => "StorageError",
         Error::Faulted(_) => "Faulted",
         Error::Closed => "Closed",
         _ => "Error",
     };
-    maho_core::hidden_stdout_log::append_debug_note(
+    debug_log(
+        "micro session stop after a lost lock failed",
         &serde_json::json!({
-            "header": "micro session stop after a lost lock failed",
             "event": "micro_lost_lock_stop_failed",
             "error": {"name": name},
         })

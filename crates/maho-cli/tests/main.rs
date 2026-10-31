@@ -93,6 +93,10 @@ pub mod management_http;
 #[cfg(feature = "omo")]
 #[path = "memory_recall_entry.rs"]
 pub mod memory_recall_entry;
+#[path = "micro_lock_loss.rs"]
+pub mod micro_lock_loss;
+#[path = "micro_lock_loss_tool.rs"]
+pub mod micro_lock_loss_tool;
 #[path = "migrations.rs"]
 pub mod migrations;
 #[path = "mini_entry.rs"]
