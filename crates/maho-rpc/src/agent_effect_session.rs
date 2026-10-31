@@ -3,10 +3,9 @@
 //! (senpi reads `AgentSession` directly). [`AgentEffectSession::observe`] forwards the session events the
 //! ledgers react to, narrowed to [`EffectSessionEvent`].
 //!
-//! Gaps against upstream, named where they sit: core's queue carries no `clientMessageId` or per-input
-//! revision, so `queued_inputs` reports none and `change_queued_input` answers `not_found`; model and thinking
-//! changes carry no `effectId`, so a `set_model` effect settles from the call's own result (the ledger's
-//! `ModelChanged` correlation never fires); `restore_queued_input` re-queues text and images only.
+//! Gaps against upstream, named where they sit: model and thinking changes carry no `effectId`, so a `set_model`
+//! effect settles from the call's own result (the ledger's `ModelChanged` correlation never fires);
+//! `restore_queued_input` re-queues text and images only, under a fresh `queuedId`.
 use crate::client_admission_record::{PreparedAdmissionInput, PreparedInputMode};
 use crate::client_admissions::ClientAdmissions;
 use crate::effect_ledger::EffectLedger;
@@ -14,7 +13,9 @@ use crate::effect_session::{
     EffectSession, EffectSessionEvent, QueuedChangeStatus, QueuedInputView, SetModelError,
 };
 use futures::future::BoxFuture;
-use maho_core::agent_session::{AgentSession, AgentSessionSubscription, QueuedInputOptions};
+use maho_core::agent_session::{
+    AgentSession, AgentSessionSubscription, QueuedInputChange, QueuedInputOptions,
+};
 use maho_ext_api::{AbortSource, AgentEvent, AgentSessionEvent, InputSource};
 use serde_json::Value;
 use std::sync::Arc;
@@ -78,13 +79,27 @@ pub fn narrow(event: &AgentSessionEvent) -> Option<EffectSessionEvent> {
         },
         AgentSessionEvent::AgentIdle => EffectSessionEvent::AgentIdle,
         AgentSessionEvent::QueueUpdate { ordered, .. } => EffectSessionEvent::QueueUpdate {
-            queued_ids: ordered.iter().map(|_| None).collect(),
+            queued_ids: ordered
+                .iter()
+                .map(|input| input.client_message_id.clone())
+                .collect(),
         },
         AgentSessionEvent::ModelChanged { .. } => {
             EffectSessionEvent::ModelChanged { effect_id: None }
         }
         _ => return None,
     })
+}
+
+/// Core's `QueuedInputChange` as the effect seam names it.
+fn queued_change_status(change: QueuedInputChange) -> QueuedChangeStatus {
+    match change {
+        QueuedInputChange::Removed => QueuedChangeStatus::Removed,
+        QueuedInputChange::Edited => QueuedChangeStatus::Edited,
+        QueuedInputChange::AlreadyDelivered => QueuedChangeStatus::AlreadyDelivered,
+        QueuedInputChange::NotFound => QueuedChangeStatus::NotFound,
+        QueuedInputChange::Conflict => QueuedChangeStatus::Conflict,
+    }
 }
 
 fn abort_source_name(source: AbortSource) -> &'static str {
@@ -179,18 +194,32 @@ impl EffectSession for AgentEffectSession {
     }
 
     fn queued_inputs(&self) -> Vec<QueuedInputView> {
-        // Core's queue carries no `queuedId`/`clientMessageId`; nothing is addressable by id.
-        Vec::new()
+        self.session
+            .get_queued_inputs()
+            .into_iter()
+            .map(|input| QueuedInputView {
+                queued_id: input.queued_id,
+                client_message_id: input.client_message_id,
+                text: input.text,
+                revision: input.revision,
+            })
+            .collect()
     }
 
     fn change_queued_input(
         &self,
-        _queued_id: &str,
-        _text: Option<String>,
-        _expected_revision: Option<u64>,
-        _effect_id: Option<String>,
+        queued_id: &str,
+        text: Option<String>,
+        expected_revision: Option<u64>,
+        effect_id: Option<String>,
     ) -> BoxFuture<'_, Result<QueuedChangeStatus, String>> {
-        Box::pin(async { Ok(QueuedChangeStatus::NotFound) })
+        let queued_id = queued_id.to_owned();
+        Box::pin(async move {
+            self.session
+                .change_queued_input(&queued_id, text, expected_revision, effect_id)
+                .await
+                .map(queued_change_status)
+        })
     }
 
     fn find_available_model(
@@ -309,14 +338,27 @@ mod tests {
             narrow(&AgentSessionEvent::QueueUpdate {
                 steering: vec!["a".into()],
                 follow_up: Vec::new(),
-                ordered: vec![maho_ext_api::QueuedInput {
-                    text: "a".into(),
-                    mode: maho_ext_api::StreamingBehavior::Steer,
-                    enqueue_order: 1,
-                }],
+                ordered: vec![
+                    maho_ext_api::QueuedInput {
+                        text: "a".into(),
+                        mode: maho_ext_api::StreamingBehavior::Steer,
+                        enqueue_order: 1,
+                        queued_id: "q_1".into(),
+                        revision: 1,
+                        client_message_id: None,
+                    },
+                    maho_ext_api::QueuedInput {
+                        text: "b".into(),
+                        mode: maho_ext_api::StreamingBehavior::FollowUp,
+                        enqueue_order: 2,
+                        queued_id: "q_2".into(),
+                        revision: 1,
+                        client_message_id: Some("c-2".into()),
+                    },
+                ],
             }),
             Some(EffectSessionEvent::QueueUpdate {
-                queued_ids: vec![None]
+                queued_ids: vec![None, Some("c-2".into())]
             })
         );
         assert_eq!(narrow(&AgentSessionEvent::AgentSettled), None);
