@@ -1,0 +1,57 @@
+st_01a18d4a [completed] transcript via event-log:
+assistant: I read this as a clean-room implementation task - read the spec delta, implement in maho-model-select (and recommended-models only where stated), add tests, commit. I'll stop when the commit exists and I reply with sha, tests, deps, ambiguities.
+tool: bash
+tool: bash
+tool: read
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Now I have the full picture. Writing the profile (D1) changes.
+tool: bash
+assistant: Design settled. Editing `profile.rs` for D1.
+tool: bash
+assistant: Writing D1 in `profile.rs`.
+tool: bash
+assistant: D1 done. Now D4 in `probe.rs`.
+tool: bash
+assistant: Now D2/D3 in `ext.rs`.
+tool: bash
+tool: bash
+tool: bash
+assistant: Now lib exports and tests.
+tool: bash
+tool: write
+tool: bash
+assistant: Reviewing without cargo: two compile issues spotted (reborrow of `warn` inside the map closure; `Some(&String)` vs `Option<&str>`). Fixing, plus a closure-call coercion hardening.
+tool: bash
+tool: bash
+assistant: Ask: implement the v5.1.52 Delta of the model-selection spec, clean room, in `maho-model-select` - wanted: a commit with every given/when/then case turned into a Rust test. For you: committed as **`0838069`** — `feat(maho-model-select): model-selection behavior from omo v5.1.52 spec (clean room)`. The commit touches only `crates/maho-model-select`: 7 files, including the PROVENANCE.md entry (method C, spec da2b172b, unit model-selection-5152). Nothing was compiled or tested, as the task said; only rustfmt was run on the changed files. Two compile mistakes I found by reading are fixed, but the code may still not build. Now: nothing open. Next: nothing; the deliverable is complete.
+
+**What changed**
+- **Launch-gated model (D1):** the built-in profiles now drop `claude-fable-5-5` (also matched with `.` instead of `-` or a `provider/` prefix) while the release flag `FABLE55_RELEASED` is off. That flag already exists in `maho-ext-recommended-models`, and the spec only asks to read it, so that crate is unchanged. With the flag on, the rung is kept only at `xhigh` or `max`. Otherwise it goes into a list of dropped rungs and one warning naming the level is logged.
+- **`daily-heavy` chain (D1):** the gated model at xhigh, then the current same-family model from the recommended-models data at xhigh, then `claude-opus-5-5` at high. Profiles you define yourself are never filtered.
+- **Profile outcomes (D2):** they are now a session entry plus a log line plus at most one notification. The code that sent a custom message to the model is gone. Notification levels follow the spec: a clean apply gets none; auth failures or a configured profile get a warning; the default order with no auth failures gets info; a model the registry dropped gets a warning. Hosts without a UI skip only the notification. If the entry can't be appended, a warning is logged and the notification still goes out.
+- **Notice text (D3):** when no model is available, the next step depends on the mode. In rpc it points to the provider settings or picking a model in the client; in other modes it says `/login` or `--model`. The "registry no longer lists it" notice names the profile and the `provider/model`, says the current model is kept, and asks you to pick another model (in settings for rpc, `/model` or `--model` otherwise).
+- **OAuth refresh in the probe (D4):** a refresh failure is now either refused or transient, and the check also looks inside wrapped errors. A transient failure keeps the provider, and its warning line carries only provider, model, fingerprint and transport class. If the model-scope check fails for the same transient reason, the candidate is still kept, with no scope result. A refused refresh, or a plain `oauth` code with no split info, still excludes the provider with reason `refresh`.
+
+**Tests (not run)** are in the new `tests/delta_5152.rs`:
+- D1: the gated id comparison; flag off removes it from every chain and resolution; flag on at `xhigh` puts it first; `medium` (or no level) is dropped with one rejection and one warning; your own profiles are not filtered.
+- D2: a clean apply gives one entry and no notification; an auth failure gives one warning; the unset default resolving to unavailable gives info; a host without UI keeps the entry; a runtime that can't append logs and notifies; a registry-dropped model gives a warning.
+- D3: the rpc and print/json wording, and the registry-dropped notice facts.
+- D4: cases 28b, 28c, the transient model-scope case, and 28d (both the refused split and a plain `oauth` code).
+
+`tests/select.rs` only changed its `ProbeError` struct literals to use `..Default`.
+
+**Cross-lane dependencies (not implemented here)**
+1. The senpi `appendEntry` start-up-bookkeeping option on mhc's `append_entry`. The code currently calls plain `append_entry`, with a comment marking where the option goes.
+2. The transient/refused OAuth refresh split in `maho-ai` / `ExtensionFailure`. Until it lands, `RegistryProbe` can't fill the new `refresh` field on `ProbeError`, so in production every `oauth` failure still counts as refused.
+
+**Ambiguities I resolved**
+- "Current top model of the same family" is `recommended_fable_model(...)` from the recommended-models data. If that ever returns the gated id, it falls back to the released model (`claude-fable-5-1`).
+- I kept `claude-opus-5-5`@high as the third `daily-heavy` rung, so "later rungs stay as §6.1 composes them" still holds.
+- The providers listed in the unavailable notice are every ranked provider in the profile's rungs, or the provider prefix for pins.
+- The registry-dropped entry reuses the `model-profile:unavailable` type with `registryMissing: true` in its details. The spec defines no type id for this case.
+- `probe_and_resolve` keeps its old signature and logs kept candidates itself. The new `probe_and_resolve_detailed` also returns them.

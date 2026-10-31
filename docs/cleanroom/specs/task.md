@@ -183,6 +183,21 @@ Tests (text; failed model id where it matters -> class). Providers are invented:
    again tomorrow" -> none.
 9. "401 unauthorized; no accounts: run /login zeta" -> rejected (both match).
 
+Matching rules (clarified 2026-11-01):
+- Words such as "account", "key", "token", "credential", "organization" and "subscription" match
+  only as whole words; a plural with a trailing "s" also counts ("tokens revoked",
+  "invalid credentials"). A word that only contains one of them ("keyword", "monkey") does not
+  count.
+- An "expired session" text counts as `rejected` only when the sentence that directly follows the
+  expiry statement tells the user to run `/login`. A bare "token expired" or "session expired"
+  is not evidence, and neither is one with a `/login` hint somewhere else in the text: the input
+  includes the child's log tail, where such lines may come from unrelated output.
+
+10. "403 forbidden: invalid credentials" -> rejected. "403: tokens revoked" -> rejected.
+    "403: invalid keyword in request" -> none.
+11. "session expired" (no `/login`) -> none. "token expired" -> none. "Session expired. Please
+    contact support. Run /login zeta" -> none (the `/login` sentence does not directly follow).
+
 ### D3. Remedy line for a credential failure
 
 Behaviour: when a run ends `failed` and D2 says `rejected` or `missing`, and the record's model
@@ -227,7 +242,9 @@ remains:
   attempt's error is kept in a hook note so it stays visible in the envelope;
 - the run is retried with the same first prompt in a **fresh** session id (the failed session
   contains the refused turn; this is the one exception to "the session id is fixed for the life
-  of the task" in §2); `runs` stays 1;
+  of the task" in §2); `runs` stays 1. "The same first prompt" includes any messages that were
+  queued before the first run and merged into its prompt (task-control.md §1); none of them is
+  lost or delivered twice because of the retry (clarified 2026-11-01);
 - the retry is not a new task: same id, same output files (overwritten), no extra background
   delivery for the failed attempt.
 
@@ -245,14 +262,17 @@ Tests:
 5. A first run that wrote output before failing with "401" → no retry.
 6. Candidates `[a/one, b/two, c/three]` where both `a` and `b` fail with credential errors → the
    task ends on `c/three`; neither `a` nor `b` is tried twice.
+7. A message is sent to the task while it is still queued (before run 1 starts), run 1 fails with
+   "No API key found for a." → the retry on `b/two` receives the first prompt together with that
+   message, and the message is not delivered again afterwards.
 
 ### D5. Deltas in other specs
 
 - `workflow-dag.md` "Delta (omo v5.1.52)": the run keeps the parent session's model for every node
-  dispatch (rows omo-components-26, omo-senpi-task-b-15) and `load_skills` uses the validated
-  bundled skills root (row omo-components-03).
-- `team.md` "Delta (omo v5.1.52)": team members record the tree root and the lead as parent
-  (rows omo-components-27, omo-senpi-task-b-14).
+  dispatch and `load_skills` uses the validated bundled skills root. Its rows are mapped in
+  `workflow-dag.md` D3 only.
+- `team.md` "Delta (omo v5.1.52)": team members record the tree root and the lead as parent. Its
+  rows are mapped in `team.md` D2 only.
 
 ### D6. Mapping table
 
@@ -277,13 +297,10 @@ Shared N-A reasons (referenced below):
 
 | census row | delta § | APPLIES/N-A | reason |
 | --- | --- | --- | --- |
-| omo-components-03 | workflow-dag D2 | APPLIES | skills loaded for workflow nodes must honour the validated bundled-root override |
 | omo-components-22 | - | N-A | R-reconcile: no session-admission gate; workflow recovery runs when the session first uses the scheduler |
 | omo-components-23 | - | N-A | R-reconcile: no reconcile gate before attach; recovery is part of creating the scheduler (ancestry half: team D1) |
 | omo-components-24 | - | N-A | R-live |
 | omo-components-25 | - | N-A | R-live (`node_unresponsive` has no producer here) |
-| omo-components-26 | workflow-dag D1 | APPLIES | category nodes keep the parent model as last candidate |
-| omo-components-27 | team D1 | APPLIES | member ancestry (root, parent, depth) is visible in records and session headers |
 | omo-senpi-task-a-01 | - | N-A | R-reconcile |
 | omo-senpi-task-a-02 | - | N-A | R-reconcile (per-host grouping) |
 | omo-senpi-task-a-03 | - | N-A | R-reconcile |
@@ -323,8 +340,6 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-b-11 | - | N-A | R-host |
 | omo-senpi-task-b-12 | D1 | APPLIES | header ancestry; R-inproc for the in-process path |
 | omo-senpi-task-b-13 | D1 | APPLIES | resume/follow-up runs pass the same parent/root/task |
-| omo-senpi-task-b-14 | team D1 | APPLIES | nested team members record the tree root |
-| omo-senpi-task-b-15 | workflow-dag D1 | APPLIES | parent model persisted in the run and used by start, retry and recovery |
 | omo-senpi-task-b-16 | - | N-A | R-live |
 | omo-senpi-task-b-17 | - | N-A | R-live / R-host |
 | omo-senpi-task-b-18 | - | N-A | R-host |
@@ -351,7 +366,8 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-b-39 | - | N-A | R-chain (profile-side gate in model-selection Delta D1) |
 | omo-senpi-task-b-40 | - | N-A | R-chain |
 
-Totals: 23 APPLIES, 50 N-A, 73 rows (review 2026-10-30 moved a-10, a-20, a-21, a-22, b-27, b-28,
+Totals: 18 APPLIES, 50 N-A, 68 rows in this table; 5 more APPLIES rows are mapped in
+`workflow-dag.md` D3 and `team.md` D2 (each row is cited by one delta only, 2026-11-01). (Review 2026-10-30 moved a-10, a-20, a-21, a-22, b-27, b-28,
 b-29, b-30 from N-A to APPLIES; see `docs/cleanroom/reviews/task-5152.md`).
 
 ### D7. Steering messages are neither lost nor doubled

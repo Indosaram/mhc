@@ -11,7 +11,7 @@ MIT senpi target `coding-agent/.../builtin/recommended-models/index.ts`; mhc MIT
 `maho-model-select` (`profile.rs`, `transforms.rs`) and `maho-ext-recommended-models`; census
 rows omo-cores-02 and senpi-builtins-b-05.
 
-Verdict: **approved after fixes** (fixes committed in this review).
+Fixes made in this review are committed with it (see the checklist below).
 
 ## Checklist (README rules 1-6)
 
@@ -60,3 +60,5 @@ Verdict: **approved after fixes** (fixes committed in this review).
 - Upstream omo GLM rung providers (`zai`, `zai-coding-cn`, `opencode-go`) differ from MIT
   senpi's GLM ranking (`zai-coding-plan`, `opencode-go`). §6.1 sources from MIT data, so mhc
   follows senpi; flagged for the maintainer only.
+
+verdict: approved
