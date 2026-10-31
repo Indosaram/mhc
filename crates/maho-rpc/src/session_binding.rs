@@ -30,27 +30,9 @@ pub fn session_event_record(
         };
     }
     Ok(match event {
-        E::SessionPaused {
-            pause_seq,
-            kind,
-            at,
-            notice_count,
-            persisted,
-        } => {
-            json!({"type":"session_paused","pauseSeq":pause_seq,"kind":kind,"at":at,"noticeCount":notice_count,"persisted":persisted})
-        }
-        E::SessionResumed {
-            pause_seq,
-            cause,
-            at,
-        } => json!({"type":"session_resumed","pauseSeq":pause_seq,"cause":cause,"at":at}),
-        E::SessionNotice {
-            notice_ids,
-            notice_count,
-            disposition,
-        } => {
-            json!({"type":"session_notice","noticeIds":notice_ids,"noticeCount":notice_count,"disposition":disposition})
-        }
+        E::SessionPaused { pause_seq, kind, at, notice_count, persisted } => json!({"type":"session_paused","pauseSeq":pause_seq,"kind":kind,"at":at,"noticeCount":notice_count,"persisted":persisted}),
+        E::SessionResumed { pause_seq, cause, at } => json!({"type":"session_resumed","pauseSeq":pause_seq,"cause":cause,"at":at}),
+        E::SessionNotice { notice_ids, notice_count, disposition } => json!({"type":"session_notice","noticeIds":notice_ids,"noticeCount":notice_count,"disposition":disposition}),
         E::Agent(event) => serde_json::to_value(event)?,
         // senpi agent-session.ts: subscribers get `{ ...agent_end, willRetry }`; abort provenance is RPC enrichment.
         E::AgentEnd {
@@ -458,54 +440,6 @@ pub fn closed_scope_record_sink(
         sink(record);
     })
 }
-/// senpi `createRpcSessionBinding`'s `taggedSink.writeStructured`: present only when `structuredLaneEnabled()`.
-pub fn structured_lane_sink(
-    session_id: String,
-    scope: maho_ai::node::provider_scope::ProviderScope,
-    lanes: crate::session_structured_lanes::SessionStructuredLanes,
-) -> Option<std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>> {
-    crate::structured_session_records::structured_lane_enabled()
-        .then(|| structured_lane_writer(session_id, scope, lanes))
-}
-/// `writeStructured`'s body: each structured record goes to the writer's per-session lanes while the entry's
-/// provider scope is open; a record after close is dropped silently (no stderr line, unlike `writeRecord`).
-pub fn structured_lane_writer(
-    session_id: String,
-    scope: maho_ai::node::provider_scope::ProviderScope,
-    lanes: crate::session_structured_lanes::SessionStructuredLanes,
-) -> std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> {
-    std::sync::Arc::new(move |record: serde_json::Value| {
-        if scope.state() != maho_ai::node::provider_scope::ScopeState::Closed {
-            lanes.accept(&session_id, &record);
-        }
-    })
-}
-/// senpi connection-handler `installSessionSubscriptions`' structured half: with a `writeStructured` sink, the
-/// session's structured lane (`subscribeStructuredSessionRecords`) writes each record tagged with the routing id
-/// (`tagSessionRecord`); without one no lane is opened.
-pub fn structured_lane_subscription(
-    session_id: &str,
-    session: &maho_core::agent_session::AgentSession,
-    write_structured: Option<std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
-) -> Result<
-    Option<maho_core::structured_session_lane::StructuredSubscription>,
-    maho_core::structured_session_lane::StructuredLaneUnavailableError,
-> {
-    let Some(write) = write_structured else {
-        return Ok(None);
-    };
-    let session_id = session_id.to_owned();
-    crate::structured_session_records::subscribe_structured_session_records(
-        session,
-        std::sync::Arc::new(move |mut record: serde_json::Value| {
-            if let Some(object) = record.as_object_mut() {
-                object.insert("sessionId".into(), session_id.clone().into());
-            }
-            write(record);
-        }),
-    )
-    .map(Some)
-}
 pub struct BindingRecords {
     tools: ToolAttributionSpans,
 }
@@ -574,9 +508,6 @@ pub struct RpcSessionBinding {
     security_subscription: std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
     relocation_subscription:
         std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>,
-    /// senpi connection-handler `unsubscribeStructured`: the structured lane feeding `sink.writeStructured`.
-    structured_subscription:
-        std::sync::Mutex<Option<maho_core::structured_session_lane::StructuredSubscription>>,
     connection_roles: Option<SharedConnectionRoles>,
     /// senpi `bindMcpForms(session, ui)`: the session's private form binding and the writer state that owns it.
     mcp_forms: std::sync::Mutex<
@@ -672,32 +603,12 @@ pub async fn create_rpc_session_binding(
         hold_subscription: std::sync::Mutex::new(Some(hold_subscription)),
         security_subscription: std::sync::Mutex::new(Some(security_subscription)),
         relocation_subscription: Default::default(),
-        structured_subscription: Default::default(),
         connection_roles,
         mcp_forms: Default::default(),
         presenters: Default::default(),
     }
 }
 impl RpcSessionBinding {
-    /// Installs (or replaces) this binding's structured lane: see [`structured_lane_subscription`]. The
-    /// subscription ends with `dispose`.
-    pub fn install_structured_lane(
-        &self,
-        session: &maho_core::agent_session::AgentSession,
-        write_structured: Option<std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
-    ) -> Result<(), maho_core::structured_session_lane::StructuredLaneUnavailableError> {
-        let subscription =
-            structured_lane_subscription(&self.session_id, session, write_structured)?;
-        let previous = std::mem::replace(
-            &mut *self
-                .structured_subscription
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            subscription,
-        );
-        drop(previous);
-        Ok(())
-    }
     pub fn keep_relocation_subscription(
         &self,
         subscription: maho_core::agent_session::AgentSessionSubscription,
@@ -814,16 +725,17 @@ impl RpcSessionBinding {
             });
         let send_fanout = fanout;
         let tag = self.session_id.clone();
-        let send: SendCallback = std::sync::Arc::new(move |id, mut record| {
-            record["sessionId"] = tag.clone().into();
-            if let Err(error) = send_fanout
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .enqueue_control(id, &record)
-            {
-                eprintln!("relocation delivery failed: {error}");
-            }
-        });
+        let send: SendCallback =
+            std::sync::Arc::new(move |id, mut record| {
+                record["sessionId"] = tag.clone().into();
+                if let Err(error) = send_fanout
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .enqueue_control(id, &record)
+                {
+                    eprintln!("relocation delivery failed: {error}");
+                }
+            });
         session.set_relocation_host(Some(std::sync::Arc::new(
             crate::session_relocation_adapter::SessionRelocationAdapter {
                 relocation: self.handler.relocation().clone(),
@@ -866,10 +778,6 @@ impl RpcSessionBinding {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        self.structured_subscription
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
         self.subscription
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -904,92 +812,7 @@ mod tests {
         scope.close();
         sink(serde_json::json!({"type":"agent_end"}));
         sink(serde_json::json!({"type":"agent_end"}));
-        assert_eq!(
-            *written.lock().unwrap(),
-            vec![serde_json::json!({"type":"agent_start"})]
-        );
-    }
-    async fn prompt(session: &maho_core::agent_session::AgentSession) {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            session
-                .agent()
-                .prompt(maho_agent::AgentPromptInput::text("go")),
-        )
-        .await
-        .expect("bounded turn");
-    }
-    // senpi 4272-structured-lane-bridge: the binding's `writeStructured` reaches the writer's structured lanes,
-    // tagged with the routing id, while the entry's scope is open; nothing reaches them after close or unsubscribe.
-    #[tokio::test]
-    async fn structured_lane_records_reach_the_writer_lanes_until_close() {
-        use maho_ai::types::{AssistantMessageEvent as E, ContentBlock, TextContent};
-        let session = crate::structured_session_records::tests::scripted_session(
-            |stream: &maho_ai::types::AssistantMessageEventStream,
-             mut partial: maho_ai::types::AssistantMessage| {
-                stream.push(E::Start {
-                    partial: partial.clone(),
-                });
-                partial.content.push(ContentBlock::Text(TextContent {
-                    text: "ok".into(),
-                    ..Default::default()
-                }));
-                stream.push(E::TextStart {
-                    content_index: 0,
-                    partial: partial.clone(),
-                });
-                stream.push(E::TextEnd {
-                    content_index: 0,
-                    content: "ok".into(),
-                    partial: partial.clone(),
-                });
-                stream.push(E::Done {
-                    reason: maho_ai::types::DoneReason::Stop,
-                    message: partial.clone(),
-                });
-                stream.end(Some(partial));
-            },
-        );
-        let lanes = crate::session_structured_lanes::SessionStructuredLanes::default();
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let log = seen.clone();
-        let stop = lanes.observe(
-            "routed",
-            std::sync::Arc::new(move |record: &serde_json::Value| {
-                log.lock().unwrap().push(record.clone())
-            }),
-        );
-        let scope = maho_ai::node::provider_scope::ProviderScope::new();
-        let writer = structured_lane_writer("routed".into(), scope.clone(), lanes.clone());
-        let subscription = structured_lane_subscription("routed", &session, Some(writer)).unwrap();
-        assert!(subscription.is_some());
-        prompt(&session).await;
-        let records = std::mem::take(&mut *seen.lock().unwrap());
-        assert!(records.iter().all(|record| record["sessionId"] == "routed"));
-        assert!(
-            records
-                .iter()
-                .any(|r| r["type"] == "message_start" && r["message"]["role"] == "assistant"),
-            "assistant message_start on the lane"
-        );
-        let start = records
-            .iter()
-            .find(|r| r["assistantMessageEvent"]["type"] == "text_start")
-            .expect("seeded text_start on the lane");
-        assert!(start["assistantMessageEvent"]["seed"].is_object());
-        scope.close();
-        prompt(&session).await;
-        assert!(
-            seen.lock().unwrap().is_empty(),
-            "a closed scope writes no structured record"
-        );
-        drop(subscription);
-        stop();
-        assert!(
-            structured_lane_subscription("routed", &session, None)
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(*written.lock().unwrap(), vec![serde_json::json!({"type":"agent_start"})]);
     }
     #[test]
     fn malformed_record_stops_stream_before_later_publication() {
