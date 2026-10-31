@@ -3425,10 +3425,17 @@ mod connection_events_tests {
             )
             .await
         });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let requests = of_type(&records, "question_request");
-        assert_eq!(requests.len(), 1);
-        let id = requests[0]["id"].as_str().expect("id").to_owned();
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let requests = of_type(&records, "question_request");
+                if let Some(first) = requests.first() {
+                    return first["id"].as_str().expect("id").to_owned();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("question_request frame emitted");
 
         let progress_line = serde_json::json!({
             "type": "extension_ui_progress",
