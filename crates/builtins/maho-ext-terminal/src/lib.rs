@@ -34,6 +34,7 @@ pub mod restore_digest;
 pub mod rpc_monitor_coalesce;
 pub mod rpc_monitor_observer;
 pub mod rpc_monitor_render;
+pub mod rpc_monitor_source;
 pub mod rpc_monitor_targets;
 pub mod rpc_monitor_watch;
 pub mod runtime_session;
