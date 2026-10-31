@@ -123,7 +123,7 @@ fn files_outside_bundled_roots_keep_read_and_external_directory_requests() {
 }
 
 #[test]
-fn bundled_roots_name_shipped_payloads_and_the_binary_directory() {
+fn bundled_roots_name_shipped_payloads_but_not_the_binary_or_package_directory() {
     let roots = bundled_resource_roots();
     let package = Path::new(&maho_core::config::get_package_dir()).to_path_buf();
     for shipped in ["theme", "export-html", "assets", "docs", "examples"] {
@@ -132,7 +132,37 @@ fn bundled_roots_name_shipped_payloads_and_the_binary_directory() {
             "{shipped} missing from {roots:?}"
         );
     }
-    let binary = std::env::current_exe().expect("exe");
-    assert!(roots.contains(&binary.parent().expect("binary dir").to_path_buf()));
     assert!(roots.iter().any(|root| root.ends_with("skill")));
+    let binary_dir = std::env::current_exe()
+        .expect("exe")
+        .parent()
+        .expect("binary dir")
+        .to_path_buf();
+    assert!(
+        !roots.contains(&binary_dir),
+        "binary dir is a root: {roots:?}"
+    );
+    assert!(
+        !roots.contains(&package),
+        "package dir is a root: {roots:?}"
+    );
+
+    // A file directly next to the binary is a plain read plus external_directory when the
+    // binary directory lies outside cwd.
+    let root = tempfile::tempdir().expect("root");
+    let base = root.path().canonicalize().expect("real root");
+    let cwd = base.join("project");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    let home = base.join("home");
+    let neighbor = binary_dir.join("neighbor-of-the-binary.txt");
+    let neighbor_text = neighbor.to_string_lossy().into_owned();
+    let requests = parse_read_permission(&neighbor_text, (&cwd, &home), &roots);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.permission.as_str())
+            .collect::<Vec<_>>(),
+        ["read", "external_directory"]
+    );
+    assert!(requests.iter().all(|request| !request.auto_approve_ask));
 }
