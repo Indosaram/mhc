@@ -196,21 +196,48 @@ pub fn load_session_settings(
         &home,
         ctx.is_project_trusted(),
     );
-    let terminal = ResolvedTerminalSettings {
+    let terminal = load_manager_terminal_settings(&settings);
+    let shell = settings.get_shell_path();
+    Ok((terminal, shell))
+}
+
+/// Upstream `loadTerminalSettings(settingsManager)`: the merged `terminal` block plus the bash
+/// tool's opt-in `redactSecretsInOutput`.
+pub fn load_manager_terminal_settings(
+    settings: &maho_core::settings_manager::SettingsManager,
+) -> ResolvedTerminalSettings {
+    ResolvedTerminalSettings {
         redact_secrets_in_output: settings.get_bash_redact_secrets_in_output(),
         ..load_terminal_settings(
             settings.get_global().get("terminal"),
             settings.get_project().get("terminal"),
         )
-    };
-    let shell = settings.get_shell_path();
-    Ok((terminal, shell))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// terminal-output-redaction.test.ts "loads the opt-in setting and defaults to off".
+    #[test]
+    fn loads_the_redaction_opt_in_and_defaults_to_off() {
+        use maho_core::settings_manager::SettingsManager;
+        let settings = |value: Value| value.as_object().cloned().unwrap_or_default();
+        assert!(
+            !load_manager_terminal_settings(&SettingsManager::in_memory(settings(json!({})), true))
+                .redact_secrets_in_output
+        );
+        assert!(
+            load_manager_terminal_settings(&SettingsManager::in_memory(
+                settings(json!({"tools":{"bash":{"redactSecretsInOutput":true}}})),
+                true
+            ))
+            .redact_secrets_in_output
+        );
+        assert!(!TERMINAL_SETTINGS_DEFAULTS.redact_secrets_in_output);
+    }
 
     #[test]
     fn absent_block_fills_defaults() {
