@@ -153,16 +153,19 @@ pub fn register_dispatch_authorizer(
         authorizer,
         retired: AbortSignal::default(),
     });
-    let previous = AUTHORIZERS
+    let mut authorizers = AUTHORIZERS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(
-            session_key(session),
-            SessionSlot {
-                session: Arc::downgrade(session),
-                registration: Arc::clone(&registration),
-            },
-        );
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A dead session's slot is unreachable (senpi `WeakMap` semantics); its address may be reused.
+    authorizers.retain(|_, slot| slot.session.strong_count() > 0);
+    let previous = authorizers.insert(
+        session_key(session),
+        SessionSlot {
+            session: Arc::downgrade(session),
+            registration: Arc::clone(&registration),
+        },
+    );
+    drop(authorizers);
     if let Some(previous) = previous {
         previous.registration.retired.abort();
     }
