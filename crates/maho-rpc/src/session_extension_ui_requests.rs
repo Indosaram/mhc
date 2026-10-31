@@ -64,6 +64,10 @@ impl SessionExtensionUiRequests {
         }
     }
 
+    /// Installs the change listener after construction (a hosted session's binding learns its routing id late).
+    pub fn set_changed(&mut self, changed: UiRequestChanged) {
+        self.changed = Some(changed);
+    }
     fn notify(&self, change: Option<UiRequestChange>) {
         if let Some(changed) = &self.changed {
             changed(change);

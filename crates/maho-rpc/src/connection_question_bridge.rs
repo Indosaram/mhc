@@ -144,6 +144,10 @@ impl ConnectionQuestionBridge {
             ..Self::default()
         }
     }
+    /// Installs the change listener after construction (a hosted session's binding learns its routing id late).
+    pub fn set_changed(&mut self, changed: crate::session_extension_ui_requests::UiRequestChanged) {
+        self.changed = Some(changed);
+    }
     fn notify(&self, change: crate::session_extension_ui_requests::UiRequestChange) {
         if let Some(changed) = &self.changed {
             changed(Some(change));

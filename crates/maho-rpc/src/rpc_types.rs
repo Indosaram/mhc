@@ -485,6 +485,11 @@ pub enum RpcCommandBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
     },
+    /// Subscribes this connection to `session_status` records (senpi `subscribe_sessions`). Every field stays raw
+    /// (read off the request) so a malformed one is refused with `invalid_subscription` naming it.
+    SubscribeSessions,
+    /// Ends one of this connection's subscriptions (senpi `unsubscribe_sessions`); `subscriptionId` is read raw.
+    UnsubscribeSessions,
     /// Patches the context an attached session publishes (senpi `set_session_context`); the session id travels in
     /// the routing envelope.
     SetSessionContext {
