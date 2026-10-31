@@ -442,7 +442,7 @@ impl Extension for OmoNativeTelemetryComponent {
             crate::omo_native_delegation::create_omo_native_delegation_capture(
                 self.task_terminal_observers
                     .as_ref()
-                    .unwrap_or_else(maho_omo_task::component::shared_task_terminal_observers),
+                    .unwrap_or_else(|| maho_omo_task::component::shared_task_terminal_observers()),
                 Arc::clone(&session_client),
                 session_hasher(&consent, &state_dir),
                 {
