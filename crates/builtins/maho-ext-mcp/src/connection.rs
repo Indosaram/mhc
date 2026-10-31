@@ -483,6 +483,13 @@ impl ServerConnection {
         }
         let result = match connect_mcp_transport(&transport).await {
             Ok(client) => Ok(client),
+            // connection.ts #connectTransport: modern discovery and needs-auth failures pass through undiagnosed.
+            Err(error)
+                if error.phase.as_deref() == Some("modern-stdio")
+                    || crate::needs_auth::is_mcp_needs_auth_error(&error) =>
+            {
+                Err(error)
+            }
             Err(error) => Err(crate::diagnose::diagnose_mcp_connect_failure(
                 &self.server_name,
                 &self.config,
