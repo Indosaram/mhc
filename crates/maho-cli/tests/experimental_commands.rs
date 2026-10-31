@@ -144,7 +144,7 @@ impl maho_cli::cli::experimental::commands::server::ServerCommandContext for Rec
 }
 impl maho_cli::cli::experimental::commands::client::ClientCommandContext for RecordingContext {
     fn run_client(&self, command: maho_cli::cli::experimental::commands::client::ClientCommand) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
-        self.clients.lock().unwrap().push(command.prompt);
+        self.clients.lock().expect("recorded").push(command.prompt);
         Box::pin(async { Ok(()) })
     }
 }
