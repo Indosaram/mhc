@@ -587,33 +587,26 @@ fn unquoted_path(path: &str) -> Option<String> {
     (!inner.is_empty()).then(|| inner.to_owned())
 }
 
-/// Port of `read-permission.ts`: classify the file the read tool opens, with one canonical
-/// external target, its lexical spelling as a rule alias and the raw path for display.
-///
-/// DIVERGENCE: upstream also auto-approves bundled resources; mhc ships no bundled read roots.
+/// `read` (senpi `parseReadPermission`, `read-permission.rs`) plus the mhc credential check over
+/// the file the read tool opens.
 fn parse_read_permission(
     input: &Value,
     location: (&Path, &Path),
     agent_dir: &Path,
 ) -> Vec<PermissionRequest> {
-    let (cwd, home) = location;
     let Some(file_path) = string(input, &["path", "file_path"]).filter(|path| !path.is_empty())
     else {
         return fallback("read");
     };
-    let targets = vec![file_path.to_owned()];
-    let mut requests = vec![request("read", targets.clone(), targets.clone())];
-    // Resolve the same file the read tool will open before classifying its ownership.
-    let read_path = resolve_read_path(file_path, cwd);
-    if let Some(target) = resolve_external_path(&read_path, cwd, home) {
-        requests.push(PermissionRequest {
-            permission: "external_directory".into(),
-            patterns: vec![target.clone()],
-            always: vec![to_parent_directory_pattern_from(&target, false, file_path)],
-            rule_aliases: (read_path != target).then(|| vec![read_path.clone()]),
-            original_paths: (file_path != target).then(|| vec![file_path.to_owned()]),
-            auto_approve_ask: false,
-        });
-    }
-    credential(requests, &[read_path], location, agent_dir)
+    let requests = crate::read_permission::parse_read_permission(
+        file_path,
+        location,
+        &crate::read_permission::bundled_resource_roots(),
+    );
+    credential(
+        requests,
+        &[resolve_read_path(file_path, location.0)],
+        location,
+        agent_dir,
+    )
 }
