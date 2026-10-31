@@ -262,6 +262,10 @@ pub struct SupervisorLaunch {
     pub agent_dir: Option<String>,
     pub bind_socket: Option<String>,
     pub replace_identity: Option<crate::socket_ownership::SocketFileIdentity>,
+    /// `--mcp-presenter-fd 4`: the launching CLI's enrollment channel, relayed once to the child (senpi
+    /// `presenterBootstrapFd`). Only fd 4 is accepted. Rust's supervisor takes no `--owner-fd`, so the upstream
+    /// owner-fd/presenter-fd collision cannot arise here.
+    pub presenter_bootstrap_fd: Option<i32>,
 }
 pub fn find_internal_supervisor_args(argv: &[String]) -> Option<&[String]> {
     let mut index = 0;
@@ -285,11 +289,19 @@ pub fn parse_supervisor_args(argv: &[String]) -> Option<SupervisorLaunch> {
         agent_dir: None,
         bind_socket: None,
         replace_identity: None,
+        presenter_bootstrap_fd: None,
     };
     let mut socket_seen = false;
     let mut index = 0;
     while index < argv.len() {
         let arg = &argv[index];
+        if arg == crate::mcp_presenter_bootstrap::MCP_PRESENTER_FD_FLAG
+            && argv.get(index + 1).map(String::as_str) == Some("4")
+        {
+            launch.presenter_bootstrap_fd = Some(crate::mcp_presenter_bootstrap::MCP_PRESENTER_BOOTSTRAP_FD);
+            index += 2;
+            continue;
+        }
         if index + 1 < argv.len()
             && matches!(
                 arg.as_str(),
@@ -498,17 +510,57 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         }
         options.open(&paths.stderr_log)?
     };
-    let spawnable = spawnable_child_launch(&child_launch, platform);
+    let mut spawnable = spawnable_child_launch(&child_launch, platform);
+    // senpi `spawnHostChild`: a shell wrapper cannot prove preservation of the private inherited handle.
     #[cfg(unix)]
-    let mut child = tokio::process::Command::new(&spawnable.command)
-        .args(&spawnable.args)
-        .env_clear()
-        .envs(child_env)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(stderr)
-        .process_group(0)
-        .spawn()?;
+    let presenter = match launch.presenter_bootstrap_fd {
+        Some(fd) if !spawnable.shell => {
+            let channel = crate::mcp_presenter_bootstrap::ChildBootstrap::new()?;
+            spawnable.args.extend([
+                crate::mcp_presenter_bootstrap::MCP_PRESENTER_FD_FLAG.to_owned(),
+                "4".to_owned(),
+            ]);
+            Some((fd, channel))
+        }
+        _ => None,
+    };
+    #[cfg(unix)]
+    let mut child = {
+        let mut command = match &presenter {
+            Some((_, channel)) => {
+                let mut command = channel.command(std::ffi::OsStr::new(&spawnable.command));
+                command.args(&spawnable.args);
+                command
+            }
+            None => {
+                let mut command = tokio::process::Command::new(&spawnable.command);
+                command.args(&spawnable.args);
+                command
+            }
+        };
+        command
+            .env_clear()
+            .envs(child_env)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(stderr)
+            .process_group(0)
+            .spawn()?
+    };
+    // The opt-in relay runs beside the supervisor; the child's copy of the channel was handed over at spawn.
+    #[cfg(unix)]
+    let _presenter_relay = presenter.and_then(|(fd, channel)| {
+        let crate::mcp_presenter_bootstrap::ChildBootstrap { parent, child: inherited } = channel;
+        drop(inherited);
+        let upstream = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream(fd)?;
+        // Bounded by the relay's 30 s deadline and either side's EOF; the supervisor does not re-launch with it.
+        Some(tokio::spawn(crate::mcp_presenter_bootstrap::relay_presenter_bootstrap(
+            upstream,
+            parent,
+            None,
+            std::future::pending::<()>(),
+        )))
+    });
     // win32: no unix lifetime pipe and no process group. The supervisor is spawned detached and owns no console,
     // so CREATE_NO_WINDOW gives the child a console without a window (senpi `windowsHide`); the lifetime
     // binding is the ppid watch alone.
@@ -1715,6 +1767,21 @@ mod tests {
             ])
             .is_none()
         );
+    }
+    #[test]
+    fn supervisor_parser_takes_only_the_reserved_presenter_descriptor() {
+        let launch = parse_supervisor_args(
+            &["--socket", "sock", "--mcp-presenter-fd", "4", "--mode", "rpc"].map(str::to_owned),
+        )
+        .unwrap();
+        assert_eq!(launch.presenter_bootstrap_fd, Some(4));
+        assert_eq!(launch.host_args, vec!["--mode", "rpc"]);
+        let other = parse_supervisor_args(
+            &["--socket", "sock", "--mcp-presenter-fd", "5"].map(str::to_owned),
+        )
+        .unwrap();
+        assert_eq!(other.presenter_bootstrap_fd, None);
+        assert_eq!(other.host_args, vec!["--mcp-presenter-fd", "5"]);
     }
     #[test]
     fn continuous_idle_resets_on_activity() {

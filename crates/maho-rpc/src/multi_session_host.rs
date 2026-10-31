@@ -159,6 +159,13 @@ pub struct HostCore {
     active_requests: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     /// Woken whenever a request settles (senpi `requestSettledListeners`).
     request_settled: tokio::sync::Notify,
+    /// The writer's MCP presenter state (senpi `SessionEventWriter` presenter half); enabled only by enforcement.
+    pub presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+    /// `--mcp-presenter-fd 4` (senpi `MultiSessionHostOptions.presenterBootstrapFd`).
+    presenter_bootstrap_fd: std::sync::OnceLock<i32>,
+    /// The private control endpoint a socket host opens when it was launched with enforcement and a bootstrap.
+    presenter_control:
+        std::sync::Mutex<Option<std::sync::Arc<crate::mcp_presenter_control::McpPresenterControl>>>,
 }
 /// A refused open: the wire message, and the registry code when one carried it (`session_path_in_use`).
 struct OpenRefusal {
@@ -242,6 +249,9 @@ impl HostCore {
             handover_parked_dir: std::sync::OnceLock::new(),
             active_requests: Default::default(),
             request_settled: tokio::sync::Notify::new(),
+            presenters: Default::default(),
+            presenter_bootstrap_fd: std::sync::OnceLock::new(),
+            presenter_control: std::sync::Mutex::new(None),
         }
     }
     /// Names the daemon directory the handoff-parked record lives under (senpi `handoverParkedDir`); the first
@@ -346,6 +356,76 @@ impl HostCore {
         self
     }
     /// The tool runtime this host advertises.
+    /// Host deployment policy; never derived from client capabilities or project settings (senpi
+    /// `MultiSessionHostOptions.mcpPresenterEnforcement`): private MCP forms are enforced and
+    /// `mcp_form_presenter_v1` is advertised.
+    pub fn with_mcp_presenter_enforcement(self, enforce: bool) -> Self {
+        if enforce {
+            self.presenters.enable();
+        }
+        self
+    }
+    /// `--mcp-presenter-fd 4`: the inherited enrollment channel a socket host opens its presenter control with.
+    pub fn with_presenter_bootstrap_fd(self, fd: Option<i32>) -> Self {
+        if let Some(fd) = fd {
+            let _ = self.presenter_bootstrap_fd.set(fd);
+        }
+        self
+    }
+    /// A deferred handover's successor enrollment channel (senpi `presenterControl?.successorBootstrap()`).
+    pub async fn presenter_successor_bootstrap(
+        &self,
+    ) -> Option<crate::mcp_presenter_wire::BoxedPrivateStream> {
+        let control = self
+            .presenter_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        control.successor_bootstrap().await
+    }
+    /// senpi `runSocketHost` presenter startup: with a bootstrap descriptor and enforcement, open the private
+    /// control endpoint in a private temp dir and enroll over the descriptor; otherwise the descriptor is dropped.
+    /// Bootstrap is optional authority, never a reason to fail the host.
+    #[cfg(unix)]
+    async fn start_presenter_control(
+        self: &std::sync::Arc<Self>,
+    ) -> Option<tempfile_dir::PresenterDir> {
+        let fd = *self.presenter_bootstrap_fd.get()?;
+        let bootstrap = crate::mcp_presenter_bootstrap::presenter_bootstrap_stream(fd)?;
+        if !self.presenters.enabled() {
+            drop(bootstrap);
+            return None;
+        }
+        let dir = tempfile_dir::PresenterDir::create()?;
+        let control = std::sync::Arc::new(crate::mcp_presenter_control::McpPresenterControl::new(
+            std::sync::Arc::new(PresenterWriter {
+                presenters: std::sync::Arc::clone(&self.presenters),
+                fanout: std::sync::Arc::clone(&self.fanout),
+            }),
+            self.presenters.enable(),
+            &dir.path.join("control.sock").to_string_lossy(),
+        ));
+        if control.listen().await.is_err() {
+            control.dispose();
+            return None;
+        }
+        control.bootstrap(bootstrap);
+        *self
+            .presenter_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+        Some(dir)
+    }
+    fn dispose_presenter_control(&self) {
+        let control = self
+            .presenter_control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(control) = control {
+            control.dispose();
+        }
+    }
     pub fn tool_runtime(&self) -> crate::host_capabilities::ToolRuntimeKind {
         self.tool_runtime
     }
@@ -377,9 +457,25 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .register(connection, actor);
+        // A private frame is written raw on the connection's control lane, never through a session queue.
+        let fanout = std::sync::Arc::downgrade(&self.fanout);
+        let id = connection.to_owned();
+        self.presenters.register_connection(
+            connection,
+            std::sync::Arc::new(move |frame| {
+                fanout.upgrade().is_some_and(|fanout| {
+                    fanout
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .enqueue_control(&id, frame)
+                        .unwrap_or(false)
+                })
+            }),
+        );
     }
     /// Unregisters a connection's sink, its capabilities and its render widths.
     pub fn unregister_connection(&self, connection: &str) {
+        self.presenters.unregister_connection(connection);
         self.fanout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -409,6 +505,11 @@ impl HostCore {
     fn advertised_capabilities(&self) -> Vec<String> {
         use crate::custom_capability::*;
         let mut capabilities = Vec::<String>::new();
+        // senpi `multiSessionHostCapabilities`: `mcp_form_presenter_v1` only when this deployment enforces presenters.
+        let presenter = self
+            .presenters
+            .enabled()
+            .then_some(crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY);
         // senpi `hostToolRuntimeCapabilities`: the host's own placement first; a negotiated `tool_runtime:*` never overrides it.
         let tool_runtime = crate::host_capabilities::host_tool_runtime_capabilities(
             self.tool_runtime,
@@ -418,6 +519,10 @@ impl HostCore {
             "multi_session",
             SNAPSHOT_CURSOR_CAPABILITY,
             UI_ANSWER_LEDGER_CAPABILITY,
+        ]
+        .into_iter()
+        .chain(presenter)
+        .chain([
             ATTACH_SESSION_CAPABILITY,
             RELEASE_ATTACHMENT_CAPABILITY,
             // `release_session` already counts only OTHER connections' attachments (`other_attachments`).
@@ -439,8 +544,7 @@ impl HostCore {
             SESSION_KIND_CAPABILITY,
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
-        ]
-        .into_iter()
+        ])
         .chain(std::iter::once(
             crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY,
         ))
@@ -497,6 +601,7 @@ impl HostCore {
     }
     /// Drops every per-connection record of a handle the host ended (senpi `forgetSessionOwnership`).
     fn forget_session(&self, session_id: &str) {
+        self.presenters.dispose_session(session_id);
         self.fanout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -892,21 +997,35 @@ impl HostCore {
             },
         );
     }
+    fn write_presenter_reply(&self, connection: Option<&str>, reply: &serde_json::Value) {
+        write_presenter_reply(
+            &std::sync::Arc::downgrade(&self.fanout),
+            &self.default_writer,
+            &std::sync::Arc::downgrade(&self.presenters),
+            connection,
+            reply,
+        );
+    }
     /// Feed one inbound JSONL line on one connection (senpi's `handle` inside `createHostCore`).
     pub async fn handle(&self, connection: Option<&str>, line: &str) -> Result<(), String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            self.error(
-                connection,
-                None,
-                "parse",
+            // With presenters enabled a parse error never echoes the (possibly private) body.
+            let message = if self.presenters.enabled() {
+                "Invalid command".to_owned()
+            } else {
                 format!(
                     "Failed to parse command: {}",
                     crate::connection_handler::json_parse_error_message(line)
-                ),
-                None,
-            );
+                )
+            };
+            self.error(connection, None, "parse", message, None);
             return Ok(());
         };
+        // senpi `writer.handleMcpForm(parsed)`: private records bypass the gate, queues, snapshots and replay.
+        if let Some(reply) = self.presenters.handle(&value, connection) {
+            self.write_presenter_reply(connection, &reply);
+            return Ok(());
+        }
         if let Some(error) = crate::rpc_input_validation::rpc_command_shape_error(&value) {
             self.error(
                 connection,
@@ -1130,6 +1249,9 @@ impl HostCore {
                     {
                         eprintln!("senpi rpc connection {connection} failed: {error}");
                     }
+                    // A connection that stops declaring `interactive_user` + `mcp_form_presenter_v1` loses its grants.
+                    self.presenters
+                        .capabilities_changed(connection, &capabilities);
                     if let Some(session_id) = &command.session_id {
                         self.widths
                             .lock()
@@ -1637,6 +1759,10 @@ impl HostCore {
                 as std::sync::Arc<
                     dyn crate::session_worker_client::WorkerSecurityWriter,
                 >),
+            presenters: self
+                .presenters
+                .enabled()
+                .then(|| std::sync::Arc::clone(&self.presenters)),
         }
     }
     /// `open_session` on the worker runtime (senpi `WorkerSessionRegistry.openSession` + the router's
@@ -2016,6 +2142,7 @@ impl HostCore {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .attach(connection, &handle);
+            self.presenters.attach(connection, &handle);
         }
         worker.set_connection_roles(std::sync::Arc::clone(&self.connection_roles));
         if !attached
@@ -2168,6 +2295,7 @@ impl HostCore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .attach(connection, session_id);
+        self.presenters.attach(connection, session_id);
         let Some(runtime) = runtime else {
             return;
         };
@@ -2193,6 +2321,28 @@ impl HostCore {
             )
             .await,
         );
+        // senpi session-binding `bindMcpForms(session, ui)`, only when the deployment enforces presenters.
+        if self.presenters.enabled() {
+            let attached = self
+                .fanout
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .targets
+                .attached_connections(session_id);
+            let (fanout, writer, presenters) = (
+                std::sync::Arc::downgrade(&self.fanout),
+                std::sync::Arc::clone(&self.default_writer),
+                std::sync::Arc::downgrade(&self.presenters),
+            );
+            binding.bind_mcp_forms(
+                &self.presenters,
+                runtime.session(),
+                &attached,
+                std::sync::Arc::new(move |connection, reply| {
+                    write_presenter_reply(&fanout, &writer, &presenters, connection, reply)
+                }),
+            );
+        }
         bindings.insert(session_id.to_owned(), binding);
     }
     /// Releases every session a dropped connection still owned (senpi `releaseConnection`). Each
@@ -2688,6 +2838,7 @@ impl HostCore {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .attach(owner, session_id);
+            self.presenters.attach(owner, session_id);
         } else {
             self.attach_connection(Some(owner), session_id).await;
         }
@@ -3037,6 +3188,7 @@ impl HostCore {
         }
     }
     async fn release_owner_attachment(&self, owner: &str, session_id: &str) {
+        self.presenters.detach(owner, session_id);
         self.connection_left(session_id, owner).await;
         self.widths
             .lock()
@@ -3227,6 +3379,78 @@ tokio::task_local! {pub(crate) static CURRENT_CONNECTION:Option<String>;}
 /// blocking UI requests go to their requester only; content goes to the connections attached to
 /// the session and is remembered for late joiners; lifecycle records follow their visibility
 /// rule. With no registered connection the record takes the shared stdio lane.
+/// The presenter control endpoint's view of this host's writer (senpi `SessionEventWriter` presenter getters).
+struct PresenterWriter {
+    presenters: std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+    fanout: std::sync::Arc<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+}
+impl crate::mcp_presenter_control::McpPresenterWriter for PresenterWriter {
+    fn mcp_form_binding(
+        &self,
+        session_id: &str,
+    ) -> Option<std::sync::Arc<crate::mcp_form_types::McpFormBinding>> {
+        self.presenters.binding(session_id)
+    }
+    fn find_mcp_presenter_connection(
+        &self,
+        nonce: &str,
+    ) -> Option<crate::mcp_presenter_authority::McpPresenterConnection> {
+        self.presenters.find_connection(nonce)
+    }
+    fn connection_capabilities(&self, connection_id: &str) -> Option<Vec<String>> {
+        self.fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .targets
+            .capabilities(connection_id)
+            .map(<[String]>::to_vec)
+    }
+}
+#[cfg(unix)]
+mod tempfile_dir {
+    /// senpi `mkdtemp(join(tmpdir(), "senpi-presenter-"))`, removed with the host.
+    pub struct PresenterDir {
+        pub path: std::path::PathBuf,
+    }
+    impl PresenterDir {
+        pub fn create() -> Option<Self> {
+            let path =
+                std::env::temp_dir().join(format!("senpi-presenter-{}", uuid::Uuid::new_v4()));
+            crate::host_daemon_paths::create_private_directory(&path).ok()?;
+            Some(Self { path })
+        }
+    }
+    impl Drop for PresenterDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+/// Writes one `mcp_form_reply` raw to the sender's control lane; a failed write detaches its presenter (senpi
+/// `handleMcpForm`). A stdio host (no connection) answers on its default writer.
+fn write_presenter_reply(
+    fanout: &std::sync::Weak<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+    writer: &crate::session_event_writer::SessionWriterActor,
+    presenters: &std::sync::Weak<crate::session_event_writer::SessionMcpPresenters>,
+    connection: Option<&str>,
+    reply: &serde_json::Value,
+) {
+    let Some(connection) = connection else {
+        let _ = writer.enqueue("", reply.clone());
+        return;
+    };
+    let written = fanout.upgrade().map(|fanout| {
+        fanout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .enqueue_control(connection, reply)
+    });
+    if !matches!(written, Some(Ok(true)))
+        && let Some(presenters) = presenters.upgrade()
+    {
+        presenters.reply_failed(connection);
+    }
+}
 fn route_session_record(
     fanout: &std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>,
     writer: &crate::session_event_writer::SessionWriterActor,
@@ -3314,6 +3538,35 @@ mod handoff_tests {
                 .count(),
             1
         );
+    }
+    #[tokio::test]
+    async fn presenter_capability_is_advertised_only_under_enforcement_and_private_records_never_echo()
+     {
+        let core = idle_core();
+        assert!(!core.advertised_capabilities().iter().any(
+            |capability| capability == crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY
+        ));
+        let Some(core) = std::sync::Arc::try_unwrap(core).ok() else {
+            panic!("the idle core is uniquely owned");
+        };
+        let core = core.with_mcp_presenter_enforcement(true);
+        let capabilities = core.advertised_capabilities();
+        assert_eq!(
+            capabilities
+                .iter()
+                .filter(|capability| *capability
+                    == crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY)
+                .count(),
+            1
+        );
+        // With presenters on, a private record is answered by the writer and a parse error echoes nothing.
+        core.handle(
+            None,
+            r#"{"type":"mcp_form_sync","id":"p","sessionId":"none"}"#,
+        )
+        .await
+        .unwrap();
+        core.handle(None, "{not json").await.unwrap();
     }
     #[tokio::test]
     async fn protocol_info_names_the_hosts_tool_runtime_and_drops_a_negotiated_one() {
@@ -3924,6 +4177,8 @@ async fn run_socket_host(
     }
     let mut listener = HostListener::bind(&path, secret.as_deref().map(Vec::as_slice))?;
     let bound = crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
+    #[cfg(unix)]
+    let presenter_dir = core.start_presenter_control().await;
     let connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut next = 0u64;
     let mut draining = false;
@@ -3992,6 +4247,9 @@ async fn run_socket_host(
     if let Some(reaper) = reaper {
         reaper.stop();
     }
+    core.dispose_presenter_control();
+    #[cfg(unix)]
+    drop(presenter_dir);
     // Ownership-checked: only the entry THIS process bound is removed (senpi `unlinkOwnedSocket`).
     crate::socket_ownership::unlink_owned_socket(
         &path,

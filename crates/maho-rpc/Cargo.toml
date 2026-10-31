@@ -17,6 +17,9 @@ maho-tool-child = { path = "../maho-tool-child" }
 maho-tui = { path = "../maho-tui" }
 chrono = { workspace = true, features = ["std", "clock"] }
 rustix = { version = "=1.1.4", features = ["process", "pipe"] }
+# Private MCP presenter enrollment/proof verification (senpi `crypto.verify(null, ..., ed25519 key)`).
+ed25519-dalek = { version = "=2.2.0", features = ["pkcs8"] }
+base64.workspace = true
 sha2.workspace = true
 hex.workspace = true
 libc.workspace = true
