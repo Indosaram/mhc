@@ -642,3 +642,104 @@ async fn sessions_with_different_legacy_form_policies_never_share_a_pool() {
     registry.dispose().await.expect("registry dispose");
     stub.close().await;
 }
+
+/// Row 09 (service.ts `#requestOrigin` `isCurrent`): an origin issued for a declared server stops being current
+/// when that server's credential identity changes or when the binding's config no longer declares it, so the
+/// request is refused as a context change. The binding lifetime and the connection generation never change here.
+#[tokio::test]
+async fn request_origins_end_when_credentials_change_or_the_server_is_undeclared() {
+    use maho_ext_mcp::{
+        auth::token_store::{McpStoredAuth, McpTokenStore},
+        host_registry::HostMcpRegistry,
+        service::McpService,
+    };
+    use std::collections::BTreeMap;
+
+    let stub = crate::reference_support::HeaderStub::start().await;
+    let agent = tempfile::tempdir().expect("agent dir");
+    let oauth_url = "http://127.0.0.1:9/mcp";
+    let tokens = McpTokenStore::new(agent.path(), "oa", oauth_url);
+    let token = |access: &str| McpStoredAuth {
+        access_token: Some(access.into()),
+        ..Default::default()
+    };
+    tokens.write(token("synthetic-5152-first")).expect("tokens");
+    std::fs::write(
+        agent.path().join("mcp.json"),
+        json!({"mcpServers": {
+            "fx": {"type": "http", "url": stub.url, "auth": false, "exposure": "direct", "lifecycle": "lazy",
+                "connectTimeoutMs": 5000},
+            "oa": {"type": "http", "url": oauth_url, "auth": "oauth", "exposure": "direct", "lifecycle": "lazy",
+                "connectTimeoutMs": 5000},
+        }})
+        .to_string(),
+    )
+    .expect("global mcp.json");
+    let registry = Arc::new(HostMcpRegistry::default());
+    let mut service = McpService::new(registry.clone(), 5152_09);
+    service
+        .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
+        .await
+        .expect("attach");
+
+    // Credential identity: rotating the stored grant makes the origin stale; restoring it makes it current.
+    let oauth = service.connections["oa"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    let origin = service.request_origin("oa", &oauth);
+    assert!(origin.current(), "issued under the admitted credential");
+    tokens
+        .write(token("synthetic-5152-second"))
+        .expect("rotated tokens");
+    assert!(!origin.current(), "a changed credential identity is stale");
+    tokens
+        .write(token("synthetic-5152-first"))
+        .expect("restored tokens");
+    assert!(
+        origin.current(),
+        "the check compares identities, not writes"
+    );
+
+    // Declaration: once the binding's config drops the server, its origin is refused.
+    service.connect_server("fx").await.expect("connect");
+    let plain = service.connections["fx"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    let client = plain.client().expect("connected client");
+    let origin = service.request_origin("fx", &plain);
+    let generation = plain.generation();
+    assert!(
+        take_mcp_request_origin(&mcp_request_options(Some(origin.clone()), None), &client)
+            .expect("current origin")
+            .is_some()
+    );
+    service
+        .config
+        .as_mut()
+        .expect("config")
+        .servers
+        .remove("fx");
+    service.resync_current_config().await.expect("resync");
+    assert!(!service.connections.contains_key("fx"));
+    assert_eq!(
+        plain.generation(),
+        generation,
+        "the pool kept its generation"
+    );
+    assert!(!origin.current(), "an undeclared server's origin is stale");
+    assert_eq!(
+        take_mcp_request_origin(&mcp_request_options(Some(origin), None), &client)
+            .err()
+            .map(|error| error.code),
+        Some(McpMrtrErrorCode::ContextChanged)
+    );
+    service.dispose().await.expect("dispose");
+    registry.dispose().await.expect("registry dispose");
+    stub.close().await;
+}
