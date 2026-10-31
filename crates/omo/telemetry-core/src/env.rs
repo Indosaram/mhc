@@ -32,7 +32,12 @@ pub fn should_disable_telemetry(input: &ShouldDisableTelemetryInput<'_>) -> bool
         prefixes.push(input.product_env_prefix);
     }
 
-    if includes_value(&TRUTHY_DISABLE_VALUES, read_env(input.env, "DO_NOT_TRACK")) {
+    if includes_value(&TRUTHY_DISABLE_VALUES, read_env(input.env, "DO_NOT_TRACK"))
+        || includes_value(
+            &TRUTHY_DISABLE_VALUES,
+            read_env(input.env, &format!("{global_prefix}_DISABLE_TELEMETRY")),
+        )
+    {
         return true;
     }
 
