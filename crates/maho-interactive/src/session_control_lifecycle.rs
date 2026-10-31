@@ -18,12 +18,12 @@ use crate::session_control_registry::{
     TuiRegistryEntry, unregister_tui_endpoint, unregister_tui_endpoint_sync,
 };
 use crate::session_control_server::ControlServer;
-use crate::session_control_wake::{WakeScheduler, on_process_continue};
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
 use maho_core::agent_session::AgentSession;
 use maho_core::extensions::session_control_types::RegisterControlEndpointOptions;
 use maho_ext_api::{AgentEvent, AgentMessage, AgentSessionEvent};
+use maho_rpc::session_control_wake::{WakeScheduler, on_process_continue};
 use serde_json::{Map, Value, json};
 use std::sync::{Arc, Mutex};
 

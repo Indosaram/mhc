@@ -71,7 +71,7 @@ pub struct HostSessionControl {
 }
 
 /// senpi `INBOX_ENGINE_ENTRY_PREFIX`: the engine's own inbox entries never count as deliveries.
-pub const INBOX_ENGINE_ENTRY_PREFIX: &str = ".senpi-";
+pub use crate::session_control_wake::INBOX_ENGINE_ENTRY_PREFIX;
 
 impl HostSessionControl {
     pub fn new(
