@@ -11,7 +11,10 @@ pub fn wrap_stream_with_tool_call_middleware(
     protocol: &'static dyn ToolCallProtocol,
     tools: Vec<Tool>,
 ) -> AssistantMessageEventStream {
-    let outer_stream = AssistantMessageEventStream::assistant();
+    // Every outer block is rebuilt from parser output and own state, never copied from a source
+    // block read late, so the outer stream captures its own pushes and no source record is
+    // forwarded.
+    let outer_stream = AssistantMessageEventStream::with_capture_blocks(true);
     let outer_for_task = outer_stream.clone();
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();

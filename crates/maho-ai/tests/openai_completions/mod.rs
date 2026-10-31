@@ -4,6 +4,7 @@ pub mod harness;
 
 mod cache_control_format;
 mod empty_tools;
+mod endpoint_reasoning_efforts;
 mod freeform_guard;
 mod prompt_cache;
 mod raw_stop_reason;
