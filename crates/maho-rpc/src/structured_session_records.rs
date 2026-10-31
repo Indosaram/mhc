@@ -1,12 +1,10 @@
 //! senpi `modes/rpc/structured-session-records.ts`: the session's internal structured lane behind the
 //! compact-updates flag, and the seeded block gate every structured subscriber runs.
 //!
-//! Cross-lane: upstream reads the provider capture of a record (`getAssistantCapture`, maho-ai lane),
-//! projects it with the seeded `toJsonEvent(record, {blockSeeds: 1})` (senpi-interactive-31, not yet in
-//! `json_event.rs`) and subscribes through `AgentSession.subscribeStructured` (senpi-core-rest-58, not
-//! yet in maho-core). The gate below is the whole upstream state machine, coded against those seams:
-//! the caller supplies each record's `StructuredCapture` view and the seeded projection, so wiring
-//! `subscribe_structured_session_records` to a live session is the remaining cross-lane step.
+//! [`subscribe_structured_session_records`] reads `AgentSession::subscribe_structured`, hands each record's
+//! provider capture to the gate as its [`StructuredCapture`] view and projects it with the seeded
+//! `to_seeded_json_event` (`toJsonEvent(record, {blockSeeds: 1})`); block controls pass through as their
+//! JSON form.
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Value, json};
@@ -222,8 +220,72 @@ impl SeededBlockGate {
     }
 }
 
+impl StructuredCapture {
+    /// The gate's view of `getAssistantCapture(record)`.
+    pub fn of(capture: &maho_ai::utils::assistant_capture::AssistantCapture) -> Self {
+        Self {
+            content_index: capture.content_index,
+            offset: capture.offset,
+            next_offset: capture.next_offset,
+            has_message: capture.message.is_some(),
+            rewritten_from: capture.rewritten_from,
+        }
+    }
+}
+
+/// senpi `subscribeStructuredSessionRecords(session, output)`: the session's internal structured lane, correlated
+/// like its legacy records (`subscribeSessionRecords` with `session.subscribeStructured` as its source): seeded
+/// projections of every session event plus the three block controls, in session order. Never a legacy
+/// destination. The subscription ends when the returned guard drops.
+pub fn subscribe_structured_session_records(
+    session: &maho_core::agent_session::AgentSession,
+    output: std::sync::Arc<dyn Fn(Value) + Send + Sync>,
+) -> Result<
+    maho_core::structured_session_lane::StructuredSubscription,
+    maho_core::structured_session_lane::StructuredLaneUnavailableError,
+> {
+    use maho_core::structured_session_lane::AgentSessionStructuredRecord as Record;
+    let gate = std::sync::Mutex::new(SeededBlockGate::default());
+    let weak = session.weak_accessor();
+    let last_abort_source: crate::connection_handler::LastAbortSource = Default::default();
+    session.subscribe_structured(std::sync::Arc::new(move |record: &Record| {
+        let (value, capture) = match record {
+            Record::Progress(progress) => match serde_json::to_value(&**progress) {
+                Ok(value) => (value, None),
+                Err(_) => return,
+            },
+            Record::Event(event) => {
+                let projected = match weak() {
+                    Some(session) => crate::connection_handler::rpc_session_event_record(
+                        &session,
+                        &event.value,
+                        &last_abort_source,
+                    ),
+                    None => crate::session_binding::session_event_record(&event.value)
+                        .map(crate::session_record_stream::session_record),
+                };
+                let Ok(value) = projected else { return };
+                (value, event.capture.clone())
+            }
+        };
+        let view = capture.as_deref().map(StructuredCapture::of);
+        let accepted = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accept(&value, view.as_ref(), || {
+                // The seeded projection fails only at a seed frontier (`SeedFrontierError`).
+                crate::json_event::to_seeded_json_event(&value, capture.as_deref())
+                    .map_err(|_| SeedFrontier)
+            });
+        // Correlation reads only `type`, `role` and outer fields, which seeded records and controls keep.
+        if let Ok(Some(accepted)) = accepted {
+            output(accepted);
+        }
+    }))
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn update(kind: &str, index: usize, delta: Option<&str>) -> Value {
@@ -336,5 +398,369 @@ mod tests {
             .expect("end")
             .expect("record");
         assert_eq!(out["invalidatedBlocks"], json!([2]));
+    }
+
+    /// A session whose agent streams `script` on a capture-enabled stream, built with the internal channel the
+    /// structured lane reads (senpi structured-lane-support.ts `scriptedSession`).
+    pub(crate) fn scripted_session(
+        script: impl Fn(&maho_ai::types::AssistantMessageEventStream, maho_ai::types::AssistantMessage)
+        + Send
+        + Sync
+        + 'static,
+    ) -> maho_core::agent_session::AgentSession {
+        let channel = maho_agent::create_internal_agent_channel();
+        let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(move |_, _, _| {
+            let stream = maho_ai::types::AssistantMessageEventStream::with_capture_blocks(true);
+            let mut partial =
+                maho_ai::providers::faux::faux_assistant_message("", Default::default());
+            partial.content.clear();
+            script(&stream, partial);
+            stream
+        });
+        let agent = maho_agent::Agent::new(maho_agent::AgentOptions {
+            internal_channel: Some(channel.clone()),
+            stream_fn: Some(stream_fn),
+            ..Default::default()
+        });
+        session_of(agent, Some(channel))
+    }
+
+    /// An in-memory session over `agent`; `channel` is the internal channel the session layer hands its agent.
+    fn session_of(
+        agent: maho_agent::Agent,
+        channel: Option<maho_agent::InternalAgentChannel>,
+    ) -> maho_core::agent_session::AgentSession {
+        maho_core::agent_session::AgentSession::new_with_internal_channel(
+            maho_core::agent_session::AgentSessionConfig {
+                agent,
+                session_manager: maho_core::session_manager::SessionManager::in_memory(
+                    "/tmp", None, None,
+                ),
+                settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
+                    Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),
+                    false,
+                ),
+                cwd: "/tmp".to_owned(),
+                agent_dir: Some("/tmp/maho-agent".to_owned()),
+                fallback_now: None,
+                retry_random: None,
+                scoped_models: Vec::new(),
+                favorite_models: Vec::new(),
+                flag_values: Default::default(),
+                custom_tools: Vec::new(),
+                model_runtime: Some(
+                    maho_core::model_runtime::ModelRuntime::create_sync(
+                        maho_core::model_runtime::CreateModelRuntimeOptions {
+                            providers: Some(Vec::new()),
+                            ..Default::default()
+                        },
+                    )
+                    .expect("valid model runtime"),
+                ),
+                model_registry: None,
+                uses_default_stream_function: Some(false),
+                initial_active_tool_names: None,
+                default_tool_names: None,
+                eval_only_tool_names: None,
+                allowed_tool_names: None,
+                excluded_tool_names: None,
+                base_tools_override: None,
+                session_start_event: None,
+                auto_title_sessions: Some(false),
+            },
+            None,
+            channel,
+        )
+        .expect("session")
+    }
+
+    fn text(text: &str) -> maho_ai::types::ContentBlock {
+        maho_ai::types::ContentBlock::Text(maho_ai::types::TextContent {
+            text: text.into(),
+            ..Default::default()
+        })
+    }
+
+    /// One prompt through `session` with a structured subscriber; returns the records of its assistant message
+    /// (senpi `laneTurn` + `firstAssistantMessage`).
+    async fn lane_turn(session: &maho_core::agent_session::AgentSession) -> Vec<Value> {
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = records.clone();
+        let subscription = subscribe_structured_session_records(
+            session,
+            std::sync::Arc::new(move |record: Value| sink.lock().expect("records").push(record)),
+        )
+        .expect("the session layer owns the channel");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session
+                .agent()
+                .prompt(maho_agent::AgentPromptInput::text("go")),
+        )
+        .await
+        .expect("bounded turn");
+        drop(subscription);
+        let records = records.lock().expect("records").clone();
+        let start = records
+            .iter()
+            .position(|r| r["type"] == "message_start" && r["message"]["role"] == "assistant")
+            .expect("assistant message_start");
+        let end = start
+            + records[start..]
+                .iter()
+                .position(|r| r["type"] == "message_end")
+                .expect("assistant message_end");
+        records[start..=end].to_vec()
+    }
+
+    /// senpi structured-lane-support.ts `messageLabels`.
+    fn labels(records: &[Value]) -> Vec<String> {
+        records
+            .iter()
+            .filter_map(|record| {
+                let kind = record["type"].as_str()?;
+                if !kind.starts_with("message_") {
+                    return None;
+                }
+                if let Some(event) = record.get("assistantMessageEvent") {
+                    return Some(format!("{kind}:{}", event["type"].as_str().unwrap_or("")));
+                }
+                Some(match record.get("phase").and_then(Value::as_str) {
+                    Some(phase) => format!("{kind}:{phase}"),
+                    None => kind.to_owned(),
+                })
+            })
+            .collect()
+    }
+
+    // senpi 4272-structured-lane-validity: "T6 invalidates every block at or above a rewriting terminal's
+    // rewrittenFrom".
+    #[tokio::test]
+    async fn invalidates_every_block_at_or_above_a_rewriting_terminals_rewritten_from() {
+        use maho_ai::types::{AssistantMessageEvent as E, ContentBlock, DoneReason, ToolCall};
+        let session = scripted_session(
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                partial.content.push(text("a"));
+                stream.push(E::TextStart {
+                    content_index: 0,
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 0,
+                    content: "a".into(),
+                    partial: partial.clone(),
+                });
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("a".into(), json!(1));
+                let call = ToolCall {
+                    id: "call_1".into(),
+                    name: "probe".into(),
+                    arguments,
+                    ..Default::default()
+                };
+                partial.content.push(ContentBlock::ToolCall(call.clone()));
+                stream.push(E::ToolcallStart {
+                    content_index: 1,
+                    partial: partial.clone(),
+                });
+                stream.push(E::ToolcallEnd {
+                    content_index: 1,
+                    tool_call: call,
+                    partial: partial.clone(),
+                });
+                partial.content.push(text("b"));
+                stream.push(E::TextStart {
+                    content_index: 2,
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 2,
+                    content: "b".into(),
+                    partial: partial.clone(),
+                });
+                partial
+                    .content
+                    .retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
+                stream.push_with_hint(
+                    E::Done {
+                        reason: DoneReason::Stop,
+                        message: partial.clone(),
+                    },
+                    maho_ai::utils::assistant_capture::CaptureHint::rewritten_from(Some(1)),
+                );
+                stream.end(Some(partial));
+            },
+        );
+        let turn = lane_turn(&session).await;
+        assert_eq!(
+            labels(&turn),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_update:toolcall_start",
+                "message_update:toolcall_end",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_end",
+            ]
+        );
+        let end = turn.last().expect("message_end");
+        assert_eq!(end["invalidatedBlocks"], json!([1, 2]));
+        assert_eq!(
+            end["message"]["content"],
+            json!([{"type":"text","text":"a"},{"type":"text","text":"b"}])
+        );
+    }
+
+    // senpi 4272-structured-lane-validity: "T6 invalidates every block of a message that ends without a
+    // terminal capture".
+    #[tokio::test]
+    async fn invalidates_every_block_of_a_message_that_ends_without_a_terminal_capture() {
+        use maho_ai::types::AssistantMessageEvent as E;
+        let session = scripted_session(
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                for value in ["a", "b"] {
+                    let content_index = partial.content.len();
+                    partial.content.push(text(value));
+                    stream.push(E::TextStart {
+                        content_index,
+                        partial: partial.clone(),
+                    });
+                    stream.push(E::TextEnd {
+                        content_index,
+                        content: value.into(),
+                        partial: partial.clone(),
+                    });
+                }
+                stream.end(Some(partial));
+            },
+        );
+        let turn = lane_turn(&session).await;
+        assert_eq!(
+            labels(&turn),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_update:text_start",
+                "message_update:text_end",
+                "message_end",
+            ]
+        );
+        assert_eq!(
+            turn.last().expect("message_end")["invalidatedBlocks"],
+            json!([0, 1])
+        );
+    }
+
+    // senpi 4272-structured-lane-bridge (lane half): block controls reach the structured lane between the
+    // session events around them, seeded starts carry their seed, and no record carries host identity keys.
+    #[tokio::test]
+    async fn orders_block_controls_among_seeded_records() {
+        use maho_ai::types::{
+            AssistantMessageEvent as E, ContentBlock, DoneReason, ProviderNativeContent,
+        };
+        use maho_ai::utils::assistant_capture::{
+            AssistantProgress, BlockPhase, push_assistant_progress,
+        };
+        let session = scripted_session(
+            |stream: &maho_ai::types::AssistantMessageEventStream,
+             mut partial: maho_ai::types::AssistantMessage| {
+                stream.push(E::Start {
+                    partial: partial.clone(),
+                });
+                partial.content.push(text(""));
+                stream.push(E::TextStart {
+                    content_index: 0,
+                    partial: partial.clone(),
+                });
+                partial.content[0] = text("hi");
+                stream.push(E::TextDelta {
+                    content_index: 0,
+                    delta: "hi".into(),
+                    partial: partial.clone(),
+                });
+                stream.push(E::TextEnd {
+                    content_index: 0,
+                    content: "hi".into(),
+                    partial: partial.clone(),
+                });
+                let native = ContentBlock::ProviderNative(ProviderNativeContent {
+                    subtype: "fixture".into(),
+                    raw: json!({"value":1}),
+                });
+                partial.content.push(native.clone());
+                push_assistant_progress(
+                    stream,
+                    AssistantProgress::block_state(1, BlockPhase::Insert, &native),
+                );
+                push_assistant_progress(
+                    stream,
+                    AssistantProgress::block_state(1, BlockPhase::End, &native),
+                );
+                stream.push(E::Done {
+                    reason: DoneReason::Stop,
+                    message: partial.clone(),
+                });
+                stream.end(Some(partial));
+            },
+        );
+        let turn = lane_turn(&session).await;
+        assert_eq!(
+            labels(&turn),
+            [
+                "message_start",
+                "message_update:text_start",
+                "message_update:text_delta",
+                "message_update:text_end",
+                "message_block_state:insert",
+                "message_block_state:end",
+                "message_end",
+            ]
+        );
+        let update = |kind: &str| {
+            turn.iter()
+                .find(|record| record["assistantMessageEvent"]["type"] == kind)
+                .expect("seeded update")
+        };
+        assert_eq!(
+            update("text_start")["assistantMessageEvent"]["seed"]["coveredCodeUnits"],
+            0
+        );
+        assert_eq!(update("text_delta")["assistantMessageEvent"]["offset"], 0);
+        assert!(
+            turn.last()
+                .expect("message_end")
+                .get("invalidatedBlocks")
+                .is_none()
+        );
+        for key in ["messageId", "turnId", "runtimeItemKey"] {
+            assert!(turn.iter().all(|record| record.get(key).is_none()), "{key}");
+        }
+    }
+
+    // senpi 4272-structured-lane-bridge: a session built outside the session layer has no lane to subscribe.
+    #[tokio::test]
+    async fn a_session_without_an_internal_channel_refuses_a_structured_subscriber() {
+        let agent = maho_agent::Agent::new(maho_agent::AgentOptions {
+            stream_fn: Some(std::sync::Arc::new(|_, _, _| {
+                maho_ai::types::AssistantMessageEventStream::assistant()
+            })),
+            ..Default::default()
+        });
+        let session = session_of(agent, None);
+        assert!(
+            subscribe_structured_session_records(&session, std::sync::Arc::new(|_: Value| {}))
+                .is_err()
+        );
     }
 }
