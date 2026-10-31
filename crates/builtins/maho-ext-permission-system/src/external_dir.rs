@@ -124,6 +124,7 @@ pub fn extract_command_paths(command:&str)->Vec<String>{
 }
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::*;
 
     #[cfg(windows)]
