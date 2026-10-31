@@ -113,6 +113,7 @@ pub mod host_process_table;
 pub mod host_protocol_info;
 pub mod host_public_clients;
 pub mod host_readiness;
+pub mod host_request_key_root;
 pub mod host_reservations;
 pub mod host_run_activity;
 pub mod host_runner;
