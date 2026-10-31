@@ -438,6 +438,22 @@ impl McpService {
                     .map(|generation| generation.config_hash.as_str()),
             )
         };
+        // service.ts `credentialIdentities`: the credential each wanted server would connect with; it keys the
+        // shared transport, so a changed credential never reuses a connection admitted under the old one.
+        let credential_identity = |name: &str| {
+            config
+                .servers
+                .get(name)
+                .and_then(|server| server.config.as_ref())
+                .and_then(|declared| {
+                    crate::auth::catalog_identity::mcp_credential_identity(
+                        declared,
+                        name,
+                        Some(agent_dir),
+                        Some(env),
+                    )
+                })
+        };
         let existing = self.connections.keys().cloned().collect::<Vec<_>>();
         for name in existing {
             let entry = self.connections[&name].entry.lock().await;
@@ -455,6 +471,7 @@ impl McpService {
                                 &name,
                                 &generation.config,
                                 Some(env),
+                                credential_identity(&name).as_deref(),
                                 &agent_dir.to_string_lossy(),
                                 &cwd.to_string_lossy(),
                             )
@@ -481,6 +498,7 @@ impl McpService {
                 name,
                 server_config,
                 Some(env),
+                credential_identity(name).as_deref(),
                 &agent_dir.to_string_lossy(),
                 &cwd.to_string_lossy(),
             );
