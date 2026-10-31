@@ -26,6 +26,9 @@ pub struct SessionConnectionOptions<'a> {
     pub name: &'a str,
     pub config_hash: &'a str,
     pub config: McpServerConfig,
+    /// The declaration the generation `config` was resolved from (service-connection.ts `declared`); literal
+    /// secret warnings read it, never the resolved snapshot. `None` when the config declares no reference.
+    pub declared: Option<&'a McpServerConfig>,
     pub agent_dir: &'a Path,
     pub env: Option<BTreeMap<String, String>>,
     /// The declaring session's UI: keys pooled connections by legacy-form policy (host-registry.ts).
@@ -76,6 +79,7 @@ fn create_session_connection(
         name,
         config_hash,
         config,
+        declared,
         agent_dir,
         env,
         elicitation_ui,
@@ -91,7 +95,9 @@ fn create_session_connection(
             on_redirect: None,
             client: reqwest::Client::new(),
         });
-    if let Ok(warnings) = crate::auth::context::detect_literal_bearer_warnings(name, &config) {
+    if let Ok(warnings) =
+        crate::auth::context::detect_literal_bearer_warnings(name, declared.unwrap_or(&config))
+    {
         for warning in warnings {
             let _ = logger
                 .lock()
@@ -241,6 +247,12 @@ fn create_session_connection(
                 entry.counters.reconnect_count += 1;
                 entry.cache_refreshed_after_connect = false;
                 if let Err(error) = entry.auth_plan.ensure_fresh().await {
+                    // Disabled while the refresh ran: the failure is our own teardown, not a sign-in need.
+                    if entry.connection.state()
+                        == crate::connection::ServerConnectionState::Disabled
+                    {
+                        return Ok(());
+                    }
                     return Err(crate::health::mark_mcp_connection_needs_auth(
                         &entry.connection,
                         &error,
