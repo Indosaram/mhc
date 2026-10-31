@@ -138,7 +138,7 @@ fn upstream_rejects_unsupported_options_without_parsing_them_through_the_stable_
 struct RecordingContext { servers: std::sync::Mutex<Vec<Option<String>>>, clients: std::sync::Mutex<Vec<Option<String>>> }
 impl maho_cli::cli::experimental::commands::server::ServerCommandContext for RecordingContext {
     fn run_server(&self, command: maho_cli::cli::experimental::commands::server::ServerCommand) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
-        self.servers.lock().unwrap().push(command.model);
+        self.servers.lock().expect("recorded").push(command.model);
         Box::pin(async { Ok(()) })
     }
 }
