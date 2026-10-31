@@ -73,11 +73,11 @@ pub async fn prepare_mcp_service_registration_entries_with(
 
 /// service-register.ts `createMcpInvocationResolver` for one connection entry.
 ///
-/// DIVERGENCE: `contextRequired` stays false (an embedder that calls a tool body without a host
-/// context keeps calling it); a call that does carry the host context is still fenced by the
-/// operation and the permission authorizer. The binding's session-id check stands in for
-/// senpi's `sessionManager` identity, and `publishCurrent` re-registration is left to the
-/// existing tools-changed path.
+/// Upstream `contextRequired: binding.context.mode !== undefined`: a session binding requires every
+/// call to carry that session's host context. Only the binding-less entry point (direct callers and
+/// tests with no session) leaves it off. DIVERGENCE: the binding's session id stands in for senpi's
+/// `sessionManager` identity (the host rebuilds that adapter on rebind), and `publishCurrent`
+/// re-registration is left to the existing tools-changed path.
 fn invocation_resolver(
     config: &ResolvedMcpConfig,
     handle: &Arc<tokio::sync::Mutex<McpConnectionEntry>>,
@@ -144,8 +144,8 @@ fn invocation_resolver(
     crate::invocation::create_mcp_invocation_resolver(crate::invocation::McpInvocationScope {
         owner: snapshot.dispatch_owner.clone(),
         configuration: snapshot.config_hash.clone(),
-        context_required: false,
-        session_id: None,
+        context_required: binding.is_some(),
+        session_id: binding.as_ref().and_then(std::sync::Weak::upgrade).and_then(|binding| binding.session_id()),
         is_current,
         ready,
         current,

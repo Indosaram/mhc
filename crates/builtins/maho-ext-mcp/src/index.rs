@@ -111,6 +111,11 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     None
                 });
                 service.set_session_mode(ctx.mode);
+                // Upstream `sessionManager: binding.context.sessionManager`: tools registered for
+                // this binding serve only calls from this session.
+                service
+                    .session_binding()
+                    .bind_session(ctx.session_manager.session_id());
                 // Bind the registration seam once; `attach_session` registers through it
                 // (upstream `attachSession`) and the deferred startup connects re-use it.
                 service.set_policy_notice_event(Arc::new({
