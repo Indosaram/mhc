@@ -261,6 +261,7 @@ struct Inner {
     held_callback: Option<crate::manager::start_admission::HeldCallback>,
     host_transport: Option<Arc<dyn crate::lifecycle::HostTransport>>,
     on_child_liveness: Option<crate::manager::types::ChildLivenessCallback>,
+    liveness_notice_timer: Option<crate::manager::types::LivenessNoticeTimer>,
     host_status_publication: Mutex<()>,
     launches_changed: std::sync::Condvar,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
@@ -494,6 +495,7 @@ impl TaskManager {
                 held_callback: options.on_held_admission,
                 host_transport: options.host_transport,
                 on_child_liveness: options.on_child_liveness,
+                liveness_notice_timer: options.liveness_notice_timer,
                 host_status_publication: Mutex::new(()),
                 launches_changed: std::sync::Condvar::new(),
                 admission_barrier: options.admission_barrier.unwrap_or_default(),
@@ -813,6 +815,19 @@ impl TaskManager {
                 message: "worker has no resident session for revival".into(),
             })
         })?;
+        // `sendToTask`: nothing is sent to a session whose host status is not running.
+        if handle
+            .liveness()
+            .is_some_and(|liveness| !liveness.is_running())
+        {
+            return Ok(SendOutcome::Unresponsive {
+                reason: format!(
+                    "Task {task_id}'s session is unresponsive; nothing was sent. Retry when its host status returns to running."
+                ),
+                task_id: task_id.to_string(),
+                retryable: true,
+            });
+        }
         let identity = crate::manager::child_handle::WorkpoolChildIdentity {
             task_id: task_id.to_string(),
             state_dir: self.inner.store.state_dir().to_string_lossy().into_owned(),
@@ -1072,9 +1087,10 @@ impl TaskManager {
             return (None, None);
         }
         if let Some(admission) = &spec.admission
-            && let Err(held) = admission.assert_open() {
-                return (None, Some(StartResult::Held(held.result)));
-            }
+            && let Err(held) = admission.assert_open()
+        {
+            return (None, Some(StartResult::Held(held.result)));
+        }
         let lease = match acquire_session_admission_lease(
             self.inner.store.state_dir(),
             &spec.parent_session_id,
@@ -1134,10 +1150,11 @@ impl TaskManager {
             return (Some(lease), None);
         };
         if let Some(scope) = &spec.admission
-            && let Err(held) = scope.assert_open() {
-                lease.release();
-                return (None, Some(StartResult::Held(held.result)));
-            }
+            && let Err(held) = scope.assert_open()
+        {
+            lease.release();
+            return (None, Some(StartResult::Held(held.result)));
+        }
         match admission {
             SpawnAdmission::Rejected {
                 message,
@@ -1238,11 +1255,9 @@ impl TaskManager {
                 if let Err(error) =
                     self.inner
                         .store
-                        .mutate(&context.record.task_id, |record: &TaskRecord| {
-                            TaskRecord {
-                                queued_admission: Some(admission.clone()),
-                                ..record.clone()
-                            }
+                        .mutate(&context.record.task_id, |record: &TaskRecord| TaskRecord {
+                            queued_admission: Some(admission.clone()),
+                            ..record.clone()
                         })
                 {
                     utils::logger::log(
@@ -1820,34 +1835,35 @@ impl TaskManager {
                 return self.send_to_task(input);
             }
             if record.status == TaskStatus::Paused
-                && let Some(pause) = record.run_pause.as_ref() {
-                    if input
-                        .caller_session_id
-                        .as_ref()
-                        .is_some_and(|id| id != &pause.parent_session_id)
-                        && !input.all_scope
-                    {
-                        return Ok(SendOutcome::ScopeDenied {
-                            task_id: record.task_id,
-                            owning_session_id: pause.parent_session_id.clone(),
-                            reason: "held run belongs to another parent".into(),
-                        });
-                    }
-                    let id = uuid::Uuid::new_v4().to_string();
-                    self.hold_task_input(
-                        &record.task_id,
-                        &pause.parent_session_id,
-                        &id,
-                        0,
-                        &input.message,
-                    )
-                    .map_err(|e| SteeringError::Store(StoreError::Parse(e)))?;
-                    return Ok(SendOutcome::Held {
+                && let Some(pause) = record.run_pause.as_ref()
+            {
+                if input
+                    .caller_session_id
+                    .as_ref()
+                    .is_some_and(|id| id != &pause.parent_session_id)
+                    && !input.all_scope
+                {
+                    return Ok(SendOutcome::ScopeDenied {
                         task_id: record.task_id,
-                        pause_seq: pause.parent_pause_seq,
-                        entry_id: id,
+                        owning_session_id: pause.parent_session_id.clone(),
+                        reason: "held run belongs to another parent".into(),
                     });
                 }
+                let id = uuid::Uuid::new_v4().to_string();
+                self.hold_task_input(
+                    &record.task_id,
+                    &pause.parent_session_id,
+                    &id,
+                    0,
+                    &input.message,
+                )
+                .map_err(|e| SteeringError::Store(StoreError::Parse(e)))?;
+                return Ok(SendOutcome::Held {
+                    task_id: record.task_id,
+                    pause_seq: pause.parent_pause_seq,
+                    entry_id: id,
+                });
+            }
         }
         self.inner.steering.send_to_task(input)
     }
@@ -2351,20 +2367,21 @@ impl TaskManager {
         if let Some(record) = self.inner.try_load(task_id)
             && let Some(admission) =
                 lock(&self.inner.concurrency).withdraw(&record.model, task_id, epoch)
-                && let Err(error) = self.inner.store.mutate(task_id, |fresh: &TaskRecord| {
-                    if fresh.notification.run_epoch != epoch {
-                        return fresh.clone();
-                    }
-                    TaskRecord {
-                        queued_admission: Some(admission.clone()),
-                        ..fresh.clone()
-                    }
-                }) {
-                    utils::logger::log(
-                        "senpi-task failed to persist resume allocation",
-                        Some(&json!({"taskId":task_id,"error":error.to_string()})),
-                    );
+            && let Err(error) = self.inner.store.mutate(task_id, |fresh: &TaskRecord| {
+                if fresh.notification.run_epoch != epoch {
+                    return fresh.clone();
                 }
+                TaskRecord {
+                    queued_admission: Some(admission.clone()),
+                    ..fresh.clone()
+                }
+            })
+        {
+            utils::logger::log(
+                "senpi-task failed to persist resume allocation",
+                Some(&json!({"taskId":task_id,"error":error.to_string()})),
+            );
+        }
         if let Some(lease) = lock(&self.inner.parked).get(task_id).cloned() {
             lock(&self.inner.concurrency).suspend_unpark(&lease);
         }
@@ -3922,21 +3939,16 @@ impl Inner {
                     if identity_stamp.swap(true, std::sync::atomic::Ordering::AcqRel) {
                         return;
                     }
-                    if let Err(error) =
-                        inner
-                            .store
-                            .mutate(&identity_task, |fresh: &TaskRecord| {
-                                if Some(fresh.run_start_epoch) != epoch
-                                    || fresh.host_pid != record.host_pid
-                                {
-                                    return fresh.clone();
-                                }
-                                TaskRecord {
-                                    child_session_id: Some(session_id.clone()),
-                                    ..fresh.clone()
-                                }
-                            })
-                    {
+                    if let Err(error) = inner.store.mutate(&identity_task, |fresh: &TaskRecord| {
+                        if Some(fresh.run_start_epoch) != epoch || fresh.host_pid != record.host_pid
+                        {
+                            return fresh.clone();
+                        }
+                        TaskRecord {
+                            child_session_id: Some(session_id.clone()),
+                            ..fresh.clone()
+                        }
+                    }) {
                         log(
                             "senpi-task host durable identity persistence failed",
                             &identity_task,
@@ -4012,44 +4024,45 @@ impl Inner {
             if matches!(event.event_type.as_str(), "message_update" | "message_end")
                 && let Some(message) = event.message.as_ref().filter(|m| {
                     m.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
-                }) {
-                    let tools = message
-                        .get("content")
-                        .and_then(serde_json::Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter(|part| part["type"] == "toolCall")
-                        .filter_map(|part| part["name"].as_str())
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>();
-                    if event.event_type == "message_update" {
-                        *lock(&streamed) = tools;
-                    } else {
-                        let mut facts = lock(&failed);
-                        if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) {
-                            let mut names = Vec::new();
-                            for name in tools.iter().chain(lock(&streamed).iter()) {
-                                if !names.contains(name) {
-                                    names.push(name.clone());
-                                }
+                })
+            {
+                let tools = message
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part["type"] == "toolCall")
+                    .filter_map(|part| part["name"].as_str())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if event.event_type == "message_update" {
+                    *lock(&streamed) = tools;
+                } else {
+                    let mut facts = lock(&failed);
+                    if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) {
+                        let mut names = Vec::new();
+                        for name in tools.iter().chain(lock(&streamed).iter()) {
+                            if !names.contains(name) {
+                                names.push(name.clone());
                             }
-                            let message_text = message["errorMessage"]
-                                .as_str()
-                                .filter(|text| !text.is_empty())
-                                .map(str::to_owned)
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "stopped with {}",
-                                        message["stopReason"].as_str().unwrap_or_default()
-                                    )
-                                });
-                            *facts = (Some(message_text), names);
-                        } else {
-                            *facts = (None, Vec::new());
                         }
-                        return;
+                        let message_text = message["errorMessage"]
+                            .as_str()
+                            .filter(|text| !text.is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "stopped with {}",
+                                    message["stopReason"].as_str().unwrap_or_default()
+                                )
+                            });
+                        *facts = (Some(message_text), names);
+                    } else {
+                        *facts = (None, Vec::new());
                     }
+                    return;
                 }
+            }
             if event.event_type != "retry_fallback_applied" {
                 return;
             }
@@ -4145,12 +4158,13 @@ impl Inner {
             let publication = lock(&inner.host_status_publication);
             if let (Some(transport), Some(identity)) =
                 (&inner.host_transport, record.host_session.as_ref())
-                && let Err(error) = transport.publish_task_status(identity, TaskStatus::Running) {
-                    utils::logger::log(
-                        "senpi-task daemon running publication failed",
-                        Some(&json!({"taskId":resumed_id,"error":error})),
-                    );
-                }
+                && let Err(error) = transport.publish_task_status(identity, TaskStatus::Running)
+            {
+                utils::logger::log(
+                    "senpi-task daemon running publication failed",
+                    Some(&json!({"taskId":resumed_id,"error":error})),
+                );
+            }
             if let Err(error) = handle.publish_task_status(TaskStatus::Running) {
                 log(
                     "senpi-task self-resumed running publication failed",
@@ -4245,9 +4259,10 @@ impl Inner {
                         return;
                     };
                     if let Some(callback) = &inner.on_child_liveness {
-                        let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || callback(&current, status),
-                        ));
+                        let delivered =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                callback(&current, status)
+                            }));
                         match delivered {
                             Ok(()) => lock(&notice.0).1 = state,
                             Err(_) => utils::logger::log(
@@ -4266,13 +4281,20 @@ impl Inner {
                 return;
             }
             let waiter = Arc::clone(&notice);
+            if let Some(timer) = &inner.liveness_notice_timer {
+                timer(Box::new(move || {
+                    let current = lock(&waiter.0).0 == generation;
+                    if current {
+                        notify();
+                    }
+                }));
+                return;
+            }
             std::thread::spawn(move || {
                 let slot = lock(&waiter.0);
                 let (slot, timeout) = waiter
                     .1
-                    .wait_timeout_while(slot, LIVENESS_NOTICE_DEBOUNCE, |slot| {
-                        slot.0 == generation
-                    })
+                    .wait_timeout_while(slot, LIVENESS_NOTICE_DEBOUNCE, |slot| slot.0 == generation)
                     .unwrap_or_else(PoisonError::into_inner);
                 let current = slot.0 == generation && timeout.timed_out();
                 drop(slot);
@@ -4649,12 +4671,13 @@ impl Inner {
                         .try_load(&task_id)
                         .and_then(|record| record.host_session)
                         && let Some(transport) = &inner.host_transport
-                            && let Err(error) = transport.publish_task_status(&identity, status) {
-                                utils::logger::log(
-                                    "senpi-task daemon status publication failed",
-                                    Some(&json!({"taskId":task_id,"error":error})),
-                                );
-                            }
+                        && let Err(error) = transport.publish_task_status(&identity, status)
+                    {
+                        utils::logger::log(
+                            "senpi-task daemon status publication failed",
+                            Some(&json!({"taskId":task_id,"error":error})),
+                        );
+                    }
                     if let Err(error) = handle.publish_task_status(status) {
                         log(
                             "senpi-task host task status publication failed",
@@ -4749,9 +4772,9 @@ impl Inner {
                 if acquired
                     && let Some(lease) =
                         lock(&self.concurrency).park(&fresh.task_id, fresh.notification.run_epoch)
-                    {
-                        lock(&self.parked).insert(fresh.task_id.clone(), lease);
-                    }
+                {
+                    lock(&self.parked).insert(fresh.task_id.clone(), lease);
+                }
             }
             let updated = TaskRecord {
                 updated_at: self.now_iso(),

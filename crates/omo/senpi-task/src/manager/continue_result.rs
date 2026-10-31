@@ -33,8 +33,6 @@ pub enum ContinueResult {
     },
 }
 
-
-
 pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
     match outcome {
         SendOutcome::Unresponsive {
@@ -114,6 +112,24 @@ pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
 #[cfg(test)]
 mod held_tests {
     use super::*;
+
+    // continue-result.test.ts
+    #[test]
+    fn unresponsive_continuation_preserves_retryability_instead_of_becoming_permanently_refused() {
+        assert_eq!(
+            to_continue_result(SendOutcome::Unresponsive {
+                task_id: "st_00000001".into(),
+                retryable: true,
+                reason: "HOST_STATUS_SENTINEL".into(),
+            }),
+            ContinueResult::Unresponsive {
+                task_id: "st_00000001".into(),
+                retryable: true,
+                reason: "HOST_STATUS_SENTINEL".into(),
+            }
+        );
+    }
+
     #[test]
     fn held_send_projects_to_paused_follow_up() {
         assert_eq!(

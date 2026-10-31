@@ -1209,3 +1209,30 @@ fn an_unresponsive_session_keeps_the_queue() {
     assert_eq!(fake.steers(), vec!["first"]);
     assert_eq!(pending_len(&h.load(&record.task_id)), 0);
 }
+
+/// `steering/engine.ts`: a non-running, non-`running`-status child sends nothing and answers a
+/// retryable `unresponsive`; a running-status child would have queued instead.
+#[test]
+fn a_completed_child_whose_session_is_unresponsive_answers_retryable_unresponsive() {
+    use crate::state::host_liveness::HostLivenessStatus;
+    let h = harness();
+    let record = h.seed_record();
+    h.to_completed(&record);
+    let fake = FakeHandle::new(&record.task_id, Flavor::Rpc);
+    *lock(&fake.liveness) = Some(HostLivenessStatus::Unresponsive { since: 1 });
+    h.set_live(&record.task_id, fake.clone());
+
+    let outcome = send(&h, SendInput::new(&record.task_id, "second pass"));
+
+    let SendOutcome::Unresponsive {
+        task_id, retryable, ..
+    } = outcome
+    else {
+        panic!("expected unresponsive, got {outcome:?}");
+    };
+    assert_eq!(task_id, record.task_id);
+    assert!(retryable);
+    assert!(fake.follow_ups().is_empty());
+    assert_eq!(h.load(&record.task_id).status, TaskStatus::Completed);
+    assert_eq!(pending_len(&h.load(&record.task_id)), 0);
+}
