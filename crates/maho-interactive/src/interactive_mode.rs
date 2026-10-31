@@ -3395,6 +3395,9 @@ impl InteractiveMode {
                 text: message.text,
                 mode: message.mode,
                 enqueue_order: message.enqueue_order.unwrap_or(fallback + index as u64 + 1),
+                queued_id: String::new(),
+                revision: 1,
+                client_message_id: None,
             }
         }));
         ordered.sort_by_key(|message| message.enqueue_order);
@@ -14642,6 +14645,19 @@ fn ordered_inputs_from_remote_state(
                         text: entry.get("text")?.as_str()?.to_owned(),
                         mode,
                         enqueue_order: entry.get("enqueueOrder")?.as_u64()?,
+                        queued_id: entry
+                            .get("queuedId")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        revision: entry
+                            .get("revision")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(1),
+                        client_message_id: entry
+                            .get("clientMessageId")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
                     })
                 })
                 .collect()

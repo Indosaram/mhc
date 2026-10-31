@@ -712,6 +712,9 @@ mod tests {
                         text,
                         mode: maho_ext_api::StreamingBehavior::Steer,
                         enqueue_order: order as u64,
+                        queued_id: format!("q_{}", order + 1),
+                        revision: 1,
+                        client_message_id: None,
                     })
                     .collect(),
             }

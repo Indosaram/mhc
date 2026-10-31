@@ -7098,6 +7098,11 @@ pub struct QueuedInput {
     pub text: String,
     pub mode: StreamingBehavior,
     pub enqueue_order: u64,
+    /// senpi `queuedId`: the id `dequeue_message` / `edit_queued_message` name (`q_<n>`).
+    pub queued_id: String,
+    /// senpi `revision`: 1 when queued, +1 on every edit (senpi#3459).
+    pub revision: u64,
+    pub client_message_id: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct ModelBudget {
