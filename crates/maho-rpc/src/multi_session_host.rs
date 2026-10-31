@@ -217,6 +217,9 @@ pub struct HostCore {
     /// The conditional idle handover a POSIX socket host can perform, with its endpoint and loaded runtime (senpi
     /// `HostCoreGate`); unset, `begin_handover` is refused `handover_unsupported`.
     handover: std::sync::OnceLock<HostHandoverGate>,
+    /// The public endpoint clients dial (senpi `hostSessionContext(...).host_socket`), set once a socket host knows it:
+    /// a hosted session's control endpoint is this socket.
+    public_socket: std::sync::OnceLock<String>,
     /// Requests in flight that carry no session (an open being admitted): the idle judgement waits for them.
     sessionless_requests: std::sync::atomic::AtomicUsize,
 }
@@ -348,6 +351,7 @@ impl HostCore {
             presenter_bootstrap: std::sync::Mutex::new(None),
             presenter_control: std::sync::Mutex::new(None),
             handover: std::sync::OnceLock::new(),
+            public_socket: std::sync::OnceLock::new(),
             sessionless_requests: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -456,6 +460,9 @@ impl HostCore {
     /// `SENPI_RPC_HOST_DAEMON_DIR` wins). Two generations of this daemon can be alive at once during a handoff; these
     /// claims keep them off one session file. A worker-runtime host keeps its own claims per worker.
     pub async fn install_endpoint_reservations(&self, endpoint_socket: Option<&str>) {
+        if let Some(socket) = endpoint_socket {
+            let _ = self.public_socket.set(socket.to_owned());
+        }
         if self.workers.is_some() {
             return;
         }
@@ -2931,6 +2938,8 @@ impl HostCore {
                 sink,
                 capabilities,
                 Some(std::sync::Arc::clone(&self.connection_roles)),
+                crate::host_session_control::profile_host_socket(&runtime)
+                    .or_else(|| self.public_socket.get().cloned()),
             )
             .await,
         );

@@ -3324,6 +3324,10 @@ pub enum ExtensionEvent {
     SessionControlWake {
         source: String,
         reason: String,
+        /// senpi `SessionControlWakeEvent.reasons`: every edge the pass covers.
+        reasons: Vec<String>,
+        /// Deliveries a `wake` command named; absent for every other edge.
+        delivery_ids: Option<Vec<String>>,
     },
     ToolActivated {
         tool_names: Vec<String>,

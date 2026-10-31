@@ -6521,6 +6521,35 @@ impl AgentSession {
         }
     }
 
+    /// senpi `session.extensionRunner.emit(event)` for one `session_control_wake` pass (`{reason, reasons,
+    /// delivery_ids?}`); a session with no runner bound emits nothing.
+    pub async fn emit_session_control_wake(&self, event: &Value) -> Result<(), String> {
+        let mut runner = self.extension_runner.lock().await.clone();
+        let Some(runner) = runner.as_mut() else {
+            return Ok(());
+        };
+        let strings = |value: &Value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let reason = event["reason"].as_str().unwrap_or("command").to_owned();
+        runner
+            .emit(maho_ext_api::ExtensionEvent::SessionControlWake {
+                source: "session_control".to_owned(),
+                reasons: strings(&event["reasons"]).unwrap_or_else(|| vec![reason.clone()]),
+                reason,
+                delivery_ids: strings(&event["delivery_ids"]),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|failure| failure.message)
+    }
+
     async fn emit_held_wakes_released(
         &self,
         sources: BTreeMap<String, usize>,

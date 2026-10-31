@@ -1036,6 +1036,7 @@ async fn handle_session_command_with_sink(
             value
         })))),
         RpcCommandBody::GetForkMessages=>{let messages=session.get_user_messages_for_forking().into_iter().map(|(entry_id,text)|serde_json::json!({"entryId":entry_id,"text":text})).collect::<Vec<_>>();("get_fork_messages",Ok(Some(serde_json::json!({"messages":messages}))))},
+        RpcCommandBody::Wake{..}=>("wake",Ok(Some(serde_json::json!({"admitted":[]})))),
         RpcCommandBody::MemoryReport=>("memory_report",crate::memory_report_command::answer_memory_report(session.memory_report_owner()).await.map(Some)),
         RpcCommandBody::GetSessionStats=>{let stats=session.get_session_stats();let mut value=serde_json::json!({"sessionId":stats.session_id,"userMessages":stats.user_messages,"assistantMessages":stats.assistant_messages,"toolCalls":stats.tool_calls,"toolResults":stats.tool_results,"totalMessages":stats.total_messages,"tokens":{"input":stats.tokens.input,"output":stats.tokens.output,"cacheRead":stats.tokens.cache_read,"cacheWrite":stats.tokens.cache_write,"total":stats.tokens.total},"cost":stats.cost});
             if let Some(file)=stats.session_file{value["sessionFile"]=file.into();}
@@ -1825,6 +1826,8 @@ pub struct RpcConnectionHandler {
     /// senpi `options.toolRuntime`: a single-session `--mode rpc` process advertises its `--tool-runtime` as
     /// `tool_runtime:<value>`.
     tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+    /// senpi `sessionControl`: the session's `registerControlEndpoint` host and the `wake` command's target.
+    session_control: std::sync::Arc<crate::host_session_control::HostSessionControl>,
 }
 /// senpi connection-handler.ts `get_protocol_info` capability tail: the classic binding's own tool-runtime answer
 /// (when it has one) goes ahead of the negotiated client capabilities, and a client flag can never advertise a tool
@@ -1896,7 +1899,7 @@ impl RpcConnectionHandler {
         out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
         capabilities: Vec<String>,
     ) -> Self {
-        Self::create_with_shutdown_handler(session, out, capabilities, None).await
+        Self::create_with_shutdown_handler(session, out, capabilities, None, None).await
     }
     /// senpi `options.shutdownHandler`: an extension's `ctx.shutdown()` calls `shutdown_handler` when
     /// given, otherwise it only marks this connection for the host's shutdown check.
@@ -1905,7 +1908,26 @@ impl RpcConnectionHandler {
         out: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
         capabilities: Vec<String>,
         shutdown_handler: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        control_socket: Option<String>,
     ) -> Self {
+        // senpi: installed before the bind below, because extensions register their control endpoint on
+        // session_start. A host with no public socket (stdio, classic) answers a registration `unsupported_mode`.
+        let report_label = control_socket
+            .as_ref()
+            .map_or_else(|| "classic".to_owned(), |_| session.session_id());
+        let session_control =
+            std::sync::Arc::new(crate::host_session_control::HostSessionControl::new(
+                std::sync::Arc::new(crate::host_session_control::AgentControlSession(
+                    session.clone(),
+                )),
+                control_socket,
+                std::sync::Arc::new(move |line| {
+                    eprintln!("senpi rpc session {report_label}: {line}");
+                }),
+            ));
+        session.set_control_endpoint_host(Some(std::sync::Arc::new(std::sync::Arc::clone(
+            &session_control,
+        ))));
         let pending: std::sync::Arc<
             std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>,
         > = Default::default();
@@ -2071,6 +2093,7 @@ impl RpcConnectionHandler {
             relocation: Default::default(),
             connection_roles: Default::default(),
             tool_runtime: None,
+            session_control,
         }
     }
     /// senpi `options.toolRuntime`: advertise this process's `--tool-runtime` in `get_protocol_info`.
@@ -2388,6 +2411,26 @@ impl RpcConnectionHandler {
                 Some(Err(error.to_owned()))
             } else {
                 match command_kind {
+                    // senpi `case "wake"`: one drain pass covering the named deliveries, answered with what it
+                    // admitted; with no endpoint registered the wake is still emitted into the extensions.
+                    "wake" => {
+                        let delivery_ids = value["delivery_ids"]
+                            .as_array()
+                            .map(|ids| {
+                                ids.iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let result = self.session_control.wake(&delivery_ids).await;
+                        Some(Ok(serde_json::json!({
+                            "admitted": result
+                                .get("admitted")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!([]))
+                        })))
+                    }
                     "resume_session" => Some(self.session.begin_resume(value).await),
                     "hold_input" => Some(crate::held_input_commands::run_hold_input(
                         &self.session,
@@ -2604,6 +2647,8 @@ impl RpcConnectionHandler {
         }
     }
     pub async fn release(&self) {
+        // senpi `sessionControl?.dispose()`: every control edge source stops here.
+        self.session_control.dispose();
         self.grant_presentation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3609,6 +3654,41 @@ mod connection_events_tests {
         );
         assert_eq!(of_type(&capable_records, "extension_event").len(), 1);
         plain.release().await;
+    }
+
+    /// senpi `case "wake"`: with no control endpoint registered the wake still answers, with nothing admitted; and a
+    /// classic (socketless) handler refuses a registration as `unsupported_mode`.
+    #[tokio::test]
+    async fn wake_answers_admitted_and_a_socketless_registration_is_unsupported() {
+        let session = session();
+        let (handler, _records) = handler(&session, &[]).await;
+        let response: serde_json::Value = serde_json::from_str(
+            &handler
+                .handle_input_line(r#"{"id":"w","type":"wake","delivery_ids":["d1"]}"#)
+                .await
+                .expect("line")
+                .expect("response"),
+        )
+        .expect("json");
+        assert_eq!(response["command"], "wake");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"], serde_json::json!({"admitted":[]}));
+        let registration = maho_core::session_control_actions::ControlEndpointHost::register(
+            &std::sync::Arc::clone(&handler.session_control),
+            maho_core::extensions::session_control_types::RegisterControlEndpointOptions {
+                inbox_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+                drain: Arc::new(|_| Box::pin(async { None })),
+                is_session_referenced: None,
+            },
+        )
+        .await;
+        assert!(matches!(
+            registration,
+            maho_core::extensions::session_control_types::SessionControlRegistration::Unsupported {
+                reason: maho_core::extensions::session_control_types::ControlEndpointUnsupported::UnsupportedMode
+            }
+        ));
+        handler.release().await;
     }
 
     #[tokio::test]
