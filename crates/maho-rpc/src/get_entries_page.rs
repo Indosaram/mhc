@@ -4,6 +4,13 @@
 //! would not fit is refused with `response_too_large` instead of taking the connection down.
 use serde_json::Value;
 
+/// The largest answer one unpaged read may produce: well under the 64 MiB connection queue bound.
+pub const RPC_RESPONSE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
+pub const DEFAULT_ENTRY_PAGE_BYTES: usize = 8 * 1024 * 1024;
+/// How long a page walk may pause before the full-history view it holds is let go (senpi `holdEntryWalk`). This
+/// port's session manager keeps its entries resident, so `get_entries_command` holds no view between pages.
+pub const ENTRY_WALK_HOLD_MS: u64 = 30_000;
+
 thread_local! {
     // Per thread so a test lowering it never changes another test's (or the host's) answers.
     static RESPONSE_BYTE_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(RPC_RESPONSE_BYTE_BUDGET) };
@@ -193,6 +200,23 @@ mod tests {
     use serde_json::json;
     fn entries(count: usize) -> Vec<Value> {
         (0..count).map(|i| json!({"id":format!("e{i}")})).collect()
+    }
+    #[test]
+    fn the_unpaged_budget_stays_under_the_connection_queue_bound() {
+        assert_eq!(RPC_RESPONSE_BYTE_BUDGET, 48 * 1024 * 1024);
+        assert!(RPC_RESPONSE_BYTE_BUDGET < crate::socket_event_fanout::DEFAULT_QUEUE_BYTES);
+        assert_eq!(current_response_byte_budget(), RPC_RESPONSE_BYTE_BUDGET);
+        {
+            let _lowered = set_response_byte_budget_for_testing(10);
+            assert_eq!(current_response_byte_budget(), 10);
+            let bounds = entry_page_bounds(&EntryPageRequest {
+                limit: Some(json!(1)),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(bounds.max_bytes, 10);
+        }
+        assert_eq!(current_response_byte_budget(), RPC_RESPONSE_BYTE_BUDGET);
     }
     #[test]
     fn bounds_reject_bad_values_and_combined_directions() {
