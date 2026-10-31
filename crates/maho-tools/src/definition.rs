@@ -80,6 +80,11 @@ pub trait ToolContext: Send + Sync {
             "Approved monitor parent is unavailable".into(),
         ))
     }
+    /// The concrete host context behind this view, for callers that need host-only state (an MCP
+    /// call reads the extension context its permission fence is evaluated in). `None` by default.
+    fn as_any(&self) -> Option<&(dyn std::any::Any + Send + Sync + 'static)> {
+        None
+    }
 }
 
 /// Cloneable abort subscription; receivers observe cancellation even when registered afterwards.

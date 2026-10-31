@@ -40,6 +40,8 @@ pub fn build_mcp_stub_definition(name: &str, promotion: Option<McpStubPromotion>
         format!("Inactive MCP tool. Run tool_search to activate {name}, then call it on your next turn.")
     };
     let name_owned = name.to_owned();
+    // tier-b.ts: the stub dispatches the promoted definition's operation for the same input.
+    let forwarded = promotion.as_ref().map(|promotion| promotion.full.clone());
     let promotion = promotion.map(Arc::new);
     let mut definition = ToolDefinition::new(name, &description, json!({"type":"object","properties":{},"additionalProperties":true}), Arc::new(move |call| {
         let promotion = promotion.clone(); let name = name_owned.clone();
@@ -50,6 +52,9 @@ pub fn build_mcp_stub_definition(name: &str, promotion: Option<McpStubPromotion>
             }
         })
     }));
+    if let Some(full) = forwarded {
+        maho_ext_permission_system::dispatch_metadata::register_dispatch_identity(&mut definition, move |input| maho_ext_permission_system::dispatch_metadata::get_dispatch_identity(&full, input));
+    }
     definition.execution_mode = Some(ToolExecutionMode::Parallel); definition
 }
 

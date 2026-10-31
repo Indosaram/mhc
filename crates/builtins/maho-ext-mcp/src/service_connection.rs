@@ -198,6 +198,7 @@ fn create_session_connection(
         known_tool_names: None,
         last_list_changed_delta: None,
         list_changed_tasks: Vec::new(),
+        dispatch_owner: maho_ext_api::ToolDispatchOwner::new(),
         list_changed_coalescer: None,
     }));
     if let Some(authority) = crate::project_skill_policy::get_project_mcp_authority(&config) {

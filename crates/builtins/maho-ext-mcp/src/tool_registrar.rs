@@ -12,6 +12,8 @@ pub trait McpToolRegistrar: Send + Sync {
     fn register_tool(&self,definition:ToolDefinition)->Result<(),ExtensionFailure>;
     /// `registerTool` of a definition that carries `renderCall`/`renderResult`.
     fn register_tool_with_renderers(&self,definition:ToolDefinition,renderers:McpToolRenderers)->Result<(),ExtensionFailure>;
+    /// The live registered definition named `name` (senpi `ctx.tools.find`), when the registrar can see it.
+    fn live_tool_definition(&self,_name:&str)->Option<ToolDefinition> {None}
 }
 
 /// Adopt the live tool list and its renderers so this handle's publication keeps
@@ -54,5 +56,9 @@ impl McpToolRegistrar for SessionMcpToolRegistrar {
         let mut api=self.api.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         adopt_live_tools(&mut api);
         api.register_tool_with_renderers(definition,renderers)
+    }
+    fn live_tool_definition(&self,name:&str)->Option<ToolDefinition> {
+        let runtime=self.api.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime.clone();
+        runtime.live_tool_definition(name)
     }
 }

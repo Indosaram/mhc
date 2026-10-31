@@ -2774,6 +2774,9 @@ impl ExtensionContext {
     }
 }
 impl ToolContext for ExtensionContext {
+    fn as_any(&self) -> Option<&(dyn std::any::Any + Send + Sync + 'static)> {
+        Some(self)
+    }
     fn cwd(&self) -> &Path {
         self.assert_active_or_panic();
         &self.cwd

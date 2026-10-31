@@ -1,156 +1,112 @@
 //! Port of senpi mcp/expose/call.ts (v2026.10.27-2): one MCP tool call through the connection's lifecycle,
 //! session-expiry and failed-send retries, with progress forwarded and failures redacted.
 //!
-//! DIVERGENCE: upstream resolves an `McpInvocation` (permission dispatch fences, schema re-validation against
-//! the latest catalog) before each attempt. The native permission system exposes no dispatch authorizer, so the
-//! port validates a modern tool's arguments once in `build_mcp_tool_definitions` and calls the offered entry.
-use crate::{catalog::McpToolCatalogEntry, errors::McpError};
+//! An entry offered by a session registration carries its invocation resolver: each attempt resolves the call
+//! against the live catalog and the permission dispatch fence (invocation.ts) and sends to the entry it resolved,
+//! re-resolving whenever the fence no longer holds. Entries built without a resolver call the offered entry.
+use crate::{
+    catalog::McpToolCatalogEntry,
+    errors::McpError,
+    invocation::{McpInvocation, McpInvocationError, McpPreparedInvocation, McpReadyInvocation},
+};
 use maho_ext_api::{ToolContent, ToolError, ToolResult};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_PROGRESS_TOKEN: AtomicU64 = AtomicU64::new(0);
 
-/// `callMcpTool`: the raw `tools/call` result of `entry`, or a redacted `ToolExecError`. An MRTR failure keeps
-/// its fixed, payload-free message.
+/// What one `callMcpTool` produced: the raw result and the entry it was sent to, or the resolver's refusal.
+pub enum McpCallOutcome {
+    Called {
+        entry: Box<McpToolCatalogEntry>,
+        result: Value,
+    },
+    Refused(McpInvocationError),
+}
+
+type UpdateFn<'a> = Option<&'a (dyn Fn(ToolResult) -> Result<(), ToolError> + Send + Sync)>;
+
+/// `callMcpTool` without an agent invocation: the raw `tools/call` result of `entry`, or a redacted
+/// `ToolExecError`. A resolver refusal fails with its JSON `{error}` text.
 pub async fn call_mcp_tool(
     entry: &McpToolCatalogEntry,
     args: Value,
     call_id: &str,
     signal: &maho_ext_api::AbortSignal,
-    on_update: Option<&(dyn Fn(ToolResult) -> Result<(), ToolError> + Send + Sync)>,
+    on_update: UpdateFn<'_>,
 ) -> Result<Value, ToolError> {
-    let operation = || async {
-        if let Some(ensure_fresh) = &entry.ensure_fresh
-            && let Err(error) = ensure_fresh().await
-        {
-            return Err(entry
-                .runtime
-                .as_ref()
-                .map(|runtime| &runtime.connection)
-                .or(entry.connection.as_ref())
-                .and_then(|connection| {
-                    crate::health::mark_mcp_connection_needs_auth(connection, &error)
-                })
-                .unwrap_or(error));
+    match call_mcp_tool_for(entry, args, call_id, signal, on_update, None).await? {
+        McpCallOutcome::Called { result, .. } => Ok(result),
+        McpCallOutcome::Refused(error) => {
+            Err(ToolError::Message(json!({ "error": error }).to_string()))
         }
-        let client = if let Some(runtime) = &entry.runtime {
-            runtime
-                .health
-                .ensure_connection(&runtime.connection)
-                .await?;
-            if let Some(ensure_connected) = &entry.ensure_connected {
-                ensure_connected().await?;
-            }
-            runtime.connection.client()?
-        } else {
-            if let Some(ensure_connected) = &entry.ensure_connected {
-                ensure_connected().await?;
-            }
-            match &entry.connection {
-                Some(connection) => connection.client()?,
-                None => entry.client.clone().ok_or_else(|| {
-                    McpError::new(
-                        crate::errors::McpErrorKind::Connect,
-                        "MCP catalog entry has no connection",
-                    )
-                })?,
+    }
+}
+
+/// `callMcpTool`: the raw `tools/call` result of the entry the call resolved to, the resolver's refusal, or a
+/// redacted `ToolExecError`. An MRTR failure keeps its fixed, payload-free message.
+pub async fn call_mcp_tool_for(
+    entry: &McpToolCatalogEntry,
+    args: Value,
+    call_id: &str,
+    signal: &maho_ext_api::AbortSignal,
+    on_update: UpdateFn<'_>,
+    invocation: Option<&McpInvocation<'_>>,
+) -> Result<McpCallOutcome, ToolError> {
+    let operation = || async {
+        let Some(resolver) = &entry.invocation else {
+            let result = call_offered(entry, &args, call_id, signal, on_update).await?;
+            return Ok::<_, McpError>(McpCallOutcome::Called {
+                entry: Box::new(entry.clone()),
+                result,
+            });
+        };
+        // Readiness and its bounded renewal are not failed remote sends; only a send enters the retry.
+        let prepare = || async {
+            loop {
+                match resolver
+                    .resolve(entry, &args, invocation, Some(signal))
+                    .await?
+                {
+                    McpPreparedInvocation::Ready(ready) if !ready.is_current() => continue,
+                    prepared => return Ok::<_, McpError>(prepared),
+                }
             }
         };
-        let send = || async {
-            let client = if let Some(runtime) = &entry.runtime {
-                runtime.connection.client()?
-            } else if let Some(connection) = &entry.connection {
-                connection.client()?
-            } else {
-                client.clone()
-            };
-            let token = format!(
-                "native:{}:{}:{}:{}",
-                entry.server,
-                entry.tool,
-                call_id,
-                NEXT_PROGRESS_TOKEN.fetch_add(1, Ordering::Relaxed)
-            );
-            let mut notifications = client.notifications.subscribe();
-            let mut notifications_open = true;
-            let call_params =
-                json!({"name":entry.tool,"arguments":args,"_meta":{"progressToken":token}});
-            // `mcpRequestOptions(current.requestOrigin?.(), {signal})`: a fresh binding-issued origin per attempt.
-            let options = crate::request_origin::mcp_request_options(
-                entry.request_origin.as_ref().and_then(|origin| origin()),
-                Some(signal.clone()),
-            );
-            // tool-client.ts: a modern call validates structured output against the declared output schema.
-            let request = async {
-                if crate::modern::request::is_modern_mcp_client(&client) {
-                    crate::tool_client::call_mcp_tool_request(
-                        &client,
-                        call_params,
-                        entry.output_schema.as_ref(),
-                        entry.request_timeout,
-                        &options,
-                    )
+        let next: std::sync::Mutex<Option<McpPreparedInvocation>> =
+            std::sync::Mutex::new(Some(prepare().await?));
+        let attempt = || async {
+            loop {
+                let taken = next
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                let ready: Box<McpReadyInvocation> = match match taken {
+                    Some(prepared) => prepared,
+                    None => prepare().await?,
+                } {
+                    McpPreparedInvocation::Refused(error) => {
+                        return Ok::<_, McpError>(McpCallOutcome::Refused(error));
+                    }
+                    McpPreparedInvocation::Ready(ready) => ready,
+                };
+                // The fence checked immediately before the send.
+                if !ready.is_current() {
+                    continue;
+                }
+                let result = send(&ready.entry, &args, call_id, signal, on_update).await?;
+                return Ok(McpCallOutcome::Called {
+                    entry: Box::new(ready.entry),
+                    result,
+                });
+            }
+        };
+        match entry.runtime.as_ref() {
+            Some(runtime) => {
+                crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection, attempt)
                     .await
-                    .map(Value::Object)
-                } else {
-                    client
-                        .request_with_options(
-                            "tools/call",
-                            call_params,
-                            entry.request_timeout,
-                            &options,
-                        )
-                        .await
-                }
-            };
-            tokio::pin!(request);
-            let result = loop {
-                tokio::select! {
-                    biased;
-                    notification = notifications.recv(), if notifications_open => {
-                        let value = match notification {
-                            Ok(value) => value,
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                notifications_open = false;
-                                continue;
-                            }
-                        };
-                        let progress = value.get("params").unwrap_or(&Value::Null);
-                        if value.get("method").and_then(Value::as_str) == Some("notifications/progress")
-                            && progress.get("progressToken") == Some(&json!(token))
-                            && let Some(update) = on_update
-                        {
-                            let label = format!("{}/{}", entry.server, entry.tool);
-                            update(ToolResult {
-                                content: vec![ToolContent::text(
-                                    maho_core::config_reference_redaction::redact_resolved_reference_values(
-                                        &format_progress(&label, progress),
-                                        "<redacted>",
-                                    ),
-                                )],
-                                details: Some(maho_core::config_reference_redaction::redact_resolved_reference_data(
-                                    &json!({"progress":progress,"server":entry.server,"tool":entry.tool}),
-                                )),
-                                structured_content: None,
-                                is_error: None,
-                            })
-                            .map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
-                        }
-                    }
-                    result = &mut request => {
-                        signal.check().map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
-                        break result?;
-                    }
-                }
-            };
-            Ok::<_, McpError>(result)
-        };
-        if let Some(runtime) = &entry.runtime {
-            crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection, send).await
-        } else {
-            send().await
+            }
+            None => attempt().await,
         }
     };
     let result = if let Some(runtime) = &entry.runtime {
@@ -176,6 +132,160 @@ pub async fn call_mcp_tool(
             },
         )
     })
+}
+
+/// The offered entry's call without a resolver: fresh auth and connection, then the send with its retry.
+async fn call_offered(
+    entry: &McpToolCatalogEntry,
+    args: &Value,
+    call_id: &str,
+    signal: &maho_ext_api::AbortSignal,
+    on_update: UpdateFn<'_>,
+) -> Result<Value, McpError> {
+    {
+        if let Some(ensure_fresh) = &entry.ensure_fresh
+            && let Err(error) = ensure_fresh().await
+        {
+            return Err(entry
+                .runtime
+                .as_ref()
+                .map(|runtime| &runtime.connection)
+                .or(entry.connection.as_ref())
+                .and_then(|connection| {
+                    crate::health::mark_mcp_connection_needs_auth(connection, &error)
+                })
+                .unwrap_or(error));
+        }
+        // Resolving the client here surfaces a missing connection before the send's retry.
+        let _client = if let Some(runtime) = &entry.runtime {
+            runtime
+                .health
+                .ensure_connection(&runtime.connection)
+                .await?;
+            if let Some(ensure_connected) = &entry.ensure_connected {
+                ensure_connected().await?;
+            }
+            runtime.connection.client()?
+        } else {
+            if let Some(ensure_connected) = &entry.ensure_connected {
+                ensure_connected().await?;
+            }
+            match &entry.connection {
+                Some(connection) => connection.client()?,
+                None => entry.client.clone().ok_or_else(|| {
+                    McpError::new(
+                        crate::errors::McpErrorKind::Connect,
+                        "MCP catalog entry has no connection",
+                    )
+                })?,
+            }
+        };
+        if let Some(runtime) = &entry.runtime {
+            crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection, || {
+                send(entry, args, call_id, signal, on_update)
+            })
+            .await
+        } else {
+            send(entry, args, call_id, signal, on_update).await
+        }
+    }
+}
+
+/// One `tools/call` to `entry`'s current client, forwarding its progress notifications.
+async fn send(
+    entry: &McpToolCatalogEntry,
+    args: &Value,
+    call_id: &str,
+    signal: &maho_ext_api::AbortSignal,
+    on_update: UpdateFn<'_>,
+) -> Result<Value, McpError> {
+    let client = if let Some(runtime) = &entry.runtime {
+        runtime.connection.client()?
+    } else if let Some(connection) = &entry.connection {
+        connection.client()?
+    } else {
+        entry.client.clone().ok_or_else(|| {
+            McpError::new(
+                crate::errors::McpErrorKind::Connect,
+                "MCP catalog entry has no connection",
+            )
+        })?
+    };
+    let token = format!(
+        "native:{}:{}:{}:{}",
+        entry.server,
+        entry.tool,
+        call_id,
+        NEXT_PROGRESS_TOKEN.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut notifications = client.notifications.subscribe();
+    let mut notifications_open = true;
+    let call_params = json!({"name":entry.tool,"arguments":args,"_meta":{"progressToken":token}});
+    // `mcpRequestOptions(current.requestOrigin?.(), {signal})`: a fresh binding-issued origin per attempt.
+    let options = crate::request_origin::mcp_request_options(
+        entry.request_origin.as_ref().and_then(|origin| origin()),
+        Some(signal.clone()),
+    );
+    // tool-client.ts: a modern call validates structured output against the declared output schema.
+    let request = async {
+        if crate::modern::request::is_modern_mcp_client(&client) {
+            crate::tool_client::call_mcp_tool_request(
+                &client,
+                call_params,
+                entry.output_schema.as_ref(),
+                entry.request_timeout,
+                &options,
+            )
+            .await
+            .map(Value::Object)
+        } else {
+            client
+                .request_with_options("tools/call", call_params, entry.request_timeout, &options)
+                .await
+        }
+    };
+    tokio::pin!(request);
+    let result = loop {
+        tokio::select! {
+            biased;
+            notification = notifications.recv(), if notifications_open => {
+                let value = match notification {
+                    Ok(value) => value,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        notifications_open = false;
+                        continue;
+                    }
+                };
+                let progress = value.get("params").unwrap_or(&Value::Null);
+                if value.get("method").and_then(Value::as_str) == Some("notifications/progress")
+                    && progress.get("progressToken") == Some(&json!(token))
+                    && let Some(update) = on_update
+                {
+                    let label = format!("{}/{}", entry.server, entry.tool);
+                    update(ToolResult {
+                        content: vec![ToolContent::text(
+                            maho_core::config_reference_redaction::redact_resolved_reference_values(
+                                &format_progress(&label, progress),
+                                "<redacted>",
+                            ),
+                        )],
+                        details: Some(maho_core::config_reference_redaction::redact_resolved_reference_data(
+                            &json!({"progress":progress,"server":entry.server,"tool":entry.tool}),
+                        )),
+                        structured_content: None,
+                        is_error: None,
+                    })
+                    .map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
+                }
+            }
+            result = &mut request => {
+                signal.check().map_err(|error| McpError::new(crate::errors::McpErrorKind::ToolExec, error.to_string()))?;
+                break result?;
+            }
+        }
+    };
+    Ok(result)
 }
 
 /// `formatProgress`: `<label> progress <n>[/<total>][ <message>]`, trimmed.
