@@ -11995,9 +11995,8 @@ impl InteractiveMode {
             }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
-            // senpi v2026.10.27-2 `session_recovered` (a torn session tail kept aside) is shown as
-            // `showWarning(sanitizeTerminalLabel(notice))`. OPEN: no branch has
-            // `AgentSessionEvent::SessionRecovered` yet (senpi-core-rest-46).
+            // senpi v2026.10.27-2 `session_recovered` (a torn session tail kept aside, senpi#4295).
+            AgentSessionEvent::SessionRecovered { notice, .. } => self.show_warning(&maho_tui::terminal_text::sanitize_terminal_label(notice)),
             // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             // senpi `offload_module_stuck`: `showWarning` naming the module, the files whose locks it holds, and the `--tool-runtime child` alternative.
