@@ -248,19 +248,15 @@ impl HostSessionControl {
     }
 }
 
-/// Whether an inbox event is an entry appearing or leaving (senpi `fs.watch` "rename"). inotify also reports opens,
-/// reads and closes; the drain opens the entries it reads, so waking on those would re-wake the drain forever.
+/// Whether an inbox event changed an entry (senpi `fs.watch` "rename" and "change": created, removed, renamed or
+/// written). inotify also reports opens, reads and closes, which libuv never surfaces; the drain opens the entries it
+/// reads, so waking on those would re-wake the drain forever.
 fn inbox_entry_changed(kind: &notify::EventKind) -> bool {
-    matches!(
-        kind,
-        notify::EventKind::Create(_)
-            | notify::EventKind::Remove(_)
-            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-    )
+    !matches!(kind, notify::EventKind::Access(_))
 }
 
-/// One watch on the inbox directory (senpi `watchInbox`): a created, removed or renamed entry that is not the
-/// engine's own wakes the drain; `on_change` gets the event's paths.
+/// One watch on the inbox directory (senpi `watchInbox`): any change to an entry that is not the engine's own wakes
+/// the drain; `on_change` gets the event's paths.
 fn watch_inbox(
     inbox_dir: &std::path::Path,
     on_change: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync>,
@@ -406,11 +402,15 @@ mod tests {
     }
 
     #[test]
-    fn only_entries_appearing_or_leaving_wake() {
+    fn every_entry_change_but_an_access_wakes() {
         use notify::EventKind;
         use notify::event::{
-            AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind, RenameMode,
+            AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
         };
+        assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Content
+        ))));
+        assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Any)));
         assert!(inbox_entry_changed(&EventKind::Create(CreateKind::File)));
         assert!(inbox_entry_changed(&EventKind::Remove(RemoveKind::File)));
         assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Name(
