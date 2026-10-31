@@ -181,10 +181,10 @@ fn memory_group(text: &str, drop_identity: bool) -> FooterGroup {
                 } else {
                     format!(" {rest}")
                 },
-                ThemeColor::Muted,
+                ThemeColor::Text,
             );
         }
-        None => group = group.with(body, ThemeColor::Muted),
+        None => group = group.with(body, ThemeColor::Text),
     }
     group
         .with(progress, ThemeColor::Accent)
@@ -193,9 +193,8 @@ fn memory_group(text: &str, drop_identity: bool) -> FooterGroup {
 }
 fn status_color(key: &str) -> ThemeColor {
     match key {
-        BADGE_STATUS_KEY | "goal" => ThemeColor::Text,
         "ulw-loop" => ThemeColor::Accent,
-        _ => ThemeColor::Muted,
+        _ => ThemeColor::Text,
     }
 }
 fn status_group(key: &str, text: &str) -> FooterGroup {
@@ -208,12 +207,13 @@ fn status_group(key: &str, text: &str) -> FooterGroup {
     // A trailing failure count is the one part that asks for action: `N failed` is error,
     // `⚠ N failed` (a degraded but non-fatal source) is warning.
     if let Some(head) = text.strip_suffix(" failed")
-        && let Some((rest, count)) = head.rsplit_once(' ')
+        && let Some((rest, count)) = head.rsplit_once(' ').or(Some(("", head)))
         && !count.is_empty()
         && count.bytes().all(|b| b.is_ascii_digit())
     {
         let (rest, failure, color) = match rest.strip_suffix(" ⚠") {
             Some(rest) => (rest, format!(" ⚠ {count} failed"), ThemeColor::Warning),
+            None if rest.is_empty() => (rest, format!("{count} failed"), ThemeColor::Error),
             None => (rest, format!(" {count} failed"), ThemeColor::Error),
         };
         return FooterGroup::run(rest, status_color(key)).with(failure, color);
@@ -277,12 +277,12 @@ impl FooterComponent {
             String::new()
         };
         Some(
-            FooterGroup::run(format_money(s.cost), ThemeColor::Text)
-                .with(if s.cost_unknown { "+?" } else { "" }, ThemeColor::Warning)
-                .with(subagent, ThemeColor::Muted)
+            FooterGroup::run(format_money(s.cost), ThemeColor::Success)
+                .with(if s.cost_unknown { "+?" } else { "" }, ThemeColor::Success)
+                .with(subagent, ThemeColor::Success)
                 .with(
                     if using_subscription { " sub" } else { "" },
-                    ThemeColor::Muted,
+                    ThemeColor::Success,
                 ),
         )
     }
@@ -297,23 +297,21 @@ impl FooterComponent {
             .map_or_else(|| "?".into(), format_tokens);
         let mut group = FooterGroup::run("ctx ", ThemeColor::Muted);
         let percent = s.context_percent.unwrap_or(0.);
+        let usage_color = if percent > 90. {
+            ThemeColor::Error
+        } else if percent > 70. {
+            ThemeColor::Warning
+        } else {
+            ThemeColor::Muted
+        };
         group = match s.context_percent {
-            Some(p) => {
-                let color = if p > 90. {
-                    ThemeColor::Error
-                } else if p > 70. {
-                    ThemeColor::Warning
-                } else {
-                    ThemeColor::Text
-                };
-                group.with(format!("{}%", p.round() as i64), color)
-            }
+            Some(p) => group.with(format!("{}%", p.round() as i64), usage_color),
             None => group.with("?", ThemeColor::Muted),
         };
         group
             .with(
                 format!(" {tokens}/{}", format_tokens(s.context_window)),
-                ThemeColor::Muted,
+                usage_color,
             )
             .with(
                 if percent > 90. { " compact soon" } else { "" },
@@ -343,8 +341,8 @@ impl FooterComponent {
         }
         let rate = s.latest_cache_hit_rate.filter(|v| *v >= 10.)?;
         Some(
-            FooterGroup::run("cache ", ThemeColor::Muted)
-                .with(format!("{}%", rate.round() as i64), ThemeColor::Text),
+            FooterGroup::run("cache ", ThemeColor::Dim)
+                .with(format!("{}%", rate.round() as i64), ThemeColor::Dim),
         )
     }
     fn model_group(&self, with_provider: bool, strip_vendor: bool) -> FooterGroup {
@@ -389,15 +387,15 @@ impl FooterComponent {
         };
         FooterGroup::run(if s.fast_mode { "⚡ " } else { "" }, ThemeColor::Warning)
             .with(provider_prefix, ThemeColor::Muted)
-            .with(model, ThemeColor::Muted)
+            .with(model, ThemeColor::Accent)
             .with(level, ThemeColor::Muted)
     }
     fn location_group(cwd: &str, branch: Option<&str>) -> FooterGroup {
-        let mut group = FooterGroup::run(cwd, ThemeColor::Muted);
+        let mut group = FooterGroup::run(cwd, ThemeColor::Accent);
         if let Some(branch) = branch {
             group = group
                 .with("  ", ThemeColor::Muted)
-                .with(branch, ThemeColor::Muted);
+                .with(branch, ThemeColor::Warning);
         }
         group
     }
@@ -409,7 +407,7 @@ impl FooterComponent {
             .session_name
             .as_deref()
             .filter(|n| !n.is_empty())
-            .map(|n| FooterGroup::run("session ", ThemeColor::Muted).with(n, ThemeColor::Text));
+            .map(|n| FooterGroup::run("session ", ThemeColor::Muted).with(n, ThemeColor::Muted));
         let cost = self.cost_group();
         let ctx = self.context_group();
         let cache = self.cache_group();
@@ -475,7 +473,7 @@ impl FooterComponent {
         if budget >= 1 {
             let left = [FooterGroup::run(
                 elide_path(&cwd, budget),
-                ThemeColor::Muted,
+                ThemeColor::Accent,
             )];
             return finish(&left, &right, gap);
         }
@@ -738,6 +736,16 @@ mod tests {
                 );
             }
             assert!(plain(&snapshot, width)[0].contains("ctx 93%"), "{width}");
+        }
+    }
+
+    #[test]
+    fn failure_count_is_error_colored_with_or_without_a_lead() {
+        for text in ["2 failed", "subagents 2 failed"] {
+            let group = status_group("omo-task", text);
+            let (last, color) = group.runs.last().unwrap();
+            assert_eq!((last.trim_start(), *color), ("2 failed", ThemeColor::Error), "{text}");
+            assert_eq!(group.plain(), text);
         }
     }
 }

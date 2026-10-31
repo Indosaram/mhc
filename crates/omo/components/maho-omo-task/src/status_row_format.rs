@@ -37,7 +37,8 @@ pub fn task_footer_status(records: &[TaskRecord]) -> Option<String> {
     let failed = records.iter().filter(|record| matches!(record.status, TaskStatus::Error | TaskStatus::Lost)).count();
     let mut parts = Vec::new();
     if live > 0 { parts.push(format!("{live} subagent{}", if live == 1 { "" } else { "s" })); }
-    if failed > 0 { parts.push(format!("{failed} failed")); }
+    // Without a live count, name the subject so the failure does not read as part of a neighbour.
+    if failed > 0 { parts.push(if live > 0 { format!("{failed} failed") } else { format!("subagents {failed} failed") }); }
     (!parts.is_empty()).then(|| parts.join(" "))
 }
 pub fn build_widget_rows(records: &[TaskRecord]) -> Vec<String> {

@@ -27,6 +27,7 @@ fn footer(ui:&support::Ui)->Option<String> { ui.statuses.lock().expect("statuses
     { let mut records=manager.records.lock().expect("records"); let mut second=records[0].clone(); second.task_id="st_second".into(); records.push(second); let mut failed=records[0].clone(); failed.task_id="st_failed".into(); failed.status=TaskStatus::Error; records.push(failed); let mut foreign=records[0].clone(); foreign.parent_session_id="foreign".into(); records.push(foreign); }
     status.sync_now(); assert_eq!(footer(&ui).as_deref(),Some("2 subagents 1 failed")); assert_eq!(timers.count(),0);
 }
+#[test] fn failures_without_live_tasks_name_the_subject() { let (status,_timers,ui,manager)=fixture(false,ExtensionMode::Tui); manager.records.lock().expect("records")[0].status=TaskStatus::Error; status.sync_now(); assert_eq!(footer(&ui).as_deref(),Some("subagents 1 failed")); }
 #[test] fn rpc_mode_does_not_publish_status() { let (status,timers,ui,_)=fixture(true,ExtensionMode::Rpc); status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.statuses.lock().expect("statuses").is_empty()); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
 #[test] fn background_surface_counts_solo_and_process_members() {
     struct Spend;
