@@ -357,17 +357,17 @@ impl Subscription {
             .unwrap_or_default()
     }
 
-    /// Waits until an event is queued (returns `true`), or the connection closes or `timeout`
-    /// passes with nothing queued (returns `false`). Queued events stay for [`Self::drain`].
+    /// Waits until an event is queued (returns `true`), or the connection closes, the
+    /// subscription is cancelled or `timeout` passes with nothing queued (returns `false`).
+    /// Queued events stay for [`Self::drain`].
     pub fn wait(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut state = self.shared.lock();
         loop {
-            if state
-                .subscribers
-                .get(&self.id)
-                .is_some_and(|subscriber| !subscriber.queue.is_empty())
-            {
+            let Some(subscriber) = state.subscribers.get(&self.id) else {
+                return false;
+            };
+            if !subscriber.queue.is_empty() {
                 return true;
             }
             let now = Instant::now();
@@ -386,6 +386,33 @@ impl Subscription {
     /// Whether the connection has ended.
     pub fn is_closed(&self) -> bool {
         self.shared.lock().closed.is_some()
+    }
+
+    /// Whether events can still arrive: the connection is open and nobody cancelled it.
+    pub fn is_active(&self) -> bool {
+        let state = self.shared.lock();
+        state.closed.is_none() && state.subscribers.contains_key(&self.id)
+    }
+
+    /// A handle that ends this subscription from another thread (wakes its [`Self::wait`]).
+    pub fn canceller(&self) -> SubscriptionCancel {
+        SubscriptionCancel {
+            shared: Arc::clone(&self.shared),
+            id: self.id,
+        }
+    }
+}
+
+/// Ends a [`Subscription`] owned elsewhere (see [`Subscription::canceller`]).
+pub struct SubscriptionCancel {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl SubscriptionCancel {
+    pub fn cancel(&self) {
+        self.shared.lock().subscribers.remove(&self.id);
+        self.shared.changed.notify_all();
     }
 }
 
@@ -566,6 +593,15 @@ mod tests {
         assert_eq!(network.drain().len(), 1);
         drop(everything);
         assert_eq!(client.shared.lock().subscribers.len(), 1);
+        let cancelled = client.subscribe(|_| true);
+        let waiter = std::thread::spawn({
+            let cancel = cancelled.canceller();
+            move || cancel.cancel()
+        });
+        assert!(!cancelled.wait(Duration::from_secs(5)));
+        assert!(waiter.join().is_ok());
+        assert!(!cancelled.is_active());
+        assert!(network.is_active());
         let _ = incoming.send(None);
         assert!(!network.wait(Duration::from_secs(5)));
         assert!(network.is_closed());

@@ -5,6 +5,7 @@
 //! tab bookkeeping of oh-my-pi's browser tool (`tools/browser.ts`: named tabs with `main` as the
 //! default, owned temporary profile removed after the browser exits, `close` of one tab or all).
 use crate::cdp::CdpClient;
+use crate::launch::stealth::StealthState;
 use crate::launch::{self, LaunchFeatures};
 use crate::page::{NAVIGATION_TIMEOUT, Page, WaitUntil};
 use crate::transport::{self, READINESS_TIMEOUT, StdioTail};
@@ -77,6 +78,9 @@ pub struct Browser {
     viewport: Option<(u32, u32)>,
     tabs: BTreeMap<String, Page>,
     pub executable: Option<PathBuf>,
+    /// oh-my-pi stealth (`applyStealthPatches`), applied to every tab this browser opens; only a
+    /// headless browser this process launched gets it, as in oh-my-pi's tab worker.
+    stealth: Option<StealthState>,
 }
 
 fn env_var(key: &str) -> Option<String> {
@@ -150,6 +154,7 @@ impl Browser {
             viewport: Some(options.viewport),
             tabs: BTreeMap::new(),
             executable: Some(executable),
+            stealth: options.headless.then(StealthState::default),
         })
     }
 
@@ -170,6 +175,7 @@ impl Browser {
             viewport: None,
             tabs: BTreeMap::new(),
             executable: None,
+            stealth: None,
         }
     }
 
@@ -210,8 +216,9 @@ impl Browser {
         self.tabs.keys().cloned().collect()
     }
 
-    /// Opens tab `name` on a new target (or reuses it) and navigates it to `url` when given.
-    /// Returns whether the navigation settled.
+    /// Opens tab `name` on a new target (or reuses it) and navigates it to `url` when given; a
+    /// new tab of a launched headless browser gets the stealth patches first. Returns whether
+    /// the navigation settled.
     pub fn open(&mut self, name: &str, url: Option<&str>, wait: WaitUntil) -> Result<bool, String> {
         if !self.tabs.contains_key(name) {
             let created =
@@ -223,6 +230,10 @@ impl Browser {
                 .ok_or("Target.createTarget returned no targetId")?
                 .to_owned();
             let page = Page::attach(self.client.clone(), &target)?;
+            // Before the first navigation, so the patches run on every document of the tab.
+            if let Some(state) = self.stealth.as_mut() {
+                page.apply_stealth(state)?;
+            }
             if let Some((width, height)) = self.viewport {
                 page.set_viewport(width, height, 1.0)?;
             }
@@ -313,6 +324,8 @@ impl Browser {
             }
         }
         self.tabs.clear();
+        // Stops the stealth target listener while the browser can still answer it.
+        self.stealth = None;
         if let Some(mut child) = self.child.take() {
             transport::shutdown(&self.client, &mut child);
         }

@@ -6,14 +6,21 @@
 //! fourteen patch scripts of `tools/puppeteer/*_stealth_*.txt` vendored unchanged under
 //! `assets/stealth/` and the injection wrapper as `assets/stealth/injection.js`.
 //!
+//! `configureUserAgentTargets` is ported as [`configure_user_agent_targets`]: browser-wide
+//! `Target.setAutoAttach` (flattened) and a listener thread that sends the override to every
+//! attached page, webview or background page (popups included), plus a one-off override through
+//! a temporary session for each such target that already exists.
+//!
 //! PORT-DIVERGENCE: puppeteer's `page.evaluateOnNewDocument` is
-//! `Page.addScriptToEvaluateOnNewDocument` on the page session. oh-my-pi also auto-attaches a
-//! browser-wide session to push the user-agent override into workers and other targets; here the
-//! override is applied to each page session the caller patches. The Rust launcher never adds
+//! `Page.addScriptToEvaluateOnNewDocument` on the page session. The puppeteer `CDPSession` event
+//! listener is a thread draining a [`crate::cdp::Subscription`]; it stops when the
+//! [`StealthState`] is dropped or the connection closes. The Rust launcher never adds
 //! puppeteer's default switches, so [`stealth_ignore_default_args`] documents what is left out
 //! rather than filtering a list.
-use crate::cdp::CdpClient;
+use crate::cdp::{CdpClient, SubscriptionCancel};
 use serde_json::{Value, json};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 const ENABLE_AUTOMATION_FLAG: &str = "--enable-automation";
 /// oh-my-pi `STEALTH_IGNORE_DEFAULT_ARGS`.
@@ -32,6 +39,11 @@ const STEALTH_IGNORE_DEFAULT_ARGS: [&str; 9] = [
 pub const DISABLE_AUTOMATION_CONTROLLED_ARG: &str = "--disable-blink-features=AutomationControlled";
 const STEALTH_ACCEPT_LANGUAGE: &str = "en-US,en";
 const USER_AGENT_TARGET_TYPES: [&str; 3] = ["page", "webview", "background_page"];
+/// oh-my-pi `USER_AGENT_TARGET_TIMEOUT_MS`: each per-target override is best effort.
+pub const USER_AGENT_TARGET_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the target listener sleeps between liveness checks when nothing arrives; a cancel
+/// or disconnect wakes it at once.
+const LISTENER_IDLE_WAIT: Duration = Duration::from_secs(3600);
 
 /// The patch scripts, in injection order (`STEALTH_PATCH_SCRIPTS`).
 pub const STEALTH_PATCH_SCRIPTS: [&str; 14] = [
@@ -294,14 +306,123 @@ pub fn send_user_agent_override(client: &CdpClient, session: &str, override_para
     );
 }
 
-/// Per-browser stealth state (`{ override }`), so the override is resolved once.
-#[derive(Clone, Debug, Default)]
+/// Per-browser stealth state (`{ browserSession, override }`), so the override is resolved and
+/// the browser-wide target listener started once.
+#[derive(Debug, Default)]
 pub struct StealthState {
     pub user_agent_override: Option<Value>,
+    user_agent_targets: Option<UserAgentTargets>,
 }
 
-/// `applyStealthPatches`: user-agent override on the page session and the patch scripts on every
-/// new document of the page.
+impl StealthState {
+    /// Whether the browser-wide user-agent target listener is running.
+    pub fn targets_configured(&self) -> bool {
+        self.user_agent_targets.is_some()
+    }
+}
+
+/// The auto-attach listener (oh-my-pi's `browserSession` and its `Target.attachedToTarget`
+/// handler). Dropping it stops and joins the thread.
+struct UserAgentTargets {
+    cancel: SubscriptionCancel,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for UserAgentTargets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UserAgentTargets")
+    }
+}
+
+impl Drop for UserAgentTargets {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// `configureUserAgentTargets`: once per state, auto-attach browser-wide and override the user
+/// agent of every page-like target that attaches later; then override every page-like target that
+/// exists now through a temporary session.
+pub fn configure_user_agent_targets(
+    client: &CdpClient,
+    state: &mut StealthState,
+    override_params: &Value,
+) -> Result<(), String> {
+    if state.user_agent_targets.is_none() {
+        let attached = client.subscribe(|event| {
+            event.method == "Target.attachedToTarget" && event.session_id.is_none()
+        });
+        client.send(
+            "Target.setAutoAttach",
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true}),
+            None,
+        )?;
+        let cancel = attached.canceller();
+        let listener = client.clone().with_timeout(USER_AGENT_TARGET_TIMEOUT);
+        let override_params = override_params.clone();
+        let thread = std::thread::Builder::new()
+            .name("stealth-targets".into())
+            .spawn(move || {
+                while attached.is_active() {
+                    attached.wait(LISTENER_IDLE_WAIT);
+                    for event in attached.drain() {
+                        let kind = event.params.pointer("/targetInfo/type");
+                        if !target_supports_user_agent_override(kind.and_then(Value::as_str)) {
+                            continue;
+                        }
+                        if let Some(session) = event.params.get("sessionId").and_then(Value::as_str)
+                        {
+                            send_user_agent_override(&listener, session, &override_params);
+                        }
+                    }
+                }
+            })
+            .map_err(|error| format!("cannot start the stealth target listener: {error}"))?;
+        state.user_agent_targets = Some(UserAgentTargets {
+            cancel,
+            thread: Some(thread),
+        });
+    }
+    let listed = client.send("Target.getTargets", json!({}), None)?;
+    let targets = listed
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let bounded = client.clone().with_timeout(USER_AGENT_TARGET_TIMEOUT);
+    for target in targets {
+        if !target_supports_user_agent_override(target.get("type").and_then(Value::as_str)) {
+            continue;
+        }
+        let Some(id) = target.get("targetId").and_then(Value::as_str) else {
+            continue;
+        };
+        // `applyTargetUserAgentOverride`: a temporary session, detached afterwards.
+        let Ok(attached) = bounded.send(
+            "Target.attachToTarget",
+            json!({"targetId": id, "flatten": true}),
+            None,
+        ) else {
+            continue;
+        };
+        if let Some(session) = attached.get("sessionId").and_then(Value::as_str) {
+            send_user_agent_override(&bounded, session, override_params);
+            let _ = bounded.send(
+                "Target.detachFromTarget",
+                json!({"sessionId": session}),
+                None,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `applyStealthPatches`: user-agent override on the page session, the browser-wide target
+/// override ([`configure_user_agent_targets`]) and the patch scripts on every new document of the
+/// page.
 pub fn apply_stealth_patches(
     client: &CdpClient,
     session: &str,
@@ -322,9 +443,9 @@ pub fn apply_stealth_patches(
             &HostInfo::current(),
         ));
     }
-    if let Some(override_params) = &state.user_agent_override {
-        send_user_agent_override(client, session, override_params);
-    }
+    let override_params = state.user_agent_override.clone().unwrap_or(Value::Null);
+    send_user_agent_override(client, session, &override_params);
+    configure_user_agent_targets(client, state, &override_params)?;
     client
         .send(
             "Page.addScriptToEvaluateOnNewDocument",
@@ -448,5 +569,98 @@ mod tests {
         }
         assert!(!target_supports_user_agent_override(Some("service_worker")));
         assert!(!target_supports_user_agent_override(None));
+    }
+
+    #[test]
+    fn user_agent_targets_cover_existing_and_later_attached_page_targets() {
+        use crate::page::fake_cdp::FakeCdp;
+        use std::sync::mpsc;
+        let (overridden_tx, overridden) = mpsc::channel::<String>();
+        let overridden_tx = std::sync::Mutex::new(overridden_tx);
+        let cdp = FakeCdp::new(Box::new(
+            move |method: &str, params: &Value, session: Option<&str>| {
+                if method == "Emulation.setUserAgentOverride" {
+                    let _ = overridden_tx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .send(session.unwrap_or_default().to_owned());
+                }
+                Ok(match method {
+                    "Target.getTargets" => json!({"targetInfos": [
+                        {"targetId": "P", "type": "page"},
+                        {"targetId": "W", "type": "service_worker"},
+                    ]}),
+                    "Target.attachToTarget" => {
+                        json!({"sessionId": format!("tmp-{}", params["targetId"].as_str().unwrap_or_default())})
+                    }
+                    _ => json!({}),
+                })
+            },
+        ));
+        let mut state = StealthState::default();
+        let ua = json!({"userAgent": "UA"});
+        assert_eq!(
+            configure_user_agent_targets(&cdp.client, &mut state, &ua),
+            Ok(())
+        );
+        assert!(state.targets_configured());
+        assert_eq!(
+            overridden
+                .recv_timeout(USER_AGENT_TARGET_TIMEOUT)
+                .ok()
+                .as_deref(),
+            Some("tmp-P")
+        );
+        let auto = cdp.calls_of("Target.setAutoAttach");
+        assert_eq!(auto.len(), 1);
+        assert_eq!(
+            auto[0].params,
+            json!({"autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true})
+        );
+        assert_eq!(
+            cdp.calls_of("Target.attachToTarget").len(),
+            1,
+            "workers are skipped"
+        );
+        assert_eq!(
+            cdp.calls_of("Target.detachFromTarget")[0].params["sessionId"],
+            "tmp-P"
+        );
+
+        cdp.emit(
+            "Target.attachedToTarget",
+            json!({"sessionId": "worker", "targetInfo": {"type": "service_worker"}}),
+            None,
+        );
+        cdp.emit(
+            "Target.attachedToTarget",
+            json!({"sessionId": "popup", "targetInfo": {"type": "page"}}),
+            None,
+        );
+        assert_eq!(
+            overridden
+                .recv_timeout(USER_AGENT_TARGET_TIMEOUT)
+                .ok()
+                .as_deref(),
+            Some("popup")
+        );
+        let popup = cdp
+            .calls_of("Network.setUserAgentOverride")
+            .into_iter()
+            .find(|call| call.session.as_deref() == Some("popup"));
+        assert_eq!(popup.map(|call| call.params), Some(ua.clone()));
+
+        // A second configuration reuses the listener.
+        assert_eq!(
+            configure_user_agent_targets(&cdp.client, &mut state, &ua),
+            Ok(())
+        );
+        assert_eq!(cdp.calls_of("Target.setAutoAttach").len(), 1);
+        drop(state);
+        assert!(
+            cdp.calls()
+                .iter()
+                .all(|call| call.session.as_deref() != Some("worker"))
+        );
     }
 }
