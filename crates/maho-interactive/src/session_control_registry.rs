@@ -9,7 +9,7 @@
 //! The directory is named by a socket built from a fresh instance id, so it never holds an earlier
 //! generation. A TUI endpoint has nothing to reattach to, so a clean exit removes its whole directory.
 use maho_rpc::host_daemon_paths::{
-    HostDaemonPaths, create_daemon_directories, create_host_daemon_paths,
+    HostDaemonPaths, create_daemon_directories_as, create_host_daemon_paths,
 };
 use maho_rpc::host_endpoints::EndpointKind;
 use maho_rpc::socket_ownership::MAX_SOCKET_PATH_BYTES;
@@ -144,14 +144,8 @@ pub async fn register_tui_endpoint(
             },
         )
         .map_err(|error| error.to_string())?;
-        create_daemon_directories(&paths).map_err(|error| error.to_string())?;
-        maho_rpc::host_daemon_paths::ensure_endpoint_identity(
-            &paths,
-            socket,
-            false,
-            Some(EndpointKind::Tui),
-        )
-        .map_err(|error| error.to_string())
+        create_daemon_directories_as(&paths, Some(EndpointKind::Tui))
+            .map_err(|error| error.to_string())
     })();
     let released = lock.release().map_err(|error| error.to_string());
     written?;
