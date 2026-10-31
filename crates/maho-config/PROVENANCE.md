@@ -21,3 +21,12 @@
   `max_bytes = 40960`; the `projection` object default carries both values. Tests added in
   `tests/load.rs` for every given/when/then case of D1 plus the invalid-value pruning case.
 - No SUL source was opened.
+
+## Unit config-keys-b (model_pad)
+
+- Method: **C** (clean room). Spec: `docs/cleanroom/specs/config-keys.md`, "Delta (omo v5.1.52)"
+  D2, copied at commit 0c0e537.
+- Change: optional strict `model_pad.labels.{daily,geeky,normal,heavy}` (strings, no defaults),
+  accepted at top level, in typed harness blocks and in profiles. Tests in `tests/load.rs`
+  (`model_pad_*`, `file_without_model_pad_*`, `schema_model_pad_*`) follow D2's tests.
+- No SUL source was opened.

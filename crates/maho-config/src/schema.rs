@@ -614,6 +614,19 @@ fn computer() -> Rule {
     ])
 }
 
+/// `model_pad`: display captions for the built-in profile families and tiers (no defaults).
+fn model_pad() -> Rule {
+    obj(vec![f(
+        "labels",
+        obj(vec![
+            f("daily", s()),
+            f("geeky", s()),
+            f("normal", s()),
+            f("heavy", s()),
+        ]),
+    )])
+}
+
 fn side_panel() -> Rule {
     obj(vec![
         d("enabled", Rule::Bool, json!(false)),
@@ -678,6 +691,7 @@ fn sections(include_gateway: bool) -> Vec<Field> {
         f("models", catalog()),
         f("model_profiles", model_profiles()),
         f("model_profile", s()),
+        f("model_pad", model_pad()),
         f("memory", memory()),
         f(
             "telemetry",
