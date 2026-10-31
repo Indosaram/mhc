@@ -167,11 +167,10 @@ impl TranscriptJournal {
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Ok(entry) = parse_transcript_entry(value) {
-                    entries.push(entry);
-                }
-            }
+            let value: serde_json::Value = serde_json::from_str(trimmed)
+                .map_err(|_| JournalError::InvalidTranscriptJournalRow)?;
+            let entry = parse_transcript_entry(value)?;
+            entries.push(entry);
         }
         Ok(entries)
     }
@@ -194,14 +193,10 @@ impl TranscriptJournal {
 
     fn read_entries_and_raw_unlocked(&self) -> Result<(Vec<TranscriptEntry>, String), JournalError> {
         let raw = self.read_raw_unlocked()?;
-        let entries = raw
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| {
-                let value = serde_json::from_str(line).ok()?;
-                parse_transcript_entry(value).ok()
-            })
-            .collect();
+        let entries = raw.lines().filter(|line| !line.trim().is_empty()).map(|line| {
+            let value = serde_json::from_str(line).map_err(|_| JournalError::InvalidTranscriptJournalRow)?;
+            parse_transcript_entry(value)
+        }).collect::<Result<Vec<_>, _>>()?;
         Ok((entries, raw))
     }
 
