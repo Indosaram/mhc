@@ -215,6 +215,7 @@ async fn extension_serves_live_dispatch_policy_until_shutdown() {
     emit(
         EventKind::SessionStart,
         ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason: maho_ext_api::SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -249,4 +250,66 @@ async fn extension_serves_live_dispatch_policy_until_shutdown() {
             .expect_err("retired"),
         DispatchError::Retired
     );
+}
+
+#[tokio::test]
+async fn custom_permission_parsers_run_without_the_policy_lock() {
+    // A custom permission parser (reached through the definition resolver) re-enters the
+    // permission extension's dispatch policy. The policy lock must not be held across the parse,
+    // or the nested evaluation would deadlock on the std mutex.
+    let project = tempfile::tempdir().expect("project");
+    let session: Arc<dyn SessionManager> = Arc::new(TestSession("reentrant".into()));
+    let ctx = context(Arc::clone(&session), project.path());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(Actions));
+    let scoped = runtime.registration_scope();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("permission", project.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        scoped.clone(),
+    );
+    PermissionSystem.register(&mut api);
+    let nested = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut tool = maho_ext_api::ToolDefinition::new(
+        "mcp_reentrant",
+        "Re-enters the dispatch policy while parsing",
+        json!({"type": "object"}),
+        Arc::new(|_| Box::pin(async { Ok(maho_ext_api::ToolResult::text("ok")) })),
+    );
+    let (parser_session, parser_ctx, parser_nested) =
+        (Arc::clone(&session), ctx.clone(), Arc::clone(&nested));
+    tool.permission_parser = Some(Arc::new(move |_input, _cwd| {
+        let inner = request("mcp_fixture_write", json!({"value": "nested"}));
+        let future = authorize_tool_dispatch(&parser_session, &inner, &parser_ctx, None);
+        // One poll runs the nested policy evaluation synchronously; its outcome is irrelevant.
+        let _ = std::future::Future::poll(
+            std::pin::pin!(future),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        );
+        parser_nested.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    }));
+    api.try_register_tool(tool).expect("register tool");
+    scoped.set_flag("permission-preset", FlagValue::String("ask".into()));
+    scoped.commit_registration().expect("commit");
+    let handlers = api.registered.handlers[&EventKind::SessionStart].clone();
+    let mut start = ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+        sizes_only: false,
+        reason: maho_ext_api::SessionReason::Startup,
+        initial_model_provenance: None,
+        previous_session_file: None,
+        attended: None,
+    });
+    for handler in handlers {
+        handler(&mut start, &ctx).await.expect("session start");
+    }
+
+    // The custom parser asks for nothing, so the outer dispatch is allowed.
+    let call = request("mcp_reentrant", json!({}));
+    let fence = authorize_tool_dispatch(&session, &call, &ctx, None)
+        .await
+        .expect("allowed");
+    assert!(fence.is_current(&call));
+    assert!(nested.load(std::sync::atomic::Ordering::SeqCst) >= 2);
 }
