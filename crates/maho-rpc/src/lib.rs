@@ -227,6 +227,7 @@ pub mod session_structured_lanes;
 pub mod session_surface_dedupe;
 pub mod session_sweep;
 pub mod session_teardown;
+pub mod session_unload;
 pub mod session_worker;
 pub mod session_worker_client;
 pub mod session_worker_credit;
