@@ -216,9 +216,9 @@ mod tests {
         );
         *host.cut.lock().expect("cut") = false;
         host.calls.lock().expect("calls").clear();
-        let detached = confirm_host_session_absent(&host, "route", &cut)
+        let gone = confirm_host_session_absent(&host, "route", &cut)
             .expect_err("the connection that closed is gone");
-        assert_eq!(detached.message, detached().message);
+        assert_eq!(gone.message, detached().message);
         assert_eq!(*host.calls.lock().expect("calls"), vec!["close_session"]);
         assert_eq!(*host.sessions.lock().expect("sessions"), vec!["route"]);
     }
