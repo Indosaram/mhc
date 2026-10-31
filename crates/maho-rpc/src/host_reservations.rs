@@ -574,6 +574,30 @@ mod tests {
         unrecorded.process_start_time = None;
         assert_eq!(claim_owner_identity(&unrecorded), ClaimIdentity::Unproven);
     }
+    /// host-28 / senpi#4119: an exited, unreaped (state Z) claim owner makes no more writes, so its claim is gone
+    /// even though signal 0 still reaches the pid.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_claim_owner_is_gone() {
+        let child = ZombieChild::spawn();
+        let pid = child.id();
+        assert!(process_is_live(pid));
+        assert!(!process_is_running(pid));
+        let owner = SessionPathOwner {
+            instance_id: "z".into(),
+            pid,
+            process_start_time: read_process_start_time(pid),
+            session_path: "/session".into(),
+            attached: Some(true),
+            current: None,
+        };
+        assert_eq!(claim_owner_identity(&owner), ClaimIdentity::Gone);
+        assert!(!claim_owner_is_live(&owner));
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::host_daemon_paths::host_daemon_directory_paths(temp.path());
+        fs::write(&paths.pointer_file, r#"{"instance_id":"z"}"#).unwrap();
+        assert_eq!(standing_owner(owner, &paths), StandingVerdict::Released);
+    }
     #[test]
     fn unproven_stale_heartbeat_claim_is_presumed_done_and_fenced_on_takeover() {
         let temp = tempfile::tempdir().unwrap();
