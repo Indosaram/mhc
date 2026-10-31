@@ -1087,6 +1087,36 @@ impl SessionWorkerClient {
             _ => Err("Invalid worker prepare response".into()),
         }
     }
+    /// senpi `setPromptSurface`: the attach that names another surface moves the live session to it.
+    pub async fn set_prompt_surface(&self, surface: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"prompt_surface","surface":surface}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker prompt_surface response".into());
+        }
+        Ok(())
+    }
+    /// senpi `setBrowserEngine`.
+    pub async fn set_browser_engine(&self, engine: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"browser_engine","engine":engine}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker browser_engine response".into());
+        }
+        Ok(())
+    }
+    /// senpi `setPermissionPreset`.
+    pub async fn set_permission_preset(&self, preset: &str) -> Result<(), String> {
+        let result = self
+            .request(serde_json::json!({"type":"permission_preset","preset":preset}))
+            .await?;
+        if result["type"] != "result" {
+            return Err("Invalid worker permission_preset response".into());
+        }
+        Ok(())
+    }
     pub async fn commit(&self) -> Result<WorkerSnapshot, String> {
         let nonce = uuid::Uuid::new_v4().to_string();
         let request = match &self.inner.acceptance {
@@ -1507,6 +1537,38 @@ mod tests {
             }
         }
         forwarded
+    }
+
+    #[tokio::test]
+    async fn attach_setters_post_their_upstream_requests_and_settle_on_the_result() {
+        let (client, mut outbox) = grant_gate_client();
+        for (kind, field, value) in [
+            ("prompt_surface", "surface", "app"),
+            ("browser_engine", "engine", "builtin"),
+            ("permission_preset", "preset", "guarded"),
+        ] {
+            let call = async {
+                match kind {
+                    "prompt_surface" => client.set_prompt_surface(value).await,
+                    "browser_engine" => client.set_browser_engine(value).await,
+                    _ => client.set_permission_preset(value).await,
+                }
+            };
+            let reply = async {
+                let line = outbox.recv().await.expect("the request is posted");
+                let sent: Value = serde_json::from_str(line.trim_end()).expect("json");
+                assert_eq!(sent["type"], kind);
+                assert_eq!(sent[field], value);
+                client
+                    .inner
+                    .receive(crate::session_worker_protocol::SessionWorkerWire::Result {
+                        request: sent["request"].as_u64().expect("request id"),
+                        error: None,
+                    });
+            };
+            let (result, ()) = tokio::join!(call, reply);
+            assert_eq!(result, Ok(()));
+        }
     }
 
     #[tokio::test]
