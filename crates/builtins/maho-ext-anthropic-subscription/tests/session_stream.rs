@@ -167,6 +167,20 @@ async fn a_cold_seed_over_the_window_is_refused_before_dispatch() {
 }
 
 #[tokio::test]
+async fn a_turn_that_fails_before_dispatch_drops_the_previous_dispatch_shape() {
+    use maho_ext_anthropic_subscription::session_stream::DispatchShape;
+    let directory = tempfile::tempdir().expect("dir");
+    let executable = directory.path().join("missing-claude");
+    let environment = BTreeMap::new(); let custom = BTreeMap::new(); let mut registry = SessionRegistry::default();
+    registry.dispatch_shapes.insert("session".into(), DispatchShape { cold_seed: true, estimated_tokens: Some(9) });
+    let options = json!({"cwd":directory.path()});
+    let context = json!({"messages":[{"role":"user","content":"hello"}]});
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), registry.turn(ResidentInput { session:"session",account:"default",model:"model",context:&context,options:&options,executable:&executable,environment:&environment,auth_lane:"ambient",custom:&custom,tool_note:None,now:1,transcript_available:true,signal:None,credential_digest:None,context_window:0 }, |_| {})).await.expect("bounded turn");
+    assert!(result.is_err());
+    assert!(!registry.dispatch_shapes.contains_key("session"));
+}
+
+#[tokio::test]
 async fn a_failed_attempt_is_observed_as_failed_not_flatten() {
     let directory = tempfile::tempdir().expect("dir");
     let executable = directory.path().join("claude");
