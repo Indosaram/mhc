@@ -139,6 +139,7 @@ pub mod host_stop_generation;
 pub mod host_stop_intent;
 pub mod host_stop_start_time;
 pub mod host_successor;
+pub mod host_successor_profile;
 pub mod host_supersession;
 pub mod host_supervisor_log;
 pub mod host_supervisor_poll;
