@@ -15239,7 +15239,9 @@ impl AgentSession {
             self.cwd().into(),
         );
         let retirement = monitor_invocation::Retirement(invocation.clone());
-        monitor_invocation::CURRENT.scope(invocation.clone(), async move {
+        // One input identity per executed call, shared by its tool_call hook, body and tool_result hook.
+        let input_identity = maho_agent::invocation_input::InvocationInput::new();
+        maho_agent::invocation_input::scope_invocation_input(input_identity, monitor_invocation::CURRENT.scope(invocation.clone(), async move {
         let _retirement = retirement;
         let hook_result = {
             let mut guard = self.extension_runner.lock().await.clone();
@@ -15321,7 +15323,7 @@ impl AgentSession {
             Some(self.with_settings_manager(SettingsManager::get_image_auto_resize)),
         ).await.into_owned();
         Ok(result)
-        }).await
+        })).await
     }
 
     /// `preflightToolCall`: run the `tool_call` extension hook. The Rust agent exposes no

@@ -8,6 +8,7 @@ pub mod assistant_terminal_state;
 pub mod empty_assistant_recovery;
 pub mod harness;
 pub mod internal_events;
+pub mod invocation_input;
 pub mod local_failure;
 pub mod proxy;
 pub mod response_timing;

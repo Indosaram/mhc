@@ -12,8 +12,9 @@ pub use maho_ai::{
     types::{ImageContent, JsonValue, ModelThinkingLevel, ThinkingLevel, Usage},
 };
 pub use maho_tools::definition::{
-    AbortSignal, ToolCall, ToolContent, ToolError, ToolExecutionMode, ToolExposure,
-    ToolPermissionParser, ToolPermissionRequest, ToolResult, ToolSessionManager,
+    AbortSignal, ToolCall, ToolContent, ToolDispatchIdentity, ToolDispatchIdentityResolver,
+    ToolDispatchOwner, ToolError, ToolExecutionMode, ToolExposure, ToolPermissionParser,
+    ToolPermissionRequest, ToolResult, ToolSessionManager,
 };
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
