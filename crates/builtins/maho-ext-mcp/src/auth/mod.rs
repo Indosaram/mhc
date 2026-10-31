@@ -11,7 +11,6 @@ pub mod commands_auth;
 pub mod commands_auth_dispatch;
 pub mod challenge;
 pub mod challenge_login;
-pub mod catalog_identity;
 pub mod legacy_lock;
 pub mod legacy_migration;
 pub mod oauth_fetch;
