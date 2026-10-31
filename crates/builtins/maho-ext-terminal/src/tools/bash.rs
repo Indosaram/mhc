@@ -998,15 +998,16 @@ mod tests {
     }
     /// terminal-bash-abort.test.ts: a descendant that escaped the group kill (its own session)
     /// keeps the PTY slave open and chattering; abort and timeout must still release the tool.
+    /// Linux only: `setsid` is a util-linux binary absent on macOS.
     /// The command records the escaped pid in `pid_file` so the test can kill it afterwards.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn escaped_descendant_command(pid_file: &std::path::Path) -> String {
         format!(
             "setsid sh -c 'while :; do echo orphan-tick; sleep 0.05; done' & echo $! > '{}'; while :; do sleep 1; done",
             pid_file.display()
         )
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn kill_escaped(pid_file: &std::path::Path) {
         if let Some(pid) = std::fs::read_to_string(pid_file)
             .ok()
@@ -1018,7 +1019,7 @@ mod tests {
             );
         }
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn abort_releases_while_an_escaped_descendant_holds_the_pty_open() {
         let dir = tempfile::tempdir().unwrap();
@@ -1059,7 +1060,7 @@ mod tests {
         assert!(text_of(&result).contains("Command aborted"));
         crate::manager::teardown_shared(&manager).await.unwrap();
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn timeout_releases_while_an_escaped_descendant_holds_the_pty_open() {
         let dir = tempfile::tempdir().unwrap();
