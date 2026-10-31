@@ -153,3 +153,150 @@ fn a_live_hosts_missing_session_reply_ends_the_handle_immediately() {
         vec!["host session closed: unknown_session".to_string()]
     );
 }
+
+/// `session-confirmed-close.test.ts` `closureFixture("answers", acked: true, listed: true)`: the
+/// real session connection over a fake host RPC client that acknowledges `close_session`, emits a
+/// `session_closed` lifecycle frame during it, and still lists the session afterwards.
+struct ClosingHost {
+    frame: Option<&'static str>,
+    listeners: Mutex<Vec<ManagedChildListener>>,
+    listings: Mutex<usize>,
+    detaches: Mutex<usize>,
+}
+
+impl ClosingHost {
+    fn emit(&self, reason: &str) {
+        let frame = crate::shared::ManagedChildEvent {
+            event_type: "session_closed".into(),
+            reason: Some(reason.into()),
+            ..crate::shared::ManagedChildEvent::default()
+        };
+        let listeners: Vec<_> = self.listeners.lock().expect("listeners").clone();
+        for listener in listeners {
+            listener(&frame);
+        }
+    }
+}
+
+impl super::super::host_command_dispatch::HostRpcClient for ClosingHost {
+    fn command(&self, _command: Value) -> Result<(), HostError> {
+        Ok(())
+    }
+    fn get_state(&self) -> Result<Value, HostError> {
+        Err(HostError {
+            message: "Timeout waiting for response to get_state".into(),
+        })
+    }
+    fn on_event(&self, listener: ManagedChildListener) -> Unsubscribe {
+        self.listeners.lock().expect("listeners").push(listener);
+        Box::new(|| {})
+    }
+    fn close(&self, _routing_id: &str) -> Result<(), HostError> {
+        if let Some(reason) = self.frame {
+            self.emit(reason);
+        }
+        Ok(())
+    }
+    fn list_sessions(&self) -> Result<Option<Vec<String>>, HostError> {
+        *self.listings.lock().expect("listings") += 1;
+        Ok(Some(vec!["closing-session".to_string()]))
+    }
+    fn detach(&self, _routing_id: &str) -> Result<(), HostError> {
+        *self.detaches.lock().expect("detaches") += 1;
+        Ok(())
+    }
+}
+
+impl super::super::task_parent_wire::HostRunHoldClient for ClosingHost {}
+
+fn closing(
+    frame: Option<&'static str>,
+) -> (
+    Arc<HostSessionHandle>,
+    Arc<ClosingHost>,
+    Arc<Mutex<Vec<&'static str>>>,
+) {
+    let host = Arc::new(ClosingHost {
+        frame,
+        listeners: Mutex::new(Vec::new()),
+        listings: Mutex::new(0),
+        detaches: Mutex::new(0),
+    });
+    let connection = super::super::session_client_connection::SessionClientConnection::new(
+        "closing-session".into(),
+        Arc::clone(&host) as Arc<dyn super::super::host_command_dispatch::HostRpcClient>,
+        Arc::clone(&host) as Arc<dyn super::super::task_parent_wire::HostRunHoldClient>,
+    );
+    let opened = OpenedHostSession {
+        session: HostSessionIdentity {
+            routing_id: "closing-session".into(),
+            session_path: "/tmp/sessions/close-proof.jsonl".into(),
+            instance_id: "close-proof".into(),
+        },
+        attached: true,
+        durable_session_id: None,
+        reported_model: None,
+    };
+    let handle = create_host_session_handle(
+        "st_close_proof".into(),
+        Arc::new(connection) as Arc<dyn HostSessionPort>,
+        opened,
+        Arc::new(|| RunnerOutcome::Cancelled),
+    );
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&notices);
+    let _kept = ManagedChildHandle::on_liveness(
+        handle.as_ref(),
+        Arc::new(move |status| {
+            sink.lock().expect("notices").push(match status {
+                HostLivenessStatus::Running => "running",
+                HostLivenessStatus::Unresponsive { .. } => "unresponsive",
+                HostLivenessStatus::TerminalPending { .. } => "terminal-pending",
+            });
+        }),
+    );
+    (handle, host, notices)
+}
+
+/// `session-confirmed-close.test.ts` "a {handoff_parked, client_close} frame cannot confirm an
+/// overdue session that remains listed": the frame arrives during the confirmed close and is a
+/// hint, not proof; the still-listed session stays owned and terminal-pending.
+#[test]
+fn a_lifecycle_frame_cannot_confirm_an_overdue_session_that_remains_listed() {
+    for reason in ["handoff_parked", "client_close"] {
+        let (handle, host, notices) = closing(Some(reason));
+        let start = now_ms() + HOST_HEARTBEAT_INTERVAL_MS;
+        miss_three(&handle, start);
+        // When the liveness deadline requests closure.
+        handle
+            .liveness_step_at(start + 170_000)
+            .expect("terminal-pending step");
+        handle.settle_close_for_tests();
+        assert!(!handle.stopped(), "{reason}: the session has not exited");
+        assert!(
+            matches!(
+                handle.liveness(),
+                Some(HostLivenessStatus::TerminalPending { .. })
+            ),
+            "{reason}"
+        );
+        assert_eq!(*host.listings.lock().expect("listings"), 1, "{reason}");
+        assert_eq!(
+            *notices.lock().expect("notices"),
+            vec!["unresponsive", "terminal-pending"],
+            "{reason}"
+        );
+    }
+}
+
+/// `handle.ts` `clientBinding.onClosed`: outside the confirmed close, a `session_closed` frame
+/// ends this child's session (`endSession`), and is never counted as liveness activity.
+#[test]
+fn a_session_closed_frame_on_a_running_session_ends_it() {
+    let (handle, host, notices) = closing(None);
+    host.emit("client_close");
+    assert!(handle.stopped());
+    assert!(notices.lock().expect("notices").is_empty());
+    assert_eq!(*host.listings.lock().expect("listings"), 0);
+    assert_eq!(*host.detaches.lock().expect("detaches"), 1);
+}

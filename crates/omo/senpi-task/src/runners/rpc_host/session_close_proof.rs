@@ -118,20 +118,15 @@ mod tests {
         open: Mutex<bool>,
         closed_routes: Mutex<Vec<String>>,
         listings: Mutex<usize>,
-        /// Emitted as a `session_closed` lifecycle frame during the close.
-        frame: Option<&'static str>,
-        listeners: Mutex<Vec<ManagedChildListener>>,
     }
 
     impl ScriptedHost {
-        fn new(closes: Vec<Result<(), HostError>>, frame: Option<&'static str>) -> Self {
+        fn new(closes: Vec<Result<(), HostError>>) -> Self {
             Self {
                 closes: Mutex::new(closes.into()),
                 open: Mutex::new(true),
                 closed_routes: Mutex::new(Vec::new()),
                 listings: Mutex::new(0),
-                frame,
-                listeners: Mutex::new(Vec::new()),
             }
         }
     }
@@ -140,8 +135,7 @@ mod tests {
         fn command(&self, _command: Value) -> Result<(), HostError> {
             Ok(())
         }
-        fn on_event(&self, listener: ManagedChildListener) -> Unsubscribe {
-            self.listeners.lock().expect("listeners").push(listener);
+        fn on_event(&self, _listener: ManagedChildListener) -> Unsubscribe {
             Box::new(|| {})
         }
         fn close(&self, routing_id: &str) -> Result<(), HostError> {
@@ -149,23 +143,13 @@ mod tests {
                 .lock()
                 .expect("routes")
                 .push(routing_id.to_string());
-            if let Some(reason) = self.frame {
-                let frame = crate::shared::ManagedChildEvent {
-                    event_type: "session_closed".into(),
-                    reason: Some(reason.into()),
-                    ..crate::shared::ManagedChildEvent::default()
-                };
-                for listener in self.listeners.lock().expect("listeners").iter() {
-                    listener(&frame);
-                }
-            }
             let answer = self
                 .closes
                 .lock()
                 .expect("closes")
                 .pop_front()
                 .unwrap_or(Ok(()));
-            if answer.is_ok() && self.frame.is_none() {
+            if answer.is_ok() {
                 *self.open.lock().expect("open") = false;
             }
             answer
@@ -180,42 +164,72 @@ mod tests {
         }
     }
 
-    /// `session-confirmed-close.test.ts`: a `handoff_parked` / `client_close` frame during an acked
-    /// close is a hint, not proof; the still-listed session stays owned.
-    #[test]
-    fn a_lifecycle_frame_cannot_confirm_an_overdue_session_that_remains_listed() {
-        for reason in ["handoff_parked", "client_close"] {
-            let host = ScriptedHost::new(vec![Ok(())], Some(reason));
-            let frames = std::sync::Arc::new(Mutex::new(0_usize));
-            let seen = std::sync::Arc::clone(&frames);
-            let _unsubscribe = host.on_event(std::sync::Arc::new(
-                move |event: &crate::shared::ManagedChildEvent| {
-                    if event.event_type == "session_closed" {
-                        *seen.lock().expect("frames") += 1;
-                    }
-                },
-            ));
-            let error = confirm_host_session_absent(&host, "route", &|| true)
-                .expect_err("a frame is not authoritative");
-            assert!(
-                crate::runners::rpc_host::session_wire::is_host_session_unresponsive(&error),
-                "{reason}: {error:?}"
-            );
-            assert_eq!(*frames.lock().expect("frames"), 1, "{reason}");
-            assert_eq!(*host.listings.lock().expect("listings"), 1, "{reason}");
+    /// A host whose connection is cut while `close_session` is withheld: the engine swallows the
+    /// transport error (the close "succeeds"), and every later request fails as transport-gone.
+    /// The session itself is still live on the host.
+    struct CutHost {
+        cut: Mutex<bool>,
+        sessions: Mutex<Vec<String>>,
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl HostRpcClient for CutHost {
+        fn command(&self, _command: Value) -> Result<(), HostError> {
+            Ok(())
         }
+        fn on_event(&self, _listener: ManagedChildListener) -> Unsubscribe {
+            Box::new(|| {})
+        }
+        fn close(&self, _routing_id: &str) -> Result<(), HostError> {
+            self.calls.lock().expect("calls").push("close_session");
+            *self.cut.lock().expect("cut") = true;
+            Ok(())
+        }
+        fn list_sessions(&self) -> Result<Option<Vec<String>>, HostError> {
+            self.calls.lock().expect("calls").push("list_sessions");
+            if *self.cut.lock().expect("cut") {
+                return Err(HostError {
+                    message: "RPC transport is gone".into(),
+                });
+            }
+            Ok(Some(self.sessions.lock().expect("sessions").clone()))
+        }
+    }
+
+    /// `session-confirmed-close.test.ts` "a transport cut swallowed by the engine close never
+    /// proves a retained session ended", at the `HostRpcClient` seam: the swallowed close is not
+    /// proof, and neither the dead listing nor a detached connection confirms absence.
+    #[test]
+    fn a_transport_cut_swallowed_by_the_engine_close_never_proves_a_retained_session_ended() {
+        let host = CutHost {
+            cut: Mutex::new(false),
+            sessions: Mutex::new(vec!["route".to_string()]),
+            calls: Mutex::new(Vec::new()),
+        };
+        let cut = || !*host.cut.lock().expect("cut");
+        let unconfirmed = confirm_host_session_absent(&host, "route", &|| true)
+            .expect_err("a cut transport cannot list the session away");
+        assert_eq!(unconfirmed.message, "RPC transport is gone");
+        assert_eq!(
+            *host.calls.lock().expect("calls"),
+            vec!["close_session", "list_sessions"]
+        );
+        *host.cut.lock().expect("cut") = false;
+        host.calls.lock().expect("calls").clear();
+        let detached = confirm_host_session_absent(&host, "route", &cut)
+            .expect_err("the connection that closed is gone");
+        assert_eq!(detached.message, detached().message);
+        assert_eq!(*host.calls.lock().expect("calls"), vec!["close_session"]);
+        assert_eq!(*host.sessions.lock().expect("sessions"), vec!["route"]);
     }
 
     /// `session-confirmed-close.test.ts`: a refused close leaves the same route open, and a retry
     /// on that route is confirmed once the host no longer lists it.
     #[test]
     fn a_refused_confirmed_close_keeps_the_same_session_route_available_for_retry() {
-        let host = ScriptedHost::new(
-            vec![Err(HostError {
-                message: "host_draining".into(),
-            })],
-            None,
-        );
+        let host = ScriptedHost::new(vec![Err(HostError {
+            message: "host_draining".into(),
+        })]);
         let refused =
             confirm_host_session_absent(&host, "route", &|| true).expect_err("close refused");
         assert_eq!(refused.message, "host_draining");

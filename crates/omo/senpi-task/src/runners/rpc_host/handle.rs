@@ -6,12 +6,12 @@ use super::{
 use crate::{
     host::HostError,
     manager::child_handle::{InputIdentity, ManagedChildHandle, ManagedChildListener, Unsubscribe},
+    runners::RunnerOutcome,
     runners::input_admission_read::read_host_admissions,
     runners::input_effects::{
         IdentifiedInput, InputCommand, InputCommandType, InputEffects, InputEffectsOptions,
         InputWriteError, create_input_effects,
     },
-    runners::RunnerOutcome,
     state::TaskStatus,
 };
 use std::sync::{Arc, Mutex};
@@ -74,13 +74,19 @@ pub fn create_host_session_handle_with_inputs(
         task_id: task_id.clone(),
         store: input_store,
         send: Arc::new(move |command: &IdentifiedInput| {
-            let current = send_port.lock().expect("hosted child state lock poisoned").clone();
+            let current = send_port
+                .lock()
+                .expect("hosted child state lock poisoned")
+                .clone();
             current
                 .send(to_host_input(command))
                 .map_err(|error| InputWriteError::from_message(None, error.message))
         }),
         read: Some(Arc::new(move |ids: &[String]| {
-            let current = read_port.lock().expect("hosted child state lock poisoned").clone();
+            let current = read_port
+                .lock()
+                .expect("hosted child state lock poisoned")
+                .clone();
             read_host_admissions(current.as_ref(), ids)
         })),
     });
@@ -162,19 +168,38 @@ impl HostSessionHandle {
         self.current_port().transport_lost(message);
     }
     fn current_port(&self) -> Arc<dyn HostSessionPort> {
-        self.port.lock().expect("hosted child state lock poisoned").clone()
+        self.port
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clone()
     }
     fn bind_events(self: &Arc<Self>) {
-        if let Some(unsubscribe) = self.event_subscription.lock().expect("hosted child state lock poisoned").take() {
+        if let Some(unsubscribe) = self
+            .event_subscription
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .take()
+        {
             unsubscribe();
         }
         let weak = Arc::downgrade(self);
-        let port = self.port.lock().expect("hosted child state lock poisoned").clone();
+        let port = self
+            .port
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .clone();
         let observed_port = port.clone();
         let subscription = port.on_event(Arc::new(move |event| {
             let Some(handle) = weak.upgrade() else {
                 return;
             };
+            if matches!(
+                event.event_type.as_str(),
+                "session_closed" | "session_parked"
+            ) {
+                handle.session_frame(event);
+                return;
+            }
             handle
                 .liveness
                 .step(|machine, changes| machine.activity(now_ms(), changes));
@@ -182,9 +207,10 @@ impl HostSessionHandle {
                 let status_handle = Arc::downgrade(&handle);
                 std::thread::spawn(move || {
                     if let Some(handle) = status_handle.upgrade()
-                        && let Err(error) = handle.teardown.publish_running() {
-                            eprintln!("host running publication failed: {error}");
-                        }
+                        && let Err(error) = handle.teardown.publish_running()
+                    {
+                        eprintln!("host running publication failed: {error}");
+                    }
                 });
                 let was_settled = handle
                     .settled
@@ -196,7 +222,10 @@ impl HostSessionHandle {
             }
             handle.listeners.emit_event(event);
         }));
-        *self.event_subscription.lock().expect("hosted child state lock poisoned") = Some(subscription);
+        *self
+            .event_subscription
+            .lock()
+            .expect("hosted child state lock poisoned") = Some(subscription);
     }
     pub fn begin_turn(&self, text: &str) -> Result<(), HostError> {
         self.settled
@@ -218,7 +247,9 @@ impl HostSessionHandle {
                 streaming_behavior: None,
                 client_message_id: client_message_id.map(str::to_string),
             })
-            .map_err(|error| HostError { message: error.to_string() })
+            .map_err(|error| HostError {
+                message: error.to_string(),
+            })
     }
     /// Reconciles inputs whose acknowledgement was lost (`reconcileInputs`).
     pub fn reconcile_inputs(&self) {
@@ -282,7 +313,9 @@ impl HostSessionHandle {
         let deadline = std::time::Duration::from_millis(
             crate::runners::rpc::heartbeat::HEARTBEAT_DEADLINE_MS as u64,
         );
-        let step = self.liveness.step(|machine, changes| machine.tick(now, changes));
+        let step = self
+            .liveness
+            .step(|machine, changes| machine.tick(now, changes));
         match step {
             HeartbeatStep::Probe => {
                 let (answer_tx, answer_rx) = std::sync::mpsc::channel();
@@ -295,15 +328,19 @@ impl HostSessionHandle {
                     } else {
                         close.probe().and_then(|probe| match probe {
                             super::unresponsive_close::UnresponsiveProbe::State(state) => Ok(state),
-                            super::unresponsive_close::UnresponsiveProbe::Missing => Err(HostError {
-                                message: "unknown_session".into(),
-                            }),
+                            super::unresponsive_close::UnresponsiveProbe::Missing => {
+                                Err(HostError {
+                                    message: "unknown_session".into(),
+                                })
+                            }
                         })
                     };
                     let _ = answer_tx.send(answer);
                 });
-                *self.pending_probe.lock().expect("hosted child state lock poisoned") =
-                    Some(answer_rx);
+                *self
+                    .pending_probe
+                    .lock()
+                    .expect("hosted child state lock poisoned") = Some(answer_rx);
             }
             HeartbeatStep::Close => self.start_close(),
             HeartbeatStep::Gone => {
@@ -327,9 +364,9 @@ impl HostSessionHandle {
                 Ok(Err(error)) => {
                     let running = self.liveness.status().is_running();
                     let missing = is_host_session_missing(None, &error.message);
-                    let next = self.liveness.step(|machine, changes| {
-                        machine.refused(now, missing, changes)
-                    });
+                    let next = self
+                        .liveness
+                        .step(|machine, changes| machine.refused(now, missing, changes));
                     if next == HeartbeatStep::Gone {
                         self.session_gone();
                         return Ok(());
@@ -340,8 +377,10 @@ impl HostSessionHandle {
                 }
                 // Still in flight: the machine counts the deadline; the probe stays single-flight.
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    *self.pending_probe.lock().expect("hosted child state lock poisoned") =
-                        Some(answer_rx);
+                    *self
+                        .pending_probe
+                        .lock()
+                        .expect("hosted child state lock poisoned") = Some(answer_rx);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
             }
@@ -349,7 +388,10 @@ impl HostSessionHandle {
         refused.map_or(Ok(()), Err)
     }
     fn start_close(&self) {
-        let mut pending = self.pending_close.lock().expect("hosted child state lock poisoned");
+        let mut pending = self
+            .pending_close
+            .lock()
+            .expect("hosted child state lock poisoned");
         if pending.is_some() {
             return;
         }
@@ -361,7 +403,10 @@ impl HostSessionHandle {
         *pending = Some(done_rx);
     }
     fn collect_close(&self) {
-        let mut pending = self.pending_close.lock().expect("hosted child state lock poisoned");
+        let mut pending = self
+            .pending_close
+            .lock()
+            .expect("hosted child state lock poisoned");
         let Some(done_rx) = pending.as_ref() else {
             return;
         };
@@ -420,9 +465,14 @@ impl HostSessionHandle {
     }
     /// `onGone(false)`: a live host answered `unknown_session`; the session ended and is detached.
     fn session_gone(&self) {
+        self.session_ended("unknown_session");
+    }
+    /// `endSession({kind: "session_closed", reason})` plus `releaseEndedSession`: the session
+    /// ended on the host, so this child exits and its connection is detached.
+    fn session_ended(&self, reason: &str) {
         self.liveness.stop();
         self.unresponsive_close.stop();
-        self.transport_lost("host session closed: unknown_session".to_string());
+        self.transport_lost(format!("host session closed: {reason}"));
         if let Err(error) = self.current_port().detach() {
             log_failure(
                 "senpi-task absent session detach failed",
@@ -430,6 +480,32 @@ impl HostSessionHandle {
                 &error.message,
             );
         }
+    }
+    /// `clientBinding.onClosed` / `onParked`: a lifecycle frame is a control record, never
+    /// activity. While the confirmed close runs (`closingUnresponsive`) it is a hint, not proof:
+    /// only the host's post-close listing ends the session. Otherwise a `session_closed` frame
+    /// ends this child's session (`endSession`).
+    fn session_frame(&self, event: &crate::manager::child_handle::ManagedChildEvent) {
+        if self.stopped()
+            || matches!(
+                self.liveness.status(),
+                crate::state::host_liveness::HostLivenessStatus::TerminalPending { .. }
+            )
+        {
+            return;
+        }
+        // SAFETY-DIVERGENCE(omo rpc-host/handle.ts park): a parked session is not an exit, but the
+        // Rust manager has no parked-session listener yet, so a parking frame is left to the
+        // heartbeat instead of parking the record.
+        if event.event_type == "session_parked"
+            || matches!(
+                event.reason.as_deref(),
+                Some("handoff_parked" | "idle_evicted")
+            )
+        {
+            return;
+        }
+        self.session_ended(event.reason.as_deref().unwrap_or("session_closed"));
     }
     pub fn start_initial_prompt(&self, text: &str) -> Result<(), HostError> {
         self.begin_turn(text)
@@ -486,17 +562,29 @@ impl ManagedChildHandle for HostSessionHandle {
     }
     fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
         self.require_running()?;
-        self.send_input(InputCommandType::Steer, text, Some(&identity.client_message_id))
+        self.send_input(
+            InputCommandType::Steer,
+            text,
+            Some(&identity.client_message_id),
+        )
     }
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.require_running()?;
         self.teardown.publish_running()?;
         self.send_input(InputCommandType::FollowUp, text, None)
     }
-    fn follow_up_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
         self.require_running()?;
         self.teardown.publish_running()?;
-        self.send_input(InputCommandType::FollowUp, text, Some(&identity.client_message_id))
+        self.send_input(
+            InputCommandType::FollowUp,
+            text,
+            Some(&identity.client_message_id),
+        )
     }
     fn liveness(&self) -> Option<crate::state::host_liveness::HostLivenessStatus> {
         Some(self.liveness.status())
@@ -569,7 +657,12 @@ pub fn to_host_input(command: &IdentifiedInput) -> serde_json::Value {
 
 impl Drop for HostSessionHandle {
     fn drop(&mut self) {
-        if let Some(unsubscribe) = self.event_subscription.get_mut().expect("validated recovery state is present").take() {
+        if let Some(unsubscribe) = self
+            .event_subscription
+            .get_mut()
+            .expect("validated recovery state is present")
+            .take()
+        {
             unsubscribe();
         }
     }
@@ -583,11 +676,15 @@ impl CurrentPortPause {
         Arc<dyn crate::pause::native_child_pause::NativeRunPause>,
         crate::pause::native_child_pause::NativePauseError,
     > {
-        self.0.lock().expect("hosted child state lock poisoned").native_pause().ok_or_else(|| {
-            crate::pause::native_child_pause::NativePauseError::Engine(
-                "native_pause_unavailable".into(),
-            )
-        })
+        self.0
+            .lock()
+            .expect("hosted child state lock poisoned")
+            .native_pause()
+            .ok_or_else(|| {
+                crate::pause::native_child_pause::NativePauseError::Engine(
+                    "native_pause_unavailable".into(),
+                )
+            })
     }
 }
 impl crate::pause::native_child_pause::NativeRunPause for CurrentPortPause {
