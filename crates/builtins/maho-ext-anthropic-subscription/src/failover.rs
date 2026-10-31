@@ -297,6 +297,7 @@ mod tests {
                     source: AccountSource::Login,
                     blocked_until: None,
                     block_reason: None,
+                    ..Default::default()
                 })
                 .collect();
             let store = InMemoryCredentialStore::new();
@@ -381,6 +382,7 @@ mod tests {
             source: AccountSource::Env,
             blocked_until: Some(42.0),
             block_reason: None,
+            ..Default::default()
         };
         let classification = SdkErrorClassification {
             kind: SdkErrorKind::RateLimit,
@@ -444,6 +446,7 @@ mod tests {
             source: AccountSource::Env,
             blocked_until: Some(123.0),
             block_reason: Some("rate_limit".into()),
+            ..Default::default()
         };
         persist_block(&store, "provider", account)
             .await

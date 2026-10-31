@@ -27,6 +27,7 @@ pub mod failover;
 pub mod guidance;
 pub mod long_context;
 pub mod long_context_retry;
+pub mod model_blocks;
 pub mod oauth_login;
 pub mod options;
 pub mod prompt_append;

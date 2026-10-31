@@ -354,6 +354,7 @@ mod tests {
             source: AccountSource::Env,
             blocked_until: None,
             block_reason: None,
+            ..Default::default()
         }
     }
     #[test]

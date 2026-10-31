@@ -268,6 +268,7 @@ mod tests {
                 source: AccountSource::Login,
                 blocked_until: Some(100.0),
                 block_reason: None,
+                ..Default::default()
             },
         )
         .expect("slot");
