@@ -312,6 +312,7 @@ pub enum RpcCommandBody {
         label: Option<String>,
     },
     GetSessionStats,
+    MemoryReport,
     ExportHtml {
         #[serde(skip_serializing_if = "Option::is_none")]
         output_path: Option<String>,

@@ -50,6 +50,7 @@ pub mod event_output_buffer;
 pub mod extension_ui_response;
 pub mod get_entries_command;
 pub mod get_entries_page;
+pub mod memory_report_command;
 pub mod get_snapshot;
 pub mod handoff_activity;
 pub mod held_input_commands;

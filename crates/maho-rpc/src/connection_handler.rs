@@ -1036,6 +1036,7 @@ async fn handle_session_command_with_sink(
             value
         })))),
         RpcCommandBody::GetForkMessages=>{let messages=session.get_user_messages_for_forking().into_iter().map(|(entry_id,text)|serde_json::json!({"entryId":entry_id,"text":text})).collect::<Vec<_>>();("get_fork_messages",Ok(Some(serde_json::json!({"messages":messages}))))},
+        RpcCommandBody::MemoryReport=>("memory_report",crate::memory_report_command::answer_memory_report(session.memory_report_owner()).await.map(Some)),
         RpcCommandBody::GetSessionStats=>{let stats=session.get_session_stats();let mut value=serde_json::json!({"sessionId":stats.session_id,"userMessages":stats.user_messages,"assistantMessages":stats.assistant_messages,"toolCalls":stats.tool_calls,"toolResults":stats.tool_results,"totalMessages":stats.total_messages,"tokens":{"input":stats.tokens.input,"output":stats.tokens.output,"cacheRead":stats.tokens.cache_read,"cacheWrite":stats.tokens.cache_write,"total":stats.tokens.total},"cost":stats.cost});
             if let Some(file)=stats.session_file{value["sessionFile"]=file.into();}
             if let Some(usage)=stats.context_usage{value["contextUsage"]=serde_json::json!({"tokens":usage.tokens,"contextWindow":usage.context_window,"percent":usage.percent});}
@@ -2731,6 +2732,28 @@ mod new_session_tests {
         assert_eq!(response["errorData"]["sessionCwd"], gone);
         assert_eq!(response["errorData"]["fallbackCwd"], "/tmp");
         assert_eq!(session.cwd(), "/tmp");
+    }
+
+    /// senpi `case "memory_report"`: a host started without SENPI_MEMORY_REPORT=1 registered no source, so the
+    /// command is refused by name rather than answered as unknown.
+    #[tokio::test]
+    async fn memory_report_without_the_flag_is_refused_as_disabled() {
+        let session = session();
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"id":"m","type":"memory_report"}))
+                .expect("command");
+        let response = serde_json::to_value(
+            handle_session_command(&session, &command)
+                .await
+                .expect("response"),
+        )
+        .expect("wire");
+        assert_eq!(response["command"], "memory_report");
+        assert_eq!(response["success"], false);
+        assert_eq!(
+            response["error"],
+            "memory_report_disabled: start the host with SENPI_MEMORY_REPORT=1"
+        );
     }
 
     #[tokio::test]

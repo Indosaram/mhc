@@ -996,6 +996,8 @@ pub struct AgentSessionInner {
     recovery_identity: Mutex<Option<crate::session_recovery_identity::SessionRecoveryIdentity>>,
     /// senpi `_structuredLane` (senpi#4272).
     structured_lane: crate::structured_session_lane::StructuredSessionLane,
+    /// senpi `_unregisterMemoryReport`: a no-op unless `SENPI_MEMORY_REPORT=1`; released on dispose.
+    memory_report_unregister: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -3890,6 +3892,45 @@ fn without_deleted_headers(headers: Option<ProviderHeaders>) -> Option<BTreeMap<
     })
 }
 
+/// senpi `registerMemoryReportSession(this, {...})`: read only when a report is requested; a dropped session
+/// reports empty figures until its dispose unregisters it.
+struct SessionMemoryReportSource(std::sync::Weak<AgentSessionInner>);
+
+impl crate::memory_report::memory_report_registry::MemoryReportSessionSource
+    for SessionMemoryReportSource
+{
+    fn session_id(&self) -> String {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner }.session_id())
+            .unwrap_or_default()
+    }
+    fn session_file(&self) -> Option<String> {
+        self.0
+            .upgrade()
+            .and_then(|inner| AgentSession { inner }.session_file())
+    }
+    fn resident_store(&self) -> crate::session_resident_store_size::ResidentStoreSize {
+        self.0
+            .upgrade()
+            .map(|inner| {
+                let stats = AgentSession { inner }
+                    .with_session_manager(|manager| manager.resident_store_stats());
+                crate::session_resident_store_size::ResidentStoreSize {
+                    entries: stats.blob_count,
+                    approx_bytes: stats.blob_bytes,
+                }
+            })
+            .unwrap_or_default()
+    }
+    fn reporters(&self) -> Vec<maho_ext_api::NamedMemoryReporter> {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner }.extension_memory_reporters())
+            .unwrap_or_default()
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -4302,6 +4343,7 @@ impl AgentSession {
                 structured_lane: crate::structured_session_lane::StructuredSessionLane::new(
                     internal_channel,
                 ),
+                memory_report_unregister: Mutex::new(None),
                 recovery_identity: Mutex::new(
                     crate::engine_socket_flag::compact_updates_enabled()
                         .then(crate::session_recovery_identity::SessionRecoveryIdentity::default),
@@ -4547,7 +4589,20 @@ impl AgentSession {
             }));
         lock(&session.lifecycle).release_restore_barrier();
         session.install_agent_next_turn_refresh();
+        // A no-op unless SENPI_MEMORY_REPORT=1: the report reads these only when it is requested.
+        *lock(&session.inner.memory_report_unregister) = Some(
+            crate::memory_report::memory_report_registry::register_memory_report_session(
+                session.memory_report_owner(),
+                Arc::new(SessionMemoryReportSource(Arc::downgrade(&session.inner))),
+                &crate::config::current_env(),
+            ),
+        );
         Ok(session)
+    }
+
+    /// The key this session's memory report source is registered under (senpi keys by object identity).
+    pub fn memory_report_owner(&self) -> u64 {
+        Arc::as_ptr(&self.inner) as usize as u64
     }
 
     fn state(&self) -> MutexGuard<'_, AgentSessionState> {
@@ -19366,6 +19421,9 @@ impl AgentSession {
             return;
         }
         self.structured_lane.dispose();
+        if let Some(unregister) = lock(&self.inner.memory_report_unregister).take() {
+            unregister();
+        }
         lock(&self.inner.nested_host_calls).clear();
         let disposers = std::mem::take(&mut *lock(&self.inner.tool_context_disposers));
         for dispose in disposers {
