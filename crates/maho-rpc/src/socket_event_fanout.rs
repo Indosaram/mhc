@@ -577,6 +577,147 @@ mod tests {
         queue.push_raw(private.to_owned());
         assert_eq!(queue.take_raw().as_deref(), Some(private));
     }
+    // senpi test/socket-event-fanout.test.ts, against the real actor over an in-memory transport that holds one
+    // byte, so a record stays in flight until the test reads it.
+    mod actor {
+        use super::super::*;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, DuplexStream};
+        fn keyed(line: &str, key: &str, demoted: Option<&str>) -> QueueEntry {
+            QueueEntry {
+                line: line.into(),
+                key: Some(key.into()),
+                demoted_line: demoted.map(str::to_owned),
+                on_written: None,
+            }
+        }
+        fn plain(line: &str) -> QueueEntry {
+            QueueEntry {
+                line: line.into(),
+                key: None,
+                demoted_line: None,
+                on_written: None,
+            }
+        }
+        fn actor(max: usize) -> (SocketEventSinkActor, DuplexStream, Arc<Mutex<Vec<String>>>) {
+            let (writer, reader) = tokio::io::duplex(1);
+            let failures: Arc<Mutex<Vec<String>>> = Arc::default();
+            let seen = failures.clone();
+            let actor = SocketEventSinkActor::new(
+                writer,
+                max,
+                DEFAULT_STALL_MS,
+                Arc::default(),
+                move |error| seen.lock().unwrap().push(error),
+            );
+            (actor, reader, failures)
+        }
+        async fn read(reader: &mut DuplexStream, expected: &str) {
+            let mut bytes = vec![0; expected.len()];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                reader.read_exact(&mut bytes),
+            )
+            .await
+            .expect("delivery")
+            .unwrap();
+            assert_eq!(String::from_utf8(bytes).unwrap(), expected);
+        }
+
+        #[tokio::test]
+        async fn delivers_both_records_across_sequential_enqueues() {
+            let (mut actor, mut reader, _) = actor(DEFAULT_QUEUE_BYTES);
+            actor.enqueue(plain("a\n")).unwrap();
+            read(&mut reader, "a\n").await;
+            actor.flush().await.unwrap();
+            actor.enqueue(plain("b\n")).unwrap();
+            read(&mut reader, "b\n").await;
+            actor.flush().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn drains_a_record_enqueued_while_the_previous_drain_is_settling() {
+            let (actor, mut reader, _) = actor(DEFAULT_QUEUE_BYTES);
+            actor.enqueue(plain("a\n")).unwrap();
+            // The first byte is out: the drain holds "a" in flight when "b" arrives.
+            read(&mut reader, "a").await;
+            actor.enqueue(plain("b\n")).unwrap();
+            read(&mut reader, "\nb\n").await;
+        }
+
+        #[tokio::test]
+        async fn keeps_a_superseded_keyed_record_as_its_delta_only_form_instead_of_dropping_it() {
+            let (actor, mut reader, _) = actor(DEFAULT_QUEUE_BYTES);
+            actor.enqueue(plain("barrier\n")).unwrap();
+            read(&mut reader, "b").await;
+            for (delta, full) in [("hel", 1), ("lo ", 2), ("world", 3)] {
+                actor
+                    .enqueue(keyed(
+                        &format!("{{\"delta\":\"{delta}\",\"message\":{{\"full\":{full}}}}}\n"),
+                        "message",
+                        Some(&format!("{{\"delta\":\"{delta}\",\"message\":null}}\n")),
+                    ))
+                    .unwrap();
+            }
+            read(
+                &mut reader,
+                concat!(
+                    "arrier\n",
+                    "{\"delta\":\"hel\",\"message\":null}\n",
+                    "{\"delta\":\"lo \",\"message\":null}\n",
+                    "{\"delta\":\"world\",\"message\":{\"full\":3}}\n"
+                ),
+            )
+            .await;
+        }
+
+        #[tokio::test]
+        async fn replaces_a_superseded_keyed_record_that_has_no_delta_only_form_legacy_caller() {
+            let (actor, mut reader, _) = actor(DEFAULT_QUEUE_BYTES);
+            actor.enqueue(plain("barrier\n")).unwrap();
+            read(&mut reader, "b").await;
+            actor
+                .enqueue(keyed("progress-1\n", "tool:1", None))
+                .unwrap();
+            actor
+                .enqueue(keyed("progress-2\n", "tool:1", None))
+                .unwrap();
+            // Without a demoted form the earlier record is kept verbatim, so nothing is lost.
+            read(&mut reader, "arrier\nprogress-1\nprogress-2\n").await;
+        }
+
+        #[tokio::test]
+        async fn reports_overflow_with_the_queue_shape_and_stops_delivering() {
+            let (actor, mut reader, failures) = actor(16);
+            actor.enqueue(plain("a\n")).unwrap();
+            // "a" is in flight; the next record is what stays queued.
+            read(&mut reader, "a").await;
+            actor.enqueue(plain("0123456789\n")).unwrap();
+            let error = actor
+                .enqueue(plain("abcdefghijklmnop\n"))
+                .expect_err("overflow");
+            assert_eq!(
+                (
+                    error.queued_bytes,
+                    error.incoming_bytes,
+                    error.max_queue_bytes
+                ),
+                (11, 17, 16)
+            );
+            assert_eq!(error.incoming_preview, "abcdefghijklmnop\n");
+            actor.enqueue(plain("after\n")).unwrap();
+            let mut rest = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                reader.read_to_string(&mut rest),
+            )
+            .await
+            .expect("cut")
+            .unwrap();
+            assert_eq!(rest, format!("\n{OVERFLOW_NOTICE}"));
+            assert_eq!(failures.lock().unwrap().len(), 1);
+        }
+    }
     #[test]
     fn undemotable_snapshots_stay_fifo() {
         let mut queue = SocketEventQueue::default();
