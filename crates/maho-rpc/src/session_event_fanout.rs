@@ -191,6 +191,14 @@ impl SessionEventFanout {
             .map_err(|error| error.to_string())?;
         Ok(true)
     }
+    /// Writes one private record raw on a registered connection (senpi `connection.writeRaw`), outside the event
+    /// queue, its overflow preview and recovery shedding; `false` when the connection has no live actor.
+    pub fn enqueue_raw(&self, id: &str, value: &Value) -> bool {
+        let Some(actor) = self.actors.get(id) else {
+            return false;
+        };
+        crate::jsonl::serialize_json_line(value).is_ok_and(|line| actor.enqueue_raw(line))
+    }
     pub fn broadcast_host_record(&mut self, record: &Value) -> Result<Option<Value>, String> {
         if self.actors.is_empty() {
             return Ok(Some(record.clone()));

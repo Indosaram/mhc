@@ -479,8 +479,7 @@ impl HostCore {
                     fanout
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .enqueue_control(&id, frame)
-                        .unwrap_or(false)
+                        .enqueue_raw(&id, frame)
                 })
             }),
         );
@@ -3451,15 +3450,13 @@ fn write_presenter_reply(
         let _ = writer.enqueue("", reply.clone());
         return;
     };
-    let written = fanout.upgrade().map(|fanout| {
+    let written = fanout.upgrade().is_some_and(|fanout| {
         fanout
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .enqueue_control(connection, reply)
+            .enqueue_raw(connection, reply)
     });
-    if !matches!(written, Some(Ok(true)))
-        && let Some(presenters) = presenters.upgrade()
-    {
+    if !written && let Some(presenters) = presenters.upgrade() {
         presenters.reply_failed(connection);
     }
 }
@@ -3579,6 +3576,156 @@ mod handoff_tests {
         .await
         .unwrap();
         core.handle(None, "{not json").await.unwrap();
+    }
+    /// senpi presenter-rpc "private resolution and the next form survive an outstanding socket drain": private
+    /// frames ride the raw lane, so a peer shed into recovery by an overflowing backlog still receives the request,
+    /// its resolution and the next request, and no overflow error ever previews them.
+    #[tokio::test]
+    async fn private_frames_survive_an_outstanding_socket_drain_recovery_and_overflow() {
+        use tokio::io::AsyncBufReadExt;
+        let Some(core) = std::sync::Arc::try_unwrap(idle_core()).ok() else {
+            panic!("the idle core is uniquely owned");
+        };
+        let core = core.with_mcp_presenter_enforcement(true);
+        let failures = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let failed = std::sync::Arc::clone(&failures);
+        // A 64-byte pipe nobody reads until the backlog is queued: the drain stays outstanding.
+        let (write, read) = tokio::io::duplex(64);
+        core.register_connection(
+            "human",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                256,
+                30_000,
+                std::sync::Arc::clone(&core.blocked),
+                move |error| failed.lock().unwrap().push(error),
+            ),
+        );
+        core.fanout
+            .lock()
+            .unwrap()
+            .set_capabilities(
+                "human",
+                &[crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY.to_owned()],
+            )
+            .unwrap();
+        let unbind = core
+            .presenters
+            .bind(
+                "session",
+                "durable-socket-drain",
+                std::sync::Arc::new(|| {}),
+                &["human".to_owned()],
+            )
+            .unwrap();
+        let authority = core.presenters.authority().unwrap().clone();
+        let sender = core.presenters.connection("human").unwrap();
+        let owner = authority.enroll(None);
+        let registration = owner
+            .register(
+                unbind.binding(),
+                &sender,
+                crate::mcp_form_types::McpPresenterKind::Desktop,
+            )
+            .unwrap();
+        owner.acquire(&registration).unwrap();
+        // Overflow the 256-byte budget: the resync peer is shed and every later event is dropped until it resyncs.
+        for _ in 0..8 {
+            core.fanout
+                .lock()
+                .unwrap()
+                .enqueue_control(
+                    "human",
+                    &serde_json::json!({"type":"notice","text":"backlog".repeat(10)}),
+                )
+                .unwrap();
+        }
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        let mut seen = Vec::<serde_json::Value>::new();
+        async fn until(
+            lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+            seen: &mut Vec<serde_json::Value>,
+            kind: &str,
+        ) -> serde_json::Value {
+            loop {
+                let line =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                seen.push(value.clone());
+                if value["type"] == kind {
+                    return value;
+                }
+            }
+        }
+        let operation = maho_ai::utils::abort::AbortController::new();
+        // This authority runs on the real clock: give the forms a deadline the test cannot reach.
+        let form = || {
+            let mut input = crate::mcp_form_dialog::tests::input(&operation);
+            input.wire.deadline_ms = 60_000.;
+            input
+        };
+        let presentation = unbind.binding().capture().unwrap();
+        let first = tokio::spawn((presentation.present)(form()));
+        let frame = until(&mut lines, &mut seen, "mcp_form_request").await;
+        let mut envelope = serde_json::json!({});
+        for key in [
+            "sessionId",
+            "bindingEpoch",
+            "attachmentEpoch",
+            "grantId",
+            "dialogId",
+            "dialogToken",
+            "formRevision",
+        ] {
+            envelope[key] = frame[key].clone();
+        }
+        let mut presented = envelope.clone();
+        presented["type"] = "mcp_form_presented".into();
+        authority.receive(&sender, &presented);
+        let mut response = envelope;
+        response["type"] = "mcp_form_response".into();
+        response["action"] = "accept".into();
+        response["content"] = serde_json::json!({"value":"x"});
+        authority.receive(&sender, &response);
+        assert!(first.await.unwrap().human_admission());
+        until(&mut lines, &mut seen, "mcp_form_resolved").await;
+        let second = tokio::spawn((presentation.present)(form()));
+        until(&mut lines, &mut seen, "mcp_form_request").await;
+        unbind.binding().dispose();
+        assert_eq!(
+            second.await.unwrap().kind,
+            crate::mcp_form_types::McpFormOutcomeKind::OperationAborted
+        );
+        let private: Vec<_> = seen
+            .iter()
+            .filter_map(|value| value["type"].as_str())
+            .filter(|kind| kind.starts_with("mcp_form_"))
+            .collect();
+        assert_eq!(
+            private,
+            ["mcp_form_request", "mcp_form_resolved", "mcp_form_request"]
+        );
+        // The backlog was shed (at most the one notice already in flight reached the pipe).
+        assert!(
+            seen.iter()
+                .filter(|value| value["type"] == "notice")
+                .count()
+                <= 1
+        );
+        let token = frame["dialogToken"].as_str().unwrap();
+        assert!(
+            failures
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|error| !error.contains(token))
+        );
+        unbind.unbind(&core.presenters);
+        core.unregister_connection("human");
     }
     #[tokio::test]
     async fn protocol_info_names_the_hosts_tool_runtime_and_drops_a_negotiated_one() {
