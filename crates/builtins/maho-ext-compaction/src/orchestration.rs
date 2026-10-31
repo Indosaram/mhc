@@ -146,6 +146,11 @@ pub fn resolve_idle_warm_action(
         Some(_) => IdleWarmAction::None,
     }
 }
+/// senpi `admitContextToolResult`: one text result under the context window's admission cap.
+pub fn admit_context_tool_result(text: &str, context_window: u64) -> (String, bool) {
+    let result = admit_tool_result(text, context_window);
+    (result.text, result.projected)
+}
 pub fn admit_context_tool_results(messages: &[Value], window: u64, enabled: bool) -> Vec<Value> {
     admit_owned_context_tool_results(messages.to_vec(), window, enabled)
 }

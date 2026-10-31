@@ -8,7 +8,9 @@ use crate::{
         record_reduction_usage, snapshot_reduction_state,
     },
     emergency_prune::EmergencyPruneLatch,
-    extension_wiring, openai_remote_model, orchestration,
+    extension_wiring,
+    openai_remote::OpenAiRemoteReplayBoundary,
+    openai_remote_model, orchestration,
     overflow_retry::estimate_total_tokens,
     policy, speculative,
 };
@@ -35,10 +37,17 @@ pub struct ContextReductionLifecycleOptions {
     pub emergency_prune_latch: Arc<Mutex<EmergencyPruneLatch>>,
     pub emergency_instructions: String,
     pub get_tools: Arc<dyn Fn() -> Vec<maho_ai::types::Tool> + Send + Sync>,
+    /// The tool declarations the provider request carries, freeform and grammar formats included;
+    /// the OpenAI remote replay boundary converts its sealed baseline with them.
+    pub get_request_tools: Arc<dyn Fn() -> Vec<maho_ai::types::Tool> + Send + Sync>,
     pub get_policy: Arc<
         dyn Fn(&ExtensionContext) -> Result<ContextReductionPolicy, ExtensionFailure> + Send + Sync,
     >,
     pub log: ContextReductionLog,
+    /// The OpenAI remote replay boundary the latest live context event sealed, read by the
+    /// `before_provider_request` payload rewrite. senpi carries it on the converted input items as
+    /// non-enumerable metadata; a typed `AgentMessage` cannot, so it travels beside the request.
+    pub replay_boundary: Arc<Mutex<Option<OpenAiRemoteReplayBoundary>>>,
 }
 
 #[derive(Default)]
@@ -99,6 +108,13 @@ fn restore(inner: &mut Inner, context: &ExtensionContext) {
     inner.session_id = Some(session_id.to_owned());
 }
 
+fn clear_replay_boundary(options: &ContextReductionLifecycleOptions) {
+    *options
+        .replay_boundary
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+}
+
 fn context_handler(
     api: &ExtensionApi,
     handoff: &ReductionHandoff,
@@ -120,6 +136,11 @@ fn context_handler(
     // The journal may not yet contain the current user/tool message. The dispatcher, not
     // transcript equality, owns request provenance.
     let live = *source != ContextEventSource::Projection;
+    if live {
+        // A live event that fails below must not leave the previous request's boundary behind for
+        // the next provider request to replay against.
+        clear_replay_boundary(options);
+    }
     let mut scratch = inner.state.clone();
     let working = if live { &mut inner.state } else { &mut scratch };
     if !live {
@@ -180,10 +201,13 @@ fn context_handler(
         .map_err(|error| ExtensionFailure::new(error.to_string()))?;
     let native = openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref());
     // Only the provider-native replay boundary reads the branch; skip the full branch copy otherwise.
-    let branch_entries = if native {
-        speculative::branch_values(context)
+    let (branch_entries, request_tools) = if native {
+        (
+            speculative::branch_values(context),
+            (options.get_request_tools)(),
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let mut live_latch = options
         .emergency_prune_latch
@@ -200,6 +224,7 @@ fn context_handler(
         entry_ids,
         model: context.model.as_ref(),
         branch_entries: &branch_entries,
+        tools: &request_tools,
         context_window: window,
         prompt_context_window: prompt_window as u64,
         usage_tokens: tokens,
@@ -230,6 +255,12 @@ fn context_handler(
             "emergency_prune",
             json!({"route":"context-event","tokensBefore":tokens_before,"tokens":tokens}),
         );
+    }
+    if live {
+        *options
+            .replay_boundary
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = output.replay_boundary;
     }
     let result = EventResult::Context {
         messages: Some(
@@ -394,6 +425,31 @@ mod tests {
         scratch.compaction_required = false;
         assert_eq!(scratch.anchor_tokens, None);
         assert!(live.compaction_required && live.anchor_tokens == Some(9));
+    }
+
+    #[test]
+    fn clearing_drops_a_stored_replay_boundary() {
+        let options = ContextReductionLifecycleOptions {
+            emergency_prune_latch: Arc::default(),
+            emergency_instructions: String::new(),
+            get_tools: Arc::new(Vec::<maho_ai::types::Tool>::new),
+            get_request_tools: Arc::new(Vec::<maho_ai::types::Tool>::new),
+            get_policy: Arc::new(|_: &ExtensionContext| Ok(ContextReductionPolicy::default())),
+            log: Arc::new(|_: &ExtensionContext, _: &str, _: Value| {}),
+            replay_boundary: Arc::new(Mutex::new(Some(OpenAiRemoteReplayBoundary {
+                compaction_entry_id: "c".into(),
+                expected_ordinals: vec![0],
+                expected_items: vec![json!({"role":"user","content":"kept"})],
+            }))),
+        };
+        clear_replay_boundary(&options);
+        assert_eq!(
+            *options
+                .replay_boundary
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            None
+        );
     }
 
     #[test]

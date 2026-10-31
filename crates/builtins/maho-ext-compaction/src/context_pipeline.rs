@@ -8,6 +8,8 @@ pub struct CompactionContextInput<'a> {
     pub entry_ids: &'a [Option<String>],
     pub model: Option<&'a maho_ai::types::Model>,
     pub branch_entries: &'a [Value],
+    /// The tool declarations the provider request carries; see `mark_openai_remote_replay_boundary`.
+    pub tools: &'a [maho_ai::types::Tool],
     pub context_window: u64,
     pub prompt_context_window: u64,
     pub usage_tokens: Option<f64>,
@@ -82,7 +84,7 @@ pub fn build_compaction_context(input: CompactionContextInput<'_>) -> Result<Com
             (emergency.messages, entry_ids, tokens, emergency.needs_aggressive_compaction, true)
         }
     };
-    let (marked, replay_boundary) = mark_openai_remote_replay_boundary(pruned, &entry_ids, input.model, input.branch_entries);
+    let (marked, replay_boundary) = mark_openai_remote_replay_boundary(pruned, &entry_ids, input.model, input.branch_entries, input.tools);
     let reminded = if input.reminder.is_some_and(|reminder| !reminder.is_empty()) { inject_token_budget_reminder(&marked, input.reminder) } else { marked };
     let outgoing = repair_orphaned_tool_results(&typed_messages(&reminded)?, input.now);
     // senpi context-pipeline.ts:90-100: a prompt that is legal only because the emergency prune
@@ -121,7 +123,7 @@ mod tests {
         let mut latch = EmergencyPruneLatch::default();
         let mut state = ContextReductionState { engaged: true, ..Default::default() };
         let output = build_compaction_context(CompactionContextInput {
-            messages: &messages, entry_ids: &[None, None, None], model: None, branch_entries: &[], context_window: 12_000,
+            messages: &messages, entry_ids: &[None, None, None], model: None, branch_entries: &[], tools: &[], context_window: 12_000,
             prompt_context_window: 12_000, usage_tokens: None, provider_native_path: false,
             tool_admission_enabled: false, breaker_fallback: false, lane_owns_compaction: false,
             append_only_transcript: false, context_reduction_state: Some(&mut state), unreduced_messages: None,
@@ -138,7 +140,7 @@ mod tests {
         let messages = [json!({"role":"user","content":"keep this transcript","timestamp":1})];
         let mut latch = EmergencyPruneLatch::default();
         let output = build_compaction_context(CompactionContextInput {
-            messages: &messages, entry_ids: &[None], model: None, branch_entries: &[], context_window: 100_000,
+            messages: &messages, entry_ids: &[None], model: None, branch_entries: &[], tools: &[], context_window: 100_000,
             prompt_context_window: 100_000, usage_tokens: Some(90_000.0), provider_native_path: false,
             tool_admission_enabled: false, breaker_fallback: true, lane_owns_compaction: false,
             append_only_transcript: false, context_reduction_state: None, unreduced_messages: None,

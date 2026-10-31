@@ -1311,8 +1311,30 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         }
         let calls = provider.get_call_log();
         assert_eq!(calls.len(), 2);
-        assert_ne!(
+        // senpi v2026.10.27-2: the reminder never touches the system prompt (cache prefix); it rides a hidden
+        // before-prompt message once per epoch, so the second request carries the first notice and no new one.
+        assert_eq!(
             calls[0].context.system_prompt, calls[1].context.system_prompt,
+            "reminder must not change the system prompt"
+        );
+        let notices = |index: usize| {
+            serde_json::to_string(&calls[index].context.messages)
+                .expect("serialized request messages")
+                .matches("[context budget]")
+                .count()
+        };
+        assert!(
+            !calls[0]
+                .context
+                .system_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("[context budget]")
+        );
+        assert_eq!(notices(0), 1, "first request carries the reminder message");
+        // The first notice may replay from the transcript; a second, new one must not be added.
+        assert!(
+            notices(1) <= 1,
             "reminder lease must not repeat on the next request"
         );
         assert!(
@@ -2590,5 +2612,124 @@ fn live_lane_policy_refuses_a_relative_session_cwd_instead_of_failing_open() {
             &ctx
         )
         .expect("foreign lane never reads settings")
+    );
+}
+
+struct CwdCaptureRegistry {
+    model: Model,
+    seen: std::sync::Mutex<Vec<Option<String>>>,
+}
+impl ModelRegistry for CwdCaptureRegistry {
+    fn get_all(&self) -> Vec<Model> {
+        vec![self.model.clone()]
+    }
+    fn get_available(&self) -> Vec<Model> {
+        self.get_all()
+    }
+    fn find(&self, _: &str, _: &str) -> Option<Model> {
+        Some(self.model.clone())
+    }
+    fn has_configured_auth(&self, _: &Model) -> bool {
+        true
+    }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> {
+        Box::pin(async { panic!("summary must use model-scoped auth") })
+    }
+    fn get_api_key_and_headers<'a>(
+        &'a self,
+        _: &'a Model,
+    ) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+        Box::pin(async {
+            Ok(ResolvedRequestAuth {
+                ambient: false,
+                auth: maho_ai::models::ProviderAuthResult {
+                    api_key: Some("faux".into()),
+                    headers: None,
+                    base_url: None,
+                },
+                extra_body: None,
+                upstream_model_id: None,
+                service_tier: None,
+                env: None,
+            })
+        })
+    }
+    fn stream(
+        &self,
+        model: &Model,
+        _: &maho_ai::types::Context,
+        options: Option<maho_ai::types::StreamOptions>,
+    ) -> Result<maho_ai::utils::event_stream::AssistantMessageEventStream, ExtensionFailure> {
+        self.seen
+            .lock()
+            .expect("cwd capture")
+            .push(options.and_then(|options| options.request.cwd));
+        let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+        let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
+        response.stop_reason = maho_ai::types::StopReason::Stop;
+        response.error_message = None;
+        response.content = vec![maho_ai::types::ContentBlock::Text(
+            maho_ai::types::TextContent {
+                text: "summary".into(),
+                text_signature: None,
+                audience: None,
+            },
+        )];
+        stream.push(maho_ai::types::AssistantMessageEvent::Done {
+            reason: maho_ai::types::DoneReason::Stop,
+            message: response,
+        });
+        Ok(stream)
+    }
+}
+
+#[tokio::test]
+async fn context_summary_request_carries_the_session_cwd() {
+    let model: Model = serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"faux","provider":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("cwd model");
+    let entries = vec![
+        serde_json::json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(1000),"timestamp":0}}),
+        serde_json::json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue","timestamp":0}}),
+    ];
+    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+    settings.keep_recent_tokens = 1;
+    let preparation =
+        maho_core::compaction::compaction::prepare_compaction(&entries, &settings, true, false)
+            .expect("cwd preparation");
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {
+        generation: 1,
+        expected_revision: 0,
+        model: model.clone(),
+        context_window: 100000,
+        preparation,
+        branch_entries: entries,
+        prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default,
+        custom_instructions: None,
+        system_prompt: None,
+        tools: Vec::new(),
+        origin: None,
+    };
+    let registry = Arc::new(CwdCaptureRegistry {
+        model,
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut ctx = context();
+    ctx.cwd = "/work/session".into();
+    ctx.session_manager = Arc::new(PolicySession(Arc::new(PolicyActions::new(
+        policy_settings(),
+    ))));
+    ctx.model_registry = registry.clone();
+    let result = maho_ext_compaction::speculative::run_extension_compaction_for_context(
+        &ctx,
+        &snapshot,
+        None,
+        &|_| {},
+    )
+    .await
+    .expect("summary generated")
+    .expect("summary result");
+    assert_eq!(result.summary, "summary");
+    assert_eq!(
+        *registry.seen.lock().expect("cwd capture"),
+        vec![Some("/work/session".to_owned())]
     );
 }

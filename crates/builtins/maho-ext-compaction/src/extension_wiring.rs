@@ -231,6 +231,22 @@ pub fn summarization_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::typ
         .collect()
 }
 
+/// The active tools as the provider request declares them: [`summarization_tools`] plus each
+/// tool's freeform and constrained-sampling declaration, which decide whether a tool call converts
+/// to a Responses `custom_tool_call` or a `function_call`.
+pub fn request_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::types::Tool> {
+    summarization_tools(api)
+        .into_iter()
+        .map(|mut tool| {
+            if let Some(definition) = api.runtime.live_tool_definition(&tool.name) {
+                tool.freeform = definition.freeform;
+                tool.constrained_sampling = definition.constrained_sampling;
+            }
+            tool
+        })
+        .collect()
+}
+
 pub fn prepare_accepted_restoration(
     state: &mut crate::restoration_tracker::RestorationTrackerState,
     context: &maho_ext_api::ExtensionContext,

@@ -115,6 +115,26 @@ fn oversized_text_projection_preserves_surrounding_blocks() {
     assert_ne!(output[0]["content"][2], input[0]["content"][2]);
 }
 #[test]
+fn single_result_marker_is_not_admission_state() {
+    let marked = format!(
+        "head\n{TOOL_ADMISSION_MARKER_PREFIX} kept 10 of ~99 tokens]\n{}\ntail",
+        "x".repeat(100000)
+    );
+    let (text, admitted) = admit_context_tool_result(&marked, 100000);
+    assert!(admitted);
+    assert_ne!(text, marked);
+}
+#[test]
+fn single_result_split_surrogate_keeps_upstream_lengths() {
+    let (text, admitted) =
+        admit_context_tool_result(&format!("a{}", "\u{1f600}".repeat(20000)), 100000);
+    assert!(admitted);
+    assert_eq!(text.encode_utf16().count(), 26265);
+    let (head, rest) = text.split_once('\n').expect("head");
+    assert_eq!(head.encode_utf16().count(), 19659);
+    assert!(rest.starts_with("[tool result projected: kept 6554 of ~10001 tokens]\n"));
+}
+#[test]
 fn reminder_alone_becomes_a_hidden_before_prompt_message() {
     let message = resolve_before_agent_start_message(
         None,
