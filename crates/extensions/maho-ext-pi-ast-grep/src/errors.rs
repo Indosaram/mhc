@@ -73,6 +73,15 @@ mod tests {
         );
     }
     #[test]
+    fn timeout_source_is_search_timeout_error() {
+        let error = ProcessError::Timeout(SearchTimeoutError::new(7));
+        let source = std::error::Error::source(&error).expect("timeout has a source");
+        assert_eq!(
+            source.downcast_ref::<SearchTimeoutError>(),
+            Some(&SearchTimeoutError::new(7))
+        );
+    }
+    #[test]
     fn download_error_keeps_message() {
         assert_eq!(
             AstGrepDownloadError::new("HTTP 404: Not Found").to_string(),
