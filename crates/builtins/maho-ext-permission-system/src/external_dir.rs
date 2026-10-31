@@ -53,16 +53,20 @@ pub fn resolve_without_open(path:&Path)->PathBuf {
                 if hops>40{return normalize(&pending.iter().fold(candidate,|path,part|path.join(part)));}
                 match std::fs::read_link(&candidate){
                     Ok(link)=>{
-                        if link.is_absolute() || link.to_string_lossy().starts_with(['/', '\\']) {
-                            resolved = if link.has_root() && !link.to_string_lossy().starts_with(['/', '\\']) {
-                                let mut parts: VecDeque<String> = link.to_string_lossy().split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_owned).collect();
+                        let mut parts:VecDeque<String>=link.to_string_lossy().split(['/', '\\']).filter(|part|!part.is_empty()).map(str::to_owned).collect();
+                        let is_drive = (link.has_root() && !link.to_string_lossy().starts_with(['/', '\\'])) || {
+                            let s = link.to_string_lossy();
+                            let b = s.as_bytes();
+                            b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'/' || b[2] == b'\\')
+                        };
+                        if link.is_absolute() || link.to_string_lossy().starts_with(['/', '\\']) || is_drive {
+                            resolved = if is_drive {
                                 let prefix = parts.pop_front().unwrap_or_default();
                                 PathBuf::from(format!("{prefix}{}", std::path::MAIN_SEPARATOR))
                             } else {
                                 PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
                             };
                         }
-                        let parts:Vec<String>=link.to_string_lossy().split(['/', '\\']).filter(|part|!part.is_empty()).map(str::to_owned).collect();
                         for part in parts.into_iter().rev(){pending.push_front(part);}
                     }
                     Err(_)=>return normalize(&pending.iter().fold(candidate,|path,part|path.join(part))),
