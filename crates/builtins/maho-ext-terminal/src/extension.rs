@@ -517,17 +517,8 @@ impl TakeoverContext {
         readable_manifest: bool,
     ) {
         let settled = self.settle_restored_commands(&mut digest).await;
-        if let Some(lifecycle) = self.state.lock().await.as_mut() {
-            for monitor_id in &settled {
-                lifecycle.writer.forget_restored(monitor_id);
-            }
-            // Upstream `persistRestored`: a readable manifest is rewritten to the restore's truth,
-            // so a watch that did not come back is gone from disk and never re-run.
-            if readable_manifest {
-                lifecycle.writer.persist_restored(terminal_now_ms()).await;
-            }
-        }
-        // A watch that did not come back never runs again: its baseline dir goes with it.
+        // A watch that did not come back never runs again: its baseline dir goes with it (upstream
+        // removes these before its generation check).
         for result in digest
             .results
             .iter()
@@ -538,6 +529,28 @@ impl TakeoverContext {
                 &result.monitor_id,
             )
             .await;
+        }
+        // Upstream `if (generation !== state.generation) return;`: a restore that a newer
+        // generation overtook touches neither that generation's manifest nor its digest slot, and
+        // sweeps, flushes and signals nothing.
+        if self
+            .digests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation
+            != self.generation
+        {
+            return;
+        }
+        if let Some(lifecycle) = self.state.lock().await.as_mut() {
+            for monitor_id in &settled {
+                lifecycle.writer.forget_restored(monitor_id);
+            }
+            // Upstream `persistRestored`: a readable manifest is rewritten to the restore's truth,
+            // so a watch that did not come back is gone from disk and never re-run.
+            if readable_manifest {
+                lifecycle.writer.persist_restored(terminal_now_ms()).await;
+            }
         }
         let mut digests = self
             .digests
@@ -2720,9 +2733,10 @@ mod persistence_tests {
     /// A takeover that lands after a newer generation started never overwrites that generation's digest.
     #[tokio::test]
     async fn own_from_a_stale_generation_sets_no_digest() {
-        let mut fixture = fixture(1, None);
-        persisted_watch(&fixture, "mon_STALEGEN00000001").await;
-        fixture.context.digests.lock().unwrap().generation = 2;
+        let fixture = fixture(1, None);
+        // The script exits 0 at once, so the grace window settles it `completed`; a stale restore
+        // must still neither forget it from the bound lifecycle nor rewrite the manifest.
+        persisted_command(&fixture, "mon_STALEGEN00000001", "true").await;
         let mut lifecycle = crate::terminal_state::TerminalStateLifecycle::new(
             &fixture.session_dir,
             "terminal-persistence",
@@ -2735,17 +2749,77 @@ mod persistence_tests {
                 terminal_now_ms(),
             )
             .unwrap();
-        fixture.context.own(lifecycle, terminal_now_ms()).await;
-        decided(&mut fixture).await;
-        assert!(
+        // `own` up to the detached grace window, inline so the test awaits `decide` itself.
+        let restore_state = lifecycle.read_restore_state().await;
+        let digest = {
+            let mut manager = fixture.context.manager.lock().unwrap();
+            let mut monitors = fixture.context.monitors.lock().unwrap();
+            lifecycle.apply_restore(
+                restore_state,
+                &mut manager,
+                &mut monitors,
+                terminal_now_ms(),
+                None,
+                &fixture.context.settings,
+            )
+        };
+        *fixture.context.state.lock().await = Some(lifecycle);
+        // A newer generation started meanwhile: it owns the slot (its deferred note).
+        fixture.context.digests.lock().unwrap().generation = 2;
+        fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .set(self::digest(
+                crate::restore_digest::RestoreDigestOutcome::Deferred,
+                2,
+            ));
+        let flushes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = flushes.clone();
+        let mut context = fixture.context.clone();
+        context.flush = Some(Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        // The grace window ends when the script exits (bounded by RESTORE_GRACE_MS).
+        context.decide(digest, 0.0, true).await;
+        assert_eq!(
+            *fixture.decided.borrow(),
+            0,
+            "a stale restore signals nothing"
+        );
+        assert_eq!(flushes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let slot = fixture
+            .context
+            .digests
+            .lock()
+            .unwrap()
+            .slot
+            .pending()
+            .map(|message| (message.details.generation, message.details.outcome));
+        assert_eq!(
+            slot,
+            Some((2, crate::restore_digest::RestoreDigestOutcome::Deferred)),
+            "the newer generation's slot is untouched"
+        );
+        assert_eq!(
+            manifest_ids(&fixture),
+            ["mon_STALEGEN00000001"],
+            "the stale restore rewrites no manifest"
+        );
+        assert_eq!(
             fixture
                 .context
-                .digests
+                .state
                 .lock()
+                .await
+                .as_ref()
                 .unwrap()
-                .slot
-                .pending()
-                .is_none()
+                .writer
+                .monitor_ids(),
+            ["mon_STALEGEN00000001"],
+            "the bound lifecycle's entries are untouched"
         );
         teardown(&fixture);
     }
