@@ -1733,6 +1733,26 @@ impl Extension for TerminalExtension {
                     ) {
                         return tool_result(refused);
                     }
+                    // Upstream `registerFile` is awaited: the file branch proves its target
+                    // with no manager/registry lock held across the await.
+                    let file_result = if crate::tools::monitor_schema::is_file_create_input(
+                        &call.params,
+                    ) && call.params.get("action").and_then(Value::as_str)
+                        != Some("rearm")
+                    {
+                        Some(
+                            crate::tools::monitor::create_file_monitor(
+                                &manager,
+                                &monitors,
+                                &call.params,
+                                &cwd,
+                                approved_parent.as_deref(),
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
                     let (result, recorded) = {
                         let mut manager = manager
                             .lock()
@@ -1740,18 +1760,21 @@ impl Extension for TerminalExtension {
                         let mut monitors = monitors
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let result = crate::tools::monitor::execute_configured_monitor_in(
-                            &mut manager,
-                            &mut monitors,
-                            &call.params,
-                            &cwd,
-                            approved_parent.as_deref(),
-                            shell.as_deref(),
-                            &settings,
-                            lifecycle
-                                .as_ref()
-                                .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
-                        );
+                        let result = match file_result {
+                            Some(result) => result,
+                            None => crate::tools::monitor::execute_configured_monitor_in(
+                                &mut manager,
+                                &mut monitors,
+                                &call.params,
+                                &cwd,
+                                approved_parent.as_deref(),
+                                shell.as_deref(),
+                                &settings,
+                                lifecycle
+                                    .as_ref()
+                                    .and_then(|lifecycle| lifecycle.writer.terminal_dir()),
+                            ),
+                        };
                         if call.params.get("action").and_then(Value::as_str) == Some("rearm")
                             && let Some(notifier) = notifier
                                 .lock()

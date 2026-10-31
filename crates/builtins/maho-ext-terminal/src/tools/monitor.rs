@@ -320,6 +320,102 @@ pub fn execute_configured_monitor_in(
     result
 }
 
+/// monitor.ts file branch with `registry.registerFile` awaited: the capacity slot is reserved,
+/// the target is proven under the registration deadline with no registry or manager lock held
+/// across the await (`MonitorRegistry::register_file_guarded`), and the proven watch owns the slot.
+pub async fn create_file_monitor(
+    manager: &std::sync::Mutex<TerminalManager>,
+    registry: &std::sync::Mutex<MonitorRegistry>,
+    input: &Value,
+    cwd: &std::path::Path,
+    approved_parent: Option<&std::path::Path>,
+) -> TerminalToolResult {
+    let (Some(description), Some(path)) = (
+        input
+            .get("description")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty()),
+        input
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty()),
+    ) else {
+        return error_result("monitor requires description and command or path to start a watcher.");
+    };
+    if input.get("wakes_per_hour").is_some() {
+        return error_result(
+            "wakes_per_hour applies to persistent command monitors (command with persistent: true); other watches are not wake-paced.",
+        );
+    }
+    if input.get("filter").is_some() {
+        return error_result("Native file monitors do not support filter.");
+    }
+    if input.get("human_input").and_then(Value::as_bool) == Some(true) {
+        return error_result(
+            "human_input applies to command monitors; a file watch carries no message text.",
+        );
+    }
+    let persistent = input.get("persistent").and_then(Value::as_bool) == Some(true);
+    let requested = super::monitor_schema::resolve_timeout_ms(
+        input.get("timeout_ms").and_then(Value::as_f64),
+    );
+    // A persistent watch has no deadline; its registration is bounded by the default timeout.
+    let registration_timeout = if persistent {
+        DEFAULT_MONITOR_TIMEOUT_MS
+    } else {
+        requested
+    };
+    let lifetime = if persistent {
+        (DURABLE_MONITOR_EXPIRY_MS, true)
+    } else {
+        (requested, false)
+    };
+    let event = if input.get("event").and_then(Value::as_str) == Some("modify") {
+        crate::terminal_manifest_model::FileEvent::Modify
+    } else {
+        crate::terminal_manifest_model::FileEvent::Create
+    };
+    let reservation = match manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reserve()
+    {
+        Ok(Some(reservation)) => reservation,
+        Ok(None) => {
+            return error_result("Cannot create file monitor: terminal capacity is already in use.");
+        }
+        Err(error) => return error_result(error.to_string()),
+    };
+    let registered = MonitorRegistry::register_file_guarded(
+        registry,
+        crate::file_monitor_source::FileRegistrationRequest {
+            description: description.to_owned(),
+            path: std::path::PathBuf::from(path),
+            cwd: cwd.to_path_buf(),
+            event,
+            approved_parent: approved_parent.map(std::path::Path::to_path_buf),
+        },
+        Some(reservation),
+        registration_timeout,
+        lifetime,
+        None,
+    )
+    .await;
+    let (id, monitor_id) = match registered {
+        Ok(ids) => ids,
+        Err(error) => return error_result(error.to_string()),
+    };
+    manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .bind_monitor_id(&monitor_id, &id);
+    let mut result = text_result(format!("Monitor started with ID: {monitor_id}"));
+    result.details = json!({"monitor_id":monitor_id,"bash_id":id,"monitor":true})
+        .as_object()
+        .cloned();
+    result
+}
+
 /// Upstream `durableAdmissionError` for a monitor tool call: only a persistent create is capped,
 /// by `terminal.maxDurableMonitors` (no cap when unset), before any spawn or registration. The
 /// count covers the bound writer's durable entries and the specs queued for a writer.
@@ -991,6 +1087,62 @@ pub(crate) mod tests {
         );
         assert!(registry.snapshot().is_empty());
         assert_eq!(manager.size(), 0);
+    }
+    /// The guarded file create: the watch owns the reserved capacity slot (released by its kill),
+    /// a refused approval leaves no watch and no slot, and a filter is refused first.
+    #[tokio::test]
+    async fn guarded_file_create_owns_its_capacity_and_refuses_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("watch"), b"x").unwrap();
+        let manager = std::sync::Mutex::new(TerminalManager::default());
+        let registry = std::sync::Mutex::new(MonitorRegistry::new(|_| {}));
+        let approved = std::fs::canonicalize(dir.path()).unwrap();
+        let ok = create_file_monitor(
+            &manager,
+            &registry,
+            &json!({"description":"w","path":"watch","event":"modify","persistent":true}),
+            dir.path(),
+            Some(&approved),
+        )
+        .await;
+        assert!(ok.is_error.is_none(), "{:?}", ok.content);
+        let details = ok.details.unwrap();
+        let (id, monitor_id) = (
+            details["bash_id"].as_str().unwrap().to_owned(),
+            details["monitor_id"].as_str().unwrap().to_owned(),
+        );
+        assert_eq!(manager.lock().unwrap().resolve_id(&monitor_id), Some(id.clone()));
+        assert_eq!(manager.lock().unwrap().active_size().unwrap(), 1);
+        let snapshot = registry.lock().unwrap().snapshot();
+        assert_eq!(snapshot[0].persistent, Some(true));
+        assert!(snapshot[0].deadline_ms.is_none());
+        let other = tempfile::tempdir().unwrap();
+        let refused = create_file_monitor(
+            &manager,
+            &registry,
+            &json!({"description":"w","path":"watch","event":"modify"}),
+            dir.path(),
+            Some(other.path()),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true));
+        assert_eq!(registry.lock().unwrap().snapshot().len(), 1);
+        assert_eq!(manager.lock().unwrap().active_size().unwrap(), 1);
+        let filtered = create_file_monitor(
+            &manager,
+            &registry,
+            &json!({"description":"w","path":"watch","filter":"x"}),
+            dir.path(),
+            None,
+        )
+        .await;
+        assert_eq!(
+            filtered.content[0].text,
+            "Native file monitors do not support filter."
+        );
+        assert!(registry.lock().unwrap().stop_file(&id));
+        assert_eq!(manager.lock().unwrap().active_size().unwrap(), 0);
+        registry.lock().unwrap().dispose();
     }
     #[test]
     fn schema_is_flat_and_invalid_branch_does_not_spawn() {
