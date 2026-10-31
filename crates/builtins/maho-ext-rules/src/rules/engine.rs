@@ -149,26 +149,28 @@ fn drive_prefix(path: &Path) -> Option<String> {
     }
     let s = path.to_string_lossy();
     let bytes = s.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        if bytes.len() == 2 || bytes[2] == b'/' || bytes[2] == b'\\' {
-            return Some(s[..2].to_ascii_uppercase());
-        }
+    if bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'/' || bytes[2] == b'\\')
+    {
+        return Some(s[..2].to_ascii_uppercase());
     }
     None
 }
 
 pub fn relative_path(base: &Path, target: &Path) -> String {
-    if let (Some(b), Some(t)) = (drive_prefix(base), drive_prefix(target)) {
-        if b != t {
-            return target.to_string_lossy().replace('\\', "/");
-        }
+    if let (Some(b), Some(t)) = (drive_prefix(base), drive_prefix(target))
+        && b != t
+    {
+        return target.to_string_lossy().replace('\\', "/");
     }
     let base = strip_verbatim_prefix(super::finder::absolute(base));
     let target = strip_verbatim_prefix(super::finder::absolute(target));
-    if let (Some(b), Some(t)) = (drive_prefix(&base), drive_prefix(&target)) {
-        if b != t {
-            return target.to_string_lossy().replace('\\', "/");
-        }
+    if let (Some(b), Some(t)) = (drive_prefix(&base), drive_prefix(&target))
+        && b != t
+    {
+        return target.to_string_lossy().replace('\\', "/");
     }
     let base: Vec<_> = base.components().collect();
     let target: Vec<_> = target.components().collect();
