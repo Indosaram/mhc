@@ -16,47 +16,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use maho_ai::utils::abort::{AbortController, AbortReason, AbortSignal};
+use maho_ai::utils::abort::{AbortController, AbortReason};
 use maho_ext_api::{
     ComponentLogger, EventResult, ExtensionContext, ExtensionEvent, ExtensionFailure,
-    ExtensionHandler,
+    ExtensionHandler, with_settle_observer,
 };
+pub use maho_ext_api::{SettleObserver, current_settle_observer};
 
 pub const SETTLE_OBSERVER_BUDGET: Duration = Duration::from_millis(2_000);
 const DEFAULT_HOOK_LABEL: &str = "onSettled";
 const RETIRED: &str = "Settle observer retired";
 const EXHAUSTED: &str = "Settle observer budget exhausted";
-
-/// What an `agent_settled` handler may use to cooperate with the bounded observation.
-#[derive(Clone)]
-pub struct SettleObserver {
-    signal: AbortSignal,
-    hook: Arc<Mutex<String>>,
-}
-
-impl SettleObserver {
-    pub fn signal(&self) -> &AbortSignal {
-        &self.signal
-    }
-
-    /// Names the current await and refuses to begin another phase after retirement.
-    pub fn phase(&self, label: &str) -> Result<(), ExtensionFailure> {
-        if let Some(reason) = self.signal.reason() {
-            return Err(ExtensionFailure::new(reason.message));
-        }
-        *self.hook.lock().unwrap_or_else(PoisonError::into_inner) = label.to_owned();
-        Ok(())
-    }
-}
-
-tokio::task_local! {
-    static CURRENT: SettleObserver;
-}
-
-/// The observer of the `agent_settled` handler running on this task, if any.
-pub fn current_settle_observer() -> Option<SettleObserver> {
-    CURRENT.try_with(Clone::clone).ok()
-}
 
 type Pending = Arc<Mutex<BTreeMap<u64, (AbortController, Option<String>)>>>;
 
@@ -139,11 +109,8 @@ impl SettleObservers {
     ) -> Result<EventResult, ExtensionFailure> {
         let controller = AbortController::new();
         let signal = controller.signal();
-        let hook = Arc::new(Mutex::new(label));
-        let observer = SettleObserver {
-            signal: signal.clone(),
-            hook: hook.clone(),
-        };
+        let observer = SettleObserver::new(signal.clone(), label);
+        let hook = observer.clone();
         let id = {
             let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
             *next += 1;
@@ -155,12 +122,13 @@ impl SettleObservers {
             .insert(id, (controller, session_id.clone()));
         let started = Instant::now();
         let outcome = {
-            let work = CURRENT.scope(observer, handler(event, context));
+            // Invoke inside the scope: a handler may read the observer before its first await.
+            let work = with_settle_observer(observer, async { handler(event, context).await });
             tokio::select! {
                 biased;
                 () = signal.cancelled() => None,
                 () = tokio::time::sleep(self.budget) => {
-                    let current = hook.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                    let current = hook.hook_label();
                     self.logger.warn(
                         "extension_handler_stalled",
                         Some(&serde_json::json!({
