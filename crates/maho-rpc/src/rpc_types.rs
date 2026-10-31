@@ -313,6 +313,32 @@ pub enum RpcCommandBody {
     },
     GetSessionStats,
     MemoryReport,
+    /// senpi `{ type: "continue_from_leaf" }`: continue from the last answer with no new prompt.
+    ContinueFromLeaf,
+    /// senpi `{ type: "interrupt"; turnId?; intent? }`: stop the running turn, scoped to `turnId` when given.
+    Interrupt {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        intent: Option<String>,
+    },
+    RequestSelfSettle,
+    GetModelThinkingLevel {
+        provider: Option<Value>,
+        model_id: Option<Value>,
+    },
+    ResolvePath {
+        path: String,
+    },
+    GetSubscriptionLimits,
+    VerifyApiKey {
+        provider: String,
+        key: String,
+    },
+    AccountOrder {
+        provider: String,
+        names: Option<Vec<String>>,
+    },
     /// senpi `{ type: "wake"; delivery_ids?: string[] }`: one control-endpoint drain pass (answered by the handler).
     Wake {
         #[serde(rename = "delivery_ids", skip_serializing_if = "Option::is_none")]

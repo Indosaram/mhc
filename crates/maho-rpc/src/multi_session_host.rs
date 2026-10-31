@@ -1834,6 +1834,20 @@ impl HostCore {
                     );
                 }
             }
+            // senpi router: every subscription account's latest limit windows, answered without a session.
+            crate::rpc_types::RpcCommandBody::GetSubscriptionLimits => {
+                let accounts = serde_json::to_value(
+                    maho_core::subscription_limits::limit_store::subscription_limits().snapshot(),
+                )
+                .unwrap_or_else(|_| serde_json::json!([]));
+                self.success(
+                    connection,
+                    command.id.clone(),
+                    "get_subscription_limits",
+                    Some(serde_json::json!({ "accounts": accounts })),
+                    None,
+                );
+            }
             crate::rpc_types::RpcCommandBody::ListSessions { include_workers } => {
                 let mut sessions = self.list_rows(include_workers.unwrap_or(false)).await;
                 let kernels =
