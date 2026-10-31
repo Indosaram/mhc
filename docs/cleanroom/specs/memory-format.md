@@ -232,7 +232,6 @@ Error cases: none new; every failure mode of 1.1 degrades to "no expiry".
 | omo-memory-15 | - | N-A | N-A reason: reading git HEAD from files; MIT store never runs or reads git |
 | omo-memory-16 | - | N-A | N-A reason: external-path projection grouping; MIT store has no projection into prompts |
 | omo-memory-17 | - | N-A | N-A reason: external-path name folding for projection; no projection |
-| omo-memory-18 | - | N-A | N-A reason: projection limits (config keys memory.projection.*) only shape the legacy prompt block; the importer does not read them. The changed upstream defaults (0 and 40960) are a config-keys.md matter, not a memory-format one |
 | omo-memory-19 | 1.2 | APPLIES | `expires` is now an interpreted frontmatter key; a value 1.1 cannot read leaves the file without expiry and is imported anyway |
 | omo-memory-20 | - | N-A | N-A reason: persona prompts of the legacy reflection/dream workers; MIT store ships no personas or reflection workers |
 | omo-memory-21 | - | N-A | N-A reason: in-process journal lock cancellation (already present upstream); MIT store has no journal lock |

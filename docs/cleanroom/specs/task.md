@@ -249,10 +249,10 @@ Tests:
 ### D5. Deltas in other specs
 
 - `workflow-dag.md` "Delta (omo v5.1.52)": the run keeps the parent session's model for every node
-  dispatch (rows omo-components-26, omo-senpi-task-b-15) and `load_skills` uses the validated
-  bundled skills root (row omo-components-03).
-- `team.md` "Delta (omo v5.1.52)": team members record the tree root and the lead as parent
-  (rows omo-components-27, omo-senpi-task-b-14).
+  dispatch and `load_skills` uses the validated bundled skills root. Its rows are mapped in
+  `workflow-dag.md` D3 only.
+- `team.md` "Delta (omo v5.1.52)": team members record the tree root and the lead as parent. Its
+  rows are mapped in `team.md` D2 only.
 
 ### D6. Mapping table
 
@@ -277,13 +277,10 @@ Shared N-A reasons (referenced below):
 
 | census row | delta § | APPLIES/N-A | reason |
 | --- | --- | --- | --- |
-| omo-components-03 | workflow-dag D2 | APPLIES | skills loaded for workflow nodes must honour the validated bundled-root override |
 | omo-components-22 | - | N-A | R-reconcile: no session-admission gate; workflow recovery runs when the session first uses the scheduler |
 | omo-components-23 | - | N-A | R-reconcile: no reconcile gate before attach; recovery is part of creating the scheduler (ancestry half: team D1) |
 | omo-components-24 | - | N-A | R-live |
 | omo-components-25 | - | N-A | R-live (`node_unresponsive` has no producer here) |
-| omo-components-26 | workflow-dag D1 | APPLIES | category nodes keep the parent model as last candidate |
-| omo-components-27 | team D1 | APPLIES | member ancestry (root, parent, depth) is visible in records and session headers |
 | omo-senpi-task-a-01 | - | N-A | R-reconcile |
 | omo-senpi-task-a-02 | - | N-A | R-reconcile (per-host grouping) |
 | omo-senpi-task-a-03 | - | N-A | R-reconcile |
@@ -323,8 +320,6 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-b-11 | - | N-A | R-host |
 | omo-senpi-task-b-12 | D1 | APPLIES | header ancestry; R-inproc for the in-process path |
 | omo-senpi-task-b-13 | D1 | APPLIES | resume/follow-up runs pass the same parent/root/task |
-| omo-senpi-task-b-14 | team D1 | APPLIES | nested team members record the tree root |
-| omo-senpi-task-b-15 | workflow-dag D1 | APPLIES | parent model persisted in the run and used by start, retry and recovery |
 | omo-senpi-task-b-16 | - | N-A | R-live |
 | omo-senpi-task-b-17 | - | N-A | R-live / R-host |
 | omo-senpi-task-b-18 | - | N-A | R-host |
@@ -351,7 +346,8 @@ Shared N-A reasons (referenced below):
 | omo-senpi-task-b-39 | - | N-A | R-chain (profile-side gate in model-selection Delta D1) |
 | omo-senpi-task-b-40 | - | N-A | R-chain |
 
-Totals: 23 APPLIES, 50 N-A, 73 rows (review 2026-10-30 moved a-10, a-20, a-21, a-22, b-27, b-28,
+Totals: 18 APPLIES, 50 N-A, 68 rows in this table; 5 more APPLIES rows are mapped in
+`workflow-dag.md` D3 and `team.md` D2 (each row is cited by one delta only, 2026-11-01). (Review 2026-10-30 moved a-10, a-20, a-21, a-22, b-27, b-28,
 b-29, b-30 from N-A to APPLIES; see `docs/cleanroom/reviews/task-5152.md`).
 
 ### D7. Steering messages are neither lost nor doubled
