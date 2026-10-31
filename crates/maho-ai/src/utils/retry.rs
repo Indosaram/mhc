@@ -360,6 +360,13 @@ where
 }
 
 pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
+    // A route that does not serve the model answers the same on every attempt, whatever status wraps it.
+    if matches!(
+        message.error_cause,
+        Some(crate::types::AssistantErrorCause::ModelConfig { .. })
+    ) {
+        return false;
+    }
     if message.stop_reason == StopReason::Error
         && message.diagnostics.as_ref().is_some_and(|diagnostics| {
             diagnostics
@@ -632,6 +639,7 @@ mod tests {
             end_turn: None,
             timestamp: crate::utils::diagnostics::now_ms(),
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
         }
     }
@@ -643,6 +651,17 @@ mod tests {
             error_message: Some(text.to_owned()),
             ..Default::default()
         })
+    }
+
+    // provider-error-redaction.test.ts / retry.ts: a model_config cause is never retried.
+    #[test]
+    fn model_config_cause_is_not_retryable_whatever_status_wraps_it() {
+        let mut message = error_message("503 Service Unavailable");
+        assert!(is_retryable_assistant_error(&message));
+        message.error_cause = Some(crate::types::AssistantErrorCause::ModelConfig {
+            model: "faux/faux-1".into(),
+        });
+        assert!(!is_retryable_assistant_error(&message));
     }
 
     /// `fauxAssistantMessage("ok")` / `fauxAssistantMessage("recovered")`

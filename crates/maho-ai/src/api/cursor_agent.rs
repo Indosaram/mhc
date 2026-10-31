@@ -18,6 +18,8 @@ pub mod exec_modern;
 pub mod r#gen;
 pub mod measure;
 pub mod pi_args;
+#[cfg(test)]
+mod producer_capture_tests;
 pub mod reasoning_params;
 pub mod stream_retry;
 pub mod types;
@@ -2279,11 +2281,18 @@ fn apply_streamed_args_delta(
             entry.last_parse_len = Some(next_len);
         }
     }
-    stream.push(AssistantMessageEvent::ToolcallDelta {
-        content_index: target,
-        delta: chunk.to_owned(),
-        partial: output.clone(),
+    // `parsedThrough` counts UTF-16 code units of the buffer prefix last parsed into `arguments`.
+    let parsed_through = entry.last_parse_len.map_or(0, |len| {
+        crate::utils::assistant_capture::utf16_len(&entry.partial_json.as_deref().unwrap_or("")[..len])
     });
+    stream.push_with_hint(
+        AssistantMessageEvent::ToolcallDelta {
+            content_index: target,
+            delta: chunk.to_owned(),
+            partial: output.clone(),
+        },
+        crate::utils::assistant_capture::CaptureHint::parsed_through(parsed_through),
+    );
 }
 
 fn interaction_case_name(message: &interaction_update::Message) -> &'static str {
@@ -6387,6 +6396,7 @@ async fn run_stream(
 ) {
     let mut output = AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -6614,7 +6624,7 @@ pub fn stream_with_options(
     context: &Context,
     options: Option<CursorAgentOptions>,
 ) -> AssistantMessageEventStream {
-    let stream = AssistantMessageEventStream::assistant();
+    let stream = AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();
@@ -6769,6 +6779,7 @@ mod tests {
     fn assistant_for_tests() -> AssistantMessage {
         AssistantMessage {
             failure_source: None,
+            credential_served_recently: None,
             timing: None,
             error_cause: None,
             prompt_cache_breakpoint: None,

@@ -98,6 +98,12 @@ pub fn lazy_stream_typed(
             Ok(source) => {
                 let _ = source_tx.send(Some(source.clone()));
                 let mut partial = None;
+                // Progress crosses as it is read, so the forwarder loop runs exactly the turns it
+                // runs for events alone; each event keeps the capture its source recorded.
+                let progress_sink = forwarding.clone();
+                let mut events = crate::utils::assistant_capture::assistant_events(&source, move |progress| {
+                    progress_sink.push_frozen_progress(progress)
+                });
                 loop {
                     let next = tokio::select! {
                         biased;
@@ -111,12 +117,12 @@ pub fn lazy_stream_typed(
                             if let Err(error) = cancellation { forwarding.fail(error); }
                             return;
                         }
-                        next = source.next() => next,
+                        next = events.next() => next,
                     };
                     match next {
                         Ok(Some(event)) => {
-                            partial = Some(crate::utils::event_stream::extract_message(&event));
-                            forwarding.push(event);
+                            partial = Some(crate::utils::event_stream::extract_message(&event.value));
+                            forwarding.push_captured(event, crate::utils::assistant_capture::CaptureHint::default());
                         }
                         Ok(None) => break,
                         Err(error) => { forwarding.fail(error); return; }
