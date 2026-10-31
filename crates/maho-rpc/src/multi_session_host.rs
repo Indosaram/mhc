@@ -4578,7 +4578,16 @@ mod handoff_tests {
         .await
         .unwrap();
         // The queued record precedes the open's reply and never wears the response-id field.
-        let queued = next(&mut client).await;
+        let queued = loop {
+            let record = next(&mut client).await;
+            assert_ne!(
+                record["id"], "open-1",
+                "the queued record precedes the reply"
+            );
+            if record["type"] == "queued" {
+                break record;
+            }
+        };
         assert_eq!(queued["type"], "queued");
         assert_eq!(queued["for_request"], "open-1");
         assert_eq!(queued["position"], 1.0);
@@ -4595,7 +4604,12 @@ mod handoff_tests {
         let mut second = peer(&core, "c2");
         let first = core.open_barrier(Some("c1"), Some("open-1")).unwrap();
         let barrier = core.open_barrier(Some("c2"), Some("open-2")).unwrap();
-        let queued = next(&mut second).await;
+        let queued = loop {
+            let record = next(&mut second).await;
+            if record["type"] == "queued" {
+                break record;
+            }
+        };
         assert_eq!(
             (queued["position"].as_f64(), queued["in_flight"].as_f64()),
             (Some(2.0), Some(1.0))
