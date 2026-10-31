@@ -20,7 +20,7 @@ async fn processes_real_image_as_attachment() {
 }
 // senpi block-images.test.ts `processFileArguments` and image-resize-callers.test.ts deferral case.
 const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
-fn tiny_png() -> Vec<u8> { use base64::Engine; base64::engine::general_purpose::STANDARD.decode(TINY_PNG_BASE64).unwrap() }
+fn tiny_png() -> Vec<u8> { use base64::Engine; base64::engine::general_purpose::STANDARD.decode(TINY_PNG_BASE64).expect("tiny png") }
 fn tiny_bmp_1x1_red_24bpp() -> Vec<u8> {
     let mut buffer = vec![0u8; 58];
     buffer[0..2].copy_from_slice(b"BM");
