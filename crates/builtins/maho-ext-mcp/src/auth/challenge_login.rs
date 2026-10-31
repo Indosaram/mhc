@@ -20,7 +20,8 @@ use crate::{
 /// Opens an authorization URL in the user's browser. Injectable so tests can follow the redirect.
 pub type BrowserOpener = Arc<dyn Fn(&url::Url) -> Result<(), String> + Send + Sync>;
 /// Builds a fresh provider for one login run (the loopback flow consumes its provider).
-pub type ProviderFactory = Arc<dyn Fn() -> Result<McpOAuthProvider, OAuthRequestError> + Send + Sync>;
+pub type ProviderFactory =
+    Arc<dyn Fn() -> Result<McpOAuthProvider, OAuthRequestError> + Send + Sync>;
 
 /// Opens the URL with the platform's default handler.
 pub fn system_browser_opener() -> BrowserOpener {

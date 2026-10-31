@@ -195,3 +195,60 @@ pub fn mapped_guarded_result(
         is_error: None,
     })
 }
+
+/// register.ts `truncatePreview`: at most 120 UTF-16 units, else the first 117 plus `...`.
+fn truncate_preview(value: &str) -> String {
+    let units = value.encode_utf16().collect::<Vec<_>>();
+    if units.len() <= 120 {
+        value.to_owned()
+    } else {
+        format!("{}...", String::from_utf16_lossy(&units[..117]))
+    }
+}
+
+/// JavaScript `String.prototype.trim`: Unicode white space and the BOM, but not NEL (U+0085).
+pub(crate) fn js_trim(value: &str) -> &str {
+    value.trim_matches(|character: char| {
+        (character.is_whitespace() && character != '\u{85}') || character == '\u{feff}'
+    })
+}
+
+/// The text `details.preview ?? fallback` interpolates into a template literal.
+pub(crate) fn details_preview(details: &Value, fallback: &str) -> String {
+    match details.get("preview") {
+        None | Some(Value::Null) => fallback.to_owned(),
+        Some(Value::String(preview)) => preview.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// register.ts `renderCall`/`renderResult` for a direct or searchable MCP tool:
+/// the call is the bold `toolTitle` `name <args JSON preview>`, the result is the
+/// `toolOutput` `name: running` while partial, else `name: <details.preview>`.
+pub fn mcp_tool_renderers(name: &str) -> crate::tool_registrar::McpToolRenderers {
+    use maho_tui::components::text::Text;
+    let call_name = name.to_owned();
+    let result_name = name.to_owned();
+    maho_ext_api::ToolRenderers {
+        render_call: Some(Arc::new(move |args, theme, _context| {
+            let preview = truncate_preview(&args.to_string());
+            let title = format!("{call_name} {preview}");
+            Box::new(Text::with_padding(
+                theme.fg("toolTitle", &theme.bold(js_trim(&title))),
+                0,
+                0,
+            ))
+        })),
+        render_result: Some(Arc::new(move |result, options, theme, _context| {
+            let title = if options.is_partial {
+                format!("{result_name}: running")
+            } else {
+                format!(
+                    "{result_name}: {}",
+                    details_preview(&result.details, "(empty result)")
+                )
+            };
+            Box::new(Text::with_padding(theme.fg("toolOutput", &title), 0, 0))
+        })),
+    }
+}
