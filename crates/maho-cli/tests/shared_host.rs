@@ -14,7 +14,8 @@ fn truthy_env_flag_matches_the_pinned_values() {
 
 /// senpi shared-host-join-removed.test.ts "interactive launch never joins a shared host": for every
 /// retired `experimental.sharedHost` value, the profile a launch hands its extensions never enables
-/// a shared host, in any app mode (the env half has no reader left to vary).
+/// a shared host, in any app mode. The env half is not varied: `DISABLE_SHARED_HOST` is read only
+/// for the obsolete-flag notice (`cli/runtime.rs`), never for the launch profile.
 #[test]
 fn no_launch_profile_enables_a_shared_host_whatever_the_retired_setting_says() {
     for setting in [Some(true), Some(false), None] {
