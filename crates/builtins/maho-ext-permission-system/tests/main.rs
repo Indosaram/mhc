@@ -11,6 +11,10 @@ mod canonical_identity;
 mod cli_source;
 #[path = "config.rs"]
 mod config;
+#[path = "context_support.rs"]
+mod context_support;
+#[path = "dispatch.rs"]
+mod dispatch;
 #[path = "denial_is_final.rs"]
 mod denial_is_final;
 #[path = "events.rs"]

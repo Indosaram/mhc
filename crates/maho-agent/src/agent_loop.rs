@@ -29,6 +29,7 @@ use crate::assistant_terminal_state::{
     should_terminate_assistant_turn,
 };
 use crate::empty_assistant_recovery::with_empty_assistant_recovery;
+use crate::invocation_input::{InvocationInput, invoke_with_input};
 use crate::response_timing::create_response_timing_recorder;
 use crate::stream_fn::get_default_stream_fn;
 use crate::tool_arguments::prepare_agent_tool_call_arguments;
@@ -2106,6 +2107,8 @@ enum ToolCallPreparation {
         tool: Box<AgentTool>,
         args: serde_json::Value,
         requested_name: Option<String>,
+        /// Identity of this call's validated input, shared by preflight, execution and result hooks.
+        input: InvocationInput,
     },
     Immediate {
         tool_call: AgentToolCall,
@@ -2277,12 +2280,14 @@ async fn prepare_tool_call(
                 tool_call,
                 tool,
                 args,
+                input,
                 ..
             } => ToolCallPreparation::Prepared {
                 tool_call,
                 tool,
                 args,
                 requested_name: Some(requested_name),
+                input,
             },
             ToolCallPreparation::Immediate {
                 tool_call,
@@ -2330,16 +2335,19 @@ async fn prepare_resolved_tool_call(
     };
     let validated_args = prepared_tool_call.args.clone();
     let mut effective_args = validated_args.clone();
+    let input = InvocationInput::new();
     if let Some(before_tool_call) = config.before_tool_call.clone() {
-        let before_result = before_tool_call(
-            crate::types::BeforeToolCallContext {
-                assistant_message: assistant_message.clone(),
-                tool_call: prepared_tool_call.tool_call.clone(),
-                args: validated_args.clone(),
-                context: Arc::clone(current_context),
-            },
-            signal.clone(),
-        )
+        let before_result = invoke_with_input(input.clone(), || {
+            before_tool_call(
+                crate::types::BeforeToolCallContext {
+                    assistant_message: assistant_message.clone(),
+                    tool_call: prepared_tool_call.tool_call.clone(),
+                    args: validated_args.clone(),
+                    context: Arc::clone(current_context),
+                },
+                signal.clone(),
+            )
+        })
         .await;
         if signal.as_ref().is_some_and(AbortSignal::aborted) {
             return ToolCallPreparation::Immediate {
@@ -2385,6 +2393,7 @@ async fn prepare_resolved_tool_call(
         tool: Box::new(tool.clone()),
         args: effective_args,
         requested_name: None,
+        input,
     }
 }
 
@@ -2418,6 +2427,7 @@ async fn execute_prepared_tool_call_with_update(
         tool_call,
         tool,
         args,
+        input,
         ..
     } = prepared
     else {
@@ -2470,12 +2480,14 @@ async fn execute_prepared_tool_call_with_update(
         })
     };
 
-    let execution = (tool.execute)(
-        tool_call.id.clone(),
-        args.clone(),
-        signal.clone(),
-        Some(on_update.clone()),
-    );
+    let execution = invoke_with_input(input.clone(), || {
+        (tool.execute)(
+            tool_call.id.clone(),
+            args.clone(),
+            signal.clone(),
+            Some(on_update.clone()),
+        )
+    });
     // The execution is detached so a losing abort race leaves it running, as the TS
     // `Promise.race` does (the abandoned promise keeps executing there).
     let (sender, receiver) = oneshot::channel();
@@ -2527,6 +2539,7 @@ async fn finalize_executed_tool_call(
         tool_call,
         requested_name,
         args,
+        input,
         ..
     } = prepared
     else {
@@ -2540,17 +2553,19 @@ async fn finalize_executed_tool_call(
     let mut is_error = executed.is_error;
 
     if let Some(after_tool_call) = config.after_tool_call.clone() {
-        let after_result = after_tool_call(
-            crate::types::AfterToolCallContext {
-                assistant_message: assistant_message.clone(),
-                tool_call: tool_call.clone(),
-                args: args.clone(),
-                result: result.clone(),
-                is_error,
-                context: Arc::clone(current_context),
-            },
-            signal.clone(),
-        )
+        let after_result = invoke_with_input(input.clone(), || {
+            after_tool_call(
+                crate::types::AfterToolCallContext {
+                    assistant_message: assistant_message.clone(),
+                    tool_call: tool_call.clone(),
+                    args: args.clone(),
+                    result: result.clone(),
+                    is_error,
+                    context: Arc::clone(current_context),
+                },
+                signal.clone(),
+            )
+        })
         .await;
         if let Some(after_result) = after_result {
             // Structured content not replaced along with the content may no longer match it.
@@ -3273,6 +3288,86 @@ mod audit_gap_tests {
         assert!(outcome.is_error);
         assert!(context.messages.is_empty());
         assert!(outcome.result.nested_calls.is_none());
+    }
+
+    #[tokio::test]
+    async fn each_prepared_call_shares_one_input_identity_across_hooks_and_execution() {
+        use crate::invocation_input::{InvocationInput, current_invocation_input};
+        // Given: a tool and both hooks that record the input identity they run under.
+        type Seen = Arc<Mutex<Vec<(&'static str, Option<InvocationInput>)>>>;
+        fn record(stage: &'static str, seen: &Seen) {
+            seen.lock()
+                .expect("seen")
+                .push((stage, current_invocation_input()));
+        }
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let executed = seen.clone();
+        let tool = AgentTool {
+            label: "write".into(),
+            prepare_arguments: None,
+            execute: Arc::new(move |_, _, _, _| {
+                record("execute", &executed);
+                Box::pin(async { AgentToolResult::text("ok") })
+            }),
+            replay: None,
+            execution_mode: None,
+            tool: Tool {
+                name: "write".into(),
+                description: String::new(),
+                parameters: serde_json::json!({"type":"object"}),
+                output_schema: None,
+                freeform: None,
+                constrained_sampling: None,
+            },
+        };
+        let (before, after) = (seen.clone(), seen.clone());
+        let options = || RunToolCallOptions {
+            assistant_message: response(StopReason::ToolUse),
+            context: Arc::new(AgentContext::default()),
+            tools: vec![tool.clone()],
+            before_tool_call: Some({
+                let before = before.clone();
+                Arc::new(move |_, _| {
+                    record("before", &before);
+                    Box::pin(async { None })
+                })
+            }),
+            after_tool_call: Some({
+                let after = after.clone();
+                Arc::new(move |_, _| {
+                    record("after", &after);
+                    Box::pin(async { None })
+                })
+            }),
+            signal: None,
+            on_update: None,
+        };
+        let call = ToolCall {
+            id: "same-provider-id".into(),
+            name: "write".into(),
+            arguments: Default::default(),
+            incomplete: None,
+            error_message: None,
+            thought_signature: None,
+            namespace: None,
+        };
+        // When: two identical calls with the same provider ID run through the pipeline.
+        run_tool_call(call.clone(), options()).await;
+        run_tool_call(call, options()).await;
+        // Then: each call has one identity across its stages, and the two calls differ.
+        let seen = seen.lock().expect("seen").clone();
+        let stages: Vec<&str> = seen.iter().map(|(stage, _)| *stage).collect();
+        assert_eq!(
+            stages,
+            ["before", "execute", "after", "before", "execute", "after"]
+        );
+        let ids: Vec<InvocationInput> = seen
+            .into_iter()
+            .map(|(_, id)| id.expect("scoped identity"))
+            .collect();
+        assert!(ids[0] == ids[1] && ids[1] == ids[2]);
+        assert!(ids[3] == ids[4] && ids[4] == ids[5]);
+        assert!(ids[0] != ids[3]);
     }
 
     #[test]

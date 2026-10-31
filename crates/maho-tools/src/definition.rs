@@ -224,6 +224,31 @@ impl ToolPermissionRequest {
 pub type ToolPermissionParser =
     Arc<dyn Fn(&Value, &Path) -> Vec<ToolPermissionRequest> + Send + Sync>;
 
+/// Identity of the owner of a dispatched operation (senpi `DispatchIdentity.owner`): compared by
+/// identity, never by value, so a replaced offer never matches the one that was approved.
+#[derive(Clone, Debug, Default)]
+pub struct ToolDispatchOwner(Arc<()>);
+impl ToolDispatchOwner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for ToolDispatchOwner {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ToolDispatchOwner {}
+/// senpi `DispatchIdentity`: the offered operation a call dispatches, as shown when it was approved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolDispatchIdentity {
+    pub owner: ToolDispatchOwner,
+    pub metadata: String,
+    pub operation: Option<String>,
+}
+pub type ToolDispatchIdentityResolver =
+    Arc<dyn Fn(&Value) -> Option<ToolDispatchIdentity> + Send + Sync>;
+
 /// Where a tool runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolPlacement {
