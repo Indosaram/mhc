@@ -27,15 +27,29 @@ impl CoordinatorConnection {
     pub fn was_replaced(&self) -> bool { self.replaced }
     pub async fn next_event(&mut self) -> Result<Option<CoordinatorMessage>, String> {
         let Some(value) = self.connection.receive().await.map_err(|error| error.to_string())? else { self.replaced = true; return Ok(None); };
-        let message = serde_json::from_value(value).map_err(|_| "Coordinator sent an invalid message")?;
+        // senpi destroys the socket on an invalid or unsupported message; the disconnect marks the connection replaced.
+        let Ok(message) = serde_json::from_value::<CoordinatorMessage>(value) else { self.replaced = true; let _ = self.connection.close().await; return Err("Coordinator sent an invalid message".to_owned()); };
         match &message {
             CoordinatorMessage::PeerConnected { peer_id } => { self.peer_ids.insert(peer_id.clone()); }
             CoordinatorMessage::PeerDisconnected { peer_id } => { self.peer_ids.remove(peer_id); }
             CoordinatorMessage::ServerReplaced => { self.replaced = true; }
             CoordinatorMessage::Message { .. } => {},
-            CoordinatorMessage::ServerRegistered { .. } => return Err("Coordinator sent an unsupported message".to_owned()),
+            CoordinatorMessage::ServerRegistered { .. } => { self.replaced = true; let _ = self.connection.close().await; return Err("Coordinator sent an unsupported message".to_owned()); }
         }
         Ok(Some(message))
+    }
+    /// senpi `onEvent` listeners plus the `replaced` promise, pulled: the next peer/message event, or `None` once the
+    /// connection was replaced, closed, or broken (when `was_replaced()` is true, upstream's `replaced` has resolved).
+    pub async fn next_connection_event(&mut self) -> Option<CoordinatorConnectionEvent> {
+        loop {
+            match self.next_event().await {
+                Ok(Some(CoordinatorMessage::PeerConnected { peer_id })) => return Some(CoordinatorConnectionEvent::PeerConnected { peer_id }),
+                Ok(Some(CoordinatorMessage::PeerDisconnected { peer_id })) => return Some(CoordinatorConnectionEvent::PeerDisconnected { peer_id }),
+                Ok(Some(CoordinatorMessage::Message { from, payload })) => return Some(CoordinatorConnectionEvent::Message { from, payload }),
+                Ok(Some(CoordinatorMessage::ServerRegistered { .. })) => continue,
+                Ok(Some(CoordinatorMessage::ServerReplaced) | None) | Err(_) => { self.replaced = true; return None; }
+            }
+        }
     }
     pub async fn send(&mut self, peer_id: &str, payload: serde_json::Value) -> Result<(), String> {
         self.write(serde_json::json!({"type":"send", "to":peer_id, "payload":payload})).await
@@ -48,6 +62,13 @@ impl CoordinatorConnection {
     pub async fn close(&mut self) -> Result<(), String> { self.peer_ids.clear(); self.connection.close().await.map_err(|error| error.to_string()) }
 }
 pub const COORDINATOR_PROTOCOL_VERSION: u32 = 3;
+/// senpi `CoordinatorConnectionEvent`: what a registered server observes from its peers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CoordinatorConnectionEvent {
+    PeerConnected { peer_id: String },
+    PeerDisconnected { peer_id: String },
+    Message { from: String, payload: serde_json::Value },
+}
 #[cfg(unix)]
 pub struct CoordinatorStartupLease(tokio::net::UnixStream);
 #[cfg(unix)]
