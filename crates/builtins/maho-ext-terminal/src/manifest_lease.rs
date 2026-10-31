@@ -999,12 +999,12 @@ mod tests {
     fn own_pid() -> f64 {
         f64::from(std::process::id())
     }
-    fn acquire_as(
+    fn acquire_as<'a>(
         dir: &Path,
         session: &str,
         identity: &LeaseSelfIdentity,
-        alive: &mut dyn FnMut(f64) -> std::io::Result<bool>,
-        start: &mut dyn FnMut(f64) -> Option<f64>,
+        alive: &'a mut dyn FnMut(f64) -> std::io::Result<bool>,
+        start: &'a mut dyn FnMut(f64) -> Option<f64>,
     ) -> std::io::Result<AcquireTerminalLeaseResult> {
         acquire_terminal_lease_as(
             dir,
@@ -1176,7 +1176,7 @@ mod tests {
         let AcquireTerminalLeaseResult::Acquired { path, pid, token } = result else {
             panic!("acquired");
         };
-        release_terminal_lease(&path, pid, Some(&token)).unwrap();
+        release_terminal_lease(&path, pid, Some(token.as_str())).unwrap();
     }
 
     #[test]
@@ -1379,9 +1379,9 @@ mod tests {
         ));
         let fresh = record(&path).and_then(|record| record.token).unwrap();
         assert_ne!(fresh, stale_token);
-        release_terminal_lease(&path, own_pid(), Some(&stale_token)).unwrap();
+        release_terminal_lease(&path, own_pid(), Some(stale_token.as_str())).unwrap();
         assert!(path.exists());
-        release_terminal_lease(&path, own_pid(), Some(&fresh)).unwrap();
+        release_terminal_lease(&path, own_pid(), Some(fresh.as_str())).unwrap();
         assert!(!path.exists());
         assert_eq!(current_lease_token(session), None);
     }
@@ -1409,7 +1409,7 @@ mod tests {
             panic!("a live sibling generation is a holder");
         };
         assert_eq!(holder.pid, own_pid());
-        release_terminal_lease(&path, pid, Some(&token)).unwrap();
+        release_terminal_lease(&path, pid, Some(token.as_str())).unwrap();
     }
 
     #[test]
@@ -1431,7 +1431,7 @@ mod tests {
         let AcquireTerminalLeaseResult::Acquired { path, pid, token } = result else {
             panic!("re-entered");
         };
-        release_terminal_lease(&path, pid, Some(&token)).unwrap();
+        release_terminal_lease(&path, pid, Some(token.as_str())).unwrap();
     }
 
     #[test]

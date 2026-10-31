@@ -132,7 +132,7 @@ impl TerminalStateLifecycle {
             crate::manifest_lease::release_terminal_lease(
                 &lease.path,
                 lease.pid,
-                Some(&lease.token),
+                Some(lease.token.as_str()),
             )?;
         }
         Ok(())
