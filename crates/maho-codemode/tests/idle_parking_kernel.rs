@@ -99,11 +99,12 @@ fn restarts(
     let calls = Arc::new(AtomicUsize::new(0));
     let queue = Arc::new(Mutex::new(kernels.into_iter()));
     let counter = calls.clone();
-    let restart: RestartParkedKernel = Arc::new(move || {
-        counter.fetch_add(1, Ordering::SeqCst);
-        let next = queue.lock().unwrap().next().expect("restart configured");
-        Box::pin(async move { next.map(|kernel| kernel as Arc<dyn EvalKernel>) })
-    });
+    let restart: RestartParkedKernel =
+        Arc::new(move || -> EvalKernelFuture<'static, Arc<dyn EvalKernel>> {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let next = queue.lock().unwrap().next().expect("restart configured");
+            Box::pin(async move { next.map(|kernel| kernel as Arc<dyn EvalKernel>) })
+        });
     (restart, calls)
 }
 
