@@ -1559,6 +1559,9 @@ impl HostCore {
                         // Only the LAST attachment tears the session down; a surviving attachment keeps
                         // the shared binding and its event stream (senpi `close`/`claimClose`).
                         if claim.finalizer != Some(true) {
+                            // senpi `close`: a surviving attachment is a detach; the last one seals instead.
+                            self.publish_status(&session_id, "detach", "client", false)
+                                .await;
                             self.success(
                                 connection,
                                 command.id.clone(),
@@ -2329,6 +2332,8 @@ impl HostCore {
             self.release_owner_attachment(connection, &session_id).await;
         }
         if claim.finalizer != Some(true) {
+            self.publish_status(&session_id, "detach", "client", false)
+                .await;
             self.success(connection, id, "close_session", None, Some(session_id));
             return;
         }
@@ -2554,6 +2559,8 @@ impl HostCore {
                 return;
             };
             if claim.finalizer != Some(true) {
+                self.publish_status(session_id, "detach", "client", false)
+                    .await;
                 return;
             }
             if let Some(worker) = workers.worker(session_id) {
@@ -2572,7 +2579,10 @@ impl HostCore {
         let Ok(claim) = claim else {
             return;
         };
+        // senpi `releaseOwnedSession`: only a release that leaves the session running is a detach.
         if claim.finalizer != Some(true) {
+            self.publish_status(session_id, "detach", "client", false)
+                .await;
             return;
         }
         if let Some(binding) = self.bindings.lock().await.remove(session_id) {
@@ -2973,7 +2983,11 @@ impl HostCore {
         };
         self.attach_live(owner, session_id)
             .await
-            .map_err(|code| (code, serde_json::json!({})))
+            .map_err(|code| (code, serde_json::json!({})))?;
+        // senpi `attach`: every live attachment is published.
+        self.publish_status(session_id, "attach", "client", false)
+            .await;
+        Ok(())
     }
     /// senpi `releaseAttachment`: gives up one of the caller's attachments; the session ends only when that was the
     /// last one, and a turn in flight runs to settlement first (`deferred: true`). A drain owns every outstanding
@@ -3201,6 +3215,8 @@ impl HostCore {
         self.attach_live(owner, &session_id)
             .await
             .map_err(|code| (code, serde_json::json!({})))?;
+        self.publish_status(&session_id, "attach", "client", false)
+            .await;
         // claimClose { drainAttachments }: every outstanding hold of the caller goes with this one claim.
         let finalizer = loop {
             let claim = match &self.workers {
@@ -3276,8 +3292,6 @@ impl HostCore {
     }
     async fn release_owner_attachment(&self, owner: &str, session_id: &str) {
         self.connection_left(session_id, owner).await;
-        self.publish_status(session_id, "detach", "client", false)
-            .await;
         self.widths
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
