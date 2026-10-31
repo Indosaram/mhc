@@ -1012,6 +1012,9 @@ pub struct AgentSessionInner {
     /// senpi `SessionLifecycleController.deadlineStop`: the deadline that stopped the current run,
     /// captured before its durable write. Lock order: `lifecycle`, then this.
     lifecycle_deadline_stop: Mutex<Option<crate::lifecycle_stop::DeadlineStopCapture>>,
+    /// The host's project-trust inputs for a switch into another project (senpi `createServices` re-run
+    /// for the target cwd with `projectTrustByCwd`, `--approve`, and `projectTrustContextFactory`).
+    switch_project_trust: Mutex<Option<SwitchProjectTrust>>,
     event_bus: EventBus,
     event_listeners: SharedEventListeners,
     next_listener_id: Arc<AtomicU64>,
@@ -3812,6 +3815,19 @@ impl std::ops::Deref for AgentSession {
     }
 }
 
+/// The host's project-trust inputs for [`AgentSession::switch_session_with_cwd`] into another project
+/// (senpi `createServices` for the target cwd): the shared `projectTrustByCwd` cache, `--approve` /
+/// `--no-approve`, the host's resolution (the extension `project_trust` event, then the saved decision and
+/// `defaultProjectTrust`; the host never prompts in it), and whether an undecided project may be asked through
+/// the session's UI (senpi `projectTrustContextFactory`, `hasUI: true` in the interactive mode).
+#[derive(Clone, Default)]
+pub struct SwitchProjectTrust {
+    pub cache: Option<crate::agent_session_runtime::ProjectTrustCache>,
+    pub trust_override: Option<bool>,
+    pub resolver: Option<crate::agent_session_runtime::ProjectTrustResolver>,
+    pub prompt: bool,
+}
+
 /// The tracker's owner: the session, held weakly so the tracker stored on it forms no cycle. A session
 /// already dropped records nothing and counts as idle.
 struct WeakDeadlineOwner(std::sync::Weak<AgentSessionInner>);
@@ -4405,6 +4421,7 @@ impl AgentSession {
                 handler_turn_scope: Arc::new(AtomicU64::new(0)),
                 deadline_tracker: std::sync::OnceLock::new(),
                 lifecycle_deadline_stop: Mutex::new(None),
+                switch_project_trust: Mutex::new(None),
                 event_bus: EventBus::new(),
                 event_listeners: Arc::new(Mutex::new(Arc::new(Vec::new()))),
                 next_listener_id: Arc::new(AtomicU64::new(0)),
@@ -11707,6 +11724,17 @@ impl AgentSession {
         self.state().cwd = self.with_session_manager(|manager| manager.cwd().to_owned());
         let cwd_changed = self.cwd() != previous_cwd;
         if cwd_changed {
+            // senpi `createServices` for the target cwd: its project trust is decided before its settings and
+            // resources load, so project code loads only when that project is trusted. A session no host
+            // installed trust inputs on (an SDK embedding) keeps the trust it was created with.
+            let host = lock(&self.switch_project_trust).clone();
+            if let Some(host) = host {
+                let trusted = self.switch_project_trusted(&previous_cwd, host).await;
+                self.with_settings_manager_mut(|manager| {
+                    manager.set_trust_from_full_access(trusted.1);
+                    manager.set_project_trusted(trusted.0);
+                });
+            }
             self.rebind_cwd_services();
             // senpi `createRuntime` re-runs the full `DefaultResourceLoader.reload` with the same
             // resource loader options (package, CLI and auto-discovered resources) for the new cwd.
@@ -11722,6 +11750,158 @@ impl AgentSession {
                 .await;
         }
         Ok(true)
+    }
+
+    /// Installs the host's project-trust inputs a switch into another project uses.
+    pub fn set_switch_project_trust(&self, trust: Option<SwitchProjectTrust>) {
+        *lock(&self.switch_project_trust) = trust;
+    }
+
+    /// The project trust a switch from `previous_cwd` into the session's (already rebound) cwd starts with,
+    /// as `(trusted, trust_from_full_access)`. Same order as `AgentSessionRuntime::replacement_project_trust`
+    /// (senpi `createServices`): the same project keeps the live trust (a Full-access-only trust yields to a
+    /// saved decision); another project takes the host cache, then `--approve` / `--no-approve`, then Full
+    /// access unless saved "do not trust", then no trust-requiring resources or a saved decision, then the
+    /// host resolver; still undecided with a UI, it asks with the launch prompt's choices (senpi
+    /// `resolveProjectTrusted` `selectProjectTrustOption`). A trust store that cannot be read fails closed.
+    async fn switch_project_trusted(
+        &self,
+        previous_cwd: &str,
+        host: SwitchProjectTrust,
+    ) -> (bool, bool) {
+        use crate::trust_manager::normalize_cwd;
+        let cwd = self.cwd();
+        let (current_trusted, current_from_full_access, global_preset, default_trust) = self
+            .with_settings_manager(|current| {
+                (
+                    current.is_project_trusted(),
+                    current.is_trust_from_full_access() || current.can_restore_full_access_trust(),
+                    current.get_global().get("permissionPreset").cloned(),
+                    current
+                        .get_global()
+                        .get("defaultProjectTrust")
+                        .and_then(Value::as_str)
+                        .and_then(crate::project_trust::DefaultProjectTrust::parse),
+                )
+            });
+        let store = crate::trust_manager::ProjectTrustStore::new(&self.agent_dir());
+        let read_saved = || match store.get(&cwd) {
+            Ok(saved) => Some(saved),
+            Err(error) => {
+                self.session_logger.warn(
+                    "project_trust_store_unreadable",
+                    Some(&Map::from_iter([
+                        ("cwd".to_owned(), Value::from(cwd.clone())),
+                        ("error".to_owned(), Value::from(error.clone())),
+                    ])),
+                );
+                self.notify_ui(
+                    &format!("Project trust store unreadable; not trusting {cwd}: {error}"),
+                    maho_ext_api::NotificationType::Warning,
+                );
+                None
+            }
+        };
+        if normalize_cwd(&cwd) == normalize_cwd(previous_cwd) {
+            if !current_from_full_access {
+                return (current_trusted, false);
+            }
+            return match read_saved() {
+                Some(Some(false)) | None => (false, false),
+                Some(Some(true)) => (current_trusted, false),
+                Some(None) => (current_trusted, true),
+            };
+        }
+        let cached = host.cache.as_ref().and_then(|cache| {
+            lock(cache).get(&cwd).copied()
+        });
+        if let Some(trusted) = cached {
+            return (trusted, false);
+        }
+        if let Some(trusted) = host.trust_override {
+            return (trusted, false);
+        }
+        let preset_flag = self.flag_value("permission-preset");
+        let full_access =
+            crate::project_trust::preset_trusts_project(preset_flag.as_ref(), global_preset.as_ref());
+        let has_resources = crate::trust_manager::has_trust_requiring_project_resources(&cwd, None);
+        if !has_resources && !full_access {
+            return (true, false);
+        }
+        let Some(saved) = read_saved() else {
+            return (false, false);
+        };
+        let full_access_trust = full_access && saved != Some(false);
+        if full_access_trust || !has_resources {
+            return (true, full_access_trust && has_resources && saved != Some(true));
+        }
+        if let Some(saved) = saved {
+            return (saved, false);
+        }
+        // The host's resolution: the extension `project_trust` event, the saved decision, `defaultProjectTrust`.
+        let decided_by_host = match &host.resolver {
+            Some(resolver) => {
+                let preset = match &preset_flag {
+                    Some(FlagValue::String(preset)) => Some(preset.clone()),
+                    _ => None,
+                };
+                let resolved = resolver(cwd.clone(), preset).await;
+                for warning in &resolved.warnings {
+                    self.notify_ui(warning, maho_ext_api::NotificationType::Warning);
+                }
+                resolved.decided.then_some(resolved.trusted)
+            }
+            None => match default_trust {
+                Some(crate::project_trust::DefaultProjectTrust::Always) => Some(true),
+                Some(crate::project_trust::DefaultProjectTrust::Never) => Some(false),
+                _ => None,
+            },
+        };
+        let asked = match decided_by_host {
+            Some(trusted) => trusted,
+            None if host.prompt => self.ask_project_trust(&cwd, &store).await,
+            None => false,
+        };
+        if let Some(cache) = &host.cache {
+            lock(cache).insert(cwd.clone(), asked);
+        }
+        (asked, false)
+    }
+
+    /// senpi `selectProjectTrustOption` + `saveProjectTrustPromptResult` through the session's UI: the launch
+    /// prompt's text and choices; a saved choice is written to trust.json, a session-only one only to the
+    /// caller's cache. No UI, or a dismissed prompt, is untrusted.
+    async fn ask_project_trust(
+        &self,
+        cwd: &str,
+        store: &crate::trust_manager::ProjectTrustStore,
+    ) -> bool {
+        let Some(ui) = self.state().extension_ui_context.clone() else {
+            return false;
+        };
+        let options = crate::trust_manager::get_project_trust_options(cwd, true);
+        let labels: Vec<String> = options.iter().map(|option| option.label.clone()).collect();
+        let selected = ui
+            .select(
+                &crate::project_trust::format_project_trust_prompt(cwd),
+                &labels,
+                maho_ext_api::ExtensionUiDialogOptions::default(),
+            )
+            .await;
+        let Some(option) = selected.and_then(|label| {
+            options.into_iter().find(|option| option.label == label)
+        }) else {
+            return false;
+        };
+        if !option.updates.is_empty()
+            && let Err(error) = store.set_many(&option.updates)
+        {
+            self.notify_ui(
+                &format!("Saving the project trust decision failed: {error}"),
+                maho_ext_api::NotificationType::Warning,
+            );
+        }
+        option.trusted
     }
 
     /// senpi recreates the cwd-bound services for the target cwd on a switch (agent-session-runtime.ts
@@ -23423,6 +23603,284 @@ mod tests {
         assert_eq!(session.cwd(), cwds[1]);
         assert_eq!(skill_names(&session), project("second-skill"));
         session.dispose().await;
+    }
+
+    /// A UI whose `select` answers with a fixed label and records each prompt it was shown.
+    struct AnsweringUi {
+        answer: Option<&'static str>,
+        asked: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+    }
+    impl maho_ext_api::ExtensionUi for AnsweringUi {
+        fn select<'a>(
+            &'a self,
+            title: &'a str,
+            options: &'a [String],
+            _: maho_ext_api::ExtensionUiDialogOptions,
+        ) -> maho_ext_api::UiFuture<'a, Option<String>> {
+            lock(&self.asked).push((title.to_owned(), options.to_vec()));
+            let answer = self.answer.map(str::to_owned);
+            Box::pin(async move { answer })
+        }
+        fn confirm<'a>(
+            &'a self,
+            title: &'a str,
+            message: &'a str,
+            options: maho_ext_api::ExtensionUiDialogOptions,
+        ) -> maho_ext_api::UiFuture<'a, bool> {
+            TestExtensionUi.confirm(title, message, options)
+        }
+        fn input<'a>(
+            &'a self,
+            title: &'a str,
+            placeholder: Option<&'a str>,
+            options: maho_ext_api::ExtensionUiDialogOptions,
+        ) -> maho_ext_api::UiFuture<'a, Option<String>> {
+            TestExtensionUi.input(title, placeholder, options)
+        }
+        fn notify(&self, _: &str, _: maho_ext_api::NotificationType) {}
+        fn set_status(&self, _: &str, _: Option<&str>) {}
+        fn set_widget(
+            &self,
+            _: &str,
+            _: Option<maho_ext_api::WidgetContent>,
+            _: maho_ext_api::ExtensionWidgetOptions,
+        ) {
+        }
+        fn set_header(&self, _: Option<maho_ext_api::ComponentFactory>) {}
+        fn set_footer(&self, _: Option<maho_ext_api::ComponentFactory>) {}
+        fn set_title(&self, _: &str) {}
+        fn paste_to_editor(&self, _: &str) {}
+        fn set_editor_text(&self, _: &str) {}
+        fn get_editor_text(&self) -> String {
+            String::new()
+        }
+        fn custom(
+            &self,
+            factory: maho_ext_api::ComponentFactory,
+            options: maho_ext_api::CustomUiOptions,
+        ) -> maho_ext_api::ExtensionFuture<'_, Value> {
+            TestExtensionUi.custom(factory, options)
+        }
+        fn theme(&self) -> maho_ext_api::Theme {
+            Default::default()
+        }
+    }
+
+    /// Two projects under a fixture-owned temp root: `trusted` (saved "trust") where the session starts, and
+    /// `other` with a project skill and no decision, plus a stored session of `other` to switch into.
+    struct SwitchTrustFixture {
+        _dir: tempfile::TempDir,
+        agent_dir: String,
+        other: String,
+        other_session: String,
+        session: AgentSession,
+    }
+
+    async fn switch_trust_fixture() -> SwitchTrustFixture {
+        let dir = crate::test_support::isolated_tempdir();
+        let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+        let start = dir.path().join("start");
+        std::fs::create_dir_all(&start).expect("start dir");
+        let other = dir.path().join("other");
+        let skill = other
+            .join(crate::config::config_dir_name())
+            .join("skills")
+            .join("other-skill");
+        std::fs::create_dir_all(&skill).expect("skill dir");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: other-skill\ndescription: probe\n---\nbody",
+        )
+        .expect("skill");
+        let start = start.to_string_lossy().into_owned();
+        let other = other.to_string_lossy().into_owned();
+        let other_session = dir.path().join("other.jsonl");
+        std::fs::write(
+            &other_session,
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"session","version":3,"id":"other-trust","timestamp":"2026-01-01T00:00:00Z","cwd":other})
+            ),
+        )
+        .expect("other session");
+        let model = serde_json::from_value(serde_json::json!({
+            "id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"",
+            "reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
+            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
+        }))
+        .expect("model");
+        let session = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(start.clone()),
+            agent_dir: Some(agent_dir.clone()),
+            model: Some(model),
+            session_manager: Some(SessionManager::in_memory(&start, None, None)),
+            tools: Some(Vec::new()),
+            ..Default::default()
+        })
+        .await
+        .expect("session")
+        .session;
+        session.load_resources().await.expect("resources");
+        SwitchTrustFixture {
+            _dir: dir,
+            agent_dir,
+            other,
+            other_session: other_session.to_string_lossy().into_owned(),
+            session,
+        }
+    }
+
+    impl SwitchTrustFixture {
+        fn bind_ui(&self, answer: Option<&'static str>) -> Arc<Mutex<Vec<(String, Vec<String>)>>> {
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            self.session.state().extension_ui_context = Some(Arc::new(AnsweringUi {
+                answer,
+                asked: asked.clone(),
+            }));
+            asked
+        }
+
+        async fn switch_into_other(&self) {
+            assert!(
+                self.session
+                    .switch_session(&self.other_session)
+                    .await
+                    .expect("switch")
+            );
+            assert_eq!(self.session.cwd(), self.other);
+        }
+
+        fn trusted(&self) -> bool {
+            self.session
+                .with_settings_manager(|settings| settings.is_project_trusted())
+        }
+
+        fn has_other_skill(&self) -> bool {
+            self.session
+                .loaded_skills()
+                .is_some_and(|loaded| loaded.skills.iter().any(|skill| skill.name == "other-skill"))
+        }
+
+        fn store(&self) -> crate::trust_manager::ProjectTrustStore {
+            crate::trust_manager::ProjectTrustStore::new(&self.agent_dir)
+        }
+    }
+
+    // senpi interactive `switchSession({ projectTrustContextFactory })`: a project nothing decided is asked with
+    // the launch prompt's text and choices; a session-only answer trusts it for this host only (cache), and its
+    // project code loads.
+    #[tokio::test]
+    async fn a_switch_into_an_undecided_project_asks_and_applies_the_answer() {
+        let fixture = switch_trust_fixture().await;
+        let cache: crate::agent_session_runtime::ProjectTrustCache = Arc::default();
+        fixture.session.set_switch_project_trust(Some(SwitchProjectTrust {
+            cache: Some(cache.clone()),
+            prompt: true,
+            ..Default::default()
+        }));
+        let asked = fixture.bind_ui(Some("Trust (this session only)"));
+
+        fixture.switch_into_other().await;
+
+        let asked = lock(&asked).clone();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked[0].0,
+            crate::project_trust::format_project_trust_prompt(&fixture.other)
+        );
+        let expected: Vec<String> = crate::trust_manager::get_project_trust_options(&fixture.other, true)
+            .into_iter()
+            .map(|option| option.label)
+            .collect();
+        assert_eq!(asked[0].1, expected);
+        assert!(fixture.trusted());
+        assert!(fixture.has_other_skill());
+        assert_eq!(lock(&cache).get(&fixture.other).copied(), Some(true));
+        assert_eq!(fixture.store().get(&fixture.other), Ok(None));
+        fixture.session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_saved_answer_to_the_switch_prompt_is_written_to_the_trust_store() {
+        let fixture = switch_trust_fixture().await;
+        fixture.session.set_switch_project_trust(Some(SwitchProjectTrust {
+            prompt: true,
+            ..Default::default()
+        }));
+        fixture.bind_ui(Some("Do not trust"));
+
+        fixture.switch_into_other().await;
+
+        assert!(!fixture.trusted());
+        assert!(!fixture.has_other_skill());
+        assert_eq!(fixture.store().get(&fixture.other), Ok(Some(false)));
+        fixture.session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_cached_decision_is_applied_without_asking() {
+        let fixture = switch_trust_fixture().await;
+        let cache: crate::agent_session_runtime::ProjectTrustCache = Arc::default();
+        lock(&cache).insert(fixture.other.clone(), true);
+        fixture.session.set_switch_project_trust(Some(SwitchProjectTrust {
+            cache: Some(cache),
+            prompt: true,
+            ..Default::default()
+        }));
+        let asked = fixture.bind_ui(Some("Do not trust"));
+
+        fixture.switch_into_other().await;
+
+        assert!(lock(&asked).is_empty());
+        assert!(fixture.trusted());
+        assert!(fixture.has_other_skill());
+        fixture.session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_headless_switch_into_an_undecided_project_stays_untrusted() {
+        let fixture = switch_trust_fixture().await;
+        // The host would allow a prompt, but the session has no UI to ask through.
+        fixture.session.set_switch_project_trust(Some(SwitchProjectTrust {
+            prompt: true,
+            ..Default::default()
+        }));
+        assert!(fixture.session.state().extension_ui_context.is_none());
+
+        fixture.switch_into_other().await;
+
+        assert!(!fixture.trusted());
+        assert!(!fixture.has_other_skill());
+        assert_eq!(fixture.store().get(&fixture.other), Ok(None));
+        fixture.session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn the_host_resolution_decides_before_the_prompt() {
+        let fixture = switch_trust_fixture().await;
+        let resolver: crate::agent_session_runtime::ProjectTrustResolver =
+            Arc::new(|_: String, _: Option<String>| {
+                Box::pin(async {
+                    crate::agent_session_runtime::ResolvedProjectTrust {
+                        trusted: true,
+                        decided: true,
+                        ..Default::default()
+                    }
+                }) as crate::agent_session_runtime::ProjectTrustResolution
+            });
+        fixture.session.set_switch_project_trust(Some(SwitchProjectTrust {
+            resolver: Some(resolver),
+            prompt: true,
+            ..Default::default()
+        }));
+        let asked = fixture.bind_ui(Some("Do not trust"));
+
+        fixture.switch_into_other().await;
+
+        assert!(lock(&asked).is_empty());
+        assert!(fixture.trusted());
+        assert!(fixture.has_other_skill());
+        fixture.session.dispose().await;
     }
 
     #[tokio::test]

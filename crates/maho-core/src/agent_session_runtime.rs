@@ -297,6 +297,9 @@ pub type RebindSession = Box<dyn Fn(&AgentSession) + Send + Sync>;
 pub struct ResolvedProjectTrust {
     pub trusted: bool,
     pub trust_from_full_access: bool,
+    /// Something decided `trusted` (an extension answer, a saved decision, `defaultProjectTrust` always/never,
+    /// a store error). `false` means the project is still undecided and only a prompt can trust it.
+    pub decided: bool,
     /// senpi `projectTrustDiagnostics`: extension load/handler failures and trust store errors.
     pub warnings: Vec<String>,
 }
@@ -2690,6 +2693,7 @@ mod tests {
                     ResolvedProjectTrust {
                         trusted: true,
                         trust_from_full_access: false,
+                        decided: true,
                         warnings: vec!["Extension project_trust error: probe".to_owned()],
                     }
                 }) as ProjectTrustResolution
