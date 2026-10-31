@@ -214,6 +214,7 @@ async fn settle_start(component: &TaskComponent, dag: &maho_omo_task::dag_engine
 }
 fn start_event() -> ExtensionEvent {
     ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Resume,
         initial_model_provenance: None,
         previous_session_file: None,

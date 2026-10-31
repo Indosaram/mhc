@@ -218,6 +218,7 @@ async fn native_sdk_registry_projects_model_headers_without_unresolved_auth_rout
                 &cwd, None, None,
             )),
             session_start_event: Some(maho_ext_api::SessionStartEvent {
+                sizes_only: false,
                 reason: maho_ext_api::SessionReason::Startup,
                 initial_model_provenance: None,
                 previous_session_file: None,

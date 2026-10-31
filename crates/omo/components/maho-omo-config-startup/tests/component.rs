@@ -59,6 +59,7 @@ async fn migration_and_config_diagnostics_report_once() -> Result<(), Box<dyn st
     ctx.ui = Arc::new(support::TestUi(notices.clone()));
     for _ in 0..2 {
         let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -105,6 +106,7 @@ async fn migration_notice_reports_once_to_ui() -> Result<(), Box<dyn std::error:
     ctx.ui = Arc::new(support::TestUi(notices.clone()));
     for _ in 0..2 {
         let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -170,6 +172,7 @@ async fn real_conflict_diagnostic_reaches_ui_once() -> Result<(), Box<dyn std::e
     ctx.ui = Arc::new(support::TestUi(notices.clone()));
     for _ in 0..2 {
         let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -208,6 +211,7 @@ async fn registered_session_start_reports_an_unserved_devin_selector_once()
     ctx.ui = Arc::new(support::TestUi(notices.clone()));
     for _ in 0..2 {
         let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,
@@ -252,6 +256,7 @@ async fn registered_session_start_stays_silent_for_a_served_devin_lane()
     ctx.has_ui = true;
     ctx.ui = Arc::new(support::TestUi(notices.clone()));
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

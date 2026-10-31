@@ -818,6 +818,7 @@ impl AgentSessionRuntime {
                 .and_then(|profile| profile.auto_title)
                 .or(Some(self.session.replacement_auto_title())),
             session_start_event: Some(maho_ext_api::SessionStartEvent {
+                sizes_only: false,
                 reason,
                 initial_model_provenance: None,
                 previous_session_file: self.session.session_file(),

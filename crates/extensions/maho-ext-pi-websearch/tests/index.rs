@@ -162,6 +162,7 @@ async fn session_publishes_loaded_config_before_ui_callbacks() {
     });
     let ctx = context(ui.clone(), temp.path(), "openai", "openai-responses");
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

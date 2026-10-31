@@ -285,6 +285,7 @@ async fn given_a_ui_when_the_session_starts_then_the_bare_skill_autocomplete_pro
     component(&fixture.skills).register(&mut api);
 
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

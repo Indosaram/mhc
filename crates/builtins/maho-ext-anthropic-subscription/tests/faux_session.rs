@@ -38,6 +38,7 @@ async fn queued_registry_handler_rechecks_retirement_after_lock_acquisition() {
                         let held = registry.lock().await;
                         let mut event = maho_ext_api::ExtensionEvent::SessionStart(
                             maho_ext_api::SessionStartEvent {
+                                sizes_only: false,
                                 reason: maho_ext_api::SessionReason::New,
                                 initial_model_provenance: None,
                                 previous_session_file: None,

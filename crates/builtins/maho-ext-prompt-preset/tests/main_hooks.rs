@@ -356,6 +356,7 @@ async fn session_start_and_model_select_refresh_the_preset_header() {
     );
     maho_ext_prompt_preset::PromptPreset.register(&mut api);
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
