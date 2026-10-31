@@ -372,6 +372,52 @@ pub fn session_event_record(
         }
     })
 }
+/// The binding's acceptance step (senpi `createRpcSessionBinding.enqueueRecord`): accepted before the
+/// writer serializes or routes the record; a `session_replaced` is the next incarnation's bootstrap.
+///
+/// Rust records carry no object identity, so a record's recovery carrier is the one the session
+/// attached when it produced it (`AgentSession::recovery_carrier`, core-session lane).
+pub struct BindingAcceptance {
+    lane: crate::session_registry::SharedAcceptanceLane,
+    session: maho_core::agent_session::AgentSession,
+}
+impl BindingAcceptance {
+    pub fn new(
+        lane: crate::session_registry::SharedAcceptanceLane,
+        session: maho_core::agent_session::AgentSession,
+    ) -> Self {
+        session.set_session_recovery_epoch(
+            lane.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recovery_epoch(),
+        );
+        Self { lane, session }
+    }
+    pub fn accept(&self, record: &serde_json::Value) {
+        let mut lane = self
+            .lane
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if record.get("type").and_then(serde_json::Value::as_str) == Some("session_replaced") {
+            let transcript = self
+                .session
+                .with_session_manager_mut(|manager| manager.begin_transcript_journal());
+            lane.bootstrap(
+                crate::session_acceptance_lane::SessionBootstrap { transcript },
+                None,
+            );
+            self.session
+                .set_session_recovery_epoch(lane.recovery_epoch());
+            return;
+        }
+        let transitions = self
+            .session
+            .with_session_manager_mut(|manager| manager.drain_transcript());
+        lane.apply_transcript(&transitions);
+        let carrier = self.session.recovery_carrier(record);
+        lane.accept(record, carrier.as_ref());
+    }
+}
 pub struct BindingRecords {
     tools: ToolAttributionSpans,
 }
@@ -441,7 +487,23 @@ pub struct RpcSessionBinding {
     relocation_subscription:
         std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>,
     connection_roles: Option<SharedConnectionRoles>,
+    /// senpi `bindMcpForms(session, ui)`: the session's private form binding and the writer state that owns it.
+    mcp_forms: std::sync::Mutex<
+        Option<(
+            crate::session_event_writer::McpFormsUnbind,
+            std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+        )>,
+    >,
+    /// The writer's presenter state: `handle` answers a private `mcp_form_*` record there, never in the session.
+    presenters: std::sync::Mutex<
+        Option<(
+            std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+            PresenterReply,
+        )>,
+    >,
 }
+/// Writes one private `mcp_form_reply` raw to the sending connection, outside every session queue.
+pub type PresenterReply = std::sync::Arc<dyn Fn(Option<&str>, &serde_json::Value) + Send + Sync>;
 /// The connection roles one host (or one worker isolate) keeps, shared with every binding it creates (senpi#3811).
 pub type SharedConnectionRoles =
     std::sync::Arc<std::sync::Mutex<crate::connection_roles::ConnectionRoles>>;
@@ -506,6 +568,8 @@ pub async fn create_rpc_session_binding(
         )
         .await;
     handler.last_abort_source = last_abort_source;
+    // A hosted session reports dialog registration and settlement to dialog observers (senpi `uiRequestChanged`).
+    handler.report_ui_request_changes(sink.clone());
     if let Some(roles) = &connection_roles {
         handler = handler.with_connection_roles(roles.clone());
     }
@@ -518,6 +582,8 @@ pub async fn create_rpc_session_binding(
         security_subscription: std::sync::Mutex::new(Some(security_subscription)),
         relocation_subscription: Default::default(),
         connection_roles,
+        mcp_forms: Default::default(),
+        presenters: Default::default(),
     }
 }
 impl RpcSessionBinding {
@@ -540,13 +606,62 @@ impl RpcSessionBinding {
     pub fn ui(&self) -> &std::sync::Arc<crate::connection_handler::RpcExtensionUi> {
         self.handler.ui()
     }
+    /// senpi session-binding `bindMcpForms`: with presenters enabled, binds this session's private forms with
+    /// `admitHumanAnswer` as the admission, attaching the connections already attached; `handle` then answers
+    /// private records through the writer. A no-op when the deployment does not enforce presenters.
+    pub fn bind_mcp_forms(
+        &self,
+        presenters: &std::sync::Arc<crate::session_event_writer::SessionMcpPresenters>,
+        session: &maho_core::agent_session::AgentSession,
+        attached: &[String],
+        reply: PresenterReply,
+    ) {
+        *self
+            .presenters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((std::sync::Arc::clone(presenters), reply));
+        let admitted = session.weak_accessor();
+        let unbind = presenters.bind(
+            &self.session_id,
+            &session.session_id(),
+            std::sync::Arc::new(move || {
+                if let Some(session) = admitted() {
+                    session.admit_human_answer();
+                }
+            }),
+            attached,
+        );
+        let previous = std::mem::replace(
+            &mut *self
+                .mcp_forms
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            unbind.map(|unbind| (unbind, std::sync::Arc::clone(presenters))),
+        );
+        if let Some((previous, presenters)) = previous {
+            previous.unbind(&presenters);
+        }
+    }
     /// Feed one inbound command; a response the handler produced is routed tagged to this session.
     pub async fn handle(&self, command: &serde_json::Value) -> Result<(), String> {
-        let line = serde_json::to_string(command).map_err(|error| error.to_string())?;
         let connection = crate::multi_session_host::CURRENT_CONNECTION
             .try_with(Clone::clone)
             .ok()
             .flatten();
+        // senpi `if (writer.handleMcpForm(command)) return`: private records never reach the session handler.
+        let presenters = self
+            .presenters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some((presenters, write)) = presenters
+            && let Some(reply) = presenters.handle(command, connection.as_deref())
+        {
+            write(connection.as_deref(), &reply);
+            return Ok(());
+        }
+        let line = serde_json::to_string(command).map_err(|error| error.to_string())?;
         if command["type"] == "extension_ui_response"
             && let Some(connection) = &connection
             && let Some(id) = crate::extension_ui_response::answered_ui_request_id(command)
@@ -621,6 +736,14 @@ impl RpcSessionBinding {
         self.handler.cancel_pending_extension_ui_requests();
     }
     pub async fn dispose(&self) {
+        let forms = self
+            .mcp_forms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some((unbind, presenters)) = forms {
+            unbind.unbind(&presenters);
+        }
         self.hold_subscription
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

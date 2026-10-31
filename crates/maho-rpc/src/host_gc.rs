@@ -60,6 +60,18 @@ enum Judged {
 }
 
 pub async fn gc_host_endpoints(agent_dir: &Path, options: &HostGcOptions) -> HostGcResult {
+    // Dead launches' public key records go first (senpi `gcRpcPublicKeys`); a failure never blocks endpoint gc.
+    #[cfg(unix)]
+    {
+        let dir = agent_dir.to_path_buf();
+        let keys = tokio::task::spawn_blocking(move || {
+            crate::rpc_public_key::gc_rpc_public_keys(&dir, Default::default())
+        })
+        .await;
+        if let Ok(Err(error)) = keys {
+            eprintln!("senpi rpc host gc: key records: {error}");
+        }
+    }
     let mut result = HostGcResult::default();
     let wanted = |kind: EndpointKind| {
         options

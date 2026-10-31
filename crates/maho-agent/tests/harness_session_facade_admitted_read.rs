@@ -102,6 +102,7 @@ fn metadata() -> SessionMetadata {
         cwd: Some("/workspace".to_owned()),
         parent_session_id: None,
         legacy_parent_session_path: None,
+        path: None,
     }
 }
 

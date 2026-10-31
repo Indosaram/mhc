@@ -10,6 +10,15 @@ pub struct HostLifecyclePolicyInput {pub idle_exit_ms:Option<f64>,pub cold_start
 pub struct HostLaunchSpec {pub session_runtime:String,pub extensions:Vec<String>,pub tunables:HostLifecyclePolicyInput,pub env:BTreeMap<String,String>}
 #[derive(Debug,Default,PartialEq)]
 pub struct ResolvedHostLaunchSpec {pub host_args:Vec<String>,pub policy:HostLifecyclePolicyInput,pub env:BTreeMap<String,String>}
+/// senpi `HostLaunchSpecCore`: the launch-profile core a spec names; `multi_session` is always true, a spec that
+/// says otherwise is refused.
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct HostLaunchSpecCore {pub session_runtime:String,pub multi_session:bool,pub extensions:Vec<String>}
+impl HostLaunchSpec {pub fn core(&self)->HostLaunchSpecCore{HostLaunchSpecCore{session_runtime:self.session_runtime.clone(),multi_session:true,extensions:self.extensions.clone()}}}
+/// senpi `HostLaunchSpecRefusal`: every `reason` a [`HostLaunchSpecError`] carries.
+pub const HOST_LAUNCH_SPEC_REFUSALS:[&str;6]=["launch_spec_unreadable","launch_spec_invalid","launch_spec_insecure","launch_spec_path_escape","launch_spec_env_denied","launch_spec_missing_extension"];
+/// senpi `DEFAULT_HOST_LAUNCH_SPEC`: no host args, no policy, no env.
+pub fn default_host_launch_spec()->ResolvedHostLaunchSpec{ResolvedHostLaunchSpec::default()}
 pub fn parse_host_launch_spec(text:&str)->Result<HostLaunchSpec,HostLaunchSpecError>{
     let value:Value=serde_json::from_str(text).map_err(|error|refusal("launch_spec_invalid",error.to_string()))?;
     let object=value.as_object().ok_or_else(||refusal("launch_spec_invalid","the spec is not a JSON object"))?;
@@ -52,4 +61,15 @@ mod tests{
     fn write(path:&Path,value:&Value){use std::io::Write;let mut options=fs::OpenOptions::new();options.create(true).truncate(true).write(true);#[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}let mut file=options.open(path).unwrap();write!(file,"{value}").unwrap();}
     #[test] fn absolute_extension_args_and_symlink_escape(){let temp=tempfile::tempdir().unwrap();let outside=tempfile::tempdir().unwrap();let root=temp.path().canonicalize().unwrap();let extension=root.join("probe.js");fs::write(&extension,"").unwrap();let path=root.join("launch.json");write(&path,&spec(serde_json::json!(["probe.js"])));assert_eq!(load_host_launch_spec(&path,"linux").unwrap().host_args,vec!["--session-runtime","in-process","--extension",extension.to_str().unwrap()]);fs::remove_file(&extension).unwrap();fs::write(outside.path().join("evil.js"),"").unwrap();#[cfg(unix)] std::os::unix::fs::symlink(outside.path().join("evil.js"),extension).unwrap();#[cfg(not(unix))] fs::copy(outside.path().join("evil.js"),&extension).unwrap();if cfg!(unix){assert_eq!(load_host_launch_spec(&path,"linux").unwrap_err().reason,"launch_spec_path_escape");}}
     #[cfg(unix)] #[test] fn rejects_permissions_missing_extension_and_env_denial(){use std::os::unix::fs::PermissionsExt;let temp=tempfile::tempdir().unwrap();let path=temp.path().join("launch.json");write(&path,&spec(serde_json::json!(["missing.js"])));assert_eq!(load_host_launch_spec(&path,"linux").unwrap_err().reason,"launch_spec_missing_extension");let mut value=spec(serde_json::json!([]));value["env"]=serde_json::json!({"PATH":"/bin"});write(&path,&value);assert_eq!(load_host_launch_spec(&path,"linux").unwrap_err().reason,"launch_spec_env_denied");fs::set_permissions(&path,fs::Permissions::from_mode(0o666)).unwrap();assert_eq!(load_host_launch_spec(&path,"linux").unwrap_err().reason,"launch_spec_insecure");}
+}
+#[cfg(test)]
+mod core_tests{
+    use super::*;
+    #[test] fn the_core_and_default_spec_match_upstream(){
+        let spec=parse_host_launch_spec(r#"{"spec_version":1,"core":{"session_runtime":"worker","multi_session":true,"extensions":["a"]}}"#).expect("spec");
+        assert_eq!(spec.core(),HostLaunchSpecCore{session_runtime:"worker".into(),multi_session:true,extensions:vec!["a".into()]});
+        assert_eq!(default_host_launch_spec(),ResolvedHostLaunchSpec{host_args:vec![],policy:HostLifecyclePolicyInput::default(),env:BTreeMap::new()});
+        let refused=parse_host_launch_spec("{").expect_err("invalid");
+        assert!(HOST_LAUNCH_SPEC_REFUSALS.contains(&refused.reason));
+    }
 }

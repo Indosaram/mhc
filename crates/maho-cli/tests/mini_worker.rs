@@ -13,7 +13,7 @@ use maho_core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 
 async fn fixture() -> (Arc<Lane>, Arc<ModelRuntimeHandle>) {
     let session = Arc::new(StorageBackedSession::new(
-        SessionMetadata { id: "mini-worker".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        SessionMetadata { id: "mini-worker".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None },
         Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 42)) })),
         StorageBackedSessionOptions::default(),
     ));
@@ -133,7 +133,7 @@ fn wire_event_folds_through_the_shared_reducer() {
 
 async fn harness_fixture() -> (Harness, Arc<Lane>) {
     let session = Arc::new(StorageBackedSession::new(
-        SessionMetadata { id: "mini-open".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        SessionMetadata { id: "mini-open".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None },
         Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 42)) })),
         StorageBackedSessionOptions::default(),
     ));

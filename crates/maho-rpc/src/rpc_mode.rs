@@ -243,7 +243,12 @@ pub async fn run_rpc_mode(
     mut output: impl tokio::io::AsyncWrite + Unpin,
 ) -> std::io::Result<i32> {
     use tokio::io::AsyncWriteExt;
-    let mut signal = Box::pin(termination_signal());
+    // senpi's signal handler kills the tracked detached children before the shared shutdown runs.
+    let mut signal = Box::pin(async {
+        let code = termination_signal().await;
+        maho_tools::shell::kill_tracked_detached_children();
+        code
+    });
     let (handler, result) = serve(
         session,
         env_client_capabilities(),

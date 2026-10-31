@@ -7,17 +7,76 @@ use tokio::sync::oneshot;
 pub struct SessionClosed;
 pub type UiRequestResult = Result<Value, SessionClosed>;
 
+/// A dialog appearing or ending (senpi `UiRequestChange`): what dialog observers are told.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiRequestChange {
+    /// `ui_request_pending { uiRequestId, method, request }`: a request with a frame was registered.
+    Pending {
+        ui_request_id: String,
+        method: Value,
+        request: Value,
+    },
+    /// `ui_request_settled { uiRequestId, disposition }`, disposition `answered` or `cancelled`.
+    Settled {
+        ui_request_id: String,
+        disposition: &'static str,
+    },
+}
+
+impl UiRequestChange {
+    /// The wire record, without the `sessionId` the writer adds (senpi `RpcUiRequestEvent`).
+    pub fn record(&self) -> Value {
+        match self {
+            Self::Pending {
+                ui_request_id,
+                method,
+                request,
+            } => {
+                json!({"type":"ui_request_pending","uiRequestId":ui_request_id,"method":method,"request":request})
+            }
+            Self::Settled {
+                ui_request_id,
+                disposition,
+            } => {
+                json!({"type":"ui_request_settled","uiRequestId":ui_request_id,"disposition":disposition})
+            }
+        }
+    }
+}
+
+pub type UiRequestChanged = Box<dyn Fn(Option<UiRequestChange>) + Send + Sync>;
+
 #[derive(Default)]
 pub struct SessionExtensionUiRequests {
     grant_connections: HashMap<String, Option<String>>,
     pending: HashMap<String, oneshot::Sender<UiRequestResult>>,
     frames: HashMap<String, Value>,
     order: Vec<String>,
+    changed: Option<UiRequestChanged>,
 }
 
 impl SessionExtensionUiRequests {
+    /// A request set that reports every change (senpi `new SessionExtensionUiRequests(changed)`).
+    pub fn with_changed(changed: UiRequestChanged) -> Self {
+        Self {
+            changed: Some(changed),
+            ..Self::default()
+        }
+    }
+
+    /// Installs the change listener after construction (a hosted session's binding learns its routing id late).
+    pub fn set_changed(&mut self, changed: UiRequestChanged) {
+        self.changed = Some(changed);
+    }
+    fn notify(&self, change: Option<UiRequestChange>) {
+        if let Some(changed) = &self.changed {
+            changed(change);
+        }
+    }
+
     pub fn set(&mut self, id: String, request: oneshot::Sender<UiRequestResult>) {
         self.pending.insert(id, request);
+        self.notify(None);
     }
 
     /// Registers a request together with the frame a late attacher needs replayed (senpi `set(id, {frame})`).
@@ -27,9 +86,14 @@ impl SessionExtensionUiRequests {
         request: oneshot::Sender<UiRequestResult>,
         frame: Value,
     ) {
-        self.frames.insert(id.clone(), frame);
+        self.frames.insert(id.clone(), frame.clone());
         self.order.push(id.clone());
-        self.pending.insert(id, request);
+        self.pending.insert(id.clone(), request);
+        self.notify(Some(UiRequestChange::Pending {
+            ui_request_id: id,
+            method: frame.get("method").cloned().unwrap_or(Value::Null),
+            request: frame,
+        }));
     }
 
     /// The frames of pending requests that carry one, in insertion order.
@@ -98,9 +162,16 @@ impl SessionExtensionUiRequests {
         self.order.retain(|entry| entry != id);
     }
 
+    /// Drops a request; only one that existed notifies (settled `cancelled`).
     pub fn delete(&mut self, id: &str) {
-        self.pending.remove(id);
+        let existed = self.pending.remove(id).is_some();
         self.forget(id);
+        if existed {
+            self.notify(Some(UiRequestChange::Settled {
+                ui_request_id: id.into(),
+                disposition: "cancelled",
+            }));
+        }
     }
 
     pub fn resolve(&mut self, response: Value) -> bool {
@@ -110,34 +181,75 @@ impl SessionExtensionUiRequests {
         let Some(request) = self.pending.remove(id) else {
             return false;
         };
-        self.forget(id);
+        let id = id.to_owned();
+        self.forget(&id);
+        let disposition = if response.get("cancelled").is_some() {
+            "cancelled"
+        } else {
+            "answered"
+        };
+        self.notify(Some(UiRequestChange::Settled {
+            ui_request_id: id,
+            disposition,
+        }));
         match request.send(Ok(response)) {
             Ok(()) | Err(_) => true,
         }
     }
 
+    /// Settles every pending request as cancelled, one `ui_request_settled` each, never silently.
     pub fn cancel_all(&mut self) {
-        self.grant_connections.clear();
-        self.frames.clear();
-        self.order.clear();
-        for (id, request) in self.pending.drain() {
+        for id in self.pending_ids() {
+            let Some(request) = self.pending.remove(&id) else {
+                continue;
+            };
+            self.forget(&id);
+            self.notify(Some(UiRequestChange::Settled {
+                ui_request_id: id.clone(),
+                disposition: "cancelled",
+            }));
             match request.send(Ok(
                 json!({"type":"extension_ui_response","id":id,"cancelled":true}),
             )) {
                 Ok(()) | Err(_) => {}
             }
         }
+        self.grant_connections.clear();
     }
 
     pub fn close(&mut self) {
-        self.grant_connections.clear();
-        self.frames.clear();
-        self.order.clear();
-        for (_, request) in self.pending.drain() {
+        for id in self.pending_ids() {
+            let Some(request) = self.pending.remove(&id) else {
+                continue;
+            };
+            self.forget(&id);
+            self.notify(Some(UiRequestChange::Settled {
+                ui_request_id: id,
+                disposition: "cancelled",
+            }));
             match request.send(Err(SessionClosed)) {
                 Ok(()) | Err(_) => {}
             }
         }
+        self.grant_connections.clear();
+    }
+
+    /// Pending ids, framed ones in insertion order first.
+    fn pending_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .order
+            .iter()
+            .filter(|id| self.pending.contains_key(*id))
+            .cloned()
+            .collect();
+        let unframed: Vec<String> = self
+            .pending
+            .keys()
+            .filter(|id| !ids.contains(id))
+            .cloned()
+            .collect();
+        ids.extend(unframed);
+        ids
     }
 }
 
@@ -197,6 +309,42 @@ mod tests {
         requests.set("id".into(), sender);
         requests.close();
         assert_eq!(receiver.await.unwrap(), Err(SessionClosed));
+    }
+
+    #[test]
+    fn changes_report_pending_and_each_settlement() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let mut requests = SessionExtensionUiRequests::with_changed(Box::new(move |change| {
+            sink.lock()
+                .unwrap()
+                .push(change.map(|change| change.record()));
+        }));
+        let (a, _a) = oneshot::channel();
+        let (b, _b) = oneshot::channel();
+        requests.set_with_frame("a".into(), a, json!({"id":"a","method":"select"}));
+        requests.set_with_frame("b".into(), b, json!({"id":"b","method":"confirm"}));
+        assert!(requests.resolve(json!({"id":"a","value":"x"})));
+        requests.delete("missing");
+        requests.cancel_all();
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![
+                Some(
+                    json!({"type":"ui_request_pending","uiRequestId":"a","method":"select","request":{"id":"a","method":"select"}})
+                ),
+                Some(
+                    json!({"type":"ui_request_pending","uiRequestId":"b","method":"confirm","request":{"id":"b","method":"confirm"}})
+                ),
+                Some(
+                    json!({"type":"ui_request_settled","uiRequestId":"a","disposition":"answered"})
+                ),
+                Some(
+                    json!({"type":"ui_request_settled","uiRequestId":"b","disposition":"cancelled"})
+                ),
+            ]
+        );
     }
 
     #[test]

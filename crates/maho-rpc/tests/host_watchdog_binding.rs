@@ -51,6 +51,7 @@ async fn inherited_pipe_eof_fires_before_the_private_directory_is_removed() {
         scratch_dir: Some(scratch.clone()),
         cleanup_paths: None,
         public_socket: None,
+        ..Default::default()
     };
     let capture_saw_directory = Arc::new(AtomicBool::new(false));
     let capture_flag = capture_saw_directory.clone();
@@ -87,6 +88,7 @@ async fn a_gone_supervisor_pid_fires_the_watchdog_on_the_next_tick() {
         scratch_dir: Some(scratch.clone()),
         cleanup_paths: None,
         public_socket: None,
+        ..Default::default()
     };
     let (reason_tx, mut reason_rx) = tokio::sync::mpsc::unbounded_channel();
     let armed = tokio::spawn(arm_host_watchdog(Some(config), async { Ok(()) }, move |reason| {

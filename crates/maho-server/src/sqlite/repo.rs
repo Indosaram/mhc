@@ -13,6 +13,28 @@ fn error(error: impl std::fmt::Display) -> SessionError {
     SessionError::io(error.to_string())
 }
 
+/// senpi `realpath(path)`: the metadata names the database file through no symlink.
+fn canonical_path(path: &Path) -> Result<String, SessionError> {
+    Ok(std::fs::canonicalize(path)
+        .map_err(error)?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// senpi repo.ts `repositoryPathForMetadata`: writable metadata must name this repository's own database file.
+fn repository_path_for_metadata(expected: &Path, metadata: &SessionMetadata) -> Result<String, SessionError> {
+    let expected = canonical_path(expected)?;
+    let Some(path) = &metadata.path else {
+        return Ok(expected);
+    };
+    if canonical_path(Path::new(path))? != expected {
+        return Err(error(format!(
+            "SQLite session metadata path is outside this repository: {path}"
+        )));
+    }
+    Ok(expected)
+}
+
 fn remove_file_retry(path: &Path) -> std::io::Result<()> {
     for attempt in 0..10 {
         match std::fs::remove_file(path) {
@@ -242,6 +264,7 @@ impl SessionRepo for SqliteSessionRepo {
                     parent_session_id: options.parent_session_id,
                     cwd: None,
                     legacy_parent_session_path: None,
+                    path: Some(canonical_path(&path)?),
                 };
                 let tx = db
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -277,8 +300,10 @@ impl SessionRepo for SqliteSessionRepo {
                     metadata.id
                 )));
             }
-            let db = Self::writable(&self.path(&metadata.id), false)?;
+            let path = repository_path_for_metadata(&self.path(&metadata.id), &metadata)?;
+            let db = Self::writable(Path::new(&path), false)?;
             let metadata = session_row::metadata_from_row(
+                &path,
                 session_row::read_session(&db, &metadata.id).map_err(error)?,
                 SQLITE_STORAGE_VERSION,
             )
@@ -311,9 +336,10 @@ impl SessionRepo for SqliteSessionRepo {
             let mut metadata = Vec::new();
             for path in paths {
                 let discovered=||->Result<Vec<SessionMetadata>,SessionError> {
-                    let db=super::open_read_only(&path).map_err(error)?;
+                    let canonical=canonical_path(&path)?;
+                    let db=super::open_read_only(Path::new(&canonical)).map_err(error)?;
                     db.execute_batch("PRAGMA busy_timeout=5000;").map_err(error)?;
-                    session_row::read_all_sessions(&db).map_err(error)?.into_iter().map(|row|session_row::metadata_from_row(row,SQLITE_STORAGE_VERSION).map_err(error)).collect()
+                    session_row::read_all_sessions(&db).map_err(error)?.into_iter().map(|row|session_row::metadata_from_row(&canonical,row,SQLITE_STORAGE_VERSION).map_err(error)).collect()
                 };
                 if let Ok(sessions)=discovered() {
                     metadata.extend(sessions);
@@ -337,9 +363,10 @@ impl SessionRepo for SqliteSessionRepo {
                     metadata.id
                 )));
             }
-            let path = self.path(&metadata.id);
+            let path = PathBuf::from(repository_path_for_metadata(&self.path(&metadata.id), &metadata)?);
             let mut db = Self::writable(&path, false)?;
             session_row::metadata_from_row(
+                &path.to_string_lossy(),
                 session_row::read_session(&db, &metadata.id).map_err(error)?,
                 SQLITE_STORAGE_VERSION,
             )
@@ -372,11 +399,32 @@ impl SessionRepo for SqliteSessionRepo {
     ) -> BoxFuture<'a, Result<Box<dyn Session>, SessionError>> {
         Box::pin(async move {
             self.assert_open()?;
-            let active=self.storages.lock().map_err(error)?.get(&source.id).cloned();
+            // senpi keys open storages by storageIdentity(source.path, source.id) and reads a foreign source from
+            // realpath(source.path) (createForkSnapshotFromExternalSource), so another repository's metadata never
+            // aliases a same-named session here.
+            let own_path = self.path(&source.id);
+            let same_identity = match &source.path {
+                Some(path) => self
+                    .sessions
+                    .lock()
+                    .map_err(error)?
+                    .get(&source.id)
+                    .is_some_and(|open| open.metadata().path.as_deref() == Some(path.as_str())),
+                None => true,
+            };
+            let active = if same_identity {
+                self.storages.lock().map_err(error)?.get(&source.id).cloned()
+            } else {
+                None
+            };
             let snapshot = if let Some(storage)=active {
                 create_fork_snapshot(storage.snapshot(&options)?,&options)?
             } else {
-                let mut db = super::open_read_only(&self.path(&source.id)).map_err(error)?;
+                let source_path = match &source.path {
+                    Some(path) => canonical_path(Path::new(path))?,
+                    None => canonical_path(&own_path)?,
+                };
+                let mut db = super::open_read_only(Path::new(&source_path)).map_err(error)?;
                 db.execute_batch("PRAGMA busy_timeout=5000;")
                     .map_err(error)?;
                 let tx = db.transaction().map_err(error)?;
@@ -402,7 +450,7 @@ impl SessionRepo for SqliteSessionRepo {
             let initialize = || -> Result<_,SessionError> {
                 let mut db = Self::writable(&path, true)?;
                 super::apply_initial_schema(&db).map_err(error)?;
-                let metadata = SessionMetadata {id:id.clone(),created_at:(self.now)(),storage_version:SQLITE_STORAGE_VERSION,parent_session_id:Some(source.id),cwd:None,legacy_parent_session_path:None};
+                let metadata = SessionMetadata {id:id.clone(),created_at:(self.now)(),storage_version:SQLITE_STORAGE_VERSION,parent_session_id:Some(source.id),cwd:None,legacy_parent_session_path:None,path:Some(canonical_path(&path)?)};
                 let tx = db
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(error)?;

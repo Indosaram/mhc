@@ -1,5 +1,5 @@
 use crate::host_protocol_info::HostProtocolInfo;
-#[derive(Debug,PartialEq,Eq)]pub struct HandoffRefusal{pub reason:&'static str,pub upgradeable:bool}
+#[derive(Debug,PartialEq,Eq)]pub struct HandoffRefusal{pub reason:&'static str,pub upgradeable:bool,pub detail:Option<String>}
 pub struct HandoffContext{pub paths:crate::host_daemon_paths::HostDaemonPaths,pub host:HostProtocolInfo,pub owner:crate::host_daemon_registration::RegisteredHost}
 pub struct HandoffOptions{pub host_args:Vec<String>,pub policy:Option<crate::host_lifecycle::HostLifecyclePolicy>,pub env:std::collections::HashMap<String,Option<String>>,pub launch_profile_id:String,pub readiness_ms:u64}
 pub async fn handoff_host(socket:&str,agent_dir:&std::path::Path,options:HandoffOptions)->std::io::Result<Result<crate::host_successor::RunningSuccessor,HandoffRefusal>>{
@@ -13,8 +13,8 @@ pub async fn handoff_host(socket:&str,agent_dir:&std::path::Path,options:Handoff
         let instance_id=crate::protocol_identity::resolve_instance_id(None);
         let prepared=match crate::host_successor::prepare_successor(socket,&context.paths,generation,&instance_id,options.policy.as_ref(),&options.host_args){
             Ok(prepared)=>prepared,
-            Err(crate::host_successor::PrepareSuccessorError::SocketPathTooLong(_))=>return Ok(Err(HandoffRefusal{reason:"socket_path_too_long",upgradeable:true})),
-            Err(crate::host_successor::PrepareSuccessorError::SocketReplaced)=>return Ok(Err(HandoffRefusal{reason:"socket_replaced",upgradeable:true})),
+            Err(crate::host_successor::PrepareSuccessorError::SocketPathTooLong(_))=>return Ok(Err(HandoffRefusal{reason:"socket_path_too_long",upgradeable:true,detail:None})),
+            Err(crate::host_successor::PrepareSuccessorError::SocketReplaced)=>return Ok(Err(HandoffRefusal{reason:"socket_replaced",upgradeable:true,detail:None})),
             Err(error)=>return Err(std::io::Error::other(error)),
         };
         let launch=crate::host_launch::default_host_launch(&prepared.argv)?;
@@ -24,17 +24,21 @@ pub async fn handoff_host(socket:&str,agent_dir:&std::path::Path,options:Handoff
     lock.release().map_err(std::io::Error::other)?;result
 }
 pub async fn prepare_handoff(socket:&str,agent_dir:&std::path::Path,platform:&str)->std::io::Result<Result<HandoffContext,HandoffRefusal>>{
-    if platform=="win32"{return Ok(Err(HandoffRefusal{reason:"upgrade_unsupported",upgradeable:false}));}
+    if platform=="win32"{return Ok(Err(HandoffRefusal{reason:"upgrade_unsupported",upgradeable:false,detail:None}));}
     let paths=crate::host_daemon_paths::create_host_daemon_paths(socket,agent_dir);
     crate::host_daemon_paths::create_daemon_directories(&paths).map_err(|error|error.source)?;
     let host=crate::host_probe::probe_protocol_info(socket,10000).await;
     if let Some(refusal)=handoff_refusal(platform,host.as_ref(),true){return Ok(Err(refusal));}
+    // The running host belongs to another agent dir; only a client of that dir may replace it (#3560).
+    if let Some(detail)=host.as_ref().and_then(|host|crate::host_handoff_agent_dir::foreign_agent_dir_refusal(socket,agent_dir,host)){return Ok(Err(HandoffRefusal{reason:crate::host_handoff_agent_dir::FOREIGN_AGENT_DIR,upgradeable:false,detail:Some(detail)}));}
+    // A pointer an earlier prune dropped is given back to the one proven live generation (senpi#1911).
+    crate::host_pointer_election::elect_pointer(&paths,socket,true);
     let registered=crate::host_daemon_registration::read_host_registration(&paths)?;
-    if crate::host_daemon_registration::proven_owner(registered.as_ref(),socket).is_none(){return Ok(Err(HandoffRefusal{reason:"unknown_owner",upgradeable:true}));}
+    if crate::host_daemon_registration::proven_owner(registered.as_ref(),socket).is_none(){return Ok(Err(HandoffRefusal{reason:"unknown_owner",upgradeable:true,detail:None}));}
     Ok(Ok(HandoffContext{paths,host:host.expect("preflight checked host"),owner:registered.expect("preflight proved owner")}))
 }
 pub fn handoff_refusal(platform:&str,host:Option<&HostProtocolInfo>,owner_proven:bool)->Option<HandoffRefusal>{
     let reason=if platform=="win32"{Some(("upgrade_unsupported",false))}else if let Some(host)=host{if !host.capabilities.iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY){Some(("handoff_unsupported",false))}else if !owner_proven{Some(("unknown_owner",true))}else{None}}else{Some(("no_host",false))};
-    reason.map(|(reason,upgradeable)|HandoffRefusal{reason,upgradeable})
+    reason.map(|(reason,upgradeable)|HandoffRefusal{reason,upgradeable,detail:None})
 }
-#[cfg(test)]mod tests{use super::*;#[test]fn platform_and_capability_refusals_precede_owner_check(){let mut host=crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[]})).unwrap();assert_eq!(handoff_refusal("win32",None,false).unwrap().reason,"upgrade_unsupported");assert_eq!(handoff_refusal("linux",None,false).unwrap().reason,"no_host");assert_eq!(handoff_refusal("linux",Some(&host),false).unwrap().reason,"handoff_unsupported");host.capabilities.push(crate::host_decision::GENERATION_HANDOFF_CAPABILITY.into());assert_eq!(handoff_refusal("linux",Some(&host),false),Some(HandoffRefusal{reason:"unknown_owner",upgradeable:true}));assert!(handoff_refusal("linux",Some(&host),true).is_none());}}
+#[cfg(test)]mod tests{use super::*;#[test]fn platform_and_capability_refusals_precede_owner_check(){let mut host=crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[]})).unwrap();assert_eq!(handoff_refusal("win32",None,false).unwrap().reason,"upgrade_unsupported");assert_eq!(handoff_refusal("linux",None,false).unwrap().reason,"no_host");assert_eq!(handoff_refusal("linux",Some(&host),false).unwrap().reason,"handoff_unsupported");host.capabilities.push(crate::host_decision::GENERATION_HANDOFF_CAPABILITY.into());assert_eq!(handoff_refusal("linux",Some(&host),false),Some(HandoffRefusal{reason:"unknown_owner",upgradeable:true,detail:None}));assert!(handoff_refusal("linux",Some(&host),true).is_none());}}
