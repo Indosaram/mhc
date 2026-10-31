@@ -18,6 +18,9 @@ pub struct McpSessionConnection {
     pub lifecycle: Option<Arc<McpConnectionLifecycle>>,
     pub reconnect: Option<Arc<McpReconnect>>,
     pub shared: Option<Arc<crate::shared_lease::SharedMcpLease>>,
+    /// Upstream `entry.credentialsCurrent`: the credential identity this connection was admitted under is still
+    /// the live one. A connection admitted without a credential check is always current.
+    pub credentials_current: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 pub struct SessionConnectionOptions<'a> {
     pub registry: &'a HostMcpRegistry,
@@ -255,6 +258,7 @@ fn create_session_connection(
             lifecycle: None,
             reconnect: None,
             shared,
+            credentials_current: Arc::new(|| true),
         });
     }
     let lifecycle = McpConnectionLifecycle::configure(connection.clone(), config.clone());
@@ -304,6 +308,7 @@ fn create_session_connection(
         lifecycle: Some(lifecycle),
         reconnect: Some(reconnect),
         shared: None,
+        credentials_current: Arc::new(|| true),
     })
 }
 pub async fn dispose_entry_connection(
