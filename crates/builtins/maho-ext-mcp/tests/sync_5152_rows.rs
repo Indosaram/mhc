@@ -479,3 +479,55 @@ fn shared_pools_key_by_legacy_form_policy() {
         true
     ));
 }
+
+/// Row 42 (resources.ts `readMcpResourceAsText`): an origin-bound read refreshes credentials before any
+/// request; a refresh needing auth marks the connection, and the failure text is redacted.
+#[tokio::test]
+async fn origin_bound_resource_read_refreshes_first_and_redacts_the_failure() {
+    let secret = crate::reference_support::resolve_env("VALUE", "synthetic3858resourcealpha");
+    let root = tempfile::tempdir().expect("root");
+    let connection = ServerConnection::new(
+        "resource",
+        http_config(),
+        None,
+        logger("resource", root.path()),
+    );
+    let client = http_client("resource", root.path()).await;
+    let refreshed = Arc::new(AtomicUsize::new(0));
+    let observed = refreshed.clone();
+    let issued = origin(
+        connection.clone(),
+        AbortSignal::default(),
+        Arc::new(AtomicBool::new(true)),
+    );
+    let server = maho_ext_mcp::resources::McpResourceServer {
+        server: "resource".into(),
+        client,
+        agent_dir: root.path().into(),
+        artifacts: Arc::new(maho_ext_mcp::guard::output_guard::McpOutputArtifacts::default()),
+        output_guard: None,
+        request_timeout: Duration::from_secs(2),
+        resources: vec![],
+        connection: Some(connection.clone()),
+        request_origin: Some(Arc::new(move || Some(issued.clone()))),
+        ensure_fresh: Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(McpError::new(McpErrorKind::Auth, "refresh rejected")) })
+        })),
+    };
+    let uri = format!("fixture://{secret}");
+    let error = maho_ext_mcp::resources::read_mcp_resource_as_text(&server, &uri)
+        .await
+        .expect_err("refresh needs auth");
+    assert_eq!(refreshed.load(Ordering::SeqCst), 1);
+    assert_eq!(connection.state(), ServerConnectionState::NeedsAuth);
+    assert!(!error.message.contains(&secret), "{}", error.message);
+    assert!(
+        error.message.starts_with(
+            "Failed to read MCP resource fixture://<redacted>: MCP server resource needs OAuth"
+        ),
+        "{}",
+        error.message
+    );
+    connection.dispose().await.expect("dispose");
+}
