@@ -33,8 +33,9 @@ pub struct McpManagerAuthAction {
 }
 
 /// Upstream `run(command, name, ctx, notify)`.
-pub type ManagerRun =
-    Arc<dyn Fn(McpManagerCommand, String, Option<McpNotify>) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type ManagerRun = Arc<
+    dyn Fn(McpManagerCommand, String, Option<McpNotify>) -> BoxFuture<'static, ()> + Send + Sync,
+>;
 /// Upstream `service.attachSession({ type: "session_start", reason: "reload" }, ctx, pi)`.
 pub type ManagerReattach = Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
@@ -285,9 +286,12 @@ pub async fn manage(
                         .into_iter()
                         .find(|snapshot| snapshot.name == name);
                     let config = service.auth_target(&name).map(|target| target.config);
-                    let logged_in = service.server_auth_status(&name).await == McpWireAuthStatus::OAuth;
+                    let logged_in =
+                        service.server_auth_status(&name).await == McpWireAuthStatus::OAuth;
                     let details = [
-                        snapshot.as_ref().and_then(|snapshot| snapshot.last_error.clone()),
+                        snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.last_error.clone()),
                         message,
                     ]
                     .into_iter()
@@ -452,7 +456,10 @@ async fn perform(
                     return Ok(None);
                 }
             }
-            let Some(path) = snapshot.source_path.as_ref().filter(|_| is_writable(snapshot))
+            let Some(path) = snapshot
+                .source_path
+                .as_ref()
+                .filter(|_| is_writable(snapshot))
             else {
                 return Ok(None);
             };
