@@ -337,10 +337,16 @@ impl Component for SelectList {
     fn handle_input(&mut self, key_data: &str) {
         let kb = get_keybindings();
         if kb.matches(key_data, "tui.select.up") {
+            if self.filtered_items.is_empty() {
+                return;
+            }
             self.selected_index =
                 if self.selected_index == 0 { self.filtered_items.len() - 1 } else { self.selected_index - 1 };
             self.notify_selection_change();
         } else if kb.matches(key_data, "tui.select.down") {
+            if self.filtered_items.is_empty() {
+                return;
+            }
             self.selected_index =
                 if self.selected_index == self.filtered_items.len() - 1 { 0 } else { self.selected_index + 1 };
             self.notify_selection_change();
