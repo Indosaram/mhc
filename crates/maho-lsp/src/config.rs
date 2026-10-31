@@ -1,5 +1,5 @@
 //! Server table: project and user `lsp-client.json` overrides merged over the builtin servers.
-use crate::servers::{BUILTIN_SERVERS, INSTALL_HINTS};
+use crate::servers::{BUILTIN_SERVERS, INSTALL_HINTS, builtin_initialization};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -110,8 +110,23 @@ fn positive_ms(value: Option<&Value>) -> Option<Duration> {
     (ms.is_finite() && ms > 0.0).then(|| Duration::from_millis(ms as u64))
 }
 
+/// Builtin default options overlaid with a configured entry's `initialization`: top-level keys
+/// of the entry win; a non-object on either side replaces the defaults as a whole.
+fn merge_initialization(defaults: Option<Value>, configured: Option<Value>) -> Option<Value> {
+    match (defaults, configured) {
+        (Some(Value::Object(mut defaults)), Some(Value::Object(configured))) => {
+            defaults.extend(configured);
+            Some(Value::Object(defaults))
+        }
+        (defaults, None) => defaults,
+        (_, configured) => configured,
+    }
+}
+
 /// Merged servers: project entries, then user entries, then builtins; within a source by
-/// descending priority. A `disabled` entry hides the id everywhere below it.
+/// descending priority. A `disabled` entry hides the id everywhere below it. An entry for a builtin
+/// id may leave out `command` and/or `extensions` (taken from the builtin); without its own
+/// `command` it also keeps the builtin initialization options, overlaid with its own.
 pub fn merged_servers(paths: &ConfigPaths) -> Vec<MergedServer> {
     let mut servers = Vec::new();
     let mut disabled = HashSet::new();
@@ -129,11 +144,30 @@ pub fn merged_servers(paths: &ConfigPaths) -> Vec<MergedServer> {
                 if seen.contains(&id) {
                     continue;
                 }
-                let (Some(command), Some(extensions)) = (
-                    strings(entry.get("command")),
-                    strings(entry.get("extensions")),
-                ) else {
+                let own_command = strings(entry.get("command"));
+                let builtin = BUILTIN_SERVERS
+                    .iter()
+                    .find(|(builtin_id, _, _)| *builtin_id == id);
+                let command = own_command.clone().or_else(|| {
+                    builtin.map(|(_, command, _)| {
+                        command.iter().map(|part| (*part).to_owned()).collect()
+                    })
+                });
+                let extensions = strings(entry.get("extensions")).or_else(|| {
+                    builtin.map(|(_, _, extensions)| {
+                        extensions.iter().map(|part| (*part).to_owned()).collect()
+                    })
+                });
+                let (Some(command), Some(extensions)) = (command, extensions) else {
                     continue;
+                };
+                let initialization = if own_command.is_some() {
+                    entry.get("initialization").cloned()
+                } else {
+                    merge_initialization(
+                        builtin_initialization(&id),
+                        entry.get("initialization").cloned(),
+                    )
                 };
                 let env = entry
                     .get("env")
@@ -153,7 +187,7 @@ pub fn merged_servers(paths: &ConfigPaths) -> Vec<MergedServer> {
                         extensions,
                         priority: entry.get("priority").and_then(Value::as_i64).unwrap_or(0),
                         env,
-                        initialization: entry.get("initialization").cloned(),
+                        initialization,
                         request_timeout: positive_ms(entry.get("requestTimeoutMs")),
                         init_timeout: positive_ms(entry.get("initTimeoutMs")),
                     },
@@ -169,6 +203,7 @@ pub fn merged_servers(paths: &ConfigPaths) -> Vec<MergedServer> {
         }
         let mut server = ResolvedServer::new(id, command, extensions);
         server.priority = -100;
+        server.initialization = builtin_initialization(id);
         servers.push(MergedServer {
             server,
             source: ServerSource::Builtin,
@@ -394,6 +429,204 @@ mod tests {
             1
         );
         assert_eq!(disabled_server_ids(&paths), vec!["rust"]);
+    }
+
+    fn merged_with_user(text: &str) -> (tempfile::TempDir, Vec<MergedServer>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let user = dir.path().join("user.json");
+        std::fs::write(&user, text).expect("write");
+        let merged = merged_servers(&ConfigPaths {
+            project: vec![],
+            user: vec![user],
+        });
+        (dir, merged)
+    }
+
+    fn server<'a>(merged: &'a [MergedServer], id: &str) -> &'a MergedServer {
+        merged
+            .iter()
+            .find(|merged| merged.server.id == id)
+            .expect("server present")
+    }
+
+    fn typescript_defaults() -> Value {
+        serde_json::json!({"tsserver": {"useSyntaxServer": "never"}, "disableAutomaticTypingAcquisition": true})
+    }
+
+    // lsp.md Delta D3 test 1 (D1).
+    #[test]
+    fn builtin_typescript_carries_default_options_and_deno_none() {
+        let merged = merged_servers(&ConfigPaths::default());
+        let typescript = server(&merged, "typescript");
+        assert_eq!(typescript.source, ServerSource::Builtin);
+        assert_eq!(
+            typescript.server.initialization,
+            Some(typescript_defaults())
+        );
+        assert_eq!(server(&merged, "deno").server.initialization, None);
+    }
+
+    // lsp.md Delta D3 test 2 (D2 row 2, missing command/extensions from the builtin).
+    #[test]
+    fn entry_without_command_adds_keys_to_builtin_defaults() {
+        let (_dir, merged) = merged_with_user(
+            r#"{"lsp":{"typescript":{"initialization":{"preferences":{"quotePreference":"single"}}}}}"#,
+        );
+        let typescript = server(&merged, "typescript");
+        assert_eq!(typescript.source, ServerSource::User);
+        assert_eq!(
+            typescript.server.command,
+            vec!["typescript-language-server", "--stdio"]
+        );
+        assert_eq!(
+            typescript.server.extensions,
+            vec![".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
+        );
+        let options = typescript
+            .server
+            .initialization
+            .as_ref()
+            .and_then(Value::as_object)
+            .expect("object options");
+        let mut keys: Vec<&str> = options.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "disableAutomaticTypingAcquisition",
+                "preferences",
+                "tsserver"
+            ]
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|merged| merged.server.id == "typescript")
+                .count(),
+            1
+        );
+    }
+
+    // lsp.md Delta D3 test 3 (D2: the entry's value wins on a shared key).
+    #[test]
+    fn entry_value_wins_on_shared_key() {
+        let (_dir, merged) = merged_with_user(
+            r#"{"lsp":{"typescript":{"initialization":{"disableAutomaticTypingAcquisition":false}}}}"#,
+        );
+        let options = server(&merged, "typescript")
+            .server
+            .initialization
+            .clone()
+            .expect("options");
+        assert_eq!(options["disableAutomaticTypingAcquisition"], false);
+        assert_eq!(options["tsserver"]["useSyntaxServer"], "never");
+    }
+
+    // lsp.md Delta D3 test 4 (D2: shallow merge).
+    #[test]
+    fn merge_is_shallow() {
+        let (_dir, merged) = merged_with_user(
+            r#"{"lsp":{"typescript":{"initialization":{"tsserver":{"logVerbosity":"off"}}}}}"#,
+        );
+        let options = server(&merged, "typescript")
+            .server
+            .initialization
+            .clone()
+            .expect("options");
+        assert_eq!(
+            options["tsserver"],
+            serde_json::json!({"logVerbosity": "off"})
+        );
+        assert_eq!(options["disableAutomaticTypingAcquisition"], true);
+    }
+
+    // lsp.md Delta D3 test 5 (D2 row 3: own command drops the builtin defaults).
+    #[test]
+    fn entry_with_own_command_uses_only_its_options() {
+        let (_dir, merged) = merged_with_user(
+            r#"{"lsp":{"typescript":{"command":["my-ts-ls","--stdio"],"extensions":[".ts"]}}}"#,
+        );
+        let typescript = server(&merged, "typescript");
+        assert_eq!(typescript.server.command, vec!["my-ts-ls", "--stdio"]);
+        assert_eq!(typescript.server.initialization, None);
+        let (_dir, merged) = merged_with_user(
+            r#"{"lsp":{"typescript":{"command":["my-ts-ls","--stdio"],"extensions":[".ts"],"initialization":{"a":1}}}}"#,
+        );
+        assert_eq!(
+            server(&merged, "typescript").server.initialization,
+            Some(serde_json::json!({"a": 1}))
+        );
+    }
+
+    // lsp.md Delta D3 test 6 (D2 note: missing command taken from the builtin).
+    #[test]
+    fn project_entry_with_only_extensions_keeps_builtin_command_and_options() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project.json");
+        std::fs::write(&project, r#"{"lsp":{"typescript":{"extensions":[".ts"]}}}"#)
+            .expect("write");
+        let merged = merged_servers(&ConfigPaths {
+            project: vec![project],
+            user: vec![],
+        });
+        let typescript = server(&merged, "typescript");
+        assert_eq!(typescript.source, ServerSource::Project);
+        assert_eq!(
+            typescript.server.command,
+            vec!["typescript-language-server", "--stdio"]
+        );
+        assert_eq!(typescript.server.extensions, vec![".ts"]);
+        assert_eq!(
+            typescript.server.initialization,
+            Some(typescript_defaults())
+        );
+    }
+
+    // lsp.md Delta D3 test 7 (D2 note: unknown ids still need a command).
+    #[test]
+    fn unknown_id_without_command_is_skipped() {
+        let (_dir, merged) = merged_with_user(r#"{"lsp":{"foo":{"initialization":{"a":1}}}}"#);
+        assert!(merged.iter().all(|merged| merged.server.id != "foo"));
+    }
+
+    // lsp.md Delta D3 test 8 (D1: the options reach `initialize`).
+    #[tokio::test]
+    async fn initialize_sends_builtin_typescript_options() {
+        use crate::client::{ClientTimings, LspClient};
+        use crate::rpc::{Connection, read_frame, write_frame};
+        use tokio::io::BufReader;
+
+        let merged = merged_servers(&ConfigPaths::default());
+        let typescript = server(&merged, "typescript").server.clone();
+        let (client_side, server_side) = tokio::io::duplex(1 << 16);
+        let (client_read, client_write) = tokio::io::split(client_side);
+        let connection = Connection::start(client_read, client_write);
+        let fake = tokio::spawn(async move {
+            let (server_read, mut server_write) = tokio::io::split(server_side);
+            let mut reader = BufReader::new(server_read);
+            let request: Value = serde_json::from_slice(
+                &read_frame(&mut reader).await.expect("read").expect("frame"),
+            )
+            .expect("json");
+            let reply = serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": {"capabilities": {}}});
+            write_frame(&mut server_write, reply.to_string().as_bytes())
+                .await
+                .expect("reply");
+            request
+        });
+        let client = LspClient::with_connection(
+            PathBuf::from("/workspace"),
+            typescript,
+            ClientTimings::immediate(),
+            connection,
+        );
+        client.initialize().await.expect("initialize");
+        let request = fake.await.expect("fake server");
+        assert_eq!(request["method"], "initialize");
+        assert_eq!(
+            request["params"]["initializationOptions"],
+            typescript_defaults()
+        );
     }
 
     #[test]

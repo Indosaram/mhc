@@ -127,6 +127,18 @@ pub const BUILTIN_SERVERS: &[(&str, &[&str], &[&str])] = &[
     ("kotlin-ls", &["kotlin-lsp"], &[".kt", ".kts"]),
 ];
 
+/// Default `initializationOptions` of a builtin server, when it carries any. Only `typescript`
+/// does: one tsserver and no background type acquisition (documented server options).
+pub fn builtin_initialization(id: &str) -> Option<serde_json::Value> {
+    match id {
+        "typescript" => Some(serde_json::json!({
+            "tsserver": {"useSyntaxServer": "never"},
+            "disableAutomaticTypingAcquisition": true,
+        })),
+        _ => None,
+    }
+}
+
 /// Manual install hint per server id.
 pub const INSTALL_HINTS: &[(&str, &str)] = &[
     (

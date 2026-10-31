@@ -357,7 +357,8 @@ async fn d4_first_run_moves_to_another_provider() {
     assert!(envelope.contains("No API key found for a."), "{envelope}");
 }
 
-/// D4: messages sent while the task waited for a slot ride the retried first run too.
+/// D4 test 7: a message sent while the task waited for a slot rides the retried first run and is
+/// not delivered again afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn d4_retry_keeps_messages_queued_before_the_first_run() {
     let mut fx = Fixture::with_concurrency(1);
@@ -390,10 +391,25 @@ async fn d4_retry_keeps_messages_queued_before_the_first_run() {
     assert_eq!(failed.prompt, "do it\n\nmessage one");
     assert_eq!(retried.model.as_deref(), Some("b/two"));
     assert_eq!(retried.prompt, failed.prompt, "queued message kept");
+    assert_ne!(retried.session_id, failed.session_id, "fresh session");
     let settled = fx.settle(&record.id).await;
     assert_eq!(settled.status, TaskStatus::Completed);
     assert_eq!(settled.runs, 1);
     assert!(settled.pending_messages.is_empty());
+    // Not delivered again: the blocker, the failed attempt and the retry are the only runs, and
+    // the message appears once in the retry's prompt.
+    let specs = fx.runner.specs();
+    assert_eq!(specs.len(), 3, "no follow-up run");
+    assert_eq!(specs[2].prompt.matches("message one").count(), 1);
+    assert_eq!(
+        lock(&fx.delivered)
+            .iter()
+            .filter(|id| **id == record.id)
+            .count(),
+        1,
+        "one background delivery for the task"
+    );
+    assert!(fx.started.try_recv().is_err(), "no further run started");
 }
 
 /// D4 test 2 and D3 test 1: no other provider -> failed with the remedy line.

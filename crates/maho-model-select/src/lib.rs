@@ -10,7 +10,10 @@ pub mod probe;
 pub mod profile;
 pub mod transforms;
 
-pub use delegate::{ChainRung, DelegateChoice, DelegateInput, Resolved, resolve_delegate_model};
+pub use delegate::{
+    ChainRung, DelegateChoice, DelegateInput, Resolved, resolve_delegate_model,
+    resolve_delegate_model_gated,
+};
 pub use ext::ModelProfileExtension;
 pub use grammar::{
     ParsedModel, clamp_reasoning, normalize_model, normalize_model_id, normalize_reasoning,
