@@ -1748,6 +1748,20 @@ impl SessionManager {
             .then(|| cache_read as f64 / latest_prompt_tokens as f64 * 100.0);
     }
 
+    /// senpi `persistHeaderNow`: a session exposed to other processes needs its id on disk before the first
+    /// assistant message would write it; later entries then append at once.
+    pub fn persist_header_now(&mut self) -> Result<(), String> {
+        if !self.persist || self.session_file.is_none() || self.flushed {
+            return Ok(());
+        }
+        self.rewrite_file();
+        if let Some(error) = self.last_write_error.take() {
+            return Err(error);
+        }
+        self.flushed = true;
+        Ok(())
+    }
+
     fn rewrite_file(&mut self) {
         if let Err(error) = self.check_session_hold() {
             eprintln!("cannot rewrite session: {error}");

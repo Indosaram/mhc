@@ -1002,6 +1002,13 @@ pub struct AgentSessionInner {
     >,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
     relocation_host: Mutex<Option<Arc<dyn crate::session_relocation::SessionRelocationHost>>>,
+    /// Installed by the interactive mode before it binds extensions; `pi.session.registerControlEndpoint` needs one.
+    control_endpoint_host:
+        Mutex<Option<Arc<dyn crate::session_control_actions::ControlEndpointHost>>>,
+    /// The current extension generation's `pi.session`: it owns the control endpoints that generation registers,
+    /// and a reload retires it (senpi#3246).
+    session_control:
+        Mutex<Option<Arc<crate::session_control_actions::GenerationSessionControlActions>>>,
     tool_barrier: crate::session_work_barrier::ToolBarrier,
     tool_workspace_effects:
         Mutex<BTreeMap<String, crate::session_work_barrier::ToolWorkspaceEffect>>,
@@ -4231,6 +4238,8 @@ impl AgentSession {
                     }),
                 ),
                 relocation_host: Mutex::new(None),
+                control_endpoint_host: Mutex::new(None),
+                session_control: Mutex::new(None),
                 tool_barrier: crate::session_work_barrier::ToolBarrier::new({
                     let session_cell = session_cell.clone();
                     move |spec| {
@@ -12816,8 +12825,12 @@ impl AgentSession {
         self.refresh_eval_only_tool_names();
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
-        self.renew_extension_runtime(maho_ext_api::SessionReason::Reload)
-            .await?;
+        let retiring = self.install_session_control();
+        let renewed = self
+            .renew_extension_runtime(maho_ext_api::SessionReason::Reload)
+            .await;
+        self.retire_session_control(retiring).await;
+        renewed?;
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {
             for (name, value) in previous_flag_values {
                 runner.runtime.set_flag(&name, value);
@@ -15826,7 +15839,66 @@ impl AgentSession {
     }
 
     /// Bind the extension runner the tool hooks read at execution time.
+    /// senpi `setControlEndpointHost`: installed by the interactive mode before it binds extensions.
+    pub fn set_control_endpoint_host(
+        &self,
+        host: Option<Arc<dyn crate::session_control_actions::ControlEndpointHost>>,
+    ) {
+        *lock(&self.control_endpoint_host) = host;
+    }
+
+    /// The current extension generation's `pi.session`, created with that generation's runner.
+    pub fn session_control(
+        &self,
+    ) -> Option<Arc<crate::session_control_actions::GenerationSessionControlActions>> {
+        lock(&self.session_control).clone()
+    }
+
+    /// senpi `_buildRuntime` -> `createSessionControlActions`: a new extension generation gets its own `pi.session`,
+    /// returning the generation it replaces.
+    fn install_session_control(
+        &self,
+    ) -> Option<Arc<crate::session_control_actions::GenerationSessionControlActions>> {
+        let host = Arc::downgrade(&self.inner);
+        let generation = crate::session_control_actions::create_session_control_actions(
+            crate::session_control_actions::SessionControlActionDeps {
+                base: Arc::new(SessionControlBase(Arc::downgrade(&self.inner))),
+                host: Arc::new(move || {
+                    host.upgrade()
+                        .and_then(|inner| lock(&inner.control_endpoint_host).clone())
+                }),
+            },
+        );
+        lock(&self.session_control).replace(Arc::new(generation))
+    }
+
+    /// senpi `_rebuildRuntimeForReload` finally: the control endpoints the retiring generation registered drain
+    /// through its closures, so they go with it; a failed retirement is a `<session-control>` reload error and does
+    /// not block the new generation (senpi#3246).
+    async fn retire_session_control(
+        &self,
+        retired: Option<Arc<crate::session_control_actions::GenerationSessionControlActions>>,
+    ) {
+        let Some(retired) = retired else {
+            return;
+        };
+        if let Err(error) = retired.retire().await
+            && let Some(runner) = self.extension_runner.lock().await.as_mut()
+        {
+            runner.emit_error(ExtensionError {
+                extension_path: "<session-control>".into(),
+                event: "reload".into(),
+                error,
+                stack: None,
+            });
+        }
+    }
+
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
+        // The first generation's `pi.session`; a reload installs the next one before it renews the runner.
+        if lock(&self.session_control).is_none() {
+            self.install_session_control();
+        }
         // senpi `_applyExtensionBindings`: the bound `onError` listener observes every error the
         // runner emits (handler failures included), read at emit time so a later rebind wins. A
         // listener copied onto a replacement runner stays inert once its session is disposed.
@@ -20258,6 +20330,66 @@ impl AgentSession {
         };
         self.refresh_lifecycle();
         result
+    }
+}
+
+/// The session half of `pi.session` (senpi `createSessionControlActions` deps): admission, ledger, header write and
+/// relocation come from the bound session.
+struct SessionControlBase(std::sync::Weak<AgentSessionInner>);
+
+impl SessionControlBase {
+    fn session(&self) -> Result<AgentSession, String> {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner })
+            .ok_or_else(|| "session disposed".to_owned())
+    }
+}
+
+impl crate::extensions::session_control_types::SessionControlActions for SessionControlBase {
+    fn admission_gate(&self) -> Value {
+        self.session()
+            .map(|session| session.external_admission.gate(&json!({})))
+            .unwrap_or_else(|error| json!({"can_admit":false,"hold_reason":error}))
+    }
+    fn admit_external_message(&self, input: Value) -> Result<Value, String> {
+        self.session()?.admit_external_message(&input, &json!({}))
+    }
+    fn list_admitted_deliveries(&self) -> Value {
+        self.session()
+            .map(|session| session.external_admission.list())
+            .unwrap_or_else(|_| json!({"pending":[],"emitted":[]}))
+    }
+    fn persist_header_now(&self) -> futures::future::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let session = self.session()?;
+            session.with_session_manager_mut(|manager| manager.persist_header_now())
+        })
+    }
+    fn relocation_offered(&self) -> bool {
+        self.session()
+            .is_ok_and(|session| session.relocation_offered())
+    }
+    fn relocation_targets(
+        &self,
+        _signal: Option<maho_ext_api::AbortSignal>,
+    ) -> futures::future::BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async move {
+            let targets = self.session()?.relocation_targets().await;
+            serde_json::to_value(targets).map_err(|error| error.to_string())
+        })
+    }
+    fn request_relocation(
+        &self,
+        request: Value,
+        _signal: Option<maho_ext_api::AbortSignal>,
+    ) -> futures::future::BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async move {
+            let request = serde_json::from_value(request)
+                .map_err(|error| format!("invalid relocation request: {error}"))?;
+            let result = self.session()?.request_relocation(request).await;
+            serde_json::to_value(result).map_err(|error| error.to_string())
+        })
     }
 }
 
@@ -32112,6 +32244,111 @@ mod tests {
         assert!(session.agent.has_queued_messages());
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("prior"));
         assert_eq!(session.compaction_state().status(), "failed");
+    }
+
+    struct FailingControlHost {
+        disposed: Arc<AtomicU64>,
+    }
+    impl crate::session_control_actions::ControlEndpointHost for FailingControlHost {
+        fn register(
+            &self,
+            _: crate::extensions::session_control_types::RegisterControlEndpointOptions,
+        ) -> futures::future::BoxFuture<
+            '_,
+            crate::extensions::session_control_types::SessionControlRegistration,
+        > {
+            let disposed = self.disposed.clone();
+            Box::pin(async move {
+                crate::extensions::session_control_types::SessionControlRegistration::Registered {
+                    socket: "/tmp/control.sock".into(),
+                    dispose: Arc::new(
+                        move || -> futures::future::BoxFuture<'static, Result<(), String>> {
+                            disposed.fetch_add(1, Ordering::SeqCst);
+                            Box::pin(async { Err("socket busy".to_owned()) })
+                        },
+                    ),
+                }
+            })
+        }
+    }
+
+    /// senpi test/suite/regressions/3246-control-endpoint-reload-generation.test.ts: a reload retires the control
+    /// endpoints the previous extension generation registered, reports a failed retirement as a `<session-control>`
+    /// reload error, and still installs the next generation.
+    #[tokio::test]
+    async fn reload_retires_the_previous_generations_control_endpoints() {
+        use crate::extensions::session_control_types::SessionControlActions;
+        let session = test_session();
+        let disposed = Arc::new(AtomicU64::new(0));
+        session.set_control_endpoint_host(Some(Arc::new(FailingControlHost {
+            disposed: disposed.clone(),
+        })));
+        let extension = maho_ext_api::LoadedExtension::new(
+            "<inline:control>",
+            session.cwd().into(),
+            Default::default(),
+        );
+        let retained = extension.clone();
+        let mut runner = maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            test_extension_context(&session),
+        );
+        runner.set_runtime_factory(Arc::new(move |context| {
+            let extension = retained.clone();
+            Box::pin(async move {
+                Ok(maho_ext_host::ExtensionRunner::new(
+                    vec![extension],
+                    Default::default(),
+                    Default::default(),
+                    context,
+                ))
+            })
+        }));
+        session.set_extension_runner(runner).await;
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let seen = errors.clone();
+        session.state().extension_error_listener = Some(Arc::new(move |error: &ExtensionError| {
+            lock(&seen).push((
+                error.extension_path.clone(),
+                error.event.clone(),
+                error.error.clone(),
+            ));
+        }));
+        let first = session.session_control().expect("first generation");
+        let registration = first
+            .register_control_endpoint(
+                crate::extensions::session_control_types::RegisterControlEndpointOptions {
+                    inbox_dir: "/tmp/inbox".into(),
+                    drain: Arc::new(
+                        |_: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
+                            Box::pin(async { None })
+                        },
+                    ),
+                    is_session_referenced: None,
+                },
+            )
+            .await;
+        assert!(matches!(
+            registration,
+            crate::extensions::session_control_types::SessionControlRegistration::Registered { .. }
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.reload())
+            .await
+            .expect("bounded reload")
+            .expect("reload");
+        assert_eq!(disposed.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *lock(&errors),
+            vec![(
+                "<session-control>".to_owned(),
+                "reload".to_owned(),
+                "socket busy".to_owned()
+            )]
+        );
+        let next = session.session_control().expect("next generation");
+        assert!(!Arc::ptr_eq(&first, &next));
     }
 
     /// senpi test/suite/regressions/4295-session-recovered-notice.test.ts: a torn session tail found on open is
