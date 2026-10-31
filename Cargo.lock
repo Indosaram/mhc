@@ -3716,6 +3716,7 @@ dependencies = [
  "maho-process-env",
  "maho-rpc",
  "maho-senpi-task",
+ "maho-server",
  "maho-side-panel",
  "maho-skills",
  "maho-task",
@@ -3744,6 +3745,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "ulw-loop-core",
  "url",
  "uuid",
@@ -4208,6 +4210,7 @@ dependencies = [
 name = "maho-ext-herdr"
 version = "0.0.0"
 dependencies = [
+ "maho-core",
  "maho-ext-api",
  "maho-ext-builtin-loose",
  "serde",
@@ -4529,11 +4532,14 @@ dependencies = [
  "maho-ext-host",
  "maho-test-support",
  "maho-tools",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "unicode-normalization",
+ "url",
 ]
 
 [[package]]
@@ -4807,6 +4813,7 @@ dependencies = [
  "dirs",
  "globset",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-ext-rule-activation",
@@ -4864,7 +4871,9 @@ dependencies = [
 name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
+ "dom_query 0.27.0",
  "maho-ai",
+ "maho-core",
  "maho-ext-anthropic-web-search",
  "maho-ext-api",
  "maho-ext-host",
@@ -5000,7 +5009,6 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-ask-user",
  "maho-ext-host",
- "maho-ext-mcp",
  "maho-rpc",
  "maho-test-support",
  "maho-tools",
@@ -5429,8 +5437,11 @@ dependencies = [
 name = "maho-omo-desktop-toolkit"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-api",
+ "reqwest 0.12.28",
  "serde_json",
+ "tempfile",
  "tokio",
  "url",
  "uuid",
@@ -5466,6 +5477,7 @@ dependencies = [
  "maho-omo-agent-home",
  "maho-omo-config-core",
  "maho-omo-config-resolution",
+ "maho-omo-memory",
  "maho-omo-telemetry",
  "maho-telemetry-core",
  "regex",
@@ -5750,6 +5762,7 @@ dependencies = [
  "maho-ai",
  "maho-ext-api",
  "maho-model-core",
+ "maho-omo-bundled-skills",
  "maho-omo-git-master",
  "maho-omo-idle-injection",
  "maho-omo-lsp",
@@ -6034,6 +6047,7 @@ name = "maho-senpi-desktop-engine"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "libc",
  "maho-senpi-desktop-backend-fake",
  "maho-senpi-desktop-backend-macos",
  "maho-senpi-desktop-backend-wayland",
@@ -6047,6 +6061,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "ulid",
@@ -6098,6 +6113,7 @@ dependencies = [
 name = "maho-senpi-desktop-safety"
 version = "0.0.0"
 dependencies = [
+ "maho-senpi-desktop-backend-fake",
  "maho-senpi-desktop-core",
  "parking_lot",
  "thiserror 2.0.20",

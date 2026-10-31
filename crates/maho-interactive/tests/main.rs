@@ -45,8 +45,6 @@ mod keybinding_hints_global;
 mod mermaid_golden;
 #[path = "mermaid_transformer.rs"]
 mod mermaid_transformer;
-#[path = "mcp_local_presenter.rs"]
-mod mcp_local_presenter;
 #[path = "presentation.rs"]
 mod presentation;
 #[path = "runtime35_external_editor.rs"]

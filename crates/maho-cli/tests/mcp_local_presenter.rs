@@ -1,12 +1,12 @@
 // senpi packages/coding-agent/test/mcp/presenter-local.test.ts (senpi-interactive-21): the terminal's
 // `local_tui` presenter over its own presenter authority.
 use maho_ai::utils::abort::{AbortController, AbortSignal};
+use maho_cli::cli::mcp_local_presenter::register_local_mcp_presenter;
 use maho_core::mcp_form_types::{
     McpFormInput, McpFormOutcome, McpFormOutcomeKind, McpFormOutcomeSource, McpFormServer,
     McpServerSource, mark_mcp_form_presented,
 };
 use maho_ext_api::*;
-use maho_interactive::mcp_local_presenter::register_local_mcp_presenter;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
