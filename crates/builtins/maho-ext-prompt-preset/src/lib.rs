@@ -44,3 +44,7 @@ pub mod index;
 pub use index::PromptPreset;
 
 pub mod contract;
+pub mod generation;
+pub mod gpt_surface;
+pub mod matchers;
+pub mod public;
