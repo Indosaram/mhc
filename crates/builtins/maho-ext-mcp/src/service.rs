@@ -92,6 +92,8 @@ pub struct McpService {
     policy_notices: Arc<crate::policy_notices::PolicyNotices>,
     policy_notice_event: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
     elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// service.ts: `declarer.context.mode !== "print" && declarer.context.mode !== "json"`.
+    elicitation_enabled: bool,
     output_artifacts: Arc<crate::guard::output_guard::McpOutputArtifacts>,
     registration: Option<crate::expose::session::McpSessionRegistration>,
     tier_b_registry: crate::expose::tier_b::McpTierBRegistry,
@@ -329,6 +331,7 @@ impl McpService {
             policy_notices: Default::default(),
             policy_notice_event: None,
             elicitation_ui: None,
+            elicitation_enabled: true,
             output_artifacts: Arc::new(Default::default()),
             registration: None,
             tier_b_registry: Default::default(),
@@ -360,6 +363,14 @@ impl McpService {
     }
     pub fn set_elicitation_ui(&mut self, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>) {
         self.elicitation_ui = ui;
+    }
+    /// Upstream `elicitationEnabled` from the declaring session's mode: print and json sessions withhold the
+    /// elicitation capability entirely.
+    pub fn set_session_mode(&mut self, mode: maho_ext_api::ExtensionMode) {
+        self.elicitation_enabled = !matches!(
+            mode,
+            maho_ext_api::ExtensionMode::Print | maho_ext_api::ExtensionMode::Json
+        );
     }
     /// Bind the service's own handle so a deferred startup-race connect can
     /// re-register tools after the attach deadline without holding the session lock.
@@ -541,6 +552,7 @@ impl McpService {
                     agent_dir,
                     env: Some(env.clone()),
                     elicitation_ui: self.elicitation_ui.clone(),
+                    elicitation_enabled: self.elicitation_enabled,
                 },
                 &cwd.to_string_lossy(),
             )?;
