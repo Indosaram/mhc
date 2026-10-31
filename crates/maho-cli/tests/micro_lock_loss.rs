@@ -182,6 +182,7 @@ async fn a_lost_session_lock_aborts_the_running_turn_and_no_further_session_writ
                     agent_dir: agent.path().to_path_buf(),
                     model_runtime,
                     on_harness: None,
+                    debug_log: None,
                 },
             )
             .await
