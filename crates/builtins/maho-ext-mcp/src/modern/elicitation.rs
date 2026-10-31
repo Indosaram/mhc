@@ -3,7 +3,8 @@ use super::{
     errors::{McpMrtrError, McpMrtrErrorCode},
     form_schema::{Property, enums, valid_value, validate_mrtr_form},
 };
-use crate::{mrtr_presentations::McpMrtrPresentation, wrap::McpLinkedSignal};
+use crate::wrap::McpLinkedSignal;
+use maho_core::mcp_mrtr_presentations::McpMrtrPresentation;
 use maho_ext_api::{AbortSignal, ExtensionUiDialogOptions};
 use serde_json::{Map, Value};
 
@@ -222,13 +223,19 @@ pub async fn collect_mrtr_form(
         return Err(McpMrtrError::new(McpMrtrErrorCode::InvalidInput));
     }
     let local = AbortSignal::default();
-    let combined = McpLinkedSignal::new(vec![
-        signal.clone(),
-        presentation.signal.clone(),
-        local.clone(),
-    ]);
+    let combined = McpLinkedSignal::with_host(
+        vec![signal.clone(), local.clone()],
+        vec![presentation.signal.clone()],
+    );
+    // DIVERGENCE(senpi bindMcpFormPresented(opts, ...)): upstream keys the callback by the dialog options object
+    // the host later passes to `markMcpFormPresented`. `ExtensionUiDialogOptions` carries no identity yet, so the
+    // key is this form's own token; a host can mark it once the options carry it (maho-ext-api owner lane).
+    let presented_key: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
     if let Some(presented) = presentation.presented.clone() {
-        crate::form_types::bind_mcp_form_presented(&presentation.ui, Some(presented));
+        crate::form_types::bind_mcp_form_presented(
+            &presented_key,
+            Some(Box::new(move || presented())),
+        );
     }
     let empty = Map::new();
     let properties = requested_schema
@@ -344,9 +351,7 @@ pub async fn collect_mrtr_form(
         }
     }
     .await;
-    if presentation.presented.is_some() {
-        crate::form_types::bind_mcp_form_presented(&presentation.ui, None);
-    }
+    crate::form_types::bind_mcp_form_presented(&presented_key, None);
     local.abort();
     content.clear();
     Ok(result)

@@ -107,7 +107,7 @@ pub struct McpSessionBinding {
     /// Aborted when the binding is replaced or released, ending every request origin it issued.
     lifetime: std::sync::Mutex<maho_ext_api::AbortSignal>,
     /// Rebound on session start and every input.
-    presentation: std::sync::Mutex<Option<crate::mrtr_presentations::McpMrtrPresentation>>,
+    presentation: std::sync::Mutex<Option<maho_core::mcp_mrtr_presentations::McpMrtrPresentation>>,
     sources: std::sync::Mutex<BTreeMap<String, crate::config_schema::McpServerSource>>,
     /// Pooled servers: this owner's lease, whose own request lifetime also bounds the origin.
     leases:
@@ -115,7 +115,8 @@ pub struct McpSessionBinding {
 }
 impl McpSessionBinding {
     pub fn bind_presentation(&self, ui: &Arc<dyn maho_ext_api::ExtensionUi>) {
-        if let Some(presentation) = crate::mrtr_presentations::get_mcp_mrtr_presentation(ui) {
+        if let Some(presentation) = maho_core::mcp_mrtr_presentations::get_mcp_mrtr_presentation(ui)
+        {
             *self
                 .presentation
                 .lock()

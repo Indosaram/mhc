@@ -3,11 +3,11 @@ use crate::{
     connection::ServerConnection,
     form_types::{McpFormPresentation, McpFormServerSource},
     modern::errors::{McpMrtrError, McpMrtrErrorCode},
-    mrtr_presentations::McpMrtrPresentation,
     transport_sdk::McpClient,
     wrap::McpLinkedSignal,
 };
 use futures::future::BoxFuture;
+use maho_core::mcp_mrtr_presentations::McpMrtrPresentation;
 use maho_ext_api::AbortSignal;
 use serde_json::Value;
 use std::sync::{
@@ -29,7 +29,7 @@ pub struct McpRequestOrigin {
     pub connection: Arc<ServerConnection>,
     pub signal: AbortSignal,
     pub presentation: Option<McpMrtrPresentation>,
-    pub private_form: Option<Arc<dyn McpFormPresentation>>,
+    pub private_form: Option<McpFormPresentation>,
     pub private_forms_enforced: bool,
     pub server_label: String,
     pub server_source: Option<McpFormServerSource>,
@@ -43,7 +43,7 @@ impl McpRequestOrigin {
         connection: Arc<ServerConnection>,
         signal: AbortSignal,
         presentation: Option<McpMrtrPresentation>,
-        private_form: Option<Arc<dyn McpFormPresentation>>,
+        private_form: Option<McpFormPresentation>,
         private_forms_enforced: bool,
         server_label: String,
         server_source: Option<McpFormServerSource>,

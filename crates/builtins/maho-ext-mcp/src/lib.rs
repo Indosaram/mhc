@@ -29,7 +29,6 @@ pub mod instructions;
 pub mod log;
 pub mod logging;
 pub mod modern;
-pub mod mrtr_presentations;
 pub mod needs_auth;
 pub mod notification_schemas;
 pub mod notifications;

@@ -1,12 +1,11 @@
 // senpi-core-ext-07 MCP half: presenter inheritance across runner wrapping and ephemeral private MRTR dialogs
 // (upstream mcp-mrtr-presentations.ts + modern/elicitation.ts, exercised by modern-mrtr-privacy.test.ts).
-use maho_ext_api::*;
-use maho_ext_mcp::{
-    modern::elicitation::{MrtrInputResponse, collect_mrtr_form},
-    mrtr_presentations::{
-        get_mcp_mrtr_presentation, inherit_mcp_mrtr_presentation, register_mcp_mrtr_presentation,
-    },
+use maho_ai::utils::abort::AbortController;
+use maho_core::mcp_mrtr_presentations::{
+    get_mcp_mrtr_presentation, inherit_mcp_mrtr_presentation, register_mcp_mrtr_presentation,
 };
+use maho_ext_api::*;
+use maho_ext_mcp::modern::elicitation::{MrtrInputResponse, collect_mrtr_form};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -79,8 +78,8 @@ impl ExtensionUi for FormUi {
 fn a_runner_wrapper_inherits_the_host_presentation_and_keeps_the_raw_ui() {
     let host = FormUi::new(Vec::new(), Vec::new());
     let raw: Arc<dyn ExtensionUi> = host.clone();
-    let signal = AbortSignal::default();
-    register_mcp_mrtr_presentation(&raw, signal.clone(), None, None);
+    let signal = AbortController::new();
+    register_mcp_mrtr_presentation(raw.clone(), signal.signal(), None, None);
     let wrapper: Arc<dyn ExtensionUi> = FormUi::new(Vec::new(), Vec::new());
     assert!(get_mcp_mrtr_presentation(&wrapper).is_none());
     let wrapper = inherit_mcp_mrtr_presentation(&raw, wrapper);
@@ -89,7 +88,7 @@ fn a_runner_wrapper_inherits_the_host_presentation_and_keeps_the_raw_ui() {
         Arc::ptr_eq(&inherited.ui, &raw),
         "private dialogs still use the raw host UI"
     );
-    signal.abort();
+    signal.abort(None);
     assert!(
         get_mcp_mrtr_presentation(&wrapper).is_none(),
         "an aborted presentation never resolves"
@@ -108,7 +107,7 @@ fn an_unregistered_source_leaves_the_wrapper_without_a_presentation() {
 async fn private_mrtr_form_dialogs_are_ephemeral() {
     let host = FormUi::new(vec!["Continue", "Submit"], vec!["Ada"]);
     let raw: Arc<dyn ExtensionUi> = host.clone();
-    register_mcp_mrtr_presentation(&raw, AbortSignal::default(), None, None);
+    register_mcp_mrtr_presentation(raw.clone(), AbortController::new().signal(), None, None);
     let presentation = get_mcp_mrtr_presentation(&raw).expect("presentation");
     let schema =
         json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]});
@@ -136,7 +135,7 @@ async fn private_mrtr_form_dialogs_are_ephemeral() {
 async fn a_declined_private_form_returns_no_field_values() {
     let host = FormUi::new(vec!["Decline"], Vec::new());
     let raw: Arc<dyn ExtensionUi> = host.clone();
-    register_mcp_mrtr_presentation(&raw, AbortSignal::default(), None, None);
+    register_mcp_mrtr_presentation(raw.clone(), AbortController::new().signal(), None, None);
     let presentation = get_mcp_mrtr_presentation(&raw).expect("presentation");
     let schema = json!({"type":"object","properties":{"name":{"type":"string"}}});
     assert_eq!(
@@ -157,7 +156,7 @@ async fn a_declined_private_form_returns_no_field_values() {
 async fn an_invalid_form_schema_is_refused_before_any_dialog() {
     let host = FormUi::new(vec!["Continue"], Vec::new());
     let raw: Arc<dyn ExtensionUi> = host.clone();
-    register_mcp_mrtr_presentation(&raw, AbortSignal::default(), None, None);
+    register_mcp_mrtr_presentation(raw.clone(), AbortController::new().signal(), None, None);
     let presentation = get_mcp_mrtr_presentation(&raw).expect("presentation");
     let error = collect_mrtr_form(
         &presentation,
