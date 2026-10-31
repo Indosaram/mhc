@@ -622,3 +622,71 @@ async fn tagged_accept_returns_closed_for_every_kind_after_close() {
         );
     }
 }
+
+/// Pinned "does not let a lone queued write validate empty acceptance": a queued `write` inbox
+/// item is not prompt content, so an empty prompt is rejected and the write stays queued.
+#[tokio::test]
+async fn lone_queued_write_does_not_validate_empty_acceptance() {
+    use maho_agent::harness::agent_harness::OperationRequest;
+    use maho_agent::harness::runtime::lane::{CommitDecision, LaneCommand};
+    use maho_agent::harness::session::values::{pending_entry, set_value};
+    let entry_id = "queued-write";
+    let lane = fixture().await.unwrap();
+    lane.command(
+        |mut state, _| {
+            Box::pin(async move {
+                state.inbox.push(InboxItem {
+                    entry_id: entry_id.into(),
+                    kind: InboxItemKind::Write,
+                });
+                Ok(LaneCommand::Commit {
+                    decision: CommitDecision {
+                        writes: vec![Write::Value(set_value(
+                            &pending_entry(entry_id),
+                            serde_json::to_value(PendingEntry::Custom {
+                                custom_type: "queued-write".into(),
+                                payload: None,
+                            })
+                            .unwrap(),
+                        ))],
+                        materialize: Arc::new(|_| ()),
+                        events: None,
+                    },
+                    next: Box::new(state),
+                })
+            })
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .unwrap();
+
+    let result = lane
+        .accept(
+            OperationRequest::Prompt {
+                operation_id: None,
+                prompt: String::new(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, Err(AdmissionError::Empty));
+    assert!(lane.state().operation.is_none());
+    assert_eq!(
+        lane.state().inbox,
+        vec![InboxItem {
+            entry_id: entry_id.into(),
+            kind: InboxItemKind::Write,
+        }]
+    );
+    assert!(
+        lane.session
+            .get_value(&pending_entry(entry_id), &BACKGROUND_CONTEXT)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
