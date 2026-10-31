@@ -65,12 +65,14 @@ fn blocked_models(slot: &Value, now: u64) -> Vec<CredentialAccountBlockedModel> 
     blocks
         .iter()
         .filter_map(|(model, block)| {
-            let until = block.get("blockedUntil").and_then(Value::as_i64)?;
-            (until > i64::try_from(now).unwrap_or(i64::MAX)).then(|| {
-                CredentialAccountBlockedModel {
-                    model: model.clone(),
-                    until,
-                }
+            // senpi `numberField`: any finite number; anthropic-subscription writes floats.
+            let until = block
+                .get("blockedUntil")
+                .and_then(Value::as_f64)
+                .filter(|until| until.is_finite())?;
+            (until > now as f64).then(|| CredentialAccountBlockedModel {
+                model: model.clone(),
+                until: until as i64,
             })
         })
         .collect()
@@ -721,6 +723,26 @@ mod tests {
         );
         assert!(!accounts[0].blocked);
         assert!(accounts[1].blocked_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_reads_float_model_block_expiries_as_anthropic_subscription_writes_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = storage(&tmp);
+        let repo = repository(&tmp);
+        store.set("fixture", Some(json!({"type":"api_key","key":"base","accounts":[
+            {"name":"work","key":"work-key","modelBlocks":{"opus":{"blockedUntil":500.0},"fable":{"blockedUntil":50.0}}}
+        ]}))).expect("seed");
+        let accounts = get_credential_accounts(&store, "fixture", &env_none(), &repo, 100)
+            .await
+            .expect("accounts");
+        assert_eq!(
+            accounts[0].blocked_models,
+            vec![CredentialAccountBlockedModel {
+                model: "opus".into(),
+                until: 500
+            }]
+        );
     }
 
     #[tokio::test]
