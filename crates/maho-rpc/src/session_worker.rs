@@ -530,6 +530,38 @@ impl WorkerState {
                     error: None,
                 }))
             }
+            // senpi `prompt_surface` / `browser_engine`: the attach that names one moves the live session to it.
+            // NATIVE-DIVERGENCE(senpi `entry.runtime.setPromptSurface`): the runtime is shared behind an `Arc`, so the
+            // live session takes the value; a later replacement re-reads it from the session.
+            H::PromptSurface { request, surface } => {
+                let session = self.current().ok_or("session_closing")?;
+                let surface = match surface.as_str() {
+                    "terminal" => maho_ext_api::PromptSurface::Terminal,
+                    "app" => maho_ext_api::PromptSurface::App,
+                    "chat" => maho_ext_api::PromptSurface::Chat,
+                    _ => return Err(format!("Invalid prompt surface: {surface}")),
+                };
+                session.runtime.session().set_prompt_surface(surface);
+                Ok(Some(W::Result {
+                    request,
+                    error: None,
+                }))
+            }
+            H::BrowserEngine { request, engine } => {
+                let session = self.current().ok_or("session_closing")?;
+                session.runtime.session().set_browser_engine(engine);
+                Ok(Some(W::Result {
+                    request,
+                    error: None,
+                }))
+            }
+            // senpi `entry.runtime.setPermissionPreset(preset)` sets the `permission-preset` extension flag and syncs
+            // the Full-access trust; maho-core exposes no runtime seam for either, so the worker refuses instead of
+            // pretending the preset moved.
+            H::PermissionPreset { .. } => {
+                self.current().ok_or("session_closing")?;
+                Err("permission_preset_unsupported".into())
+            }
             H::Display { .. } => Ok(Some(W::ControlDone {
                 control: crate::session_worker_protocol::WorkerControlKind::Display,
             })),
@@ -682,6 +714,18 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
                 | crate::session_worker_protocol::HostToSessionWorker::Bind { request, .. }
                 | crate::session_worker_protocol::HostToSessionWorker::Command {
                     request, ..
+                }
+                | crate::session_worker_protocol::HostToSessionWorker::PromptSurface {
+                    request,
+                    ..
+                }
+                | crate::session_worker_protocol::HostToSessionWorker::BrowserEngine {
+                    request,
+                    ..
+                }
+                | crate::session_worker_protocol::HostToSessionWorker::PermissionPreset {
+                    request,
+                    ..
                 } => Some(*request),
                 _ => None,
             };
@@ -711,6 +755,53 @@ pub async fn run_session_worker(configure: ConfigureSessionWorker) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn idle_worker() -> std::sync::Arc<WorkerState> {
+        let port = std::sync::Arc::new(WorkerPort {
+            out: std::sync::Mutex::new(std::io::stdout()),
+            pending: Default::default(),
+            next: std::sync::atomic::AtomicU64::new(1),
+            ordered: std::sync::atomic::AtomicBool::new(false),
+            output_ordinal: std::sync::atomic::AtomicU64::new(0),
+        });
+        std::sync::Arc::new(WorkerState {
+            port,
+            configure: Box::new(|_| Err("unused".into())),
+            prepared: Default::default(),
+            session: Default::default(),
+            binding: Default::default(),
+            subscription: Default::default(),
+            closing: std::sync::atomic::AtomicBool::new(false),
+            roles: Default::default(),
+            private_forms: crate::mcp_form_worker::McpFormWorker::new(std::sync::Arc::new(|_| {})),
+            private_binding: Default::default(),
+        })
+    }
+    // senpi `prompt_surface` / `browser_engine` / `permission_preset`: with no live runtime the request fails
+    // `session_closing`, so the host's attach reports the closing session instead of hanging.
+    #[tokio::test]
+    async fn attach_setters_before_a_runtime_answer_session_closing() {
+        use crate::session_worker_protocol::HostToSessionWorker as H;
+        let worker = idle_worker();
+        for message in [
+            H::PromptSurface {
+                request: 1,
+                surface: "app".into(),
+            },
+            H::BrowserEngine {
+                request: 2,
+                engine: "builtin".into(),
+            },
+            H::PermissionPreset {
+                request: 3,
+                preset: "guarded".into(),
+            },
+        ] {
+            assert_eq!(
+                worker.handle(message).await.err().as_deref(),
+                Some("session_closing")
+            );
+        }
+    }
     #[test]
     fn display_rejects_stale_revision_but_accepts_equal() {
         let mut display = WorkerDisplay {
