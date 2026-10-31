@@ -2,7 +2,7 @@
 //! registers, built on its live parser registry, evaluator and approval handler.
 use crate::{
     dispatch::{DispatchAuthorizer, DispatchFuture, DispatchPolicy, DispatchRequest},
-    parsers::ParserRegistry,
+    parsers::{ParserRegistry, PermissionRequest},
     service::{DecisionOptions, PermissionService},
     types::Action,
 };
@@ -30,6 +30,18 @@ pub fn dispatch_policy(
     let requests = state
         .parsers
         .parse(&request.tool_name, &request.input, (&ctx.cwd, home));
+    decide_dispatch_policy(state.service, state.preset_bound, &requests, ctx)
+}
+
+/// The decision half of [`dispatch_policy`] over already parsed requests, so a caller can run the
+/// parser (and the tool-definition or custom-parser callbacks it invokes) without holding the lock
+/// that guards the service.
+pub fn decide_dispatch_policy(
+    service: &PermissionService,
+    preset_bound: bool,
+    requests: &[PermissionRequest],
+    ctx: &ExtensionContext,
+) -> DispatchPolicy {
     let mut action = Action::Allow;
     let decisions: Vec<Value> = requests
         .iter()
@@ -42,9 +54,7 @@ pub fn dispatch_policy(
                 .patterns
                 .iter()
                 .map(|pattern| {
-                    let decision = state
-                        .service
-                        .decide(&permission.permission, pattern, &options);
+                    let decision = service.decide(&permission.permission, pattern, &options);
                     match decision.action {
                         Action::Deny => action = Action::Deny,
                         Action::Ask if !permission.auto_approve_ask && action != Action::Deny => {
@@ -73,7 +83,7 @@ pub fn dispatch_policy(
         fingerprint: json!([
             ctx.session_manager.session_id(),
             ctx.cwd,
-            state.preset_bound,
+            preset_bound,
             decisions
         ])
         .to_string(),
