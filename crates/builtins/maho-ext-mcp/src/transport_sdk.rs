@@ -1296,13 +1296,22 @@ impl McpClient {
                     self.protocol.legacy_form_eligible().unwrap_or(true),
                 );
                 match self.request_inner("initialize",json!({"protocolVersion":crate::modern::era::LATEST_PROTOCOL_VERSION,"capabilities":capabilities,"clientInfo":{"name":MCP_CLIENT_NAME,"version":"0.0.0"}}),timeout,None,None).await {
-                    Ok(response)=>{self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).silent=false;response}
+                    Ok(response)=>{
+                        // stdio-probe.ts `onLegacy`: a silent child that answered initialize is legacy.
+                        let silent=std::mem::take(&mut self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).silent);
+                        if silent {self.protocol.legacy.store(true,Ordering::Release);self.protocol.resolve_stdio_diagnostics(false);}
+                        response
+                    }
                     Err(error)=>{
                         // A complete discovery that arrived after the probe window upgrades a stream whose server
                         // rejects initialize: a legacy server cannot produce a complete discovery.
-                        let late={let mut slot=self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if std::mem::take(&mut slot.silent){slot.late.take()}else{None}};
-                        let Some(late)=late.filter(|late|late.get("supportedVersions").and_then(Value::as_array).is_some_and(|versions|versions.iter().any(|version|version.as_str()==Some(crate::modern::wire::MODERN_PROTOCOL_VERSION)))) else{return Err(error);};
+                        let (was_silent,late)={let mut slot=self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let silent=std::mem::take(&mut slot.silent);(silent,if silent{slot.late.take()}else{None})};
+                        let Some(late)=late.filter(|late|late.get("supportedVersions").and_then(Value::as_array).is_some_and(|versions|versions.iter().any(|version|version.as_str()==Some(crate::modern::wire::MODERN_PROTOCOL_VERSION)))) else{
+                            if was_silent {self.protocol.legacy.store(true,Ordering::Release);self.protocol.resolve_stdio_diagnostics(false);}
+                            return Err(error);
+                        };
                         self.speak_modern(&late,crate::modern::wire::MODERN_PROTOCOL_VERSION,None)?;
+                        self.protocol.resolve_stdio_diagnostics(true);
                         self.local_initialize.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or(Value::Null)
                     }
                 }

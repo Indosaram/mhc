@@ -129,3 +129,14 @@ async fn a_real_unclassified_child_that_exits_keeps_complete_and_trailing_stderr
     assert!(logged.contains("trailing diagnostic"), "{logged}");
     let _ = client.close().await;
 }
+
+/// stdio-probe.ts: a late discovery that upgrades a silent child discards what it wrote while unclassified.
+#[test]
+fn a_late_modern_upgrade_discards_text_held_while_silent() {
+    let (_root, logger, diagnostics, protocol) = setup();
+    diagnostics.data(&protocol, "modern child chatter\n");
+    protocol.set_version("2026-07-28");
+    protocol.resolve_stdio_diagnostics(true);
+    diagnostics.end(&protocol);
+    assert!(lines(&logger).is_empty());
+}
