@@ -371,10 +371,7 @@ impl WorkerState {
                 if self.current().is_some() {
                     return Err("Invalid session commit".into());
                 }
-                let mut registry = crate::session_registry::RpcSessionRegistry {
-                    worker_isolate: true,
-                    ..Default::default()
-                };
+                let mut registry = crate::session_worker_registry::create_session_worker_registry();
                 let crate::session_registry::OpenAdmission::Create(handle) = registry
                     .admit_open(profile.clone(), false, crate::connection_handler::now_ms())
                     .map_err(|error| error.to_string())?
