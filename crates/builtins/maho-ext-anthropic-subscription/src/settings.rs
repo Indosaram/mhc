@@ -2,9 +2,12 @@ use serde_json::{Map, Value};
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
+#[derive(Clone, Debug, Default)]
 pub struct ProviderSettings {
     pub values: Map<String, Value>,
     pub prompt_mode_from_env: bool,
+    /// senpi `resumeModeSource`: the layer that set `resumeMode`; `None` for settings built outside [`load`].
+    pub resume_mode_source: Option<&'static str>,
 }
 fn valid_choice(key: &str, value: &Value) -> bool {
     let choices: &[&str] = match key {
@@ -104,9 +107,13 @@ pub fn load(
     let env = parse(&Value::Object(env));
     let prompt_mode_from_env = env.contains_key("systemPromptMode");
     values.extend(env);
+    let resume_mode_source = values
+        .contains_key("resumeMode")
+        .then(|| resume_mode_source(project, environment));
     ProviderSettings {
         values,
         prompt_mode_from_env,
+        resume_mode_source,
     }
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -363,6 +370,15 @@ mod tests {
         )));
         let project = json!({"claudeSdkOauthProvider":{"resumeMode":"auto"}});
         assert_eq!(resume_mode_source(&json!({}), &BTreeMap::new()), "global");
+        let project = json!({"anthropicSubscriptionProvider":{"resumeMode":"off"}});
+        assert_eq!(
+            load(&json!({}), &project, &BTreeMap::new()).resume_mode_source,
+            Some("project")
+        );
+        assert_eq!(
+            load(&json!({}), &json!({}), &BTreeMap::new()).resume_mode_source,
+            None
+        );
         assert_eq!(resume_mode_source(&project, &BTreeMap::new()), "project");
         assert_eq!(
             resume_mode_source(

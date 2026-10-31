@@ -122,6 +122,7 @@ fn oauth_adapter(
         move || maho_ext_anthropic_subscription::settings::ProviderSettings {
             values: values.clone(),
             prompt_mode_from_env: false,
+            resume_mode_source: None,
         },
     );
     let probes = Arc::new(AtomicUsize::new(0));
@@ -495,6 +496,7 @@ fn provider_registration_exposes_oauth_models_and_native_stream() {
         || maho_ext_anthropic_subscription::settings::ProviderSettings {
             values: serde_json::Map::new(),
             prompt_mode_from_env: false,
+            resume_mode_source: None,
         },
     );
     let runtime = maho_ext_api::types::ExtensionRuntime::default();
@@ -542,6 +544,7 @@ fn provider_fallback_eligibility_tracks_the_enabled_false_kill_switch() {
             maho_ext_anthropic_subscription::settings::ProviderSettings {
                 values,
                 prompt_mode_from_env: false,
+                resume_mode_source: None,
             }
         })
     };
