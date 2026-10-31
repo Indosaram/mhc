@@ -2413,6 +2413,7 @@ async fn uses_one_stable_provider_session_id_per_lane() {
             cwd: None,
             parent_session_id: None,
             legacy_parent_session_path: None,
+            path: None,
         },
         Arc::new(MemoryStorage::new(MemoryStorageOptions::default())),
         StorageBackedSessionOptions::default(),
