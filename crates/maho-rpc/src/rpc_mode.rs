@@ -178,7 +178,17 @@ async fn serve(
     .await
     .with_tool_runtime(tool_runtime);
     handler.last_abort_source = last_abort_source;
+    // senpi rpc-mode.ts `ClientAdmissions.sealQueuedOnReplace` / `EffectLedger.sealOnReplace`: the stdio session's
+    // ledgers are keyed by its durable id, read as the outgoing session is replaced.
+    // The route is read as the listener runs: each replacement gives the session a new durable id.
+    let seal_session = session.weak_accessor();
+    let seal = session.on_before_session_replace(std::sync::Arc::new(move || {
+        if let Some(session) = seal_session() {
+            crate::session_registry::seal_ledgers_on_replace(session.session_id())();
+        }
+    }));
     let result = pump(&handler, input, output, &mut events, signal).await;
+    session.remove_before_session_replace(seal);
     drop(subscription);
     (handler, result)
 }

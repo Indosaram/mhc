@@ -226,3 +226,126 @@ async fn the_writer_refuses_a_lane_for_a_sealed_session() {
         "a sealed session takes no new lane"
     );
 }
+
+/// senpi session-registry-open.ts `ClientAdmissions.sealQueuedOnReplace` / `EffectLedger.sealOnReplace`: an installed
+/// runtime replaced in place seals a held model switch in the ledger published under its host handle.
+#[tokio::test]
+async fn an_installed_session_replaced_in_place_seals_its_held_model_switch() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = runtime_in(&temp).await;
+    let mut registry = RpcSessionRegistry::default();
+    let OpenAdmission::Create(handle) = registry
+        .admit_open(
+            RpcSessionLaunchProfile {
+                runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
+                    cwd: temp.path().to_string_lossy().into_owned(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            false,
+            0.0,
+        )
+        .expect("admitted")
+    else {
+        panic!("expected create admission")
+    };
+    registry
+        .install_runtime(&handle, Arc::clone(&runtime))
+        .expect("installed");
+    let ledger_session: Arc<dyn maho_rpc::effect_session::EffectSession> =
+        Arc::new(RouteSession(handle.clone()));
+    let ledger = maho_rpc::effect_ledger::EffectLedger::for_session(&ledger_session).await;
+    ledger
+        .begin(
+            maho_rpc::effect_record::EffectCommandKind::SetModel,
+            "m1",
+            &json!({"provider":"p","modelId":"m"}),
+            maho_rpc::effect_record::EffectActor {
+                connection_id: "c".into(),
+            },
+        )
+        .await
+        .expect("begun");
+    assert!(runtime.session().new_session(None).await.expect("new"));
+    assert_eq!(
+        ledger.status("m1", None).expect("recorded").state,
+        maho_rpc::effect_record::EffectState::Failed
+    );
+    maho_rpc::effect_ledger::EffectLedger::forget(&handle);
+    maho_rpc::client_admissions::ClientAdmissions::forget(&handle);
+}
+
+/// The ledger's view of a session keyed by a host handle; only what `begin` and `seal_on_replace` read.
+struct RouteSession(String);
+impl maho_rpc::effect_session::EffectSession for RouteSession {
+    fn durable_session_id(&self) -> String {
+        format!("durable-{}", self.0)
+    }
+    fn effect_route(&self) -> String {
+        self.0.clone()
+    }
+    fn entries(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+    fn append_custom_entry(&self, _: &str, _: serde_json::Value) {}
+    fn persist_header_now(&self) -> futures::future::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn session_file(&self) -> Option<String> {
+        None
+    }
+    fn is_streaming(&self) -> bool {
+        false
+    }
+    fn current_abort_source(&self) -> Option<String> {
+        None
+    }
+    fn streaming_client_message_id(&self) -> Option<String> {
+        None
+    }
+    fn restore_queued_input(
+        &self,
+        _: maho_rpc::client_admission_record::PreparedAdmissionInput,
+    ) -> futures::future::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn clear_queue(&self, _: bool) -> usize {
+        0
+    }
+    fn queued_inputs(&self) -> Vec<maho_rpc::effect_session::QueuedInputView> {
+        Vec::new()
+    }
+    fn change_queued_input(
+        &self,
+        _: &str,
+        _: Option<String>,
+        _: Option<u64>,
+        _: Option<String>,
+    ) -> futures::future::BoxFuture<'_, Result<maho_rpc::effect_session::QueuedChangeStatus, String>>
+    {
+        Box::pin(async { Ok(maho_rpc::effect_session::QueuedChangeStatus::NotFound) })
+    }
+    fn find_available_model(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> futures::future::BoxFuture<'_, Result<Option<serde_json::Value>, String>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn set_model(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<String>,
+    ) -> futures::future::BoxFuture<
+        '_,
+        Result<Option<String>, maho_rpc::effect_session::SetModelError>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+    fn available_thinking_levels(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn set_thinking_level(&self, _: &str, _: bool, _: Option<String>) {}
+}
