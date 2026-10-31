@@ -1112,6 +1112,8 @@ pub struct AgentSessionInner {
             maho_ext_api::MessageDeliveryReceipt,
         )>,
     >,
+    /// Session-file repairs reported inside a session-manager append; emitted only after its lock is released.
+    pending_session_recoveries: Mutex<Vec<crate::session_write_recovery::SessionRecovery>>,
 }
 
 pub type HtmlThemeResolver = Arc<
@@ -4350,6 +4352,7 @@ impl AgentSession {
                 work_obligations: Mutex::new(None),
                 custody_run_id: Mutex::new(uuid::Uuid::new_v4().to_string()),
                 queued_custom_receipts: Mutex::new(Vec::new()),
+                pending_session_recoveries: Mutex::new(Vec::new()),
             }),
         };
         // The hold's callbacks reach the session through this cell; a session that never gets here has no hold users.
@@ -4362,13 +4365,16 @@ impl AgentSession {
         session.restore_queued_external_deliveries();
         // A torn session tail is reported once and replayed to later subscribers until the next prompt (senpi#4295).
         let recovery_cell = Arc::downgrade(&session.inner);
+        // The manager reports a repair inside its own append, under the session_manager lock: the listener only
+        // queues it, and it is emitted once the lock is released.
         lock(&session.session_manager).on_recovery(crate::session_manager::RecoveryListener(
             Arc::new(move |recovery| {
                 if let Some(inner) = recovery_cell.upgrade() {
-                    AgentSession { inner }.report_session_recovered(recovery);
+                    lock(&inner.pending_session_recoveries).push(recovery.clone());
                 }
             }),
         ));
+        session.emit_pending_session_recoveries();
         let initial_model = session.agent.state().model;
         let scoped_tier = lock(&session.state)
             .scoped_models
@@ -5539,8 +5545,15 @@ impl AgentSession {
         }
     }
 
-    /// senpi `sessionManager.onRecovery` listener: emits `session_recovered` and keeps it standing for replay. Runs
-    /// inside the session manager's append, so it must not touch the session manager.
+    /// Emits the repairs the session manager queued during an append; callers hold no session_manager lock.
+    fn emit_pending_session_recoveries(&self) {
+        let recoveries = std::mem::take(&mut *lock(&self.pending_session_recoveries));
+        for recovery in &recoveries {
+            self.report_session_recovered(recovery);
+        }
+    }
+
+    /// senpi `sessionManager.onRecovery` listener: emits `session_recovered` and keeps it standing for replay.
     fn report_session_recovered(&self, recovery: &crate::session_write_recovery::SessionRecovery) {
         let event = AgentSessionEvent::SessionRecovered {
             cause: recovery.cause.as_str().to_owned(),
@@ -13580,7 +13593,9 @@ impl AgentSession {
 
     /// Locked access to the session manager; the TS getter returns the live object.
     pub fn with_session_manager<T>(&self, f: impl FnOnce(&SessionManager) -> T) -> T {
-        f(&lock(&self.session_manager))
+        let result = f(&lock(&self.session_manager));
+        self.emit_pending_session_recoveries();
+        result
     }
 
     /// senpi `getSessionContextEntryId` for each live message: a message carries the id of the
@@ -13604,7 +13619,9 @@ impl AgentSession {
     }
 
     pub fn with_session_manager_mut<T>(&self, f: impl FnOnce(&mut SessionManager) -> T) -> T {
-        f(&mut lock(&self.session_manager))
+        let result = f(&mut lock(&self.session_manager));
+        self.emit_pending_session_recoveries();
+        result
     }
 
     pub fn with_settings_manager<T>(&self, f: impl FnOnce(&SettingsManager) -> T) -> T {
@@ -20476,6 +20493,8 @@ impl AgentSession {
                 .as_mut()
                 .expect("session custody initialized"))
         };
+        // Custody appends go through the manager directly (SessionCustodyStore).
+        self.emit_pending_session_recoveries();
         self.refresh_lifecycle();
         result
     }
@@ -32791,6 +32810,70 @@ mod tests {
         let _ = session.prompt("next", Default::default()).await;
         let (third, _third) = subscribe();
         assert!(recovered(&third).is_empty());
+    }
+
+    /// senpi#4295 on the append path: the fragment of a failed append is set aside by the next append, inside the
+    /// session manager's lock. `session_recovered` is emitted after that lock is released, so a subscriber that
+    /// reads the session manager does not deadlock.
+    #[test]
+    fn a_recovery_found_by_an_append_is_emitted_after_the_session_manager_lock_is_released() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manager = SessionManager::create(
+            &dir.path().to_string_lossy(),
+            Some(&dir.path().to_string_lossy()),
+            None,
+        );
+        let session = test_session_with_manager(manager);
+        let path = PathBuf::from(
+            session
+                .with_session_manager(|manager| manager.session_file().map(str::to_owned))
+                .expect("session file"),
+        );
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+            manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        });
+        // A real failed write: the session file is a directory while the append runs.
+        let aside = dir.path().join("aside.jsonl");
+        std::fs::rename(&path, &aside).expect("move file aside");
+        std::fs::create_dir(&path).expect("directory in its place");
+        let failure = session.with_session_manager_mut(|manager| {
+            manager.append_message(json!({ "role": "user", "content": "b", "timestamp": 3 }));
+            manager.take_write_error()
+        });
+        assert!(failure.is_some(), "the append must fail");
+        std::fs::remove_dir(&path).expect("remove directory");
+        let mut torn = std::fs::read(&aside).expect("read file");
+        torn.extend_from_slice(b"{\"type\":\"mess");
+        std::fs::write(&path, torn).expect("file with a torn tail");
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let weak = Arc::downgrade(&session.inner);
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::SessionRecovered { dropped_bytes, .. } = event
+                && let Some(inner) = weak.upgrade()
+            {
+                let entries =
+                    AgentSession { inner }.with_session_manager(|manager| manager.entries().len());
+                lock(&sink).push((*dropped_bytes, entries));
+            }
+        }));
+        let (done, finished) = std::sync::mpsc::channel();
+        let appender = session.clone();
+        std::thread::spawn(move || {
+            appender.with_session_manager_mut(|manager| {
+                manager.append_message(json!({ "role": "user", "content": "c", "timestamp": 4 }));
+            });
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the append completes without deadlocking");
+        let seen = lock(&seen).clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "{\"type\":\"mess".len() as u64);
+        assert!(lock(&session.pending_session_recoveries).is_empty());
     }
 
     /// senpi test/suite/regressions/4282-model-not-found-config-error.test.ts: a model configuration error is never
