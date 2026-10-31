@@ -18,6 +18,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[path = "monitor_invocation.rs"]
 mod monitor_invocation;
 
+thread_local! {
+    /// The recovery carrier of the record each session is emitting on this thread, innermost last: listeners run
+    /// synchronously inside `emit`, so `AgentSession::recovery_carrier` reads the record's carrier here (senpi keys
+    /// it to the event object through a WeakMap).
+    static EMITTING_RECOVERY: std::cell::RefCell<Vec<(usize, Option<crate::session_recovery_identity::RecoveryCarrier>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 tokio::task_local! {
     static EXTENSION_EVENT_SIGNAL: maho_ext_api::AbortSignal;
     static EXTENSION_COMPACTION_PREPARATION: maho_ext_api::CompactionPreparationDetails;
@@ -977,6 +985,8 @@ pub struct AgentSessionInner {
     lifecycle_stop_facts: Mutex<(Option<crate::lifecycle_stop::RunStopFacts>, Option<String>)>,
     /// Live run activity projected on the lifecycle (senpi#3864): wire-only, never written.
     lifecycle_activity: Mutex<crate::session_lifecycle::LifecycleActivity>,
+    /// senpi `_recoveryIdentity`: present only under compact updates; mints each message's recovery carrier.
+    recovery_identity: Mutex<Option<crate::session_recovery_identity::SessionRecoveryIdentity>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -4202,6 +4212,10 @@ impl AgentSession {
                 lifecycle_turn_facts: Mutex::new(None),
                 lifecycle_stop_facts: Mutex::new((None, restored_run_id)),
                 lifecycle_activity: Mutex::new(Default::default()),
+                recovery_identity: Mutex::new(
+                    crate::engine_socket_flag::compact_updates_enabled()
+                        .then(crate::session_recovery_identity::SessionRecoveryIdentity::default),
+                ),
                 session_manager: Mutex::new(config.session_manager),
                 settings_manager: Arc::new(Mutex::new(config.settings_manager)),
                 model_registry,
@@ -4454,6 +4468,7 @@ impl AgentSession {
 
     async fn process_agent_event_inner(&self, mut event: maho_agent::types::AgentEvent) {
         use maho_agent::types::AgentEvent;
+        let mut recovery = self.observe_recovery(&event);
         let _persistence = if let AgentEvent::MessageEnd { message } = &event {
             let id = uuid::Uuid::new_v4();
             self.state()
@@ -4560,6 +4575,7 @@ impl AgentSession {
                         &active,
                         run_id.as_deref(),
                         &value,
+                        recovery.as_ref(),
                         |ticket, run| {
                             let mut record = active
                                 .iter()
@@ -4875,11 +4891,20 @@ impl AgentSession {
                 will_retry: boundary.will_retry,
                 abort_source,
             });
-        } else if matches!(event, AgentEvent::MessageEnd { .. }) {
-            self.emit(AgentSessionEvent::Agent(event.clone()));
+        } else if let AgentEvent::MessageEnd { message } = &event {
+            // A committed lifecycle delivery can predate its terminal record.
+            if let Some(ticket) = message_ticket(message) {
+                let durable = self.with_session_manager(|manager| {
+                    crate::lifecycle_delivery::lifecycle_delivery_entries(&manager.entries())
+                        .get(&ticket)
+                        .cloned()
+                });
+                recovery = crate::session_recovery_identity::hint(recovery, durable.as_deref());
+            }
+            self.emit_carried(AgentSessionEvent::Agent(event.clone()), recovery.clone());
         } else {
             // Only MessageEnd is read below, so every other event is handed off by move.
-            self.emit(AgentSessionEvent::Agent(event));
+            self.emit_carried(AgentSessionEvent::Agent(event), recovery);
             return;
         }
         if end_boundary.is_some() {
@@ -4906,11 +4931,12 @@ impl AgentSession {
                             if already {
                                 return Value::Null;
                             }
-                            manager.append_custom_message(
+                            manager.append_custom_message_with_recovery(
                                 &custom.custom_type,
                                 content,
                                 custom.display,
                                 custom.details.clone(),
+                                recovery.as_ref(),
                             )
                         });
                         self.state().message_revision += 1;
@@ -4947,7 +4973,11 @@ impl AgentSession {
             match serde_json::to_value(message) {
                 Ok(message) => {
                     let (entry, failure) = self.with_session_manager_mut(|manager| {
-                        let entry = manager.append_owned_message(message, input_source);
+                        let entry = manager.append_owned_message_with_recovery(
+                            message,
+                            input_source,
+                            recovery.as_ref(),
+                        );
                         (entry, manager.take_write_error())
                     });
                     if let Some(error) = failure {
@@ -18393,6 +18423,89 @@ impl AgentSession {
 
     /// Emit an event to all listeners.
     pub fn emit(&self, event: AgentSessionEvent) {
+        let carrier = match &event {
+            AgentSessionEvent::Agent(event) => self.observe_recovery(event),
+            _ => None,
+        };
+        self.emit_carried(event, carrier);
+    }
+
+    /// senpi `setSessionRecoveryEpoch`: the host lane's nonce; a same-epoch rebind keeps open messages, a new epoch
+    /// clears them. A session without compact updates mints nothing.
+    pub fn set_session_recovery_epoch(&self, epoch: &str) {
+        if let Some(identity) = lock(&self.recovery_identity).as_mut() {
+            identity.reset(epoch);
+        }
+    }
+
+    /// senpi `recoveryCarrier(record)`: the carrier of the record this session is emitting, read by a listener
+    /// while `emit` delivers it. Rust records have no object identity, so the carrier travels beside the record.
+    pub fn recovery_carrier(
+        &self,
+        _record: &Value,
+    ) -> Option<crate::session_recovery_identity::RecoveryCarrier> {
+        let owner = Arc::as_ptr(&self.inner) as usize;
+        EMITTING_RECOVERY.with(|stack| {
+            stack
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(session, _)| *session == owner)
+                .and_then(|(_, carrier)| carrier.clone())
+        })
+    }
+
+    /// senpi `_recoveryIdentity.observe(event)`: mints or finds the carrier of one message event.
+    fn observe_recovery(
+        &self,
+        event: &maho_agent::types::AgentEvent,
+    ) -> Option<crate::session_recovery_identity::RecoveryCarrier> {
+        use maho_agent::types::AgentEvent;
+        let (kind, message) = match event {
+            AgentEvent::MessageStart { message, .. } => ("message_start", message),
+            AgentEvent::MessageUpdate { message, .. } => ("message_update", message),
+            AgentEvent::MessageEnd { message } => ("message_end", message),
+            _ => return None,
+        };
+        let mut identity = lock(&self.recovery_identity);
+        let identity = identity.as_mut()?;
+        let value = session_message_to_value(message).ok()?;
+        // senpi keys non-assistant messages by object identity; a message's role, timestamp and tool call or custom
+        // type are its stable handle across the start/end copies here.
+        let key = format!(
+            "{}:{}:{}:{}",
+            message.role(),
+            value["timestamp"],
+            value["toolCallId"].as_str().unwrap_or_default(),
+            value["customType"].as_str().unwrap_or_default()
+        );
+        identity.observe(kind, &value, &key)
+    }
+
+    /// `_emit` with the record's recovery carrier (`carryRecovery`): listeners read it through `recovery_carrier`.
+    fn emit_carried(
+        &self,
+        event: AgentSessionEvent,
+        carrier: Option<crate::session_recovery_identity::RecoveryCarrier>,
+    ) {
+        struct Pop;
+        impl Drop for Pop {
+            fn drop(&mut self) {
+                EMITTING_RECOVERY.with(|stack| {
+                    stack.borrow_mut().pop();
+                });
+            }
+        }
+        EMITTING_RECOVERY.with(|stack| {
+            stack
+                .borrow_mut()
+                .push((Arc::as_ptr(&self.inner) as usize, carrier))
+        });
+        let _pop = Pop;
+        self.emit_inner(event);
+    }
+
+    fn emit_inner(&self, event: AgentSessionEvent) {
         let mut event = event;
         if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageEnd {
             message: AgentMessage::Llm(maho_ai::types::Message::Assistant(message)),
@@ -18954,12 +19067,20 @@ impl AgentSession {
             self.settle_queued_custom_receipt(&message, Err(error_message.clone()));
             error_message
         })?;
+        let start = maho_agent::types::AgentEvent::MessageStart {
+            message: AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+                message.clone(),
+            )),
+            streaming: None,
+        };
+        let recovery = self.observe_recovery(&start);
         let entry = self.with_session_manager_mut(|manager| {
-            manager.append_custom_message(
+            manager.append_custom_message_with_recovery(
                 &message.custom_type,
                 content,
                 message.display,
                 message.details.clone(),
+                recovery.as_ref(),
             )
         });
         if let Some(id) = entry.get("id").and_then(Value::as_str) {
@@ -18971,12 +19092,7 @@ impl AgentSession {
         messages.push(message.clone());
         self.agent.set_messages(messages);
         self.state().message_revision += 1;
-        self.emit(AgentSessionEvent::Agent(
-            maho_agent::types::AgentEvent::MessageStart {
-                message: message.clone(),
-                streaming: None,
-            },
-        ));
+        self.emit_carried(AgentSessionEvent::Agent(start), recovery);
         self.emit(AgentSessionEvent::Agent(
             maho_agent::types::AgentEvent::MessageEnd { message },
         ));
@@ -32244,6 +32360,106 @@ mod tests {
         assert!(session.agent.has_queued_messages());
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("prior"));
         assert_eq!(session.compaction_state().status(), "failed");
+    }
+
+    /// senpi test/suite/regressions/4272-epoch-producer.test.ts and 4272-terminal-inprocess.test.ts: under compact
+    /// updates each message's events carry one recovery carrier to session listeners, its transcript append records
+    /// that owner, and a new host epoch re-mints while a same-epoch rebind keeps the open message.
+    #[tokio::test]
+    async fn emitted_messages_carry_their_recovery_owner_into_the_transcript() {
+        let session = retry_session(
+            vec![maho_ai::providers::faux::faux_assistant_message(
+                "reply",
+                Default::default(),
+            )],
+            0,
+        );
+        *lock(&session.recovery_identity) =
+            Some(crate::session_recovery_identity::SessionRecoveryIdentity::new("epoch-1".into()));
+        session.set_session_recovery_epoch("epoch-1");
+        session.with_session_manager_mut(|manager| manager.begin_transcript_journal());
+        let carriers = Arc::new(Mutex::new(Vec::new()));
+        let seen = carriers.clone();
+        let weak = session.weak_accessor();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::Agent(event) = event
+                && let Some(kind) = match event {
+                    maho_agent::types::AgentEvent::MessageStart { message, .. } => {
+                        Some(("start", message.role()))
+                    }
+                    maho_agent::types::AgentEvent::MessageEnd { message } => {
+                        Some(("end", message.role()))
+                    }
+                    _ => None,
+                }
+                && let Some(session) = weak()
+            {
+                lock(&seen).push((kind, session.recovery_carrier(&Value::Null)));
+            }
+        }));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.prompt("hello", Default::default()),
+        )
+        .await
+        .expect("bounded turn")
+        .expect("prompt");
+        let carriers = lock(&carriers).clone();
+        let of = |kind, role| {
+            carriers
+                .iter()
+                .find(|(seen, _)| *seen == (kind, role))
+                .and_then(|(_, carrier)| carrier.clone())
+                .unwrap_or_else(|| panic!("{kind} {role} carries its recovery identity"))
+        };
+        let (user, assistant) = (of("start", "user"), of("start", "assistant"));
+        assert_eq!(of("end", "user"), user);
+        assert_eq!(of("end", "assistant"), assistant);
+        assert_ne!(user.message_id, assistant.message_id);
+        assert_eq!(user.epoch, "epoch-1");
+        let owners: Vec<_> = session
+            .with_session_manager_mut(|manager| manager.drain_transcript())
+            .into_iter()
+            .filter_map(|transition| match transition {
+                crate::session_transcript_journal::TranscriptTransition::Append {
+                    owning_message_id: Some(id),
+                    recovery_epoch,
+                    ..
+                } => Some((id, recovery_epoch)),
+                _ => None,
+            })
+            .collect();
+        for owner in [&user, &assistant] {
+            assert!(
+                owners.contains(&(owner.message_id.clone(), Some("epoch-1".to_owned()))),
+                "{owner:?} owns its transcript append"
+            );
+        }
+        assert!(
+            owners
+                .iter()
+                .all(|(_, epoch)| epoch.as_deref() == Some("epoch-1"))
+        );
+        assert!(
+            session.recovery_carrier(&Value::Null).is_none(),
+            "a carrier is readable only while its record is emitted"
+        );
+    }
+
+    #[test]
+    fn a_session_without_compact_updates_mints_no_recovery_carrier() {
+        let session = test_session();
+        *lock(&session.recovery_identity) = None;
+        let message =
+            AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage {
+                content: maho_ai::types::UserContent::Text("hi".into()),
+                timestamp: 1,
+            }));
+        assert!(
+            session
+                .observe_recovery(&maho_agent::types::AgentEvent::MessageEnd { message })
+                .is_none()
+        );
     }
 
     struct FailingControlHost {
