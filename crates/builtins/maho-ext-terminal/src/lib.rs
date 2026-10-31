@@ -3,6 +3,7 @@ pub mod durable_command;
 pub mod durable_file;
 pub mod durable_rpc;
 pub mod extension;
+pub mod extension_state;
 pub mod file_monitor;
 pub mod file_monitor_check;
 pub mod file_monitor_guard;

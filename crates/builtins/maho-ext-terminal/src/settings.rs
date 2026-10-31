@@ -49,10 +49,10 @@ pub struct ResolvedTerminalSettings {
 
 pub const TERMINAL_SETTINGS_DEFAULTS: ResolvedTerminalSettings = ResolvedTerminalSettings {
     redact_secrets_in_output: false,
-    default_cols: 120.0,
-    default_rows: 40.0,
-    scrollback: 10_000.0,
-    max_sessions: 32.0,
+    default_cols: crate::shared::DEFAULT_COLS as f64,
+    default_rows: crate::shared::DEFAULT_ROWS as f64,
+    scrollback: crate::shared::DEFAULT_SCROLLBACK as f64,
+    max_sessions: crate::shared::DEFAULT_MAX_SESSIONS as f64,
     timeout_action: TimeoutAction::Background,
     notify: NotifyMode::Wake,
     monitor: MonitorDeliverySettings {
