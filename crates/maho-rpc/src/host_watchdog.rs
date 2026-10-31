@@ -22,7 +22,7 @@ pub const fn ppid_interval_ms(pipe_armed: bool) -> u64 {
     }
 }
 pub const HOST_CLEANUP_PATHS_ENV: &str = "SENPI_RPC_HOST_CLEANUP_PATHS";
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostWatchdogConfig {
     pub fd: Option<u64>,
     pub ppid: Option<u64>,
