@@ -6,13 +6,68 @@
 //! page world's `deref`/`resolvePointerTarget`/`waitForReady`/`checkHitTarget`/`checkEditable`,
 //! mouse clicks as `mouseMoved`/`mousePressed`/`mouseReleased`, `keyboard.press`/`type`,
 //! `mouse.wheel`, `screenshot`) and `src/page-bundle.js` (the injected snapshot world, vendored as
-//! `assets/page-snapshot.js`). Frames, network snooping, downloads, HAR, tracing and the extension
-//! bridge are not ported.
+//! `assets/page-snapshot.js`).
+//!
+//! Submodules port the rest of omowright's page surface: [`frames`] (`src/frames-snapshot.js` and
+//! the core.js `FrameManager`/multi-frame snapshot), [`network_snoop`] (`src/network-snoop.js`),
+//! [`har`] (`src/har.js`), [`trace`] (`src/trace.js`), [`events`] (`src/events.js`: tabs and
+//! downloads) and [`bridge`] (`src/bridge-transport.js` + `src/bridge-schemas.js`: the extension
+//! bridge). The page console capture is core.js `CONSOLE_INTERCEPTOR_SCRIPT`/`PageConsole`.
 use crate::cdp::CdpClient;
 use crate::keys;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
+
+pub mod bridge;
+pub mod events;
+#[cfg(test)]
+pub(crate) mod fake_cdp;
+pub mod frames;
+pub mod har;
+pub mod network_snoop;
+pub mod trace;
+
+/// omowright `CONSOLE_INTERCEPTOR_SCRIPT` (`__omowrightConsole` renamed `__mahoConsole`): keeps the
+/// last 1000 `console.*` calls of the page for [`Page::console_logs`].
+pub const CONSOLE_INTERCEPTOR: &str = r#"(function(){
+  if(window.__mahoConsole)return;
+  var logs=[];
+  var orig={log:console.log,info:console.info,warn:console.warn,error:console.error,debug:console.debug};
+  function ser(a){
+    var r=[];
+    for(var i=0;i<a.length;i++){
+      var v=a[i];
+      try{
+        if(v===null){r.push('null');continue}
+        if(v===void 0){r.push('undefined');continue}
+        if(typeof v==='string'){r.push(v);continue}
+        if(v instanceof Error){r.push(v.name+': '+v.message);continue}
+        r.push(JSON.stringify(v));
+      }catch(e){r.push(String(v))}
+    }
+    return r.join(' ');
+  }
+  function cap(level,args){
+    if(logs.length>=1000)logs.shift();
+    logs.push({level:level,message:ser(args),timestamp:new Date().toISOString()});
+  }
+  ['log','info','warn','error','debug'].forEach(function(l){
+    console[l]=function(){cap(l,arguments);return orig[l].apply(console,arguments)};
+  });
+  window.__mahoConsole={
+    logs:logs,
+    drain:function(o){
+      o=o||{};
+      var r=logs;
+      if(o.levels&&o.levels.length)r=r.filter(function(e){return o.levels.indexOf(e.level)>=0});
+      if(o.filter)r=r.filter(function(e){return e.message.indexOf(o.filter)>=0});
+      if(o.limit)r=r.slice(-o.limit);
+      return r;
+    },
+    clear:function(){logs.length=0}
+  };
+})();"#;
 
 /// The injected page world (`globalThis.__mahoPage`).
 pub const PAGE_WORLD: &str = include_str!("../assets/page-snapshot.js");
@@ -750,6 +805,75 @@ impl Page {
             .map_err(|error| format!("screenshot is not base64: {error}"))
     }
 
+    /// Installs the console interceptor in this document and every later one
+    /// (`Page.addScriptToEvaluateOnNewDocument`, as the core.js FrameManager does).
+    pub fn capture_console(&self) -> Result<(), String> {
+        self.send(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({"source": CONSOLE_INTERCEPTOR, "runImmediately": true}),
+        )?;
+        self.evaluate(CONSOLE_INTERCEPTOR).map(drop)
+    }
+
+    /// Buffered console entries (`PageConsole.logs`): `levels`, `filter` and `limit` as upstream;
+    /// empty until [`Self::capture_console`] ran.
+    pub fn console_logs(&self, options: Value) -> Result<Vec<Value>, String> {
+        let value = self.evaluate(&format!(
+            "(window.__mahoConsole ? window.__mahoConsole.drain({options}) : [])"
+        ))?;
+        Ok(value.as_array().cloned().unwrap_or_default())
+    }
+
+    /// Empties the console buffer (`PageConsole.clear`).
+    pub fn clear_console(&self) -> Result<(), String> {
+        self.evaluate("void (window.__mahoConsole && window.__mahoConsole.clear())")
+            .map(drop)
+    }
+
+    /// Applies oh-my-pi's stealth patches to this tab: the user-agent override and the patch
+    /// scripts on every new document (`applyStealthPatches`). Call before navigating.
+    pub fn apply_stealth(
+        &self,
+        state: &mut crate::launch::stealth::StealthState,
+    ) -> Result<(), String> {
+        crate::launch::stealth::apply_stealth_patches(&self.client, &self.session_id, state)
+    }
+
+    /// A network snoop over this tab (omowright `createNetworkSnoop(page, options)`).
+    pub fn network_snoop(
+        &self,
+        options: network_snoop::SnoopOptions,
+    ) -> network_snoop::NetworkSnoop {
+        network_snoop::NetworkSnoop::new(self.client.clone(), &self.session_id, options)
+    }
+
+    /// The tab's frames (core.js `FrameManager`).
+    pub fn frame_manager(&self) -> Result<frames::FrameManager, String> {
+        frames::FrameManager::new(self.client.clone(), &self.session_id)
+    }
+
+    /// A snapshot of every frame, child trees stitched under their iframes (omowright
+    /// `snapshotWithFrames`).
+    pub fn snapshot_with_frames(
+        &self,
+        manager: &mut frames::FrameManager,
+        options: &SnapshotOptions,
+    ) -> Result<frames::FramesSnapshot, String> {
+        let mut js_options = json!({"interactive": options.interactive});
+        if let Some(depth) = options.max_depth {
+            js_options["maxDepth"] = json!(depth);
+        }
+        if let Some(chars) = options.max_chars {
+            js_options["maxChars"] = json!(chars);
+        }
+        frames::snapshot_with_frames(manager, &self.target_id, &js_options)
+    }
+
+    /// Starts a flight-recorder trace of this tab (omowright `createTrace(page, options)`).
+    pub fn trace(&self, options: trace::TraceOptions) -> Result<trace::Trace, String> {
+        trace::Trace::new(self, options)
+    }
+
     /// Waits until a selector/ref is visible, or text appears, or for `duration`.
     pub fn wait_for(
         &self,
@@ -796,9 +920,95 @@ impl Page {
     }
 }
 
+impl trace::TracePage for Page {
+    fn cdp(&self) -> &CdpClient {
+        &self.client
+    }
+
+    fn session(&self) -> &str {
+        &self.session_id
+    }
+
+    fn screenshot_png(&mut self) -> Result<Vec<u8>, String> {
+        self.screenshot(false, None)
+    }
+
+    fn console_entries(&mut self) -> Result<Vec<Value>, String> {
+        self.console_logs(json!({}))
+    }
+
+    fn current_url(&mut self) -> String {
+        self.location().map(|(url, _)| url).unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_capture_installs_the_interceptor_on_new_documents() {
+        let cdp = fake_cdp::FakeCdp::new(Box::new(|method: &str, _: &Value, _: Option<&str>| {
+            Ok(match method {
+                "Target.attachToTarget" => json!({"sessionId": "S"}),
+                "Runtime.evaluate" => {
+                    json!({"result": {"value": [{"level": "log", "message": "hi"}]}})
+                }
+                _ => json!({}),
+            })
+        }));
+        let page = Page::attach(cdp.client.clone(), "T").unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(page.capture_console(), Ok(()));
+        let added = cdp.calls_of("Page.addScriptToEvaluateOnNewDocument");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].params["source"], CONSOLE_INTERCEPTOR);
+        assert_eq!(added[0].session.as_deref(), Some("S"));
+        let logs = page.console_logs(json!({"limit": 5})).unwrap_or_default();
+        assert_eq!(logs[0]["message"], "hi");
+        let drains = cdp.calls_of("Runtime.evaluate");
+        assert!(
+            drains
+                .last()
+                .and_then(|call| call.params["expression"].as_str())
+                .is_some_and(|expression| expression.contains("drain({\"limit\":5})"))
+        );
+        assert!(!CONSOLE_INTERCEPTOR.contains("__omowright"));
+    }
+
+    #[test]
+    fn stealth_resolves_the_user_agent_once_and_injects_the_patches() {
+        let cdp = fake_cdp::FakeCdp::new(Box::new(|method: &str, _: &Value, _: Option<&str>| {
+            Ok(match method {
+                "Target.attachToTarget" => json!({"sessionId": "S"}),
+                "Browser.getVersion" => json!({
+                    "product": "HeadlessChrome/150.0.7871.24",
+                    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/150.0.7871.24 Safari/537.36",
+                }),
+                _ => json!({}),
+            })
+        }));
+        let page = Page::attach(cdp.client.clone(), "T").unwrap_or_else(|error| panic!("{error}"));
+        let mut state = crate::launch::stealth::StealthState::default();
+        assert_eq!(page.apply_stealth(&mut state), Ok(()));
+        assert_eq!(page.apply_stealth(&mut state), Ok(()));
+        assert_eq!(cdp.calls_of("Browser.getVersion").len(), 1);
+        let overrides = cdp.calls_of("Emulation.setUserAgentOverride");
+        assert_eq!(overrides.len(), 2);
+        assert_eq!(overrides[0].session.as_deref(), Some("S"));
+        assert!(
+            overrides[0].params["userAgent"]
+                .as_str()
+                .is_some_and(|ua| !ua.contains("Headless") && ua.contains("Windows NT 10.0"))
+        );
+        assert_eq!(cdp.calls_of("Network.setUserAgentOverride").len(), 2);
+        let scripts = cdp.calls_of("Page.addScriptToEvaluateOnNewDocument");
+        assert_eq!(scripts.len(), 2);
+        assert!(
+            scripts[0].params["source"]
+                .as_str()
+                .is_some_and(|source| source.contains("functionToStringProxy"))
+        );
+    }
 
     #[test]
     fn refs_are_recognised() {

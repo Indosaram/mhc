@@ -3,8 +3,10 @@
 //! Port of omowright `src/pipe.js` (`PipeCdpClient`: id sequence, pending-command map, per-command
 //! timeout, event fan-out, fail-all on disconnect, dialog policy) and the WebSocket `CdpClient` of
 //! `src/core.js` (same wire handling). The JS event emitter is replaced by a bounded event log with
-//! sequence numbers that callers wait on, and the transport is a pair of closures so the pipe and
-//! the WebSocket transports share one client.
+//! sequence numbers that short-lived waiters scan, plus [`Subscription`]s: filtered, unbounded
+//! per-subscriber queues for long-lived listeners (network snoop, browser events, traces), which
+//! like upstream emitter listeners never lose an event. The transport is a pair of closures so the
+//! pipe and the WebSocket transports share one client.
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -31,12 +33,22 @@ pub struct Event {
     pub params: Value,
 }
 
+/// Which events a [`Subscription`] keeps.
+pub type EventFilter = Box<dyn Fn(&Event) -> bool + Send>;
+
+struct Subscriber {
+    filter: EventFilter,
+    queue: VecDeque<Event>,
+}
+
 #[derive(Default)]
 struct State {
     pending: HashMap<u64, Option<Result<Value, String>>>,
     events: VecDeque<Event>,
     next_event_seq: u64,
     closed: Option<String>,
+    subscribers: HashMap<u64, Subscriber>,
+    next_subscriber: u64,
 }
 
 struct Shared {
@@ -98,12 +110,18 @@ impl Shared {
         let mut state = self.lock();
         let seq = state.next_event_seq;
         state.next_event_seq += 1;
-        state.events.push_back(Event {
+        let event = Event {
             seq,
             method: method.to_owned(),
             session_id,
             params: message.get("params").cloned().unwrap_or(Value::Null),
-        });
+        };
+        for subscriber in state.subscribers.values_mut() {
+            if (subscriber.filter)(&event) {
+                subscriber.queue.push_back(event.clone());
+            }
+        }
+        state.events.push_back(event);
         while state.events.len() > EVENT_LOG_LIMIT {
             state.events.pop_front();
         }
@@ -265,6 +283,25 @@ impl CdpClient {
             .collect()
     }
 
+    /// Starts queueing every later event that passes `filter`, without bound and without loss,
+    /// until the subscription is dropped. Keep the filter narrow: unread events stay queued.
+    pub fn subscribe(&self, filter: impl Fn(&Event) -> bool + Send + 'static) -> Subscription {
+        let mut state = self.shared.lock();
+        let id = state.next_subscriber;
+        state.next_subscriber += 1;
+        state.subscribers.insert(
+            id,
+            Subscriber {
+                filter: Box::new(filter),
+                queue: VecDeque::new(),
+            },
+        );
+        Subscription {
+            shared: Arc::clone(&self.shared),
+            id,
+        }
+    }
+
     /// Waits for the first event at or after `cursor` matching `accept`; `None` on timeout or
     /// disconnect.
     pub fn wait_event(
@@ -300,6 +337,125 @@ impl CdpClient {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
+    }
+}
+
+/// A listener's own event queue (see [`CdpClient::subscribe`]).
+pub struct Subscription {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl Subscription {
+    /// Takes every queued event, oldest first.
+    pub fn drain(&self) -> Vec<Event> {
+        self.shared
+            .lock()
+            .subscribers
+            .get_mut(&self.id)
+            .map(|subscriber| subscriber.queue.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    /// Waits until an event is queued (returns `true`), or the connection closes, the
+    /// subscription is cancelled or `timeout` passes with nothing queued (returns `false`).
+    /// Queued events stay for [`Self::drain`].
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.shared.lock();
+        loop {
+            let Some(subscriber) = state.subscribers.get(&self.id) else {
+                return false;
+            };
+            if !subscriber.queue.is_empty() {
+                return true;
+            }
+            let now = Instant::now();
+            if state.closed.is_some() || now >= deadline {
+                return false;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Waits until `ready` returns `true` (returns `true`), or the connection closes, the
+    /// subscription is cancelled or `timeout` passes (returns `false`). `ready` is checked after
+    /// every event, under the client lock, so it must not call back into the client; it suits
+    /// filters that fold events into their own state instead of queueing them.
+    pub fn wait_until(&self, timeout: Duration, ready: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.shared.lock();
+        loop {
+            if !state.subscribers.contains_key(&self.id) {
+                return false;
+            }
+            if ready() {
+                return true;
+            }
+            let now = Instant::now();
+            if state.closed.is_some() || now >= deadline {
+                return false;
+            }
+            state = self
+                .shared
+                .changed
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Events queued and not yet drained.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.shared
+            .lock()
+            .subscribers
+            .get(&self.id)
+            .map_or(0, |subscriber| subscriber.queue.len())
+    }
+
+    /// Whether the connection has ended.
+    pub fn is_closed(&self) -> bool {
+        self.shared.lock().closed.is_some()
+    }
+
+    /// Whether events can still arrive: the connection is open and nobody cancelled it.
+    pub fn is_active(&self) -> bool {
+        let state = self.shared.lock();
+        state.closed.is_none() && state.subscribers.contains_key(&self.id)
+    }
+
+    /// A handle that ends this subscription from another thread (wakes its [`Self::wait`]).
+    pub fn canceller(&self) -> SubscriptionCancel {
+        SubscriptionCancel {
+            shared: Arc::clone(&self.shared),
+            id: self.id,
+        }
+    }
+}
+
+/// Ends a [`Subscription`] owned elsewhere (see [`Subscription::canceller`]).
+pub struct SubscriptionCancel {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl SubscriptionCancel {
+    pub fn cancel(&self) {
+        self.shared.lock().subscribers.remove(&self.id);
+        self.shared.changed.notify_all();
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.shared.lock().subscribers.remove(&self.id);
     }
 }
 
@@ -430,5 +586,61 @@ mod tests {
         assert!(error.contains("closed"), "{error}");
         assert!(!client.is_connected());
         assert!(client.send("Browser.getVersion", json!({}), None).is_err());
+    }
+
+    #[test]
+    fn subscriptions_keep_every_matching_event_past_the_log_bound() {
+        let (client, sent, incoming) = pair();
+        let network = client.subscribe(|event| event.method.starts_with("Network."));
+        let everything = client.subscribe(|_| true);
+        let total = EVENT_LOG_LIMIT + 100;
+        for index in 0..total {
+            let method = if index % 2 == 0 {
+                "Network.dataReceived"
+            } else {
+                "Page.lifecycleEvent"
+            };
+            let _ = incoming.send(Some(
+                json!({"method": method, "params": {"index": index}}).to_string(),
+            ));
+        }
+        // A command round trip is a barrier: the reader handles messages in order.
+        let worker = std::thread::spawn({
+            let client = client.clone();
+            move || client.send("Fake.flush", json!({}), None)
+        });
+        let id = sent_json(&sent)["id"].as_u64().unwrap_or_default();
+        let _ = incoming.send(Some(json!({"id": id, "result": {}}).to_string()));
+        assert!(worker.join().ok().is_some_and(|result| result.is_ok()));
+
+        assert_eq!(client.events_since(0).len(), EVENT_LOG_LIMIT);
+        let all = everything.drain();
+        assert_eq!(all.len(), total);
+        assert!(all.windows(2).all(|pair| pair[0].seq + 1 == pair[1].seq));
+        let kept = network.drain();
+        assert_eq!(kept.len(), total / 2);
+        assert_eq!(kept[0].params["index"], 0);
+        assert!(network.drain().is_empty());
+        assert!(!network.wait(Duration::from_millis(1)));
+
+        let _ = incoming.send(Some(
+            json!({"method": "Network.loadingFinished", "params": {}}).to_string(),
+        ));
+        assert!(network.wait(Duration::from_secs(5)));
+        assert_eq!(network.drain().len(), 1);
+        drop(everything);
+        assert_eq!(client.shared.lock().subscribers.len(), 1);
+        let cancelled = client.subscribe(|_| true);
+        let waiter = std::thread::spawn({
+            let cancel = cancelled.canceller();
+            move || cancel.cancel()
+        });
+        assert!(!cancelled.wait(Duration::from_secs(5)));
+        assert!(waiter.join().is_ok());
+        assert!(!cancelled.is_active());
+        assert!(network.is_active());
+        let _ = incoming.send(None);
+        assert!(!network.wait(Duration::from_secs(5)));
+        assert!(network.is_closed());
     }
 }

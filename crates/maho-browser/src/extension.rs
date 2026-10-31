@@ -69,7 +69,12 @@ impl BrowserExtension {
     /// (`pipe` | `port`), `$MAHO_COMPUTER_PYTHON`.
     pub fn from_env() -> Self {
         let mut launch = LaunchOptions {
-            executable: launch::find_executable(&env_var),
+            // Only an explicit variable is resolved here; the system lookup and the Chrome for
+            // Testing download happen lazily in `Browser::launch`.
+            executable: launch::EXECUTABLE_ENV
+                .iter()
+                .find_map(|key| env_var(key))
+                .map(|value| PathBuf::from(value.trim())),
             ..LaunchOptions::default()
         };
         if let Some(headless) = env_var("MAHO_BROWSER_HEADLESS") {
