@@ -1366,6 +1366,7 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::SubscribeSessions|RpcCommandBody::UnsubscribeSessions=>{let kind=if matches!(command.body,RpcCommandBody::SubscribeSessions){"subscribe_sessions"}else{"unsubscribe_sessions"};return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}});},
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
         // senpi: only a multi-session host tracks attachments per connection; the classic handler has no such command.
+        RpcCommandBody::Warm{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"warm".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: warm".into(),error_code:None,error_data:None}}),
         RpcCommandBody::DetachConnection=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"detach_connection".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: detach_connection".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse {

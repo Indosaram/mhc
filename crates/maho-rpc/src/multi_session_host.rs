@@ -1622,7 +1622,9 @@ impl HostCore {
             return Ok(());
         }
         let _settled = HandoverObserve(self.handover.get().map(|gate| &gate.handover));
-        let _sessionless = command.session_id.is_none().then(|| {
+        // A warm holds no session and no path, so it stays out of the accounting a drain or idle window waits on.
+        let warm = matches!(command.body, crate::rpc_types::RpcCommandBody::Warm { .. });
+        let _sessionless = (command.session_id.is_none() && !warm).then(|| {
             self.sessionless_requests
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             SessionlessGuard(&self.sessionless_requests)
@@ -1834,6 +1836,22 @@ impl HostCore {
                         Some(session_id),
                     );
                 }
+            }
+            // senpi router: a warm holds no session and no path, so it is answered outside the drain accounting.
+            // This host builds runtimes whole and has no prepare-only factory, so it answers `unsupported` and
+            // does not advertise `warm` (senpi: a registry without `warm`).
+            crate::rpc_types::RpcCommandBody::Warm { .. } => {
+                let answer = crate::host_warm::answer_warm(
+                    &value,
+                    crate::host_warm::WarmHost {
+                        draining: self.is_draining(),
+                        warm: None,
+                        cwd: &self.options.cwd,
+                        host_context: None,
+                    },
+                )
+                .await;
+                self.respond_record(connection, "", answer);
             }
             // senpi router `detachConnection`: answered only once the asking connection's attachments are released.
             crate::rpc_types::RpcCommandBody::DetachConnection => {
@@ -4674,6 +4692,39 @@ mod handoff_tests {
                 .lock()
                 .unwrap()
                 .owns(Some("c"), "gone-session")
+        );
+    }
+    /// senpi router: a host without a prepare-only factory answers `warm` as unsupported and never advertises it.
+    #[tokio::test]
+    async fn warm_answers_unsupported_without_a_prepare_factory() {
+        use tokio::io::AsyncBufReadExt;
+        let core = idle_core();
+        assert!(
+            !core
+                .advertised_capabilities()
+                .iter()
+                .any(|capability| capability == "warm")
+        );
+        let (write, read) = tokio::io::duplex(1 << 16);
+        core.register_connection(
+            "c",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                write,
+                crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,
+                crate::socket_event_fanout::DEFAULT_STALL_MS,
+                std::sync::Arc::clone(&core.blocked),
+                |_| {},
+            ),
+        );
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        core.handle(Some("c"), r#"{"id":"w","type":"warm"}"#)
+            .await
+            .unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(
+            answer,
+            serde_json::json!({"id":"w","type":"response","command":"warm","success":true,"data":{"state":"unsupported"}})
         );
     }
     #[tokio::test]

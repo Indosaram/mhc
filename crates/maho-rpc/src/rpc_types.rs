@@ -333,6 +333,16 @@ pub enum RpcCommandBody {
     GetSubscriptionLimits,
     /// senpi `{ type: "detach_connection" }`: a multi-session host drops every attachment the asking connection holds.
     DetachConnection,
+    /// senpi `{ type: "warm"; cwd?; kind?; context? }`: load a launch profile's extensions without a session. The
+    /// fields stay raw: `answer_warm` validates them and answers each refusal by code.
+    Warm {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context: Option<Value>,
+    },
     VerifyApiKey {
         provider: String,
         key: String,
