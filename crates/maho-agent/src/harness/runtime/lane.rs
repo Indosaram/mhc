@@ -337,6 +337,15 @@ impl Lane {
             .ok_or_else(|| session_invariant_error("Lane has no installed self reference"))
     }
 
+    /// Pinned `Lane.activeDrive?.operationId`: the operation whose drive pass is installed, if any.
+    pub fn active_drive_operation_id(&self) -> Option<String> {
+        self.active_drive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .map(|drive| drive.operation_id.clone())
+    }
+
     fn active_drive_matching(&self, operation_id: &str) -> Option<Arc<Drive>> {
         self.active_drive
             .lock()
