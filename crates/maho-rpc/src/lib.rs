@@ -71,6 +71,7 @@ pub mod host_run_activity;
 pub mod host_runner;
 pub mod host_session_detach;
 pub mod host_session_ref;
+pub mod host_session_runner;
 pub mod host_session_wait;
 pub mod host_spawn_environment;
 pub mod host_stale_engine;

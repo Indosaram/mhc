@@ -157,11 +157,10 @@ impl HostRpcClient for LiveClient {
         let client = self.client.clone();
         self.call(async move {
             match command["type"].as_str().unwrap_or_default() {
-                "prompt" => {
-                    client
-                        .prompt(command["message"].as_str().unwrap_or_default(), json!({}))
-                        .await
-                }
+                "prompt" => client
+                    .prompt(command["message"].as_str().unwrap_or_default(), json!({}))
+                    .await
+                    .map(|_| ()),
                 "steer" => {
                     client
                         .steer(command["message"].as_str().unwrap_or_default(), None, None)
