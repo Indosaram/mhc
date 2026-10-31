@@ -12,6 +12,7 @@ pub mod context_provenance;
 pub mod cursor;
 pub mod cursor_agent_provider;
 pub mod devin_provider;
+pub mod endpoint_reasoning_efforts;
 pub mod env_api_keys;
 pub mod image_models;
 pub mod image_models_generated;

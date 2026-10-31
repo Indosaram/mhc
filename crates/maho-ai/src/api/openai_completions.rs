@@ -3047,8 +3047,17 @@ pub fn stream_simple_with_transport(
         None if model.id.contains("gpt-6-astra") => Some(ModelThinkingLevel::Off),
         None => None,
     };
+    // An explicitly mapped off value (for example an endpoint-advertised "none", senpi#2196) is how the
+    // model turns reasoning off, so only a map without one keeps the Astra off -> low fallback.
+    let has_mapped_off = matches!(
+        thinking_model
+            .thinking_level_map
+            .as_ref()
+            .and_then(|map| map.get(&ModelThinkingLevel::Off)),
+        Some(Some(_))
+    );
     let normalized_reasoning = match clamped_reasoning {
-        Some(ModelThinkingLevel::Off) if model.id.contains("gpt-6-astra") => {
+        Some(ModelThinkingLevel::Off) if model.id.contains("gpt-6-astra") && !has_mapped_off => {
             Some(ModelThinkingLevel::Low)
         }
         other => other,
