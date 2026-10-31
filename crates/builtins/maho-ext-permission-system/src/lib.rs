@@ -18,6 +18,7 @@ pub mod external_spellings;
 pub mod dispatch;
 pub mod dispatch_metadata;
 pub mod dispatch_policy;
+pub mod read_permission;
 
 use maho_ext_api::{Extension,ExtensionApi,EventKind,ExtensionEvent,EventResult,FlagType,FlagValue,ExtensionFailure,ExtensionContext,ToolCallEvent,ToolCallEventResult};
 use std::sync::{Arc,Mutex,atomic::{AtomicU64,Ordering}};
