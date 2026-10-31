@@ -22,6 +22,7 @@ maho-tui = { path = "../../maho-tui" }
 maho-core = { path = "../../maho-core" }
 maho-rpc = { path = "../../maho-rpc" }
 maho-pty = { path = "../../vendor/maho-pty" }
+notify = "=8.2.0"
 thiserror = "=2.0.20"
 tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
