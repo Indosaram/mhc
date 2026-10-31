@@ -138,6 +138,8 @@ pub mod radius_auth;
 pub mod radius_relay;
 #[path = "reasoning_host.rs"]
 pub mod reasoning_host;
+#[path = "rpc_entry.rs"]
+pub mod rpc_entry;
 #[path = "rpc_fast_mode.rs"]
 pub mod rpc_fast_mode;
 #[path = "session_runtime_worker.rs"]
