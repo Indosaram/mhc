@@ -2760,6 +2760,53 @@ mod tests {
         assert!(project_trusted(&runtime));
     }
 
+    /// senpi's symlink fixture: a link to project B under B's own fixture-owned temp root. Fails the test when
+    /// the link cannot be made.
+    #[cfg(unix)]
+    fn link_to(other: &tempfile::TempDir, target: &str) -> String {
+        let link = other.path().join("other-link");
+        std::os::unix::fs::symlink(target, &link)
+            .unwrap_or_else(|error| panic!("cannot create the symlink fixture {}: {error}", link.display()));
+        link.to_string_lossy().into_owned()
+    }
+
+    // senpi "a project reached through a symlink is keyed by its real path: its own saved decision applies".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_project_reached_through_a_symlink_is_keyed_by_its_real_path() {
+        let (_dir, mut runtime) = full_access_fixture(Some(true)).await;
+        let (other_dir, other, path) = other_project_session();
+        // B's saved "trust" is stored under its real path; the session reaches B through a link.
+        trust_store(&runtime)
+            .set(&other, Some(true))
+            .expect("save trust");
+        let link = link_to(&other_dir, &other);
+
+        switch_into(&mut runtime, &link, &path).await;
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert!(project_trusted(&runtime));
+        assert!(has_skill(&runtime, "other-skill"));
+        assert_eq!(trust_store(&runtime).get(&link), Ok(Some(true)));
+    }
+
+    // senpi "a symlinked project without its own decision does not inherit the project it was opened from".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_project_without_its_own_decision_does_not_inherit_the_opening_project() {
+        // A is saved "trust"; B (reached through a link) has no decision, so only Full access trusts it.
+        let (_dir, mut runtime) = saved_trust_fixture().await;
+        let (other_dir, other, path) = other_project_session();
+        let link = link_to(&other_dir, &other);
+
+        switch_into(&mut runtime, &link, &path).await;
+        runtime.set_permission_preset("ask".to_owned()).await;
+
+        assert!(!project_trusted(&runtime));
+        assert!(!has_skill(&runtime, "other-skill"));
+        assert_eq!(trust_store(&runtime).get(&link), Ok(None));
+    }
+
     #[test]
     fn user_message_text_joins_text_parts_and_skips_others() {
         let content = serde_json::json!([
