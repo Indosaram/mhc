@@ -127,11 +127,19 @@ impl HostSessionControl {
     }
 
     /// senpi `register`: replaces any earlier registration; `inbox_dir` is watched for new entries.
+    ///
+    /// Passes run on the tokio runtime current at the call. Called outside one, it answers
+    /// `Failed { reason: "no tokio runtime" }` and leaves any earlier registration in place.
     pub fn register(
         &self,
         inbox_dir: &std::path::Path,
         drain: ControlDrain,
     ) -> ControlRegistration {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return ControlRegistration::Failed {
+                reason: "no tokio runtime".to_owned(),
+            };
+        }
         self.release_active();
         let Some(socket) = self.socket.clone().filter(|_| !self.state().disposed) else {
             return ControlRegistration::Unsupported {
@@ -442,6 +450,20 @@ mod tests {
         assert!(!inbox_entry_changed(&EventKind::Access(AccessKind::Close(
             AccessMode::Read
         ))));
+    }
+
+    #[test]
+    fn registering_outside_a_runtime_fails_instead_of_panicking() {
+        let temp = tempfile::tempdir().unwrap();
+        let (control, _, _) = control(Some("/tmp/host.sock"));
+        let ControlRegistration::Failed { reason } = control.register(
+            &temp.path().join("inbox"),
+            Arc::new(|_| Box::pin(async { Ok(None) })),
+        ) else {
+            panic!("a registration outside a runtime fails");
+        };
+        assert_eq!(reason, "no tokio runtime");
+        assert!(control.state().active.is_none());
     }
 
     #[tokio::test]
