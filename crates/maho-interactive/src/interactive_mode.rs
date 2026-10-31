@@ -516,6 +516,7 @@ fn is_internal_only_command(text: &str) -> bool {
         "/import-confirm",
         "/import-cwd",
         "/resume",
+        "/resume-pick",
         "/resume-cwd",
         "/fork",
         "/tree",
@@ -531,6 +532,47 @@ fn is_internal_only_command(text: &str) -> bool {
     ]
     .into_iter()
     .any(with_argument)
+}
+
+/// senpi `chooseResumePath`'s `ResumeRebindUi` for the terminal: the rebind question is a private
+/// Yes/No dialog (`showExtensionConfirm`), and the error is kept for the mode's `showError`.
+struct ResumeRebindDialogs {
+    ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
+    error: RefCell<Option<String>>,
+}
+
+impl crate::resume_rebind::ResumeRebindUi for ResumeRebindDialogs {
+    fn confirm<'a>(
+        &'a self,
+        title: &'a str,
+        message: &'a str,
+    ) -> crate::resume_rebind::ConfirmFuture<'a> {
+        use maho_ext_api::ExtensionUi;
+        self.ui.confirm(
+            title,
+            message,
+            maho_ext_api::ExtensionUiDialogOptions {
+                ephemeral: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn show_error(&self, message: &str) {
+        *self.error.borrow_mut() = Some(message.to_owned());
+    }
+}
+
+/// Runs a session-list future on the selector's loader thread (a blocking thread, never the UI
+/// task), on a runtime of its own so the repository identity reads can spawn `git`.
+fn block_on_loader<T: Default>(future: impl std::future::Future<Output = T>) -> T {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(future),
+        Err(_) => T::default(),
+    }
 }
 
 /// The built-in command branches of senpi's `onSubmit` (`interactive-mode.ts:4776-4916`), which
@@ -2744,7 +2786,8 @@ impl InteractiveMode {
                 }),
                 crate::components::message_path_links::MessagePathLinkOptions::default(),
             );
-        let built_in_markdown_transformers = vec![mermaid_transformer, message_path_link_transformer];
+        let built_in_markdown_transformers =
+            vec![mermaid_transformer, message_path_link_transformer];
         let (extension_ui, ui_requests) =
             crate::interactive_extension_ui::InteractiveExtensionUi::channel(
                 crate::interactive_extension_ui::extension_theme(&theme),
@@ -6708,6 +6751,35 @@ impl InteractiveMode {
             self.park_session_switch(path, None, false);
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/resume-pick ") {
+            // senpi `showSessionSelector` onSelect: `chooseResumePath`, then `handleResumeSession`.
+            let path = get_path_command_argument(text.trim(), "/resume-pick")
+                .ok_or("Missing session path")?;
+            let source = self
+                .session
+                .with_session_manager(crate::resume_rebind::SessionScopeSource::of);
+            let ui = ResumeRebindDialogs {
+                ui: self.extension_ui.clone(),
+                error: RefCell::new(None),
+            };
+            self.park_action(
+                async move {
+                    let target =
+                        crate::resume_rebind::choose_resume_path(&path, &source, &ui).await;
+                    (target, ui.error.into_inner())
+                },
+                |mode, (target, error)| {
+                    if let Some(error) = error {
+                        mode.show_error(&error);
+                    }
+                    if let Some(target) = target {
+                        mode.clear_status_indicator(None);
+                        mode.park_session_switch(target, None, false);
+                    }
+                },
+            );
+            return Ok(PromptDisposition::Handled);
+        }
         if text.trim().starts_with("/resume-cwd ") {
             let path = get_path_command_argument(text.trim(), "/resume-cwd")
                 .ok_or("Missing session path")?;
@@ -9013,15 +9085,10 @@ impl InteractiveMode {
                 return Ok(true);
             }
             use crate::components::session_selector::SessionSelectorComponent;
-            let (cwd, directory, default_directory) =
-                self.session.with_session_manager(|manager| {
-                    (
-                        manager.cwd().to_owned(),
-                        manager.session_dir().to_owned(),
-                        manager.uses_default_session_dir(),
-                    )
-                });
-            let current_directory = directory.clone();
+            let current_source = self
+                .session
+                .with_session_manager(crate::resume_rebind::SessionScopeSource::of);
+            let all_source = current_source.clone();
             let convert = |info: maho_core::session_discovery::SessionInfo| {
                 crate::components::session_selector_search::SessionInfo {
                     path: info.path,
@@ -9061,11 +9128,11 @@ impl InteractiveMode {
                             );
                         }
                     };
-                    maho_core::session_manager::SessionManager::list(
-                        &cwd,
-                        Some(&current_directory),
+                    // senpi `currentScopeSessions`: this folder's sessions plus its repository's moved ones.
+                    block_on_loader(crate::resume_rebind::current_scope_sessions(
+                        &current_source,
                         Some(&mut forward),
-                    )
+                    ))
                     .into_iter()
                     .map(convert)
                     .collect()
@@ -9084,10 +9151,11 @@ impl InteractiveMode {
                             );
                         }
                     };
-                    maho_core::session_manager::SessionManager::list_all(
-                        (!default_directory).then_some(directory.as_str()),
+                    // senpi `allScopeSessions`: every session, the moved ones marked.
+                    block_on_loader(crate::resume_rebind::all_scope_sessions(
+                        &all_source,
                         Some(&mut forward),
-                    )
+                    ))
                     .into_iter()
                     .map(convert)
                     .collect()
@@ -9095,7 +9163,7 @@ impl InteractiveMode {
                 Box::new(move |path| {
                     submissions
                         .borrow_mut()
-                        .push_back(internal_command(format!("/resume \"{path}\"")));
+                        .push_back(internal_command(format!("/resume-pick \"{path}\"")));
                     selected.borrow_mut().take();
                 }),
                 Box::new(move || {
