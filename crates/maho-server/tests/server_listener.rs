@@ -270,3 +270,41 @@ async fn close_during_start_waits_for_the_start_and_closes_the_listener_it_start
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn a_cancelled_start_does_not_park_close() {
+    struct StuckListener {
+        entered: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+    impl ServerListener for StuckListener {
+        fn start(&self, _: ByteConnectionAcceptor) -> ServerFuture<'_, ()> {
+            Box::pin(async move {
+                if let Some(entered) = self.entered.lock().await.take() {
+                    let _receiver_gone = entered.send(());
+                }
+                std::future::pending::<Result<(), ServerError>>().await
+            })
+        }
+        fn close(&self) -> ServerFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let test = create_test_server(TestServerOptions {
+        listeners: vec![Arc::new(StuckListener {
+            entered: tokio::sync::Mutex::new(Some(entered_tx)),
+        })],
+        ..Default::default()
+    })
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let server = test.server.clone();
+        let starting = tokio::spawn(async move { server.start().await });
+        entered_rx.await.unwrap();
+        starting.abort();
+        assert!(starting.await.unwrap_err().is_cancelled());
+        test.server.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

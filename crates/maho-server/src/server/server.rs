@@ -61,6 +61,13 @@ pub struct Server {
     closed: watch::Sender<Option<Result<(), ServerError>>>,
     close_lock: Mutex<()>,
 }
+/// Clears `Server::starting` when a start settles or is cancelled.
+struct StartingGuard<'a>(&'a watch::Sender<bool>);
+impl Drop for StartingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.send_replace(false);
+    }
+}
 impl Server {
     pub fn new(
         host: Arc<dyn ServerHost>,
@@ -196,8 +203,10 @@ impl Server {
                 "Server is already starting",
             ));
         }
+        // Pinned `finally { startPromise = undefined }`: clearing `starting` on drop also covers a
+        // cancelled start future, so a waiting `close` is never left parked.
+        let _starting = StartingGuard(&self.starting);
         if self.closing.load(Ordering::SeqCst) {
-            self.starting.send_replace(false);
             return Err(ServerError::new(
                 "internal_error",
                 "Server is closing or closed",
@@ -208,10 +217,7 @@ impl Server {
         let started = ServerListeners::new(self.listeners.clone())
             .start(self.clone(), signal)
             .await;
-        let result = self.settle_start(started).await;
-        // Pinned `finally { startPromise = undefined }`: a waiting `close` proceeds only now.
-        self.starting.send_replace(false);
-        result
+        self.settle_start(started).await
     }
     async fn settle_start(
         &self,
