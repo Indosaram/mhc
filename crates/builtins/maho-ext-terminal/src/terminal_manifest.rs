@@ -146,6 +146,10 @@ impl TerminalManifestWriter {
     pub async fn persist_restored(&mut self, now: f64) {
         self.persist(now).await;
     }
+    /// The stable ids of the recorded entries, in order.
+    pub fn monitor_ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
+    }
     pub fn durable_count(&self) -> usize {
         self.entries
             .values()
