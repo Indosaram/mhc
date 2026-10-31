@@ -41,6 +41,8 @@ impl maho_ext_api::Extension for WebsearchExtension {
         let execute_native = native.clone();
         let execute_home = self.home.clone();
         let execute_config = state.clone();
+        let last_served_by = LastServedBy::default();
+        let execute_served = last_served_by.clone();
         let mut executor_api = maho_ext_api::ExtensionApi::new(
             api.registered.clone(),
             api.profile.clone(),
@@ -56,6 +58,7 @@ impl maho_ext_api::Extension for WebsearchExtension {
                     let native = execute_native.clone();
                     let home = execute_home.clone();
                     let config_state = execute_config.clone();
+                    let served = execute_served.clone();
                     Box::pin(async move {
                         if signal.as_ref().is_some_and(|signal| signal.aborted()) {
                             return Err(maho_ext_api::ExtensionFailure::new(
@@ -153,6 +156,20 @@ impl maho_ext_api::Extension for WebsearchExtension {
                         })
                         .await
                         .map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        // `onSearchComplete`: remember which route and model served a successful search.
+                        if let Some(details) = result.details.as_ref().filter(|details| {
+                            details.get("results").is_some() && details.get("error").is_none()
+                        }) {
+                            *served
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(crate::websearch::route_attempts::attempt_route_label(
+                                    details["provider"].as_str().unwrap_or_default(),
+                                    None,
+                                    details["entryId"].as_str(),
+                                    details["model"].as_str(),
+                                ));
+                        }
                         Ok(convert(result))
                     })
                 }),
@@ -161,7 +178,8 @@ impl maho_ext_api::Extension for WebsearchExtension {
         scope
             .commit_registration()
             .unwrap_or_else(|error| std::panic::panic_any(error));
-        register_websearch_command(api, get_state);
+        register_websearch_command_with(api, get_state, last_served_by.clone());
+        register_moonshot_server_search(api);
         for event in [
             maho_ext_api::EventKind::SessionStart,
             maho_ext_api::EventKind::ModelSelect,
@@ -171,14 +189,19 @@ impl maho_ext_api::Extension for WebsearchExtension {
             let home = self.home.clone();
             let bypass = self.provider_native_bypass.clone();
             let native = native.clone();
+            let served = last_served_by.clone();
+            let runtime = api.runtime.clone();
             api.on(event,std::sync::Arc::new(move |event,ctx| {
-                let state=state.clone();let home=home.clone();let bypass=bypass.clone();let native=native.clone();
+                let state=state.clone();let home=home.clone();let bypass=bypass.clone();let native=native.clone();let served=served.clone();let runtime=runtime.clone();
                 Box::pin(async move {
                     if matches!(event,maho_ext_api::ExtensionEvent::BeforeAgentStart(event) if event.preview || event.trigger=="extension") {return Ok(maho_ext_api::EventResult::None);}
                     let session_start=matches!(event,maho_ext_api::ExtensionEvent::SessionStart(_));
+                    if session_start {*served.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;}
                     let model=match event {maho_ext_api::ExtensionEvent::ModelSelect(event)=>Some(&event.model),_=>ctx.model.as_ref()};
                     let failed={let mut native=native.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if session_start{*native=Default::default();}else{native.new_turn();}native.failed(model)};
                     let mut next=refresh_state(&ctx.cwd,&home,!failed && bypass(model)).await?;
+                    let moonshot=!failed && crate::server_search::additional_server_search(model)==Some(crate::server_search::AdditionalServerSearch::Moonshot);
+                    if let Ok(actions)=runtime.session_actions() && let Some(next)=moonshot_active_tools(actions.get_active_tools()?,moonshot) {actions.set_active_tools(next)?;}
                     if failed && let ConfigLoadResult::Ok{config,..}=&mut next {config.auto=false;}
                     *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=next.clone();
                     clear_ui(ctx);
@@ -347,6 +370,50 @@ mod on_update_type {
         >,
     >;
 }
+/// Moonshot's built-in server search: the model calls `$web_search` and the official flow echoes the
+/// generated arguments back to the same model, never making a separate request.
+pub fn moonshot_server_search_tool() -> maho_tools::definition::ToolDefinition {
+    let mut tool = maho_tools::definition::ToolDefinition::new(
+        "$web_search",
+        "Return the Moonshot built-in server search result to the same model.",
+        serde_json::json!({"type":"object","additionalProperties":{}}),
+        std::sync::Arc::new(|call| {
+            Box::pin(async move {
+                Ok(maho_tools::definition::ToolResult {
+                    content: vec![maho_tools::definition::ToolContent::text(
+                        call.params.to_string(),
+                    )],
+                    details: Some(call.params),
+                    structured_content: None,
+                    is_error: None,
+                })
+            })
+        }),
+    );
+    tool.label = "Moonshot Server Search".into();
+    tool.exposure = Some(maho_tools::definition::ToolExposure::Search);
+    tool.allow_lazy_activation = Some(false);
+    tool
+}
+fn register_moonshot_server_search(api: &mut maho_ext_api::ExtensionApi) {
+    api.register_tool(moonshot_server_search_tool());
+}
+/// `$web_search` is active only while the session model is a Moonshot route whose server search has
+/// not failed; the active tool list changes only when that answer changes.
+pub fn moonshot_active_tools(active: Vec<String>, enabled: bool) -> Option<Vec<String>> {
+    let present = active.iter().any(|name| name == "$web_search");
+    if enabled == present {
+        return None;
+    }
+    let mut next: Vec<String> = active
+        .into_iter()
+        .filter(|name| name != "$web_search")
+        .collect();
+    if enabled {
+        next.push("$web_search".into());
+    }
+    Some(next)
+}
 fn clear_ui(ctx: &maho_ext_api::ExtensionContext) {
     if ctx.has_ui {
         ctx.ui.set_status("pi-websearch", None);
@@ -375,14 +442,37 @@ pub fn register_websearch_command(
     api: &mut maho_ext_api::ExtensionApi,
     get_state: std::sync::Arc<dyn Fn() -> ConfigLoadResult + Send + Sync>,
 ) {
+    register_websearch_command_with(api, get_state, LastServedBy::default());
+}
+/// `lastServedBy`: the route label of the last successful search, reset each session.
+pub type LastServedBy = std::sync::Arc<std::sync::Mutex<Option<String>>>;
+pub fn register_websearch_command_with(
+    api: &mut maho_ext_api::ExtensionApi,
+    get_state: std::sync::Arc<dyn Fn() -> ConfigLoadResult + Send + Sync>,
+    last_served_by: LastServedBy,
+) {
     api.register_command(
         "websearch",
         Some("Show web search provider status".into()),
         None,
         std::sync::Arc::new(move |raw, ctx| {
             let get_state = get_state.clone();
+            let last_served_by = last_served_by.clone();
             Box::pin(async move {
-                let (message, level) = status_message(raw, &get_state());
+                let state = get_state();
+                let native = match &state {
+                    ConfigLoadResult::Ok { config, .. } => native_model_status(
+                        config,
+                        ctx.model.as_ref(),
+                        &ctx.model_registry.get_available(),
+                        last_served_by
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_deref(),
+                    ),
+                    ConfigLoadResult::Err { .. } => NativeStatus::default(),
+                };
+                let (message, level) = status_message_with(raw, &state, &native);
                 ctx.ui.notify(
                     &message,
                     match level {
@@ -397,6 +487,77 @@ pub fn register_websearch_command(
     );
 }
 pub fn status_message(raw_args: &str, state: &ConfigLoadResult) -> (String, StatusLevel) {
+    status_message_with(raw_args, state, &NativeStatus::default())
+}
+/// `nativeModelStatus` (senpi#2340): the model native search runs on, a warning for an ignored
+/// `nativeModel`, and the route and model that served the last search.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NativeStatus {
+    pub text: String,
+    pub warning: Option<String>,
+}
+pub fn native_model_status(
+    config: &crate::websearch::types::WebsearchConfig,
+    model: Option<&maho_ext_api::Model>,
+    available: &[maho_ext_api::Model],
+    last_served_by: Option<&str>,
+) -> NativeStatus {
+    let choice = config
+        .auto
+        .then(|| {
+            crate::websearch::search_model::resolve_native_search_model(
+                model,
+                available,
+                config.native_model.as_deref(),
+            )
+        })
+        .flatten();
+    let mut parts = Vec::new();
+    if let Some(choice) = &choice {
+        let fallback = choice
+            .fallback_model
+            .as_ref()
+            .map_or_else(String::new, |model| format!(" (falls back to {model})"));
+        parts.push(format!("native model={}{fallback}", choice.model));
+    }
+    if let Some(served) = last_served_by {
+        parts.push(format!("last search via {served}"));
+    }
+    let text = parts
+        .iter()
+        .map(|part| format!(", {part}"))
+        .collect::<String>();
+    if let Some(warning) = choice.as_ref().and_then(|choice| choice.warning.clone()) {
+        return NativeStatus {
+            text,
+            warning: Some(warning),
+        };
+    }
+    if let Some(native_model) = config.native_model.as_deref()
+        && choice.is_none()
+    {
+        let reason = if config.auto {
+            "the session model has no hosted web search route"
+        } else {
+            "auto is disabled"
+        };
+        return NativeStatus {
+            text,
+            warning: Some(format!(
+                "nativeModel \"{native_model}\" is ignored: {reason}."
+            )),
+        };
+    }
+    NativeStatus {
+        text,
+        warning: None,
+    }
+}
+pub fn status_message_with(
+    raw_args: &str,
+    state: &ConfigLoadResult,
+    native: &NativeStatus,
+) -> (String, StatusLevel) {
     let args=raw_args.trim_matches(|character:char|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}'));
     if !args.is_empty() && args != "status" {
         return ("Usage: /websearch status".into(), StatusLevel::Warning);
@@ -420,13 +581,18 @@ pub fn status_message(raw_args: &str, state: &ConfigLoadResult) -> (String, Stat
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            (
-                format!(
-                    "Web search active: strategy={strategy}, auto={}, providers={providers}",
-                    if config.auto { "enabled" } else { "disabled" }
+            let summary = format!(
+                "Web search active: strategy={strategy}, auto={}, providers={providers}{}",
+                if config.auto { "enabled" } else { "disabled" },
+                native.text
+            );
+            match &native.warning {
+                Some(warning) => (
+                    format!("{summary}\nWarning: {warning}"),
+                    StatusLevel::Warning,
                 ),
-                StatusLevel::Info,
-            )
+                None => (summary, StatusLevel::Info),
+            }
         }
         ConfigLoadResult::Err {
             reason: ConfigLoadFailureReason::ProviderNativeBypass,
@@ -481,6 +647,12 @@ mod tests {
             &mut api,
         );
         assert_eq!(api.registered.tools[0].definition.name, "web_search");
+        assert!(
+            api.registered
+                .tools
+                .iter()
+                .any(|tool| tool.definition.name == "$web_search")
+        );
         assert_eq!(api.registered.commands[0].name, "websearch");
         for event in [
             maho_ext_api::EventKind::SessionStart,
@@ -489,6 +661,164 @@ mod tests {
         ] {
             assert_eq!(api.registered.handlers[&event].len(), 1);
         }
+    }
+    fn proxy_model(
+        provider: &str,
+        id: &str,
+        api: &str,
+        base: &str,
+        cost: (f64, f64),
+    ) -> maho_ext_api::Model {
+        serde_json::from_value(serde_json::json!({"provider":provider,"id":id,"name":id,"api":api,"baseUrl":base,"reasoning":false,"input":["text"],"cost":{"input":cost.0,"output":cost.1,"cacheRead":0,"cacheWrite":0},"contextWindow":200_000,"maxTokens":16_384})).unwrap()
+    }
+    fn native_config(native_model: &str) -> crate::websearch::types::WebsearchConfig {
+        crate::websearch::types::WebsearchConfig {
+            strategy: RoutingStrategy::Priority,
+            fallback: true,
+            auto: true,
+            native_model: Some(native_model.into()),
+            providers: vec![crate::websearch::types::SearchProviderEntry {
+                config: crate::websearch::types::SearchProviderConfig::new(
+                    crate::websearch::provider_endpoints::SearchProvider::DuckduckgoHtml,
+                ),
+                priority: None,
+                weight: None,
+                fallback_model: None,
+            }],
+        }
+    }
+    #[test]
+    fn status_warns_that_another_providers_native_model_is_ignored() {
+        let opus = proxy_model(
+            "claude-proxy",
+            "claude-opus-4-5",
+            "anthropic-messages",
+            "https://claude-proxy.example.com",
+            (5., 25.),
+        );
+        let haiku = proxy_model(
+            "claude-proxy",
+            "claude-haiku-4-5",
+            "anthropic-messages",
+            "https://claude-proxy.example.com",
+            (1., 5.),
+        );
+        let luna = proxy_model(
+            "openai-proxy",
+            "gpt-5.6-luna",
+            "openai-responses",
+            "https://openai-proxy.example.com/v1",
+            (0.2, 1.2),
+        );
+        let config = native_config("gpt-5.6-luna");
+        let native = native_model_status(&config, Some(&opus), &[opus.clone(), haiku, luna], None);
+        let state = ConfigLoadResult::Ok {
+            config,
+            source: "fixture".into(),
+        };
+        let (message, level) = status_message_with("status", &state, &native);
+        assert_eq!(level, StatusLevel::Warning);
+        assert!(
+            message.contains("nativeModel \"gpt-5.6-luna\" is ignored"),
+            "{message}"
+        );
+        assert!(
+            message.contains("native model=claude-opus-4-5"),
+            "{message}"
+        );
+    }
+    #[test]
+    fn status_names_the_planned_and_the_serving_model() {
+        let opus = proxy_model(
+            "claude-proxy",
+            "claude-opus-4-5",
+            "anthropic-messages",
+            "https://claude-proxy.example.com",
+            (5., 25.),
+        );
+        let haiku = proxy_model(
+            "claude-proxy",
+            "claude-haiku-4-5",
+            "anthropic-messages",
+            "https://claude-proxy.example.com",
+            (1., 5.),
+        );
+        let config = native_config("claude-haiku-4-5");
+        let served = crate::websearch::route_attempts::attempt_route_label(
+            "anthropic",
+            None,
+            Some("claude-proxy/native"),
+            Some("claude-haiku-4-5"),
+        );
+        let native =
+            native_model_status(&config, Some(&opus), &[opus.clone(), haiku], Some(&served));
+        let state = ConfigLoadResult::Ok {
+            config,
+            source: "fixture".into(),
+        };
+        let (message, level) = status_message_with("status", &state, &native);
+        assert_eq!(level, StatusLevel::Info);
+        assert!(
+            message.contains("native model=claude-haiku-4-5 (falls back to claude-opus-4-5)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("last search via claude-proxy/native (claude-haiku-4-5)"),
+            "{message}"
+        );
+    }
+    #[test]
+    fn native_model_with_auto_disabled_is_reported_as_ignored() {
+        let mut config = native_config("claude-haiku-4-5");
+        config.auto = false;
+        let native = native_model_status(&config, None, &[], None);
+        assert_eq!(
+            native.warning.as_deref(),
+            Some("nativeModel \"claude-haiku-4-5\" is ignored: auto is disabled.")
+        );
+    }
+    #[tokio::test]
+    async fn moonshot_server_search_echoes_generated_arguments() {
+        let tool = moonshot_server_search_tool();
+        assert_eq!(tool.name, "$web_search");
+        assert_eq!(
+            tool.exposure,
+            Some(maho_tools::definition::ToolExposure::Search)
+        );
+        assert_eq!(tool.allow_lazy_activation, Some(false));
+        let params = serde_json::json!({"search_result":{"search_id":"fixture"}});
+        let result = (tool.execute)(maho_tools::definition::ToolCall {
+            id: "call",
+            params: params.clone(),
+            signal: Default::default(),
+            on_update: None,
+            context: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.details, Some(params.clone()));
+        assert!(
+            matches!(&result.content[0], maho_tools::definition::ToolContent::Text { text, .. } if *text == params.to_string())
+        );
+    }
+    #[test]
+    fn moonshot_tool_is_toggled_only_when_its_answer_changes() {
+        assert_eq!(
+            moonshot_active_tools(vec!["web_search".into()], false),
+            None
+        );
+        assert_eq!(
+            moonshot_active_tools(vec!["web_search".into()], true),
+            Some(vec!["web_search".into(), "$web_search".into()])
+        );
+        assert_eq!(
+            moonshot_active_tools(vec!["$web_search".into(), "web_search".into()], true),
+            None
+        );
+        assert_eq!(
+            moonshot_active_tools(vec!["$web_search".into(), "web_search".into()], false),
+            Some(vec!["web_search".into()])
+        );
     }
     #[test]
     fn status_argument_uses_ecmascript_whitespace() {

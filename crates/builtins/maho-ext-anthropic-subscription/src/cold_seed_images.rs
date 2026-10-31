@@ -72,7 +72,7 @@ pub fn replay_history_images(messages: &[Value], custom: &std::collections::BTre
         };
         let Some(content) = message["content"].as_array() else {continue};
         for (ei, block) in content.iter().enumerate() {
-            if block["type"]!="image" || !matches!(block["mimeType"].as_str(),Some("image/jpeg"|"image/png"|"image/gif"|"image/webp")) {continue;}
+            if block["type"]!="image" || !block["mimeType"].as_str().is_some_and(crate::content_blocks::is_sdk_image_media_type) {continue;}
             let data=block["data"].as_str().map(str::to_owned);let decoded=data.as_deref().and_then(canonical_base64);
             images.push(Image {message:mi,entry:ei,answered:mi<answer_boundary,origin:origin.clone(),block:block.clone(),hash:decoded.as_ref().map(|v|v.0.clone()),data:decoded.map(|v|v.1)});
         }

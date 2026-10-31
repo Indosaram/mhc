@@ -717,7 +717,11 @@ mod tests {
         struct Release(Option<tokio::sync::oneshot::Sender<()>>);
         impl Drop for Release {
             fn drop(&mut self) {
-                self.0.take().expect("release sender").send(()).expect("release subscriber");
+                self.0
+                    .take()
+                    .expect("release sender")
+                    .send(())
+                    .expect("release subscriber");
             }
         }
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
@@ -728,8 +732,14 @@ mod tests {
             std::future::pending().await
         });
         let bound = std::time::Duration::from_secs(5);
-        tokio::time::timeout(bound, entered_rx).await.expect("setup deadline").expect("setup");
-        tokio::time::timeout(bound, stream.cancel()).await.expect("cancel deadline").expect("cancel");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("setup deadline")
+            .expect("setup");
+        tokio::time::timeout(bound, stream.cancel())
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
         assert_eq!(released_rx.try_recv(), Ok(()));
     }
 
@@ -738,20 +748,35 @@ mod tests {
         let inner = maho_ai::utils::event_stream::create_assistant_message_event_stream();
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        inner.set_cancellation_handler(Box::new(move || Box::pin(async move {
-            entered_tx.send(()).expect("cleanup subscriber");
-            release_rx.await.expect("release");
-            Ok(())
-        })));
+        inner.set_cancellation_handler(Box::new(move || {
+            Box::pin(async move {
+                entered_tx.send(()).expect("cleanup subscriber");
+                release_rx.await.expect("release");
+                Ok(())
+            })
+        }));
         inner.end(None);
         let outer = stream_after_setup(async move { inner });
         let bound = std::time::Duration::from_secs(5);
-        assert!(tokio::time::timeout(bound, outer.next()).await.expect("relay deadline").expect("event").is_none());
+        assert!(
+            tokio::time::timeout(bound, outer.next())
+                .await
+                .expect("relay deadline")
+                .expect("event")
+                .is_none()
+        );
         let cancellation = tokio::spawn(async move { outer.cancel().await });
-        tokio::time::timeout(bound, entered_rx).await.expect("cleanup deadline").expect("cleanup");
+        tokio::time::timeout(bound, entered_rx)
+            .await
+            .expect("cleanup deadline")
+            .expect("cleanup");
         assert!(!cancellation.is_finished());
         release_tx.send(()).expect("release subscriber");
-        tokio::time::timeout(bound, cancellation).await.expect("cancel deadline").expect("task").expect("cancel");
+        tokio::time::timeout(bound, cancellation)
+            .await
+            .expect("cancel deadline")
+            .expect("task")
+            .expect("cancel");
     }
 
     #[tokio::test]
@@ -768,11 +793,20 @@ mod tests {
         inner.end(Some(message));
         let outer = stream_after_setup(async move { inner });
         let bound = std::time::Duration::from_secs(5);
-        let actual = tokio::time::timeout(bound, outer.result()).await.expect("result deadline").expect("result");
-        tokio::time::timeout(bound, outer.cancel()).await.expect("cancel deadline").expect("cancel");
-        assert_eq!(actual.error_cause, Some(maho_ai::types::AssistantErrorCause::UsageLimit {
-            scope: maho_ai::types::UsageLimitScope::Account,
-        }));
+        let actual = tokio::time::timeout(bound, outer.result())
+            .await
+            .expect("result deadline")
+            .expect("result");
+        tokio::time::timeout(bound, outer.cancel())
+            .await
+            .expect("cancel deadline")
+            .expect("cancel");
+        assert_eq!(
+            actual.error_cause,
+            Some(maho_ai::types::AssistantErrorCause::UsageLimit {
+                scope: maho_ai::types::UsageLimitScope::Account,
+            })
+        );
         assert_eq!(actual, expected);
         assert_eq!(outer.result_if_ready(), Some(Ok(expected)));
     }
@@ -1851,5 +1885,67 @@ mod tests {
                 }
             })
         }
+    }
+    async fn captured_wire_body(
+        model: maho_ai::types::Model,
+        reasoning: Option<maho_ai::types::ThinkingLevel>,
+    ) -> Value {
+        maho_ai::api_registry::register_builtin_api_provider(
+            "anthropic-messages",
+            maho_ai::api::anthropic_messages_lazy::anthropic_messages_api(),
+        );
+        let unused = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}", unused.local_addr().unwrap());
+        drop(unused);
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        let sink = Arc::clone(&captured);
+        let mut model = model;
+        model.base_url = base;
+        let mut options = maho_ai::types::SimpleStreamOptions::default();
+        options.reasoning = reasoning;
+        options.stream.request.api_key = Some("key".into());
+        options.stream.request.max_retries = Some(0);
+        options.stream.request.on_payload = Some(Arc::new(move |payload, _, _| {
+            *sink.lock().unwrap() = Some(payload.clone());
+            None
+        }));
+        let stream = maho_ai::providers::anthropic::stream_simple_anthropic(
+            &model,
+            &maho_ai::types::Context::default(),
+            Some(options),
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result())
+            .await
+            .unwrap();
+        captured.lock().unwrap().take().expect("payload captured")
+    }
+    fn registered_wire_model(toggle: bool) -> maho_ai::types::Model {
+        let mut config = crate::models::model_config("glm-5.3".into(), "GLM".into());
+        let (map, compat) = crate::models::thinking_config(toggle);
+        config.thinking_level_map = Some(map);
+        config.compat = compat;
+        crate::models::persisted(&[config]).remove(0)
+    }
+    #[tokio::test]
+    async fn medium_wire_body_uses_adaptive_thinking_with_low_effort() {
+        let body = captured_wire_body(
+            registered_wire_model(false),
+            Some(maho_ai::types::ThinkingLevel::Medium),
+        )
+        .await;
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"], json!({"effort":"low"}));
+    }
+    #[tokio::test]
+    async fn off_wire_body_omits_thinking_and_keeps_low_adaptive_effort() {
+        let body = captured_wire_body(registered_wire_model(false), None).await;
+        assert!(body.get("thinking").is_none(), "{body}");
+        assert_eq!(body["output_config"], json!({"effort":"low"}));
+    }
+    #[tokio::test]
+    async fn toggle_model_off_disables_thinking_without_adaptive_effort() {
+        let body = captured_wire_body(registered_wire_model(true), None).await;
+        assert!(body.get("output_config").is_none(), "{body}");
+        assert_eq!(body["thinking"], json!({"type":"disabled"}));
     }
 }

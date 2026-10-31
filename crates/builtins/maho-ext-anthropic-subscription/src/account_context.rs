@@ -175,6 +175,7 @@ mod tests {
             source,
             blocked_until: None,
             block_reason: None,
+            ..Default::default()
         }
     }
 

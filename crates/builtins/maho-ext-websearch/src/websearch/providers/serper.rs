@@ -3,7 +3,7 @@ use serde_json::{Value,json};
 use super::shared::{BuildContext,BuiltSearchRequest,SearchResultItem,append_domain_filters,clamp,content_headers,json_count,result};
 use crate::websearch::provider_endpoints::{SearchProvider,provider_url};
 pub fn build_request(ctx:&BuildContext<'_>)->BuiltSearchRequest {
-    BuiltSearchRequest{url:provider_url(SearchProvider::Serper,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("X-API-KEY".into(),ctx.api_key.unwrap_or("").into())])),body:Some(json!({"q":append_domain_filters(ctx.query,ctx.allowed_domains,ctx.blocked_domains),"num":json_count(clamp(ctx.max_results,1.0,20.0))}))}
+    BuiltSearchRequest{form:None,url:provider_url(SearchProvider::Serper,ctx.base_url).into(),method:"POST",headers:content_headers(BTreeMap::from([("X-API-KEY".into(),ctx.api_key.unwrap_or("").into())])),body:Some(json!({"q":append_domain_filters(ctx.query,ctx.allowed_domains,ctx.blocked_domains),"num":json_count(clamp(ctx.max_results,1.0,20.0))}))}
 }
 pub fn normalize_response(data:&Value)->Vec<SearchResultItem> {
     data.get("organic").and_then(Value::as_array).into_iter().flatten().filter_map(|item|result(item.get("title").and_then(Value::as_str),item.get("link").and_then(Value::as_str),item.get("snippet").and_then(Value::as_str),None,None)).take(50).collect()
