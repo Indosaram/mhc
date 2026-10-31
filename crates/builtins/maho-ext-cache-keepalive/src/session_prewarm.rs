@@ -11,10 +11,11 @@
 //! The request runs detached from the turn pipeline, so it can never delay or fail the
 //! first user turn; its billed usage is recorded as a custom entry that session stats count.
 //!
-//! Host seams: maho-ext-api's `ExtensionContext` has no `onUserActivity` or
-//! `getPromptCachePrefixRequest` yet, so the context is the [`PrewarmContext`] trait and the
-//! `pi.on(model_select | session_parked | session_resumed | session_shutdown)` handlers are the
-//! `on_*` methods, which the extension wiring calls from those events.
+//! Host seams: the context is the [`PrewarmContext`] trait, implemented for the live
+//! `ExtensionContext` by [`ExtensionPrewarmContext`] over `on_user_activity` and
+//! `get_prompt_cache_prefix_request`; the `pi.on(model_select | session_parked |
+//! session_resumed | session_shutdown)` handlers are the `on_*` methods, which the extension
+//! wiring calls from those events.
 
 use crate::prewarm_entry::{PROMPT_CACHE_PREWARM_ENTRY_TYPE, PromptCachePrewarmEntryData};
 use maho_ai::{
@@ -34,15 +35,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 pub const PROMPT_CACHE_PREWARM_TIMEOUT_MS: u64 = 30_000;
 
-/// senpi `UserActivityKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UserActivityKind {
-    Draft,
-    Prompt,
-}
-
-pub type ActivityListener = Arc<dyn Fn(UserActivityKind) + Send + Sync>;
-pub type Unsubscribe = Box<dyn FnOnce() + Send>;
+pub use maho_ext_api::UserActivityKind;
+pub type ActivityListener = maho_ext_api::UserActivityListener;
+pub type Unsubscribe = maho_ext_api::UserActivityUnsubscribe;
 
 /// The ready prefix request: `{ model, context, options }`.
 pub struct PromptCachePrefixRequest {
@@ -71,6 +66,56 @@ pub trait PrewarmContext: Send + Sync {
     ) -> BoxFuture<'static, Option<PromptCachePrefixOutcome>>;
     /// `onUserActivity?.(listener)`; `None` when the host cannot report activity.
     fn on_user_activity(&self, listener: ActivityListener) -> Option<Unsubscribe>;
+}
+
+/// The live `ExtensionContext` as a [`PrewarmContext`]: every read goes through the context's
+/// actions, so a retired context reports no model, no keep-alive and no activity.
+pub struct ExtensionPrewarmContext(pub maho_ext_api::ExtensionContext);
+
+impl PrewarmContext for ExtensionPrewarmContext {
+    fn model(&self) -> Option<Model> {
+        self.0.current_model().ok().flatten()
+    }
+    fn keep_alive_enabled(&self) -> bool {
+        self.0
+            .get_prompt_cache_keep_alive_settings()
+            .is_ok_and(|settings| settings.enabled)
+    }
+    fn is_idle(&self) -> bool {
+        self.0.is_idle()
+    }
+    fn has_pending_messages(&self) -> bool {
+        self.0.has_pending_messages().unwrap_or(true)
+    }
+    fn prompt_cache_prefix_request(
+        &self,
+        signal: AbortSignal,
+    ) -> BoxFuture<'static, Option<PromptCachePrefixOutcome>> {
+        let ctx = self.0.clone();
+        Box::pin(async move {
+            let options = maho_ext_api::PromptCachePrefixRequestOptions {
+                sizes_only: false,
+                signal: Some(signal),
+            };
+            // A context retired mid-build ends the attempt: the session it would warm is gone.
+            match ctx.get_prompt_cache_prefix_request(options).await.ok()? {
+                maho_ext_api::PromptCachePrefixResult::Ready(request) => {
+                    let request = *request;
+                    Some(PromptCachePrefixOutcome::Ready(PromptCachePrefixRequest {
+                        model: request.model,
+                        context: request.context,
+                        options: request.options,
+                    }))
+                }
+                maho_ext_api::PromptCachePrefixResult::Skipped(reason) => {
+                    Some(PromptCachePrefixOutcome::Skipped(reason))
+                }
+            }
+        })
+    }
+    fn on_user_activity(&self, listener: ActivityListener) -> Option<Unsubscribe> {
+        self.0.on_user_activity(listener).ok().flatten()
+    }
 }
 
 pub type WarmPromptCacheFn = Arc<

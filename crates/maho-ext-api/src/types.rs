@@ -1450,6 +1450,36 @@ pub struct ReloadVetoDecision {
     pub cancelled: bool,
     pub reason: Option<String>,
 }
+/// senpi `UserActivityKind`: a draft keystroke in the composer or a submitted prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserActivityKind {
+    Draft,
+    Prompt,
+}
+pub type UserActivityListener = Arc<dyn Fn(UserActivityKind) + Send + Sync>;
+pub type UserActivityUnsubscribe = Box<dyn FnOnce() + Send>;
+/// Provider request prefix of the next user turn (see
+/// `ExtensionContextActions::get_prompt_cache_prefix_request`).
+#[derive(Clone, Debug)]
+pub struct PromptCachePrefixRequest {
+    pub model: Model,
+    pub context: maho_ai::types::Context,
+    pub options: maho_ai::types::SimpleStreamOptions,
+}
+#[derive(Clone, Debug, Default)]
+pub struct PromptCachePrefixRequestOptions {
+    /// Inspect composition without resolving credentials.
+    pub sizes_only: bool,
+    /// Aborting resolves the build as `Skipped`.
+    pub signal: Option<maho_ai::utils::abort::AbortSignal>,
+}
+/// Outcome of `getPromptCachePrefixRequest`.
+#[derive(Clone, Debug)]
+pub enum PromptCachePrefixResult {
+    Ready(Box<PromptCachePrefixRequest>),
+    Skipped(String),
+}
+pub const NO_PROMPT_CACHE_PREFIX_REASON: &str = "the host builds no prompt-cache prefix";
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptCacheKeepAliveSettings {
     pub enabled: bool,
@@ -1741,6 +1771,23 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings;
+    /// senpi `onUserActivity`: subscribe to host-authenticated activity; extensions cannot publish
+    /// it. `None` when the host cannot report activity.
+    fn on_user_activity(&self, _listener: UserActivityListener) -> Option<UserActivityUnsubscribe> {
+        None
+    }
+    /// senpi `getPromptCachePrefixRequest`: the provider request prefix the next user turn will
+    /// send, with an empty conversation. Hosts without a prefix builder skip.
+    fn get_prompt_cache_prefix_request(
+        &self,
+        _options: PromptCachePrefixRequestOptions,
+    ) -> ExtensionFuture<'_, PromptCachePrefixResult> {
+        Box::pin(async {
+            Ok(PromptCachePrefixResult::Skipped(
+                NO_PROMPT_CACHE_PREFIX_REASON.into(),
+            ))
+        })
+    }
     fn get_look_at_settings(&self) -> LookAtSettings;
     fn get_ask_user_settings(&self) -> AskUserSettings;
     fn get_image_settings(&self) -> ImageSettings;
@@ -2558,6 +2605,23 @@ impl ExtensionContext {
         &self,
     ) -> Result<PromptCacheKeepAliveSettings, ExtensionFailure> {
         Ok(self.actions()?.get_prompt_cache_keep_alive_settings())
+    }
+    pub fn on_user_activity(
+        &self,
+        listener: UserActivityListener,
+    ) -> Result<Option<UserActivityUnsubscribe>, ExtensionFailure> {
+        Ok(self.actions()?.on_user_activity(listener))
+    }
+    pub async fn get_prompt_cache_prefix_request(
+        &self,
+        options: PromptCachePrefixRequestOptions,
+    ) -> Result<PromptCachePrefixResult, ExtensionFailure> {
+        let result = self
+            .actions()?
+            .get_prompt_cache_prefix_request(options)
+            .await?;
+        self.actions()?;
+        Ok(result)
     }
     pub fn get_look_at_settings(&self) -> Result<LookAtSettings, ExtensionFailure> {
         Ok(self.actions()?.get_look_at_settings())
