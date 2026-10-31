@@ -1209,13 +1209,29 @@ impl McpService {
             } else {
                 None
             };
-            snapshots.push(crate::service_snapshot::build_mcp_server_snapshot(
+            let mut snapshot = crate::service_snapshot::build_mcp_server_snapshot(
                 name,
                 Some(server),
                 entry.as_ref().map(|entry| entry.connection.as_ref()),
                 entry.as_deref(),
                 chrono::Utc::now().timestamp_millis() as f64,
-            ));
+            );
+            // A server whose references failed in the latest sync is reported degraded with the reference
+            // error, never connected (service.ts #serverSnapshot, senpi#3858).
+            if entry.is_none()
+                && let Some(error) = self.reference_errors.get(name)
+            {
+                snapshot.lifecycle_state = crate::service_types::McpLifecycleState::Connection(
+                    crate::connection::ServerConnectionState::Degraded,
+                );
+                snapshot.last_error = Some(
+                    maho_core::config_reference_redaction::redact_resolved_reference_values(
+                        &error.to_string(),
+                        "<redacted>",
+                    ),
+                );
+            }
+            snapshots.push(snapshot);
         }
         snapshots
     }
