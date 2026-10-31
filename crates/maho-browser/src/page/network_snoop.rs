@@ -5,12 +5,12 @@
 //! are fetched with `Network.getResponseBody` unless oversized; `pop`/`peek`/`popJson`/`waitFor`/
 //! `summary`/`dispose` keep their meaning.
 //!
-//! PORT-DIVERGENCE: the JS snoop subscribes listeners on the CDP emitter. The Rust
-//! [`CdpClient`] keeps a bounded event log instead, so the snoop holds a cursor into it and folds
-//! new events in whenever it is read ([`NetworkSnoop::poll`], called by every accessor). Events
-//! older than the client's log bound (4096 events) that were never read are lost. `Network.enable`
-//! is sent on creation because the Rust page does not enable the domain itself.
-use crate::cdp::{CdpClient, Event};
+//! PORT-DIVERGENCE: the JS snoop subscribes listeners on the CDP emitter. Here it holds a
+//! [`Subscription`] to the session's `Network.*` events (an unbounded queue, so nothing is lost
+//! between reads) and folds them in whenever it is read ([`NetworkSnoop::poll`], called by every
+//! accessor). `Network.enable` is sent on creation because the Rust page does not enable the
+//! domain itself.
+use crate::cdp::{CdpClient, Event, Subscription};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -232,7 +232,7 @@ pub struct NetworkSnoop {
     client: CdpClient,
     session_id: String,
     options: SnoopOptions,
-    cursor: u64,
+    events: Option<Subscription>,
     inflight: HashMap<String, NetworkEntry>,
     buffer: VecDeque<NetworkEntry>,
     disposed: bool,
@@ -241,14 +241,18 @@ pub struct NetworkSnoop {
 impl NetworkSnoop {
     /// Starts buffering traffic of `session_id` from now on.
     pub fn new(client: CdpClient, session_id: &str, options: SnoopOptions) -> Self {
-        let cursor = client.event_cursor();
+        let session = session_id.to_owned();
+        let events = client.subscribe(move |event| {
+            event.session_id.as_deref() == Some(session.as_str())
+                && event.method.starts_with("Network.")
+        });
         // Without the Network domain the page sends no request events.
         let _ = client.send("Network.enable", json!({}), Some(session_id));
         Self {
             client,
             session_id: session_id.to_owned(),
             options,
-            cursor,
+            events: Some(events),
             inflight: HashMap::new(),
             buffer: VecDeque::new(),
             disposed: false,
@@ -372,13 +376,13 @@ impl NetworkSnoop {
     /// Folds every event received since the last read into the buffer; returns the entries it
     /// committed.
     pub fn poll(&mut self) -> Vec<NetworkEntry> {
-        if self.disposed {
-            return Vec::new();
-        }
-        let events = self.client.events_since(self.cursor);
+        let events = self
+            .events
+            .as_ref()
+            .map(Subscription::drain)
+            .unwrap_or_default();
         let mut committed = Vec::new();
         for event in events {
-            self.cursor = self.cursor.max(event.seq + 1);
             committed.extend(self.handle(&event));
         }
         committed
@@ -436,8 +440,12 @@ impl NetworkSnoop {
         }
         let deadline = Instant::now() + timeout;
         loop {
-            for event in self.client.events_since(self.cursor) {
-                self.cursor = self.cursor.max(event.seq + 1);
+            let events = self
+                .events
+                .as_ref()
+                .map(Subscription::drain)
+                .unwrap_or_default();
+            for event in events {
                 if let Some(entry) = self.handle(&event)
                     && event.seq >= mark
                     && matcher.test(&entry)
@@ -455,16 +463,9 @@ impl NetworkSnoop {
                     timeout.as_millis()
                 ));
             }
-            let session = self.session_id.clone();
-            let _ = self
-                .client
-                .wait_event(self.cursor, deadline - now, |event| {
-                    event.session_id.as_deref() == Some(session.as_str())
-                        && matches!(
-                            event.method.as_str(),
-                            "Network.loadingFinished" | "Network.loadingFailed"
-                        )
-                });
+            if let Some(events) = &self.events {
+                events.wait(deadline - now);
+            }
         }
     }
 
@@ -501,6 +502,7 @@ impl NetworkSnoop {
     /// Stops recording; later reads see nothing new and waits fail.
     pub fn dispose(&mut self) {
         self.disposed = true;
+        self.events = None;
         self.inflight.clear();
     }
 
@@ -661,6 +663,28 @@ mod tests {
         assert_eq!(first[0].request_id, "r1");
         assert!(snoop.pop().is_empty());
         assert!(snoop.peek().is_empty());
+    }
+
+    #[test]
+    fn traffic_older_than_the_client_event_log_is_still_recorded() {
+        let (cdp, _) = fake();
+        let mut snoop = snoop(&cdp, SnoopOptions::default());
+        round_trip(&cdp, "early", Req::default());
+        // More unrelated events than the client log keeps, all before the snoop is read.
+        for index in 0..5000 {
+            cdp.emit(
+                "Page.lifecycleEvent",
+                json!({"name": "noise", "index": index}),
+                Some("s1"),
+            );
+        }
+        round_trip(&cdp, "late", Req::default());
+        let ids: Vec<String> = snoop
+            .pop()
+            .into_iter()
+            .map(|entry| entry.request_id)
+            .collect();
+        assert_eq!(ids, ["early", "late"]);
     }
 
     #[test]

@@ -6,13 +6,13 @@
 //! second call returns the first summary and writes nothing).
 //!
 //! PORT-DIVERGENCE: the JS trace subscribes to `Page.frameNavigated` and the page's `dialog`
-//! emitter. Here both are read from the CDP event log at every drain (after each step and at
-//! stop), filtered to the page session; download events come from a [`BrowserEvents`] bridge the
+//! emitter. Here a [`Subscription`] queues both for the page session without loss and the queue
+//! is drained after each step and at stop; download events come from a [`BrowserEvents`] bridge the
 //! caller hands to [`Trace::observe`] (the JS `events` option).
 use super::events::BrowserEvent;
 use super::har::{HarOptions, to_har};
 use super::network_snoop::{NetworkEntry, NetworkSnoop, SnoopOptions, now_ms};
-use crate::cdp::CdpClient;
+use crate::cdp::{CdpClient, Subscription};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -78,9 +78,7 @@ pub struct Trace {
     records: Vec<Value>,
     net_entries: Vec<NetworkEntry>,
     snoop: Option<NetworkSnoop>,
-    session: String,
-    client: CdpClient,
-    cursor: u64,
+    page_events: Subscription,
     seq: u64,
     console_seen: usize,
     summary: Option<Value>,
@@ -119,9 +117,16 @@ impl Trace {
             records: Vec::new(),
             net_entries: Vec::new(),
             snoop,
-            session: page.session().to_owned(),
-            client: page.cdp().clone(),
-            cursor: page.cdp().event_cursor(),
+            page_events: page.cdp().subscribe({
+                let session = page.session().to_owned();
+                move |event| {
+                    event.session_id.as_deref() == Some(session.as_str())
+                        && matches!(
+                            event.method.as_str(),
+                            "Page.frameNavigated" | "Page.javascriptDialogOpening"
+                        )
+                }
+            }),
             seq: 0,
             console_seen: 0,
             summary: None,
@@ -159,11 +164,7 @@ impl Trace {
     }
 
     fn drain_page_events(&mut self) {
-        for event in self.client.events_since(self.cursor) {
-            self.cursor = self.cursor.max(event.seq + 1);
-            if event.session_id.as_deref() != Some(self.session.as_str()) {
-                continue;
-            }
+        for event in self.page_events.drain() {
             let params = &event.params;
             match event.method.as_str() {
                 "Page.frameNavigated" if params.pointer("/frame/parentId").is_none() => {
@@ -526,6 +527,44 @@ mod tests {
         assert_eq!(summary["network"], 1);
         assert_eq!(summary["events"], lines.len());
         assert_eq!(summary["url"], "https://x.test/app");
+    }
+
+    #[test]
+    fn navigations_older_than_the_client_event_log_are_still_traced() {
+        let dir = tempdir();
+        let mut page = page();
+        let mut trace = Trace::new(&page, TraceOptions::new(dir.path()))
+            .unwrap_or_else(|error| panic!("{error}"));
+        page.cdp.emit(
+            "Page.frameNavigated",
+            json!({"frame": {"id": "F1", "url": "https://x.test/first"}}),
+            Some("s1"),
+        );
+        for index in 0..5000 {
+            page.cdp.emit(
+                "Network.dataReceived",
+                json!({"requestId": format!("n{index}")}),
+                Some("other"),
+            );
+        }
+        round_trip(&page.cdp, "r1");
+        let _ = trace.step(&mut page, "after the burst", |_| Ok(()));
+        trace
+            .stop(&mut page)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let lines = lines(dir.path());
+        assert!(
+            lines
+                .iter()
+                .any(|line| line["kind"] == "navigation" && line["url"] == "https://x.test/first")
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line["kind"] == "network")
+                .count(),
+            1
+        );
     }
 
     #[test]
