@@ -13,6 +13,12 @@ pub use crate::shared::ManagedChildEvent;
 pub type ManagedChildListener = Arc<dyn Fn(&ManagedChildEvent) + Send + Sync>;
 pub type Unsubscribe = Box<dyn FnOnce() + Send>;
 
+/// `InputIdentity`: the durable id an input is sent under; the child holds it under this id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputIdentity {
+    pub client_message_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkpoolChildIdentity {
     pub task_id: String,
@@ -41,10 +47,35 @@ pub trait ManagedChildHandle: Send + Sync {
         None
     }
     fn steer(&self, text: &str) -> Result<(), HostError>;
+    /// `steer(text, identity)`: the input travels under the caller's durable id (#2838 step 4).
+    /// A handle without input identity sends it plain.
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        let _ = identity;
+        self.steer(text)
+    }
     fn start_initial_turn(&self, _text: &str) -> Option<crate::pause::ports::ResumedChildTurn> {
         None
     }
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
+        let _ = identity;
+        self.follow_up(text)
+    }
+    /// `liveness()`: a host-session child's liveness; `None` for runners without one.
+    fn liveness(&self) -> Option<crate::state::host_liveness::HostLivenessStatus> {
+        None
+    }
+    /// `onLiveness(listener)`: `None` for runners without liveness.
+    fn on_liveness(
+        &self,
+        _listener: Arc<dyn Fn(crate::state::host_liveness::HostLivenessStatus) + Send + Sync>,
+    ) -> Option<Unsubscribe> {
+        None
+    }
     fn rebind_workpool_identity(
         &self,
         _identity: WorkpoolChildIdentity,
@@ -96,6 +127,8 @@ pub trait ManagedChildHandle: Send + Sync {
     fn publish_task_status(&self, _status: crate::state::TaskStatus) -> Result<(), HostError> {
         Ok(())
     }
+    /// Re-reads inputs whose acknowledgement was lost (TS `reconcileInputs?`); a no-op by default.
+    fn reconcile_inputs(&self) {}
 }
 
 /// Terminate (when supported) then always dispose.

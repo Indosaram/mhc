@@ -44,6 +44,20 @@ pub trait HostSessionPort: Send + Sync {
     fn get_state(&self) -> Result<Value, HostError>;
     fn on_event(&self, listener: ManagedChildListener) -> Unsubscribe;
     fn close(&self) -> Result<(), HostError>;
+    /// `closeConfirmed`: retain the route after a rejected close so a liveness stop can retry
+    /// confirmation. `None` for a port without the confirmed close.
+    fn close_confirmed(&self) -> Option<Result<(), HostError>> {
+        None
+    }
+    /// `getPendingInputs`: what the child holds for each input id; `Ok(None)` from an engine
+    /// client without the read (senpi#3549).
+    fn get_pending_inputs(
+        &self,
+        known_client_message_ids: &[String],
+    ) -> Result<Option<Value>, HostError> {
+        let _ = known_client_message_ids;
+        Ok(None)
+    }
     fn detach(&self) -> Result<(), HostError>;
     fn task_parent_wire(&self) -> Option<Arc<crate::runners::task_parent_control::TaskParentWire>> {
         None

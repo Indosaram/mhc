@@ -38,7 +38,7 @@ fn given_skipped_descendant_chain_when_ancestor_is_selected_then_dependents_rest
         schema_version: crate::dag::types::SchemaVersion1,
         checkpoint_seq: 0,
         run_id: "run".into(), run_key: "test".into(), name: "test".into(),
-        parent_session_id: "parent".into(), root_session_id: "root".into(),
+        parent_session_id: "parent".into(), root_session_id: "root".into(), parent_model: None,
         definition_fingerprint: "fingerprint".into(),
         definition: crate::dag::manager::DagPersistedDefinition { key: "test".into(), name: "test".into(), nodes: vec![] },
         status: DagRunStatus::Failed, generation: 1,
@@ -80,7 +80,7 @@ fn retry_record() -> DagRunRecordV1 {
     DagRunRecordV1 {
         schema_version: crate::dag::types::SchemaVersion1, checkpoint_seq: 0,
         run_id: "run".into(), run_key: "test".into(), name: "test".into(),
-        parent_session_id: "parent".into(), root_session_id: "root".into(),
+        parent_session_id: "parent".into(), root_session_id: "root".into(), parent_model: None,
         definition_fingerprint: "fingerprint".into(),
         definition: crate::dag::manager::DagPersistedDefinition { key: "test".into(), name: "test".into(), nodes: vec![] },
         status: DagRunStatus::Failed, generation: 1,

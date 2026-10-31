@@ -10,11 +10,19 @@ use serde_json::{Value, json};
 
 use crate::host::HostError;
 use crate::manager::child_handle::{
-    ManagedChildEvent, ManagedChildHandle, ManagedChildListener, Unsubscribe,
+    InputIdentity, ManagedChildEvent, ManagedChildHandle, ManagedChildListener, Unsubscribe,
 };
 use crate::runners::RunnerOutcome;
+use crate::runners::input_admission_read::read_stdio_admissions;
+use crate::runners::input_effects::{
+    IdentifiedInput, InputCommand, InputCommandType, InputEffectError, InputEffects,
+    InputEffectsOptions, InputWriteError, create_input_effects,
+};
 use crate::runners::rpc::errors::RpcCommandError;
 use crate::runners::rpc::exit_mapping::classify_child_exit;
+use crate::runners::rpc::heartbeat::{
+    HEARTBEAT_DEADLINE_MS, HeartbeatMachine, MissVerdict, unresponsive_message,
+};
 use crate::runners::rpc::native_run_pause::RpcRunPause;
 use crate::runners::rpc::protocol_client::{RpcClientError, RpcClientPort};
 use crate::runners::rpc::turn_claim::{TurnClaim, create_turn_claim};
@@ -36,6 +44,8 @@ pub struct RpcChildHandleOptions {
     pub task_id: String,
     pub heartbeat_interval_ms: u64,
     pub now: Clock,
+    /// `inputStore`: where identified inputs and uncertain deliveries are persisted.
+    pub input_store: Option<crate::store::TaskRecordStore>,
 }
 
 #[derive(Default)]
@@ -57,6 +67,9 @@ struct HandleState {
 }
 
 struct HandleShared {
+    /// `startHeartbeat`'s miss accounting; events feed its `activity()`.
+    heartbeat: Mutex<HeartbeatMachine>,
+    clock: Clock,
     claims: TurnClaim,
     resumed_listeners: ResumedListenersCallback,
     next_listener: std::sync::atomic::AtomicU64,
@@ -67,6 +80,11 @@ struct HandleShared {
 impl HandleShared {
     fn lock(&self) -> MutexGuard<'_, HandleState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn live(&self) -> bool {
+        let state = self.lock();
+        !state.disposed && state.exit.is_none()
     }
 
     fn settle_turn(&self, state: &mut HandleState, settled: RunnerOutcome) {
@@ -81,6 +99,10 @@ impl HandleShared {
     }
 
     fn on_event(&self, event: &Value) {
+        self.heartbeat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .activity((self.clock)());
         let mut state = self.lock();
         if event["type"] == "agent_start" && state.turn_outcome.is_some() && state.exit.is_none() {
             state.turn_generation += 1;
@@ -155,11 +177,14 @@ pub struct RpcChildHandle {
     spawn_spec: Mutex<Option<RpcSpawnSpec>>,
     resume: Mutex<Option<(String, RpcSwitchSessionResult)>>,
     unsubscribe: Mutex<Vec<Unsubscribe>>,
+    input_effects: InputEffects,
 }
 
 impl RpcChildHandle {
     pub fn new(options: RpcChildHandleOptions) -> Arc<Self> {
         let shared = Arc::new(HandleShared {
+            heartbeat: Mutex::new(HeartbeatMachine::default()),
+            clock: Arc::clone(&options.now),
             claims: create_turn_claim(),
             resumed_listeners: Mutex::new(Vec::new()),
             next_listener: std::sync::atomic::AtomicU64::new(0),
@@ -195,8 +220,22 @@ impl RpcChildHandle {
                     .map_err(|error| TaskParentControlError::new(&error.to_string()))
             }),
         )));
+        let send_client = Arc::clone(&client);
+        let read_client = Arc::clone(&client);
+        let input_effects = create_input_effects(InputEffectsOptions {
+            task_id: options.task_id.clone(),
+            store: options.input_store,
+            send: Arc::new(move |command: &IdentifiedInput| {
+                write_command(send_client.as_ref(), command.wire(), command.kind.wire())
+                    .map_err(input_write_error)
+            }),
+            read: Some(Arc::new(move |ids: &[String]| {
+                read_stdio_admissions(read_client.as_ref(), ids)
+            })),
+        });
         Arc::new(Self {
             control,
+            input_effects,
             task_id: options.task_id,
             client,
             shared,
@@ -269,15 +308,73 @@ impl RpcChildHandle {
     }
 
     fn run_command(&self, command: Value, label: &str) -> Result<(), RpcClientError> {
-        let response = self.client.send(command)?;
-        if response.get("success").and_then(Value::as_bool) == Some(true) {
-            return Ok(());
+        write_command(self.client.as_ref(), command, label)
+    }
+
+    /// `inputEffects.send`: the input goes out under its durable id (minted or the caller's own).
+    fn send_input(
+        &self,
+        kind: InputCommandType,
+        text: &str,
+        streaming_behavior: Option<&str>,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
+        // The refused response keeps its typed fields (a credential refusal drives the start chain).
+        let refused = Mutex::new(None);
+        let command = InputCommand {
+            kind,
+            message: text.to_string(),
+            streaming_behavior: streaming_behavior.map(str::to_string),
+            client_message_id: client_message_id.map(str::to_string),
+        };
+        self.input_effects
+            .send_with(command, |identified| {
+                write_command(
+                    self.client.as_ref(),
+                    identified.wire(),
+                    identified.kind.wire(),
+                )
+                .map_err(|error| {
+                    let classified = input_write_error(error.clone());
+                    *refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                    classified
+                })
+            })
+            .map_err(|error| match error {
+                InputEffectError::Failed(message) => refused
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                    .unwrap_or(RpcClientError::Write { message }),
+                other => RpcClientError::Write {
+                    message: other.to_string(),
+                },
+            })
+    }
+
+    /// `delivery.prompt`: a busy refusal admitted nothing, so its followUp fallback keeps the id.
+    fn deliver_prompt(
+        &self,
+        text: &str,
+        follow_up: bool,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
+        let behavior = follow_up.then_some("followUp");
+        let result = self.send_input(InputCommandType::Prompt, text, behavior, client_message_id);
+        match result {
+            Err(error) if !follow_up && is_busy_child_rejection(&error) => self.send_input(
+                InputCommandType::Prompt,
+                text,
+                Some("followUp"),
+                client_message_id,
+            ),
+            other => other,
         }
-        let detail = response
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown error");
-        Err(RpcCommandError::new(label, detail).into())
+    }
+
+    /// Reconciles inputs whose acknowledgement was lost (`reconcileInputs`).
+    pub fn reconcile_inputs(&self) {
+        self.input_effects.reconcile();
     }
 
     fn begin_turn(&self) {
@@ -298,31 +395,59 @@ impl RpcChildHandle {
         state.turn_baseline = state.final_text.clone();
     }
 
-    fn run_prompt(&self, text: &str, follow_up: bool) -> Result<(), RpcClientError> {
+    fn run_prompt(
+        &self,
+        text: &str,
+        follow_up: bool,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
         self.begin_turn();
-        let command = if follow_up {
-            json!({ "type": "prompt", "message": text, "streamingBehavior": "followUp" })
-        } else {
-            json!({ "type": "prompt", "message": text })
-        };
-        self.run_command(command, "prompt").inspect_err(|error| {
-            let mut state = self.shared.lock();
-            self.shared
-                .settle_turn(&mut state, prompt_failure_outcome(&error.to_string()));
-        })
+        self.deliver_prompt(text, follow_up, client_message_id)
+            .inspect_err(|error| {
+                // An uncertain input may still be delivered: its turn is not failed.
+                if is_uncertain_input(error) {
+                    return;
+                }
+                let mut state = self.shared.lock();
+                self.shared
+                    .settle_turn(&mut state, prompt_failure_outcome(&error.to_string()));
+            })
     }
 
     pub fn start_initial_prompt(&self, text: &str) -> Result<(), RpcClientError> {
-        self.run_prompt(text, false)
+        self.run_prompt(text, false, None)
     }
 
     pub fn steer_turn(&self, text: &str) -> Result<(), RpcClientError> {
+        self.steer_turn_as(text, None)
+    }
+
+    /// `delivery.steer(text, clientMessageId)`: task_send ALWAYS steers; a busy refusal degrades to
+    /// followUp queueing under the same id.
+    pub fn steer_turn_as(
+        &self,
+        text: &str,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
         self.begin_turn();
-        self.run_command(json!({ "type": "steer", "message": text }), "steer")
+        match self.send_input(InputCommandType::Steer, text, None, client_message_id) {
+            Err(error) if is_busy_child_rejection(&error) => {
+                self.deliver_prompt(text, true, client_message_id)
+            }
+            other => other,
+        }
     }
 
     pub fn follow_up_turn(&self, text: &str) -> Result<(), RpcClientError> {
-        self.run_prompt(text, true)
+        self.run_prompt(text, true, None)
+    }
+
+    pub fn follow_up_turn_as(
+        &self,
+        text: &str,
+        client_message_id: Option<&str>,
+    ) -> Result<(), RpcClientError> {
+        self.run_prompt(text, true, client_message_id)
     }
 
     pub fn abort_turn(&self) -> Result<(), RpcClientError> {
@@ -431,6 +556,9 @@ impl RpcChildHandle {
 }
 
 impl ManagedChildHandle for RpcChildHandle {
+    fn reconcile_inputs(&self) {
+        RpcChildHandle::reconcile_inputs(self);
+    }
     fn run_pause(&self) -> Option<&dyn crate::pause::native_child_pause::NativeRunPause> {
         Some(self)
     }
@@ -474,8 +602,22 @@ impl ManagedChildHandle for RpcChildHandle {
         self.steer_turn(text).map_err(host_error)
     }
 
+    fn steer_with_identity(&self, text: &str, identity: &InputIdentity) -> Result<(), HostError> {
+        self.steer_turn_as(text, Some(&identity.client_message_id))
+            .map_err(host_error)
+    }
+
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.follow_up_turn(text).map_err(host_error)
+    }
+
+    fn follow_up_with_identity(
+        &self,
+        text: &str,
+        identity: &InputIdentity,
+    ) -> Result<(), HostError> {
+        self.follow_up_turn_as(text, Some(&identity.client_message_id))
+            .map_err(host_error)
     }
 
     fn abort(&self) -> Result<(), HostError> {
@@ -543,12 +685,58 @@ impl ManagedChildHandle for RpcChildHandle {
     }
 }
 
+/// `writeCommand` + `assertOk`: the refused response's typed fields travel with the error.
+fn write_command(
+    client: &dyn RpcClientPort,
+    command: Value,
+    label: &str,
+) -> Result<(), RpcClientError> {
+    let response = client.send(command)?;
+    if response.get("success").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    let detail = response
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown error");
+    Err(RpcCommandError::with_refusal(label, detail, &response).into())
+}
+
+fn input_write_error(error: RpcClientError) -> InputWriteError {
+    match error {
+        RpcClientError::Command(error) => InputWriteError::from_message(
+            error.error_code.clone(),
+            format!("{}: {}", error.command, error.detail),
+        ),
+        other => InputWriteError::from_message(None, other.to_string()),
+    }
+}
+
+fn is_uncertain_input(error: &RpcClientError) -> bool {
+    matches!(error, RpcClientError::Write { message } if message.starts_with("uncertain: "))
+}
+
+/// `isBusyChildRejection` (`rpc/delivery-semantics.ts`): the child is alive and simply busy.
+fn is_busy_child_rejection(error: &RpcClientError) -> bool {
+    let detail = match error {
+        RpcClientError::Command(error) => error.detail.to_lowercase(),
+        RpcClientError::Write { message } => message.to_lowercase(),
+        _ => return false,
+    };
+    detail.contains("already processing")
+        || detail.contains("streamingbehavior")
+        || detail.contains("one-at-a-time")
+}
+
 fn host_error(error: RpcClientError) -> HostError {
     HostError {
         message: error.to_string(),
     }
 }
 
+/// `startHeartbeat` driver: one `get_state` in flight at a time on its own thread; this loop owns
+/// the deadline. Three consecutive misses (no answer and no session event for the deadline) end
+/// the child as `child-unresponsive` and terminate it.
 fn spawn_heartbeat(
     shared: Weak<HandleShared>,
     client: Arc<dyn RpcClientPort>,
@@ -556,42 +744,139 @@ fn spawn_heartbeat(
     interval: Duration,
     now: Clock,
 ) {
+    let deadline = Duration::from_millis(HEARTBEAT_DEADLINE_MS as u64);
     thread::spawn(move || {
         loop {
+            if !wait_while_live(&shared, interval) {
+                return;
+            }
+            let (answer_tx, answer_rx) = std::sync::mpsc::channel();
+            let probe_client = Arc::clone(&client);
+            thread::spawn(move || {
+                let _ = answer_tx.send(probe_client.send(json!({ "type": "get_state" })));
+            });
+            let mut missed = false;
+            let mut wait = deadline;
+            let answer = loop {
+                match answer_rx.recv_timeout(wait) {
+                    Ok(answer) => break Some(answer),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                let Some(strong) = shared.upgrade() else {
+                    return;
+                };
+                if !strong.live() {
+                    return;
+                }
+                let verdict = strong
+                    .heartbeat
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .miss(now());
+                match verdict {
+                    MissVerdict::Rearm(ms) => wait = Duration::from_millis(ms.max(1) as u64),
+                    MissVerdict::Missed => {
+                        missed = true;
+                        wait = deadline;
+                    }
+                    MissVerdict::Unresponsive => {
+                        declare_unresponsive(&strong, client.as_ref(), &task_id);
+                        return;
+                    }
+                }
+            };
             let Some(strong) = shared.upgrade() else {
                 return;
             };
-            {
-                let state = strong.lock();
-                let (state, _) = strong
-                    .changed
-                    .wait_timeout_while(state, interval, |state| {
-                        !state.disposed && state.exit.is_none()
-                    })
-                    .unwrap_or_else(PoisonError::into_inner);
-                if state.disposed || state.exit.is_some() {
-                    return;
-                }
+            if !strong.live() {
+                return;
             }
-            drop(strong);
-            match client.send(json!({ "type": "get_state" })) {
-                Ok(response) => {
-                    let Some(strong) = shared.upgrade() else {
-                        return;
-                    };
+            match answer {
+                Some(Ok(response))
+                    if response.get("success").and_then(Value::as_bool) != Some(false) =>
+                {
+                    strong
+                        .heartbeat
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .answered();
                     let mut state = strong.lock();
                     state.last_seen_at = Some(now());
                     if let Some(session_id) = read_session_id(&response) {
                         state.session_id = Some(session_id);
                     }
                 }
-                Err(error) => utils::logger::log(
-                    "senpi-task heartbeat get_state failed",
-                    Some(&json!({ "taskId": task_id, "error": error.to_string() })),
-                ),
+                failed => {
+                    let error = match failed {
+                        Some(Ok(response)) => response
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("get_state refused")
+                            .to_string(),
+                        Some(Err(error)) => error.to_string(),
+                        None => "get_state probe ended".to_string(),
+                    };
+                    utils::logger::log(
+                        "senpi-task heartbeat get_state failed",
+                        Some(&json!({ "taskId": task_id, "error": error })),
+                    );
+                    let verdict = strong
+                        .heartbeat
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .refused(missed);
+                    if verdict == Some(MissVerdict::Unresponsive) {
+                        declare_unresponsive(&strong, client.as_ref(), &task_id);
+                        return;
+                    }
+                }
             }
         }
     });
+}
+
+/// Waits one interval; false once the child exited or the handle was disposed.
+fn wait_while_live(shared: &Weak<HandleShared>, interval: Duration) -> bool {
+    let Some(strong) = shared.upgrade() else {
+        return false;
+    };
+    let state = strong.lock();
+    let (state, _) = strong
+        .changed
+        .wait_timeout_while(state, interval, |state| {
+            !state.disposed && state.exit.is_none()
+        })
+        .unwrap_or_else(PoisonError::into_inner);
+    !state.disposed && state.exit.is_none()
+}
+
+/// `onUnresponsive`: settle the turn and the exit, then terminate the silent child.
+fn declare_unresponsive(shared: &HandleShared, client: &dyn RpcClientPort, task_id: &str) {
+    {
+        let mut state = shared.lock();
+        shared.settle_turn(
+            &mut state,
+            RunnerOutcome::error(
+                crate::runners::RunnerFailureKind::ChildUnresponsive,
+                unresponsive_message(task_id),
+            ),
+        );
+    }
+    shared.on_exit(ChildExitOutcome::Crashed {
+        facts: crate::runners::types::ChildExitFacts {
+            pid: client.pid().map(i64::from),
+            code: None,
+            signal: None,
+            stderr_tail: "child-unresponsive".to_string(),
+        },
+    });
+    if let Err(error) = client.terminate(TerminateOptions::default()) {
+        utils::logger::log(
+            "senpi-task unresponsive child termination failed",
+            Some(&json!({ "taskId": task_id, "error": error.to_string() })),
+        );
+    }
 }
 
 fn read_session_id(response: &Value) -> Option<String> {
