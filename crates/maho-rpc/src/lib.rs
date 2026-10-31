@@ -73,6 +73,7 @@ pub mod host_ensure_client;
 pub mod host_ensure_liveness;
 pub mod host_ensure_lock;
 pub mod host_ensure_stop;
+pub mod host_ensure_types;
 pub mod host_gc;
 pub mod host_gc_pass_marker;
 pub mod host_generations;
