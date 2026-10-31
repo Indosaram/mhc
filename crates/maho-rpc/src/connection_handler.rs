@@ -1113,6 +1113,9 @@ async fn handle_session_command_with_sink(
             let outcome=crate::session_control_actions_data::interrupt_running_turn(session,turn_id.as_ref(),||session.abort()).await;
             ("interrupt",serde_json::to_value(outcome).map(Some).map_err(|error|error.to_string()))
         },
+        // senpi: without `options.retryFallbackCommand` (this binding has no such launch option, and it does not
+        // advertise `retry_fallback_command`) the command is refused with upstream's text.
+        RpcCommandBody::SetRetryFallback{..}=>("set_retry_fallback",Err("set_retry_fallback is for a single-session rpc process; a host session takes open_session.retryFallback.".into())),
         RpcCommandBody::RequestSelfSettle=>("request_self_settle",Ok(Some(session.request_self_settle()))),
         RpcCommandBody::GetModelThinkingLevel{provider,model_id}=>{
             let (Some(provider),Some(model_id))=(provider.as_ref().and_then(serde_json::Value::as_str),model_id.as_ref().and_then(serde_json::Value::as_str)) else{return Some(coded_error(command,"get_model_thinking_level","get_model_thinking_level requires 'provider' and 'modelId'.".into(),crate::rpc_types::RPC_ERROR_INVALID_ARGUMENT));};
@@ -2943,6 +2946,10 @@ mod new_session_tests {
         let path =
             answer(serde_json::json!({"type":"resolve_path","path":"/definitely/not/here"})).await;
         assert_eq!(path["data"]["status"], "not_found");
+        let fallback =
+            answer(serde_json::json!({"type":"set_retry_fallback","retryFallback":{}})).await;
+        assert_eq!(fallback["success"], false);
+        assert_eq!(fallback["command"], "set_retry_fallback");
         let limits = answer(serde_json::json!({"type":"get_subscription_limits"})).await;
         assert!(limits["data"]["accounts"].is_array());
         // An unknown provider is answered before any probe goes out.

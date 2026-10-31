@@ -331,6 +331,12 @@ pub enum RpcCommandBody {
         path: String,
     },
     GetSubscriptionLimits,
+    /// senpi `{ type: "set_retry_fallback"; retryFallback }`: only a single-session rpc process launched with the
+    /// retry-fallback command option takes it.
+    SetRetryFallback {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_fallback: Option<Value>,
+    },
     /// senpi `{ type: "detach_connection" }`: a multi-session host drops every attachment the asking connection holds.
     DetachConnection,
     /// senpi `{ type: "warm"; cwd?; kind?; context? }`: load a launch profile's extensions without a session. The
