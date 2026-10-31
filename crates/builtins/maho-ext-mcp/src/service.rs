@@ -967,8 +967,9 @@ impl McpService {
         );
         if let Some(inputs) = self.registration_inputs.clone() {
             for removed in &diff.removed {
-                let _ = inputs.registrar.register_tool(
+                let _ = inputs.registrar.register_tool_with_renderers(
                     crate::notifications::build_mcp_tombstone_definition(removed, name),
+                    crate::notifications::mcp_tombstone_renderers(removed),
                 );
             }
         }

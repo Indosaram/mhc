@@ -47,6 +47,14 @@ pub fn build_mcp_tombstone_definition(name:&str,server:&str)->maho_ext_api::Tool
     }));
     tool.label=name.into();tool.execution_mode=Some(maho_ext_api::ToolExecutionMode::Parallel);tool
 }
+/// notifications.ts tombstone `renderCall`: `theme.fg("toolOutput", `${name} (removed)`)`; no `renderResult`.
+pub fn mcp_tombstone_renderers(name:&str)->crate::tool_registrar::McpToolRenderers {
+    let name=name.to_owned();
+    maho_ext_api::ToolRenderers {
+        render_call:Some(Arc::new(move |_args,theme,_context|Box::new(maho_tui::components::text::Text::with_padding(theme.fg("toolOutput",&format!("{name} (removed)")),0,0)))),
+        render_result:None,
+    }
+}
 pub fn subscribe_mcp_list_changed(client:&crate::transport_sdk::McpClient,on_change:Arc<dyn Fn()+Send+Sync>)->JoinHandle<()> {
     let mut notifications=client.notifications.subscribe();
     tokio::spawn(async move {loop {

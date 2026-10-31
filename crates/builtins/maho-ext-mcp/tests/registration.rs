@@ -43,6 +43,7 @@ impl McpToolRegistrar for RecordingRegistrar {
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure> {Ok(self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())}
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> {*self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = names; Ok(())}
     fn register_tool(&self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {self.registered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(definition.name); Ok(())}
+    fn register_tool_with_renderers(&self, definition: ToolDefinition, _renderers: maho_ext_mcp::tool_registrar::McpToolRenderers) -> Result<(), ExtensionFailure> {self.register_tool(definition)}
 }
 
 struct NoToolsActions;

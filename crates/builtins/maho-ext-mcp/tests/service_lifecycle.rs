@@ -33,6 +33,9 @@ impl McpToolRegistrar for RecordingRegistrar {
         self.registered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(definition.name);
         Ok(())
     }
+    fn register_tool_with_renderers(&self, definition: ToolDefinition, _renderers: maho_ext_mcp::tool_registrar::McpToolRenderers) -> Result<(), ExtensionFailure> {
+        self.register_tool(definition)
+    }
 }
 
 fn declaration(name: &str, cwd: &std::path::Path, extra_args: &[&str]) -> maho_ext_api::RegisteredMcpServerDeclaration {
