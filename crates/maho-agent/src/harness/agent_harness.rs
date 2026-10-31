@@ -54,6 +54,51 @@ pub type AgentHarnessSystemPromptFn<TContext> = Arc<
 
 pub type Resources = crate::harness::types::AgentHarnessResources;
 
+/// Pinned `OperationRequest`: the tagged admission request accepted by `AgentLane.accept`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OperationRequest {
+    Prompt {
+        operation_id: Option<String>,
+        prompt: String,
+        images: Vec<maho_ai::types::ImageContent>,
+    },
+    PromptMessages {
+        operation_id: Option<String>,
+        prompt: Vec<crate::types::AgentMessage>,
+    },
+    Skill {
+        operation_id: Option<String>,
+        name: String,
+        additional_instructions: Option<String>,
+    },
+    PromptTemplate {
+        operation_id: Option<String>,
+        name: String,
+        args: Option<Vec<String>>,
+    },
+    Compaction {
+        operation_id: Option<String>,
+        custom_instructions: Option<String>,
+    },
+    Navigation {
+        operation_id: Option<String>,
+        target_id: Option<String>,
+        options: Option<super::runtime::lane::NavigationOptions>,
+    },
+}
+
+/// Pinned `OperationAdmissionResult`.
+pub type OperationAdmissionResult =
+    Result<super::runtime::lane::OperationAdmission, super::runtime::lane::AdmissionError>;
+
+/// Pinned `LaneInfo`: one loaded lane as reported by `AgentHarness.lanes`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaneInfo {
+    pub name: String,
+    pub tip_id: Option<String>,
+    pub operation: Option<CurrentOperationInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriveOptions {
     pub operation_id: String,
