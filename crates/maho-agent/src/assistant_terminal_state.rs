@@ -260,7 +260,7 @@ pub fn create_terminal_failure_assistant_message(
         }
         _ => None,
     };
-    let mut message = AssistantMessage {
+    let mut message = AssistantMessage { credential_served_recently: None,
         content: partial_message
             .map(|message| message.content.clone())
             .unwrap_or_else(|| vec![ContentBlock::text("")]),

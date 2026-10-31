@@ -26087,7 +26087,7 @@ mod tests {
             "5::::undefined:undefined:false"
         );
 
-        let mut asst = maho_ai::types::AssistantMessage {
+        let mut asst = maho_ai::types::AssistantMessage { credential_served_recently: None,
             content: vec![maho_ai::types::ContentBlock::text("answer")],
             api: "a".into(),
             provider: "p".into(),
