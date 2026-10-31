@@ -107,6 +107,7 @@ pub mod project_memory_nudge;
 pub mod project_recall_mentions;
 pub mod project_recall_seats;
 pub mod projection_expiry;
+pub mod projection_limits;
 pub mod projection_pin;
 pub mod prompt;
 pub mod prompt_notice;
