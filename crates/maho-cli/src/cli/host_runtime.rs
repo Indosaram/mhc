@@ -1110,12 +1110,18 @@ pub fn host_runtime_factory_with_mcp_registry(
                     &scoped.scoped_models,
                 )
                 .await?;
-                let session_start_event = initial.provenance.map(|provenance| SessionStartEvent {
+                // senpi `buildOpeningEntry`: re-opening an existing file starts as a resume, and an unattended
+                // open says so; the host's registry decided which (`session_start_reason`).
+                let session_start_event = (initial.provenance.is_some()
+                    || profile.session_start_reason.is_some())
+                .then(|| SessionStartEvent {
                     sizes_only: false,
-                    reason: maho_ext_api::SessionReason::Startup,
-                    initial_model_provenance: Some(provenance.to_owned()),
+                    reason: profile
+                        .session_start_reason
+                        .unwrap_or(maho_ext_api::SessionReason::Startup),
+                    initial_model_provenance: initial.provenance.map(str::to_owned),
                     previous_session_file: None,
-                    attended: None,
+                    attended: (profile.attended == Some(false)).then_some(false),
                 });
                 let request = CliRuntimeRequest {
                     cwd: Some(profile.runtime.cwd.clone()),

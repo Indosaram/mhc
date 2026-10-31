@@ -203,11 +203,13 @@ impl OpenRefusal {
             data: None,
         }
     }
+    /// senpi router `error(id, command, code(cause), detail(cause))`: the registry's detail (who holds a path, when
+    /// to retry) rides as `errorData`.
     fn from_registry(error: &crate::session_registry::RpcSessionRegistryError) -> Self {
         Self {
             message: error.to_string(),
             code: Some(error.code.clone()),
-            data: None,
+            data: error.detail.clone(),
         }
     }
     fn sealed(data: serde_json::Value) -> Self {
@@ -409,6 +411,26 @@ impl HostCore {
     /// call wins.
     pub fn set_handover_parked_dir(&self, dir: std::path::PathBuf) {
         let _ = self.handover_parked_dir.set(dir);
+    }
+    /// senpi `createHostCore` `pathReservations`: the cross-generation claims the in-process registry publishes for
+    /// its sessions' files, in the daemon directory of the endpoint clients dial (a told
+    /// `SENPI_RPC_HOST_DAEMON_DIR` wins). Two generations of this daemon can be alive at once during a handoff; these
+    /// claims keep them off one session file. A worker-runtime host keeps its own claims per worker.
+    pub async fn install_endpoint_reservations(&self, endpoint_socket: Option<&str>) {
+        if self.workers.is_some() {
+            return;
+        }
+        let reservations = crate::host_reservations::create_endpoint_reservations(
+            &self.options.agent_dir,
+            endpoint_socket,
+            crate::protocol_identity::host_instance_id().to_owned(),
+            |message| eprintln!("senpi rpc host: {message}"),
+        )
+        .map(|reservations| reservations.with_public_socket(endpoint_socket.map(str::to_owned)));
+        self.registry
+            .lock()
+            .await
+            .set_path_reservations(reservations);
     }
     /// Whether a handoff drain is running (senpi `router.draining`).
     pub fn is_draining(&self) -> bool {
@@ -2232,6 +2254,7 @@ impl HostCore {
             }),
             // senpi `open`: `{ ...profile, spawnedBy: ancestry }` once validated.
             spawned_by: serde_json::from_value(spawned_by.clone()).ok(),
+            session_start_reason: None,
         };
         let retain = retain_on_disconnect.unwrap_or(false);
         let opened = self
@@ -2258,12 +2281,35 @@ impl HostCore {
                 .open_worker_session(&workers, connection, profile, retain, overlay)
                 .await;
         }
-        let admitted = {
-            let mut registry = self.registry.lock().await;
-            registry.admit_open(profile.clone(), retain, crate::connection_handler::now_ms())
+        // senpi `attachToOpenSession`: a path still opening is waited on (bounded, this waiter only) with no
+        // registry lock held, then admitted again so the reopen attaches to the session it opened.
+        let admitted = loop {
+            let admitted = {
+                let mut registry = self.registry.lock().await;
+                registry.admit_open(profile.clone(), retain, crate::connection_handler::now_ms())
+            };
+            match admitted {
+                Ok(crate::session_registry::OpenAdmission::Wait {
+                    completion,
+                    session_path,
+                }) => {
+                    if let Err(error) = crate::session_registry_attach::wait_open_completion(
+                        completion,
+                        &session_path,
+                    )
+                    .await
+                    {
+                        break Err(error);
+                    }
+                }
+                other => break other,
+            }
         };
         match admitted {
             Err(error) => Err(OpenRefusal::from_registry(&error)),
+            Ok(crate::session_registry::OpenAdmission::Wait { .. }) => Err(OpenRefusal::plain(
+                crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,
+            )),
             Ok(crate::session_registry::OpenAdmission::Attached(handle))
                 if self.default_writer.is_session_sealed(&handle) =>
             {
@@ -2313,8 +2359,14 @@ impl HostCore {
             Ok(crate::session_registry::OpenAdmission::Create(handle)) => {
                 let created = {
                     let mut registry = self.registry.lock().await;
+                    // senpi `runtimeProfile`: a resume drops the create-only model and thinking level and starts
+                    // with `session_start { reason: "resume" }`.
+                    let runtime_profile = registry.take_runtime_profile(&handle).unwrap_or(profile);
                     registry
-                        .create_admitted_runtime(&handle, (self.options.create_runtime)(profile))
+                        .create_admitted_runtime(
+                            &handle,
+                            (self.options.create_runtime)(runtime_profile),
+                        )
                         .await
                 };
                 if let Err(error) = created {
@@ -5266,7 +5318,11 @@ pub async fn run_multi_session_host_with_signals(
     #[cfg(any(unix, windows))]
     {
         match listen.as_deref() {
-            None | Some("stdio://") => run_stdio_host(core).await,
+            None | Some("stdio://") => {
+                // A stdio host serves no socket: it publishes claims only into a told daemon directory.
+                core.install_endpoint_reservations(None).await;
+                run_stdio_host(core).await
+            }
             Some(path) => run_socket_host(core, path.to_owned(), signals).await,
         }
     }
@@ -5623,6 +5679,8 @@ async fn run_socket_host(
     )
     .dir;
     core.set_handover_parked_dir(daemon_dir.clone());
+    core.install_endpoint_reservations(Some(&endpoint_socket))
+        .await;
     // senpi `runSocketHost`: the runtime this host loaded, computed once at startup. A successor an idle handover
     // started for another runtime exits before it listens, leaving its predecessor serving.
     let runtime_build_id = startup_runtime_build_id(&core.options.cwd);
