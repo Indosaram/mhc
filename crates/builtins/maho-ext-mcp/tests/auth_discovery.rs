@@ -145,14 +145,14 @@ async fn missing_token_endpoint_and_missing_metadata_are_reported() {
 }
 
 #[tokio::test]
-async fn missing_protected_resource_falls_back_to_the_server_url_as_issuer() {
+async fn missing_protected_resource_falls_back_to_the_server_origin_as_issuer() {
     let server = server().await;
     let base = &server.base;
     server.set(ASM, 200, Some(metadata(base)));
     let root = tempfile::tempdir().expect("test fixture");
     let provider = provider(root.path(), base);
     let info = discover(&provider, &reqwest::Client::new()).await.expect("test fixture");
-    assert_eq!(info.authorization_server_url, *base);
+    assert_eq!(info.authorization_server_url, format!("{base}/"));
     assert!(info.resource_metadata.is_null());
 }
 

@@ -20,6 +20,35 @@ pub struct McpClient {
     auth_challenge_handler:tokio::sync::RwLock<Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>>,
     http_stream:Mutex<Option<JoinHandle<()>>>,
     pub resource_subscriptions:tokio::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Upstream `ModernProtocolState`, one per physical client.
+    pub protocol:crate::modern::request::ModernProtocolState,
+    /// Upstream `legacyOperations`: private legacy form ownership per physical client.
+    pub legacy_operations:Mutex<Vec<crate::request_origin::LegacyMcpOperation>>,
+    modern:Arc<std::sync::OnceLock<ModernRoute>>,
+    probe:Arc<Mutex<ProbeSlot>>,
+    local_initialize:Mutex<Option<Value>>,
+    this:std::sync::Weak<Self>,
+}
+/// The negotiated modern route: every later request carries per-request `_meta` at `version`.
+pub struct ModernRoute {
+    pub version:String,
+    pub client_info:crate::modern::wire::ModernClientInfo,
+    pub client_capabilities:Value,
+    pub http:Option<crate::modern::transport::ModernHttpTransport>,
+    pub subscriptions:Arc<crate::modern::subscriptions::ModernSubscriptions>,
+}
+#[derive(Default)]
+struct ProbeSlot {waiting:Option<(String,oneshot::Sender<Value>)>,late:Option<crate::modern::era::DiscoveryResult>,silent:bool}
+pub const MCP_CLIENT_NAME:&str="senpi-mcp-client";
+pub fn mcp_client_info()->crate::modern::wire::ModernClientInfo {crate::modern::wire::ModernClientInfo {name:MCP_CLIENT_NAME.into(),version:"0.0.0".into()}}
+/// Upstream dispatch `probeOptions`: empty client capabilities, only the modern version.
+pub fn mcp_probe_options()->crate::modern::era::ProbeOptions {
+    crate::modern::era::ProbeOptions {client_info:mcp_client_info(),client_capabilities:json!({}),supported_versions:vec![crate::modern::wire::MODERN_PROTOCOL_VERSION.into()]}
+}
+/// One modern stdio message from the child: subscription routing, then the privacy filter.
+fn modern_incoming(route:&ModernRoute,value:Value)->Option<Value> {
+    if !route.subscriptions.incoming(&value){return None;}
+    crate::modern::diagnostics::sanitize_modern_message(&value).ok().flatten().map(crate::modern::sdk_bridge::normalize_modern_result)
 }
 enum ClientTransport {
     Stdio {input:tokio::sync::Mutex<Option<ChildStdin>>,child:Box<tokio::sync::Mutex<Child>>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
@@ -57,11 +86,25 @@ impl McpClient {
         let pending:Arc<Mutex<BTreeMap<u64,Reply>>>=Arc::new(Mutex::new(BTreeMap::new()));let replies=pending.clone();
         let (notifications,_)=broadcast::channel(256);let events=notifications.clone();let name=server.to_owned();
         let (closed,_)=tokio::sync::watch::channel(false);let close_signal=closed.clone();
+        let modern:Arc<std::sync::OnceLock<ModernRoute>>=Arc::default();let probe:Arc<Mutex<ProbeSlot>>=Arc::default();
+        let (reader_modern,reader_probe)=(modern.clone(),probe.clone());
         let reader=tokio::spawn(async move {
             let mut lines=BufReader::new(output).lines();
             while let Ok(Some(line))=lines.next_line().await {
                 let Ok(value)=serde_json::from_str::<Value>(&line) else{continue;};
                 if value.get("id").is_some() && value.get("method").is_some(){let _=events.send(value);continue;}
+                if let Some(id)=value.get("id").and_then(Value::as_str) {
+                    // Discovery replies never reach the request table; a late one may still upgrade the stream.
+                    if id.starts_with(crate::modern::era::STDIO_PROBE_ID) {
+                        let mut slot=reader_probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if slot.waiting.as_ref().is_some_and(|(waiting,_)|waiting==id) {if let Some((_,sender))=slot.waiting.take(){let _=sender.send(value);}}
+                        else if slot.late.is_none(){slot.late=crate::modern::era::discovery_reply(&value,&Value::String(id.into()));}
+                        continue;
+                    }
+                    if let Some(route)=reader_modern.get(){route.subscriptions.incoming(&value);}
+                    continue;
+                }
+                let value=match reader_modern.get() {Some(route)=>match modern_incoming(route,value){Some(value)=>value,None=>continue},None=>value};
                 if let Some(id)=value.get("id").and_then(Value::as_u64) {
                     if let Some(sender)=replies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) {
                         let result=if let Some(error)=value.get("error") {let mut failure=failure(&name,McpErrorKind::Protocol,error.get("message").and_then(Value::as_str).unwrap_or("MCP protocol error"),"request");failure.cause=Some(Box::new(error.clone()));Err(failure)}else{Ok(value.get("result").cloned().unwrap_or(Value::Null))};
@@ -75,7 +118,7 @@ impl McpClient {
         let stderr=tokio::spawn(async move {
             let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
         });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),auth_challenge_handler:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+        Ok(Arc::new_cyclic(|this|Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),auth_challenge_handler:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default()),protocol:Default::default(),legacy_operations:Mutex::default(),modern,probe,local_initialize:Mutex::new(None),this:this.clone()}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         Self::materialize_with_policy(server,spec,logger,false).await
@@ -87,17 +130,46 @@ impl McpClient {
                 let client=reqwest::Client::builder().build().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;
                 let (notifications,_)=broadcast::channel(256);
                 let (closed,_)=tokio::sync::watch::channel(false);
-                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),auth_challenge_handler:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+                Ok(Arc::new_cyclic(|this|Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),auth_challenge_handler:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default()),protocol:Default::default(),legacy_operations:Mutex::default(),modern:Arc::default(),probe:Arc::default(),local_initialize:Mutex::new(None),this:this.clone()}))
             }
         }
     }
+    /// Every request: once negotiation selects modern (or private forms are enforced) it runs the MRTR engine
+    /// without a request origin, exactly like upstream's patched `client.request`.
     pub async fn request(&self,method:&str,params:Value,timeout:Duration)->Result<Value,McpError> {
-        self.request_inner(method,params,timeout,None).await
+        self.request_with_options(method,params,timeout,&crate::request_origin::McpRequestOptions::default()).await
     }
     pub async fn request_with_signal(&self,method:&str,params:Value,timeout:Duration,signal:&maho_ext_api::AbortSignal)->Result<Value,McpError> {
-        self.request_inner(method,params,timeout,Some(signal)).await
+        self.request_with_options(method,params,timeout,&crate::request_origin::mcp_request_options(None,Some(signal.clone()))).await
     }
-    async fn request_inner(&self,method:&str,params:Value,timeout:Duration,signal:Option<&maho_ext_api::AbortSignal>)->Result<Value,McpError> {
+    pub async fn request_with_options(&self,method:&str,params:Value,timeout:Duration,options:&crate::request_origin::McpRequestOptions)->Result<Value,McpError> {
+        match self.this.upgrade() {
+            Some(this) if method!="initialize" && this.protocol.requests_active()=>Box::pin(crate::modern::request::mcp_request(&this,method,params,timeout,options)).await,
+            _=>self.request_inner(method,params,timeout,options.signal.as_ref(),None).await,
+        }
+    }
+    /// One wire attempt; the MRTR engine's dispatch guard runs at the network boundary.
+    pub async fn request_guarded(&self,method:&str,params:Value,timeout:Duration,signal:Option<&maho_ext_api::AbortSignal>,guard:Option<crate::modern::request::DispatchGuard>)->Result<Value,McpError> {
+        self.request_inner(method,params,timeout,signal,guard).await
+    }
+    /// Upstream `modernCredentialSnapshot(authProvider.tokens())`.
+    pub fn credential_snapshot(&self)->Option<String> {
+        let auth=self.auth.try_read().ok()?.clone()?;
+        let tokens=auth.provider().tokens(chrono::Utc::now().timestamp_millis() as f64).ok().flatten();
+        crate::modern::transport::modern_credential_snapshot(tokens.as_ref())
+    }
+    /// The snapshot after the provider's own freshness check, so a proactive refresh is not a context change.
+    pub async fn fresh_credential_snapshot(&self)->Option<String> {
+        let auth=self.auth.read().await.clone()?;
+        let tokens=auth.ensure_fresh().await.ok().flatten();
+        crate::modern::transport::modern_credential_snapshot(tokens.as_ref())
+    }
+    pub fn modern_route(&self)->Option<&ModernRoute> {self.modern.get()}
+    /// The negotiated wire version: the modern version, else the one `initialize` agreed.
+    pub fn negotiated_version(&self)->Option<String> {
+        self.modern.get().map(|route|route.version.clone()).or_else(||self.protocol_version.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+    }
+    async fn request_inner(&self,method:&str,params:Value,timeout:Duration,signal:Option<&maho_ext_api::AbortSignal>,guard:Option<crate::modern::request::DispatchGuard>)->Result<Value,McpError> {
         let id=self.next_id.fetch_add(1,Ordering::Relaxed);let (sender,receiver)=oneshot::channel();
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id,sender);
         struct PendingRequest {pending:Arc<Mutex<BTreeMap<u64,Reply>>>,id:u64}
@@ -105,6 +177,19 @@ impl McpClient {
         let _pending=PendingRequest {pending:self.pending.clone(),id};
         let result=async {
             let message=json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+            if let Some(route)=self.modern.get() {
+                route.subscriptions.outgoing(&message);
+                let sent=self.modern_send(route,&message,guard.as_ref()).await;
+                let reply=match sent {
+                    Ok(reply)=>reply,
+                    Err(error)=>{route.subscriptions.failed_send(&message);return Err(error);}
+                };
+                return match reply {
+                    Some(reply)=>{route.subscriptions.incoming(&reply);self.http_reply(crate::modern::sdk_bridge::normalize_modern_result(reply),message.get("id"))}
+                    None=>receiver.await.map_err(|_|failure(&self.server,McpErrorKind::Connect,"transport closed","request"))?,
+                };
+            }
+            if let Some(guard)=&guard {guard(None)?;}
             if matches!(self.io,ClientTransport::Http {..}) {return self.http_send(&message).await;}
             self.send(&message).await?;
             receiver.await.map_err(|_|failure(&self.server,McpErrorKind::Connect,"transport closed","request"))?
@@ -121,7 +206,36 @@ impl McpClient {
     }
     pub async fn set_auth(&self,refresh:Arc<crate::auth::oauth_refresh::McpRefreshManager>) {*self.auth.write().await=Some(refresh);}
     pub async fn set_auth_challenge_handler(&self,handler:Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>) {*self.auth_challenge_handler.write().await=Some(handler);}
+    /// Modern wire: HTTP POSTs through the stateless transport (its reply returns here); stdio writes the
+    /// modernized line and the reader answers through the pending table (`Ok(None)`).
+    async fn modern_send(&self,route:&ModernRoute,message:&Value,guard:Option<&crate::modern::request::DispatchGuard>)->Result<Option<Value>,McpError> {
+        if let Some(http)=&route.http {
+            let (subscriptions,notifications)=(route.subscriptions.clone(),self.notifications.clone());
+            let deliver=move |value:Value|{if subscriptions.incoming(&value){let _=notifications.send(crate::modern::sdk_bridge::normalize_modern_result(value));}};
+            return http.send(message,guard,&deliver).await;
+        }
+        if let Some(guard)=guard {guard(None)?;}
+        let Some(method)=message.get("method").and_then(Value::as_str) else{self.write_line(message).await?;return Ok(None);};
+        if method=="notifications/cancelled" {
+            let id=message.get("params").and_then(|params|params.get("requestId")).cloned().unwrap_or(Value::Null);
+            self.write_line(&json!({"jsonrpc":"2.0","method":method,"params":{"requestId":id,"reason":"MCP request canceled"}})).await?;return Ok(None);
+        }
+        let mut request=crate::modern::wire::modernize_request(message.get("id").cloned().unwrap_or(Value::from(0)),method,&route.client_info,&route.client_capabilities,&route.version,message.get("params"));
+        if message.get("id").is_none() && let Some(object)=request.as_object_mut(){object.remove("id");}
+        self.write_line(&request).await.map_err(|_|McpError::from(crate::modern::errors::McpMrtrError::new(crate::modern::errors::McpMrtrErrorCode::TransportFailed))).map(|()|None)
+    }
+    /// Subscription streams: no reply is awaited; for HTTP the future ends with the SSE stream.
+    async fn modern_stream(&self,message:Value)->Result<(),McpError> {
+        let Some(route)=self.modern.get() else{return Err(failure(&self.server,McpErrorKind::Connect,"MCP modern route closed","request"));};
+        // A response ends the long-lived request; it retires the stream before the send settles.
+        if let Some(reply)=self.modern_send(route,&message,None).await? {route.subscriptions.incoming(&reply);}
+        Ok(())
+    }
     async fn send(&self,value:&Value)->Result<(),McpError> {
+        if let Some(route)=self.modern.get() {route.subscriptions.outgoing(value);return self.modern_send(route,value,None).await.map(|_|());}
+        self.write_line(value).await
+    }
+    async fn write_line(&self,value:&Value)->Result<(),McpError> {
         let ClientTransport::Stdio {input,..}=&self.io else{self.http_send(value).await?;return Ok(());};
         let mut text=value.to_string();text.push('\n');let mut input=input.lock().await;let Some(input)=input.as_mut() else{return Err(failure(&self.server,McpErrorKind::Connect,"stdio input closed","request"));};
         input.write_all(text.as_bytes()).await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
@@ -221,12 +335,72 @@ impl McpClient {
         if reply.get("id")!=id{return Err(failure(&self.server,McpErrorKind::Protocol,"MCP response id mismatch","request"));}
         if let Some(error)=reply.get("error") {let mut result=failure(&self.server,McpErrorKind::Protocol,error.get("message").and_then(Value::as_str).unwrap_or("MCP protocol error"),"request");result.cause=Some(Box::new(error.clone()));Err(result)}else{Ok(reply.get("result").cloned().unwrap_or(Value::Null))}
     }
+    /// Upstream `createMcpRequestClient`: record the form policy before the first request.
+    pub fn configure_requests(&self,private_forms:bool,legacy_form_eligible:bool) {
+        self.protocol.private_forms.store(private_forms,Ordering::Release);
+        self.protocol.set_legacy_form_eligible(legacy_form_eligible);
+    }
+    /// Stdio discovery exchange on the started child: the reply never reaches the request table.
+    pub async fn probe_exchange(&self,request:Value,wait:Duration)->Result<Value,crate::modern::era::ProbeSendError> {
+        use crate::modern::era::ProbeSendError;
+        let id=request.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let (sender,receiver)=oneshot::channel();
+        self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waiting=Some((id,sender));
+        struct Waiting(Arc<Mutex<ProbeSlot>>);
+        impl Drop for Waiting {fn drop(&mut self){self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waiting=None;}}
+        let _waiting=Waiting(self.probe.clone());
+        let mut closed=self.closed.subscribe();
+        if *closed.borrow_and_update() {return Err(ProbeSendError::Closed("MCP stdio closed during discovery".into()));}
+        self.write_line(&request).await.map_err(|error|ProbeSendError::Closed(error.message))?;
+        tokio::select! {
+            reply=receiver=>reply.map_err(|_|ProbeSendError::Closed("MCP stdio closed during discovery".into())),
+            _=closed.changed()=>Err(ProbeSendError::Closed("MCP stdio closed during discovery".into())),
+            ()=tokio::time::sleep(wait)=>Err(ProbeSendError::Silence),
+        }
+    }
+    /// A silent probe keeps the process for the legacy handshake; a late discovery may still upgrade it.
+    pub fn await_late_discovery(&self) {self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).silent=true;}
+    /// Switch to the modern wire: `initialize` is answered locally from discovery from now on.
+    pub fn speak_modern(&self,discovery:&crate::modern::era::DiscoveryResult,version:&str,http:Option<crate::modern::transport::ModernHttpTransport>)->Result<(),McpError> {
+        let initialize=crate::modern::sdk_bridge::modern_initialize_result(discovery,version).map_err(|error|failure(&self.server,McpErrorKind::Connect,error.0,"connect"))?;
+        let weak=self.this.clone();
+        let send:crate::modern::subscriptions::SubscriptionSend=Arc::new(move |message:Value|->futures::future::BoxFuture<'static,Result<(),String>>{
+            let weak=weak.clone();
+            Box::pin(async move {match weak.upgrade() {Some(client)=>client.modern_stream(message).await.map_err(|error|error.message),None=>Err("MCP client closed".into())}})
+        });
+        let capabilities=discovery.get("capabilities").cloned().unwrap_or_else(||json!({}));
+        let completes=http.is_some();
+        let route=ModernRoute {version:version.into(),client_info:mcp_client_info(),client_capabilities:json!({}),http,subscriptions:crate::modern::subscriptions::ModernSubscriptions::new(send,capabilities,completes)};
+        if self.modern.set(route).is_err() {return Err(failure(&self.server,McpErrorKind::Connect,"Modern MCP bridge has already initialized","connect"));}
+        self.protocol.set_version(version);
+        *self.local_initialize.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(initialize);
+        Ok(())
+    }
     pub async fn initialize(self:&Arc<Self>,timeout:Duration)->Result<(),McpError> {
-        let response=self.request("initialize",json!({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},"clientInfo":{"name":"senpi-mcp-client","version":"0.0.0"}}),timeout).await?;
+        let local=self.local_initialize.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let response=match local {
+            Some(local)=>local,
+            None=>{
+                let capabilities=crate::elicitation::mcp_client_capabilities(self.protocol.legacy_form_eligible().unwrap_or(true));
+                match self.request_inner("initialize",json!({"protocolVersion":crate::modern::era::LATEST_PROTOCOL_VERSION,"capabilities":capabilities,"clientInfo":{"name":MCP_CLIENT_NAME,"version":"0.0.0"}}),timeout,None,None).await {
+                    Ok(response)=>{self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).silent=false;response}
+                    Err(error)=>{
+                        // A complete discovery that arrived after the probe window upgrades a stream whose server
+                        // rejects initialize: a legacy server cannot produce a complete discovery.
+                        let late={let mut slot=self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if std::mem::take(&mut slot.silent){slot.late.take()}else{None}};
+                        let Some(late)=late.filter(|late|late.get("supportedVersions").and_then(Value::as_array).is_some_and(|versions|versions.iter().any(|version|version.as_str()==Some(crate::modern::wire::MODERN_PROTOCOL_VERSION)))) else{return Err(error);};
+                        self.speak_modern(&late,crate::modern::wire::MODERN_PROTOCOL_VERSION,None)?;
+                        self.local_initialize.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or(Value::Null)
+                    }
+                }
+            }
+        };
+        let modern=self.modern.get().is_some();
         *self.server_capabilities.write().await=response.get("capabilities").cloned().unwrap_or(Value::Null);
         *self.server_info.write().await=response.get("serverInfo").cloned().unwrap_or(Value::Null);
         *self.instructions.write().await=response.get("instructions").and_then(Value::as_str).map(str::to_owned);
         *self.protocol_version.write().unwrap_or_else(std::sync::PoisonError::into_inner)=response.get("protocolVersion").and_then(Value::as_str).map(str::to_owned);
+        if modern {return Ok(());}
         self.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await?;
         if matches!(self.io,ClientTransport::Http {..}) {self.start_http_notifications();}
         Ok(())
@@ -284,9 +458,14 @@ impl McpClient {
             let value=match requests.recv().await {Ok(value)=>value,Err(broadcast::error::RecvError::Lagged(_))=>continue,Err(_)=>return};
             let (Some(id),Some(method))=(value.get("id"),value.get("method").and_then(Value::as_str)) else{continue;};
             let Some(client)=weak.upgrade() else{return;};
-            let response=if method=="elicitation/create" {
-                let result=crate::elicitation::handle_mcp_elicitation(ui.as_deref(),value.get("params").unwrap_or(&Value::Null),Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS)).await;
-                json!({"jsonrpc":"2.0","id":id,"result":result})
+            let response=if client.modern.get().is_some() {
+                // Modern servers ask for input through MRTR results, never server-to-client requests.
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported MCP method."}})
+            }else if method=="elicitation/create" {
+                match crate::elicitation::handle_client_elicitation(&client,ui.as_ref(),value.get("params").unwrap_or(&Value::Null),id,Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS)).await {
+                    Ok(result)=>json!({"jsonrpc":"2.0","id":id,"result":result}),
+                    Err(rejection)=>json!({"jsonrpc":"2.0","id":id,"error":rejection.to_json()}),
+                }
             }else{json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})};
             if let Err(error)=client.send(&response).await {maho_ext_api::diagnostic(&format!("MCP server request response failed: {error}"));}
         }})

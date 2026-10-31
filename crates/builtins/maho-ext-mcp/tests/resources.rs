@@ -29,7 +29,7 @@ async fn utility_tools_list_and_read_the_real_server() {
     assert!(client.resource_subscriptions.lock().await.is_empty());
     ensure_mcp_resource_subscriptions(client.clone(),&resources,Duration::from_secs(3)).await;
     assert!(client.resource_subscriptions.lock().await.is_empty());
-    let server=McpResourceServer {server:"fx".into(),client,agent_dir:root.path().into(),artifacts:artifacts.clone(),output_guard:None,request_timeout:Duration::from_secs(3),resources};
+    let server=McpResourceServer {server:"fx".into(),client,agent_dir:root.path().into(),artifacts:artifacts.clone(),output_guard:None,request_timeout:Duration::from_secs(3),resources,connection:None,request_origin:None,ensure_fresh:None};
     let tools=create_mcp_resource_tools(Arc::new(move ||vec![server.clone()]));
     let call=|params|ToolCall {id:"resource",params,signal:AbortSignal::default(),on_update:None,context:None};
     // When the native utility definitions list and read the resource.

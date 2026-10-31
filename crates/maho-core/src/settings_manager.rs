@@ -29,7 +29,7 @@ pub const DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS: u64 = 10_000;
 /// Total wait across every `session_shutdown` handler when the process quits (senpi#3711).
 pub const DEFAULT_SESSION_SHUTDOWN_QUIT_BUDGET_MS: u64 = 2_000;
 /// senpi `MAX_ENGINE_TURNS_PER_USER_INPUT`.
-pub const MAX_ENGINE_TURNS_PER_USER_INPUT: i64 = 150;
+pub const MAX_ENGINE_TURNS_PER_USER_INPUT: i64 = 0;
 /// senpi `MAX_ENGINE_TURNS_PER_RESUME_WINDOW`.
 pub const MAX_ENGINE_TURNS_PER_RESUME_WINDOW: i64 = 8;
 /// senpi `MAX_TOOL_FREE_ENGINE_TURNS_PER_WINDOW`.
@@ -1185,6 +1185,16 @@ impl SettingsManager {
     /// The `BashToolOptions.env_passthrough` value: `Some(passthrough)` when scrubbing is enabled.
     pub fn get_bash_env_scrub_passthrough(&self) -> Option<Vec<String>> {
         self.get_bash_env_scrub().then(|| self.get_bash_env_passthrough())
+    }
+
+    /// senpi `getBashRedactSecretsInOutput`: `tools.bash.redactSecretsInOutput === true` (default false).
+    pub fn get_bash_redact_secrets_in_output(&self) -> bool {
+        self.settings
+            .get("tools")
+            .and_then(|tools| tools.get("bash"))
+            .and_then(|bash| bash.get("redactSecretsInOutput"))
+            .and_then(Value::as_bool)
+            == Some(true)
     }
 
     /// The agent dir this manager was created for (the process default for storages without one).

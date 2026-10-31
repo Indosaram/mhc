@@ -54,6 +54,10 @@ async fn mcp(State(idp): State<Idp>, headers: HeaderMap, Json(body): Json<Value>
     if body.get("id").is_none() {
         return StatusCode::ACCEPTED.into_response();
     }
+    // A legacy server does not know modern discovery: a generic JSON-RPC error selects the legacy era.
+    if body["method"] == "server/discover" {
+        return Json(json!({"jsonrpc":"2.0","id":body["id"],"error":{"code":-32601,"message":"Method not found"}})).into_response();
+    }
     Json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"login","version":"1"}}})).into_response()
 }
 

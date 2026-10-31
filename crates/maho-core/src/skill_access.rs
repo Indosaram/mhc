@@ -52,12 +52,32 @@ pub fn inside_skill_root(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(root)
 }
 
+/// A canonicalizer shared by one discovery pass (senpi `SkillWalkOptions.realpath`).
+pub type RealpathFn = std::sync::Arc<dyn Fn(&Path) -> std::io::Result<PathBuf> + Send + Sync>;
+
+/// A realpath that remembers each answer for the life of the returned closure: authority scans are linear
+/// in the number of directories instead of canonicalizing a path once per probe.
+pub fn memoized_realpath() -> RealpathFn {
+    let memo: std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>> = std::sync::Mutex::default();
+    std::sync::Arc::new(move |path: &Path| {
+        let mut memo = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(canonical) = memo.get(path) {
+            return Ok(canonical.clone());
+        }
+        let canonical = std::fs::canonicalize(path)?;
+        memo.insert(path.to_path_buf(), canonical.clone());
+        Ok(canonical)
+    })
+}
+
 pub fn build_skill_allowed_set(sources: &[PathBuf]) -> SkillAllowedSet {
     let mut roots = BTreeSet::new();
     let mut files = BTreeSet::new();
+    let realpath = memoized_realpath();
+    let unique_sources: BTreeSet<&PathBuf> = sources.iter().collect();
 
-    for source in sources {
-        let canonical = match std::fs::canonicalize(source) {
+    for source in unique_sources {
+        let canonical = match realpath(source) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -286,5 +306,21 @@ mod tests {
         assert!(inside_skill_root(Path::new("/a/b/c"), Path::new("/a/b")));
         assert!(inside_skill_root(Path::new("/a/b"), Path::new("/a/b")));
         assert!(!inside_skill_root(Path::new("/a/other"), Path::new("/a/b")));
+    }
+
+    #[test]
+    fn allowed_set_dedupes_sources_and_memoizes_realpath() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("skills");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let allowed = build_skill_allowed_set(&[root.clone(), root.clone()]);
+        assert_eq!(allowed.roots.len(), 1);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let realpath = memoized_realpath();
+        for _ in 0..3 {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(realpath(&root).expect("realpath"), std::fs::canonicalize(&root).expect("canonical"));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }
