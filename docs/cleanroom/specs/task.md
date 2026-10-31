@@ -183,6 +183,19 @@ Tests (text; failed model id where it matters -> class). Providers are invented:
    again tomorrow" -> none.
 9. "401 unauthorized; no accounts: run /login zeta" -> rejected (both match).
 
+Matching rules (clarified 2026-11-01):
+- Words such as "account", "key", "token", "credential", "organization" and "subscription" match
+  only as whole words; a plural with a trailing "s" also counts ("tokens revoked",
+  "invalid credentials"). A word that only contains one of them ("keyword", "monkey") does not
+  count.
+- An "expired session" text counts as `rejected` only when the same text also mentions `/login`.
+  A bare "token expired" or "session expired" line without `/login` is not evidence; the input
+  includes the child's log tail, and such lines may come from unrelated output.
+
+10. "403 forbidden: invalid credentials" -> rejected. "403: tokens revoked" -> rejected.
+    "403: invalid keyword in request" -> none.
+11. "session expired" (no `/login`) -> none. "token expired" -> none.
+
 ### D3. Remedy line for a credential failure
 
 Behaviour: when a run ends `failed` and D2 says `rejected` or `missing`, and the record's model
@@ -225,7 +238,9 @@ remains:
 - the record's `model`/`thinking` become the new choice, `model_source` gets a suffix naming the
   dropped provider (for example `category:quick (fallback: openai signed out)`), the failed
   attempt's error is kept in a hook note so it stays visible in the envelope;
-- the run is retried with the same first prompt in a **fresh** session id (the failed session
+- the run is retried with the same first prompt in a **fresh** session id. "The same first prompt"
+  includes any messages that were queued before the first run and merged into its prompt; none
+  of them is lost or delivered twice because of the retry (clarified 2026-11-01) (the failed session
   contains the refused turn; this is the one exception to "the session id is fixed for the life
   of the task" in §2); `runs` stays 1;
 - the retry is not a new task: same id, same output files (overwritten), no extra background
@@ -245,6 +260,9 @@ Tests:
 5. A first run that wrote output before failing with "401" → no retry.
 6. Candidates `[a/one, b/two, c/three]` where both `a` and `b` fail with credential errors → the
    task ends on `c/three`; neither `a` nor `b` is tried twice.
+7. A message is sent to the task while it is still queued (before run 1 starts), run 1 fails with
+   "No API key found for a." → the retry on `b/two` receives the first prompt together with that
+   message, and the message is not delivered again afterwards.
 
 ### D5. Deltas in other specs
 
