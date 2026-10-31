@@ -5,7 +5,8 @@
     { "file": "senpi-task/src/team/registry.rs", "keep": 1, "rename": 0, "source": "packages/senpi-task/src/team/registry.ts:51@77f3067f: project team discovery" },
     { "file": "senpi-task/src/team/storage.rs", "keep": 1, "rename": 0, "source": "packages/senpi-task/src/team/storage.ts@77f3067f: project runtime storage" },
     { "file": "senpi-task/src/tools/task/plan_review_contract.rs", "keep": 1, "rename": 0, "source": "packages/senpi-task/src/tools/task/plan-review-contract.ts@77f3067f: recorded project plan selector" },
-    { "file": "senpi-task/src/isolation/runtime.rs", "keep": 2, "rename": 0, "source": "packages/senpi-task/src/isolation/runtime.ts:104@455dee62: producer HOME/.omo/wt; one explanatory Rust comment" }
+    { "file": "senpi-task/src/isolation/runtime.rs", "keep": 2, "rename": 0, "source": "packages/senpi-task/src/isolation/runtime.ts:104@455dee62: producer HOME/.omo/wt; one explanatory Rust comment" },
+    { "file": "boulder-state/src/storage/review_artifacts.rs", "keep": 1, "rename": 0, "source": "packages/boulder-state/src/storage/review-artifacts.ts:106@354bcf9f: project plans root <directory>/.omo/plans" }
   ],
   "filter": {
     "roots": [
