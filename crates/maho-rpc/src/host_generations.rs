@@ -16,8 +16,12 @@ pub struct HostGenerationRow {
     pub generation: f64,
     pub pid: u32,
     pub engine_version: Option<String>,
+    /// Resident memory of that generation's process tree, `None` where the platform hides it.
     #[serde(rename = "rss_mb")]
     pub rss_mb: Option<i64>,
+    /// Resident memory of that generation's own supervisor and host processes, without their tools.
+    #[serde(rename = "host_rss_mb")]
+    pub host_rss_mb: Option<i64>,
     pub sessions: usize,
     pub current: bool,
     pub alive: bool,
@@ -74,6 +78,13 @@ pub fn prune_dead_generations_with(
             continue;
         };
         if process_is_live(pid) {
+            continue;
+        }
+        // A supervisor that died while its host child still runs is not an ended generation (#3054).
+        if crate::host_stalled_evidence::host_child_alive(&generation, |line| {
+            crate::host_supervisor_log::supervisor_log(&line)
+        }) == Some(true)
+        {
             continue;
         }
         pruned.generations.push(id);
@@ -174,7 +185,27 @@ fn advance_session_fence(session_file: &str) -> std::io::Result<()> {
     }
     result
 }
+/// senpi `readGenerationRows` options: `include_dead` is for the reader that must not prune (`host status --all`),
+/// which reports a dead record as an `alive: false` row instead of dropping it.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GenerationRowOptions {
+    pub include_dead: bool,
+}
+fn platform() -> &'static str {
+    if cfg!(windows) {
+        "win32"
+    } else {
+        std::env::consts::OS
+    }
+}
+/// Every generation of this daemon that is still running (the supervisor's pid, or its host child), oldest first.
 pub fn read_generation_rows(paths: &HostDaemonPaths) -> std::io::Result<Vec<HostGenerationRow>> {
+    read_generation_rows_with(paths, GenerationRowOptions::default())
+}
+pub fn read_generation_rows_with(
+    paths: &HostDaemonPaths,
+    options: GenerationRowOptions,
+) -> std::io::Result<Vec<HostGenerationRow>> {
     let current = current_id(paths);
     let claims = read_session_path_claims(&paths.reservations_dir);
     let mut rows = Vec::new();
@@ -190,9 +221,19 @@ pub fn read_generation_rows(paths: &HostDaemonPaths) -> std::io::Result<Vec<Host
         else {
             continue;
         };
-        if !process_is_live(pid) {
+        let alive = process_is_live(pid)
+            || crate::host_stalled_evidence::host_child_alive(
+                &generation_paths(paths, &instance_id),
+                |line| crate::host_supervisor_log::supervisor_log(&line),
+            ) == Some(true);
+        if !alive && !options.include_dead {
             continue;
         }
+        let metrics = if alive {
+            read_host_process_metrics(pid, platform())
+        } else {
+            crate::host_process_metrics::HostProcessMetrics::default()
+        };
         rows.push(HostGenerationRow {
             generation: record
                 .get("generation")
@@ -203,14 +244,15 @@ pub fn read_generation_rows(paths: &HostDaemonPaths) -> std::io::Result<Vec<Host
                 .get("engineVersion")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
-            rss_mb: read_host_process_metrics(pid, "linux").rss_mb,
+            rss_mb: metrics.rss_mb,
+            host_rss_mb: metrics.host_rss_mb,
             sessions: claims
                 .iter()
                 .filter(|claim| claim.owner.instance_id == instance_id)
                 .count(),
             current: current.as_ref() == Some(&instance_id),
             instance_id,
-            alive: true,
+            alive,
         });
     }
     rows.sort_by(|a, b| a.generation.total_cmp(&b.generation));
@@ -282,6 +324,80 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].instance_id, "live");
         assert!(!rows[0].current);
+    }
+    /// The child record of a generation whose supervisor died, naming this live process.
+    fn live_child(paths: &HostDaemonPaths, id: &str) {
+        let generation = generation_paths(paths, id);
+        crate::host_daemon_paths::create_generation_directory(&generation).unwrap();
+        fs::write(&generation.pid_file, r#"{"pid":0,"generation":1}"#).unwrap();
+        let own = std::process::id();
+        fs::write(
+            &generation.child_pid_file,
+            serde_json::json!({"pid":own,"processStartTime":crate::host_reservations::read_process_start_time(own)}).to_string(),
+        )
+        .unwrap();
+    }
+    // senpi#3054: a generation whose supervisor died but whose host child still runs is not pruned, and is alive.
+    #[test]
+    fn prune_keeps_a_generation_whose_host_child_is_alive_and_rows_report_it_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::host_daemon_paths::create_host_daemon_paths("socket", temp.path());
+        crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+        live_child(&paths, "child");
+        fs::write(&paths.pointer_file, r#"{"instance_id":"child"}"#).unwrap();
+        let pruned = prune_dead_generations(&paths).unwrap();
+        assert!(pruned.generations.is_empty());
+        assert!(!pruned.pointer);
+        assert!(generation_paths(&paths, "child").pid_file.exists());
+        let rows = read_generation_rows(&paths).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].alive && rows[0].current);
+        // A dead child releases it.
+        fs::write(
+            generation_paths(&paths, "child").child_pid_file,
+            serde_json::json!({"pid":u32::MAX}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            prune_dead_generations(&paths).unwrap().generations,
+            vec!["child"]
+        );
+    }
+    // senpi `readGenerationRows(paths, { includeDead })`: a dead record is an `alive: false` row with no memory.
+    #[test]
+    fn rows_include_dead_records_only_when_asked() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::host_daemon_paths::create_host_daemon_paths("socket", temp.path());
+        crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+        for (id, pid, generation) in [("gone", 0, 0), ("live", std::process::id(), 1)] {
+            crate::host_daemon_paths::create_generation_directory(&generation_paths(&paths, id))
+                .unwrap();
+            fs::write(
+                generation_paths(&paths, id).pid_file,
+                serde_json::json!({"pid":pid,"generation":generation}).to_string(),
+            )
+            .unwrap();
+        }
+        let default = read_generation_rows(&paths).unwrap();
+        assert_eq!(
+            default
+                .iter()
+                .map(|row| row.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["live"]
+        );
+        let all =
+            read_generation_rows_with(&paths, GenerationRowOptions { include_dead: true }).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].instance_id, "gone");
+        assert!(!all[0].alive);
+        assert_eq!((all[0].rss_mb, all[0].host_rss_mb), (None, None));
+        assert!(all[1].alive);
+        let json = serde_json::to_value(&all[0]).unwrap();
+        assert!(
+            json.get("host_rss_mb")
+                .is_some_and(serde_json::Value::is_null)
+        );
     }
     #[test]
     fn prune_keeps_a_pointer_a_registration_replaced_after_it_was_read() {

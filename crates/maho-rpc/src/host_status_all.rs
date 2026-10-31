@@ -56,7 +56,10 @@ async fn endpoint_status(
             (report, answered.then_some(instance))
         }
         None => {
-            let generations = crate::host_generations::read_generation_rows(&paths)?;
+            let generations = crate::host_generations::read_generation_rows_with(
+                &paths,
+                crate::host_generations::GenerationRowOptions { include_dead: true },
+            )?;
             // Without the socket no generation can be proven to serve it, so nothing is elected or offered.
             let pointer = generations.iter().find(|row| row.current).map_or_else(
                 || crate::host_pointer_election::HostPointerState::missing(Vec::new()),
@@ -67,7 +70,7 @@ async fn endpoint_status(
             let claims_live =
                 crate::host_reservations::read_session_path_claims(&paths.reservations_dir).len();
             (
-                json!({"reachable":false,"socket":null,"pid":null,"processStartTime":null,"instanceId":null,"generation":null,"engineVersion":null,"capabilities":[],"launchProfile":null,"sessions":{"total":0,"interactive":0,"worker":0,"retained":0,"foreign_attached":0,"foreign_retained":0},"zombies":null,"rss_mb":null,"host_footprint_mb":null,"open_fds":null,"env_keys":[],"generations":generations,"pointer":pointer,"claims_live":claims_live}),
+                json!({"reachable":false,"socket":null,"pid":null,"processStartTime":null,"instanceId":null,"generation":null,"engineVersion":null,"capabilities":[],"launchProfile":null,"sessions":{"total":0,"interactive":0,"worker":0,"retained":0,"foreign_attached":0,"foreign_retained":0},"zombies":null,"rss_mb":null,"host_rss_mb":null,"host_footprint_mb":null,"open_fds":null,"env_keys":[],"generations":generations,"pointer":pointer,"claims_live":claims_live}),
                 None,
             )
         }

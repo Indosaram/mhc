@@ -93,8 +93,14 @@ async fn read_host_status_in_key_root(
     }
     // A lost pointer is given back to the one proven live generation (senpi#1911); `prune: false` only looks.
     let pointer = crate::host_pointer_election::elect_pointer(&paths, socket, prune);
-    let generations = crate::host_generations::read_generation_rows(&paths)?;
-    let current = generations.iter().find(|row| row.current);
+    // `prune: false` removes nothing, so what ended is shown as `alive: false` rows instead.
+    let generations = crate::host_generations::read_generation_rows_with(
+        &paths,
+        crate::host_generations::GenerationRowOptions {
+            include_dead: !prune,
+        },
+    )?;
+    let current = generations.iter().find(|row| row.current && row.alive);
     let metrics = current
         .map(|row| {
             crate::host_process_metrics::read_host_process_metrics(
@@ -112,7 +118,7 @@ async fn read_host_status_in_key_root(
     let sessions = read_session_counts(socket, include_workers).await;
     let env_keys = crate::host_daemon_env::read_daemon_env_keys(&paths)?;
     let identity = answered.as_ref().zip(host.as_ref());
-    let mut report = serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer});
+    let mut report = serde_json::json!({"reachable":host.is_some(),"socket":socket,"pid":current.map(|row|row.pid),"processStartTime":process_start_time,"instanceId":host.as_ref().and_then(|host|host.instance_id.as_deref()).or_else(||current.map(|row|row.instance_id.as_str())),"generation":host.as_ref().and_then(|host|host.generation).or_else(||current.map(|row|row.generation)),"engineVersion":host.as_ref().and_then(|host|host.engine_version.as_deref()).or_else(||current.and_then(|row|row.engine_version.as_deref())),"capabilities":host.as_ref().map(|host|host.capabilities.as_slice()).unwrap_or(&[]),"launchProfile":host.as_ref().and_then(|host|host.launch_profile.as_ref()),"sessions":sessions,"zombies":metrics.zombies,"rss_mb":metrics.rss_mb,"host_rss_mb":metrics.host_rss_mb,"host_footprint_mb":metrics.host_footprint_mb,"open_fds":metrics.open_fds,"env_keys":env_keys,"generations":generations,"pointer":pointer});
     report["lifecycle"] = host_lifecycle(host.as_ref()).into();
     report["runtimeBuildId"] = identity
         .and_then(|(data, _)| {
