@@ -405,7 +405,9 @@ pub async fn resolve_launch_project_trust(
         false,
     );
     let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
-    let saved = trust_store.get(cwd).ok().flatten();
+    // Fails closed: an unreadable trust store grants no Full-access trust (senpi throws here).
+    let saved_read = trust_store.get(cwd);
+    let saved = saved_read.as_ref().ok().copied().flatten();
     let flags = maho_core::session_extension_flags::session_extension_flag_values(
         &config.extension_flag_values.clone().unwrap_or_default(),
         launch_profile,
@@ -413,7 +415,8 @@ pub async fn resolve_launch_project_trust(
     let full_access_trust = maho_core::project_trust::preset_trusts_project(
         flags.get("permission-preset"),
         bootstrap.get_global().get("permissionPreset"),
-    ) && saved != Some(false);
+    ) && saved_read.is_ok()
+        && saved != Some(false);
     // Trusted only because of Full access: the resources need trust and nothing else granted it.
     let trust_from_full_access = full_access_trust
         && has_trust_requiring_resources
@@ -781,13 +784,14 @@ pub async fn mount_agent_session_runtime(
         .await;
     let diagnostics = created.services.diagnostics.clone();
     let model_fallback_message = created.model_fallback_message.clone();
-    let runtime = AgentSessionRuntime::new(
+    let mut runtime = AgentSessionRuntime::new(
         created.session,
         created.services,
         diagnostics.clone(),
         model_fallback_message.clone(),
         Some(launch_config.launch_profile()),
     );
+    runtime.set_project_trust_override(config.project_trust_override);
     Ok(MountedRuntime {
         runtime,
         diagnostics,
