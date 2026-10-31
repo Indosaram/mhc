@@ -23,7 +23,7 @@ maho-core = { path = "../../maho-core" }
 maho-rpc = { path = "../../maho-rpc" }
 maho-pty = { path = "../../vendor/maho-pty" }
 thiserror = "=2.0.20"
-tokio = { version = "=1.52.3", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
