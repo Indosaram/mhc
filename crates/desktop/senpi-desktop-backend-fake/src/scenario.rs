@@ -9,7 +9,7 @@ use senpi_desktop_core::types::{DesktopCapabilities, DesktopDisplay, DesktopPoin
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::method::FakeMethod;
+use crate::method::{AxWrite, FakeMethod};
 
 const DEFAULT_CAPTURE_COLOR: [u8; 4] = [32, 96, 160, 255];
 
@@ -36,6 +36,9 @@ pub struct FakeScenario {
     pub resize_window: Option<ResizeWindow>,
     /// Failures queued at load time, as if `fail_next` had been called.
     pub fail_next: Vec<ScriptedFailure>,
+    /// AX writes left unanswered at load time, in order, as if
+    /// `Faults::cannot_complete_next` had been called.
+    pub ax_cannot_complete: Vec<AxWrite>,
 }
 
 impl Default for FakeScenario {
@@ -51,6 +54,7 @@ impl Default for FakeScenario {
             delay_ms: DelayMs::default(),
             resize_window: None,
             fail_next: Vec::new(),
+            ax_cannot_complete: Vec::new(),
         }
     }
 }
@@ -201,6 +205,8 @@ struct RawScenario {
     resize_window: Option<ResizeWindow>,
     #[serde(default)]
     fail_next: Vec<ScriptedFailure>,
+    #[serde(default)]
+    ax_cannot_complete: Vec<AxWrite>,
 }
 
 impl TryFrom<RawScenario> for FakeScenario {
@@ -228,6 +234,7 @@ impl TryFrom<RawScenario> for FakeScenario {
             delay_ms: raw.delay_ms,
             resize_window: raw.resize_window,
             fail_next: raw.fail_next,
+            ax_cannot_complete: raw.ax_cannot_complete,
         })
     }
 }
