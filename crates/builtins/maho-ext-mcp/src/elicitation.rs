@@ -5,7 +5,9 @@
 //! never custom UI). Without a UI the request fails with a processing error, never a user refusal. The
 //! whole form is bounded by a timeout that resolves to cancel. URL mode is deliberately unsupported.
 use crate::{
-    form_types::{McpFormInput, McpFormOutcomeKind, McpFormServer, McpFormServerSource, private_mcp_forms},
+    form_types::{
+        McpFormInput, McpFormOutcomeKind, McpFormServer, McpFormServerSource, private_mcp_forms,
+    },
     modern::form_schema::validate_mrtr_form,
     request_origin::{LegacyMcpOperationLookup, legacy_mcp_operation},
     transport_sdk::McpClient,
@@ -23,7 +25,11 @@ pub fn mcp_client_elicitation_capability() -> Value {
     json!({"elicitation":{}})
 }
 pub fn mcp_client_capabilities(elicitation_enabled: bool) -> Value {
-    if elicitation_enabled { mcp_client_elicitation_capability() } else { json!({}) }
+    if elicitation_enabled {
+        mcp_client_elicitation_capability()
+    } else {
+        json!({})
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,13 +57,22 @@ impl ElicitationRejection {
     }
 }
 fn reject() -> ElicitationRejection {
-    ElicitationRejection { code: INTERNAL_ERROR, message: "Elicitation cannot be processed".into() }
+    ElicitationRejection {
+        code: INTERNAL_ERROR,
+        message: "Elicitation cannot be processed".into(),
+    }
 }
 fn reject_private() -> ElicitationRejection {
-    ElicitationRejection { code: INTERNAL_ERROR, message: "Elicitation processing unavailable".into() }
+    ElicitationRejection {
+        code: INTERNAL_ERROR,
+        message: "Elicitation processing unavailable".into(),
+    }
 }
 fn response(action: ElicitationAction) -> ElicitationResponse {
-    ElicitationResponse { action, content: None }
+    ElicitationResponse {
+        action,
+        content: None,
+    }
 }
 
 /// Whether legacy forms may be advertised: a host-enforced private binding must have a ready presenter.
@@ -67,47 +82,71 @@ pub fn legacy_mcp_form_eligible(ui: Option<&Arc<dyn ExtensionUi>>, enabled: bool
     }
     match ui.and_then(private_mcp_forms) {
         None => true,
-        Some(binding) => (binding.capture)().is_some_and(|presenter| presenter.ready()),
+        Some(binding) => (binding.capture)().is_some_and(|presenter| (presenter.ready)()),
     }
 }
 
-async fn private_elicitation(client: &McpClient, params: &Value, request_id: &Value, timeout: Duration) -> Result<Value, ElicitationRejection> {
+async fn private_elicitation(
+    client: &McpClient,
+    params: &Value,
+    request_id: &Value,
+    timeout: Duration,
+) -> Result<Value, ElicitationRejection> {
     let (origin, signal) = match legacy_mcp_operation(client) {
         LegacyMcpOperationLookup::One { origin, signal } => (origin, signal),
-        LegacyMcpOperationLookup::None | LegacyMcpOperationLookup::Ambiguous => return Err(reject_private()),
+        LegacyMcpOperationLookup::None | LegacyMcpOperationLookup::Ambiguous => {
+            return Err(reject_private());
+        }
     };
-    let Some(presenter) = origin.private_form.clone().filter(|presenter| presenter.ready()) else {
-        return Err(reject_private());
-    };
-    let message = params.get("message").and_then(Value::as_str);
-    let mode_ok = params.get("mode").is_none_or(|mode| mode.as_str() == Some("form"));
-    let schema = params.get("requestedSchema").cloned().unwrap_or(Value::Null);
-    let (Some(message), true, true, Some(schema)) =
-        (message, mode_ok, validate_mrtr_form(&schema), schema.as_object().cloned())
+    let Some(presenter) = origin
+        .private_form
+        .clone()
+        .filter(|presenter| (presenter.ready)())
     else {
         return Err(reject_private());
     };
-    let id = request_id.as_str().map_or_else(|| request_id.to_string(), str::to_owned);
-    let outcome = presenter
-        .present(McpFormInput {
-            operation_id: id.clone(),
-            input_id: id,
-            round: 0,
-            server: McpFormServer {
-                label: origin.server_label.clone(),
-                source: origin.server_source.unwrap_or(McpFormServerSource::User),
-            },
-            message: message.into(),
-            schema,
-            operation_signal: signal.clone(),
-            operation_current: None,
-            presentation_signal: presenter.signal(),
-            deadline_ms: timeout.as_secs_f64() * 1000.0,
-        })
-        .await;
+    let message = params.get("message").and_then(Value::as_str);
+    let mode_ok = params
+        .get("mode")
+        .is_none_or(|mode| mode.as_str() == Some("form"));
+    let schema = params
+        .get("requestedSchema")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let (Some(message), true, true, Some(schema)) = (
+        message,
+        mode_ok,
+        validate_mrtr_form(&schema),
+        schema.as_object().cloned(),
+    ) else {
+        return Err(reject_private());
+    };
+    let id = request_id
+        .as_str()
+        .map_or_else(|| request_id.to_string(), str::to_owned);
+    let operation = crate::wrap::McpHostSignal::follow(&signal);
+    let outcome = (presenter.present)(McpFormInput {
+        operation_id: id.clone(),
+        input_id: id,
+        round: 0,
+        server: McpFormServer {
+            label: origin.server_label.clone(),
+            source: origin.server_source.unwrap_or(McpFormServerSource::User),
+        },
+        message: message.into(),
+        schema: Value::Object(schema),
+        operation_signal: operation.signal.clone(),
+        operation_current: None,
+        presentation_signal: presenter.signal.clone(),
+        deadline_ms: timeout.as_secs_f64() * 1000.0,
+    })
+    .await;
     match outcome.kind {
+        // The presenter answers with a validated `MrtrInputResponse` as JSON; re-validate before the server sees it.
         McpFormOutcomeKind::Result(result) if !signal.is_aborted() && origin.current() => {
-            serde_json::to_value(result).map_err(|_| reject_private())
+            serde_json::from_value::<crate::modern::elicitation::MrtrInputResponse>(result)
+                .and_then(serde_json::to_value)
+                .map_err(|_| reject_private())
         }
         _ => Err(reject_private()),
     }
@@ -121,7 +160,10 @@ pub async fn handle_client_elicitation(
     request_id: &Value,
     timeout: Duration,
 ) -> Result<Value, ElicitationRejection> {
-    let enforced = client.protocol.private_forms.load(std::sync::atomic::Ordering::Acquire)
+    let enforced = client
+        .protocol
+        .private_forms
+        .load(std::sync::atomic::Ordering::Acquire)
         || ui.is_some_and(|ui| private_mcp_forms(ui).is_some());
     // Unsolicited requests without an advertised capability never claim UI support.
     if client.protocol.legacy_form_eligible() == Some(false) {
@@ -147,7 +189,13 @@ pub async fn handle_mcp_elicitation(
     let Some(ui) = ui else {
         return Err(reject());
     };
-    run_elicitation_form(ui, params.get("message").and_then(Value::as_str).unwrap_or(""), schema, timeout).await
+    run_elicitation_form(
+        ui,
+        params.get("message").and_then(Value::as_str).unwrap_or(""),
+        schema,
+        timeout,
+    )
+    .await
 }
 pub async fn run_elicitation_form(
     ui: &dyn ExtensionUi,
@@ -160,22 +208,48 @@ pub async fn run_elicitation_form(
         Err(_) => Ok(response(ElicitationAction::Cancel)),
     }
 }
-async fn collect_form(ui: &dyn ExtensionUi, message: &str, schema: &Value) -> Result<ElicitationResponse, ElicitationRejection> {
+async fn collect_form(
+    ui: &dyn ExtensionUi,
+    message: &str,
+    schema: &Value,
+) -> Result<ElicitationResponse, ElicitationRejection> {
     let mut content = Map::new();
     let empty = Map::new();
-    let properties = schema.get("properties").and_then(Value::as_object).unwrap_or(&empty);
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
     let required = |name: &str| {
-        schema.get("required").and_then(Value::as_array).is_some_and(|required| required.iter().any(|value| value.as_str() == Some(name)))
+        schema
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(|required| required.iter().any(|value| value.as_str() == Some(name)))
     };
     for (name, property) in properties {
-        let title = format!("{message} - {}", property.get("title").and_then(Value::as_str).unwrap_or(name));
+        let title = format!(
+            "{message} - {}",
+            property
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or(name)
+        );
         let description = property.get("description").and_then(Value::as_str);
         let kind = property.get("type").and_then(Value::as_str);
         if kind == Some("boolean") {
             // confirm collapses cancellation into false, including automated RPC replies.
             // A selection preserves dismissal separately from a human's explicit No.
-            let prompt = description.map_or_else(|| title.clone(), |description| format!("{title}\n{description}"));
-            let Some(picked) = ui.select(&prompt, &["Yes".to_owned(), "No".to_owned()], ExtensionUiDialogOptions::default()).await else {
+            let prompt = description.map_or_else(
+                || title.clone(),
+                |description| format!("{title}\n{description}"),
+            );
+            let Some(picked) = ui
+                .select(
+                    &prompt,
+                    &["Yes".to_owned(), "No".to_owned()],
+                    ExtensionUiDialogOptions::default(),
+                )
+                .await
+            else {
                 return Ok(response(ElicitationAction::Cancel));
             };
             // The thread gateway also accepts y/n and true/false, ignoring case and whitespace.
@@ -187,15 +261,32 @@ async fn collect_form(ui: &dyn ExtensionUi, message: &str, schema: &Value) -> Re
             content.insert(name.clone(), Value::Bool(flag));
             continue;
         }
-        if let Some(options) = property.get("enum").and_then(Value::as_array).filter(|options| !options.is_empty()) {
-            let options = options.iter().map(|value| value.as_str().map_or_else(|| value.to_string(), str::to_owned)).collect::<Vec<_>>();
-            let Some(picked) = ui.select(&title, &options, ExtensionUiDialogOptions::default()).await else {
+        if let Some(options) = property
+            .get("enum")
+            .and_then(Value::as_array)
+            .filter(|options| !options.is_empty())
+        {
+            let options = options
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_owned)
+                })
+                .collect::<Vec<_>>();
+            let Some(picked) = ui
+                .select(&title, &options, ExtensionUiDialogOptions::default())
+                .await
+            else {
                 return Ok(response(ElicitationAction::Cancel));
             };
             content.insert(name.clone(), json!(picked));
             continue;
         }
-        let Some(answer) = ui.input(&title, description, ExtensionUiDialogOptions::default()).await else {
+        let Some(answer) = ui
+            .input(&title, description, ExtensionUiDialogOptions::default())
+            .await
+        else {
             return Ok(response(ElicitationAction::Cancel));
         };
         if answer.is_empty() {
@@ -216,8 +307,21 @@ async fn collect_form(ui: &dyn ExtensionUi, message: &str, schema: &Value) -> Re
         content.insert(name.clone(), value);
     }
     // Even a fieldless form needs an explicit submission rather than an automatic accept.
-    if content.is_empty() && ui.select(message, &["Submit".to_owned()], ExtensionUiDialogOptions::default()).await.as_deref() != Some("Submit") {
+    if content.is_empty()
+        && ui
+            .select(
+                message,
+                &["Submit".to_owned()],
+                ExtensionUiDialogOptions::default(),
+            )
+            .await
+            .as_deref()
+            != Some("Submit")
+    {
         return Ok(response(ElicitationAction::Cancel));
     }
-    Ok(ElicitationResponse { action: ElicitationAction::Accept, content: Some(content) })
+    Ok(ElicitationResponse {
+        action: ElicitationAction::Accept,
+        content: Some(content),
+    })
 }

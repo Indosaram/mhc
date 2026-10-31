@@ -18,7 +18,10 @@ use crate::{
         McpRequestOptions, McpRequestOrigin, begin_legacy_mcp_operation, take_mcp_request_origin,
     },
     transport_sdk::McpClient,
-    wrap::{MCP_ELAPSED_CLOCK, McpClock, McpLinkedSignal, mcp_interrupted, on_mcp_client_close},
+    wrap::{
+        MCP_ELAPSED_CLOCK, McpClock, McpHostSignal, McpLinkedSignal, mcp_interrupted,
+        on_mcp_client_close,
+    },
 };
 use futures::FutureExt;
 use maho_ext_api::AbortSignal;
@@ -175,9 +178,9 @@ impl Operation {
         self.check()?;
         if let Some(origin) = &self.origin {
             if let Some(form) = &origin.private_form
-                && let Some(synchronize) = form.synchronize()
+                && let Some(synchronize) = &form.synchronize
             {
-                synchronize.await;
+                synchronize().await;
             }
             let resolved = mcp_interrupted(
                 (origin.resolve_authority)(self.state.signal.clone()),
@@ -211,7 +214,7 @@ impl Operation {
             Some(origin) if origin.private_forms_enforced => origin
                 .private_form
                 .as_ref()
-                .is_some_and(|form| form.ready()),
+                .is_some_and(|form| (form.ready)()),
             Some(origin) => {
                 !self.state.presentation_lost.load(Ordering::Acquire)
                     && origin.presentation.is_some()
@@ -266,7 +269,7 @@ impl Operation {
             let origin = self.origin.as_ref();
             let answer = if let Some(origin) = origin.filter(|origin| origin.private_forms_enforced)
             {
-                let Some(presenter) = origin.private_form.as_ref().filter(|form| form.ready())
+                let Some(presenter) = origin.private_form.as_ref().filter(|form| (form.ready)())
                 else {
                     return Err(code(McpMrtrErrorCode::ProcessingUnavailable));
                 };
@@ -278,30 +281,35 @@ impl Operation {
                     return Err(code(McpMrtrErrorCode::ProcessingUnavailable));
                 };
                 let began = self.clock.now();
-                let outcome = presenter
-                    .present(McpFormInput {
-                        operation_id: maho_ai::utils::js::number_to_string(self.start),
-                        input_id: key.clone(),
-                        round,
-                        server: McpFormServer {
-                            label: origin.server_label.clone(),
-                            source: origin.server_source.unwrap_or(McpFormServerSource::User),
-                        },
-                        message: input.message.clone(),
-                        schema: schema.clone(),
-                        operation_signal: active.clone(),
-                        operation_current: None,
-                        presentation_signal: presenter.signal(),
-                        deadline_ms: (CONSENT_BUDGET_MS - spent).max(0.0),
-                    })
-                    .await;
+                let operation = McpHostSignal::follow(active);
+                let outcome = (presenter.present)(McpFormInput {
+                    operation_id: maho_ai::utils::js::number_to_string(self.start),
+                    input_id: key.clone(),
+                    round,
+                    server: McpFormServer {
+                        label: origin.server_label.clone(),
+                        source: origin.server_source.unwrap_or(McpFormServerSource::User),
+                    },
+                    message: input.message.clone(),
+                    schema: Value::Object(schema.clone()),
+                    operation_signal: operation.signal.clone(),
+                    operation_current: None,
+                    presentation_signal: presenter.signal.clone(),
+                    deadline_ms: (CONSENT_BUDGET_MS - spent).max(0.0),
+                })
+                .await;
+                drop(operation);
                 *self
                     .consent_spent
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) += self.clock.now() - began;
                 self.check()?;
                 match outcome.kind {
-                    McpFormOutcomeKind::Result(result) => result,
+                    // The presenter answers with a validated `MrtrInputResponse` as JSON.
+                    McpFormOutcomeKind::Result(result) => {
+                        serde_json::from_value::<MrtrInputResponse>(result)
+                            .map_err(|_| code(McpMrtrErrorCode::ProcessingUnavailable))?
+                    }
                     McpFormOutcomeKind::OperationAborted => {
                         return Err(code(McpMrtrErrorCode::Cancelled));
                     }
@@ -327,11 +335,10 @@ impl Operation {
                         consent.abort();
                     })
                 };
-                let linked = McpLinkedSignal::new(vec![
-                    active.clone(),
-                    presentation.signal.clone(),
-                    consent.clone(),
-                ]);
+                let linked = McpLinkedSignal::with_host(
+                    vec![active.clone(), consent.clone()],
+                    vec![presentation.signal.clone()],
+                );
                 let presented = AtomicBool::new(false);
                 let answer = mcp_interrupted(
                     queued_form(origin.binding, &linked.signal, || {
@@ -468,7 +475,7 @@ pub async fn mcp_request_with_clock(
             origin
                 .presentation
                 .as_ref()
-                .is_none_or(|presentation| presentation.signal.is_aborted())
+                .is_none_or(|presentation| presentation.signal.aborted())
         })),
     });
     let operation = Arc::new(Operation {

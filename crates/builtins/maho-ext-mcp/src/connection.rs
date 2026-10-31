@@ -136,7 +136,7 @@ impl ServerConnection {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-    fn private_forms(&self) -> Option<Arc<crate::form_types::McpFormBinding>> {
+    fn private_forms(&self) -> Option<crate::form_types::McpFormBinding> {
         self.elicitation_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
