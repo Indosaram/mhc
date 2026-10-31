@@ -179,6 +179,7 @@ fn ensure_request(
         settings,
         launch_profile_id: launch_profile_id.clone(),
         timeout: std::time::Duration::from_millis(DEFAULT_READINESS_MS),
+        owner: false,
     };
     let handoff = HandoffOptions {
         host_args: supervisor_args,

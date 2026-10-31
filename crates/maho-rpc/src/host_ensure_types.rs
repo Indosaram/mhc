@@ -37,6 +37,9 @@ pub struct EnsureHostOptions {
     pub readiness_ms: u64,
     /// Credential lookup only (`--rpc-key-root`); endpoint keys come from here, the profile is unchanged.
     pub key_root: Option<std::path::PathBuf>,
+    /// senpi `owner: "caller"`: opt in to this caller process's lifetime. Attach holds remain independently
+    /// releasable.
+    pub owner: bool,
 }
 impl Default for EnsureHostOptions {
     fn default() -> Self {
@@ -50,6 +53,7 @@ impl Default for EnsureHostOptions {
             upgrade: HostUpgradePolicy::Never,
             readiness_ms: 10_000,
             key_root: None,
+            owner: false,
         }
     }
 }

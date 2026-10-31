@@ -235,6 +235,181 @@ pub async fn host_owner_gone_bounded(owner: HostLifetimeOwner) -> bool {
     )
 }
 
+/// senpi `writeHostOwner`: the one mutable ownership record. An ensure writes it under the endpoint lock (`None` is
+/// an explicit unowned generation); supervisors only read it. Written atomically, private to this user.
+pub fn write_host_owner(
+    generation_dir: &std::path::Path,
+    owner: Option<&HostLifetimeOwner>,
+) -> std::io::Result<()> {
+    let path = generation_dir.join(OWNER_RECORD_FILE);
+    let temporary = generation_dir.join(format!(
+        "{OWNER_RECORD_FILE}.{}.{}.tmp",
+        std::process::id(),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    let record = serde_json::json!({
+        "owner": owner.map(|owner| serde_json::json!({"pid": owner.pid, "startTime": owner.start_time})),
+    });
+    let written = crate::host_daemon_state::write_state_file(&temporary, &record)
+        .map_err(|error| error.source)
+        .and_then(|()| std::fs::rename(&temporary, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// senpi `callerHostOwner`: this process by its OS start identity; an unreadable identity refuses ownership.
+pub fn caller_host_owner() -> std::io::Result<HostLifetimeOwner> {
+    let pid = std::process::id();
+    crate::host_reservations::read_process_start_time(pid)
+        .filter(|start| maho_tool_child::group_ownership::process_start_time_ms(start).is_some())
+        .map(|start_time| HostLifetimeOwner { pid, start_time })
+        .ok_or_else(|| std::io::Error::other("cannot establish RPC host owner OS start identity"))
+}
+
+/// senpi `claimHostOwner`, called inside the ensure lock: a live or unknown different owner is never silently
+/// replaced, and an old generation without an owner record does not support owner lifetime.
+pub async fn claim_host_owner(generation_dir: &std::path::Path) -> std::io::Result<()> {
+    let previous = read_host_owner(generation_dir);
+    if previous == OwnerRecord::Unknown {
+        return Err(std::io::Error::other(
+            "RPC host does not support owner lifetime registration",
+        ));
+    }
+    let next = caller_host_owner()?;
+    if same_host_owner(&previous, &OwnerRecord::Owned(next.clone())) {
+        return Ok(());
+    }
+    if let OwnerRecord::Owned(previous) = previous
+        && !host_owner_gone_bounded(previous).await
+    {
+        return Err(std::io::Error::other(
+            "RPC host lifetime owner is still alive or its identity is unknown",
+        ));
+    }
+    write_host_owner(generation_dir, Some(&next))
+}
+
+/// senpi `OWNER_WATCH_FD` + `keepOwnerPipe`: the caller-lifetime pipe an owning ensure hands its supervisor. The
+/// read end is inherited (`--owner-fd <n>`); the write end stays in this process, close-on-exec, never written, and
+/// is retained until that supervisor exits - this process's exit (even SIGKILL) closes it in the kernel, which the
+/// supervisor reads as owner death.
+///
+/// SAFETY-DIVERGENCE(senpi stdio slot 3): Rust's `Command` exposes only the three standard slots and this crate
+/// denies the `unsafe` a `pre_exec` `dup2` needs, so the read end is duplicated above the presenter's fd 4 and
+/// inherited at that number, which `--owner-fd` names. Win32 launches carry no pipe: the supervisor binds the
+/// owner by its recorded OS identity instead.
+///
+/// Accepted spawn window (the same trade-off as `bind_child_watch_pipe`): the inheritable read end exists from
+/// `OwnerPipe::new` until `keep` drops it after the spawn, so a process another thread spawns inside that window
+/// also inherits it. Only a read end can leak this way - the write end is close-on-exec from creation (on apple,
+/// from the `F_SETFD` right after `pipe`) - so owner death still reads as EOF; closing the window would need the
+/// `/bin/sh 3<&N N<&-` wrapper on every owner launch. The supervisor adopts and closes-on-exec its copy at once
+/// (`adopt_owner_pipe_fd`), so the host child never inherits it.
+#[cfg(unix)]
+pub struct OwnerPipe {
+    read_end: std::os::fd::OwnedFd,
+    write_end: std::os::fd::OwnedFd,
+}
+
+/// Win32 launches inherit no owner pipe; this type is never constructed there.
+#[cfg(not(unix))]
+pub struct OwnerPipe {
+    never: std::convert::Infallible,
+}
+
+#[cfg(not(unix))]
+impl OwnerPipe {
+    pub fn args(&self) -> [String; 2] {
+        let never = self.never;
+        match never {}
+    }
+
+    pub fn keep(self, _pid: u32) {
+        let never = self.never;
+        match never {}
+    }
+}
+
+/// The lowest descriptor the inherited read end may take: clear of stdio, `OWNER_WATCH_FD` and the presenter's 4.
+#[cfg(unix)]
+const OWNER_PIPE_MIN_FD: i32 = 10;
+
+#[cfg(unix)]
+impl OwnerPipe {
+    pub fn new() -> std::io::Result<Self> {
+        // Close-on-exec from creation where the platform allows it: a concurrent spawn must never inherit the write
+        // end, or the owner's exit would not read as EOF.
+        #[cfg(not(target_vendor = "apple"))]
+        let (read_end, write_end) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)?;
+        #[cfg(target_vendor = "apple")]
+        let (read_end, write_end) = {
+            let (read_end, write_end) = rustix::pipe::pipe()?;
+            rustix::io::fcntl_setfd(&write_end, rustix::io::FdFlags::CLOEXEC)?;
+            (read_end, write_end)
+        };
+        // Only the duplicate above the presenter's fd 4 is inherited; the original read end closes here.
+        let read_end = rustix::io::fcntl_dupfd_cloexec(&read_end, OWNER_PIPE_MIN_FD)?;
+        rustix::io::fcntl_setfd(&read_end, rustix::io::FdFlags::empty())?;
+        Ok(Self {
+            read_end,
+            write_end,
+        })
+    }
+
+    /// The supervisor argv that names the inherited read end.
+    pub fn args(&self) -> [String; 2] {
+        use std::os::fd::AsRawFd;
+        ["--owner-fd".into(), self.read_end.as_raw_fd().to_string()]
+    }
+
+    /// senpi `keepOwnerPipe`: after the spawn, this process drops its read end and retains the write end until the
+    /// supervisor `pid` is no longer running (pruned on the next keep), never longer than this process.
+    pub fn keep(self, pid: u32) {
+        static KEPT: std::sync::Mutex<Vec<(u32, std::os::fd::OwnedFd)>> =
+            std::sync::Mutex::new(Vec::new());
+        let Self {
+            read_end,
+            write_end,
+        } = self;
+        drop(read_end);
+        let mut kept = KEPT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        kept.retain(|(kept_pid, _)| crate::host_reservations::process_is_running(*kept_pid));
+        kept.push((pid, write_end));
+    }
+}
+
+/// senpi `startSuccessor`'s owner half: the successor generation inherits its predecessor's lifetime owner record,
+/// and the owner pipe only when that owner is this very process (`inheritOwnerPipe`).
+pub fn inherit_host_owner(
+    predecessor_dir: Option<&std::path::Path>,
+    successor_dir: &std::path::Path,
+) -> std::io::Result<Option<OwnerPipe>> {
+    let owner = match predecessor_dir.map(read_host_owner) {
+        Some(OwnerRecord::Owned(owner)) => Some(owner),
+        _ => None,
+    };
+    write_host_owner(successor_dir, owner.as_ref())?;
+    let inherit_pipe = owner.is_some_and(|owner| {
+        owner.pid == std::process::id()
+            && caller_host_owner().is_ok_and(|caller| {
+                same_host_owner(&OwnerRecord::Owned(owner), &OwnerRecord::Owned(caller))
+            })
+    });
+    #[cfg(unix)]
+    {
+        inherit_pipe.then(OwnerPipe::new).transpose()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = inherit_pipe;
+        Ok(None)
+    }
+}
+
 /// senpi `SupervisorOwner`: a fresh start inherits the caller's lifetime pipe; an existing supervisor (or a foreign
 /// handoff caller) binds the owner by its OS start identity, probed with a backoff. Failed observations are never
 /// death. The owner record is re-read on every check (the polling form upstream degrades to when its directory watch
@@ -264,15 +439,16 @@ impl SupervisorOwner {
         }
     }
 
-    /// senpi `start`: reads the record and, for an owned generation, binds the inherited pipe `fd`. Its EOF marks
-    /// the bound owner gone; a read error leaves it unknown. Inheritance that is unavailable on this launch path
-    /// falls back to the recorded OS identity.
-    pub fn start(&mut self, fd: Option<i32>, now: f64) {
+    /// senpi `start`: reads the record and, for an owned generation, binds the inherited pipe (already adopted by
+    /// [`adopt_owner_pipe_fd`]). Its EOF marks the bound owner gone; a read error leaves it unknown. Inheritance that
+    /// is unavailable on this launch path falls back to the recorded OS identity; an unowned generation closes the
+    /// pipe here.
+    pub fn start(&mut self, pipe: Option<InheritedOwnerPipe>, now: f64) {
         self.reload(now);
-        let (Some(fd), OwnerRecord::Owned(_)) = (fd, &self.owner) else {
+        let (Some(pipe), OwnerRecord::Owned(_)) = (pipe, &self.owner) else {
             return;
         };
-        self.pipe = watch_owner_pipe(fd);
+        self.pipe = watch_owner_pipe(pipe);
     }
 
     fn reload(&mut self, now: f64) {
@@ -432,13 +608,66 @@ impl OwnerCheck {
     }
 }
 
-/// Reads the inherited owner pipe on its own detached thread: `true` at EOF, `false` on a read error. A descriptor
-/// that cannot be reopened leaves the owner on its recorded identity.
-fn watch_owner_pipe(fd: i32) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+/// The supervisor's adopted owner read end: an owned descriptor on POSIX; win32 inherits no owner pipe.
+#[cfg(unix)]
+pub type InheritedOwnerPipe = std::os::fd::OwnedFd;
+/// The supervisor's adopted owner read end: an owned descriptor on POSIX; win32 inherits no owner pipe.
+#[cfg(not(unix))]
+pub type InheritedOwnerPipe = std::convert::Infallible;
+
+/// Takes ownership of the inherited `--owner-fd` descriptor when it is an open pipe (FIFO), and marks it close-on-exec
+/// so neither the host child nor anything it spawns inherits the owner read end (upstream overwrites the child's fd 3
+/// with its own watch pipe; this crate's presenter fd 4 is adopted the same way). Must run before the supervisor
+/// spawns anything. Anything else at that number is left untouched and yields `None`: the owner then binds by its
+/// recorded OS identity.
+///
+/// Adoption happens at most once per process; a second call yields `None` instead of a second owner.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+pub fn adopt_owner_pipe_fd(fd: i32) -> Option<InheritedOwnerPipe> {
+    use std::os::fd::{BorrowedFd, FromRawFd as _, OwnedFd};
+    use std::os::unix::fs::FileTypeExt as _;
+    static ADOPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if fd < 3 {
+        return None;
+    }
+    // SAFETY: `fcntl(F_GETFD)` takes no pointers and only reports whether `fd` is open (`-1`/EBADF otherwise).
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+        return None;
+    }
+    // SAFETY: `fd` was just observed open, and the launch contract (`--owner-fd <fd>`) reserves it for the owner
+    // pipe, so nothing else in this process closes it while this borrow lives.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let kind = std::fs::File::from(borrowed.try_clone_to_owned().ok()?)
+        .metadata()
+        .ok()?
+        .file_type();
+    if !kind.is_fifo() {
+        return None;
+    }
+    if ADOPTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    // SAFETY: `fd` is open and is the pipe this process inherited as its owner read end; the one-shot `ADOPTED` latch
+    // makes this the descriptor's only owner, so it is closed exactly once, when the `OwnedFd` drops.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    rustix::io::fcntl_setfd(&owned, rustix::io::FdFlags::CLOEXEC).ok()?;
+    Some(owned)
+}
+
+/// Win32 inherits no owner pipe: the owner binds by its recorded OS identity.
+#[cfg(not(unix))]
+pub fn adopt_owner_pipe_fd(_fd: i32) -> Option<InheritedOwnerPipe> {
+    None
+}
+
+/// Reads the adopted owner pipe on its own detached thread: `true` at EOF, `false` on a read error. A thread that
+/// cannot start leaves the owner on its recorded identity.
+fn watch_owner_pipe(pipe: InheritedOwnerPipe) -> Option<tokio::sync::oneshot::Receiver<bool>> {
     #[cfg(unix)]
     {
         use std::io::Read;
-        let mut file = std::fs::File::open(format!("/dev/fd/{fd}")).ok()?;
+        let mut file = std::fs::File::from(pipe);
         let (sender, receiver) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("rpc-host-owner".into())
@@ -459,8 +688,7 @@ fn watch_owner_pipe(fd: i32) -> Option<tokio::sync::oneshot::Receiver<bool>> {
     }
     #[cfg(not(unix))]
     {
-        let _ = fd;
-        None
+        match pipe {}
     }
 }
 
@@ -658,15 +886,125 @@ mod activity_tests {
         assert!(!check.tick(40_000.).await);
     }
 
+    #[tokio::test]
+    async fn an_ensure_claims_only_an_unowned_or_its_own_or_a_dead_owner_record() {
+        let temp = tempfile::tempdir().unwrap();
+        // An old generation without a record does not support owner lifetime.
+        assert!(claim_host_owner(temp.path()).await.is_err());
+        write_host_owner(temp.path(), None).unwrap();
+        assert_eq!(read_host_owner(temp.path()), OwnerRecord::Unowned);
+        claim_host_owner(temp.path()).await.unwrap();
+        let caller = caller_host_owner().unwrap();
+        assert_eq!(
+            read_host_owner(temp.path()),
+            OwnerRecord::Owned(caller.clone())
+        );
+        // Claiming again as the same owner is a no-op.
+        claim_host_owner(temp.path()).await.unwrap();
+        // A different, live owner is never replaced.
+        #[cfg(unix)]
+        {
+            let parent = std::os::unix::process::parent_id();
+            let live = HostLifetimeOwner {
+                pid: parent,
+                start_time: crate::host_reservations::read_process_start_time(parent).unwrap(),
+            };
+            write_host_owner(temp.path(), Some(&live)).unwrap();
+            assert!(claim_host_owner(temp.path()).await.is_err());
+            assert_eq!(read_host_owner(temp.path()), OwnerRecord::Owned(live));
+        }
+        // An owner whose pid now holds a different incarnation is gone and may be replaced.
+        let replaced = HostLifetimeOwner {
+            pid: caller.pid,
+            start_time: "1".into(),
+        };
+        write_host_owner(temp.path(), Some(&replaced)).unwrap();
+        claim_host_owner(temp.path()).await.unwrap();
+        assert_eq!(read_host_owner(temp.path()), OwnerRecord::Owned(caller));
+        // Only the record itself is left behind: the atomic write's temporary is renamed away.
+        let names: Vec<_> = std::fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from(OWNER_RECORD_FILE)]);
+    }
+
+    #[test]
+    fn a_successor_inherits_the_owner_record_and_this_process_keeps_its_pipe() {
+        let temp = tempfile::tempdir().unwrap();
+        let (old, new) = (temp.path().join("old"), temp.path().join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        // No predecessor record: the successor is explicitly unowned.
+        assert!(inherit_host_owner(Some(&old), &new).unwrap().is_none());
+        assert_eq!(read_host_owner(&new), OwnerRecord::Unowned);
+        let caller = caller_host_owner().unwrap();
+        write_host_owner(&old, Some(&caller)).unwrap();
+        let pipe = inherit_host_owner(Some(&old), &new).unwrap();
+        assert_eq!(read_host_owner(&new), OwnerRecord::Owned(caller));
+        assert_eq!(pipe.is_some(), cfg!(unix));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_owner_pipe_is_named_by_owner_fd_and_its_write_end_close_is_owner_death() {
+        let pipe = OwnerPipe::new().unwrap();
+        let args = pipe.args();
+        let fd: i32 = args[1].parse().unwrap();
+        assert!(fd >= OWNER_PIPE_MIN_FD);
+        let launch = crate::host_lifecycle_launch::parse_supervisor_args(&[
+            "--socket".into(),
+            "s".into(),
+            args[0].clone(),
+            args[1].clone(),
+        ])
+        .unwrap();
+        assert_eq!(launch.owner_fd, Some(fd));
+        // The supervisor side reads the inherited descriptor; the ensure's write end closing is EOF.
+        let OwnerPipe {
+            read_end,
+            write_end,
+        } = pipe;
+        let receiver = watch_owner_pipe(read_end).unwrap();
+        drop(write_end);
+        let eof = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(eof);
+    }
+
+    /// The only test that adopts: adoption is one-shot per process.
+    #[cfg(unix)]
+    #[test]
+    fn the_adopted_owner_fd_is_close_on_exec_and_adopted_once() {
+        use std::os::fd::{AsRawFd, IntoRawFd};
+        let (read_end, write_end) = rustix::pipe::pipe().unwrap();
+        // As inherited: open and NOT close-on-exec.
+        rustix::io::fcntl_setfd(&read_end, rustix::io::FdFlags::empty()).unwrap();
+        let fd = read_end.into_raw_fd();
+        // Stdio is never adopted, whatever it is.
+        assert!(adopt_owner_pipe_fd(2).is_none());
+        let adopted = adopt_owner_pipe_fd(fd).unwrap();
+        assert_eq!(adopted.as_raw_fd(), fd);
+        assert!(
+            rustix::io::fcntl_getfd(&adopted)
+                .unwrap()
+                .contains(rustix::io::FdFlags::CLOEXEC)
+        );
+        assert!(adopt_owner_pipe_fd(fd).is_none());
+        drop(write_end);
+        drop(adopted);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn the_inherited_owner_pipe_eof_is_owner_death() {
-        use std::os::fd::AsRawFd;
         let temp = tempfile::tempdir().unwrap();
         owner_record(temp.path(), this_owner());
         let (read_end, write_end) = rustix::pipe::pipe().unwrap();
         let mut owner = SupervisorOwner::new(temp.path().into());
-        owner.start(Some(read_end.as_raw_fd()), 0.);
+        owner.start(Some(read_end), 0.);
         assert!(owner.pipe.is_some());
         drop(write_end);
         let receiver = owner.pipe.take().unwrap();
@@ -675,7 +1013,6 @@ mod activity_tests {
             .unwrap()
             .unwrap();
         assert!(eof);
-        drop(read_end);
     }
 }
 
