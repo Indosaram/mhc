@@ -227,18 +227,8 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     // services. --session and --resume may select a session from another project, so project
     // trust, settings, resources and models resolve against the target session cwd.
     // senpi v2026.10.27-2 `createSessionManager`: ancestry applies to fresh sessions only.
-    if parsed.spawned_by.is_some()
-        && (parsed.session.is_some()
-            || parsed.resume
-            || parsed.continue_session
-            || parsed.fork.is_some()
-            || parsed.rebind.is_some())
-    {
-        indicator.during_surface_write(|| {
-            eprintln!(
-                "\x1b[33mWarning: --spawned-by is ignored when resuming or forking a session.\x1b[39m"
-            )
-        });
+    if let Some(warning) = super::args::spawned_by_ignored_warning(&parsed) {
+        indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: {warning}\x1b[39m"));
     }
     let identity = Some(maho_core::session_manager::NewSessionOptions {
         id: parsed.session_id.clone(),

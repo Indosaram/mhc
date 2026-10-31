@@ -97,6 +97,18 @@ pub fn resolve_session_runtime(args: &Args) -> SessionRuntime {
         }
     })
 }
+/// senpi v2026.10.27-2 `createSessionManager`: ancestry applies to fresh sessions only, so a
+/// `--spawned-by` next to a resume, continue, fork or rebind is ignored with this warning.
+pub fn spawned_by_ignored_warning(args: &Args) -> Option<&'static str> {
+    (args.spawned_by.is_some()
+        && (args.session.is_some()
+            || args.resume
+            || args.continue_session
+            || args.fork.is_some()
+            || args.rebind.is_some()))
+    .then_some("--spawned-by is ignored when resuming or forking a session.")
+}
+
 pub fn is_valid_thinking_level(value: &str) -> bool {
     matches!(
         value,
