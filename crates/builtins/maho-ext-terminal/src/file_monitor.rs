@@ -115,20 +115,11 @@ impl FileMonitor {
         Ok(crate::file_monitor_record::new_file_record(crate::file_monitor_record::NewFileRecordInput {id,description,path,parent,event,initial:checkpoint}))
     }
     pub fn reserve_capacity(&mut self,reservation:crate::manager::CapacityReservation) {if !self.settled {self.reservation=Some(reservation);}}
+    /// One check pass (upstream `checkFileOnce`); a fire completes the watch.
     pub fn check(&mut self)->std::io::Result<Vec<MonitorEvent>> {
-        if self.paused||self.settled {return Ok(vec![]);}
-        let parent=realpath_without_open(self.path.parent().expect("registered file parent"));
-        if parent!=self.parent {return Err(std::io::Error::other(format!("watcher error: monitored parent changed: {}",self.path.parent().expect("registered file parent").display())));}
-        let current=crate::durable_file::file_checkpoint_with_identity(&self.path,Some(self.identity))?;
-        let changed=match self.event {
-            FileEvent::Create=>!self.checkpoint.present&&current.present,
-            FileEvent::Modify=>self.checkpoint.present&&current.present&&(self.checkpoint.mtime_ms!=current.mtime_ms||self.checkpoint.size!=current.size||self.checkpoint.digest!=current.digest),
-        };
-        if !self.checkpoint.present&&current.present {self.identity=(current.dev,current.ino);}
-        self.checkpoint=current;
-        if !changed {return Ok(vec![]);}
+        let crate::file_monitor_check::FileCheckOutcome::Fire(line)=crate::file_monitor_check::check_file_once(self)? else {return Ok(vec![]);};
         self.settled=true;self.reservation.take();
-        Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line:format!("{} {}",match self.event {FileEvent::Create=>"create",FileEvent::Modify=>"modify"},self.path.display()),human_input:false},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
+        Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line,human_input:false},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
     }
     pub fn stop(&mut self,summary:&str)->Option<MonitorEvent> {
         if self.settled {return None;}
