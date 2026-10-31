@@ -31,6 +31,20 @@ fn normalize(path:&Path)->PathBuf {
     }
     result
 }
+pub fn split_link_target(link: &Path) -> (Option<PathBuf>, Vec<String>) {
+    let mut parts: VecDeque<String> = link.to_string_lossy().split(['/', '\\']).filter(|part| !part.is_empty()).map(str::to_owned).collect();
+    let root = if link.is_absolute() || link.to_string_lossy().starts_with(['/', '\\']) {
+        if link.has_root() && !link.to_string_lossy().starts_with(['/', '\\']) {
+            let prefix = parts.pop_front().unwrap_or_default();
+            Some(PathBuf::from(format!("{prefix}{}", std::path::MAIN_SEPARATOR)))
+        } else {
+            Some(PathBuf::from(std::path::MAIN_SEPARATOR.to_string()))
+        }
+    } else {
+        None
+    };
+    (root, parts.into())
+}
 pub fn resolve_without_open(path:&Path)->PathBuf {
     let absolute=if path.is_absolute(){path.to_owned()}else{std::env::current_dir().unwrap_or_else(|_|PathBuf::from("/")).join(path)};
     let mut pending:VecDeque<String>=absolute.to_string_lossy().split(['/', '\\']).filter(|part|!part.is_empty()).map(str::to_owned).collect();
@@ -53,17 +67,13 @@ pub fn resolve_without_open(path:&Path)->PathBuf {
                 if hops>40{return normalize(&pending.iter().fold(candidate,|path,part|path.join(part)));}
                 match std::fs::read_link(&candidate){
                     Ok(link)=>{
-                        if link.is_absolute() || link.to_string_lossy().starts_with(['/', '\\']) {
-                            resolved = if link.has_root() && !link.to_string_lossy().starts_with(['/', '\\']) {
-                                let mut parts: VecDeque<String> = link.to_string_lossy().split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_owned).collect();
-                                let prefix = parts.pop_front().unwrap_or_default();
-                                PathBuf::from(format!("{prefix}{}", std::path::MAIN_SEPARATOR))
-                            } else {
-                                PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
-                            };
+                        let (root, parts) = split_link_target(&link);
+                        if let Some(root) = root {
+                            resolved = root;
                         }
-                        let parts:Vec<String>=link.to_string_lossy().split(['/', '\\']).filter(|part|!part.is_empty()).map(str::to_owned).collect();
-                        for part in parts.into_iter().rev(){pending.push_front(part);}
+                        for part in parts.into_iter().rev() {
+                            pending.push_front(part);
+                        }
                     }
                     Err(_)=>return normalize(&pending.iter().fold(candidate,|path,part|path.join(part))),
                 }
@@ -111,4 +121,16 @@ pub fn extract_command_paths(command:&str)->Vec<String>{
         if token.starts_with('-')||assignment||["|","||","&&",";","&","$(","${","`"].iter().any(|op|token.contains(op))||!(pathlike||credential_name){return None;}
         Some(token)
     }).collect()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_without_open_handles_windows_drive_symlink_target() {
+        let (root, parts) = split_link_target(Path::new(r"C:\target\file.txt"));
+        assert_eq!(root, Some(PathBuf::from(format!("C:{}", std::path::MAIN_SEPARATOR))));
+        assert_eq!(parts, vec!["target".to_string(), "file.txt".to_string()]);
+    }
 }
