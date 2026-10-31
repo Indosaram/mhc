@@ -555,12 +555,15 @@ pub async fn create_rpc_session_binding(
     let event_sink = sink.clone();
     let last_abort_source: crate::connection_handler::LastAbortSource = Default::default();
     let (event_session, event_abort_source) = (session.weak_accessor(), last_abort_source.clone());
+    // The routing handle is the key this session's admission ledger is published under.
+    let event_route = session_id.clone();
     let subscription = session.subscribe(std::sync::Arc::new(move |event| {
         let record = match event_session() {
-            Some(session) => crate::connection_handler::rpc_session_event_record(
+            Some(session) => crate::connection_handler::rpc_session_event_record_routed(
                 &session,
                 event,
                 &event_abort_source,
+                Some(&event_route),
             ),
             None => session_event_record(event),
         };
