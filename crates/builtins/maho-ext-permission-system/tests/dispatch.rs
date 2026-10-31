@@ -92,7 +92,10 @@ struct Fixture {
 }
 fn fixture() -> Fixture {
     let cwd = tempfile::tempdir().expect("cwd");
-    let session: Arc<dyn SessionManager> = Arc::new(TestSession("dispatch".into()));
+    // Authorizers are keyed on the session id, so every fixture owns its own session.
+    static NEXT_SESSION: AtomicUsize = AtomicUsize::new(0);
+    let id = NEXT_SESSION.fetch_add(1, Ordering::SeqCst);
+    let session: Arc<dyn SessionManager> = Arc::new(TestSession(format!("dispatch-{id}")));
     let ctx = context(Arc::clone(&session), cwd.path());
     let authorizer = Authorizer::new(Action::Ask, "explicit-ask");
     let retire = register_dispatch_authorizer(&session, authorizer.clone());
@@ -284,4 +287,31 @@ async fn keeps_each_preflight_approval_on_its_own_validated_input() {
         writes += usize::from(fence.is_current(call));
     }
     assert_eq!((writes, prompts, fx.authorizer.asks()), (2, 2, 0));
+}
+
+#[tokio::test]
+async fn authorizes_through_a_rebound_adapter_for_the_same_session_id() {
+    // The host rebuilds the context's session-manager adapter on a UI/core rebind (RPC reattach)
+    // without a new session_start; the registration must follow the session, not the adapter.
+    let fx = fixture();
+    let rebound: Arc<dyn SessionManager> =
+        Arc::new(TestSession(fx.session.session_id().to_owned()));
+    assert!(!Arc::ptr_eq(&rebound, &fx.session));
+    let rebound_ctx = context(Arc::clone(&rebound), fx._cwd.path());
+    assert!(maho_ext_permission_system::dispatch::has_dispatch_authorizer(&rebound));
+    let call = fx.request();
+    let fence = authorize_tool_dispatch(&rebound, &call, &rebound_ctx, None)
+        .await
+        .expect("registered authorizer found through the rebound adapter");
+    assert!(fence.is_current(&call));
+    assert_eq!(fx.authorizer.asks(), 1);
+    // Retiring the registration made through the first adapter retires it for the rebound one.
+    fx.retire.retire();
+    assert!(!fence.is_current(&call));
+    assert_eq!(
+        authorize_tool_dispatch(&rebound, &fx.request(), &rebound_ctx, None)
+            .await
+            .expect_err("retired"),
+        DispatchError::Retired
+    );
 }
