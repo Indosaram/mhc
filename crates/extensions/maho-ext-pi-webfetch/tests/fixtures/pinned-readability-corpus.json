@@ -1,0 +1,100 @@
+[
+  {
+    "name": "byline-and-duplicate-title",
+    "html": "<html><head><title>Readable Story Title Here | Site</title></head><body><div class=\"nav\"><a href=\"/a\">Home</a> <a href=\"/b\">About</a></div><article><h1>Readable Story Title Here</h1><div class=\"byline\">By <span itemprop=\"name\">Jane Writer</span></div><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>Another paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></article><div class=\"comments\"><p>Nice post, thanks for sharing it with everyone here.</p></div></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "# Readable Story Title Here | Site\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nAnother paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "Readable Story Title Here | Site\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nAnother paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "jsonld-title",
+    "html": "<html><head><title>Fallback</title><script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"NewsArticle\",\"headline\":\"JSON-LD Headline For Story\",\"author\":{\"name\":\"Ld Author\"}}</script></head><body><main><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></main></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "# JSON-LD Headline For Story\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "JSON-LD Headline For Story\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "br-chains-and-font",
+    "html": "<html><body><div id=\"content\">First line of the story, with commas, and words.<br><br>Second line follows here, again with enough text to be readable, honestly.<br><br><font color=\"red\">Third line rendered in font, which becomes a span element in the reader.</font></div></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "First line of the story, with commas, and words.\n\nSecond line follows here, again with enough text to be readable, honestly.\n\nThird line rendered in font, which becomes a span element in the reader.",
+    "text": "First line of the story, with commas, and words.\n\nSecond line follows here, again with enough text to be readable, honestly.\n\nThird line rendered in font, which becomes a span element in the reader."
+  },
+  {
+    "name": "hidden-and-aria",
+    "html": "<html><body><div style=\"display:none\"><p>Hidden text should never be part of the article content at all.</p></div><div aria-hidden=\"true\"><p>Aria hidden text also stays out of the readable article output.</p></div><section><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></section></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "noscript-lazy-image",
+    "html": "<html><body><article><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><img src=\"data:image/png;base64,AAAA\" data-src=\"/real.jpg\" alt=\"Lazy\"><noscript><img src=\"/noscript.jpg\" alt=\"Fallback\"></noscript><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><figure data-src=\"/figure.png\"></figure></article></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\n![Fallback](https://example.org/noscript.jpg)\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\n![](https://example.org/figure.png)",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "share-and-forms",
+    "html": "<html><body><article><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><div class=\"share-buttons\"><a href=\"/s\">Share</a></div><form><input type=\"text\"><button>Go</button></form><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><iframe src=\"https://www.youtube.com/embed/x\"></iframe><iframe src=\"https://ads.example/x\"></iframe></article></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "data-table-and-layout-table",
+    "html": "<html><body><article><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><table><caption>Results</caption><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table><table><tr><td>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</td></tr></table><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></article></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nResults\n\nA\n\nB\n\n1\n\n2\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nResults\nA\nB\n\n1\n2\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "short-content-retry",
+    "html": "<html><head><title>Tiny</title></head><body><div class=\"sidebar\"><p>Short sidebar text that is the only content, really.</p></div></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "# Tiny\n\nShort sidebar text that is the only content, really.",
+    "text": "Tiny\n\nShort sidebar text that is the only content, really."
+  },
+  {
+    "name": "sibling-merge",
+    "html": "<html><body><div class=\"wrap\"><div class=\"post\"><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></div><p>Short closing sentence.</p><p>no period here</p><div class=\"post\"><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></div></div></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nShort closing sentence.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nShort closing sentence.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "javascript-links-and-relative",
+    "html": "<html><head><base href=\"/docs/\"></head><body><article><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>See <a href=\"javascript:void(0)\">this</a> and <a href=\"guide\">the guide</a> and <a href=\"#frag\">frag</a>, it is useful.</p><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></article></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nSee this and [the guide](https://example.org/docs/guide) and [frag](https://example.org/docs/#frag), it is useful.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nSee this and the guide and frag, it is useful.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "headings-and-lists",
+    "html": "<html><head><title>Lists and headings in an article page</title></head><body><article><h2>Section heading</h2><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><ul><li>One item with words</li><li>Two item with words</li></ul><h2 class=\"sidebar\">Bad heading</h2><ol><li><a href=\"/x\">Linked list item</a></li></ol><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></article></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "## Section heading\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\n-   One item with words\n-   Two item with words\n\n1.  [Linked list item](https://example.org/x)\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "Section heading\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nOne item with words\n\nTwo item with words\n\nLinked list item\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "nested-divs-and-classes",
+    "html": "<html><body><div class=\"outer page\"><div class=\"inner\"><section class=\"x\"><div><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></div></section></div></div><footer><p>Footer text that should be dropped from the article output.</p></footer></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "meta-title-and-entities",
+    "html": "<html><head><title>Raw &amp; Title</title><meta property=\"og:title\" content=\"OG &amp;quot;Quoted&amp;quot; Title\"></head><body><main><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></main></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "# OG \"Quoted\" Title\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "OG \"Quoted\" Title\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  },
+  {
+    "name": "pre-and-code",
+    "html": "<html><body><article><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p><pre><code class=\"language-js\">const a = 1;\nconst b = 2;</code></pre><p>This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.</p></article></body></html>",
+    "url": "https://example.org/blog/post",
+    "markdown": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\n```\nconst a = 1;\nconst b = 2;\n```\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.",
+    "text": "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nconst a = 1;\nconst b = 2;\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  }
+]
