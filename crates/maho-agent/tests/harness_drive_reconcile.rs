@@ -12,7 +12,7 @@ use maho_agent::harness::context::BACKGROUND_CONTEXT;
 use maho_agent::harness::events::{HarnessEventBus, event_to_value};
 use maho_agent::harness::hooks::{HookName, HookResult};
 use maho_agent::harness::runtime::drive::checkpoint::{run_checkpoint, start_run};
-use maho_agent::harness::runtime::drive::deferred::run_deferred;
+use maho_agent::harness::runtime::drive::deferred::{run_deferred, run_deferred_suspended};
 use maho_agent::harness::runtime::drive::drive_operation;
 use maho_agent::harness::runtime::drive::generation::run_generation;
 use maho_agent::harness::runtime::drive::reconcile::reconcile_operation;
@@ -1558,8 +1558,11 @@ async fn waits_without_a_permit_then_performs_at_most_one_pending_poll_from_capt
     .await;
     let suspended = submit_deferred(&fixture, done_message()).await;
     fixture.storage.clear_commit_attempts();
+    let OperationState::DeferredSuspended(suspended) = suspended else {
+        panic!("expected a deferred.suspended state")
+    };
 
-    let waiting = bounded(run_deferred(
+    let waiting = bounded(run_deferred_suspended(
         fixture.lane.as_ref(),
         &fixture.drive,
         &suspended,
