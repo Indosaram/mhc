@@ -19758,11 +19758,13 @@ impl AgentSession {
     /// A spent account instead uses the held target, the override, or another authenticated model whose
     /// window fits the live context, and otherwise fails with the account usage-limit advice.
     fn resolve_compaction_model(&self, session_model: &Model) -> Result<Model, String> {
+        // senpi `!override`: an empty `compaction.model` is unset, not a malformed override.
         let override_selector = self.with_settings_manager(|manager| {
             manager
                 .get_value("compaction")
                 .and_then(|settings| settings.get("model"))
                 .and_then(Value::as_str)
+                .filter(|selector| !selector.is_empty())
                 .map(str::to_owned)
         });
         let runtime = self.model_runtime();
@@ -29381,6 +29383,38 @@ mod tests {
     #[tokio::test]
     async fn held_target_serves_pre_prompt_compaction_without_calling_the_spent_provider() {
         held_target_compacts_without_calling_the_spent_provider(true).await;
+    }
+
+    /// senpi `_resolveCompactionModel` (healthy session): an empty `compaction.model` is unset (`!override`),
+    /// so the session model serves and no `compaction_model_fallback` notice is recorded.
+    #[test]
+    fn empty_compaction_model_override_is_unset() {
+        let session = keyed_test_session();
+        session.agent.set_model(test_model());
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "compaction".to_owned(),
+                serde_json::json!({"model":""}),
+            )]))
+        });
+        let resolved = session
+            .resolve_compaction_model(&session.model())
+            .expect("session model");
+        assert_eq!(resolved.id, test_model().id);
+        assert_eq!(session.state().compaction_model_fallback_notice, None);
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "compaction".to_owned(),
+                serde_json::json!({"model":"no-slash"}),
+            )]))
+        });
+        session
+            .resolve_compaction_model(&session.model())
+            .expect("session model");
+        assert_eq!(
+            session.state().compaction_model_fallback_notice.as_deref(),
+            Some("no-slash\u{0}malformed")
+        );
     }
 
     /// senpi `_resolveCompactionModel` (healthy session): an override on a spent provider keeps the session
