@@ -28,7 +28,6 @@ pub const MONITOR_ENV_STATE_DIR: &str = "SENPI_MONITOR_STATE_DIR";
 pub const MONITOR_ENV_RESTORED: &str = "SENPI_MONITOR_RESTORED";
 pub const MONITOR_ENV_DOWNTIME_MS: &str = "SENPI_MONITOR_DOWNTIME_MS";
 pub const KILLED_SESSION_EXIT_GRACE_MS: u64 = 5000;
-pub const MAX_DURABLE_MONITORS: usize = 5;
 pub const DURABLE_MONITOR_EXPIRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const FIRE_BUDGET_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 /// Wake pacing of a persistent command watch: average wakes an hour (and burst size); extra lines batch.

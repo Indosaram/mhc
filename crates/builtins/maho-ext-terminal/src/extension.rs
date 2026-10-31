@@ -642,6 +642,8 @@ impl Extension for TerminalExtension {
             // manifest coverage continues; a fresh generation acquires the lease and restores.
             let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
             if reload {
+                // Bound at once: the specs queued before this generation's writer drain into it.
+                crate::tools::monitor_manifest_binding::bind_and_drain(&session_id,&mut lifecycle.writer,now).await;
                 *state.lock().await=Some(lifecycle);
             } else {
                 let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
@@ -653,6 +655,8 @@ impl Extension for TerminalExtension {
                         let restore_state=lifecycle.read_restore_state().await;
                         let digest={let mut manager=manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let mut monitors=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);lifecycle.apply_restore(restore_state,&mut manager,&mut monitors,now,shell.as_deref(),&settings)};
                         if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
+                        // Bound AFTER the restore read the file: draining queued specs writes the manifest.
+                        crate::tools::monitor_manifest_binding::bind_and_drain(&session_id,&mut lifecycle.writer,terminal_now_ms()).await;
                         *state.lock().await=Some(lifecycle);
                     }
                     Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>send_terminal_reminder(&sender,delivery,&format!("Terminal monitors for this session are attached in another live process (pid {pid}); nothing was restored here.")),
@@ -666,6 +670,7 @@ impl Extension for TerminalExtension {
         api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();let monitors=shutdown_monitors.clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
             let Some(mut lifecycle)=state.lock().await.take() else {return Ok(EventResult::None);};
+            crate::tools::monitor_manifest_binding::unbind_terminal_manifest_writer(lifecycle.writer.session_id());
             // Upstream `suspendAndFlushManifest`: a final live-state sync so the shutdown write
             // carries each watch's burned fire window and mute state.
             let snapshot=monitors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).snapshot();
@@ -1301,8 +1306,12 @@ impl Extension for TerminalExtension {
                     // and :207-217 caps durable creates before any spawn. The writer lock is async; the
                     // manager/registry locks are held only across the synchronous registration.
                     let mut lifecycle = lifecycle.lock().await;
+                    let session_key =
+                        crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(
                         &call.params,
+                        settings.max_durable_monitors,
+                        session_key.as_deref(),
                         lifecycle.as_ref().map(|lifecycle| &lifecycle.writer),
                     ) {
                         return tool_result(refused);
@@ -1375,6 +1384,19 @@ impl Extension for TerminalExtension {
                             lifecycle
                                 .writer
                                 .schedule_checkpoint(&monitor_id, checkpoint);
+                        }
+                    } else if let Some((registration, _)) = recorded {
+                        // Upstream `handMonitorSpec`: no writer is bound yet (the lease is held
+                        // elsewhere), so the spec waits, bounded, for the writer that binds next.
+                        if crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                            session_key.as_deref(),
+                            registration.registration,
+                        )
+                        .is_some()
+                        {
+                            maho_ext_api::diagnostic(
+                                "terminal manifest: a writer is bound for this session but not held by this generation; the monitor spec was not recorded",
+                            );
                         }
                     }
                     drop(lifecycle);
