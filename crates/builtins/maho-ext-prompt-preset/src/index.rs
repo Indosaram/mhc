@@ -49,7 +49,7 @@ pub fn resolve_home_with(lookup: impl Fn(&str) -> Result<String, std::env::VarEr
 }
 
 pub fn resolve_home() -> String {
-    resolve_home_with(std::env::var)
+    resolve_home_with(|key| std::env::var(key))
 }
 
 fn settings(ctx: &ExtensionContext) -> PromptPresetName {
