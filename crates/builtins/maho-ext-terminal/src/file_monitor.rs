@@ -1,5 +1,5 @@
 use std::path::{Path,PathBuf};
-use crate::{terminal_manifest_model::{FileEvent,TerminalManifestCheckpoint},monitor_registry::MonitorEvent};
+use crate::{terminal_manifest_model::FileEvent,monitor_registry::MonitorEvent};
 
 /// Symlink hop budget for `realpath_without_open` (upstream `MAX_SYMLINK_HOPS`).
 #[cfg(unix)]
@@ -87,22 +87,20 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     path
 }
 
-pub struct FileMonitor {
-    pub id:String,
-    pub description:String,
-    path:PathBuf,
-    parent:PathBuf,
-    event:FileEvent,
-    identity:(f64,f64),
-    pub checkpoint:TerminalManifestCheckpoint,
-    pub paused:bool,
-    pub settled:bool,
-    reservation:Option<crate::manager::CapacityReservation>,
-}
+/// Upstream `FileMonitorRecord` (file-monitor-record.ts); registration, the check pass and settle
+/// are its methods here.
+pub type FileMonitor=crate::file_monitor_record::FileMonitorRecord;
 impl FileMonitor {
     pub fn register(id:String,description:String,path:&Path,event:FileEvent,approved_parent:Option<&Path>)->std::io::Result<Self> {
         let path=if path.is_absolute() {path.to_path_buf()} else {std::env::current_dir()?.join(path)};
         let raw_parent=path.parent().ok_or_else(||std::io::Error::other("file has no parent"))?;
+        // Upstream `proveWatchTarget`: the parent directory must already be reachable; a missing one
+        // fails the registration instead of watching a path that can never appear.
+        match std::fs::metadata(raw_parent) {
+            Ok(_)=>{},
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Err(std::io::Error::other(format!("Cannot watch file: parent directory does not exist: {}",raw_parent.display()))),
+            Err(error)=>return Err(std::io::Error::other(format!("Cannot access parent directory {}: {error}",raw_parent.display()))),
+        }
         // Identity is derived without open(2), with the same walker the permission parser used, so
         // the two sides agree byte-for-byte and neither can block on a wedged mount.
         let parent=realpath_without_open(raw_parent);
@@ -114,23 +112,14 @@ impl FileMonitor {
         let expected_parent=approved_parent.as_deref().unwrap_or(&parent);
         if resolved_target!=expected_parent.join(path.file_name().unwrap_or_default()) {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
         let checkpoint=crate::durable_file::file_checkpoint(&path)?;
-        Ok(Self {id,description,path,parent,event,identity:(checkpoint.dev,checkpoint.ino),checkpoint,paused:false,settled:false,reservation:None})
+        Ok(crate::file_monitor_record::new_file_record(crate::file_monitor_record::NewFileRecordInput {id,description,path,parent,event,initial:checkpoint}))
     }
     pub fn reserve_capacity(&mut self,reservation:crate::manager::CapacityReservation) {if !self.settled {self.reservation=Some(reservation);}}
+    /// One check pass (upstream `checkFileOnce`); a fire completes the watch.
     pub fn check(&mut self)->std::io::Result<Vec<MonitorEvent>> {
-        if self.paused||self.settled {return Ok(vec![]);}
-        let parent=realpath_without_open(self.path.parent().expect("registered file parent"));
-        if parent!=self.parent {return Err(std::io::Error::other(format!("watcher error: monitored parent changed: {}",self.path.parent().expect("registered file parent").display())));}
-        let current=crate::durable_file::file_checkpoint_with_identity(&self.path,Some(self.identity))?;
-        let changed=match self.event {
-            FileEvent::Create=>!self.checkpoint.present&&current.present,
-            FileEvent::Modify=>self.checkpoint.present&&current.present&&(self.checkpoint.mtime_ms!=current.mtime_ms||self.checkpoint.size!=current.size||self.checkpoint.digest!=current.digest),
-        };
-        if !self.checkpoint.present&&current.present {self.identity=(current.dev,current.ino);}
-        self.checkpoint=current;
-        if !changed {return Ok(vec![]);}
+        let crate::file_monitor_check::FileCheckOutcome::Fire(line)=crate::file_monitor_check::check_file_once(self)? else {return Ok(vec![]);};
         self.settled=true;self.reservation.take();
-        Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line:format!("{} {}",match self.event {FileEvent::Create=>"create",FileEvent::Modify=>"modify"},self.path.display())},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
+        Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line,human_input:false},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
     }
     pub fn stop(&mut self,summary:&str)->Option<MonitorEvent> {
         if self.settled {return None;}
@@ -209,6 +198,12 @@ mod tests {
         let parent=dir.path().join("parent");std::os::unix::fs::symlink(&second,&parent)?;
         let error=FileMonitor::register("watch_1".to_owned(),"retarget".to_owned(),&parent.join("file"),FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
         assert!(error.contains("parent directory changed during permission approval"),"{error}");Ok(())
+    }
+    #[test]
+    fn a_missing_parent_directory_fails_registration() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("missing").join("file");
+        let error=FileMonitor::register("watch_1".to_owned(),"missing".to_owned(),&path,FileEvent::Create,None).err().expect("register must fail").to_string();
+        assert!(error.contains("parent directory does not exist"),"{error}");
     }
     #[test]
     fn a_target_whose_identity_changed_is_refused()->std::io::Result<()> {

@@ -4737,6 +4737,7 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-pty",
+ "maho-rpc",
  "maho-test-support",
  "maho-tool-child",
  "maho-tools",
