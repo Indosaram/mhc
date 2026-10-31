@@ -105,7 +105,7 @@ pub fn register_memory_static(
     });
     if let Some(load_settings) = options.load_settings {
         let limits_settings = load_settings.clone();
-        handler.set_projection_limits(Some(Arc::new(move |identity| {
+        handler.set_projection_limits(Some(Arc::new(move |identity: &str| {
             crate::projection_limits::projection_limits(&limits_settings(), identity)
         })));
         let sender = Arc::new(maho_ext_api::ExtensionApi::new(
