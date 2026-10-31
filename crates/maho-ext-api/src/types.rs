@@ -2653,7 +2653,14 @@ impl ExtensionContext {
             .take_approved_monitor_parent(tool_call_id, input)
     }
     pub fn is_idle(&self) -> bool {
-        self.assert_active_or_panic();
+        if self
+            .session_manager
+            .extension_context_actions()
+            .and_then(|a| a.assert_active().err())
+            .is_some()
+        {
+            return false;
+        }
         self.session_manager
             .extension_context_actions()
             .map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle)
