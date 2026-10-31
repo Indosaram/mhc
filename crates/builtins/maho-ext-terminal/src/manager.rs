@@ -125,14 +125,18 @@ fn signal_tracked_children(
     signalled: &mut Vec<TrackedDetachedChild>,
     first_error: &mut Option<RuntimeError>,
 ) {
-    let mut detached = detached
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if detached.cleaned {
-        return;
-    }
-    detached.cleaned = true;
-    for child in &detached.children {
+    // The children are cloned out and the lock released before any probe or kill callback runs.
+    let children = {
+        let mut detached = detached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if detached.cleaned {
+            return;
+        }
+        detached.cleaned = true;
+        detached.children.clone()
+    };
+    for child in &children {
         if child.is_exited() {
             continue;
         }
@@ -1322,7 +1326,20 @@ mod tests {
                 ..TrackedDetachedChild::default()
             },
         );
-        assert!(manager.stop(&id)?);
+        // A regression that sleeps for the grace fails here instead of hanging for 600 s: the stop
+        // runs on a detached thread (runtime entered) and its result is awaited with a bound.
+        let (sender, stopped) = tokio::sync::oneshot::channel();
+        let (handle, stop_id) = (tokio::runtime::Handle::current(), id.clone());
+        std::thread::spawn(move || {
+            let _runtime = handle.enter();
+            let result = manager.stop(&stop_id);
+            let _ = sender.send((result, manager));
+        });
+        let (result, mut manager) = tokio::time::timeout(Duration::from_secs(30), stopped)
+            .await
+            .expect("stop returned before the detached grace")
+            .unwrap();
+        assert!(result?);
         assert_eq!(*killed.lock().unwrap(), ["-701:SIGTERM"]);
         manager.teardown()?;
         assert_eq!(*killed.lock().unwrap(), ["-701:SIGTERM"]);
