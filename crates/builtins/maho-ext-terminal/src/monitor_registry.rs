@@ -150,12 +150,15 @@ pub struct MonitorRegistry {
     >,
     file_snapshots:
         std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String, MonitorSnapshotEntry>>>,
+    rpc_slot: RpcSourceSlot,
     next_file_id: usize,
     transitions: tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
     parked: tokio::sync::watch::Sender<bool>,
     delivery: std::sync::Arc<std::sync::Mutex<MonitorRouting>>,
     ended: MonitorEndedSink,
     runaway_guard: std::sync::Arc<std::sync::Mutex<crate::settings::MonitorRunawayGuard>>,
+    /// Upstream `#rpc`: rpc watches (eager here; upstream loads the source on the first one).
+    rpc: crate::rpc_monitor_source::RpcMonitorSource,
     disposed: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -168,9 +171,12 @@ struct MonitorRouting {
     sink: Option<MonitorSink>,
     pending: std::collections::VecDeque<MonitorEvent>,
 }
+type RpcSourceSlot =
+    std::sync::Arc<std::sync::OnceLock<crate::rpc_monitor_source::RpcMonitorSource>>;
 fn publish_snapshot(
     records: &std::sync::Mutex<indexmap::IndexMap<String, CommandMonitor>>,
     files: &std::sync::Mutex<indexmap::IndexMap<String, MonitorSnapshotEntry>>,
+    rpc: &RpcSourceSlot,
     sender: &tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
 ) {
     let mut snapshot = records
@@ -180,6 +186,9 @@ fn publish_snapshot(
         .map(|record| record.snapshot.clone())
         .collect::<Vec<_>>();
     snapshot.extend(files.lock().expect("file snapshots").values().cloned());
+    if let Some(rpc) = rpc.get() {
+        snapshot.extend(rpc.snapshots());
+    }
     sender.send_if_modified(|current| {
         if *current == snapshot {
             false
@@ -226,20 +235,49 @@ impl MonitorRegistry {
                 sink(event);
             }
         });
+        let records: std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String, CommandMonitor>>> =
+            Default::default();
+        let file_snapshots: std::sync::Arc<
+            std::sync::Mutex<indexmap::IndexMap<String, MonitorSnapshotEntry>>,
+        > = Default::default();
+        let transitions = tokio::sync::watch::channel(vec![]).0;
+        let ended: MonitorEndedSink = std::sync::Arc::new(ended);
+        let rpc_slot: RpcSourceSlot = Default::default();
+        let rpc = crate::rpc_monitor_source::RpcMonitorSource::new(
+            crate::rpc_monitor_source::RpcSourceHost {
+                emit: emit.clone(),
+                ended: ended.clone(),
+                changed: {
+                    let (records, files, slot, transitions) = (
+                        records.clone(),
+                        file_snapshots.clone(),
+                        rpc_slot.clone(),
+                        transitions.clone(),
+                    );
+                    std::sync::Arc::new(move || {
+                        publish_snapshot(&records, &files, &slot, &transitions)
+                    })
+                },
+                now_ms: std::sync::Arc::new(now_ms),
+            },
+        );
+        let _ = rpc_slot.set(rpc.clone());
         Self {
-            records: Default::default(),
+            records,
             tasks: vec![],
             emit,
             files: Default::default(),
-            file_snapshots: Default::default(),
+            file_snapshots,
+            rpc_slot,
             next_file_id: 0,
-            transitions: tokio::sync::watch::channel(vec![]).0,
+            transitions,
             parked: tokio::sync::watch::channel(false).0,
             delivery,
-            ended: std::sync::Arc::new(ended),
+            ended,
             runaway_guard: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor_runaway,
             )),
+            rpc,
             disposed: false,
         }
     }
@@ -290,10 +328,30 @@ impl MonitorRegistry {
             .lock()
             .expect("monitor records")
             .get(id)
-            .map_or(0, |record| record.muted_dropped)
+            .map(|record| record.muted_dropped)
+            .or_else(|| self.rpc.muted_dropped(id))
+            .unwrap_or(0)
+    }
+    /// The rpc source, for an arm that is awaited without holding the registry lock (upstream
+    /// `registerRpc`).
+    pub fn rpc_source(&self) -> crate::rpc_monitor_source::RpcMonitorSource {
+        self.rpc.clone()
+    }
+    /// Upstream `stopRpc`: false when the id is not a live rpc watch.
+    pub fn stop_rpc(&self, id: &str) -> bool {
+        self.rpc.settle(id, "watcher killed")
+    }
+    /// Upstream `stopAllRpc`.
+    pub fn stop_all_rpc(&self) -> usize {
+        self.rpc.settle_all("watcher killed")
     }
     fn publish_state(&self) {
-        publish_snapshot(&self.records, &self.file_snapshots, &self.transitions);
+        publish_snapshot(
+            &self.records,
+            &self.file_snapshots,
+            &self.rpc_slot,
+            &self.transitions,
+        );
     }
     pub fn register_file(
         &mut self,
@@ -443,6 +501,7 @@ impl MonitorRegistry {
             .fire_count = Some(0);
         self.publish_state();
         let records = self.records.clone();
+        let rpc_slot = self.rpc_slot.clone();
         let transitions = self.transitions.clone();
         let mut state = self.subscribe_state();
         let mut parked = self.parked.subscribe();
@@ -511,7 +570,7 @@ impl MonitorRegistry {
                         );
                     }
                 }
-                publish_snapshot(&records, &snapshots, &transitions);
+                publish_snapshot(&records, &snapshots, &rpc_slot, &transitions);
                 for event in events {
                     emit(event);
                 }
@@ -644,6 +703,7 @@ impl MonitorRegistry {
                 .values()
                 .cloned(),
         );
+        snapshot.extend(self.rpc.snapshots());
         snapshot
     }
     pub fn pause(&self, ids: &[String]) -> Vec<String> {
@@ -670,19 +730,29 @@ impl MonitorRegistry {
                 }
             }
         }
+        paused.extend(ids.iter().filter(|id| self.rpc.pause(id)).cloned());
         drop(records);
         self.publish_state();
         paused
     }
     pub fn resume(&self, ids: Option<&[String]>) -> Vec<(String, usize)> {
         let mut records = self.records.lock().expect("monitor records");
-        let ids = ids
-            .map(<[String]>::to_vec)
-            .unwrap_or_else(|| records.keys().chain(self.files.keys()).cloned().collect());
+        let ids = ids.map(<[String]>::to_vec).unwrap_or_else(|| {
+            records
+                .keys()
+                .chain(self.files.keys())
+                .cloned()
+                .chain(self.rpc.keys())
+                .collect()
+        });
         let mut resumed = vec![];
         let mut pending_events = vec![];
         for id in ids {
             if let Some(dropped) = records.get_mut(&id).and_then(CommandMonitor::resume) {
+                resumed.push((id, dropped));
+                continue;
+            }
+            if let Some(dropped) = self.rpc.resume(&id) {
                 resumed.push((id, dropped));
                 continue;
             }
@@ -745,6 +815,7 @@ impl MonitorRegistry {
         let records = self.records.clone();
         let emit = self.emit.clone();
         let files = self.file_snapshots.clone();
+        let rpc_slot = self.rpc_slot.clone();
         let transitions = self.transitions.clone();
         let ended = self.ended.clone();
         self.tasks.retain(|task| !task.is_finished());
@@ -753,7 +824,7 @@ impl MonitorRegistry {
                 let settled=exit.borrow().clone();
                 if let Some(result)=settled {
                     let Some(mut record)=records.lock().expect("monitor records").shift_remove(&id) else {return;};
-                    publish_snapshot(&records,&files,&transitions);
+                    publish_snapshot(&records,&files,&rpc_slot,&transitions);
                     while let Ok(chunk)=output.try_recv() {let current=*guard.lock().expect("runaway guard");for event in record.consume(&chunk,now_ms(),&current) {emit(event);}}
                     let (reason,exit_code)=match &result {Ok(exit)=>(if exit.timed_out {MonitorEndedReason::Timeout} else if exit.cancelled {MonitorEndedReason::Killed} else {MonitorEndedReason::Exit},exit.exit_code),Err(_)=>(MonitorEndedReason::Exit,None)};
                     // A timed-out watch was KILLED by its own timeout_ms deadline; say so instead of a
@@ -765,7 +836,7 @@ impl MonitorRegistry {
                     return;
                 }
                 tokio::select! {
-                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|{let current=*guard.lock().expect("runaway guard");record.consume(&chunk,now_ms(),&current)}).unwrap_or_default();if !events.is_empty() {publish_snapshot(&records,&files,&transitions);}for event in events {emit(event);}},
+                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|{let current=*guard.lock().expect("runaway guard");record.consume(&chunk,now_ms(),&current)}).unwrap_or_default();if !events.is_empty() {publish_snapshot(&records,&files,&rpc_slot,&transitions);}for event in events {emit(event);}},
                     changed=exit.changed()=>{if changed.is_err() {return;}}
                 }
             }
@@ -808,6 +879,7 @@ impl MonitorRegistry {
             );
         }
         self.records.lock().expect("monitor records").clear();
+        self.rpc.dispose();
         self.publish_state();
         for event in events {
             (self.emit)(event);

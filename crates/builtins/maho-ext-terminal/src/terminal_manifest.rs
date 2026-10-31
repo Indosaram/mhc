@@ -30,7 +30,12 @@ pub struct TerminalManifestWriter {
     entries: IndexMap<String, ManifestMonitor>,
     backgrounds: IndexMap<String, ManifestBackgroundSession>,
     pending: BTreeMap<String, TerminalManifestCheckpoint>,
+    /// Shared so a live rpc watch can checkpoint without the writer lock (`rpc_checkpoint_sink`).
+    pending_rpc: std::sync::Arc<std::sync::Mutex<BTreeMap<String, TerminalManifestRpcCheckpoint>>>,
     pub persist_failure: Option<SidecarError>,
+    /// Where a restored rpc watch looks for endpoints (upstream `CheckpointedRpcRestoreDeps.agentDir`);
+    /// `None` is `getAgentDir()`.
+    pub rpc_agent_dir: Option<std::path::PathBuf>,
 }
 impl TerminalManifestWriter {
     pub fn new(session_dir: &std::path::Path, session_id: &str) -> Self {
@@ -40,7 +45,9 @@ impl TerminalManifestWriter {
             entries: IndexMap::new(),
             backgrounds: IndexMap::new(),
             pending: BTreeMap::new(),
+            pending_rpc: Default::default(),
             persist_failure: None,
+            rpc_agent_dir: None,
         }
     }
     pub async fn record_register(&mut self, registration: MonitorRegistration, now: f64) {
@@ -64,6 +71,7 @@ impl TerminalManifestWriter {
             cwd,
             approved_parent,
             persistent,
+            rpc,
         ) = match registration.spec {
             MonitorSpec::Command {
                 description,
@@ -85,6 +93,7 @@ impl TerminalManifestWriter {
                 cwd,
                 None,
                 persistent,
+                None,
             ),
             MonitorSpec::File {
                 description,
@@ -106,15 +115,40 @@ impl TerminalManifestWriter {
                 Some(cwd),
                 approved_parent,
                 persistent,
+                None,
+            ),
+            MonitorSpec::Rpc {
+                description,
+                target,
+                events,
+                exclude,
+                filter,
+                persistent,
+            } => (
+                description,
+                MonitorRuntimeKind::Rpc,
+                None,
+                None,
+                None,
+                filter,
+                None,
+                None,
+                None,
+                None,
+                persistent,
+                Some((target, events, exclude)),
             ),
         };
         let durability_class = if !persistent {
             MonitorDurabilityClass::Ephemeral
         } else if runtime_kind == MonitorRuntimeKind::File {
             MonitorDurabilityClass::CheckpointedFile
+        } else if runtime_kind == MonitorRuntimeKind::Rpc {
+            MonitorDurabilityClass::CheckpointedRpc
         } else {
             MonitorDurabilityClass::RestartableCommand
         };
+        let (target, events, exclude) = rpc.unwrap_or_default();
         self.entries.insert(
             registration.monitor_id.clone(),
             ManifestMonitor {
@@ -131,6 +165,10 @@ impl TerminalManifestWriter {
                 wakes_per_hour,
                 cwd,
                 approved_parent,
+                target: (!target.is_empty()).then_some(target),
+                events,
+                exclude,
+                rpc_checkpoint: None,
                 created_at: now,
                 expires_at: persistent.then_some(now + DURABLE_MONITOR_EXPIRY_MS as f64),
                 persistent,
@@ -141,6 +179,7 @@ impl TerminalManifestWriter {
                     start_ms: now,
                     count: 0.0,
                 },
+                runtime: None,
                 deadline_ms: deadline_ms.filter(|_| !persistent),
             },
         );
@@ -287,7 +326,21 @@ impl TerminalManifestWriter {
                 terminal_dir: terminal_dir.clone(),
                 remaining_ms,
             };
+            let mut reason = None;
             let outcome = match monitor.durability_class {
+                MonitorDurabilityClass::CheckpointedRpc => {
+                    let restored = self.restore_rpc(&monitor, None, manager, registry);
+                    reason = restored.reason;
+                    restored.outcome
+                }
+                MonitorDurabilityClass::Ephemeral
+                    if remaining_ms.is_some()
+                        && monitor.runtime_kind == MonitorRuntimeKind::Rpc =>
+                {
+                    let restored = self.restore_rpc(&monitor, remaining_ms, manager, registry);
+                    reason = restored.reason;
+                    restored.outcome
+                }
                 MonitorDurabilityClass::Ephemeral
                     if remaining_ms.is_some()
                         && monitor.runtime_kind == MonitorRuntimeKind::Command =>
@@ -332,7 +385,9 @@ impl TerminalManifestWriter {
                 RestoreOutcome::Lost => digest.lost += 1,
                 RestoreOutcome::AttachedElsewhere => digest.attached_elsewhere += 1,
             }
-            digest.results.push(restored(&monitor, outcome.bucket()));
+            let mut result = restored(&monitor, outcome.bucket());
+            result.reason = reason;
+            digest.results.push(result);
             if matches!(outcome, RestoreOutcome::Restored | RestoreOutcome::Muted) {
                 self.adopt_restored(monitor.clone());
                 registry.adopt_fire_window(&monitor.monitor_id, &monitor.fire_window);
@@ -353,6 +408,40 @@ impl TerminalManifestWriter {
             })
             .collect();
         digest
+    }
+    /// The `checkpointed-rpc` handler (`durable_rpc`): the watch is armed under the registry now
+    /// and its endpoint join runs on the runtime.
+    fn restore_rpc(
+        &self,
+        monitor: &ManifestMonitor,
+        remaining_ms: Option<f64>,
+        manager: &mut crate::manager::TerminalManager,
+        registry: &mut crate::monitor_registry::MonitorRegistry,
+    ) -> crate::durable_rpc::RpcRestoreResult {
+        let source = registry.rpc_source();
+        let mut arm = |options| {
+            let (id, _, start) = source.arm(options)?;
+            tokio::spawn(start);
+            Ok(id)
+        };
+        let mut pause = |ids: &[String]| {
+            registry.pause(ids);
+        };
+        let mut bind = |monitor_id: &str, runtime_id: &str| {
+            manager.bind_monitor_id(monitor_id, runtime_id);
+        };
+        crate::durable_rpc::restore_checkpointed_rpc(
+            monitor,
+            remaining_ms,
+            crate::durable_rpc::CheckpointedRpcRestoreDeps {
+                arm: &mut arm,
+                pause: &mut pause,
+                writer: Some(self.rpc_checkpoint_sink()),
+                bind_monitor_id: Some(&mut bind),
+                session_id: Some(self.session_id.clone()),
+                agent_dir: self.rpc_agent_dir.clone(),
+            },
+        )
     }
     pub async fn observe_monitor_state(
         &mut self,
@@ -396,15 +485,48 @@ impl TerminalManifestWriter {
     pub fn schedule_checkpoint(&mut self, id: &str, checkpoint: TerminalManifestCheckpoint) {
         self.pending.insert(id.to_owned(), checkpoint);
     }
+    /// Upstream `scheduleRpcCheckpoint`: an rpc watch's view (hosts, statuses), absorbed with the
+    /// file checkpoints on the next flush or shutdown.
+    pub fn schedule_rpc_checkpoint(&mut self, id: &str, checkpoint: TerminalManifestRpcCheckpoint) {
+        self.rpc_checkpoint_sink()(id, checkpoint);
+    }
+    /// `scheduleRpcCheckpoint` as a sink a live rpc watch holds (no writer lock taken).
+    pub fn rpc_checkpoint_sink(&self) -> crate::rpc_monitor_source::RpcCheckpointSink {
+        let pending = self.pending_rpc.clone();
+        std::sync::Arc::new(move |id, checkpoint| {
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.to_owned(), checkpoint);
+        })
+    }
+    fn take_pending_rpc(&self) -> BTreeMap<String, TerminalManifestRpcCheckpoint> {
+        std::mem::take(
+            &mut self
+                .pending_rpc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
     fn absorb_pending(&mut self) {
         for (id, checkpoint) in std::mem::take(&mut self.pending) {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.last_checkpoint = Some(checkpoint);
             }
         }
+        for (id, checkpoint) in self.take_pending_rpc() {
+            if let Some(entry) = self.entries.get_mut(&id) {
+                entry.rpc_checkpoint = Some(checkpoint);
+            }
+        }
     }
     pub async fn flush(&mut self, now: f64) {
-        if !self.pending.is_empty() {
+        let rpc_pending = !self
+            .pending_rpc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty();
+        if !self.pending.is_empty() || rpc_pending {
             self.absorb_pending();
             self.persist(now).await;
         }
@@ -801,6 +923,74 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5),async {for expected in ["33 91","shell:bash"] {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line==expected));}assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();
         registry.dispose();
         manager.teardown().unwrap();
+    }
+    /// terminal-manifest.ts `scheduleRpcCheckpoint` + `#entryFor` (rpc): a persistent rpc spec is
+    /// the `checkpointed-rpc` class with its target/events/exclude, and its view is absorbed on
+    /// flush; a restore re-arms it under its `mon_` id (an agent dir with no endpoints joins none).
+    #[tokio::test]
+    async fn rpc_spec_records_checkpointed_rpc_absorbs_its_checkpoint_and_restores_under_its_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = TerminalManifestWriter::new(dir.path(), "s");
+        writer
+            .record_register(
+                MonitorRegistration {
+                    monitor_id: "mon_RPC".to_owned(),
+                    spec: MonitorSpec::Rpc {
+                        description: "kids".to_owned(),
+                        target: "all".to_owned(),
+                        events: Some(crate::rpc_monitor_targets::RpcEvents::All),
+                        exclude: Some(vec!["message_update".to_owned()]),
+                        filter: Some("idle".to_owned()),
+                        persistent: true,
+                    },
+                },
+                10.0,
+            )
+            .await;
+        let entry = &writer.entries["mon_RPC"];
+        assert_eq!(entry.runtime_kind, MonitorRuntimeKind::Rpc);
+        assert_eq!(
+            entry.durability_class,
+            MonitorDurabilityClass::CheckpointedRpc
+        );
+        assert_eq!(entry.target.as_deref(), Some("all"));
+        assert_eq!(entry.cwd, None);
+        let checkpoint: TerminalManifestRpcCheckpoint = serde_json::from_value(serde_json::json!({
+            "hosts":{"/h.sock":{"instanceId":"i","generation":"3"}},"statuses":{"/h.sock#s1":"idle"}}))
+        .unwrap();
+        writer.rpc_checkpoint_sink()("mon_RPC", checkpoint.clone());
+        writer.flush(20.0).await;
+        let persisted = crate::restore::parse_terminal_manifest(
+            &writer.store.read().await.unwrap().unwrap(),
+            "s",
+        )
+        .unwrap();
+        assert_eq!(persisted.monitors[0].rpc_checkpoint, Some(checkpoint));
+        assert_eq!(
+            persisted.monitors[0].events,
+            Some(crate::rpc_monitor_targets::RpcEvents::All)
+        );
+        writer.record_shutdown(30.0).await;
+        let mut next = TerminalManifestWriter::new(dir.path(), "s");
+        next.rpc_agent_dir = Some(dir.path().join("agent"));
+        let mut manager = crate::manager::TerminalManager::default();
+        let mut registry = crate::monitor_registry::MonitorRegistry::new(|_| {});
+        let state = next.read_restore_state().await;
+        let digest = next.apply_restore_state(
+            state,
+            &mut manager,
+            &mut registry,
+            40.0,
+            None,
+            &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
+        );
+        assert_eq!((digest.restored, digest.lost), (1, 0));
+        assert_eq!(manager.resolve_id("mon_RPC"), Some("rpc_1".to_owned()));
+        assert_eq!(next.durable_count(), 1);
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot[0].monitor_id.as_deref(), Some("mon_RPC"));
+        assert_eq!(snapshot[0].filter.as_deref(), Some("idle"));
+        registry.dispose();
     }
     #[tokio::test]
     async fn missing_stable_identity_is_an_error() {
