@@ -526,3 +526,180 @@ Errors (only if §7.2 is implemented)
   is sourced from MIT code.
 - Notice/log wording is specified by required facts; proposed identifiers are neutral.
 - No OmO-original feature or persona name is used.
+
+---
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+Changes to §6 (model profiles) observed in the upstream release. Message wording is the
+implementer's; only the facts below are mandated.
+
+### D1. Launch-gated model rungs (daily-heavy)
+
+Behaviour: a profile chain may contain a *launch-gated* model, i.e. a model id that is known to
+the product before the provider serves it. The one gated id in this release is `claude-fable-5-5`
+(compared after turning `.` into `-` and ignoring any `provider/` prefix). The release flag is
+the one MIT `maho-ext-recommended-models` already carries for this model (off in this release).
+While it is off, the gated rung is removed from every built-in chain when the chain is built, so
+profile resolution, the default order and the probe only ever operate on chains without it.
+When the flag is on, a gated rung is kept only if its reasoning level is one of the *accepted
+levels* for that model (`xhigh`, `max`); a gated rung with another or no level is dropped, the
+drop is made observable to tests (for example a list of dropped rungs) and one warning is logged
+naming the level. Building the built-in profiles always succeeds; a dropped rung is not an error.
+
+The built-in `daily-heavy` chain stages the gated rung first, at `xhigh`, on the Anthropic
+provider set, followed by the current top model of the same family at `xhigh` (source that id
+from the MIT recommended-models data as §6.1 says). Later rungs stay as §6.1 composes them. With
+the flag off the chain therefore starts with that same-family rung.
+
+Inputs: the built-in chain definitions; the flag; the accepted levels. Output: the built chain.
+Errors: none surfaced to the user beyond the one warning.
+
+Tests:
+1. Given the flag is off, when built-in profiles are created, then `daily-heavy` has no rung
+   whose model normalises to `claude-fable-5-5`, and `resolve_profile` never reports it as
+   skipped or selected, even with an `available` list that contains it.
+2. Given the flag is on and the rung is `xhigh`, then the chain starts with that rung.
+3. Given the flag is on and a rung has level `medium`, then it is dropped, one rejection is
+   recorded and one warning is logged; the other rungs remain.
+4. A user-defined profile that names the gated id explicitly is not filtered (the gate covers
+   built-in data only).
+
+### D2. Profile outcomes are not sent to the model
+
+Behaviour: the "applied / unavailable / unknown / registry no longer lists it" outcomes of §6.8
+are recorded as **session entries** that are not part of the model's input, and are never
+delivered as a custom message that enters the next model request. The entry carries the same
+type ids and details as §6.8 and is appended with the MIT senpi (v2026.10.27-2)
+`appendEntry` start-up-bookkeeping option, so a session that never gets a conversation leaves no
+session file behind (the mhc `append_entry` action does not carry that option yet; porting it
+from senpi is a prerequisite).
+
+UI notifications (in addition to the entry and the log line):
+- applied, no auth failures → none;
+- applied with auth failures → one `warning`;
+- unavailable / unknown → one notification, `info` when the profile came from the default order
+  (§6.5) and there were no auth failures, otherwise `warning`;
+- registry no longer lists the resolved model → one `warning`.
+
+Hosts without a UI notification channel (headless json/print runs) skip the notification only;
+the entry and the log line remain. A runtime that cannot append entries logs a warning and
+notifies only.
+
+Tests: given a clean applied outcome in a run with a recording host, then exactly one entry with
+type `model-profile:applied` is appended, no notification is issued, and no message is sent to
+the model; given an applied outcome with one auth failure, then one `warning` notification;
+given the unset default resolving to unavailable with no auth failures, then one `info`
+notification; given a host without UI, then the entry exists and nothing fails.
+
+### D3. Notice facts for "no available model" and "registry dropped the model"
+
+1. Unavailable because no rung is in the registry (no auth failures): the notice ends with a
+   next step that depends on the run mode. In rpc/desktop mode: sign in to one of the listed
+   providers from the client's provider settings, or pick a model in the client. In every other
+   mode: log in to one of the listed providers from an interactive session (`/login`), or start
+   with `--model`. (The auth-failure variant keeps its per-failure advice from §6.8.)
+2. Resolved but the registry no longer lists the chosen model: the notice states the profile id,
+   the `provider/model`, that the session keeps its current model, and asks the user to choose
+   another model for this profile (rpc/desktop: in settings; otherwise via `/model` or `--model`).
+   The product name in the message is `mhc`.
+
+Tests: unavailable in rpc mode points to the provider settings and does not mention `/login`; in
+print/json mode it contains `/login` and `--model` (the TUI never applies a profile, §6.7);
+registry-dropped notice names the profile, the `provider/model` and that the current model is kept.
+
+### D4. Transient OAuth refresh failure in the request-auth probe (§6.6)
+
+Behaviour: an OAuth refresh failure in §6.6 step 2 is either *refused* (the token endpoint
+answered and rejected the stored grant) or *transient* (the endpoint could not be reached, timed
+out, or answered with a temporary error such as rate limiting or a server error). Only a refused
+refresh excludes the provider with reason `refresh`. On a transient one the provider is **kept**
+as a candidate and no `refresh` failure is reported; the model-scope check (§6.6 step 3) still
+runs on it, and if that check itself cannot complete because of the same transient refresh, the
+candidate stays kept without a model-scope result. Each kept candidate produces one warning log
+line that carries the provider, the model, the error fingerprint of §6.6 step 4 and a short
+transport classification (for example an OS error code, `http_<status>` or a timeout marker);
+it never carries an error message, URL or response body.
+
+Prerequisite (MIT side): MIT senpi v2026.10.27-2 (`packages/ai/src/utils/oauth-refresh-error.ts`)
+separates the transient refresh failure from a refused one and supplies the transport
+classification; mhc's `maho-ai` still reports every OAuth refresh failure as the single `oauth`
+code. Port that MIT distinction first and expose it through `AuthProbe`'s error; the probe must
+recognise it even when the failure is wrapped by another error.
+
+Tests: 28b. Provider A's login refresh fails transiently (classification carried by a wrapped
+error) → A stays the chosen rung, the applied outcome lists no failure for A, one warning with
+fingerprint and transport classification and no message text.
+28c. Same, but the model's headers fail → only that model is excluded (reason request). 28d. A
+plain refused refresh still excludes A with reason refresh.
+
+### D6. Kimi rung of daily-normal follows the current Kimi model
+
+Behaviour: the Kimi rung of the built-in `daily-normal` chain (second rung, after the Claude rung
+and before the GLM rung) names the current top model of the Kimi family, model id
+`kimi-k3.1-pro`. As §6.1 says, the id is sourced from the MIT `maho-ext-recommended-models`
+data, and the rung takes that data's provider ranking for the id as its provider list (same
+entries, same order) and that data's default level for the id as its level, which is `max` in
+this release. The id `kimi-k3` no longer appears in any built-in chain.
+
+Prerequisite (MIT-direct port, census senpi-builtins-b-05): the mhc copy of
+`maho-ext-recommended-models` still lists `kimi-k3`. It must first be brought to the current MIT
+senpi data, which lists `kimi-k3.1-pro` at `max` with the Kimi provider ranking `kimi-coding`,
+`kimi-for-coding`, `moonshotai`, `opencode-go`.
+
+Provider id transform (extends §4, compatibility fact; MIT senpi recommended-models also notes
+that Kimi Code serves bare ids): Kimi Code publishes the new model under a bare id, so for
+`kimi-coding` and `kimi-for-coding` also map `kimi-k3.1-pro` → `k3.1-pro` and
+`kimi-k3.1-pro-highspeed` → `k3.1-pro-highspeed`. Without it the rung cannot match on the two
+providers it ranks first.
+
+Invariant: every rung of every built-in profile has a non-empty provider list. A built-in rung
+must never fall back to the empty-list meaning of §6.4 (any provider, including gateways and
+resellers), and must never be left without a level when the recommended data gives one. A
+built-in rung whose model id the recommended data does not rank is a data defect, to be caught
+by test, not a runtime condition.
+
+Review of the other built-in rungs against the recommended data's provider ranking (builtins-b
+lane): once the recommended data is current, the only built-in rung whose model id is not ranked
+is the `daily-normal` Kimi rung (`kimi-k3`). Every other id used by the built-in chains
+(`claude-opus-5-5`, `glm-5.3`, `claude-fable-5-1`, `gpt-6.1-sol`, `gpt-6-astra`) is still ranked, so no other rung changes.
+
+Inputs: the recommended-models data (ranking and default levels). Output: the built chain.
+Errors: none at runtime. The invariant is enforced by tests.
+
+Tests:
+1. Given built-in profiles, when `daily-normal` is inspected, then it contains a rung with model
+   `kimi-k3.1-pro` whose providers equal the recommended-models ranking for `kimi-k3.1-pro`
+   (same entries, same order) and whose level is `max`. No rung names `kimi-k3`.
+2. Given built-in profiles, when every rung of every built-in profile is inspected, then each
+   has a non-empty provider list.
+3. Given `available` is exactly `["acme-gateway/kimi-k3.1-pro"]` (a provider not in the Kimi
+   ranking), when `daily-normal` is resolved, then the result is `Unavailable` listing all
+   three rungs; the Kimi rung does not match through that gateway.
+4. Given `available` is exactly `["kimi-coding/k3.1-pro"]`, when `daily-normal` is resolved,
+   then the result is `Resolved` with provider `kimi-coding`, model id `k3.1-pro`, reasoning
+   `max`, and the Claude rung as the only skipped label.
+5. `("kimi-for-coding","kimi-k3.1-pro")` → `k3.1-pro`; `("moonshotai","kimi-k3.1-pro")` →
+   unchanged.
+
+### D5. Mapping table
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-18 | D1 | APPLIES | model id and rung order are observable in the chain |
+| omo-components-19 | D2 | APPLIES | what the user sees and what the model reads |
+| omo-components-20 | D3 | APPLIES | notice facts the user reads |
+| omo-components-21 | D4 | APPLIES | changes which providers a session may start on |
+| omo-cores-02 | D6 | APPLIES | Kimi model id and provider set of a built-in chain are observable; data prerequisite is senpi-builtins-b-05 |
+
+Leak self-check:
+- No fenced code from SUL: none used (no code blocks in this delta).
+- No sentence paraphrases a SUL comment or prompt: the gate and probe are described from
+  behaviour; messages are described by facts only. (Reviewer fixes in
+  docs/cleanroom/reviews/model-selection-5152.md removed sentences in D1, D2 and D4 that echoed
+  SUL comments and SUL implementation constants.)
+- No row-for-row table: only the single gated model id, two level names, and (D6) model ids
+  and one level name appear (interface facts).
+- No OmO-original identifier: type ids stay `model-profile:*`; product name `mhc`.
+- No OmO-original feature: the persona/launch tooling of the upstream is not specified beyond the
+  one gate that shapes a built-in chain.

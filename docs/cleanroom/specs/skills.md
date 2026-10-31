@@ -122,3 +122,52 @@ Behaviour:
    symlink-escape paths refused.
 5. `/skill` listing and detail text.
 6. `collect_disabled_skills` integration: user + project `omo.jsonc` union.
+
+---
+
+## Delta (omo v5.1.52, 2026-10-30)
+
+### D1. Validated bundled-root override
+
+§2's first rule is tightened. The override value (`MAHO_SKILLS_ROOT`; when that is unset or
+empty, the launcher's legacy `OMO_BUNDLED_SKILLS_DIR` is read instead, and only the one value
+read is validated) is valid only if it is non-empty, an **absolute** path, and a directory this
+process can read and list (a file or missing path is invalid). An unset or empty value is simply
+absent (no notice).
+
+- Valid → it is the bundled root.
+- Invalid → it is ignored, the executable-sibling fallback of §2 applies, and the problem is
+  reported: one error log line and one error UI notification, each **at most once per process**
+  per distinct message. The message names the variable, the value, the reason (`relative`, or
+  the OS error name such as `ENOENT`, `EACCES`, `ENOTDIR`) and what a valid value must be.
+  Consumers without a UI only log.
+- An explicit directory handed in by code (an option) always wins over the environment and is
+  not subject to the notice.
+
+### D2. All bundled-skill consumers use the one resolver
+
+The `/skill` command, the `skill` tool and `resources_discover` resolve the root through the same
+function so the override and its once-only notice apply everywhere; the notice context (logger,
+UI) is passed through each. A first-run setup step that points at a bundled tour skill uses the
+same resolved root (onboarding has no such step in the MIT spec; nothing to do there until it does).
+
+### D3. Tests
+
+1. Relative value → ignored, sibling used, one log + one UI notice; calling again → no second one.
+2. Value naming a file, a missing directory, an unreadable directory → ignored with the matching
+   reason; readable absolute directory → used.
+3. Option + invalid env → option wins, no notice.
+4. `/skill` and `skill` tool see the same root; the notice is shown once across both.
+5. `MAHO_SKILLS_ROOT` empty and legacy variable set to a valid directory → legacy used;
+   `MAHO_SKILLS_ROOT` invalid and legacy valid → notice for `MAHO_SKILLS_ROOT`, sibling used.
+
+### D4. Mapping table
+
+| census row | delta § | APPLIES/N-A | reason |
+| --- | --- | --- | --- |
+| omo-components-01 | D1 | APPLIES | env interface and notice are user-visible |
+| omo-components-02 | D2 | APPLIES | /skill and tool must honour the same override; the onboarding half is N-A (no tour step in onboarding.md) |
+
+Leak self-check:
+- No fenced SUL code. - No paraphrase of SUL comments. - No constant tables. - Neutral names
+  (`MAHO_SKILLS_ROOT`; the legacy env name is an interface fact). - No OmO-original features.
