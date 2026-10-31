@@ -56,3 +56,21 @@ pub fn render_highlighted_html(html: &str, theme: &HighlightTheme) -> String {
     flush(&mut output, &mut buffer, &scopes, theme);
     output
 }
+
+/// senpi `highlight(code, { language, ignoreIllegals, theme })`: `code` tokenized into
+/// highlight.js classes (by the TUI's grammar set, `maho_interactive::theme::highlight`) and each
+/// run passed through the `theme` formatter of its class, as `renderHighlightedHtml` does for
+/// highlight.js output. `Err` when the language is not registered (`hljs.highlight` throws). The
+/// no-language branch (`hljs.highlightAuto`) has no counterpart: the only caller, `highlightCode`,
+/// always passes a supported language.
+pub fn highlight(code: &str, language: &str, theme: &HighlightTheme) -> Result<String, String> {
+    let runs = maho_interactive::theme::highlight::highlight_runs(code, language)?;
+    let mut output = String::new();
+    for (class, text) in runs {
+        match formatter(&[class.map(str::to_owned)], theme) {
+            Some(format) => output.push_str(&format(&text)),
+            None => output.push_str(&text),
+        }
+    }
+    Ok(output)
+}
