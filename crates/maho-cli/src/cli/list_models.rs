@@ -6,8 +6,10 @@ pub fn format_token_count(count: u64) -> String {
 }
 pub fn list_models(runtime: &ModelRuntime, search: Option<&str>) -> String {
     let mut models = runtime.get_models(None);
+    // senpi `listModels`: an empty catalog answers the no-models guidance before any search applies.
+    if models.is_empty() { return maho_core::auth_guidance::format_no_models_available_message(); }
     if let Some(search) = search.filter(|s| !s.is_empty()) { models = maho_tui::fuzzy::fuzzy_filter(&models, search, |model| format!("{} {}", model.provider, model.id)); }
-    if models.is_empty() { return search.filter(|s| !s.is_empty()).map_or_else(maho_core::auth_guidance::format_no_models_available_message, |s| format!("No models matching \"{s}\"")); }
+    if models.is_empty() { return format!("No models matching \"{}\"", search.unwrap_or_default()); }
     let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
     models.sort_by(|left, right| collator.compare(&left.provider, &right.provider).then_with(|| collator.compare(&left.id, &right.id)));
     let mut rows = vec![["provider".to_owned(), "model".to_owned(), "context".to_owned(), "max-out".to_owned(), "thinking".to_owned(), "images".to_owned()]];
