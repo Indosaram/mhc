@@ -264,7 +264,10 @@ impl CellHandler {
                         },
                     )
                     .await
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| {
+                        error_code = error.code();
+                        error.to_string()
+                    })
                     .map(|value| (value, true, None, None))
                 } else {
                     Err("eval handle requires an owning session id".to_string())
@@ -360,7 +363,8 @@ impl CellHandler {
                     .as_ref()
                     .and_then(|tools| tools.iter().find(|tool| tool.name == name))
                     .and_then(|tool| tool.parameters.as_ref());
-                let error = if name == "eval" {
+                // A blocked call (a permission denial or another hook's veto) is not an argument problem.
+                let error = if name == "eval" || error_code == Some("blocked") {
                     error
                 } else {
                     parameters.map_or_else(

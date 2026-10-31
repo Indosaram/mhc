@@ -92,16 +92,29 @@ mod tests {
         }
     }
 
+    fn missing_candidate() -> Candidate {
+        let root = std::sync::Arc::new(crate::grep::rg::enumerate::Root {
+            path: "missing".into(),
+            alias: "missing".into(),
+            cwd: ".".into(),
+            file: true,
+        });
+        Candidate {
+            absolute: "missing".into(),
+            canonical: "missing".into(),
+            display: "missing".into(),
+            root,
+            size: 5_000_000,
+            ordinal: 1,
+            binary: false,
+        }
+    }
+
     #[tokio::test]
     async fn aborted_prefix_does_not_classify_missing_file() {
         let signal = AbortSignal::default();
         signal.abort();
-        let candidate = Candidate {
-            absolute: "missing".into(),
-            display: "missing".into(),
-            size: 5_000_000,
-            ordinal: 1,
-        };
+        let candidate = missing_candidate();
         let mut result = empty_result();
         let read = read_searchable_prefix(
             &candidate,
@@ -117,12 +130,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_prefix_does_not_classify_missing_file() {
-        let candidate = Candidate {
-            absolute: "missing".into(),
-            display: "missing".into(),
-            size: 5_000_000,
-            ordinal: 1,
-        };
+        let candidate = missing_candidate();
         let mut result = empty_result();
         let read = read_searchable_prefix(
             &candidate,
