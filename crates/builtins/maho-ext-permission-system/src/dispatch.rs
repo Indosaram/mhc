@@ -17,7 +17,7 @@ use std::{
     fmt,
     future::Future,
     pin::Pin,
-    sync::{Arc, LazyLock, Mutex, Weak},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 pub type DispatchFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
@@ -88,10 +88,6 @@ struct Registration {
     authorizer: Arc<dyn DispatchAuthorizer>,
     retired: AbortSignal,
 }
-struct SessionSlot {
-    session: Weak<dyn SessionManager>,
-    registration: Arc<Registration>,
-}
 struct Approval {
     registration: Arc<Registration>,
     tool_call_id: String,
@@ -101,25 +97,23 @@ struct Approval {
     policy: DispatchPolicy,
 }
 
-// senpi keeps both in `WeakMap`s; here a dead session or input drops its entry on the next access.
-static AUTHORIZERS: LazyLock<Mutex<HashMap<usize, SessionSlot>>> = LazyLock::new(Default::default);
+// senpi keys authorizers on the runner's stable `sessionManager`. DIVERGENCE: the host hands each
+// context a session-manager adapter it rebuilds on every UI/core rebind (RPC reattach) without a
+// new `session_start`, so the adapter pointer is not stable; the session id is. Retired
+// registrations are retained like senpi's, so required authority stays distinguishable from a
+// session where enforcement was never loaded. Approvals stay keyed on the live input identity; a
+// dead input drops its entry on the next access.
+static AUTHORIZERS: LazyLock<Mutex<HashMap<String, Arc<Registration>>>> =
+    LazyLock::new(Default::default);
 static APPROVALS: LazyLock<Mutex<HashMap<usize, (WeakInvocationInput, Arc<Approval>)>>> =
     LazyLock::new(Default::default);
 
-fn session_key(session: &Arc<dyn SessionManager>) -> usize {
-    Arc::as_ptr(session).cast::<()>() as usize
-}
 fn registration_for(session: &Arc<dyn SessionManager>) -> Option<Arc<Registration>> {
-    let mut authorizers = AUTHORIZERS
+    AUTHORIZERS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = session_key(session);
-    let slot = authorizers.get(&key)?;
-    if slot.session.strong_count() == 0 {
-        authorizers.remove(&key);
-        return None;
-    }
-    Some(Arc::clone(&slot.registration))
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(session.session_id())
+        .map(Arc::clone)
 }
 fn approval_for(input: &InvocationInput) -> Option<Arc<Approval>> {
     let approvals = APPROVALS
@@ -153,21 +147,12 @@ pub fn register_dispatch_authorizer(
         authorizer,
         retired: AbortSignal::default(),
     });
-    let mut authorizers = AUTHORIZERS
+    let previous = AUTHORIZERS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // A dead session's slot is unreachable (senpi `WeakMap` semantics); its address may be reused.
-    authorizers.retain(|_, slot| slot.session.strong_count() > 0);
-    let previous = authorizers.insert(
-        session_key(session),
-        SessionSlot {
-            session: Arc::downgrade(session),
-            registration: Arc::clone(&registration),
-        },
-    );
-    drop(authorizers);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(session.session_id().to_owned(), Arc::clone(&registration));
     if let Some(previous) = previous {
-        previous.registration.retired.abort();
+        previous.retired.abort();
     }
     DispatchRetirement(registration)
 }
