@@ -468,7 +468,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             .await;
         }
     });
-    let drain_relay = DrainRelay {
+    let drain_relay = crate::host_lifecycle_drain::DrainRelay {
         file: generation_files.child_drain_request_file.clone(),
         sender: crate::host_stop_intent::HostStopSender {
             pid: std::process::id(),
@@ -694,7 +694,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             }
             // The signal-free drain request (senpi#3653): armed BEFORE it is advertised, so an asker that finds the
             // marker never writes into a generation that is not yet reading.
-            let drain_request_watch = accept_drain_requests(&generation_files, drain_tx);
+            let drain_request_watch =
+                crate::host_lifecycle_drain::accept_drain_requests(&generation_files, drain_tx);
             std::io::Result::Ok((listener, identity, drain_request_watch))
         }
     };
@@ -730,7 +731,7 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     // win32: a child whose identity changed or vanished has exited even when no exit event came.
     let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     #[cfg(windows)]
-    let identity_watch = watch_win32_child_identity(
+    let identity_watch = crate::host_lifecycle_drain::watch_win32_child_identity(
         child_pid,
         || false,
         move || {
@@ -740,20 +741,23 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     #[cfg(not(windows))]
     drop(gone_tx);
     // Losing the public entry IS a drain request (senpi `watchForSupersession`, #1893/#1961).
-    let supersession = crate::host_supersession::watch_for_supersession_with_pointer(
+    // A replaced entry's registration belongs to the replacer; `release_generation` already leaves a pointer that
+    // names another instance alone, so the replacement needs no further bookkeeping here.
+    let supersession = crate::host_lifecycle_drain::drain_on_public_socket_loss(
         public_socket.clone(),
         bound,
+        || false,
+        {
+            let drain_tx = drain_tx.clone();
+            move || {
+                let _ = drain_tx.send(true);
+            }
+        },
+        || {},
         Some(crate::host_supersession::SupersessionPointer {
             file: paths.pointer_file.clone(),
             instance_id: instance_id.clone(),
         }),
-        || false,
-        {
-            let drain_tx = drain_tx.clone();
-            move |_loss| {
-                let _ = drain_tx.send(true);
-            }
-        },
     );
     let observer_busy = turns.clone();
     let observer_socket = internal.socket.clone();
@@ -857,7 +861,22 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
     tokio::pin!(idle);
     let mut draining = false;
     let mut signal_code: Option<i32> = None;
-    let mut handoff_grace: Option<tokio::task::JoinHandle<()>> = None;
+    // senpi `SupervisorDrain`: `admission.stop()` refuses opens from the drain on (senpi `beginStopping`).
+    let supervisor_drain = crate::host_lifecycle_drain::SupervisorDrain::new(
+        child_pid,
+        child_running.clone(),
+        || false,
+        {
+            #[cfg(unix)]
+            let admission = admission.clone();
+            move || {
+                #[cfg(unix)]
+                admission.stop();
+            }
+        },
+        Some(drain_relay),
+        std::env::consts::OS == "windows",
+    );
     // Only proxy/idle completion, the child exiting, or a shutdown signal ends the supervisor. A
     // drain starts the grace and loops again, so busy sessions keep running until the child exits.
     loop {
@@ -886,18 +905,8 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
             changed=drain_rx.changed()=>{
                 if changed.is_ok()&&*drain_rx.borrow()&&!draining{
                     draining=true;
-                    // senpi `SupervisorDrain.drain` -> `admission.stop()`: opens are refused from this instant.
-                    #[cfg(unix)]
-                    admission.stop();
-                    eprintln!("senpi rpc host supervisor: draining into the next generation");
-                    request_child_drain(child_pid,&child_running,Some(&drain_relay),std::env::consts::OS=="windows");
-                    let grace_ms=resolve_handoff_grace_ms(&std::env::vars().collect::<HashMap<String,String>>());
-                    let grace_running=child_running.clone();let grace_relay=drain_relay.clone();
-                    handoff_grace=Some(tokio::spawn(async move{
-                        tokio::time::sleep(std::time::Duration::from_secs_f64(grace_ms/1000.)).await;
-                        eprintln!("senpi rpc host supervisor: {}",serde_json::json!({"event":"handoff_grace_expired","graceMs":grace_ms}));
-                        request_child_drain(child_pid,&grace_running,Some(&grace_relay),std::env::consts::OS=="windows");
-                    }));
+                    // senpi `SupervisorDrain.drain`: admission stops, the child is asked, the soft grace re-asks.
+                    supervisor_drain.drain();
                 }
             },
         }
@@ -911,9 +920,9 @@ pub async fn run_host_supervisor(launch: SupervisorLaunch) -> std::io::Result<()
         Box::new(move || observer.abort()),
     ];
     teardown.watchers.extend(watchers);
-    if let Some(task) = handoff_grace {
-        teardown.watchers.push(Box::new(move || task.abort()));
-    }
+    teardown
+        .watchers
+        .push(Box::new(move || supervisor_drain.stop()));
     #[cfg(windows)]
     teardown
         .watchers
@@ -1190,70 +1199,6 @@ pub fn create_internal_socket_path(
         secret_path: Some(dir.join(".secret")),
     })
 }
-/// The child's drain-request relay: the one way to reach a child on every platform (senpi `SupervisorDrain` relay).
-#[derive(Debug, Clone)]
-pub struct DrainRelay {
-    pub file: std::path::PathBuf,
-    pub sender: crate::host_stop_intent::HostStopSender,
-}
-/// Asks the child to drain: the relay file everywhere, plus SIGUSR1 as the immediate wake on POSIX (senpi
-/// `requestChildDrain`). A child that already exited is never asked.
-#[cfg(any(unix, windows))]
-fn request_child_drain(
-    child_pid: u32,
-    running: &std::sync::atomic::AtomicBool,
-    relay: Option<&DrainRelay>,
-    windows: bool,
-) {
-    if !running.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    if let Some(relay) = relay
-        && let Err(error) = crate::host_stop_intent::write_drain_request(
-            &relay.file,
-            &relay.sender,
-            "supervisor_drain",
-        )
-    {
-        eprintln!("senpi rpc host supervisor: could not relay the drain to the host: {error}");
-    }
-    if windows {
-        return;
-    }
-    #[cfg(unix)]
-    if let Err(error) =
-        crate::host_stop::signal_generation(child_pid, rustix::process::Signal::USR1)
-    {
-        eprintln!("senpi rpc host supervisor: could not ask the host to drain: {error}");
-    }
-    #[cfg(not(unix))]
-    let _ = child_pid;
-}
-/// The signal-free drain request: the watcher is armed BEFORE the marker is advertised. A marker that cannot be
-/// written only leaves this generation reachable by the POSIX signal, as before.
-#[cfg(any(unix, windows))]
-fn accept_drain_requests(
-    generation: &crate::host_daemon_paths::HostGenerationPaths,
-    drain_tx: tokio::sync::watch::Sender<bool>,
-) -> crate::host_stop_intent::DrainRequestWatch {
-    let watch = crate::host_stop_intent::watch_drain_request(
-        generation.drain_request_file.clone(),
-        move |request| {
-            eprintln!(
-                "senpi rpc host supervisor: drain requested ({})",
-                request.reason
-            );
-            let _ = drain_tx.send(true);
-        },
-        None,
-    );
-    if let Err(error) =
-        crate::host_stop_intent::write_drain_watch(&generation.drain_watch_file, std::process::id())
-    {
-        eprintln!("senpi rpc host supervisor: cannot advertise the drain request: {error}");
-    }
-    watch
-}
 const CHILD_START_TIME_WAIT_MS: u64 = 10_000;
 fn write_child_pid_record(
     file: &std::path::Path,
@@ -1507,70 +1452,6 @@ impl Drop for ShutdownHardExit {
         }
     }
 }
-/// The decision core of senpi `watchWin32ChildIdentity`: a child whose identity changes or disappears has exited
-/// even when no exit event came. A failed baseline read is UNKNOWN, so the watch then relies on its own
-/// comparisons; an absent identity is only believed once the pid probe agrees the child is gone, and only after
-/// two consecutive confirmations (a loaded runner's timed-out probe means UNKNOWN, never death).
-#[derive(Debug, Default)]
-pub struct ChildIdentityWatch {
-    baseline: Option<String>,
-    missing_identity_checks: u32,
-}
-impl ChildIdentityWatch {
-    pub fn new(baseline: Option<String>) -> Self {
-        Self {
-            baseline,
-            missing_identity_checks: 0,
-        }
-    }
-    /// One observation; `true` when the child is gone.
-    pub fn observe(&mut self, current: Option<&str>, pid_live: bool) -> bool {
-        match current {
-            None if !pid_live => self.missing_identity_checks += 1,
-            Some(_) => self.missing_identity_checks = 0,
-            None => {}
-        }
-        let identity_changed = matches!((&self.baseline, current), (Some(baseline), Some(current)) if baseline != current);
-        identity_changed || self.missing_identity_checks >= 2
-    }
-}
-/// win32 only: polls the child's start identity every 500 ms until it is gone or `shutting_down` turns true, then
-/// calls `on_gone` once (senpi `watchWin32ChildIdentity`). The probe is a bounded 1 s read run off the runtime.
-pub fn watch_win32_child_identity(
-    pid: u32,
-    shutting_down: impl Fn() -> bool + Send + 'static,
-    on_gone: impl FnOnce() + Send + 'static,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let read = |pid: u32| async move {
-            tokio::time::timeout(
-                std::time::Duration::from_millis(1_000),
-                tokio::task::spawn_blocking(move || {
-                    crate::host_reservations::read_process_start_time(pid)
-                }),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-        };
-        let mut watch = ChildIdentityWatch::new(read(pid).await);
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(500));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if shutting_down() {
-                return;
-            }
-            let current = read(pid).await;
-            let live = crate::host_reservations::process_is_live(pid);
-            if watch.observe(current.as_deref(), live) {
-                on_gone();
-                return;
-            }
-        }
-    })
-}
 /// The Windows named-pipe listener of the supervisor's public endpoint and its authenticated internal hop (senpi
 /// `host-lifecycle-proxy.ts` `listen` on win32). The pipe name is derived from the logical socket path AND the
 /// secret (`socket_transport::resolve_socket_transport_address`), and the secret handshake is the only boundary:
@@ -1739,26 +1620,6 @@ pub mod win32_pipe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn identity_watch_needs_two_confirmed_absences_and_never_believes_a_live_pid() {
-        let mut watch = ChildIdentityWatch::new(Some("100".into()));
-        assert!(!watch.observe(Some("100"), true));
-        assert!(!watch.observe(None, true));
-        assert!(!watch.observe(None, false));
-        // A readable identity resets the count.
-        assert!(!watch.observe(Some("100"), true));
-        assert!(!watch.observe(None, false));
-        assert!(watch.observe(None, false));
-    }
-    #[test]
-    fn identity_watch_reports_a_changed_identity_and_works_without_a_baseline() {
-        let mut watch = ChildIdentityWatch::new(Some("100".into()));
-        assert!(watch.observe(Some("200"), true));
-        let mut unknown = ChildIdentityWatch::new(None);
-        assert!(!unknown.observe(Some("200"), true));
-        assert!(!unknown.observe(None, false));
-        assert!(unknown.observe(None, false));
-    }
     #[tokio::test(start_paused = true)]
     async fn the_hard_exit_bound_fires_only_on_win32_and_is_disarmed_by_dropping_it() {
         let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1831,64 +1692,6 @@ mod tests {
         let record: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&stopped).unwrap()).unwrap();
         assert!(record["processStartTime"].is_null());
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn drain_requests_reach_the_supervisor_without_a_signal_and_are_advertised_after_arming()
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = crate::host_daemon_paths::host_daemon_directory_paths(temp.path());
-        let generation = crate::host_daemon_paths::generation_paths(&paths, "g");
-        crate::host_daemon_paths::create_generation_directory(&generation).unwrap();
-        let (tx, mut rx) = tokio::sync::watch::channel(false);
-        let watch = accept_drain_requests(&generation, tx);
-        assert_eq!(
-            crate::host_stop_intent::read_drain_watch(&generation.drain_watch_file),
-            Some(std::process::id())
-        );
-        let sender = crate::host_stop_intent::HostStopSender {
-            pid: 1,
-            kind: "stop".into(),
-            generation: None,
-        };
-        crate::host_stop_intent::write_drain_request(
-            &generation.drain_request_file,
-            &sender,
-            "operator_drain",
-        )
-        .unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            rx.wait_for(|drain| *drain),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        watch.stop();
-    }
-    #[cfg(unix)]
-    #[test]
-    fn child_drain_is_relayed_by_file_and_skipped_once_the_child_exited() {
-        let temp = tempfile::tempdir().unwrap();
-        let relay = DrainRelay {
-            file: temp.path().join("host-drain-request.json"),
-            sender: crate::host_stop_intent::HostStopSender {
-                pid: 1,
-                kind: "supervisor".into(),
-                generation: None,
-            },
-        };
-        let gone = std::sync::atomic::AtomicBool::new(false);
-        request_child_drain(0, &gone, Some(&relay), true);
-        assert!(!relay.file.exists());
-        let running = std::sync::atomic::AtomicBool::new(true);
-        request_child_drain(0, &running, Some(&relay), true);
-        assert_eq!(
-            crate::host_stop_intent::read_drain_request(&relay.file)
-                .unwrap()
-                .reason,
-            "supervisor_drain"
-        );
     }
     #[test]
     fn persistent_never_idle_exits() {
