@@ -109,6 +109,8 @@ pub mod proxy_events;
 pub mod tool_argument_purity;
 #[path = "tool_call_name_alias.rs"]
 pub mod tool_call_name_alias;
+#[path = "thrown_provider_error_boundary.rs"]
+pub mod thrown_provider_error_boundary;
 #[path = "tool_inline_is_error.rs"]
 pub mod tool_inline_is_error;
 
