@@ -29,6 +29,7 @@ struct Lane {
     events: Mutex<Vec<HarnessEvent>>,
     cancel_options: Mutex<Vec<maho_ai::types::ProviderRequestOptions>>,
     cancel_fails: std::sync::atomic::AtomicBool,
+    emitted: tokio::sync::watch::Sender<usize>,
 }
 struct FauxAuth;
 impl maho_ai::models::ModelsAuth for FauxAuth {
@@ -77,10 +78,12 @@ impl RuntimeLane for Lane {
     }
     fn emit<'a>(&'a self, events: Vec<HarnessEvent>, _: &'a Context) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            self.events
-                .lock()
-                .expect("generation fixture must be valid")
-                .extend(events);
+            let count = {
+                let mut stored = self.events.lock().expect("generation fixture must be valid");
+                stored.extend(events);
+                stored.len()
+            };
+            self.emitted.send_replace(count);
         })
     }
 }
@@ -161,6 +164,16 @@ async fn fixture_with_options(
     Drive,
     maho_ai::providers::faux::FauxProviderHandle,
 ) {
+    fixture_with_storage(options, Arc::new(MemoryStorage::new(Default::default()))).await
+}
+async fn fixture_with_storage(
+    options: maho_ai::providers::faux::RegisterFauxProviderOptions,
+    storage: Arc<dyn Storage>,
+) -> (
+    Arc<Lane>,
+    Drive,
+    maho_ai::providers::faux::FauxProviderHandle,
+) {
     let faux = maho_ai::providers::faux::faux_provider(options).expect("valid faux provider");
     let model = faux
         .get_model(None)
@@ -182,7 +195,7 @@ async fn fixture_with_options(
             legacy_parent_session_path: None,
             path: None,
         },
-        Arc::new(MemoryStorage::new(Default::default())),
+        storage,
         StorageBackedSessionOptions::default(),
     );
     let prompt = NewEntry::message(
@@ -273,6 +286,7 @@ async fn fixture_with_options(
         events: Mutex::new(vec![]),
         cancel_options: Mutex::new(vec![]),
         cancel_fails: std::sync::atomic::AtomicBool::new(false),
+        emitted: tokio::sync::watch::channel(0).0,
     });
     (
         lane,
@@ -1605,4 +1619,253 @@ async fn generation_request_carries_the_harness_telemetry_context() {
         telemetry.backend(),
         maho_agent::harness::telemetry::noop_telemetry_context().backend()
     ));
+}
+
+/// Pinned `FrameBlockingMemoryStorage`: once armed, the next commit carrying a
+/// `pi.pending.assistant_frame` append signals `started` and parks until `release` fires.
+struct FrameBlockingStorage {
+    decorator: maho_agent::harness::session::StorageDecorator,
+    armed: std::sync::atomic::AtomicBool,
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+impl Storage for FrameBlockingStorage {
+    fn commit<'a>(
+        &'a self,
+        writes: Vec<Write>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<CommitResult, SessionError>> {
+        Box::pin(async move {
+            let carries_frame = writes.iter().any(|write| {
+                matches!(write, Write::List(ListWrite::Append(append)) if append.namespace == "pi.pending.assistant_frame")
+            });
+            if carries_frame && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let started = self.started.lock().expect("started lock").take();
+                let release = self.release.lock().expect("release lock").take();
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+            }
+            self.decorator.commit(writes, context).await
+        })
+    }
+    fn get_entries<'a>(
+        &'a self,
+        ids: Vec<String>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<std::collections::BTreeMap<String, Entry>, SessionError>> {
+        self.decorator.get_entries(ids, context)
+    }
+    fn get_value<'a>(
+        &'a self,
+        address: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Option<StoredValue>, SessionError>> {
+        self.decorator.get_value(address, context)
+    }
+    fn scan_values<'a>(
+        &'a self,
+        prefix: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<StoredValue>, SessionError>> {
+        self.decorator.scan_values(prefix, context)
+    }
+    fn read_list<'a>(
+        &'a self,
+        address: &'a ValueList,
+        options: Option<ListReadOptions>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<ListElement>, SessionError>> {
+        self.decorator.read_list(address, options, context)
+    }
+    fn scan_branch<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<Entry>, SessionError>> {
+        self.decorator.scan_branch(query, context)
+    }
+    fn scan_branch_structure<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<EntryStructure>, SessionError>> {
+        self.decorator.scan_branch_structure(query, context)
+    }
+    fn scan_entries<'a>(
+        &'a self,
+        query: EntryScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<Entry>, SessionError>> {
+        self.decorator.scan_entries(query, context)
+    }
+    fn scan_usage<'a>(
+        &'a self,
+        query: UsageScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, Result<Vec<UsageRow>, SessionError>> {
+        self.decorator.scan_usage(query, context)
+    }
+    fn get_stats<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, Result<SessionStats, SessionError>> {
+        self.decorator.get_stats(context)
+    }
+    fn close<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, ()> {
+        self.decorator.close(context)
+    }
+}
+
+/// Faux-backed provider whose `stream_simple` returns a stream with the whole scripted response
+/// already queued: start, text_start, text_delta "ab", text_end, done.
+struct ScriptedFrameProvider {
+    inner: Arc<dyn maho_ai::models::Provider>,
+}
+impl maho_ai::models::Provider for ScriptedFrameProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn auth(&self) -> Option<&maho_ai::auth::types::ProviderAuth> {
+        self.inner.auth()
+    }
+    fn get_models(&self) -> Vec<maho_ai::model::Model> {
+        self.inner.get_models()
+    }
+    fn stream(
+        &self,
+        model: &maho_ai::model::Model,
+        context: &maho_ai::types::Context,
+        options: Option<maho_ai::types::StreamOptions>,
+    ) -> maho_ai::types::AssistantMessageEventStream {
+        self.inner.stream(model, context, options)
+    }
+    fn stream_simple(
+        &self,
+        _: &maho_ai::model::Model,
+        _: &maho_ai::types::Context,
+        _: Option<maho_ai::types::SimpleStreamOptions>,
+    ) -> maho_ai::types::AssistantMessageEventStream {
+        use maho_ai::providers::faux::{FauxAssistantMessageOptions, faux_assistant_message};
+        use maho_ai::types::{AssistantMessageEvent, ContentBlock, DoneReason, StopReason, TextContent};
+        let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+        let options = || FauxAssistantMessageOptions {
+            timestamp: Some(5),
+            ..Default::default()
+        };
+        let mut partial = faux_assistant_message(Vec::<ContentBlock>::new(), options());
+        partial.stop_reason = StopReason::Pending;
+        stream.push(AssistantMessageEvent::Start {
+            partial: partial.clone(),
+        });
+        // senpi mutates one shared partial before the consumer drains the queue, so every queued
+        // event after `start` observes the final "ab" text block.
+        partial.content.push(ContentBlock::Text(TextContent {
+            text: "ab".into(),
+            ..Default::default()
+        }));
+        stream.push(AssistantMessageEvent::TextStart {
+            content_index: 0,
+            partial: partial.clone(),
+        });
+        stream.push(AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: "ab".into(),
+            partial: partial.clone(),
+        });
+        stream.push(AssistantMessageEvent::TextEnd {
+            content_index: 0,
+            content: "ab".into(),
+            partial,
+        });
+        stream.push(AssistantMessageEvent::Done {
+            reason: DoneReason::Stop,
+            message: faux_assistant_message("ab", options()),
+        });
+        stream
+    }
+}
+
+fn message_updates(lane: &Lane) -> usize {
+    lane.events
+        .lock()
+        .expect("generation fixture must be valid")
+        .iter()
+        .filter(|event| event.event_type() == "message_update")
+        .count()
+}
+
+/// Pinned "does not await frame storage inside the provider event loop and persists frames in
+/// order": the provider stream is fully consumed while the first frame commit is parked, and the
+/// released frames land in stream order.
+#[tokio::test]
+async fn does_not_await_frame_storage_inside_the_provider_event_loop() {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let blocking = Arc::new(FrameBlockingStorage {
+        decorator: maho_agent::harness::session::StorageDecorator::new(Arc::new(
+            MemoryStorage::new(Default::default()),
+        )),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        started: Mutex::new(Some(started_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let storage = Arc::new(maho_agent::harness::session::InstrumentedStorage::new(
+        blocking.clone(),
+    ));
+    let (lane, drive, faux) = fixture_with_storage(Default::default(), storage.clone()).await;
+    ready(&lane, &drive).await;
+    lane.models.set_provider(Arc::new(ScriptedFrameProvider {
+        inner: faux.provider.clone(),
+    }));
+    blocking
+        .armed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    storage.clear_commit_attempts();
+
+    let mut emitted = lane.emitted.subscribe();
+    let ready_state = current(&lane);
+    let generating = run_generation(lane.as_ref(), &drive, &ready_state);
+    tokio::pin!(generating);
+    tokio::select! {
+        _ = &mut generating => panic!("generation settled while the first frame commit was parked"),
+        observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            started_rx.await.expect("frame commit started");
+            emitted
+                .wait_for(|_| message_updates(&lane) == 3)
+                .await
+                .expect("event watch open");
+        }) => observed.expect("provider stream consumed while frame storage is blocked"),
+    }
+    release_tx.send(()).expect("release frame commit");
+    tokio::time::timeout(std::time::Duration::from_secs(5), generating)
+        .await
+        .expect("generation settles after release")
+        .expect("generation succeeds");
+
+    let frames: Vec<serde_json::Value> = storage
+        .get_commit_attempts()
+        .into_iter()
+        .flatten()
+        .filter_map(|write| match write {
+            Write::List(ListWrite::Append(append))
+                if append.namespace == "pi.pending.assistant_frame" =>
+            {
+                Some(append.value)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame["type"].as_str())
+            .collect::<Vec<_>>(),
+        vec![Some("start"), Some("text_start"), Some("text_end")]
+    );
+    assert_eq!(frames[0]["partial"]["content"], json!([]));
+    assert_eq!(frames[1]["content"]["text"], "ab");
 }

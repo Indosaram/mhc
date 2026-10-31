@@ -1129,10 +1129,17 @@ async fn close_rejects_observation_without_waiting_for_a_non_cooperative_effect(
     assert_eq!(message, maho_agent::harness::result::HarnessClosed::MESSAGE);
     let _ = release.send(());
     // Pinned `expect.poll(() => activeDrive).toBeUndefined()`: the detached pass clears its
-    // installation once the non-cooperative effect returns; the whole wait is bounded.
+    // installation once the non-cooperative effect returns; the whole wait is bounded and each
+    // notification is registered before the check it guards.
     bounded(async {
-        while fixture.lane.active_drive_operation_id().is_some() {
-            tokio::task::yield_now().await;
+        loop {
+            let changed = fixture.lane.state_changed();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if fixture.lane.active_drive_operation_id().is_none() {
+                break;
+            }
+            changed.await;
         }
     })
     .await;
