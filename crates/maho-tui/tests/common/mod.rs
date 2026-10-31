@@ -83,3 +83,11 @@ pub fn paste(editor: &mut Editor, content: &str) -> String {
     editor.handle_editor_input(&format!("\x1b[200~{content}\x1b[201~"));
     editor.get_text()
 }
+
+/// Serializes tests that swap the process-global keybindings (senpi's `setKeybindings`), so one
+/// test's custom bindings or restore never lands inside another's.
+pub fn global_keybindings_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

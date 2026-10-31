@@ -97,6 +97,8 @@ pub struct ActivationParts {
     pub scheduler: WakeScheduler,
     pub feed: Arc<Mutex<ControlFeed>>,
     pub stop_inbox: Arc<dyn Fn() + Send + Sync>,
+    /// Stops the effect ledgers' event forwarding and forgets the ledgers of this endpoint's session.
+    pub release_effects: Arc<dyn Fn() + Send + Sync>,
     pub wake: WakeFn,
 }
 
@@ -124,12 +126,13 @@ pub fn unregister_endpoints_at_exit() {
 pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoint {
     let ActivationParts {
         context,
-        options: _,
+        options,
         entry,
         server,
         scheduler,
         feed,
         stop_inbox,
+        release_effects,
         wake,
     } = parts;
     let session = context.session.clone();
@@ -206,20 +209,29 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
     lock(&EXIT_ENTRIES).push((exit_id, entry.clone()));
     let teardown_feed = feed.clone();
     let teardown_entry = entry.clone();
+    let teardown_session = session.clone();
+    let teardown_surface = surface.clone();
     let teardown: BoxFuture<'static, ()> = Box::pin(async move {
         lock(&EXIT_ENTRIES).retain(|(id, _)| *id != exit_id);
         drop(subscription);
         inputs_live.store(false, std::sync::atomic::Ordering::SeqCst);
         stop_continue();
         stop_inbox();
+        release_effects();
         scheduler.dispose();
         lock(&teardown_feed).clear();
         server.close().await;
         // senpi's header-only rule removes a file this endpoint's header write created and nothing
-        // else filled, unless the registrant says the session is referenced. OPEN: mhc's
-        // `SessionManager` has no `discard_header_only_file` (nor the owned-header record it reads),
-        // so the file is kept (what the rule does whenever it cannot answer), and the registrant's
-        // `is_session_referenced` is not asked.
+        // else filled, unless the registrant says the session is referenced.
+        if !session_referenced(&options, teardown_surface.as_ref()).await {
+            drop(
+                tokio::task::spawn_blocking(move || {
+                    teardown_session
+                        .with_session_manager_mut(|manager| manager.discard_header_only_file())
+                })
+                .await,
+            );
+        }
         unregister_tui_endpoint(&teardown_entry).await;
     });
     ActiveControlEndpoint {
@@ -229,6 +241,31 @@ pub fn activate_control_endpoint(parts: ActivationParts) -> ActiveControlEndpoin
         surface,
         disposing: Arc::default(),
         teardown: Arc::new(Mutex::new(Some(teardown))),
+    }
+}
+
+/// senpi `sessionReferenced`: no question means unreferenced; a question that fails keeps the file and
+/// says so.
+async fn session_referenced(
+    options: &RegisterControlEndpointOptions,
+    surface: &dyn TuiControlSurface,
+) -> bool {
+    let Some(is_session_referenced) = &options.is_session_referenced else {
+        return false;
+    };
+    match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(is_session_referenced()))
+        .await
+    {
+        Ok(referenced) => referenced,
+        Err(panic) => {
+            let reason = panic
+                .downcast_ref::<&str>()
+                .map(|reason| (*reason).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "the reference check failed".to_owned());
+            surface.notice(&format!("control endpoint kept the session file: {reason}"));
+            true
+        }
     }
 }
 

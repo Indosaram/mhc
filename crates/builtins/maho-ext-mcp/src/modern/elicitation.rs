@@ -44,6 +44,7 @@ fn as_text(value: &Value) -> String {
 struct Form<'a> {
     presentation: &'a McpMrtrPresentation,
     signal: AbortSignal,
+    presented: maho_ext_api::DialogPresentedKey,
     heading: String,
     required: Vec<String>,
 }
@@ -53,6 +54,7 @@ impl Form<'_> {
         ExtensionUiDialogOptions {
             ephemeral: true,
             signal: Some(self.signal.clone()),
+            presented: Some(self.presented.clone()),
             ..Default::default()
         }
     }
@@ -227,9 +229,8 @@ pub async fn collect_mrtr_form(
         vec![signal.clone(), local.clone()],
         vec![presentation.signal.clone()],
     );
-    // DIVERGENCE(senpi bindMcpFormPresented(opts, ...)): upstream keys the callback by the dialog options object
-    // the host later passes to `markMcpFormPresented`. `ExtensionUiDialogOptions` carries no identity yet, so the
-    // key is this form's own token; a host can mark it once the options carry it (maho-ext-api owner lane).
+    // senpi bindMcpFormPresented(opts, ...): the callback is keyed by the dialog options; every dialog of this
+    // form carries the same key in `ExtensionUiDialogOptions::presented`, which the host marks once on screen.
     let presented_key: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
     if let Some(presented) = presentation.presented.clone() {
         crate::form_types::bind_mcp_form_presented(
@@ -245,6 +246,7 @@ pub async fn collect_mrtr_form(
     let form = Form {
         presentation,
         signal: combined.signal.clone(),
+        presented: maho_ext_api::DialogPresentedKey(presented_key.clone()),
         heading: format!("MCP server: {}\n{}", inert(server_label), inert(message)),
         required: requested_schema
             .get("required")

@@ -59,6 +59,22 @@ pub fn theme_from_extension(
     crate::theme::Theme::from_json(json, mode)
 }
 
+/// The private-dialog half of `ExtensionUIDialogOptions` a host acts on: an ephemeral answer is no
+/// human admission under `--mcp-presenter-enforcement`, and `presented` is marked once on screen.
+#[derive(Clone, Debug, Default)]
+pub struct PrivateDialog {
+    pub ephemeral: bool,
+    pub presented: Option<maho_ext_api::DialogPresentedKey>,
+}
+impl PrivateDialog {
+    fn of(options: &ExtensionUiDialogOptions) -> Self {
+        Self {
+            ephemeral: options.ephemeral,
+            presented: options.presented.clone(),
+        }
+    }
+}
+
 pub enum UiRequest {
     SubagentCost(Option<f64>),
     WidgetFrame,
@@ -68,11 +84,13 @@ pub enum UiRequest {
         options: Vec<String>,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
+        private: PrivateDialog,
     },
     Input {
         title: String,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
+        private: PrivateDialog,
     },
     Notify(String, NotificationType),
     Widget(String, Option<WidgetContent>, ExtensionWidgetOptions),
@@ -460,6 +478,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             options: options.to_vec(),
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
@@ -484,6 +503,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             options: vec!["Yes".into(), "No".into()],
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
@@ -505,6 +525,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             title: title.into(),
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
