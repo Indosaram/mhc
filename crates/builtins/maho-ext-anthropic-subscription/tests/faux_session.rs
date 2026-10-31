@@ -96,6 +96,7 @@ async fn retired_account_mutations_cannot_write_after_waiting_for_store_lock() {
                 source: AccountSource::Login,
                 blocked_until: None,
                 block_reason: None,
+                ..Default::default()
             },
         )
         .expect("slot");
@@ -255,6 +256,7 @@ async fn native_builtin_command_pins_and_removes_accounts_through_bound_session(
             source: AccountSource::Login,
             blocked_until: Some(123.0),
             block_reason: Some("rate_limit".into()),
+            ..Default::default()
         },
     )
     .expect("slot");

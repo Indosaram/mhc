@@ -201,6 +201,7 @@ pub fn terminal_child_job(ctx: &TerminalToolContext, kind: &'static str) -> Tool
                     "env": env,
                     "defaultCols": settings.default_cols,
                     "defaultRows": settings.default_rows,
+                    "redactSecretsInOutput": settings.redact_secrets_in_output,
                     "timeoutAction": match settings.timeout_action {
                         TimeoutAction::Background => "background",
                         TimeoutAction::Kill => "kill",

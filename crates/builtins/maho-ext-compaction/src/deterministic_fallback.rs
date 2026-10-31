@@ -13,37 +13,87 @@ pub enum SummaryFailure {
     UnsafeRetainedSuffix,
     Timeout,
     CredentialFailover,
-    Request { transient: bool, refused: bool, truncated: bool },
+    Request {
+        transient: bool,
+        refused: bool,
+        truncated: bool,
+    },
     OverflowExhausted,
     EmptySummary,
     Other,
 }
 
-pub fn classify_required_compaction_fallback_failure(error: SummaryFailure, message: &str) -> Option<RequiredCompactionFallbackFailure> {
+pub fn classify_required_compaction_fallback_failure(
+    error: SummaryFailure,
+    message: &str,
+) -> Option<RequiredCompactionFallbackFailure> {
     match error {
-        SummaryFailure::UnsafeRetainedSuffix => Some(RequiredCompactionFallbackFailure::UnsafeRetainedContent),
+        SummaryFailure::UnsafeRetainedSuffix => {
+            Some(RequiredCompactionFallbackFailure::UnsafeRetainedContent)
+        }
         SummaryFailure::Timeout => Some(RequiredCompactionFallbackFailure::SummarizationTimeout),
-        SummaryFailure::Request { transient: true, truncated: true, .. } => Some(RequiredCompactionFallbackFailure::UpstreamStreamTruncated),
-        SummaryFailure::OverflowExhausted => Some(RequiredCompactionFallbackFailure::SummarizationOverflowExhausted),
-        SummaryFailure::EmptySummary => Some(RequiredCompactionFallbackFailure::SummarizationEmptySummary),
-        SummaryFailure::CredentialFailover | SummaryFailure::Request { transient: false, refused: false, truncated: false } => Some(RequiredCompactionFallbackFailure::SummarizationProviderFailure),
-        _ if message.starts_with("senpi:no-turn-retry:") => Some(RequiredCompactionFallbackFailure::SummarizationProviderFailure),
+        SummaryFailure::Request {
+            transient: true,
+            truncated: true,
+            ..
+        } => Some(RequiredCompactionFallbackFailure::UpstreamStreamTruncated),
+        SummaryFailure::OverflowExhausted => {
+            Some(RequiredCompactionFallbackFailure::SummarizationOverflowExhausted)
+        }
+        SummaryFailure::EmptySummary => {
+            Some(RequiredCompactionFallbackFailure::SummarizationEmptySummary)
+        }
+        SummaryFailure::CredentialFailover
+        | SummaryFailure::Request {
+            transient: false,
+            refused: false,
+            truncated: false,
+        } => Some(RequiredCompactionFallbackFailure::SummarizationProviderFailure),
+        _ if message.starts_with("senpi:no-turn-retry:") => {
+            Some(RequiredCompactionFallbackFailure::SummarizationProviderFailure)
+        }
         _ => None,
     }
 }
 
-pub fn format_required_compaction_fallback_notice(failure: RequiredCompactionFallbackFailure, cause: Option<&str>) -> String {
+pub fn format_required_compaction_fallback_notice(
+    failure: RequiredCompactionFallbackFailure,
+    cause: Option<&str>,
+) -> String {
     let cause_text = match failure {
-        RequiredCompactionFallbackFailure::UnsafeRetainedContent => "no replay-safe retained suffix fits the context",
-        RequiredCompactionFallbackFailure::SummarizationTimeout => "the summary stream ran out of its time budget",
-        RequiredCompactionFallbackFailure::SummarizationProviderFailure => "the provider ended the summary stream with an error",
-        RequiredCompactionFallbackFailure::UpstreamStreamTruncated => "the provider truncated the summary stream",
-        RequiredCompactionFallbackFailure::SummarizationOverflowExhausted => "the summary input stayed over the provider's context limit",
-        RequiredCompactionFallbackFailure::SummarizationEmptySummary => "the provider returned no summary text",
+        RequiredCompactionFallbackFailure::UnsafeRetainedContent => {
+            "no replay-safe retained suffix fits the context"
+        }
+        RequiredCompactionFallbackFailure::SummarizationTimeout => {
+            "the summary stream ran out of its time budget"
+        }
+        RequiredCompactionFallbackFailure::SummarizationProviderFailure => {
+            "the provider ended the summary stream with an error"
+        }
+        RequiredCompactionFallbackFailure::UpstreamStreamTruncated => {
+            "the provider truncated the summary stream"
+        }
+        RequiredCompactionFallbackFailure::SummarizationOverflowExhausted => {
+            "the summary input stayed over the provider's context limit"
+        }
+        RequiredCompactionFallbackFailure::SummarizationEmptySummary => {
+            "the provider returned no summary text"
+        }
     };
     let mut parts = vec![format!("Compaction could not complete a provider summary: {cause_text}."), "A deterministic checkpoint was applied and older transcript detail was dropped, so it is safe to continue.".into()];
-    if let Some(detail) = cause.map(|cause| cause.strip_prefix("senpi:no-turn-retry:").unwrap_or(cause).trim()).filter(|cause| !cause.is_empty()) {
-        parts.push(format!("Provider reported: {}.", crate::task_intent::cap_utf8_bytes(detail, 512)));
+    if let Some(detail) = cause
+        .map(|cause| {
+            cause
+                .strip_prefix("senpi:no-turn-retry:")
+                .unwrap_or(cause)
+                .trim()
+        })
+        .filter(|cause| !cause.is_empty())
+    {
+        parts.push(format!(
+            "Provider reported: {}.",
+            crate::task_intent::cap_utf8_bytes(detail, 512)
+        ));
     }
     parts.push("Run /compact on a different model for a richer summary.".into());
     parts.join(" ")
@@ -53,32 +103,45 @@ fn failure_name(failure: RequiredCompactionFallbackFailure) -> &'static str {
     match failure {
         RequiredCompactionFallbackFailure::UnsafeRetainedContent => "unsafe-retained-content",
         RequiredCompactionFallbackFailure::SummarizationTimeout => "summarization-timeout",
-        RequiredCompactionFallbackFailure::SummarizationProviderFailure => "summarization-provider-failure",
+        RequiredCompactionFallbackFailure::SummarizationProviderFailure => {
+            "summarization-provider-failure"
+        }
         RequiredCompactionFallbackFailure::UpstreamStreamTruncated => "upstream-stream-truncated",
-        RequiredCompactionFallbackFailure::SummarizationOverflowExhausted => "summarization-overflow-exhausted",
-        RequiredCompactionFallbackFailure::SummarizationEmptySummary => "summarization-empty-summary",
+        RequiredCompactionFallbackFailure::SummarizationOverflowExhausted => {
+            "summarization-overflow-exhausted"
+        }
+        RequiredCompactionFallbackFailure::SummarizationEmptySummary => {
+            "summarization-empty-summary"
+        }
     }
 }
 
 fn bounded_value(value: &serde_json::Value, depth: usize) -> bool {
-    if depth > 32 { return false; }
+    if depth > 32 {
+        return false;
+    }
     match value {
         serde_json::Value::Array(items) => items.iter().all(|item| bounded_value(item, depth + 1)),
-        serde_json::Value::Object(items) => items.values().all(|item| bounded_value(item, depth + 1)),
+        serde_json::Value::Object(items) => {
+            items.values().all(|item| bounded_value(item, depth + 1))
+        }
         _ => true,
     }
 }
 
 fn has_visible_user_text(text: &str) -> bool {
     use unicode_normalization::UnicodeNormalization;
-    text.nfkc().any(|character| !character.is_whitespace() && !matches!(character,
+    text.nfkc().any(|character| {
+        !character.is_whitespace()
+            && !matches!(character,
         '\u{00ad}' | '\u{034f}' | '\u{061c}' | '\u{115f}'..='\u{1160}' |
         '\u{17b4}'..='\u{17b5}' | '\u{180b}'..='\u{180f}' |
         '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
         '\u{2060}'..='\u{206f}' | '\u{3164}' | '\u{fe00}'..='\u{fe0f}' |
         '\u{feff}' | '\u{ffa0}' | '\u{fff0}'..='\u{fff8}' |
         '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' |
-        '\u{e0000}'..='\u{e0fff}'))
+        '\u{e0000}'..='\u{e0fff}')
+    })
 }
 
 #[cfg(test)]
@@ -87,7 +150,12 @@ mod meaningful_user_tests {
 
     #[test]
     fn invisible_and_compatibility_blank_requests_are_not_fallback_boundaries() {
-        for text in ["\u{200b}\u{2060}", "\u{3164}\u{ffa0}", "\u{00ad}\u{e0100}", "\u{00a0}\u{3000}"] {
+        for text in [
+            "\u{200b}\u{2060}",
+            "\u{3164}\u{ffa0}",
+            "\u{00ad}\u{e0100}",
+            "\u{00a0}\u{3000}",
+        ] {
             assert!(!has_visible_user_text(text), "{text:?}");
         }
     }
@@ -105,13 +173,26 @@ fn complete_tool_chains(messages: &[serde_json::Value]) -> bool {
     for (index, message) in messages.iter().enumerate() {
         if message["role"] == "assistant" {
             for block in message["content"].as_array().into_iter().flatten() {
-                if block["type"] == "toolCall" && let Some(id) = block["id"].as_str()
-                    && calls.insert(id, (index, block["incomplete"] == true)).is_some() { return false; }
+                if block["type"] == "toolCall"
+                    && let Some(id) = block["id"].as_str()
+                    && calls
+                        .insert(id, (index, block["incomplete"] == true))
+                        .is_some()
+                {
+                    return false;
+                }
             }
-        } else if message["role"] == "toolResult" && let Some(id) = message["toolCallId"].as_str()
-            && results.insert(id, index).is_some() { return false; }
+        } else if message["role"] == "toolResult"
+            && let Some(id) = message["toolCallId"].as_str()
+            && results.insert(id, index).is_some()
+        {
+            return false;
+        }
     }
-    calls.len() == results.len() && calls.iter().all(|(id, (index, incomplete))| !incomplete && results.get(id).is_some_and(|result| result > index))
+    calls.len() == results.len()
+        && calls.iter().all(|(id, (index, incomplete))| {
+            !incomplete && results.get(id).is_some_and(|result| result > index)
+        })
 }
 
 /// senpi `RecoveryMetadata`.
@@ -141,32 +222,140 @@ pub struct UnsafeRetainedSuffixError {
 
 impl std::fmt::Display for UnsafeRetainedSuffixError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&format_required_compaction_fallback_rejection(&self.diagnostics, true))
+        formatter.write_str(&format_required_compaction_fallback_rejection(
+            &self.diagnostics,
+            true,
+        ))
     }
 }
 
-pub fn format_required_compaction_fallback_rejection(diagnostics: &DeterministicFallbackDiagnostic, automatic_paused: bool) -> String {
+/// senpi `REJECTION_REASON_PRIORITY`: a budget rejection reached a replay-safe, atomic candidate, so invalid cut
+/// points must not outvote that actionable constraint just because a tool batch is wide.
+pub fn rejection_reason_priority(reason: &str) -> u8 {
+    match reason {
+        "missing-preparation-boundary" => 0,
+        "context-reconstruction-failed" => 1,
+        "atomic-tool-chain-cut" => 2,
+        "unsafe-retained-content" => 3,
+        "retained-token-budget-exceeded" => 4,
+        _ => 0,
+    }
+}
+
+pub fn format_required_compaction_fallback_rejection(
+    diagnostics: &DeterministicFallbackDiagnostic,
+    automatic_paused: bool,
+) -> String {
     use serde_json::json;
-    let reason = diagnostics.rejection_reason.unwrap_or("context-reconstruction-failed");
+    let candidates = &diagnostics.candidate_rejections;
+    let mut rejection_counts: Vec<(&str, u64)> = Vec::new();
+    for candidate in candidates {
+        let Some(reason) = candidate["rejectionReason"].as_str() else {
+            continue;
+        };
+        match rejection_counts
+            .iter_mut()
+            .find(|(seen, _)| *seen == reason)
+        {
+            Some((_, count)) => *count += 1,
+            None => rejection_counts.push((reason, 1)),
+        }
+    }
+    let ranked =
+        rejection_counts
+            .iter()
+            .map(|(reason, _)| *reason)
+            .fold(None::<&str>, |best, reason| match best {
+                Some(best)
+                    if rejection_reason_priority(best) >= rejection_reason_priority(reason) =>
+                {
+                    Some(best)
+                }
+                _ => Some(reason),
+            });
+    let reason = ranked
+        .or(diagnostics.rejection_reason)
+        .unwrap_or("context-reconstruction-failed");
+    let best_candidate = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate["estimatedTokens"]
+                .as_f64()
+                .is_some_and(f64::is_finite)
+        })
+        .fold(None::<&serde_json::Value>, |best, candidate| match best {
+            Some(best)
+                if candidate["estimatedTokens"].as_f64() >= best["estimatedTokens"].as_f64() =>
+            {
+                Some(best)
+            }
+            _ => Some(candidate),
+        });
+    let format_candidate = |candidate: Option<&serde_json::Value>| -> serde_json::Value {
+        let Some(candidate) = candidate else {
+            return serde_json::Value::Null;
+        };
+        let mut candidate = candidate.clone();
+        for (key, max) in [
+            ("firstKeptEntryId", 128),
+            ("unsafeEntryId", 128),
+            ("unsafeMessageRole", 32),
+        ] {
+            if let Some(text) = candidate[key].as_str() {
+                candidate[key] = json!(crate::task_intent::cap_utf8_bytes(text, max));
+            }
+        }
+        candidate
+    };
     let recovery = match reason {
-        "retained-token-budget-exceeded" => "The retained turn exceeds the usable context. Use set_model to select a larger-context model, then compact (or /model and /compact).",
-        "atomic-tool-chain-cut" => "The retained tool calls and results do not form complete pairs. Finish the pending tool operation, then use compact to retry explicitly.",
-        "unsafe-retained-content" => "The retained message cannot be replayed safely. Inspect the identified entry with get_messages; use compact after correcting the context or selecting a larger-context model.",
-        "missing-preparation-boundary" => "The prepared boundary is absent from the branch. Reload the session and run /compact.",
-        _ => "The retained context could not be reconstructed. Reload the session and run /compact.",
+        "retained-token-budget-exceeded" => {
+            "The retained turn exceeds the usable context. Use set_model to select a larger-context model, then compact (or /model and /compact)."
+        }
+        "atomic-tool-chain-cut" => {
+            "The retained tool calls and results do not form complete pairs. Finish the pending tool operation, then use compact to retry explicitly."
+        }
+        "unsafe-retained-content" => {
+            "The retained message cannot be replayed safely. Inspect the identified entry with get_messages; use compact after correcting the context or selecting a larger-context model."
+        }
+        "missing-preparation-boundary" => {
+            "The prepared boundary is absent from the branch. Reload the session and run /compact."
+        }
+        _ => {
+            "The retained context could not be reconstructed. Reload the session and run /compact."
+        }
     };
     let mut diagnostic = json!({"rejectionReason":reason,"contextWindow":diagnostics.context_window,
         "reserveTokens":diagnostics.reserve_tokens,"budgetTokens":diagnostics.budget_tokens,
         "budgetExceeded":diagnostics.budget_exceeded,"candidatesChecked":diagnostics.candidates_checked});
-    if let Some(candidate) = diagnostics.candidate_rejections.last() {
-        let mut candidate = candidate.clone();
-        for (key, max) in [("firstKeptEntryId",128), ("unsafeEntryId",128), ("unsafeMessageRole",32)] {
-            if let Some(text) = candidate[key].as_str() { candidate[key] = json!(crate::task_intent::cap_utf8_bytes(text,max)); }
+    diagnostic["rejectionCounts"] = serde_json::Value::Object(
+        rejection_counts
+            .iter()
+            .map(|(reason, count)| ((*reason).to_owned(), json!(count)))
+            .collect(),
+    );
+    // `undefined` fields drop out of JSON.stringify; only present candidates are written.
+    for (key, candidate) in [
+        ("firstCandidate", candidates.first()),
+        ("bestCandidate", best_candidate),
+        (
+            "candidate",
+            candidates
+                .iter()
+                .find(|candidate| candidate["rejectionReason"].as_str() == Some(reason)),
+        ),
+    ] {
+        if candidate.is_some() {
+            diagnostic[key] = format_candidate(candidate);
         }
-        diagnostic["candidate"] = candidate;
     }
-    let pause = if automatic_paused { " Automatic compaction is paused for this unchanged transcript and model/settings." } else { "" };
-    format!("deterministic compaction fallback could not retain a safe suffix\n{diagnostic}\n{recovery}{pause} The original transcript has not been changed.")
+    let pause = if automatic_paused {
+        " Automatic compaction is paused for this unchanged transcript and model/settings."
+    } else {
+        ""
+    };
+    format!(
+        "deterministic compaction fallback could not retain a safe suffix\n{diagnostic}\n{recovery}{pause} The original transcript has not been changed."
+    )
 }
 
 pub fn create_required_compaction_fallback(
@@ -177,40 +366,87 @@ pub fn create_required_compaction_fallback(
     branch_entries: &[serde_json::Value],
     diagnostics: &mut DeterministicFallbackDiagnostic,
 ) -> Option<maho_ext_api::CompactionResult> {
+    use maho_core::{
+        compaction::compaction::estimate_tokens,
+        session_manager::{build_context_entries, session_entry_to_context_messages},
+    };
     use serde_json::json;
-    use maho_core::{compaction::compaction::estimate_tokens, session_manager::{build_context_entries, session_entry_to_context_messages}};
-    let reserve = crate::policy::resolve_effective_reserve_tokens(context_window as f64, preparation.settings.reserve_tokens as f64, preparation.settings.ideal.reserve_scaling_enabled) as u64;
+    let reserve = crate::policy::resolve_effective_reserve_tokens(
+        context_window as f64,
+        preparation.settings.reserve_tokens as f64,
+        preparation.settings.ideal.reserve_scaling_enabled,
+    ) as u64;
     diagnostics.context_window = context_window;
     diagnostics.reserve_tokens = reserve;
     diagnostics.budget_tokens = context_window.saturating_sub(reserve);
-    let Some(prepared_index) = branch_entries.iter().position(|entry| entry["id"].as_str() == Some(&preparation.first_kept_entry_id)) else {
-        diagnostics.rejection_reason = Some("missing-preparation-boundary"); return None;
+    let Some(prepared_index) = branch_entries
+        .iter()
+        .position(|entry| entry["id"].as_str() == Some(&preparation.first_kept_entry_id))
+    else {
+        diagnostics.rejection_reason = Some("missing-preparation-boundary");
+        return None;
     };
     let mut summary = "[Deterministic compaction recovery checkpoint]\nGenerated summarization did not complete, so older context was reduced without another provider request.\nContinue from the retained messages after this checkpoint. Treat omitted transcript details as unknown.".to_owned();
-    let intent = metadata.task_intent.map(str::trim).filter(|intent| !intent.is_empty());
-    if let Some(intent) = intent { summary.push_str(&format!("\n\nTask intent:\n{intent}")); }
+    let intent = metadata
+        .task_intent
+        .map(str::trim)
+        .filter(|intent| !intent.is_empty());
+    if let Some(intent) = intent {
+        summary.push_str(&format!("\n\nTask intent:\n{intent}"));
+    }
     if let Some(override_summary) = metadata.summary {
         summary = override_summary.to_owned();
-    } else if let Some(previous) = preparation.previous_summary.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+    } else if let Some(previous) = preparation
+        .previous_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
         let prefix = format!("{summary}\n\nPrevious checkpoint:\n");
-        let available = ((context_window as f64 * 0.4).floor() as usize).max(1024).saturating_sub(prefix.len());
+        let available = ((context_window as f64 * 0.4).floor() as usize)
+            .max(1024)
+            .saturating_sub(prefix.len());
         let marker = "\n[Older checkpoint truncated]";
-        summary = if previous.len() <= available { format!("{prefix}{previous}") } else { format!("{prefix}{}{marker}", crate::task_intent::cap_utf8_bytes(previous, available.saturating_sub(marker.len()))) };
+        summary = if previous.len() <= available {
+            format!("{prefix}{previous}")
+        } else {
+            format!(
+                "{prefix}{}{marker}",
+                crate::task_intent::cap_utf8_bytes(
+                    previous,
+                    available.saturating_sub(marker.len())
+                )
+            )
+        };
     }
     let mut candidates = vec![(prepared_index, "prepared")];
     for index in (0..prepared_index).rev() {
-        if branch_entries[index]["type"] == "compaction" { break; }
+        if branch_entries[index]["type"] == "compaction" {
+            break;
+        }
         candidates.push((index, "earlier-safe-boundary"));
     }
     for index in (prepared_index + 1..branch_entries.len()).rev() {
         let entry = &branch_entries[index];
-        if entry["type"] != "message" || entry["message"]["role"] != "user" { continue; }
+        if entry["type"] != "message" || entry["message"]["role"] != "user" {
+            continue;
+        }
         let content = &entry["message"]["content"];
-        let meaningful = content.as_str().is_some_and(has_visible_user_text) || content.as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "text" && block["text"].as_str().is_some_and(has_visible_user_text)));
-        if !meaningful { continue; }
+        let meaningful = content.as_str().is_some_and(has_visible_user_text)
+            || content.as_array().is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    block["type"] == "text"
+                        && block["text"].as_str().is_some_and(has_visible_user_text)
+                })
+            });
+        if !meaningful {
+            continue;
+        }
         candidates.push((index, "latest-user-turn"));
         for earlier in (prepared_index + 1..index).rev() {
-            if branch_entries[earlier]["type"] == "compaction" { break; }
+            if branch_entries[earlier]["type"] == "compaction" {
+                break;
+            }
             candidates.push((earlier, "earlier-safe-boundary"));
         }
         break;
@@ -221,83 +457,169 @@ pub fn create_required_compaction_fallback(
     let mut projection_entries = branch_entries.to_vec();
     projection_entries.push(projection_preview);
     let context = maho_core::session_manager::build_session_context(&projection_entries, None);
-    let projected: Vec<_> = context.entry_ids.iter().map(|id| json!(id)).zip(context.messages).collect();
-    let projected_messages: Vec<_> = projected.iter().map(|(_, message)| message.clone()).collect();
+    let projected: Vec<_> = context
+        .entry_ids
+        .iter()
+        .map(|id| json!(id))
+        .zip(context.messages)
+        .collect();
+    let projected_messages: Vec<_> = projected
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect();
     let mut retained_positions = Vec::new();
     for (index, message) in projected_messages.iter().enumerate() {
-        if message["role"] == "assistant" && matches!(message["stopReason"].as_str(), Some("aborted" | "error")) { continue; }
-        if message["role"] == "toolResult" && message["toolCallId"].as_str().is_some_and(|id| {
-            projected_messages.iter().any(|candidate| candidate["role"] == "assistant" && matches!(candidate["stopReason"].as_str(), Some("aborted" | "error")) && candidate["content"].as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "toolCall" && block["id"] == id)))
-        }) { continue; }
+        if message["role"] == "assistant"
+            && matches!(message["stopReason"].as_str(), Some("aborted" | "error"))
+        {
+            continue;
+        }
+        if message["role"] == "toolResult"
+            && message["toolCallId"].as_str().is_some_and(|id| {
+                projected_messages.iter().any(|candidate| {
+                    candidate["role"] == "assistant"
+                        && matches!(candidate["stopReason"].as_str(), Some("aborted" | "error"))
+                        && candidate["content"].as_array().is_some_and(|blocks| {
+                            blocks
+                                .iter()
+                                .any(|block| block["type"] == "toolCall" && block["id"] == id)
+                        })
+                })
+            })
+        {
+            continue;
+        }
         retained_positions.push(index);
     }
     let (mut position, mut saw_unsafe_retained_content, mut later_added) = (0, false, false);
+    let mut saw_retained_budget_exceeded = false;
+    let mut checked_entry_ids = std::collections::HashSet::<String>::new();
     loop {
         if position == candidates.len() {
-            // A split turn can contain an unsafe persisted tool payload after the prepared boundary
-            // and no later user message. Advance to the earliest safe suffix rather than retaining
-            // that payload forever; every candidate is still checked for pairs, safety and budget.
-            if saw_unsafe_retained_content && !later_added {
+            // A split turn can contain an unsafe or over-budget persisted tool payload after the
+            // prepared boundary and no later user message. Advance to the earliest safe suffix rather
+            // than retaining that payload forever; every candidate is still checked for pairs, safety and budget.
+            if (saw_unsafe_retained_content || saw_retained_budget_exceeded) && !later_added {
                 later_added = true;
-                candidates.extend((prepared_index + 1..branch_entries.len()).filter(|index| branch_entries[*index]["type"] != "compaction").map(|index| (index, "later-safe-boundary")));
+                candidates.extend(
+                    (prepared_index + 1..branch_entries.len())
+                        .filter(|index| branch_entries[*index]["type"] != "compaction")
+                        .map(|index| (index, "later-safe-boundary")),
+                );
             }
-            if position == candidates.len() { break; }
+            if position == candidates.len() {
+                break;
+            }
         }
         let (index, retained_suffix) = candidates[position];
         position += 1;
-        diagnostics.candidates_checked += 1;
         let id = branch_entries[index]["id"].as_str().unwrap_or_default();
+        if !checked_entry_ids.insert(id.to_owned()) {
+            continue;
+        }
+        diagnostics.candidates_checked += 1;
         let mut details = json!({"schema":"senpi.compaction.deterministic-fallback.v1","origin":"required-compaction-recovery","failureKind":failure_name(failure),"retainedMessagePolicy":"omit-unsafe-v1","retainedSuffix":retained_suffix});
-        if let Some(intent) = intent { details["taskIntent"] = json!(intent); }
+        if let Some(intent) = intent {
+            details["taskIntent"] = json!(intent);
+        }
         let preview = json!({"type":"compaction","id":"__senpi_deterministic_fallback_preview__","parentId":branch_entries.last().and_then(|entry| entry.get("id")),"timestamp":"1970-01-01T00:00:00.000Z","summary":summary,"firstKeptEntryId":id,"tokensBefore":preparation.tokens_before,"details":details,"fromHook":true});
-        let mut entries = branch_entries.to_vec(); entries.push(preview);
+        let mut entries = branch_entries.to_vec();
+        entries.push(preview);
         let context_entries = build_context_entries(&entries, None);
-        let messages: Vec<_> = context_entries.iter().flat_map(session_entry_to_context_messages).collect();
+        let messages: Vec<_> = context_entries
+            .iter()
+            .flat_map(session_entry_to_context_messages)
+            .collect();
         // Preserve the raw session envelope for safety and token accounting.
         // convert_to_llm would erase custom/bash fields before they are checked.
-        let start = projected.iter().position(|(entry_id,_)| entry_id.as_str() == Some(id));
-        let retained_indexes: Vec<_> = retained_positions.iter().copied().filter(|position|start.is_some_and(|start|*position >= start)).collect();
-        let canonical: Vec<_> = retained_indexes.iter().map(|position|projected[*position].1.clone()).collect();
+        let start = projected
+            .iter()
+            .position(|(entry_id, _)| entry_id.as_str() == Some(id));
+        let retained_indexes: Vec<_> = retained_positions
+            .iter()
+            .copied()
+            .filter(|position| start.is_some_and(|start| *position >= start))
+            .collect();
+        let canonical: Vec<_> = retained_indexes
+            .iter()
+            .map(|position| projected[*position].1.clone())
+            .collect();
         let summary_message = messages.first()?;
         let mut rejection_details = json!({});
         let reason = if start.is_none() {
             Some("context-reconstruction-failed")
-        } else if crate::retained_message_safety::has_unsafe_retained_content(&canonical) || !canonical.iter().all(|message| bounded_value(message, 0)) {
-            if let Some(unsafe_index) = canonical.iter().position(|message| crate::retained_message_safety::has_unsafe_retained_content(std::slice::from_ref(message)) || !bounded_value(message, 0)) {
+        } else if crate::retained_message_safety::has_unsafe_retained_content(&canonical)
+            || !canonical.iter().all(|message| bounded_value(message, 0))
+        {
+            if let Some(unsafe_index) = canonical.iter().position(|message| {
+                crate::retained_message_safety::has_unsafe_retained_content(std::slice::from_ref(
+                    message,
+                )) || !bounded_value(message, 0)
+            }) {
                 let projected_index = retained_indexes[unsafe_index];
                 rejection_details["unsafeMessageIndex"] = json!(projected_index);
-                if let Some(role) = canonical[unsafe_index].get("role") { rejection_details["unsafeMessageRole"] = role.clone(); }
-                rejection_details["unsafeEntryId"] = projected[retained_indexes[unsafe_index]].0.clone();
+                if let Some(role) = canonical[unsafe_index].get("role") {
+                    rejection_details["unsafeMessageRole"] = role.clone();
+                }
+                rejection_details["unsafeEntryId"] =
+                    projected[retained_indexes[unsafe_index]].0.clone();
             }
             Some("unsafe-retained-content")
-        } else if !complete_tool_chains(&canonical) { Some("atomic-tool-chain-cut") } else {
-            let tokens: u64 = canonical.iter().chain(std::iter::once(summary_message)).map(|message| {
-                let mut envelope = message.clone();
-                let mut image_tokens = 0;
-                if envelope["role"] == "toolResult" && let Some(blocks) = envelope["content"].as_array_mut() {
-                    for block in blocks {
-                        if block["type"] == "image" {
-                            let mut single_image = message.clone();
-                            single_image["content"] = json!([block.clone()]);
-                            image_tokens += estimate_tokens(&single_image);
-                            block["data"] = json!("");
+        } else if !complete_tool_chains(&canonical) {
+            Some("atomic-tool-chain-cut")
+        } else {
+            let tokens: u64 = canonical
+                .iter()
+                .chain(std::iter::once(summary_message))
+                .map(|message| {
+                    let mut envelope = message.clone();
+                    let mut image_tokens = 0;
+                    if envelope["role"] == "toolResult"
+                        && let Some(blocks) = envelope["content"].as_array_mut()
+                    {
+                        for block in blocks {
+                            if block["type"] == "image" {
+                                let mut single_image = message.clone();
+                                single_image["content"] = json!([block.clone()]);
+                                image_tokens += estimate_tokens(&single_image);
+                                block["data"] = json!("");
+                            }
                         }
                     }
-                }
-                estimate_tokens(message).max(estimate_tokens(&json!({"role":"user","content":envelope.to_string(),"timestamp":0})) + image_tokens)
-            }).sum();
+                    estimate_tokens(message).max(
+                        estimate_tokens(
+                            &json!({"role":"user","content":envelope.to_string(),"timestamp":0}),
+                        ) + image_tokens,
+                    )
+                })
+                .sum();
             rejection_details["estimatedTokens"] = json!(tokens);
-            if tokens > diagnostics.budget_tokens { diagnostics.budget_exceeded = true; Some("retained-token-budget-exceeded") } else { None }
+            if tokens > diagnostics.budget_tokens {
+                diagnostics.budget_exceeded = true;
+                Some("retained-token-budget-exceeded")
+            } else {
+                None
+            }
         };
         if let Some(reason) = reason {
             saw_unsafe_retained_content |= reason == "unsafe-retained-content";
-            diagnostics.rejection_reason = Some(reason);
+            saw_retained_budget_exceeded |= reason == "retained-token-budget-exceeded";
+            if diagnostics.rejection_reason.is_none_or(|current| {
+                rejection_reason_priority(reason) > rejection_reason_priority(current)
+            }) {
+                diagnostics.rejection_reason = Some(reason);
+            }
             rejection_details["firstKeptEntryId"] = json!(id);
             rejection_details["rejectionReason"] = json!(reason);
             diagnostics.candidate_rejections.push(rejection_details);
             continue;
         }
-        return Some(maho_ext_api::CompactionResult { summary, first_kept_entry_id: id.into(), tokens_before: preparation.tokens_before as u64, details: Some(details) });
+        return Some(maho_ext_api::CompactionResult {
+            summary,
+            first_kept_entry_id: id.into(),
+            tokens_before: preparation.tokens_before as u64,
+            details: Some(details),
+        });
     }
     None
 }

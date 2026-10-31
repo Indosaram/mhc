@@ -3,5 +3,9 @@
 
 #[path = "dom_source_cases.rs"]
 mod dom_source_cases;
+#[path = "golden.rs"]
+mod golden;
 #[path = "native_render.rs"]
 mod native_render;
+#[path = "reader_mode.rs"]
+mod reader_mode;
