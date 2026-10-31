@@ -33,3 +33,9 @@ fn wake(id:&str)->ScheduleWakeupInput { ScheduleWakeupInput { loop_id:id.into(),
     let mut expired=scheduler(); expired.create_fixed(fixed(),"f".into(),0.0); expired.on_due("f",LOOP_EXPIRY_MS,false,"unused".into()); observed.push(lifecycle(&expired.state.entries["f"]).end_reason().unwrap());
     let mut labels=observed.into_iter().map(|reason|match reason { LoopEndReason::Stopped=>"stopped",LoopEndReason::KeepaliveExhausted=>"keepalive_exhausted",LoopEndReason::Expired=>"expired",LoopEndReason::TickBudgetExhausted=>"tick_budget_exhausted",LoopEndReason::Error=>"error" }).collect::<Vec<_>>(); labels.sort_unstable(); assert_eq!(labels,["expired","keepalive_exhausted","stopped","tick_budget_exhausted"]);
 }
+#[test] fn upstream_uncharged_keepalive_keeps_credit_and_dispatch_steers() {
+    let mut s=scheduler(); s.create_dynamic(dynamic(),"d".into(),0.0);
+    let DueResult::Dispatch(tick)=s.on_due("d",1.0,true,"delivery".into()) else { panic!("dispatch") }; assert_eq!(tick.deliver_as,maho_ext_api::StreamingBehavior::Steer);
+    assert!(matches!(s.on_turn_ended_without_schedule_charged("d","w".into(),2.0,false),KeepaliveResult::Armed { .. }));
+    let Some(CronEntry::Dynamic { keepalive_credit,.. })=s.state.entries.get("d") else { panic!("dynamic") }; assert_eq!(*keepalive_credit,1);
+}

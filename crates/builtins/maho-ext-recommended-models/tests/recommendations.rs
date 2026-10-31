@@ -22,6 +22,8 @@ fn aliases() {
     for id in ["kimi-k3-ultrafast", "k3", "K3-FAST-256k-unlocked"] {
         assert_eq!(canonical_model_id(id), "kimi-k3");
     }
+    assert_eq!(canonical_model_id("k3.1-pro"), "kimi-k3.1-pro");
+    assert_eq!(canonical_model_id("kimi-k3.1-pro"), "kimi-k3.1-pro");
     assert_eq!(canonical_model_id("gpt-6-astra-fast"), "gpt-6-astra");
 }
 #[test]
@@ -118,7 +120,7 @@ fn shipped_list_order_levels_and_no_gateway_providers() {
         [
             ("claude-opus-5-5", ThinkingLevel::Medium),
             ("claude-fable-5-1", ThinkingLevel::Xhigh),
-            ("kimi-k3", ThinkingLevel::Max),
+            ("kimi-k3.1-pro", ThinkingLevel::Max),
             ("gpt-6-astra", ThinkingLevel::Xhigh),
             ("gpt-6.1-sol", ThinkingLevel::Medium),
             ("glm-5.3", ThinkingLevel::Max)
@@ -147,15 +149,15 @@ fn subscription_lane_wins_over_api_listed_first() {
 }
 
 #[test]
-fn gateway_aggregators_are_skipped_for_kimi_k3() {
+fn gateway_aggregators_are_skipped_for_kimi_k31_pro() {
     let available = [
         model("anthropic/claude-opus-5-5", "opengateway"),
         model("anthropic/claude-fable-5-1", "openrouter"),
-        model("kimi-k3", "kimi-coding"),
+        model("k3.1-pro", "kimi-coding"),
     ];
     assert_eq!(
         pick(&available, None),
-        Some(("kimi-k3".into(), "kimi-coding".into(), ThinkingLevel::Max))
+        Some(("k3.1-pro".into(), "kimi-coding".into(), ThinkingLevel::Max))
     );
 }
 
@@ -163,11 +165,11 @@ fn gateway_aggregators_are_skipped_for_kimi_k3() {
 fn unranked_provider_rung_is_skipped() {
     let available = [
         model("claude-opus-5-5", "venice"),
-        model("kimi-k3", "kimi-coding"),
+        model("k3.1-pro", "kimi-coding"),
     ];
     assert_eq!(
         pick(&available, None).map(|(id, _, _)| id),
-        Some("kimi-k3".into())
+        Some("k3.1-pro".into())
     );
 }
 
@@ -221,7 +223,7 @@ fn astra_ranks_above_sol_at_xhigh() {
 fn override_priority_keeps_the_table_level() {
     let configured = vec!["glm-5.3".to_owned()];
     let available = [
-        model("kimi-k3", "kimi-coding"),
+        model("k3.1-pro", "kimi-coding"),
         model("glm-5.3", "zai-coding-plan"),
     ];
     assert_eq!(
@@ -235,13 +237,13 @@ fn override_priority_keeps_the_table_level() {
 }
 
 #[test]
-fn suffix_and_k3_aliases_count_as_recommended() {
+fn suffix_and_k31_pro_aliases_count_as_recommended() {
     let recommendations = recommendations_for(None);
     for id in [
         "gpt-6-astra-fast",
         "gpt-6.1-sol-fast",
-        "kimi-k3-ultrafast",
-        "k3",
+        "kimi-k3.1-pro",
+        "k3.1-pro",
     ] {
         assert!(
             is_recommended(Some(&model(id, "faux")), &recommendations),
@@ -252,6 +254,33 @@ fn suffix_and_k3_aliases_count_as_recommended() {
         Some(&model("off-list", "faux")),
         &recommendations
     ));
+}
+
+#[test]
+fn k31_pro_is_selected_over_k3_and_k3_is_no_longer_recommended() {
+    let available = [model("k3", "kimi-coding"), model("k3.1-pro", "kimi-coding")];
+    assert_eq!(
+        pick(&available, None),
+        Some(("k3.1-pro".into(), "kimi-coding".into(), ThinkingLevel::Max))
+    );
+    assert!(!is_recommended(
+        Some(&model("k3", "kimi-coding")),
+        &recommendations_for(None)
+    ));
+    assert!(
+        RECOMMENDED_DEFAULT_MODELS
+            .iter()
+            .all(|(id, _)| *id != "kimi-k3")
+    );
+}
+
+#[test]
+fn override_naming_k3_still_canonicalizes_to_kimi_k3() {
+    let configured = vec!["k3".to_owned()];
+    assert_eq!(
+        pick(&[model("k3", "kimi-coding")], Some(&configured)),
+        Some(("k3".into(), "kimi-coding".into(), ThinkingLevel::Medium))
+    );
 }
 
 #[test]
