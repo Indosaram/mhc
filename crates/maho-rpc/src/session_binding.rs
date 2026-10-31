@@ -381,6 +381,34 @@ pub fn session_event_record(
         }
     })
 }
+thread_local! {
+    /// The recovery carrier the correlation stage forwards with the record it is writing now (senpi `carryRecovery`
+    /// keeps it on the record object). A turn's prefix is buffered and flushed during a later emit, so the session's
+    /// emitting carrier would name the later record; the forwarded one is the record's own.
+    static FORWARDED_CARRIER: std::cell::RefCell<Vec<Option<maho_core::session_recovery_identity::RecoveryCarrier>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+/// Runs `write` with `carrier` as the forwarded carrier of the record it writes.
+fn with_forwarded_carrier(
+    carrier: Option<maho_core::session_recovery_identity::RecoveryCarrier>,
+    write: impl FnOnce(),
+) {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            FORWARDED_CARRIER.with(|stack| {
+                stack.borrow_mut().pop();
+            });
+        }
+    }
+    FORWARDED_CARRIER.with(|stack| stack.borrow_mut().push(carrier));
+    let _pop = Pop;
+    write();
+}
+/// The carrier forwarded with the record being written, when the correlation stage is writing one.
+fn forwarded_carrier() -> Option<Option<maho_core::session_recovery_identity::RecoveryCarrier>> {
+    FORWARDED_CARRIER.with(|stack| stack.borrow().last().cloned())
+}
 /// The binding's acceptance step (senpi `createRpcSessionBinding.enqueueRecord`): accepted before the
 /// writer serializes or routes the record; a `session_replaced` is the next incarnation's bootstrap.
 ///
@@ -423,7 +451,7 @@ impl BindingAcceptance {
             .session
             .with_session_manager_mut(|manager| manager.drain_transcript());
         lane.apply_transcript(&transitions);
-        let carrier = self.session.recovery_carrier(record);
+        let carrier = forwarded_carrier().unwrap_or_else(|| self.session.recovery_carrier(record));
         lane.accept(record, carrier.as_ref());
     }
 }
@@ -546,7 +574,7 @@ fn new_client_message_events(
     route: String,
 ) -> crate::client_message_events::ClientMessageEvents {
     crate::client_message_events::ClientMessageEvents::new(
-        move |record, _carrier| sink(record),
+        move |record, carrier| with_forwarded_carrier(carrier, || sink(record)),
         move || {
             crate::client_admissions::ClientAdmissions::existing(&route)
                 .is_some_and(|admissions| admissions.has_identities())
@@ -586,6 +614,7 @@ pub async fn create_rpc_session_binding(
     let event_route = session_id.clone();
     // senpi session-record-stream.ts: records go through client-message correlation, enabled once the session's
     // admission ledger has seen a client identity.
+    let carrier_session = session.weak_accessor();
     let correlated = std::sync::Mutex::new(new_client_message_events(
         event_sink.clone(),
         event_route.clone(),
@@ -601,10 +630,15 @@ pub async fn create_rpc_session_binding(
             None => session_event_record(event),
         };
         match record {
-            Ok(record) => correlated
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .accept(record, None),
+            // senpi session-record-stream: the record keeps the carrier the session attached while emitting it.
+            Ok(record) => {
+                let carrier =
+                    carrier_session().and_then(|session| session.recovery_carrier(&record));
+                correlated
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .accept(record, carrier)
+            }
             Err(error) => {
                 event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))
             }
@@ -860,6 +894,24 @@ impl RpcSessionBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// senpi `carryRecovery`: a record the correlation stage writes keeps its own carrier, even when it is written
+    /// during a later emit (a flushed turn prefix); outside a forwarded write no carrier is claimed.
+    #[test]
+    fn a_forwarded_record_keeps_its_own_recovery_carrier() {
+        let carrier = maho_core::session_recovery_identity::RecoveryCarrier {
+            message_id: "m1".into(),
+            epoch: "e".into(),
+            durable_entry_id: None,
+        };
+        assert_eq!(forwarded_carrier(), None);
+        let mut seen = None;
+        with_forwarded_carrier(Some(carrier.clone()), || {
+            with_forwarded_carrier(None, || assert_eq!(forwarded_carrier(), Some(None)));
+            seen = forwarded_carrier();
+        });
+        assert_eq!(seen, Some(Some(carrier)));
+        assert_eq!(forwarded_carrier(), None);
+    }
     // senpi session-record-stream.ts: correlation runs once the route's admission ledger has a client identity; a
     // turn's records then carry the input that caused them.
     #[tokio::test]
