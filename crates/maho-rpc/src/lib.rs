@@ -229,6 +229,7 @@ pub mod session_worker_client;
 pub mod session_worker_credit;
 pub mod session_worker_limit_mirror;
 pub mod session_worker_protocol;
+pub mod session_worker_registry;
 pub mod session_worker_requests;
 pub mod session_worker_signals;
 pub mod shutdown;
