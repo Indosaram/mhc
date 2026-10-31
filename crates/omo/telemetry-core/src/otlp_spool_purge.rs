@@ -1,10 +1,145 @@
 //! Opt-out only removes verified regular files whose names the spool itself creates.
-use crate::otlp_spool_names::{QUARANTINE_DIR, is_spool_file_name};
-use crate::types::{
-    TelemetryDiagnosticEvent, TelemetryDiagnosticInput, TelemetryDiagnostics,
-    TelemetrySpoolEntryKind,
+use crate::otlp_pid_alive::is_pid_alive;
+use crate::otlp_spool_names::{
+    QUARANTINE_DIR, SpoolEntry, is_spool_file_name, owners_dir, parse_spool_name,
 };
-use std::{fs, io, path::Path};
+use crate::otlp_transport_types::{CreateOtlpTelemetryTransportInput, IsPidAlive, NowMs};
+use crate::types::{
+    TelemetryDiagnosticErrorKind, TelemetryDiagnosticEvent, TelemetryDiagnosticInput,
+    TelemetryDiagnostics, TelemetryError, TelemetrySpoolEntryKind,
+};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+/// What the opt-out purge needs from a transport input.
+#[derive(Clone)]
+pub struct PurgeOptOutInput {
+    pub diagnostics: Option<TelemetryDiagnostics>,
+    pub source: Option<String>,
+    pub spool_dir: PathBuf,
+    pub spool_root: PathBuf,
+}
+impl From<&CreateOtlpTelemetryTransportInput> for PurgeOptOutInput {
+    fn from(input: &CreateOtlpTelemetryTransportInput) -> Self {
+        Self {
+            diagnostics: input.diagnostics.clone(),
+            source: input.source.clone(),
+            spool_dir: input.spool_dir.clone(),
+            spool_root: input.spool_root.clone(),
+        }
+    }
+}
+/// `PurgeOptOutInput` plus the liveness seams of `purge_idle_otlp_spool`.
+#[derive(Clone)]
+pub struct PurgeIdleOtlpSpoolInput {
+    pub opt_out: PurgeOptOutInput,
+    pub is_pid_alive: Option<IsPidAlive>,
+    pub now_ms: Option<NowMs>,
+}
+
+/// Startup cleanup for a lazy adapter whose caller decided the persisted setting is off. The spool is
+/// shared by every process of the product, so it is left alone while any writer is alive (a writer's
+/// owner marker or active WAL file with a running pid, or an unexpired send claim): an idle writer whose
+/// batches are all sealed still holds its marker, and that consented session sweeps its own spool when
+/// its consent ends.
+pub fn purge_idle_otlp_spool(input: &PurgeIdleOtlpSpoolInput) {
+    let alive = |pid: u32| match &input.is_pid_alive {
+        Some(f) => f(pid),
+        None => is_pid_alive(pid),
+    };
+    let now = match &input.now_ms {
+        Some(f) => f(),
+        None => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64),
+    };
+    let spool_dir = &input.opt_out.spool_dir;
+    let Ok(read) = fs::read_dir(spool_dir) else {
+        return;
+    };
+    let owners = owners_dir(spool_dir);
+    let names = read
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .chain(
+            fs::read_dir(&owners)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned()),
+        );
+    let live = names.into_iter().any(|name| match parse_spool_name(&name) {
+        SpoolEntry::Active { pid, .. } | SpoolEntry::Owner { pid, .. } => alive(pid),
+        SpoolEntry::Sending {
+            lease_expires_ms, ..
+        } => lease_expires_ms > now,
+        _ => false,
+    });
+    if live {
+        return;
+    }
+    purge_on_opt_out(&input.opt_out);
+    let mut owners_input = input.opt_out.clone();
+    owners_input.spool_dir = owners;
+    purge_on_opt_out(&owners_input);
+}
+
+/// The opt-out purge with the diagnostics sink wired to its report; every entry it leaves behind
+/// becomes one diagnostic, by kind or errno code, never by path.
+pub fn purge_owned_spool(
+    dir: &Path,
+    root: &Path,
+    diagnostics: Option<&TelemetryDiagnostics>,
+    source: &str,
+) -> io::Result<PurgeOutcome> {
+    let on_skipped =
+        |kind: TelemetrySpoolEntryKind| purge_report(diagnostics, source, Some(kind), None);
+    let on_failed = |code: &str| purge_report(diagnostics, source, None, Some(code));
+    let report = PurgeReport {
+        on_skipped: &on_skipped,
+        on_failed: &on_failed,
+    };
+    purge_spool(dir, root, &report, &PurgeSeams::default())
+}
+
+pub fn purge_on_opt_out(input: &PurgeOptOutInput) {
+    let source = input.source.clone().unwrap_or_else(|| "otlp".to_string());
+    match purge_owned_spool(
+        &input.spool_dir,
+        &input.spool_root,
+        input.diagnostics.as_ref(),
+        &source,
+    ) {
+        Ok(PurgeOutcome::Refused) => {
+            if let Some(diagnostics) = &input.diagnostics {
+                diagnostics(&TelemetryDiagnosticInput {
+                    event: TelemetryDiagnosticEvent::TelemetrySpoolPurgeRefused,
+                    source,
+                    error: None,
+                    error_kind: None,
+                    entry_kind: None,
+                    error_code: None,
+                    count: None,
+                });
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            if let Some(diagnostics) = &input.diagnostics {
+                diagnostics(&TelemetryDiagnosticInput {
+                    event: TelemetryDiagnosticEvent::TelemetrySpoolSweepFailed,
+                    source,
+                    error: Some(TelemetryError::new(error.to_string())),
+                    error_kind: Some(TelemetryDiagnosticErrorKind::Error),
+                    entry_kind: None,
+                    error_code: None,
+                    count: None,
+                });
+            }
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PurgeOutcome {
     Purged,
@@ -257,6 +392,39 @@ mod tests {
         );
         assert!(dir.join("notes").exists());
         assert!(!dir.join(name).exists());
+        Ok(())
+    }
+    fn idle_input(root: &Path, alive: bool) -> PurgeIdleOtlpSpoolInput {
+        PurgeIdleOtlpSpoolInput {
+            opt_out: PurgeOptOutInput {
+                diagnostics: None,
+                source: None,
+                spool_dir: root.join("spool"),
+                spool_root: root.to_path_buf(),
+            },
+            is_pid_alive: Some(std::sync::Arc::new(move |_| alive)),
+            now_ms: Some(std::sync::Arc::new(|| 1_000)),
+        }
+    }
+    #[test]
+    fn idle_purge_waits_for_a_live_owner_marker_then_removes_spool_and_owners() -> io::Result<()> {
+        use crate::otlp_spool_names::{batch_name, owner_name};
+        let root = tempfile::tempdir()?;
+        let dir = root.path().join("spool");
+        let owners = owners_dir(&dir);
+        fs::create_dir(&dir)?;
+        fs::create_dir(&owners)?;
+        let batch = batch_name(Signal::Logs, "00000000-0000-7000-8000-000000000000");
+        fs::write(dir.join(&batch), "x")?;
+        fs::write(
+            owners.join(owner_name(Signal::Logs, 7, &"b".repeat(32))),
+            "",
+        )?;
+        purge_idle_otlp_spool(&idle_input(root.path(), true));
+        assert!(dir.join(&batch).exists());
+        purge_idle_otlp_spool(&idle_input(root.path(), false));
+        assert!(!dir.exists());
+        assert!(!owners.exists());
         Ok(())
     }
     #[cfg(unix)]

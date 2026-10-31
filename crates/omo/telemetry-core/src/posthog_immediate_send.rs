@@ -8,6 +8,7 @@ pub struct ImmediateSender {
     options: TelemetryTransportOptions,
     http: reqwest::Client,
     queue: tokio::sync::Mutex<()>,
+    gate: Option<crate::posthog_transport::ConsentGate>,
 }
 
 pub fn create_immediate_sender(
@@ -23,15 +24,23 @@ pub fn create_immediate_sender(
         options: options.clone(),
         http,
         queue: tokio::sync::Mutex::new(()),
+        gate: None,
     })
 }
 
 impl ImmediateSender {
+    pub fn set_gate(&mut self, gate: crate::posthog_transport::ConsentGate) {
+        self.gate = Some(gate);
+    }
+
     pub async fn send(
         &self,
         message: &TelemetryCaptureMessage,
     ) -> Result<(), TelemetryDeliveryError> {
         let _guard = self.queue.lock().await;
+        if self.gate.as_ref().is_some_and(|gate| !gate.allows(1)) {
+            return Ok(());
+        }
         let mut properties = message.properties.clone();
         properties.insert("$lib".into(), "omo-telemetry-core-rs".into());
         properties.insert("$lib_version".into(), env!("CARGO_PKG_VERSION").into());

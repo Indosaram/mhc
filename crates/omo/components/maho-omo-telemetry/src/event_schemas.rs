@@ -71,7 +71,6 @@ pub static OMO_NATIVE_COMMON_PROPERTY_SCHEMAS: std::sync::LazyLock<serde_json::V
     "ci": {"type":"boolean"},
     "event_id": {"type":"string"},
     "install_hash": {"type":"string"},
-    "machine_hash": {"type":"string"},
     "package_version": {"type":"string"},
     "platform": {"type":"string","values":["omo-senpi"]},
     "product_name": {"type":"string","values":["omo-native"]},

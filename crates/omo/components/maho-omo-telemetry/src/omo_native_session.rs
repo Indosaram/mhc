@@ -9,17 +9,17 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-pub use crate::session_inventory::{
-    InventoryDiagnostics, OmoNativeInventoryDiagnostic as InventoryDiagnostic,
-};
 use crate::account_inventory::{EngineTables, read_connected_accounts};
 use crate::index::{SenpiTelemetryOptions, get_senpi_telemetry_state_dir};
 use crate::product_identity::{
-    EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, OmoNativeAttributionInput, create_omo_native_product_config,
-    get_omo_native_attribution, get_omo_native_state_dir, hash_session_id,
-    with_omo_native_attribution,
+    EVENT_PROPERTY_ALLOWLISTS, OMO_NATIVE_SCHEMA_VERSION, OmoNativeAttributionInput,
+    create_omo_native_product_config, get_omo_native_attribution, get_omo_native_state_dir,
+    hash_session_id, with_omo_native_attribution,
 };
 use crate::session_inventory::read_omo_native_inventory;
+pub use crate::session_inventory::{
+    InventoryDiagnostics, OmoNativeInventoryDiagnostic as InventoryDiagnostic,
+};
 use crate::session_role::TelemetrySessionRole;
 use crate::session_summary_purge::{ConfigSelection, with_config_selection};
 
@@ -27,7 +27,12 @@ pub const SOURCE: &str = "omo-native-session";
 pub const SESSION_REASONS: [&str; 5] = ["startup", "reload", "new", "resume", "fork"];
 pub const OPTED_OUT_SESSION_HASH: &str = "opted-out";
 const ALLOW_AUTOMATION_VALUES: [&str; 3] = ["1", "true", "yes"];
-const POSIX_TEMP_ROOTS: [&str; 4] = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+const POSIX_TEMP_ROOTS: [&str; 4] = [
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+];
 const POSIX_USERS_DIRS: [&str; 3] = ["/Users", "/home", "/var/home"];
 const POSIX_ROOT_HOMES: [&str; 2] = ["/root", "/var/root"];
 
@@ -43,12 +48,10 @@ pub struct TempDirDeps {
 
 pub fn session_reason(payload: &Value) -> &'static str {
     match payload.get("reason").and_then(Value::as_str) {
-        Some(reason) if SESSION_REASONS.contains(&reason) => {
-            SESSION_REASONS
-                .into_iter()
-                .find(|candidate| *candidate == reason)
-                .unwrap_or("startup")
-        }
+        Some(reason) if SESSION_REASONS.contains(&reason) => SESSION_REASONS
+            .into_iter()
+            .find(|candidate| *candidate == reason)
+            .unwrap_or("startup"),
         _ => "startup",
     }
 }
@@ -133,7 +136,11 @@ pub fn is_inside_temp_dir(
         .clone()
         .unwrap_or_else(|| Arc::new(|candidate: &Path| std::fs::canonicalize(candidate).ok()));
     let resolve = |candidate: &Path| realpath(candidate);
-    let Some(target) = resolve(path) else {
+    // The install id is written under `home.join(...)`, which resolves `..` lexically, so every check below
+    // judges that lexically resolved path, not the raw HOME. A lexical HOME that does not exist yet cannot hold
+    // a stable id either: it counts as ephemeral (telemetry OFF).
+    let lexical = lexical_resolve(path);
+    let Some(target) = resolve(&lexical) else {
         return true;
     };
     let users_dirs: Vec<PathBuf> = if windows {
@@ -173,11 +180,12 @@ pub fn is_inside_temp_dir(
         .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
     let mut candidates = vec![tmpdir];
     if !windows {
-        candidates.extend(
-            deps.posix_temp_roots
-                .clone()
-                .unwrap_or_else(|| POSIX_TEMP_ROOTS.iter().map(|root| (*root).to_string()).collect()),
-        );
+        candidates.extend(deps.posix_temp_roots.clone().unwrap_or_else(|| {
+            POSIX_TEMP_ROOTS
+                .iter()
+                .map(|root| (*root).to_string())
+                .collect()
+        }));
     }
     candidates.into_iter().any(|candidate| {
         let candidate = PathBuf::from(candidate);
@@ -192,6 +200,32 @@ pub fn is_inside_temp_dir(
         };
         target == candidate || target.starts_with(&candidate)
     })
+}
+
+/// `path.resolve`: absolute, with `.` and `..` segments folded lexically (no filesystem access).
+fn lexical_resolve(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    out.components().next_back(),
+                    None | Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The automation check sits on the consent path, which must never panic: if it cannot decide, telemetry is off.
@@ -233,27 +267,26 @@ pub fn is_omo_native_telemetry_config_enabled(
     account_home_dir: Option<&Path>,
     selection: Option<&ConfigSelection>,
 ) -> bool {
-    let mut shared = env.clone();
+    let mut neutral = env.clone();
     for key in crate::session_summary_purge::CONFIG_SELECTION_ENV_KEYS {
-        shared.remove(key);
+        neutral.remove(key);
     }
-    // The account's own home, unless the record names the home its writer read.
-    let own_home = selection
-        .map(|selection| {
-            !selection.contains_key("HOME") && !selection.contains_key("USERPROFILE")
-        })
-        .unwrap_or(true);
-    if own_home && let Some(account_home_dir) = account_home_dir {
+    let mut shared = match selection {
+        None => neutral,
+        Some(selection) => with_config_selection(&neutral, selection),
+    };
+    // The account's own home, unless the record names the home its writer read (HOME, or USERPROFILE on
+    // Windows): applied after the selection, so a record naming only a profile is judged with the account home.
+    if !shared.contains_key("HOME")
+        && !shared.contains_key("USERPROFILE")
+        && let Some(account_home_dir) = account_home_dir
+    {
         shared.insert(
             "HOME".into(),
             account_home_dir.to_string_lossy().into_owned(),
         );
     }
-    let env = match selection {
-        None => shared,
-        Some(selection) => with_config_selection(&shared, selection),
-    };
-    config_enabled(options, cwd, &env)
+    config_enabled(options, cwd, &shared)
 }
 
 fn config_enabled(
@@ -264,13 +297,16 @@ fn config_enabled(
     if let Some(is_config_enabled) = &options.is_config_enabled {
         return is_config_enabled(cwd.unwrap_or_else(|| Path::new("")));
     }
-    let loaded = maho_omo_config_resolution::load_senpi_omo_config(
-        omo_config_core::LoadOmoConfigOptions {
+    let loaded =
+        maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
             cwd: cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
-            env: Some(env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
+            env: Some(
+                env.iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
             ..Default::default()
-        },
-    );
+        });
     if !loaded.diagnostics.is_empty() {
         if let Some(diagnostics) = &options.diagnostics {
             diagnostics(&telemetry_core::TelemetryDiagnosticInput {
@@ -307,6 +343,9 @@ pub struct StartNativeSessionInput<'a> {
     pub payload: &'a Value,
     pub agent_dir: &'a Path,
     pub session_role: TelemetrySessionRole,
+    /// The session context's component logger; a failed legacy daily-active send is reported there
+    /// (upstream `ctx.logger.warn`), on stderr when the host hands none.
+    pub logger: Option<Arc<dyn maho_ext_api::ComponentLogger>>,
 }
 
 pub fn start_native_session(
@@ -326,16 +365,12 @@ pub fn start_native_session(
     let attribution = get_omo_native_attribution(&OmoNativeAttributionInput {
         env: Some(&env),
         state_dir: None,
-        now: options.now,
-        os_provider: Some(os),
     });
     let product = with_omo_native_attribution(
         product,
         &OmoNativeAttributionInput {
             env: Some(&env),
             state_dir: None,
-            now: options.now,
-            os_provider: Some(os),
         },
     );
     let mut allowlists: EventPropertyAllowlist = EVENT_PROPERTY_ALLOWLISTS
@@ -364,7 +399,18 @@ pub fn start_native_session(
         schema_version: OMO_NATIVE_SCHEMA_VERSION,
         set_timeout_fn: options.set_timeout_fn.clone(),
         source: SOURCE,
-        transport_factory: options.transport_factory.clone(),
+        transport_factory: Some(options.transport_factory.clone().unwrap_or_else(|| {
+            let consent_options = options.clone();
+            let consent_env = env.clone();
+            crate::otlp::create_senpi_telemetry_transport_factory(crate::otlp::TransportInput {
+                env: env.clone(),
+                consent: Arc::new(move || {
+                    is_omo_native_telemetry_enabled(&consent_options, None, &consent_env)
+                }),
+                diagnostics: options.diagnostics.clone(),
+                source: Some(SOURCE.into()),
+            })
+        })),
     });
     if !client.enabled() {
         return Ok(None);
@@ -373,8 +419,8 @@ pub fn start_native_session(
         .state_dir
         .clone()
         .unwrap_or_else(|| get_omo_native_state_dir(&env));
-    let hash =
-        hash_session_id(input.session_id, &state).map_err(|e| TelemetryError::new(e.to_string()))?;
+    let hash = hash_session_id(input.session_id, &state)
+        .map_err(|e| TelemetryError::new(e.to_string()))?;
     let activity = get_daily_active_capture_state(&DailyActiveCaptureStateInput {
         state_dir: &state,
         now: options.now,
@@ -391,12 +437,10 @@ pub fn start_native_session(
         ]);
         client.capture_event("daily_active", &properties);
     }
-    let inventory = read_omo_native_inventory(input.agent_dir, options.inventory_diagnostics.as_ref());
-    let connected_accounts = read_connected_accounts(
-        input.agent_dir,
-        &env,
-        EngineTables::load().as_ref(),
-    );
+    let inventory =
+        read_omo_native_inventory(input.agent_dir, options.inventory_diagnostics.as_ref());
+    let connected_accounts =
+        read_connected_accounts(input.agent_dir, &env, EngineTables::load().as_ref());
     let reason = session_reason(input.payload);
     let timezone = read_time_zone(options.time_zone.as_deref());
     let mut properties = serde_json::Map::from_iter([
@@ -415,10 +459,7 @@ pub fn start_native_session(
             "configured_provider_count".into(),
             json!(inventory.configured_provider_count),
         ),
-        (
-            "connected_account_count".into(),
-            json!(connected_accounts),
-        ),
+        ("connected_account_count".into(), json!(connected_accounts)),
         ("model_count".into(), json!(inventory.model_count)),
         ("providers".into(), json!(inventory.providers)),
         ("reason".into(), json!(reason)),
@@ -436,9 +477,18 @@ pub fn start_native_session(
     client.capture_event("session_started", &properties);
     let mut legacy = options.clone();
     legacy.state_dir = Some(get_senpi_telemetry_state_dir(&env));
+    let logger = input.logger.clone();
     tokio::spawn(async move {
         if let Err(error) = crate::index::record_senpi_daily_active(&legacy).await {
-            maho_ext_api::diagnostic(&format!("omo-senpi legacy telemetry failed: {error}"));
+            match logger {
+                Some(logger) => logger.warn(
+                    "omo-senpi legacy telemetry failed",
+                    Some(&json!({"error": error.to_string()})),
+                ),
+                None => {
+                    maho_ext_api::diagnostic(&format!("omo-senpi legacy telemetry failed: {error}"))
+                }
+            }
         }
     });
     Ok(Some(client))
@@ -513,10 +563,7 @@ mod tests {
             Some("test_runner")
         );
         assert_eq!(
-            automated_run_reason(
-                &env(&[("NODE_ENV", "test")]),
-                &TempDirDeps::default()
-            ),
+            automated_run_reason(&env(&[("NODE_ENV", "test")]), &TempDirDeps::default()),
             Some("test_runner")
         );
         assert_eq!(
@@ -558,10 +605,7 @@ mod tests {
         std::fs::create_dir_all(&inside).unwrap();
         assert!(is_inside_temp_dir(&inside, &env(&[]), &deps));
         assert_eq!(
-            automated_run_reason(
-                &env(&[("HOME", inside.to_str().unwrap())]),
-                &deps
-            ),
+            automated_run_reason(&env(&[("HOME", inside.to_str().unwrap())]), &deps),
             Some("ephemeral_home")
         );
         // A real account profile is never ephemeral, whatever TMPDIR says.
@@ -583,7 +627,11 @@ mod tests {
             &account_deps
         ));
         // Root's home is likewise never ephemeral.
-        assert!(!is_inside_temp_dir(Path::new("/root"), &env(&[]), &account_deps));
+        assert!(!is_inside_temp_dir(
+            Path::new("/root"),
+            &env(&[]),
+            &account_deps
+        ));
     }
 
     #[test]
@@ -622,7 +670,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let deps = TempDirDeps {
             platform: Some("win32".into()),
-            tmpdir: Some(Arc::new({ let path = tmp.path().to_string_lossy().into_owned(); move || path.clone() })),
+            tmpdir: Some(Arc::new({
+                let path = tmp.path().to_string_lossy().into_owned();
+                move || path.clone()
+            })),
             posix_temp_roots: None,
             realpath: Some(Arc::new(|candidate: &Path| {
                 std::fs::canonicalize(candidate).ok()
@@ -631,10 +682,7 @@ mod tests {
         let inside = tmp.path().join("Temp-home");
         std::fs::create_dir_all(&inside).unwrap();
         assert_eq!(
-            automated_run_reason(
-                &env(&[("USERPROFILE", inside.to_str().unwrap())]),
-                &deps
-            ),
+            automated_run_reason(&env(&[("USERPROFILE", inside.to_str().unwrap())]), &deps),
             Some("ephemeral_home")
         );
         // HOME is not read on win32.
@@ -646,17 +694,86 @@ mod tests {
 
     #[test]
     fn timezone_reads_the_provider_then_the_environment() {
-        assert_eq!(read_time_zone(None), std::env::var("TZ").ok().filter(|zone| {
-            !zone.trim().is_empty() && zone.trim().len() <= 64
-        }).map(|zone| zone.trim().to_string()));
+        assert_eq!(
+            read_time_zone(None),
+            std::env::var("TZ")
+                .ok()
+                .filter(|zone| { !zone.trim().is_empty() && zone.trim().len() <= 64 })
+                .map(|zone| zone.trim().to_string())
+        );
         assert_eq!(
             read_time_zone(Some(&|| "Europe/Berlin".to_string())).as_deref(),
             Some("Europe/Berlin")
         );
         assert_eq!(read_time_zone(Some(&|| String::new())), None);
+        assert_eq!(read_time_zone(Some(&|| "x".repeat(65))), None);
+    }
+
+    #[test]
+    fn lexical_resolve_folds_dot_segments_without_touching_the_filesystem() {
         assert_eq!(
-            read_time_zone(Some(&|| "x".repeat(65))),
-            None
+            lexical_resolve(Path::new("/a/b/../c/./d")),
+            PathBuf::from("/a/c/d")
         );
+        assert_eq!(lexical_resolve(Path::new("/../x")), PathBuf::from("/x"));
+    }
+
+    #[test]
+    fn a_dotdot_home_is_judged_by_its_lexical_target() {
+        let home = tempfile::tempdir().unwrap();
+        let missing = home.path().join("gone").join("..");
+        let deps = TempDirDeps {
+            platform: Some("linux".into()),
+            tmpdir: Some(Arc::new(|| "/definitely-not-a-tmp".into())),
+            posix_temp_roots: Some(Vec::new()),
+            realpath: None,
+        };
+        // `<home>/gone/..` does not exist as a path, but its lexical form `<home>` does.
+        assert!(!is_inside_temp_dir(&missing, &env(&[]), &deps));
+    }
+
+    #[test]
+    fn a_selection_naming_only_a_profile_is_judged_with_the_account_home() {
+        let root = tempfile::tempdir().unwrap();
+        let account = root.path().join("account");
+        let elsewhere = root.path().join("elsewhere");
+        let project = root.path().join("project");
+        for dir in [&account, &elsewhere, &project] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir(account.join(".omo")).unwrap();
+        // Only the account home's `work` profile turns telemetry on.
+        std::fs::write(
+            account.join(".omo/omo.jsonc"),
+            r#"{"telemetry":{"enabled":false},"profiles":{"work":{"telemetry":{"enabled":true}}}}"#,
+        )
+        .unwrap();
+        let process_env = env(&[
+            ("HOME", elsewhere.to_str().unwrap()),
+            ("OMO_PROFILE", "mine"),
+        ]);
+        let options = SenpiTelemetryOptions::default();
+        let judge = |selection: &[(&str, &str)]| {
+            let selection: ConfigSelection = selection
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect();
+            is_omo_native_telemetry_config_enabled(
+                &options,
+                Some(project.as_path()),
+                &process_env,
+                Some(account.as_path()),
+                Some(&selection),
+            )
+        };
+
+        assert!(judge(&[("OMO_PROFILE", "work")]));
+        // The same profile read from the writer's own home (no config there) stays off.
+        assert!(!judge(&[
+            ("OMO_PROFILE", "work"),
+            ("HOME", elsewhere.to_str().unwrap()),
+        ]));
+        // The account home without the writer's profile stays off.
+        assert!(!judge(&[]));
     }
 }

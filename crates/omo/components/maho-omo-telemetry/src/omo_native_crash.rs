@@ -15,6 +15,10 @@ fn version(value: &Value) -> &str {
         })
         .unwrap_or("unknown")
 }
+/// Legacy automatic crash reporting is retired; usage telemetry is not crash consent. Claims nothing, sends nothing.
+pub fn capture_process_crashes() -> usize {
+    0
+}
 pub fn process_crashed_properties(
     crash: &ClaimedCrashRecord,
     os: &dyn telemetry_core::TelemetryOsProvider,
@@ -56,4 +60,11 @@ pub fn process_crashed_properties(
         properties["exit_code"] = json!(code);
     }
     properties
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn automatic_crash_reporting_is_retired() {
+        assert_eq!(super::capture_process_crashes(), 0);
+    }
 }

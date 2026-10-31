@@ -1,7 +1,9 @@
 pub type WalErrorCallback = Arc<dyn Fn(&io::Error, usize) + Send + Sync>;
 pub type WalWriteCallback = Arc<dyn Fn(&mut File, &[u8]) -> io::Result<usize> + Send + Sync>;
 pub type TruncateCallback = Option<Arc<dyn Fn(&File, u64) -> io::Result<()> + Send + Sync>>;
-use crate::otlp_spool_dir::{active_name, batch_name, delete_file, publish_batch};
+use crate::otlp_spool_dir::{
+    active_name, batch_name, delete_file, owner_name, owners_dir, publish_batch,
+};
 use crate::otlp_spool_file::{Signal, field, frame, varint};
 use serde_json::{Map, Value};
 use std::{
@@ -26,6 +28,7 @@ pub struct SpoolWriter {
     input: SpoolWriterInput,
     pub name: String,
     file: Option<File>,
+    owned: bool,
     pub records: usize,
     pub bytes: u64,
 }
@@ -36,6 +39,7 @@ impl SpoolWriter {
             input,
             name,
             file: None,
+            owned: false,
             records: 0,
             bytes: 0,
         }
@@ -137,6 +141,7 @@ impl SpoolWriter {
             }
             Err(e) => return Err(e),
         };
+        self.mark_owner();
         let header = frame(&self.input.header);
         if let Err(e) = self.write_all(&mut file, &header) {
             drop(file);
@@ -156,22 +161,71 @@ impl SpoolWriter {
         if self.file.is_none() || self.records == 0 {
             return Ok(None);
         }
-        self.close();
+        self.close_file();
         let sealed = batch_name(self.input.signal, batch_id);
         Ok(publish_batch(&self.input.dir, &self.name, &sealed)?.then_some(sealed))
     }
     pub fn discard(&mut self) -> io::Result<()> {
         let open = self.file.is_some();
-        self.close();
+        self.close_file();
         if open {
             delete_file(&self.input.dir, &self.name)?;
         }
         Ok(())
     }
-    pub fn close(&mut self) {
+    /// Marks this process as a live writer for as long as it runs: once sealed, its batches have no
+    /// active file, and an opt-out purge in another process must still leave them alone
+    /// (`purge_idle_otlp_spool`). Best effort: a failed marker costs no record.
+    fn mark_owner(&mut self) {
+        if self.owned {
+            return;
+        }
+        let dir = owners_dir(&self.input.dir);
+        let result = (|| {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&dir)?;
+            let mut options = OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options.open(dir.join(owner_name(
+                self.input.signal,
+                self.input.pid,
+                &self.input.boot_id,
+            )))
+        })();
+        match result {
+            Ok(_) => self.owned = true,
+            Err(e) => (self.input.on_error)(&e, 0),
+        }
+    }
+    fn close_file(&mut self) {
         self.file = None;
         self.records = 0;
         self.bytes = 0;
+    }
+    pub fn close(&mut self) {
+        self.close_file();
+        if !self.owned {
+            return;
+        }
+        self.owned = false;
+        // `delete_file` already treats NotFound as success; anything else is surfaced, not discarded.
+        if let Err(e) = delete_file(
+            &owners_dir(&self.input.dir),
+            &owner_name(self.input.signal, self.input.pid, &self.input.boot_id),
+        ) {
+            (self.input.on_error)(&e, 0);
+        }
     }
 }
 fn event_name(name: &str) -> bool {
