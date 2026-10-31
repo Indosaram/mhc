@@ -305,7 +305,7 @@ pub struct ResolvedProjectTrust {
 }
 
 /// senpi `projectTrustContextFactory` + `resolveProjectTrusted` for a replacement in another project with no
-/// cached, overridden, Full-access or saved-"trust" decision: emits the extension `project_trust` event, reads the
+/// cached, overridden or Full-access decision: emits the extension `project_trust` event, reads the
 /// saved decision and `defaultProjectTrust`, and asks when the host has a UI that can. The host caches the answer.
 /// Arguments: the target cwd, the runtime's current `permission-preset` (already known not to grant Full access),
 /// and the UI of a host that may ask (senpi `projectTrustContext.ui`, `hasUI: true`): the extension `project_trust`
@@ -2771,8 +2771,6 @@ mod tests {
         assert!(project_trusted(&runtime));
     }
 
-    /// senpi's symlink fixture: a link to project B under B's own fixture-owned temp root. Fails the test when
-    /// the link cannot be made.
     /// senpi's `home/other-link`: the link lives in its own fixture-owned temp dir beside the project, never inside
     /// it, so the project tree has no cycle. Fails the test when the link cannot be made.
     #[cfg(unix)]
