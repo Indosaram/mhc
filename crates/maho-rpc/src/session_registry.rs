@@ -628,8 +628,8 @@ mod tests {
         assert_eq!(registry.get("rpc-1").unwrap().last_command_at, 3.);
         let mut closing = registry_with(RpcSessionState::Closing, 1);
         assert_eq!(
-            closing.attach_session("rpc-1", 3.).unwrap_err().code,
-            "unknown_session"
+            closing.attach_session("rpc-1", 3.).err().map(|error| error.code),
+            Some("unknown_session".to_owned())
         );
     }
     #[test]
