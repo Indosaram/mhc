@@ -221,7 +221,7 @@ impl InteractiveExtensionUi {
     }
     /// An ephemeral dialog whose signal is already aborted is never shown (senpi returns undefined).
     fn settled_ephemeral(opts: &ExtensionUiDialogOptions) -> bool {
-        opts.ephemeral && opts.signal.as_ref().is_some_and(AbortSignal::is_aborted)
+        opts.ephemeral && opts.signal.as_ref().is_some_and(AbortSignal::aborted)
     }
     async fn wait<T: Default>(
         reply: tokio::sync::oneshot::Receiver<T>,
@@ -812,6 +812,68 @@ mod tests {
             events[1].1,
             serde_json::json!({"active": false, "id": events[0].1["id"]})
         );
+    }
+
+    fn recording_emitter(ui: &InteractiveExtensionUi) -> Arc<Mutex<Vec<String>>> {
+        let channels: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = channels.clone();
+        *ui.blocked_emitter.lock().expect("emitter slot") =
+            Some(Arc::new(move |channel: &str, _data: &serde_json::Value| {
+                sink.lock().expect("channels").push(channel.to_owned());
+            }));
+        channels
+    }
+
+    // senpi v2026.10.27-2 a644802688: an ephemeral dialog skips the `herdr:blocked` bracket, and one
+    // whose signal is already aborted answers undefined (`confirm`: false) without being shown.
+    #[tokio::test]
+    async fn ephemeral_dialogs_skip_the_blocked_bracket_and_an_aborted_one_is_never_shown() {
+        let (ui, mut requests) = InteractiveExtensionUi::channel(Theme::default());
+        let channels = recording_emitter(&ui);
+        let options = vec!["a".to_owned()];
+        let ephemeral = || ExtensionUiDialogOptions {
+            ephemeral: true,
+            ..Default::default()
+        };
+        let shown = ui.select("Private", &options, ephemeral());
+        drop(
+            requests
+                .try_recv()
+                .expect("an ephemeral select is still shown"),
+        );
+        assert_eq!(shown.await, None);
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let aborted = || ExtensionUiDialogOptions {
+            ephemeral: true,
+            signal: Some(controller.signal()),
+            ..Default::default()
+        };
+        assert_eq!(ui.select("Gone", &options, aborted()).await, None);
+        assert!(!ui.confirm("Gone", "sure?", aborted()).await);
+        assert_eq!(ui.input("Gone", None, aborted()).await, None);
+        assert!(
+            requests.try_recv().is_err(),
+            "an aborted ephemeral dialog is never shown"
+        );
+        assert!(channels.lock().expect("channels").is_empty());
+    }
+
+    // senpi 3ffffa7369 / 25acb02f29: the lifecycle status is host-owned; an extension cannot write
+    // it, and the /reload reset keeps it while clearing the extensions' statuses.
+    #[test]
+    fn the_lifecycle_status_is_host_owned_and_survives_the_reload_reset() {
+        let (ui, _requests) = InteractiveExtensionUi::channel(Theme::default());
+        let key = crate::lifecycle_status::LIFECYCLE_STATUS_KEY;
+        ui.set_status(key, Some("forged"));
+        assert!(ui.statuses.lock().expect("statuses").get(key).is_none());
+        ui.set_host_status(key, Some("Idle"));
+        ui.set_status(key, None);
+        ui.set_status("ext", Some("mine"));
+        ui.reset_before_session_invalidate();
+        let statuses = ui.statuses.lock().expect("statuses").clone();
+        assert_eq!(statuses.get(key).map(String::as_str), Some("Idle"));
+        assert!(statuses.get("ext").is_none());
     }
 
     #[test]
