@@ -192,6 +192,7 @@ pub mod session_work_barrier;
 pub mod session_write_fence;
 pub mod session_write_recovery;
 pub mod session_write_reservation;
+pub mod session_writer_claims;
 pub mod settings_diagnostics;
 pub mod settings_overrides;
 pub mod settings_public_types;
