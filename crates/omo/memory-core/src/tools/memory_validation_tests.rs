@@ -226,6 +226,34 @@ fn test_rejects_no_changes_and_missing_strings() {
 }
 
 #[test]
+fn test_dirty_repo_refuses_create_without_writing_the_file() {
+    let (_temp, repo) = fixture();
+    let author = test_author();
+    fs::write(repo.dir.join("dirty.md"), "dirty").expect("dirty");
+
+    let err = run_memory_tool(
+        &repo,
+        &author,
+        &MemoryToolParams {
+            command: Some("create".to_string()),
+            reason: "new note".to_string(),
+            file_path: Some("new.md".to_string()),
+            description: Some("New".to_string()),
+            file_text: Some("body".to_string()),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.message.contains("Memory repo has uncommitted changes"),
+        "{}",
+        err.message
+    );
+    assert!(!repo.dir.join("new.md").exists());
+}
+
+#[test]
 fn test_rejects_path_traversal() {
     let (_temp, repo) = fixture();
     let author = test_author();
