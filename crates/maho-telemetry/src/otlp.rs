@@ -140,8 +140,11 @@ impl Run {
         }
     }
 
+    /// Sum of the exported (cache-inclusive) input over the run's chat calls, saturating.
     fn input_tokens(&self) -> u64 {
-        self.chats.iter().map(|c| c.record.input).sum()
+        self.chats
+            .iter()
+            .fold(0u64, |sum, c| sum.saturating_add(exported_input(&c.record)))
     }
     fn output_tokens(&self) -> u64 {
         self.chats.iter().map(|c| c.record.output).sum()
@@ -155,6 +158,44 @@ impl Run {
             .filter_map(|c| c.record.cost.map(|cost| cost.total))
             .sum()
     }
+}
+
+/// The exported `gen_ai.usage.input_tokens`: all prompt tokens, cached ones included
+/// (`input + cacheRead + cacheWrite`, saturating). The ledger keeps uncached `input`.
+pub fn exported_input(record: &UsageRecord) -> u64 {
+    record
+        .input
+        .saturating_add(record.cache_read)
+        .saturating_add(record.cache_write)
+}
+
+/// The exported `gen_ai.provider.name`: the OpenTelemetry well-known value for the mhc provider
+/// ids that have one, else the mhc provider id itself. Exact, case-sensitive matching.
+pub fn gen_ai_provider_name(provider: &str) -> &str {
+    match provider {
+        "anthropic" => "anthropic",
+        "openai" | "chatgpt-subscription" | "openai-codex" => "openai",
+        "azure-openai-responses" => "azure.ai.openai",
+        "amazon-bedrock" => "aws.bedrock",
+        "google" => "gcp.gemini",
+        "google-vertex" => "gcp.vertex_ai",
+        "mistral" => "mistral_ai",
+        "xai" => "x_ai",
+        "groq" => "groq",
+        "deepseek" => "deepseek",
+        other => other,
+    }
+}
+
+/// `gen_ai.provider.name` plus the original `mhc.provider.id`.
+fn provider_attrs(provider: &str) -> [(&'static str, AnyValue); 2] {
+    [
+        (
+            "gen_ai.provider.name",
+            gen_ai_provider_name(provider).into(),
+        ),
+        ("mhc.provider.id", provider.into()),
+    ]
 }
 
 fn attrs(pairs: Vec<(&str, AnyValue)>) -> Attributes {
@@ -255,15 +296,17 @@ pub fn traces_request(config: &ExportConfig, run: &Run) -> Vec<u8> {
     })];
     for chat in &run.chats {
         let record = &chat.record;
+        let [provider_name, provider_id] = provider_attrs(&record.provider);
         let mut attributes = attrs(vec![
             ("gen_ai.operation.name", "chat".into()),
-            ("gen_ai.provider.name", record.provider.as_str().into()),
+            provider_name,
+            provider_id,
             ("gen_ai.request.model", record.model.as_str().into()),
             (
                 "gen_ai.response.finish_reasons",
                 AnyValue::Array(vec![record.stop_reason.as_str().into()]),
             ),
-            ("gen_ai.usage.input_tokens", record.input.into()),
+            ("gen_ai.usage.input_tokens", exported_input(record).into()),
             ("gen_ai.usage.output_tokens", record.output.into()),
             (
                 "gen_ai.usage.cache_read.input_tokens",
@@ -410,13 +453,15 @@ pub fn metrics_request(config: &ExportConfig, run: &Run) -> Vec<u8> {
     let mut tokens = Vec::new();
     for chat in &run.chats {
         let record = &chat.record;
+        let [provider_name, provider_id] = provider_attrs(&record.provider);
         let base = attrs(vec![
             ("gen_ai.operation.name", "chat".into()),
-            ("gen_ai.provider.name", record.provider.as_str().into()),
+            provider_name,
+            provider_id,
             ("gen_ai.request.model", record.model.as_str().into()),
         ]);
         for (kind, value) in [
-            ("input", record.input),
+            ("input", exported_input(record)),
             ("output", record.output),
             ("total", record.total_tokens),
             ("cache_read_input", record.cache_read),
@@ -433,10 +478,12 @@ pub fn metrics_request(config: &ExportConfig, run: &Run) -> Vec<u8> {
     let cost = grouped(run.chats.iter().filter_map(|chat| {
         let total = chat.record.cost.map(|cost| cost.total)?;
         (total > 0.0).then(|| {
+            let [provider_name, provider_id] = provider_attrs(&chat.record.provider);
             (
                 attrs(vec![
                     ("gen_ai.operation.name", "chat".into()),
-                    ("gen_ai.provider.name", chat.record.provider.as_str().into()),
+                    provider_name,
+                    provider_id,
                     ("gen_ai.request.model", chat.record.model.as_str().into()),
                 ]),
                 total,

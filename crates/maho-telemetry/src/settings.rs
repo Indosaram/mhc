@@ -206,8 +206,62 @@ fn signal_target(
     })
 }
 
+/// `os.type` (OpenTelemetry well-known value) for a Rust target OS name; `None` when unmapped.
+pub fn os_type_for(os: &str) -> Option<&'static str> {
+    Some(match os {
+        "linux" => "linux",
+        "macos" => "darwin",
+        "windows" => "windows",
+        "freebsd" => "freebsd",
+        "netbsd" => "netbsd",
+        "openbsd" => "openbsd",
+        "dragonfly" => "dragonflybsd",
+        "solaris" => "solaris",
+        "aix" => "aix",
+        _ => return None,
+    })
+}
+
+/// `host.arch` (OpenTelemetry well-known value) for a Rust target architecture; `None` when
+/// unmapped.
+pub fn host_arch_for(arch: &str) -> Option<&'static str> {
+    Some(match arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "x86" => "x86",
+        "arm" => "arm32",
+        "powerpc" => "ppc32",
+        "powerpc64" => "ppc64",
+        "s390x" => "s390x",
+        _ => return None,
+    })
+}
+
+/// `service.instance.id`: a random UUID v4 drawn once per process; never persisted and never
+/// derived from the machine.
+pub fn service_instance_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// Resource precedence (lowest to highest): built-in defaults (`service.name`,
+/// `service.instance.id`, `os.type`, `host.arch`) -> `OTEL_RESOURCE_ATTRIBUTES` ->
+/// `OTEL_SERVICE_NAME` -> `service.version` and `process.pid`. No host name, OS version or other
+/// machine-derived value is added by default.
 fn resource(env: &dyn Fn(&str) -> Option<String>, version: &str) -> Vec<(String, String)> {
-    let mut attributes = vec![("service.name".to_owned(), "mhc".to_owned())];
+    let mut attributes = vec![
+        ("service.name".to_owned(), "mhc".to_owned()),
+        (
+            "service.instance.id".to_owned(),
+            service_instance_id().to_owned(),
+        ),
+    ];
+    if let Some(os) = os_type_for(std::env::consts::OS) {
+        attributes.push(("os.type".to_owned(), os.to_owned()));
+    }
+    if let Some(arch) = host_arch_for(std::env::consts::ARCH) {
+        attributes.push(("host.arch".to_owned(), arch.to_owned()));
+    }
     if let Some(raw) = env("OTEL_RESOURCE_ATTRIBUTES") {
         merge(&mut attributes, parse_key_values(&raw));
     }
@@ -337,6 +391,12 @@ impl Settings {
                         target.url
                     ));
                 }
+                let resource: Vec<String> = export
+                    .resource
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect();
+                lines.push(format!("  resource: {}", resource.join(", ")));
             }
             None => lines.push(format!("OTLP export: off ({})", self.export_off.join("; "))),
         }

@@ -5,10 +5,12 @@ use crate::model::{
     Destination, Draft, PrepareOutcome, Refusal, ReportKind, SectionId, SubmitResult,
 };
 use crate::reports::{DISABLE_ENV, PrepareRequest, Reports};
+use crate::signin::{Access, SignInStore, decide_access};
 use maho_ext_api::{ExtensionUi, ExtensionUiDialogOptions, NotificationType};
 use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 pub type FlowFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -34,8 +36,13 @@ pub trait FlowUi: Send + Sync {
 pub trait FlowBackend: Send + Sync {
     /// A draft for the current session; `Err` is a prepare failure.
     fn prepare(&self) -> Result<PrepareOutcome, String>;
-    /// Submits `{draftId, kind, description}`.
+    /// Submits `{draftId, kind, description}` plus `accessToken` when one was decided.
     fn submit(&self, input: Value) -> FlowFuture<'_, SubmitResult>;
+    /// The access token for the submit and an optional warning to show before sending
+    /// (delta D3). The default sends anonymously without a warning.
+    fn access(&self) -> Access {
+        Access::default()
+    }
 }
 
 /// The session UI as [`FlowUi`].
@@ -68,6 +75,8 @@ impl FlowUi for SessionUi<'_> {
 pub struct ReportsBackend {
     pub reports: Reports,
     pub request: PrepareRequest,
+    /// Stored CLI sign-in; `None` keeps the caller-supplied token (`request.access_token`).
+    pub sign_in: Option<Arc<dyn SignInStore>>,
 }
 
 impl FlowBackend for ReportsBackend {
@@ -80,6 +89,16 @@ impl FlowBackend for ReportsBackend {
             let result = self.reports.submit_json(&input).await;
             parse_result(&result)
         })
+    }
+
+    fn access(&self) -> Access {
+        let host = &self.reports.host;
+        decide_access(
+            host.uploads_disabled(),
+            self.sign_in.as_deref(),
+            (host.clock)(),
+            self.request.access_token.as_deref(),
+        )
     }
 }
 
@@ -94,12 +113,36 @@ pub fn parse_result(value: &Value) -> SubmitResult {
             path: field("path").to_owned(),
         },
         "already-sent" => SubmitResult::AlreadySent,
-        _ => SubmitResult::Refused(match field("reason") {
-            "secret-detected" => Refusal::SecretDetected,
-            "too-large" => Refusal::TooLarge,
-            "rate-limited" => Refusal::RateLimited,
-            _ => Refusal::Unavailable,
-        }),
+        _ => {
+            let code = || {
+                value
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or(crate::reports::UNKNOWN_CODE)
+                    .to_owned()
+            };
+            let request_id = || {
+                value
+                    .get("requestId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            };
+            SubmitResult::Refused(match field("reason") {
+                "secret-detected" => Refusal::SecretDetected,
+                "too-large" => Refusal::TooLarge,
+                "rate-limited" => Refusal::RateLimited,
+                "sign-in-required" => Refusal::SignInRequired,
+                "service-rejected" => Refusal::ServiceRejected {
+                    code: code(),
+                    request_id: request_id(),
+                },
+                "service-unavailable" => Refusal::ServiceUnavailable {
+                    code: code(),
+                    request_id: request_id(),
+                },
+                _ => Refusal::Unavailable,
+            })
+        }
     }
 }
 
@@ -156,27 +199,37 @@ pub fn result_notice(result: &SubmitResult) -> (String, NotificationType) {
             "This report was already sent; nothing more to do.".into(),
             NotificationType::Info,
         ),
-        SubmitResult::Refused(reason) => {
-            let hint = match reason {
-                Refusal::SecretDetected => {
-                    "the intake found something that looks like a secret. Remove it from your description and try again."
-                }
-                Refusal::TooLarge => {
-                    "the report is too large. Shorten the description or start a new session and try again."
-                }
-                Refusal::RateLimited => {
-                    "too many reports were sent recently. Wait a few minutes and try again."
-                }
-                Refusal::Unavailable => {
-                    "the report service could not be reached or the draft expired. Check your connection and run the command again."
-                }
-            };
-            (
-                format!("The report was not sent: {hint}"),
-                NotificationType::Error,
-            )
-        }
+        SubmitResult::Refused(reason) => (refusal_message(reason), NotificationType::Error),
     }
+}
+
+/// The request id sentence, labelled for support, when a request id is present.
+fn request_id_part(reason: &Refusal) -> String {
+    reason
+        .request_id()
+        .map(|id| format!(" Request id for support: {id}."))
+        .unwrap_or_default()
+}
+
+/// The error text for a refusal, with what the user can do next.
+pub fn refusal_message(reason: &Refusal) -> String {
+    let code = reason.code().unwrap_or(crate::reports::UNKNOWN_CODE);
+    let text = match reason {
+        Refusal::SecretDetected => "the intake found something that looks like a secret. Remove it from your description and try again.".to_owned(),
+        Refusal::TooLarge => "the report is too large. Shorten the description or start a new session and try again.".to_owned(),
+        Refusal::RateLimited => "too many reports were sent recently. Wait a few minutes and try again.".to_owned(),
+        Refusal::SignInRequired => "the report service needs you to sign in. Sign in to mhc and run the command again.".to_owned(),
+        Refusal::ServiceRejected { .. } => format!(
+            "the report service did not accept the report (code {code}).{} Updating mhc may help.",
+            request_id_part(reason)
+        ),
+        Refusal::ServiceUnavailable { .. } => format!(
+            "the report service cannot take reports right now (code {code}).{} Try again later.",
+            request_id_part(reason)
+        ),
+        Refusal::Unavailable => "the report service could not be reached or the draft expired. Check your connection and run the command again.".to_owned(),
+    };
+    format!("The report was not sent: {text}")
 }
 
 /// Warning shown when feedback cannot be used in this build.
@@ -217,13 +270,19 @@ pub async fn run(kind: ReportKind, args: &str, ui: &dyn FlowUi, backend: &dyn Fl
         match ui.select(&title, &options).await.as_deref() {
             Some(VIEW) => ui.notify(&view_text(&draft), NotificationType::Info),
             Some(SEND) => {
-                let result = backend
-                    .submit(json!({
-                        "draftId": draft.draft_id,
-                        "kind": kind.as_str(),
-                        "description": description,
-                    }))
-                    .await;
+                let access = backend.access();
+                if let Some(warning) = &access.warning {
+                    ui.notify(warning, NotificationType::Warning);
+                }
+                let mut input = json!({
+                    "draftId": draft.draft_id,
+                    "kind": kind.as_str(),
+                    "description": description,
+                });
+                if let (Some(token), Some(object)) = (access.token, input.as_object_mut()) {
+                    object.insert("accessToken".into(), Value::String(token));
+                }
+                let result = backend.submit(input).await;
                 let (message, level) = result_notice(&result);
                 ui.notify(&message, level);
                 return;

@@ -1,6 +1,6 @@
 //! Skill content for `load_skills` (spec §3.2): a node's named skills are looked up once, at
 //! node creation, and their `SKILL.md` body is prepended to the stored prompt.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Looks up the `SKILL.md` content of a skill by name.
 pub trait SkillResolver: Send + Sync {
@@ -33,8 +33,33 @@ impl SkillResolver for DirSkillResolver {
     }
 }
 
+/// The roots `load_skills` searches, in order: `<cwd>/.omo/skills`, `<cwd>/.agents/skills`, the
+/// caller's `extra` roots, then the bundled root from the shared `maho-skills` resolver (validated
+/// `MAHO_SKILLS_ROOT` override with its once-per-process notice, else the executable sibling;
+/// Delta D2). Each root appears once.
+pub fn skill_roots(
+    cwd: &Path,
+    extra: &[PathBuf],
+    resolver: &maho_skills::RootResolver,
+    notices: &maho_skills::NoticeContext<'_>,
+) -> Vec<PathBuf> {
+    let mut roots = vec![
+        cwd.join(".omo").join("skills"),
+        cwd.join(".agents").join("skills"),
+    ];
+    roots.extend(extra.iter().cloned());
+    roots.extend(resolver.resolve(None, notices));
+    let mut seen = std::collections::HashSet::new();
+    roots.retain(|root| seen.insert(root.clone()));
+    roots
+}
+
 /// The prefix built from `skills` (in order, each once) and the diagnostics for missing ones.
-pub fn skill_prefix(resolver: &dyn SkillResolver, node_id: &str, skills: &[String]) -> (String, Vec<String>) {
+pub fn skill_prefix(
+    resolver: &dyn SkillResolver,
+    node_id: &str,
+    skills: &[String],
+) -> (String, Vec<String>) {
     let mut prefix = String::new();
     let mut diagnostics = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -76,5 +101,51 @@ mod tests {
             skill_prefix(&resolver, "n", &["s".into(), "s".into(), "missing".into()]);
         assert_eq!(prefix, "# Skill: s\n\nBody\n\n# Task\n\n");
         assert_eq!(diagnostics.len(), 1);
+    }
+
+    /// Delta D2: an invalid (relative) override falls back to the executable-sibling root through
+    /// the shared resolver, and its notice is reported at most once in the process.
+    #[test]
+    fn bundled_root_comes_from_the_shared_resolver() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(bin.join("skills/s")).expect("mkdir");
+        std::fs::write(
+            bin.join("skills/s/SKILL.md"),
+            "---\nname: s\n---\nBundled body",
+        )
+        .expect("write");
+        let resolver = maho_skills::RootResolver {
+            env: std::sync::Arc::new(|key: &str| {
+                (key == maho_skills::SKILLS_ROOT_ENV).then(|| "relative/skills".to_owned())
+            }),
+            exe: Some(bin.join("mhc")),
+            ledger: std::sync::Arc::new(maho_skills::NoticeLedger::default()),
+        };
+        let logged = std::sync::Mutex::new(Vec::<String>::new());
+        let log = |message: &str| logged.lock().expect("log").push(message.to_owned());
+        let notices = maho_skills::NoticeContext {
+            log: &log,
+            ui: None,
+        };
+        let cwd = dir.path().join("work");
+        for _ in 0..2 {
+            // No extra roots: the bundled root can only come from the resolver.
+            let roots = skill_roots(&cwd, &[], &resolver, &notices);
+            assert_eq!(roots.last(), Some(&bin.join("skills")), "{roots:?}");
+            assert_eq!(
+                roots
+                    .iter()
+                    .filter(|root| **root == bin.join("skills"))
+                    .count(),
+                1
+            );
+            let (prefix, missing) = skill_prefix(&DirSkillResolver { roots }, "n", &["s".into()]);
+            assert!(missing.is_empty());
+            assert!(prefix.contains("Bundled body"), "{prefix}");
+        }
+        let logged = logged.lock().expect("log").clone();
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].contains(maho_skills::SKILLS_ROOT_ENV));
     }
 }

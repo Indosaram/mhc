@@ -521,10 +521,11 @@ async fn cancel_interrupted_signals_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_foreign_running_task_signals_its_owner() {
     let fx = Fixture::new(0);
-    let mut child = tokio::process::Command::new("sleep")
-        .arg("30")
+    // The child's command line carries `--session-id <session>` (task.md Delta D8).
+    let mut child = tokio::process::Command::new("sh")
+        .args(["-c", "while :; do sleep 1; done", "--session-id", "Foreign-session"])
         .spawn()
-        .expect("sleep");
+        .expect("sh");
     let pid = child.id().expect("pid");
     fx.manager
         .state()

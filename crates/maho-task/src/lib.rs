@@ -12,6 +12,7 @@
 //! `task_cancel` contract and `/task-kill` (`docs/cleanroom/specs/task-control.md`).
 pub mod agents;
 pub mod control;
+pub mod credentials;
 pub mod extension;
 pub mod ids;
 pub mod isolation;
@@ -20,6 +21,7 @@ pub mod models;
 pub mod record;
 pub mod runner;
 pub mod settings;
+pub mod steering;
 pub mod summary;
 
 pub use agents::{AgentDefinition, AgentSource, Discovery, bundled_agents, discover};
@@ -29,8 +31,9 @@ pub use extension::{
     TaskExtension, TaskScope,
 };
 pub use manager::{SpawnRequest, TaskManager, TaskManagerOptions};
-pub use models::{ModelChoice, ModelContext, ModelRequest, choose_model};
+pub use credentials::CredentialFailure;
+pub use models::{FallbackPlan, ModelChoice, ModelContext, ModelRequest, choose_model};
 pub use isolation::{IsolatedWorkspace, TaskObserver, WorkspaceIsolation};
 pub use record::{PendingMessage, StateDir, TaskRecord, TaskStatus};
 pub use runner::{CancelToken, ProcessRunner, RunOutcome, RunSpec, TaskRunner};
-pub use settings::TaskSettings;
+pub use settings::{Lineage, PARENT_SESSION_ENV, SpawnedBy, TaskSettings, current_spawned_by};

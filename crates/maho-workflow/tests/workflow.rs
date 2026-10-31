@@ -27,6 +27,7 @@ struct Started {
     task: String,
     attempt: u32,
     prompt: String,
+    parent_model: Option<String>,
 }
 
 /// Children whose outcome the test sets. Survives a scheduler (children outlive their owner).
@@ -73,6 +74,7 @@ impl NodeExecutor for FakeExecutor {
             task: task.clone(),
             attempt: request.attempt,
             prompt: request.prompt.clone(),
+            parent_model: request.parent_model.clone(),
         });
         Ok(task)
     }
@@ -732,4 +734,48 @@ async fn acceptance_21_user_paused_run() {
     assert_eq!(restarted.node, "a");
     assert!(restarted.prompt.contains("prefer tiny diffs"));
     h.no_pending_start();
+}
+
+/// workflow-dag.md Delta D1 tests 2 and 3: the parent model stored at start is passed to a manual
+/// retry (after the session moved to another model) and to recovery's re-dispatch.
+#[tokio::test]
+async fn delta_d1_parent_model_survives_retry_and_recovery() {
+    let mut h = harness();
+    let starter = h.caller.clone().with_parent_model(Some("p/main".into()));
+    let out = h.scheduler.start(&starter, def("pm", vec![node("a", &[])])).expect("start");
+    let run = out.run.run_id.clone();
+    assert_eq!(out.run.parent_model.as_deref(), Some("p/main"));
+    let a = h.next_start().await;
+    assert_eq!(a.parent_model.as_deref(), Some("p/main"));
+    h.exec.finish(&a.task, ChildOutcome::Failed { message: "boom".into(), infrastructure: false });
+    assert_eq!(h.settled(&run).await, RunStatus::Failed);
+
+    // The session switched models; the retry still sends the stored one.
+    let switched = h.caller.clone().with_parent_model(Some("q/other".into()));
+    let retried = tool::run(&h.scheduler, &switched, &json!({"action": "retry", "run_id": run}), None).await;
+    assert!(!retried.is_error, "{}", retried.text);
+    let again = h.next_start().await;
+    assert_eq!(again.parent_model.as_deref(), Some("p/main"));
+    // A reused start keeps the stored value too.
+    let reused = h.scheduler.start(&switched, def("pm", vec![node("a", &[])])).expect("reuse");
+    assert!(reused.reused);
+    assert_eq!(reused.run.parent_model.as_deref(), Some("p/main"));
+
+    // The owner dies while a node waits for dispatch; the successor re-dispatches it with the
+    // stored parent model.
+    let second = h.scheduler.start(&starter, def("pm2", vec![node("x", &[]), node("y", &["x"])])).expect("start");
+    let x = h.next_start().await;
+    assert_eq!(x.node, "x");
+    h.scheduler.shutdown();
+    h.exec.complete(&x.task);
+    let successor = scheduler_at(h.dir.path(), &h.exec, DagSettings::default());
+    let recovered = successor.recover(&h.caller.session_id);
+    assert!(recovered.contains(&second.run.run_id), "{recovered:?}");
+    let y = loop {
+        let started = h.next_start().await;
+        if started.node == "y" {
+            break started;
+        }
+    };
+    assert_eq!(y.parent_model.as_deref(), Some("p/main"));
 }
