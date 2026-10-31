@@ -581,6 +581,9 @@ pub struct TaskRecord {
     pub final_response: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Exit observed, cause unconfirmed: status stays running until the owning manager confirms it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provisional_exit: Option<ProvisionalExit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub killed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -637,6 +640,16 @@ pub struct TaskRecord {
     /// Live overlay from the host-session handle; never persisted.
     #[serde(skip)]
     pub host_liveness: Option<crate::state::host_liveness::HostLivenessStatus>,
+}
+
+/// An unexpected child exit the owning manager has observed but not yet confirmed (TS
+/// `TaskRecord.provisional_exit`). `code` and `signal` serialize as `null` when absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProvisionalExit {
+    pub observed_at: String,
+    pub run_epoch: i64,
+    pub code: Option<i64>,
+    pub signal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -12,7 +12,9 @@ use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{ChildPlanner, ManagerStartSpec, ResolvedChildPlan};
 use crate::runners::{RunnerFailureKind, RunnerOutcome};
 use crate::shared::ManagedChildEvent;
-use crate::state::{ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskStatus};
+use crate::state::{
+    ProvisionalExit, ResolvedModelRecord, ResolvedModelSource, TaskRecord, TaskStatus,
+};
 
 fn category_record(provider: &str, model_id: &str) -> ResolvedModelRecord {
     ResolvedModelRecord::new(ResolvedModelSource::Category, provider, model_id)
@@ -245,6 +247,40 @@ fn given_native_fallback_advanced_once_when_model_terminates_then_handoff_uses_r
             "vendor-c/fallback-two"
         ]
     );
+}
+
+#[test]
+fn given_a_provisional_exit_when_runtime_fallback_hands_off_then_the_exit_is_dropped() {
+    // fallback-handoff.ts handOffToNextRung: the failed rung's unconfirmed exit leaves with it.
+    let runner = FakeRunner::new();
+    let harness = harness_with(
+        fallback_plan(vec![category_record("vendor-b", "fallback-model")]),
+        &runner,
+        ExecutionMode::Process,
+    );
+    let task_id = start_in(&harness, ExecutionMode::Process);
+    let first = launched(&runner, &task_id, 1);
+    let epoch = load(&harness, &task_id).notification.run_epoch;
+    harness
+        .store
+        .mutate(&task_id, |record| TaskRecord {
+            provisional_exit: Some(ProvisionalExit {
+                observed_at: "2030-01-01T00:00:00.000Z".to_string(),
+                run_epoch: epoch,
+                code: Some(1),
+                signal: None,
+            }),
+            ..record.clone()
+        })
+        .expect("seed provisional exit");
+
+    first.fail(RunnerFailureKind::ChildPromptFailed, "primary unavailable");
+
+    launched(&runner, &task_id, 2);
+    let handed_off = load(&harness, &task_id);
+    assert_eq!(handed_off.model, "vendor-b/fallback-model");
+    assert_eq!(handed_off.notification.run_epoch, epoch + 1);
+    assert_eq!(handed_off.provisional_exit, None);
 }
 
 // manager-runtime-fallback.test.ts

@@ -25,7 +25,7 @@ pub use transitions::{
     read_resolved_reasoning, resolved_reasoning_fields, transition_task_record,
 };
 pub use types::{
-    ParentModelFallback, ParentModelFallbackReason, FallbackClosingChild, StartQueued,
+    ParentModelFallback, ParentModelFallbackReason, FallbackClosingChild, ProvisionalExit, StartQueued,
     ReviveDeliveryUncertainty, RecordedRunPause, RunPauseRef, RunPauseKind,
     COST_REPORT_STATUSES, LiveRunStats, PARENT_MODEL_FALLBACK_REASONS, ParentModelFallbackPhase,
     AwaitingInputReason, BackgroundMode, CancelRequest, CostReportStatus, DeliverAs,

@@ -222,6 +222,7 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             child_session_id: None,
             final_response: None,
             error_message: None,
+            provisional_exit: None,
             killed: None,
             run_stats: None,
             isolation: None,

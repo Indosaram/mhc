@@ -930,6 +930,7 @@ pub(super) fn build_revived(record: &TaskRecord, timestamp: String) -> TaskRecor
     revived.failure_kind = None;
     revived.failure_reason = None;
     revived.awaiting_input = None;
+    revived.provisional_exit = None;
     revived.status = TaskStatus::Running;
     revived.residency_state = ResidencyState::Resident;
     revived.updated_at = timestamp;
