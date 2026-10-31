@@ -101,7 +101,7 @@
       "path": "kernels/js/worker-indirect-eval.js",
       "status": "patched",
       "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "772a5a02181579051546decde882545bb6e7b03d32c84b37686a37c91213b41a",
+      "sha256": "5f369c2e9e135f0116e6b92c1fb4b001f337860d7d65b1a1f3df67f9fb8e5f02",
       "change": "use shared isKernelGlobal predicate"
     },
     {
@@ -113,16 +113,15 @@
     },
     {
       "path": "kernels/js/worker-shadow-guard.js",
-      "status": "patched",
-      "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "528286684aec08ca458e37fa227b0f6f13fb8fc3e109531a2589a33dbafd2ce9",
-      "change": "export shared isKernelGlobal predicate"
+      "status": "verbatim",
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "528286684aec08ca458e37fa227b0f6f13fb8fc3e109531a2589a33dbafd2ce9"
     },
     {
       "path": "kernels/js/worker-shell-capture.js",
       "status": "patched",
       "upstreamCommit": "c44e259d177bc65b02e5912395dbc3f58ae5e741",
-      "sha256": "5a62792a581592bc1e69fb7f843f35410202247155404e92d903831cdfba411f",
+      "sha256": "c23722472c34b0514ee7182efc07507d35870204a502fe5c277ab6ad227ffce2",
       "change": "track shell waits and process groups"
     },
     {
