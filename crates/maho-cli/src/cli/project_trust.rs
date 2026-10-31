@@ -97,8 +97,15 @@ impl maho_ext_api::ModelRegistry for PreTrustModels {
 /// senpi `ProjectTrustContext` (`cwd`, `mode`, `hasUI`, `ui`) as the context the native
 /// `project_trust` handlers receive; no session exists before trust is resolved.
 pub fn project_trust_extension_context(cwd: &str, agent_dir: &str, mode: AppMode, ui: Arc<ProjectTrustUi>) -> ExtensionContext {
+    let has_ui = ui.has_ui;
+    project_trust_extension_context_with(cwd, agent_dir, mode, ui, has_ui)
+}
+
+/// [`project_trust_extension_context`] over any UI: a mid-session switch hands the handlers the live session's UI
+/// with `hasUI: true` (senpi interactive `projectTrustContextFactory`).
+pub fn project_trust_extension_context_with(cwd: &str, agent_dir: &str, mode: AppMode, ui: Arc<dyn ExtensionUi>, has_ui: bool) -> ExtensionContext {
     ExtensionContext {
-        has_ui: ui.has_ui, ui, mode: to_extension_mode(mode), cwd: cwd.into(), agent_dir: agent_dir.into(),
+        has_ui, ui, mode: to_extension_mode(mode), cwd: cwd.into(), agent_dir: agent_dir.into(),
         session_manager: Arc::new(PreTrustSession), model_registry: Arc::new(PreTrustModels),
         model: None, thinking_level: None, service_tier: None, effective_service_tier: None, scoped_models: Vec::new(),
         goal_store_file: None, loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
@@ -173,9 +180,23 @@ pub async fn resolve_extension_project_trust(
     mode: AppMode,
     ui: Arc<ProjectTrustUi>,
 ) -> ExtensionProjectTrust {
+    let has_ui = ui.has_ui;
+    resolve_extension_project_trust_with(cwd, agent_dir, cli_extension_paths, no_extensions, mode, ui, has_ui).await
+}
+
+/// [`resolve_extension_project_trust`] with the handlers' UI and `hasUI` given directly.
+pub async fn resolve_extension_project_trust_with(
+    cwd: &str,
+    agent_dir: &str,
+    cli_extension_paths: &[String],
+    no_extensions: bool,
+    mode: AppMode,
+    ui: Arc<dyn ExtensionUi>,
+    has_ui: bool,
+) -> ExtensionProjectTrust {
     let loaded = load_project_trust_extensions(cwd, agent_dir, cli_extension_paths, no_extensions).await;
     let load_warnings = loaded.errors.iter()
         .map(|error| super::default_extensions::extension_load_failure_message(&error.extension_path, &error.error)).collect();
-    let (result, trust_warnings) = emit_project_trust_event(loaded, project_trust_extension_context(cwd, agent_dir, mode, ui)).await;
+    let (result, trust_warnings) = emit_project_trust_event(loaded, project_trust_extension_context_with(cwd, agent_dir, mode, ui, has_ui)).await;
     ExtensionProjectTrust { result, load_warnings, trust_warnings }
 }
