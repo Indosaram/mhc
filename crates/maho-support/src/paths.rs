@@ -32,38 +32,41 @@ fn absolutize(path: &Path) -> PathBuf {
     }
 }
 
-/// Canonicalises `path`; when it does not exist, canonicalises its deepest existing ancestor and
-/// re-appends the remaining components.
+/// Canonicalises `path` as given (made absolute, not lexically normalised first), so the
+/// operating system follows each symlink before a later `..` is applied. When it does not exist,
+/// canonicalises its deepest existing prefix and appends the remaining components, dropping `.`
+/// and letting each `..` remove the last component built so far.
 pub fn canonicalize_lenient(path: &Path) -> PathBuf {
-    let path = normalize_lexically(&absolutize(path));
+    let path = absolutize(path);
     if let Ok(real) = path.canonicalize() {
         return real;
     }
-    let mut remainder: Vec<std::ffi::OsString> = Vec::new();
-    let mut current = path.clone();
-    loop {
-        if let Ok(real) = current.canonicalize() {
-            let mut out = real;
-            for part in remainder.iter().rev() {
-                out.push(part);
-            }
-            return out;
+    let components: Vec<Component<'_>> = path.components().collect();
+    for split in (0..components.len()).rev() {
+        let prefix: PathBuf = components[..split].iter().collect();
+        if prefix.as_os_str().is_empty() {
+            continue;
         }
-        match (
-            current.file_name().map(|name| name.to_os_string()),
-            current.parent(),
-        ) {
-            (Some(name), Some(parent)) => {
-                remainder.push(name);
-                current = parent.to_path_buf();
+        let Ok(mut out) = prefix.canonicalize() else {
+            continue;
+        };
+        for component in &components[split..] {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other.as_os_str()),
             }
-            _ => return path,
         }
+        return out;
     }
+    normalize_lexically(&path)
 }
 
-/// True when `candidate` equals `root` or lies below it (component-wise, after normalisation and
-/// symlink resolution).
+/// True when `candidate` equals `root` or lies below it (component-wise, after
+/// [`canonicalize_lenient`]). The verdict is about the exact string passed in: callers must check
+/// the same string they later open.
 pub fn contains_path(root: &Path, candidate: &Path) -> bool {
     let root = canonicalize_lenient(root);
     let candidate = canonicalize_lenient(candidate);
