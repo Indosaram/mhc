@@ -6,8 +6,8 @@ use crate::{
     },
     openai_remote_schema::{
         OPENAI_REMOTE_COMPACTION_SCHEMA, OpenAiRemoteCompactionDetails,
-        get_openai_remote_compaction_details, is_openai_remote_compaction_output_item,
-        is_retained_remote_output_item,
+        OpenAiRemoteCompactionOrigin, get_openai_remote_compaction_details,
+        is_openai_remote_compaction_output_item, is_retained_remote_output_item,
     },
 };
 use maho_ai::{
@@ -814,6 +814,103 @@ pub fn mark_openai_remote_replay_boundary(
     )
 }
 
+const MISSING_REMOTE_REPLAY_ORIGIN_REASON: &str = "missing-remote-replay-origin-provenance";
+const REMOTE_REPLAY_ORIGIN_MISMATCH_REASON: &str = "remote-replay-origin-mismatch";
+const UNPROVEN_REMOTE_REPLAY_BOUNDARY_REASON: &str = "unproven-remote-replay-boundary";
+
+/// senpi `leadingPromptMessages(...).length`: the leading system/developer items.
+fn leading_prompt_message_count(input: &[Value]) -> usize {
+    input
+        .iter()
+        .take_while(|item| {
+            matches!(
+                item.get("role").and_then(Value::as_str),
+                Some("system" | "developer")
+            )
+        })
+        .count()
+}
+
+/// senpi `rewriteOpenAiPayloadWithRemoteCompaction`: replace the checkpoint-owned input items of
+/// the final provider payload with the stored remote replacement input. The replacement happens
+/// only when the latest remote checkpoint matches the model identity and the current request
+/// origin, and the payload carries exactly the items [`mark_openai_remote_replay_boundary`] sealed
+/// for that checkpoint, at the position right after the leading prompt messages. Anything else
+/// emits a `remote_fallback` event and leaves the payload untouched (`None`).
+///
+/// `boundary` is the side-channel form of senpi's per-item provenance (see
+/// [`OpenAiRemoteReplayBoundary`]): a sealed item is proven when the payload item equals it.
+pub fn rewrite_openai_payload_with_remote_compaction(
+    payload: &Value,
+    model: Option<&Model>,
+    branch_entries: &[Value],
+    origin: Option<&OpenAiRemoteCompactionOrigin>,
+    boundary: Option<&OpenAiRemoteReplayBoundary>,
+    emit: &dyn Fn(Value),
+) -> Option<Value> {
+    let model = model.filter(|model| is_openai_remote_compaction_model(Some(*model)))?;
+    let payload_input = payload.as_object()?.get("input")?.as_array()?;
+    let remote = latest_remote_compaction(branch_entries)?;
+    let fallback = |reason: &str| {
+        emit(
+            json!({"version":1,"action":"remote_fallback","route":"builtin.compaction.openai_remote","requestId":format!("replay:{}", remote.entry_id),"modelId":model.id,"reason":reason}),
+        );
+    };
+    let identity = OpenAiRemoteCompactionIdentity {
+        provider: remote.details.provider.clone(),
+        api: remote.details.api.clone(),
+    };
+    if !matches_openai_remote_compaction_identity(model, &identity) {
+        fallback("remote-replay-identity-mismatch");
+        return None;
+    }
+    let (Some(persisted), Some(current)) = (remote.details.origin.as_ref(), origin) else {
+        fallback(MISSING_REMOTE_REPLAY_ORIGIN_REASON);
+        return None;
+    };
+    if persisted != current {
+        fallback(REMOTE_REPLAY_ORIGIN_MISMATCH_REASON);
+        return None;
+    }
+    let checkpoint_start = leading_prompt_message_count(payload_input);
+    let Some(expected) = boundary
+        .filter(|boundary| boundary.compaction_entry_id == remote.entry_id)
+        .map(|boundary| boundary.expected_items.as_slice())
+        .filter(|expected| {
+            !expected.is_empty()
+                && payload_input.len() >= checkpoint_start + expected.len()
+                && payload_input[checkpoint_start..checkpoint_start + expected.len()] == **expected
+        })
+    else {
+        fallback(UNPROVEN_REMOTE_REPLAY_BOUNDARY_REASON);
+        return None;
+    };
+    let input: Vec<Value> = payload_input[..checkpoint_start]
+        .iter()
+        .filter(|item| item.is_object())
+        .cloned()
+        .chain(
+            remote
+                .details
+                .replacement_input
+                .into_iter()
+                .map(Value::Object),
+        )
+        .chain(
+            payload_input[checkpoint_start + expected.len()..]
+                .iter()
+                .filter(|item| item.is_object())
+                .cloned(),
+        )
+        .collect();
+    emit(
+        json!({"version":1,"action":"remote_payload_rewritten","route":"builtin.compaction.openai_remote","modelId":model.id,"compactionEntryId":remote.entry_id,"inputItemCount":input.len()}),
+    );
+    let mut rewritten = payload.as_object()?.clone();
+    rewritten.insert("input".into(), Value::Array(input));
+    Some(Value::Object(rewritten))
+}
+
 /// senpi `replayBoundaryConversionOptions`: the codex converter omits the system prompt and keeps
 /// text signatures, so the sealed baseline matches what that provider converts.
 fn replay_boundary_conversion_options(model: &Model) -> ConvertResponsesMessagesOptions {
@@ -881,6 +978,103 @@ mod replay_boundary_tests {
         );
         assert!(marked[1][CONTEXT_PROVENANCE_FIELD]["integrity"].is_string());
         assert!(marked[2].get(CONTEXT_PROVENANCE_FIELD).is_none());
+    }
+
+    fn origin() -> OpenAiRemoteCompactionOrigin {
+        OpenAiRemoteCompactionOrigin {
+            endpoint: "https://api.openai.com/v1".into(),
+            trust_domain: "https://api.openai.com".into(),
+            auth_tenant_fingerprint: "sha256:abc".into(),
+        }
+    }
+
+    /// The final payload the provider would send: leading prompt, the sealed checkpoint items, then
+    /// the post-checkpoint turn.
+    fn sealed_payload(boundary: &OpenAiRemoteReplayBoundary) -> Value {
+        let mut input = vec![json!({"role":"developer","content":"prompt"})];
+        input.extend(boundary.expected_items.iter().cloned());
+        input.push(json!({"role":"user","content":[{"type":"input_text","text":"new"}]}));
+        json!({"model":"m","input":input,"stream":true})
+    }
+
+    fn rewrite(
+        payload: &Value,
+        origin: Option<&OpenAiRemoteCompactionOrigin>,
+        boundary: Option<&OpenAiRemoteReplayBoundary>,
+    ) -> (Option<Value>, Vec<Value>) {
+        let events = std::cell::RefCell::new(Vec::new());
+        let rewritten = rewrite_openai_payload_with_remote_compaction(
+            payload,
+            Some(&model()),
+            &branch(),
+            origin,
+            boundary,
+            &|data| events.borrow_mut().push(data),
+        );
+        (rewritten, events.into_inner())
+    }
+
+    fn sealed_boundary() -> OpenAiRemoteReplayBoundary {
+        let branch = branch();
+        let (messages, entry_ids) = context(&branch);
+        mark_openai_remote_replay_boundary(messages, &entry_ids, Some(&model()), &branch)
+            .1
+            .expect("sealed boundary")
+    }
+
+    #[test]
+    fn sealed_checkpoint_items_are_replaced_by_the_remote_replacement_input() {
+        let boundary = sealed_boundary();
+        let (rewritten, events) =
+            rewrite(&sealed_payload(&boundary), Some(&origin()), Some(&boundary));
+        assert_eq!(
+            rewritten,
+            Some(json!({"model":"m","input":[
+                {"role":"developer","content":"prompt"},
+                {"type":"compaction","encrypted_content":"x"},
+                {"role":"user","content":[{"type":"input_text","text":"new"}]},
+            ],"stream":true}))
+        );
+        assert_eq!(
+            events,
+            vec![
+                json!({"version":1,"action":"remote_payload_rewritten","route":"builtin.compaction.openai_remote","modelId":"m","compactionEntryId":"c","inputItemCount":3})
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hook_changed_checkpoint_item_is_unproven_and_never_replaced() {
+        let boundary = sealed_boundary();
+        let mut payload = sealed_payload(&boundary);
+        payload["input"][2]["content"][0]["text"] = json!("edited by a later context hook");
+        let (rewritten, events) = rewrite(&payload, Some(&origin()), Some(&boundary));
+        assert_eq!(rewritten, None);
+        assert_eq!(events[0]["reason"], "unproven-remote-replay-boundary");
+        assert_eq!(events[0]["requestId"], "replay:c");
+        // Raw provider items with no sealed boundary never authorize replacement either.
+        let (rewritten, events) = rewrite(&sealed_payload(&boundary), Some(&origin()), None);
+        assert_eq!(rewritten, None);
+        assert_eq!(events[0]["reason"], "unproven-remote-replay-boundary");
+    }
+
+    #[test]
+    fn replay_requires_the_persisted_origin() {
+        let boundary = sealed_boundary();
+        let payload = sealed_payload(&boundary);
+        let (rewritten, events) = rewrite(&payload, None, Some(&boundary));
+        assert_eq!(rewritten, None);
+        assert_eq!(
+            events[0]["reason"],
+            "missing-remote-replay-origin-provenance"
+        );
+        let other = OpenAiRemoteCompactionOrigin {
+            auth_tenant_fingerprint: "sha256:other".into(),
+            ..origin()
+        };
+        let (rewritten, events) = rewrite(&payload, Some(&other), Some(&boundary));
+        assert_eq!(rewritten, None);
+        assert_eq!(events[0]["reason"], "remote-replay-origin-mismatch");
     }
 
     #[test]

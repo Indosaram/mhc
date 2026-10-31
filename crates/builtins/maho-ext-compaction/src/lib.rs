@@ -509,6 +509,82 @@ impl maho_ext_api::Extension for CompactionExtension {
                     replay_boundary: std::sync::Arc::clone(&replay_boundary),
                 },
             );
+            // senpi before_provider_request: replay the stored remote checkpoint in place of the
+            // sealed checkpoint-owned items, for the origin this request will actually reach.
+            let replay_events = api.events.clone();
+            api.on(
+                maho_ext_api::EventKind::BeforeProviderRequest,
+                std::sync::Arc::new(move |event, context| {
+                    let replay_boundary = std::sync::Arc::clone(&replay_boundary);
+                    let events = replay_events.clone();
+                    Box::pin(async move {
+                        let maho_ext_api::ExtensionEvent::BeforeProviderRequest {
+                            payload,
+                            model,
+                            headers,
+                        } = event
+                        else {
+                            return Ok(maho_ext_api::EventResult::None);
+                        };
+                        let Some(model) = model.as_ref().or(context.model.as_ref()) else {
+                            return Ok(maho_ext_api::EventResult::None);
+                        };
+                        if !openai_remote_model::is_openai_remote_compaction_model(Some(model)) {
+                            return Ok(maho_ext_api::EventResult::None);
+                        }
+                        let Ok(auth) = context.model_registry.get_api_key_and_headers(model).await
+                        else {
+                            return Ok(maho_ext_api::EventResult::None);
+                        };
+                        let mut effective = model.clone();
+                        if let Some(id) = auth.upstream_model_id.filter(|id| !id.is_empty()) {
+                            effective.id = id;
+                        }
+                        if let Some(base_url) =
+                            auth.auth.base_url.filter(|base_url| !base_url.is_empty())
+                        {
+                            effective.base_url = base_url;
+                        }
+                        let additional = headers
+                            .clone()
+                            .or(auth.auth.headers)
+                            .unwrap_or_default();
+                        let Ok(Some(request_headers)) =
+                            openai_remote_model::create_live_openai_remote_compaction_headers(
+                                &effective,
+                                auth.auth.api_key.as_deref(),
+                                &additional,
+                                Some(context.session_manager.session_id()),
+                            )
+                        else {
+                            return Ok(maho_ext_api::EventResult::None);
+                        };
+                        let origin = openai_remote_model::openai_remote_compaction_origin(
+                            &effective,
+                            &request_headers,
+                        );
+                        let boundary = replay_boundary
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone();
+                        let branch = speculative::branch_values(context);
+                        Ok(openai_remote::rewrite_openai_payload_with_remote_compaction(
+                            payload,
+                            Some(&effective),
+                            &branch,
+                            origin.as_ref(),
+                            boundary.as_ref(),
+                            &|data: serde_json::Value| {
+                                events.emit(openai_remote::SENPI_COMPACTION_EVENT, &data)
+                            },
+                        )
+                        .map_or(
+                            maho_ext_api::EventResult::None,
+                            maho_ext_api::EventResult::ProviderPayload,
+                        ))
+                    })
+                }),
+            );
             // senpi session_compact: an accepted compaction restarts the frontier.
             api.on(
                 maho_ext_api::EventKind::SessionCompact,
