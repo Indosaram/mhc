@@ -369,6 +369,13 @@ impl Lane {
         self.state_change.notify_waiters();
     }
 
+    /// Test hook: a `state_change` notification future. Register (and `enable`) it before checking
+    /// the condition it guards so a concurrent `notify_waiters` is not lost.
+    #[doc(hidden)]
+    pub fn state_changed(&self) -> tokio::sync::futures::Notified<'_> {
+        self.state_change.notified()
+    }
+
     fn active_drive_matching(&self, operation_id: &str) -> Option<Arc<Drive>> {
         self.active_drive
             .lock()
