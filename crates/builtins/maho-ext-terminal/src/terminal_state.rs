@@ -26,12 +26,19 @@ impl TerminalStateLifecycle {
         pid: f64,
         started_at_ms: f64,
     ) -> std::io::Result<TerminalStateAdoption> {
-        match crate::manifest_lease::acquire_terminal_lease(
+        // Upstream `acquireTerminalLease` probes the holder's start instant, so a lease whose pid
+        // now belongs to an unrelated, later-started process is reclaimed at once.
+        let mut is_process_alive = crate::manifest_lease::probe_alive;
+        let mut read_process_start_ms = crate::manifest_lease::read_process_start_ms;
+        match crate::manifest_lease::acquire_terminal_lease_with(
             dir,
             encoded_session_id,
             pid,
             started_at_ms,
-            crate::manifest_lease::probe_alive,
+            &mut crate::manifest_lease::LeaseProbes {
+                is_process_alive: &mut is_process_alive,
+                read_process_start_ms: &mut read_process_start_ms,
+            },
         )? {
             crate::manifest_lease::AcquireTerminalLeaseResult::Acquired { path, pid } => {
                 self.lease = Some((path, pid));
@@ -149,9 +156,13 @@ mod tests {
             .await;
         writer.record_shutdown(2.0).await;
 
+        // The acquisition instant is real: the start probe compares it with this process's start.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0);
         let mut owner = TerminalStateLifecycle::new(dir.path(), "s");
         assert_eq!(
-            owner.acquire(dir.path(), "s", f64::from(std::process::id()), 10.0)?,
+            owner.acquire(dir.path(), "s", f64::from(std::process::id()), now)?,
             TerminalStateAdoption::Acquired
         );
         assert!(owner.is_owner());
@@ -169,7 +180,7 @@ mod tests {
 
         let mut other = TerminalStateLifecycle::new(dir.path(), "s");
         assert_eq!(
-            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, 40.0)?,
+            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, now)?,
             TerminalStateAdoption::AttachedElsewhere {
                 pid: f64::from(std::process::id())
             }
@@ -182,7 +193,7 @@ mod tests {
 
         owner.release()?;
         assert_eq!(
-            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, 50.0)?,
+            other.acquire(dir.path(), "s", f64::from(std::process::id()) + 1.0, now)?,
             TerminalStateAdoption::Acquired
         );
         other.release()?;
