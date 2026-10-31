@@ -163,12 +163,16 @@ where
             log_version(&inputs.logger, server_name, Some(&version), None);
             Ok(client)
         }
-        StdioProbeResult::Legacy { .. } => {
-            client
-                .protocol
-                .legacy
-                .store(true, std::sync::atomic::Ordering::Release);
-            client.protocol.resolve_stdio_diagnostics(false);
+        StdioProbeResult::Legacy { silent } => {
+            // stdio-probe.ts: a silent child is classified by its initialize reply (late discovery may still
+            // upgrade it); only a clean non-modern answer is legacy now.
+            if !silent {
+                client
+                    .protocol
+                    .legacy
+                    .store(true, std::sync::atomic::Ordering::Release);
+                client.protocol.resolve_stdio_diagnostics(false);
+            }
             Ok(client)
         }
         StdioProbeResult::Restart => {
