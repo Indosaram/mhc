@@ -6,6 +6,11 @@ use std::{
 pub const HOST_DAEMON_LAYOUT: u32 = 2;
 pub const HOST_DAEMON_DIR_ENV: &str = "SENPI_RPC_HOST_DAEMON_DIR";
 pub const HOST_STATE_FILE_MODE: u32 = 0o600;
+/// Version of the `endpoint.json` registry record.
+pub const ENDPOINT_REGISTRY_VERSION: u32 = 1;
+/// senpi `HostDaemonDirectory`: the paths inside one endpoint directory. The Rust record carries the flat
+/// fields too; a directory-only caller ignores them.
+pub type HostDaemonDirectory = HostDaemonPaths;
 #[derive(Debug, Clone)]
 pub struct HostDaemonPaths {
     pub flat_dir: PathBuf,
@@ -142,6 +147,84 @@ pub fn create_daemon_directories(paths: &HostDaemonPaths) -> Result<(), HostDaem
         source,
     })
 }
+/// Writes `endpoint.json` when it is absent and never rewrites a valid one: the first writer's `created_at` is
+/// the endpoint's birth (senpi `ensureEndpointIdentity`). The record is written whole to a temporary name and
+/// LINKED into place, so a reader never sees it half-written and a racing second writer loses on the link.
+/// `repair` - asserted only by an ensure under this socket's ensure lock - also replaces a file that does not
+/// name a socket of this directory. A filesystem without hard links gets the exclusive create instead.
+pub fn ensure_endpoint_identity(
+    paths: &HostDaemonPaths,
+    socket: &str,
+    repair: bool,
+    kind: Option<crate::host_endpoints::EndpointKind>,
+) -> Result<(), HostDaemonStateError> {
+    use std::io::Write;
+    let temporary = paths.endpoint_file.with_file_name(format!(
+        "endpoint.json.{}-{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let record = format!(
+        "{}\n",
+        serde_json::json!({
+            "layout": HOST_DAEMON_LAYOUT,
+            "registry_version": ENDPOINT_REGISTRY_VERSION,
+            "endpoint_kind": kind.unwrap_or(crate::host_endpoints::EndpointKind::RpcHost).as_str(),
+            "socket": socket,
+            "created_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        })
+    );
+    let exclusive = |path: &Path| -> io::Result<bool> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, HOST_STATE_FILE_MODE);
+        match options.open(path) {
+            Ok(mut file) => file.write_all(record.as_bytes()).map(|()| true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error),
+        }
+    };
+    let result = (|| -> io::Result<()> {
+        create_private_directory(&paths.dir)?;
+        exclusive(&temporary)?;
+        let placed = match fs::hard_link(&temporary, &paths.endpoint_file) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+            Err(_) => exclusive(&paths.endpoint_file)?,
+        };
+        if !placed && repair && !names_this_directory(paths) {
+            fs::rename(&temporary, &paths.endpoint_file)?;
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temporary);
+    result.map_err(|source| HostDaemonStateError {
+        path: paths.endpoint_file.clone(),
+        source,
+    })
+}
+fn names_this_directory(paths: &HostDaemonPaths) -> bool {
+    let Some(record) = fs::read_to_string(&paths.endpoint_file)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return false;
+    };
+    let name = paths.dir.file_name().unwrap_or_default().to_string_lossy();
+    let platform = if cfg!(windows) {
+        "win32"
+    } else {
+        std::env::consts::OS
+    };
+    record
+        .get("socket")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|socket| {
+            !socket.is_empty()
+                && crate::host_endpoint_names::socket_names_directory(socket, &name, platform)
+        })
+}
 pub fn create_generation_directory(
     generation: &HostGenerationPaths,
 ) -> Result<(), HostDaemonStateError> {
@@ -171,6 +254,46 @@ pub fn create_generation_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn endpoint_identity_is_written_once_and_repaired_only_when_foreign() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join("rpc.sock").to_string_lossy().into_owned();
+        let paths = create_host_daemon_paths(&socket, temp.path());
+        ensure_endpoint_identity(&paths, &socket, false, None).expect("write");
+        let first = fs::read_to_string(&paths.endpoint_file).expect("read");
+        let record: serde_json::Value = serde_json::from_str(&first).expect("json");
+        assert_eq!(record["registry_version"], ENDPOINT_REGISTRY_VERSION);
+        assert_eq!(record["endpoint_kind"], "rpc_host");
+        assert_eq!(record["socket"], socket.as_str());
+        ensure_endpoint_identity(&paths, &socket, true, None).expect("again");
+        assert_eq!(
+            fs::read_to_string(&paths.endpoint_file).expect("read"),
+            first
+        );
+        fs::write(&paths.endpoint_file, "{\"socket\":\"/elsewhere\"}").expect("tear");
+        ensure_endpoint_identity(&paths, &socket, false, None).expect("no repair");
+        assert!(
+            fs::read_to_string(&paths.endpoint_file)
+                .expect("read")
+                .contains("/elsewhere")
+        );
+        ensure_endpoint_identity(
+            &paths,
+            &socket,
+            true,
+            Some(crate::host_endpoints::EndpointKind::Tui),
+        )
+        .expect("repair");
+        let repaired: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&paths.endpoint_file).expect("read"))
+                .expect("json");
+        assert_eq!(repaired["endpoint_kind"], "tui");
+        assert_eq!(
+            fs::read_dir(&paths.dir).expect("dir").count(),
+            1,
+            "no temporary is left behind"
+        );
+    }
     #[test]
     fn hash_matches_sha256_prefix() {
         assert_eq!(daemon_directory_name("abc"), "ba7816bf8f01cfea");

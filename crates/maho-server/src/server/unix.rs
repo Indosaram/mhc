@@ -184,9 +184,13 @@ pub struct UnixListener {
     on_error: Option<ServerErrorObserver>,
     closing: AtomicBool,
     running: Mutex<Option<RunningUnixListener>>,
+    /// Pinned `closePromise`: every `close()`, concurrent or later, answers the first close's outcome.
+    close_outcome: tokio::sync::OnceCell<Result<(), ServerError>>,
 }
 /// Pinned `createUnixListener`.
-pub fn create_unix_listener(options: UnixListenerOptions) -> Result<Arc<dyn ServerListener>, ServerError> {
+pub fn create_unix_listener(
+    options: UnixListenerOptions,
+) -> Result<Arc<dyn ServerListener>, ServerError> {
     let resolved = resolve_unix_listener_options(&options)?;
     Ok(Arc::new(UnixListener {
         path: options.path,
@@ -194,6 +198,7 @@ pub fn create_unix_listener(options: UnixListenerOptions) -> Result<Arc<dyn Serv
         on_error: options.on_error,
         closing: AtomicBool::new(false),
         running: Mutex::new(None),
+        close_outcome: tokio::sync::OnceCell::new(),
     }))
 }
 /// Pinned `createUnixServer`: compose `Server` with one Unix-domain socket listener. The caller
@@ -225,17 +230,27 @@ impl ServerListener for UnixListener {
         Box::pin(async move {
             let mut running = self.running.lock().await;
             if running.is_some() {
-                return Err(ServerError::new("internal_error", "Unix listener is already started"));
+                return Err(ServerError::new(
+                    "internal_error",
+                    "Unix listener is already started",
+                ));
             }
             if self.closing.load(Ordering::SeqCst) {
-                return Err(ServerError::new("internal_error", "Unix listener is closing or closed"));
+                return Err(ServerError::new(
+                    "internal_error",
+                    "Unix listener is closing or closed",
+                ));
             }
             let path = &self.path;
             let options = self.options;
             let parent = path
                 .parent()
                 .ok_or_else(|| ServerError::new("invalid_request", "Socket path has no parent"))?;
-            tokio::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent).await?;
+            tokio::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .await?;
             remove_stale_socket(path).await?;
             let hash = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
             let owned = parent.join(format!("bind-{}", &hash[..8]));
@@ -259,9 +274,9 @@ impl ServerListener for UnixListener {
             let (shutdown, mut signal) = watch::channel(false);
             let on_error = self.on_error.clone();
             let task = tokio::spawn(async move {
-                let mut connections=JoinSet::new();
+                let mut connections = JoinSet::new();
                 loop {
-                    let connection_signal=signal.clone();
+                    let connection_signal = signal.clone();
                     tokio::select! {
                         biased;
                         _=signal.wait_for(|v| *v)=>break,
@@ -276,32 +291,58 @@ impl ServerListener for UnixListener {
                     }
                 }
                 let mut failures = Vec::new();
-                let drained = tokio::time::timeout(std::time::Duration::from_millis(u64::from(options.graceful_close_timeout_ms)),async {
-                    while let Some(result)=connections.join_next().await {
-                        match result {
-                            Ok(Ok(()))=>{},
-                            Ok(Err(error))=>failures.push(error.message),
-                            Err(error)=>failures.push(error.to_string()),
+                let drained = tokio::time::timeout(
+                    std::time::Duration::from_millis(u64::from(options.graceful_close_timeout_ms)),
+                    async {
+                        while let Some(result) = connections.join_next().await {
+                            match result {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => failures.push(error.message),
+                                Err(error) => failures.push(error.to_string()),
+                            }
                         }
-                    }
-                }).await;
+                    },
+                )
+                .await;
                 if drained.is_err() {
                     connections.abort_all();
-                    while let Some(result)=connections.join_next().await {
-                        if let Err(error)=result && !error.is_cancelled() {failures.push(error.to_string());}
+                    while let Some(result) = connections.join_next().await {
+                        if let Err(error) = result
+                            && !error.is_cancelled()
+                        {
+                            failures.push(error.to_string());
+                        }
                     }
                 }
-                if failures.is_empty() {Ok(())} else {Err(ServerError::new("internal_error",&failures.join("; ")))}
+                if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ServerError::new("internal_error", &failures.join("; ")))
+                }
             });
-            *running = Some(RunningUnixListener { identity, shutdown, task });
+            *running = Some(RunningUnixListener {
+                identity,
+                shutdown,
+                task,
+            });
             Ok(())
         })
     }
     fn close(&self) -> ServerFuture<'_, ()> {
         Box::pin(async move {
             self.closing.store(true, Ordering::SeqCst);
-            let mut running = self.running.lock().await;
-            let Some(listener) = running.take() else {
+            self.close_outcome
+                .get_or_init(|| self.close_internal())
+                .await
+                .clone()
+        })
+    }
+}
+impl UnixListener {
+    async fn close_internal(&self) -> Result<(), ServerError> {
+        {
+            let running = self.running.lock().await.take();
+            let Some(listener) = running else {
                 return Ok(());
             };
             listener.shutdown.send_replace(true);
@@ -311,14 +352,15 @@ impl ServerListener for UnixListener {
                 .map_err(|e| ServerError::new("internal_error", &e.to_string()))
                 .and_then(|r| r)
                 .err();
-            if let Err(error) = remove_owned_socket(&self.path, listener.identity, "cleanup").await {
+            if let Err(error) = remove_owned_socket(&self.path, listener.identity, "cleanup").await
+            {
                 failure = Some(error);
             }
             match failure {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
-        })
+        }
     }
 }
 struct SocketConnection {
@@ -429,7 +471,11 @@ async fn serve_socket(
             _ = stop.wait_for(|v| *v) => {},
         }
     });
-    let result = accept(AcceptedConnection { connection, inbound: rx }).await;
+    let result = accept(AcceptedConnection {
+        connection,
+        inbound: rx,
+    })
+    .await;
     tasks.abort_all();
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result
@@ -465,5 +511,37 @@ mod tests {
         peer.read_exact(&mut received).await.unwrap();
         assert_eq!(&received, b"ab");
         connection.close(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_repeated_close_answers_the_first_close_outcome() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("repeat.sock");
+        let listener = create_unix_listener(UnixListenerOptions {
+            path: path.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel::<()>();
+        let accepted_tx = Arc::new(std::sync::Mutex::new(Some(accepted_tx)));
+        let accept: ByteConnectionAcceptor = Arc::new(move |mut accepted: AcceptedConnection| {
+            let entered = accepted_tx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            Box::pin(async move {
+                if let Some(entered) = entered {
+                    let _receiver_gone = entered.send(());
+                }
+                while accepted.inbound.recv().await.is_some() {}
+                Err(ServerError::new("internal_error", "handler failed"))
+            }) as ServerFuture<'static, ()>
+        });
+        listener.start(accept).await.unwrap();
+        let _client = UnixStream::connect(&path).await.unwrap();
+        accepted_rx.await.unwrap();
+        let first = listener.close().await.unwrap_err();
+        assert_eq!(first.message, "handler failed");
+        assert_eq!(listener.close().await.unwrap_err(), first);
     }
 }
