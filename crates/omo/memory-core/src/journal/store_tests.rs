@@ -30,6 +30,32 @@ fn tolerant_snapshot_skips_torn_rows_without_creating_missing_journal() {
 }
 
 #[test]
+fn read_entries_skips_malformed_rows_and_returns_valid_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let journal = create_journal(temp.path());
+    let valid_row = serde_json::json!({
+        "kind": "user",
+        "captured_at": "2026-08-09T12:00:00.000Z",
+        "source_line_id": "line-1",
+        "source_message_id": "msg-1",
+        "text": "hello"
+    });
+    let malformed_row = serde_json::json!({
+        "kind": "legacy",
+        "captured_at": "2026-08-09T12:00:00.000Z",
+        "source_line_id": "line-2"
+    });
+    std::fs::write(
+        &journal.transcript_path,
+        format!("{valid_row}\n{malformed_row}\n"),
+    )
+    .unwrap();
+    let entries = journal.read_entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source_line_id(), "line-1");
+}
+
+#[test]
 fn consecutive_reflection_failures_use_bounded_exponential_backoff() {
     let temp = tempfile::tempdir().unwrap();
     let journal = create_journal(temp.path());
