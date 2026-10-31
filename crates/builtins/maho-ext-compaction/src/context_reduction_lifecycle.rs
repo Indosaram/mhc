@@ -108,6 +108,13 @@ fn restore(inner: &mut Inner, context: &ExtensionContext) {
     inner.session_id = Some(session_id.to_owned());
 }
 
+fn clear_replay_boundary(options: &ContextReductionLifecycleOptions) {
+    *options
+        .replay_boundary
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+}
+
 fn context_handler(
     api: &ExtensionApi,
     handoff: &ReductionHandoff,
@@ -129,6 +136,11 @@ fn context_handler(
     // The journal may not yet contain the current user/tool message. The dispatcher, not
     // transcript equality, owns request provenance.
     let live = *source != ContextEventSource::Projection;
+    if live {
+        // A live event that fails below must not leave the previous request's boundary behind for
+        // the next provider request to replay against.
+        clear_replay_boundary(options);
+    }
     let mut scratch = inner.state.clone();
     let working = if live { &mut inner.state } else { &mut scratch };
     if !live {
@@ -413,6 +425,31 @@ mod tests {
         scratch.compaction_required = false;
         assert_eq!(scratch.anchor_tokens, None);
         assert!(live.compaction_required && live.anchor_tokens == Some(9));
+    }
+
+    #[test]
+    fn clearing_drops_a_stored_replay_boundary() {
+        let options = ContextReductionLifecycleOptions {
+            emergency_prune_latch: Arc::default(),
+            emergency_instructions: String::new(),
+            get_tools: Arc::new(Vec::<maho_ai::types::Tool>::new),
+            get_request_tools: Arc::new(Vec::<maho_ai::types::Tool>::new),
+            get_policy: Arc::new(|_: &ExtensionContext| Ok(ContextReductionPolicy::default())),
+            log: Arc::new(|_: &ExtensionContext, _: &str, _: Value| {}),
+            replay_boundary: Arc::new(Mutex::new(Some(OpenAiRemoteReplayBoundary {
+                compaction_entry_id: "c".into(),
+                expected_ordinals: vec![0],
+                expected_items: vec![json!({"role":"user","content":"kept"})],
+            }))),
+        };
+        clear_replay_boundary(&options);
+        assert_eq!(
+            *options
+                .replay_boundary
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            None
+        );
     }
 
     #[test]
