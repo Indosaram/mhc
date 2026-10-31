@@ -85,7 +85,7 @@ fn translate_member_error(input: &serde_json::Map<String, Value>) -> MemberParse
             "missing-kind",
         );
     }
-    if kind == Some("category") || (!has_kind && has_category) {
+    if (kind == Some("category") || (!has_kind && has_category)) && !present(input.get("prompt")) {
         let category = input
             .get("category")
             .and_then(Value::as_str)
@@ -161,5 +161,21 @@ mod tests {
         );
         assert_eq!(member_name.as_deref(), Some("worker"));
         assert_eq!(issue.as_deref(), Some("unknown-subagent"));
+    }
+
+    #[test]
+    fn parse_member_base_does_not_report_missing_prompt_when_prompt_present() {
+        let raw = json!({
+            "name": "INVALID/NAME",
+            "kind": "category",
+            "category": "quick",
+            "prompt": "some prompt",
+        });
+        let error = parse_member_base(&raw).expect_err("invalid name rejected");
+        let MemberParseError::Validation { issue, .. } = error else {
+            panic!("expected validation error");
+        };
+        assert_ne!(issue.as_deref(), Some("category-missing-prompt"));
+        assert_eq!(issue.as_deref(), Some("zod-residual"));
     }
 }
