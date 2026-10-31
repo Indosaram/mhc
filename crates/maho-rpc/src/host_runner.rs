@@ -142,9 +142,15 @@ pub async fn run_host_request(request: HostRequest) -> std::io::Result<HostOutco
         },
         HostRequest::Gc { agent_dir } => Ok(HostOutcome {
             exit_code: HOST_EXIT_OK,
-            payload: crate::host_gc::gc_host_endpoints(&agent_dir, &Default::default())
-                .await
-                .to_value(),
+            payload: crate::host_gc::gc_host_endpoints(
+                &agent_dir,
+                &crate::host_gc::HostGcOptions {
+                    stale_engine: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .to_value(),
         }),
         HostRequest::ShardPath { kind, owner, root } => Ok(shard_path_outcome(kind, &owner, &root)),
     }
@@ -269,7 +275,9 @@ pub async fn handoff_outcome(
     }
 }
 /// The registration the operator saw and authorized (senpi `HostStopGeneration`), shared with `host_stop`.
-pub use crate::host_stop_generation::{HostStopGeneration, StopGenerationMatch, compare_stop_generation};
+pub use crate::host_stop_generation::{
+    HostStopGeneration, StopGenerationMatch, compare_stop_generation,
+};
 /// The refusal reason for a binding the endpoint no longer matches; `None` when proven or bound (senpi `generationRefusal`).
 pub fn generation_refusal(matched: StopGenerationMatch) -> Option<&'static str> {
     match matched {
