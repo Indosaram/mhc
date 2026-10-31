@@ -5,7 +5,7 @@ pub mod clipboard;
 pub mod clipboard_command;
 pub mod deprecation;
 pub mod duration;
-pub mod exif_orientation;
+pub use maho_core::utils::exif_orientation;
 pub mod frontmatter;
 pub mod fs_watch;
 pub mod html;

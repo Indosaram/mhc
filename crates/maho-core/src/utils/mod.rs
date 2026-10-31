@@ -1,3 +1,4 @@
+pub mod exif_orientation;
 pub mod image_convert;
 pub mod image_process;
 pub mod shell;
