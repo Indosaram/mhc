@@ -139,9 +139,6 @@ fn parse_structured_plan(lines: &[&str]) -> ParsedStructuredPlan {
             completed += 1;
             continue;
         }
-        if checkbox.status == CheckboxStatus::InProgress {
-            continue;
-        }
 
         remaining += 1;
         if next_task_label.is_none() {
@@ -179,9 +176,6 @@ fn parse_simple_checklist(lines: &[&str]) -> PlanChecklist {
         total += 1;
         if checkbox.status == CheckboxStatus::Done {
             completed += 1;
-            continue;
-        }
-        if checkbox.status == CheckboxStatus::InProgress {
             continue;
         }
 
