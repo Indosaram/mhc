@@ -1,4 +1,5 @@
 use super::theme::{Theme, ThemeColor};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, OnceLock};
 use syntect::{
     parsing::{ParseState, ScopeStack, SyntaxSet},
@@ -34,6 +35,35 @@ fn eager_language(lang: &str) -> Option<(&'static str, &'static str)> {
     };
     Some(language)
 }
+/// senpi `loadAllHighlightLanguages`: after it runs, every language the full highlight.js bundle
+/// knows is highlighted, not just the eager twenty. Here the full bundle is two-face's grammar set,
+/// looked up by name or file-extension token.
+static ALL_LANGUAGES_LOADED: AtomicBool = AtomicBool::new(false);
+pub fn load_all_highlight_languages() {
+    ALL_LANGUAGES_LOADED.store(true, Ordering::Relaxed);
+}
+/// senpi `supportsLanguage`.
+pub fn supports_language(name: &str) -> bool {
+    resolve_language(name, ALL_LANGUAGES_LOADED.load(Ordering::Relaxed)).is_some()
+}
+/// The highlight.js name and grammar for `lang`: an eager language always, any grammar two-face
+/// carries once all languages are loaded.
+fn resolve_language(
+    lang: &str,
+    all_loaded: bool,
+) -> Option<(String, &'static syntect::parsing::SyntaxReference)> {
+    let syntax_set = syntax_set();
+    if let Some((name, grammar)) = eager_language(lang) {
+        return syntax_set
+            .find_syntax_by_name(grammar)
+            .map(|syntax| (name.to_owned(), syntax));
+    }
+    if !all_loaded || lang.is_empty() {
+        return None;
+    }
+    let syntax = syntax_set.find_syntax_by_token(lang)?;
+    Some((lang.to_ascii_lowercase(), syntax))
+}
 fn syntax_set() -> &'static SyntaxSet {
     static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines)
@@ -56,7 +86,11 @@ fn scope_color(scope: &str, text: &str, lang: &str) -> Option<ThemeColor> {
     let word = text.trim();
     let is_word = word.chars().any(char::is_alphanumeric);
     let starts = |prefix: &str| scope.starts_with(prefix);
-    if lang == "json" && starts("punctuation.definition.string") {
+    if starts("markup.inserted") {
+        Some(ThemeColor::ToolDiffAdded)
+    } else if starts("markup.deleted") {
+        Some(ThemeColor::ToolDiffRemoved)
+    } else if lang == "json" && starts("punctuation.definition.string") {
         Some(ThemeColor::SyntaxString)
     } else if lang == "json" && starts("punctuation") {
         Some(ThemeColor::SyntaxPunctuation)
@@ -133,6 +167,10 @@ fn token_color(scopes: &[String], in_meta: bool, text: &str, lang: &str) -> Opti
     if lang == "json" && scopes.iter().any(|scope| scope.starts_with("meta.mapping.key")) {
         return Some(ThemeColor::SyntaxVariable);
     }
+    // highlight.js draws a regex literal (flags and quantifiers included) as one `regexp` span.
+    if scopes.iter().any(|scope| scope.starts_with("string.regexp")) {
+        return Some(ThemeColor::SyntaxString);
+    }
     let color = scopes.iter().find_map(|scope| scope_color(scope, text, lang));
     let keeps_color = matches!(
         color,
@@ -149,10 +187,11 @@ fn token_color(scopes: &[String], in_meta: bool, text: &str, lang: &str) -> Opti
     color
 }
 pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<String> {
+    highlight_code_with(theme, code, lang, ALL_LANGUAGES_LOADED.load(Ordering::Relaxed))
+}
+fn highlight_code_with(theme: &Theme, code: &str, lang: Option<&str>, all_loaded: bool) -> Vec<String> {
     let syntax_set = syntax_set();
-    let language = lang.and_then(eager_language);
-    let syntax = language.and_then(|(_, name)| syntax_set.find_syntax_by_name(name));
-    let (Some((language, _)), Some(syntax)) = (language, syntax) else {
+    let Some((language, syntax)) = lang.and_then(|lang| resolve_language(lang, all_loaded)) else {
         return code
             .split('\n')
             .map(|line| theme.fg(ThemeColor::MdCodeBlock, line))
@@ -181,7 +220,7 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
             if index > previous {
                 let text = &line[previous..index];
                 refresh(&stack, &mut scopes, &mut in_meta, &mut scopes_stale);
-                append_run(&mut runs, token_color(&scopes, in_meta, text, language), text);
+                append_run(&mut runs, token_color(&scopes, in_meta, text, &language), text);
             }
             if stack.apply(&op).is_err() {
                 return code.split('\n').map(str::to_owned).collect();
@@ -192,7 +231,7 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
         if previous < line.len() {
             let text = &line[previous..];
             refresh(&stack, &mut scopes, &mut in_meta, &mut scopes_stale);
-            append_run(&mut runs, token_color(&scopes, in_meta, text, language), text);
+            append_run(&mut runs, token_color(&scopes, in_meta, text, &language), text);
         }
     }
     for (color, text) in runs {
@@ -296,5 +335,56 @@ pub fn get_language_from_path(path: &str) -> Option<&'static str> {
         "tf" => Some("hcl"),
         "hcl" => Some("hcl"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Port of the theme-side cases of senpi `test/syntax-highlight.test.ts` (`highlightCode` and
+    //! `supportsLanguage`); the `renderHighlightedHtml`/`highlight` cases live with
+    //! `maho_cli::utils::syntax_highlight`. The all-languages flag is passed explicitly so the tests
+    //! never flip the process-wide switch under parallel tests.
+    use super::*;
+    use crate::theme::ColorMode;
+
+    const EAGER_LANGUAGES: &[&str] = &[
+        "python", "java", "go", "javascript", "cpp", "typescript", "php", "ruby", "c", "csharp",
+        "nix", "bash", "rust", "scala", "kotlin", "swift", "dart", "groovy", "perl", "lua",
+    ];
+
+    fn theme() -> Theme {
+        Theme::builtin("dark", ColorMode::Truecolor).expect("builtin dark theme")
+    }
+
+    #[test]
+    fn loads_the_twenty_most_common_languages_at_startup_and_defers_the_rest() {
+        assert!(EAGER_LANGUAGES.iter().all(|lang| resolve_language(lang, false).is_some()));
+        assert!(resolve_language("ada", false).is_none());
+        assert!(resolve_language("ada", true).is_some());
+    }
+
+    #[test]
+    fn colors_diff_additions_and_deletions_in_fenced_diff_blocks() {
+        let theme = theme();
+        let lines = highlight_code_with(&theme, "-old\n+new\n", Some("diff"), true);
+
+        assert_eq!(lines[0], format!("{}-old\x1b[39m", theme.get_fg_ansi(ThemeColor::ToolDiffRemoved)));
+        assert_eq!(lines[1], format!("{}+new\x1b[39m", theme.get_fg_ansi(ThemeColor::ToolDiffAdded)));
+    }
+
+    #[test]
+    fn keeps_cli_highlight_default_styled_scopes_mapped_to_theme_styles() {
+        let theme = theme();
+        let javascript = highlight_code_with(&theme, "const re = /foo+/gi;", Some("javascript"), true);
+        assert!(
+            javascript[0].contains(&format!("{}/foo+/gi\x1b[39m", theme.get_fg_ansi(ThemeColor::SyntaxString))),
+            "{javascript:?}"
+        );
+        assert_eq!(
+            highlight_code_with(&theme, "@decorator", Some("python"), true)[0],
+            format!("{}@decorator\x1b[39m", theme.get_fg_ansi(ThemeColor::Muted))
+        );
+        let html = highlight_code_with(&theme, "<div></div>", Some("html"), true);
+        assert!(html[0].contains(&format!("{}div\x1b[39m", theme.get_fg_ansi(ThemeColor::SyntaxKeyword))), "{html:?}");
     }
 }
