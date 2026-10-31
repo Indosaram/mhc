@@ -433,6 +433,105 @@ async fn registered_owned_member_expires_only_after_fixed_clock_advance() {
     .await;
 }
 
+#[test]
+fn sync_delivers_only_completions_owned_by_this_session() {
+    let root = tempfile::tempdir().expect("root");
+    let actions = Arc::new(Actions::default());
+    let runner = Arc::new(NoLaunch);
+    let engine = compose_task_engine(ComposeTaskEngineDeps {
+        cwd: root.path().into(),
+        config: serde_json::json!({}),
+        runners: ManagedRunners {
+            in_process: runner.clone(),
+            process: runner,
+        },
+        actions: actions.clone(),
+        coordinator: None,
+        resolve_registry: Arc::new(|| None),
+        host_transport: None,
+    });
+    // Two finished background children in the shared store: one spawned by this session, one by
+    // another session using the same state dir.
+    let finished = |parent: &str| {
+        let mut record = senpi_task::state::create_task_record(
+            senpi_task::state::TaskRecordInput {
+                parent_session_id: parent.into(),
+                root_session_id: parent.into(),
+                ..Default::default()
+            },
+            Some(1),
+        )
+        .expect("record");
+        record.status = senpi_task::state::TaskStatus::Completed;
+        record.residency_state = senpi_task::state::ResidencyState::Disposed;
+        record.notify_on_terminal = true;
+        record.notification.run_epoch = 1;
+        record.notification.notified_epoch = 0;
+        engine.store.save(&record).expect("save");
+        record.task_id
+    };
+    let owned = finished("session");
+    let foreign = finished("other-session");
+    let mut api = support::api();
+    let component = TaskComponent::register(
+        &mut api,
+        engine,
+        Default::default(),
+        TeamMemberOwnershipDeps {
+            state_dir: StateDirConfig {
+                project_dir: root.path().into(),
+                task_state_dir: None,
+            },
+            team_bounds: TeamTaskBounds {
+                max_members: 4,
+                max_parallel_members: 2,
+                max_wall_clock_minutes: 10,
+            },
+            load_runtime_state: None,
+        },
+        false,
+    )
+    .expect("register")
+    .expect("component");
+    let mut context = support::context();
+    context.cwd = root.path().into();
+    component
+        .engine
+        .runtime
+        .lock()
+        .expect("runtime")
+        .capture_from(&context);
+    component.sync();
+    let delivered: Vec<String> = actions
+        .0
+        .lock()
+        .expect("messages")
+        .iter()
+        .filter(|message| message.custom_type == "senpi-task.completion")
+        .flat_map(|message| {
+            let details = message.details.clone().unwrap_or_default();
+            details
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|detail| detail["task_id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(delivered, [owned]);
+    let foreign_record = component
+        .engine
+        .store
+        .load(&foreign)
+        .expect("load")
+        .expect("foreign record");
+    assert_eq!(
+        foreign_record.notification.notified_epoch, 0,
+        "another session's completion stays owed to its owner"
+    );
+    component.dispose();
+}
+
 async fn recovery(case: Case) {
     let root = tempfile::tempdir().expect("root");
     let actions = Arc::new(Actions::default());
