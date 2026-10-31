@@ -1,9 +1,21 @@
 //! Request-time configuration key and header resolution.
+use crate::config_reference_resolver::{
+    ConfigReferenceContext, ConfigValue, assert_config_reference_authority,
+};
 use crate::model_config_schema::ModelsJsonProvider;
 use crate::resolve_config_value::{
-    get_config_value_env_var_names, is_command_config_value, resolve_config_value_or_throw,
-    resolve_headers_or_throw,
+    get_config_value_env_var_names_of, is_command_config_value_of,
+    resolve_config_headers_or_throw as resolve_headers_or_throw,
+    resolve_config_value_or_throw_of as resolve_config_value_or_throw_with,
 };
+
+async fn resolve_config_value_or_throw(
+    config: &ConfigValue,
+    description: &str,
+    env: Option<&HashMap<String, String>>,
+) -> Result<String, String> {
+    resolve_config_value_or_throw_with(config, description, env, None).await
+}
 use async_trait::async_trait;
 use maho_ai::auth::headers::has_credential_headers;
 use maho_ai::auth::types::{
@@ -16,25 +28,67 @@ use maho_ai::utils::abort::AbortSignal;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// senpi `configuredApiKey`: an extension's key never carries a reference (`forbidden`), and a models.json
+/// reference needs its remembered trusted origin (senpi#3858).
+pub fn try_configured_api_key<'a>(
+    config: Option<&'a ModelsJsonProvider>,
+    extension: Option<&'a ModelsJsonProvider>,
+) -> Result<Option<&'a ConfigValue>, String> {
+    if let Some(value) = extension.and_then(|c| c.api_key.as_ref()) {
+        assert_config_reference_authority(value, Some(&ConfigReferenceContext::extension("extension.apiKey")))
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(value) = config.and_then(|c| c.api_key.as_ref()) {
+        assert_config_reference_authority(value, None).map_err(|error| error.to_string())?;
+    }
+    Ok(extension
+        .and_then(|c| c.api_key.as_ref())
+        .or(config.and_then(|c| c.api_key.as_ref())))
+}
+
+/// The configured key, `None` when absent. A refused reference still counts as a declared key here; it fails
+/// with `forbidden` when it is resolved.
 pub fn configured_api_key<'a>(
     config: Option<&'a ModelsJsonProvider>,
     extension: Option<&'a ModelsJsonProvider>,
-) -> Option<&'a str> {
+) -> Option<&'a ConfigValue> {
     extension
-        .and_then(|c| c.api_key.as_deref())
-        .or(config.and_then(|c| c.api_key.as_deref()))
+        .and_then(|c| c.api_key.as_ref())
+        .or(config.and_then(|c| c.api_key.as_ref()))
+}
+
+/// senpi `configuredHeaders` authority preflight: extension headers (provider and per-model) never carry a
+/// reference; models.json references need a trusted origin.
+pub fn assert_configured_header_authority(
+    config: Option<&ModelsJsonProvider>,
+    extension: Option<&ModelsJsonProvider>,
+) -> Result<(), String> {
+    for model in extension.and_then(|c| c.models.as_ref()).into_iter().flatten() {
+        for (name, value) in model.headers.iter().flatten() {
+            let context = ConfigReferenceContext::extension(format!("extension.models.{}.headers.{name}", model.id));
+            assert_config_reference_authority(value, Some(&context)).map_err(|error| error.to_string())?;
+        }
+    }
+    for (name, value) in extension.and_then(|c| c.headers.as_ref()).into_iter().flatten() {
+        let context = ConfigReferenceContext::extension(format!("extension.headers.{name}"));
+        assert_config_reference_authority(value, Some(&context)).map_err(|error| error.to_string())?;
+    }
+    for value in config.and_then(|c| c.headers.as_ref()).into_iter().flatten().map(|(_, v)| v) {
+        assert_config_reference_authority(value, None).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn configured_headers(
     config: Option<&ModelsJsonProvider>,
     extension: Option<&ModelsJsonProvider>,
-) -> Option<HashMap<String, String>> {
+) -> Option<HashMap<String, ConfigValue>> {
     if config.and_then(|c| c.headers.as_ref()).is_none()
         && extension.and_then(|c| c.headers.as_ref()).is_none()
     {
         return None;
     }
-    let mut headers: HashMap<String, String> = config
+    let mut headers: HashMap<String, ConfigValue> = config
         .and_then(|c| c.headers.as_ref())
         .into_iter()
         .flatten()
@@ -55,11 +109,9 @@ pub fn configured_request_auth_status(
     extension: Option<&ModelsJsonProvider>,
 ) -> Option<crate::provider_composer::AuthStatus> {
     use crate::provider_composer::AuthStatus;
-    use crate::resolve_config_value::{
-        get_config_value_env_var_names, is_command_config_value, is_config_value_configured,
-    };
+    use crate::resolve_config_value::is_config_value_configured_of;
     let key = configured_api_key(config, extension);
-    let mut values: Vec<(String, &str)> = Vec::new();
+    let mut values: Vec<(String, &ConfigValue)> = Vec::new();
     if let Some(key) = key {
         values.push((
             if extension.and_then(|c| c.api_key.as_ref()).is_some() {
@@ -97,7 +149,7 @@ pub fn configured_request_auth_status(
         return None;
     }
     for (source, value) in values {
-        if is_command_config_value(value) {
+        if is_command_config_value_of(value) {
             return Some(AuthStatus {
                 ambient: false,
                 configured: true,
@@ -105,9 +157,9 @@ pub fn configured_request_auth_status(
                 label: None,
             });
         }
-        let names = get_config_value_env_var_names(value);
+        let names = get_config_value_env_var_names_of(value);
         if !names.is_empty() {
-            if is_config_value_configured(value, None) {
+            if is_config_value_configured_of(value, None) {
                 return Some(AuthStatus {
                     ambient: false,
                     configured: true,
@@ -117,7 +169,7 @@ pub fn configured_request_auth_status(
             }
             continue;
         }
-        if !value.trim().is_empty() {
+        if value.as_str().is_none_or(|value| !value.trim().is_empty()) {
             return Some(AuthStatus {
                 ambient: false,
                 configured: true,
@@ -164,7 +216,7 @@ pub async fn resolve_configured_auth(
     let mut env_auth_token = None;
     let key = if let Some(key) = stored_key {
         Some(key.to_owned())
-    } else if let Some(raw) = configured_api_key(config, extension) {
+    } else if let Some(raw) = try_configured_api_key(config, extension)? {
         Some(
             resolve_config_value_or_throw(raw, &format!("API key for provider \"{id}\""), env)
                 .await?,
@@ -184,6 +236,7 @@ pub async fn resolve_configured_auth(
                 .filter(|key| key != maho_ai::models::AMBIENT_AUTH_MARKER)
         }
     };
+    assert_configured_header_authority(config, extension)?;
     let raw_headers = configured_headers(config, extension);
     let headers =
         resolve_headers_or_throw(raw_headers.as_ref(), &format!("provider \"{id}\""), env)
@@ -245,7 +298,7 @@ pub fn result_to_model_auth(auth: ProviderAuthResult) -> maho_ai::auth::types::M
 /// `configContextEnv`: explicit values first, then the auth context for every env var the config
 /// values reference.
 async fn config_context_env(
-    values: &[&str],
+    values: &[&ConfigValue],
     ctx: &dyn AuthContext,
     explicit: Option<&ProviderEnv>,
 ) -> Option<HashMap<String, String>> {
@@ -256,7 +309,7 @@ async fn config_context_env(
         .collect();
     let mut names: Vec<String> = Vec::new();
     for value in values {
-        for name in get_config_value_env_var_names(value) {
+        for name in get_config_value_env_var_names_of(value) {
             if !names.contains(&name) {
                 names.push(name);
             }
@@ -270,7 +323,8 @@ async fn config_context_env(
             env.insert(name, value);
         }
     }
-    (!env.is_empty()).then_some(env)
+    // A reference reads the environment only through the env it is handed, so it always gets one.
+    (!env.is_empty() || values.iter().any(|value| value.is_reference())).then_some(env)
 }
 
 /// `composeApiKeyAuth`: the provider's own api-key auth (`inherited`) layered under the models.json
@@ -278,8 +332,8 @@ async fn config_context_env(
 pub struct ComposedApiKeyAuth {
     provider_id: String,
     inherited: Option<Arc<dyn ApiKeyAuth>>,
-    raw_key: Option<String>,
-    raw_headers: Option<HashMap<String, String>>,
+    raw_key: Option<ConfigValue>,
+    raw_headers: Option<HashMap<String, ConfigValue>>,
     header_source: Option<String>,
     auth_header: bool,
 }
@@ -293,7 +347,7 @@ pub fn compose_api_key_auth(
     config: Option<&ModelsJsonProvider>,
     extension: Option<&ModelsJsonProvider>,
 ) -> Option<Arc<dyn ApiKeyAuth>> {
-    let raw_key = configured_api_key(config, extension).map(str::to_owned);
+    let raw_key = configured_api_key(config, extension).cloned();
     let header_source = crate::provider_header_auth::header_auth_resolution_source(
         config.and_then(|c| c.headers.as_ref()),
         extension.and_then(|c| c.headers.as_ref()),
@@ -332,7 +386,7 @@ pub fn compose_api_key_auth(
 pub struct AmbientOnlyAuth {
     provider_id: String,
     oauth: Arc<dyn maho_ai::auth::types::OAuthAuth>,
-    raw_headers: Option<HashMap<String, String>>,
+    raw_headers: Option<HashMap<String, ConfigValue>>,
     header_source: Option<String>,
     auth_header: bool,
 }
@@ -362,10 +416,10 @@ impl AmbientOnlyAuth {
         let mut explicit_env: ProviderEnv =
             credential.and_then(|c| c.env.clone()).unwrap_or_default();
         explicit_env.extend(result.env.clone().unwrap_or_default());
-        let header_values: Vec<&str> = self
+        let header_values: Vec<&ConfigValue> = self
             .raw_headers
             .iter()
-            .flat_map(|headers| headers.values().map(String::as_str))
+            .flat_map(|headers| headers.values())
             .collect();
         let header_env = config_context_env(&header_values, ctx, Some(&explicit_env)).await;
         let headers = resolve_headers_or_throw(
@@ -464,7 +518,7 @@ impl ComposedApiKeyAuth {
             };
         };
         let env = config_context_env(
-            &[raw_key.as_str()],
+            &[raw_key],
             ctx,
             credential.and_then(|c| c.env.as_ref()),
         )
@@ -572,8 +626,8 @@ impl ApiKeyAuth for ComposedApiKeyAuth {
             }));
         }
         if let Some(raw_key) = &self.raw_key {
-            if !is_command_config_value(raw_key) {
-                for name in get_config_value_env_var_names(raw_key) {
+            if !raw_key.is_reference() && !is_command_config_value_of(raw_key) {
+                for name in get_config_value_env_var_names_of(raw_key) {
                     if ctx.env(&name).await.is_none() {
                         return Ok(None);
                     }
@@ -599,7 +653,7 @@ impl ApiKeyAuth for ComposedApiKeyAuth {
                 }));
             }
         }
-        let raw_headers: Option<std::collections::BTreeMap<String, String>> =
+        let raw_headers: Option<std::collections::BTreeMap<String, ConfigValue>> =
             self.raw_headers.as_ref().map(|headers| {
                 headers
                     .iter()
@@ -629,10 +683,10 @@ impl ApiKeyAuth for ComposedApiKeyAuth {
                 .and_then(|r| r.env.clone())
                 .unwrap_or_default(),
         );
-        let header_values: Vec<&str> = self
+        let header_values: Vec<&ConfigValue> = self
             .raw_headers
             .iter()
-            .flat_map(|headers| headers.values().map(String::as_str))
+            .flat_map(|headers| headers.values())
             .collect();
         let header_env = config_context_env(&header_values, ctx, Some(&explicit_env)).await;
         let headers = resolve_headers_or_throw(
@@ -651,10 +705,16 @@ impl ApiKeyAuth for ComposedApiKeyAuth {
         if result.is_none() && !has_credential_headers(headers.as_ref()) {
             return Ok(None);
         }
-        let (auth, env, source, ambient) = match result {
+        let (auth, mut env, source, ambient) = match result {
             Some(result) => (result.auth, result.env, result.source, result.ambient),
             None => (Default::default(), None, None, false),
         };
+        // Stored-then-env (senpi#4324 `ambientApiKeyAuth`): the provider's own stored env wins over the env an
+        // ambient resolver returned.
+        if let Some(stored) = credential.and_then(|c| c.env.as_ref()) {
+            env.get_or_insert_with(Default::default)
+                .extend(stored.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
         let auth = with_configured_auth(model_auth_to_result(auth), headers, self.auth_header)
             .map_err(|error| anyhow::anyhow!(error))?;
         Ok(Some(AuthResult {
@@ -775,6 +835,43 @@ mod tests {
             .expect("check")
             .expect("configured");
         assert_eq!(check.source.as_deref(), Some("configured API key"));
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    /// senpi test/mcp/3858-reference-trust.test.ts: an extension's reference key is forbidden; a trusted
+    /// models.json reference passes the authority check.
+    #[test]
+    fn extension_reference_keys_are_forbidden() {
+        let reference: ConfigValue =
+            serde_json::from_value(serde_json::json!({"$env": "KEY"})).expect("reference");
+        let extension = ModelsJsonProvider { api_key: Some(reference.clone()), ..Default::default() };
+        let error = try_configured_api_key(None, Some(&extension)).expect_err("forbidden");
+        assert_eq!(error, "extension.apiKey: configuration reference forbidden");
+        let mut trusted = reference;
+        crate::config_reference_resolver::remember_config_reference_origin(
+            &mut trusted,
+            ConfigReferenceContext::trusted("/m.json", "providers.p.apiKey"),
+        );
+        let config = ModelsJsonProvider { api_key: Some(trusted), ..Default::default() };
+        assert!(try_configured_api_key(Some(&config), None).expect("trusted").is_some());
+    }
+
+    #[test]
+    fn a_reference_key_counts_as_configured() {
+        let mut trusted: ConfigValue =
+            serde_json::from_value(serde_json::json!({"$file": "~/key"})).expect("reference");
+        crate::config_reference_resolver::remember_config_reference_origin(
+            &mut trusted,
+            ConfigReferenceContext::trusted("/m.json", "providers.p.apiKey"),
+        );
+        let config = ModelsJsonProvider { api_key: Some(trusted), ..Default::default() };
+        let status = configured_request_auth_status(Some(&config), None).expect("status");
+        assert!(status.configured);
+        assert_eq!(status.source.as_deref(), Some("models_json_key"));
     }
 }
 
