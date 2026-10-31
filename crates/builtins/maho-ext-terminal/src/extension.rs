@@ -10,7 +10,7 @@ use crate::tools::{
     bash_input::{BashInputInput, execute_bash_input},
     bash_output::execute_bash_output_view,
     bash_resize::execute_bash_resize,
-    context::TerminalToolResult,
+    context::{TerminalToolResult, error_result},
 };
 use maho_ext_api::types::{EventKind, EventResult, Extension, ExtensionApi, ExtensionFailure};
 use maho_tools::definition::{ToolContent, ToolDefinition, ToolError, ToolResult};
@@ -642,6 +642,78 @@ async fn acquire_or_wait(
             wait_for_lease(ctx, context, keeper, None, session_dir, session_id);
         }
     }
+}
+
+/// The monitor tool's rpc branch (monitor.ts `source === "rpc"` + monitor-rpc.ts
+/// `createRpcMonitor`): refuse `human_input`, cap a durable create, arm the watch through the
+/// registry's rpc source with no std lock held across the arm, bind its `mon_` id and hand its
+/// spec to the session's writer (or queue it until one binds).
+async fn create_rpc_monitor_call(
+    input: &Value,
+    settings: &crate::settings::ResolvedTerminalSettings,
+    session_key: Option<String>,
+    manager: &Arc<Mutex<TerminalManager>>,
+    monitors: &Arc<Mutex<crate::monitor_registry::MonitorRegistry>>,
+    lifecycle: Option<&mut crate::terminal_state::TerminalStateLifecycle>,
+) -> TerminalToolResult {
+    if input.get("human_input").and_then(Value::as_bool) == Some(true) {
+        return error_result(
+            "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
+        );
+    }
+    if input.get("persistent").and_then(Value::as_bool) == Some(true)
+        && let Some(refused) = crate::tools::monitor_manifest_binding::durable_admission_error(
+            settings.max_durable_monitors,
+            session_key.as_deref(),
+            lifecycle.as_deref().map(|lifecycle| &lifecycle.writer),
+        )
+    {
+        return refused;
+    }
+    let source = monitors
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .rpc_source();
+    let (result, created) = crate::tools::monitor_rpc::create_rpc_monitor(
+        crate::tools::monitor_rpc::RpcMonitorContext {
+            source,
+            session_id: session_key.clone(),
+            agent_dir: maho_core::config::get_agent_dir().into(),
+            endpoints: None,
+            opener: None,
+            now_ms: manifest_now_ms(),
+        },
+        input,
+    )
+    .await;
+    let Some(created) = created else {
+        return result;
+    };
+    manager
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .bind_monitor_id(&created.monitor_id, &created.runtime_id);
+    match lifecycle {
+        Some(lifecycle) => {
+            lifecycle
+                .writer
+                .record_register_with(created.registration, manifest_now_ms())
+                .await;
+        }
+        None => {
+            if crate::tools::monitor_manifest_binding::hand_monitor_spec(
+                session_key.as_deref(),
+                created.registration.registration,
+            )
+            .is_some()
+            {
+                maho_ext_api::diagnostic(
+                    "terminal manifest: a writer is bound for this session but not held by this generation; the monitor spec was not recorded",
+                );
+            }
+        }
+    }
+    result
 }
 
 /// Upstream `stopPersistence` (first half): stop waiting; a tick in flight either releases what it
@@ -1606,7 +1678,7 @@ impl Extension for TerminalExtension {
         let tool_lifecycle = state_lifecycle.clone();
         let mut monitor_tool = ToolDefinition::new(
             "monitor",
-            "Subscribe to a change instead of polling. Pass command XOR path, never both: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected. Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",
+            "Subscribe to a change instead of polling. Pass one source: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected; target (type rpc) watches sessions' status, effects and content on every RPC host and terminal (\"children\", \"all\" or one session). Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",
             crate::tools::monitor::monitor_schema(),
             Arc::new(move |call| {
                 let manager = tool_manager.clone();
@@ -1632,6 +1704,27 @@ impl Extension for TerminalExtension {
                     let mut lifecycle = lifecycle.lock().await;
                     let session_key =
                         crate::tools::monitor_manifest_binding::manifest_session_key(call.context);
+                    // Upstream monitor.ts: a create names exactly one source; the rpc branch
+                    // (monitor-rpc.ts) arms a watch over every RPC host and terminal.
+                    if call.params.get("action").and_then(Value::as_str) != Some("rearm") {
+                        match crate::tools::monitor_rpc::monitor_source_of(&call.params) {
+                            Err(error) => return tool_result(error_result(error)),
+                            Ok(crate::tools::monitor_rpc::MonitorSource::Rpc) => {
+                                return tool_result(
+                                    create_rpc_monitor_call(
+                                        &call.params,
+                                        &settings,
+                                        session_key,
+                                        &manager,
+                                        &monitors,
+                                        lifecycle.as_mut(),
+                                    )
+                                    .await,
+                                );
+                            }
+                            Ok(_) => {}
+                        }
+                    }
                     if let Some(refused) = crate::tools::monitor::durable_admission_error(
                         &call.params,
                         settings.max_durable_monitors,
@@ -1734,6 +1827,7 @@ impl Extension for TerminalExtension {
             r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already; when the run creates that directory too, use the `command` branch instead."#.to_owned(),
             r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
             "A non-persistent command watch is a watcher with a deadline: timeout_ms KILLS the watched command when it fires (the summary says killed at deadline). Put long jobs in a run_in_background session and only watch them.".to_owned(),
+            r#"Waiting on other sessions (your children, a task, every session) is the rpc branch: `monitor({ type: "rpc", target: "children", description: "children status" })` reports each status change and effect receipt as it happens; `events: "all"` adds their content (streaming collapses to one line per 2 s), `exclude` drops kinds."#.to_owned(),
             "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
         ]);
         api.register_tool_with_renderers(monitor_tool, crate::tools::render::monitor_renderers())
@@ -1905,6 +1999,45 @@ mod tests {
         })
         .await?;
         Ok(())
+    }
+    /// monitor.ts: a create names one source (`monitorSourceOf`), and the rpc branch refuses
+    /// `human_input` before arming anything.
+    #[tokio::test]
+    async fn registered_monitor_resolves_one_source_and_refuses_rpc_human_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut api = ExtensionApi::new(
+            LoadedExtension::new("terminal", dir.path().to_owned(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            ExtensionRuntime::default(),
+        );
+        TerminalExtension.register(&mut api);
+        let monitor = &api.registered.tools[5].definition;
+        for (params, expected) in [
+            (
+                json!({"description":"d","command":"true","path":"file"}),
+                "monitor takes one source; this call names command and path.",
+            ),
+            (
+                json!({"description":"d","type":"rpc"}),
+                "monitor type \"rpc\" needs target; pass target: \"children\", \"all\" or a session id.",
+            ),
+            (
+                json!({"description":"d","target":"all","human_input":true}),
+                "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
+            ),
+        ] {
+            let error = (monitor.execute)(maho_tools::definition::ToolCall {
+                id: "source",
+                params,
+                signal: Default::default(),
+                on_update: None,
+                context: None,
+            })
+            .await
+            .expect_err("refused before arming");
+            assert_eq!(error.to_string(), expected);
+        }
     }
     #[tokio::test]
     async fn registered_file_monitor_stable_id_kill_releases_shared_capacity()

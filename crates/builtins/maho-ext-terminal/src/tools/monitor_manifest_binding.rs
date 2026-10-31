@@ -20,6 +20,8 @@ pub const MAX_PENDING_MONITOR_SPECS: usize = 32;
 struct Bindings {
     bound: BTreeSet<String>,
     pending: BTreeMap<String, VecDeque<MonitorRegistration>>,
+    /// The bound writer's `scheduleRpcCheckpoint`, looked up at call time like upstream's map.
+    rpc_sinks: BTreeMap<String, crate::rpc_monitor_source::RpcCheckpointSink>,
 }
 
 fn bindings() -> std::sync::MutexGuard<'static, Bindings> {
@@ -45,6 +47,9 @@ pub fn bind_terminal_manifest_writer(session_id: &str) -> Vec<MonitorRegistratio
 /// `bindTerminalManifestWriter` followed by the drain: every queued spec is recorded in order.
 pub async fn bind_and_drain(session_id: &str, writer: &mut TerminalManifestWriter, now: f64) {
     let drained = bind_terminal_manifest_writer(session_id);
+    bindings()
+        .rpc_sinks
+        .insert(session_id.to_owned(), writer.rpc_checkpoint_sink());
     #[cfg(test)]
     {
         let hook = after_bind_hooks().remove(session_id);
@@ -75,7 +80,9 @@ pub(crate) fn set_after_bind_hook(session_id: &str, hook: AfterBindHook) {
 }
 
 pub fn unbind_terminal_manifest_writer(session_id: &str) {
-    bindings().bound.remove(session_id);
+    let mut bindings = bindings();
+    bindings.bound.remove(session_id);
+    bindings.rpc_sinks.remove(session_id);
 }
 
 pub fn is_terminal_manifest_writer_bound(session_id: &str) -> bool {
@@ -135,18 +142,19 @@ pub fn hand_file_checkpoint(
 }
 
 /// `handRpcCheckpoint`: persist an rpc watch's view (host generations, session statuses) through
-/// the session's bound writer. Without a bound writer the checkpoint is dropped, as upstream.
+/// the writer bound for the session at call time (so a reload's rebind is followed). Without a
+/// bound writer the checkpoint is dropped, as upstream.
 pub fn hand_rpc_checkpoint(
-    writer: Option<&crate::rpc_monitor_source::RpcCheckpointSink>,
     session_key: Option<&str>,
     monitor_id: &str,
     checkpoint: crate::terminal_manifest_model::TerminalManifestRpcCheckpoint,
 ) {
-    let (Some(writer), Some(session_key)) = (writer, session_key) else {
+    let Some(session_key) = session_key else {
         return;
     };
-    if is_terminal_manifest_writer_bound(session_key) {
-        writer(monitor_id, checkpoint);
+    let sink = bindings().rpc_sinks.get(session_key).cloned();
+    if let Some(sink) = sink {
+        sink(monitor_id, checkpoint);
     }
 }
 
@@ -216,21 +224,45 @@ mod tests {
         assert!(hand_monitor_spec(None, spec("mon_5", true)).is_none());
     }
 
-    #[test]
-    fn an_rpc_checkpoint_reaches_only_a_bound_writer() {
+    /// `handRpcCheckpoint`: only the writer bound at call time receives the checkpoint; it is
+    /// absorbed into that writer's entry on the next flush.
+    #[tokio::test]
+    async fn an_rpc_checkpoint_reaches_only_the_bound_writer() {
+        use crate::terminal_manifest_model::MonitorSpec;
+        let dir = tempfile::tempdir().unwrap();
         let key = "binding-rpc-checkpoint";
-        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
-        let sink: crate::rpc_monitor_source::RpcCheckpointSink = {
-            let seen = seen.clone();
-            std::sync::Arc::new(move |id, _| seen.lock().unwrap().push(id.to_owned()))
+        let mut writer = TerminalManifestWriter::new(dir.path(), key);
+        let registration = MonitorRegistration {
+            monitor_id: "mon_RPC".to_owned(),
+            spec: MonitorSpec::Rpc {
+                description: "kids".into(),
+                target: "all".into(),
+                events: None,
+                exclude: None,
+                filter: None,
+                persistent: true,
+            },
         };
-        hand_rpc_checkpoint(Some(&sink), Some(key), "mon_unbound", Default::default());
-        bind_terminal_manifest_writer(key);
-        hand_rpc_checkpoint(Some(&sink), Some(key), "mon_bound", Default::default());
-        hand_rpc_checkpoint(Some(&sink), None, "mon_nokey", Default::default());
-        hand_rpc_checkpoint(None, Some(key), "mon_nowriter", Default::default());
+        writer.record_register(registration, 1.0).await;
+        let checkpoint = |status: &str| {
+            serde_json::from_value::<crate::terminal_manifest_model::TerminalManifestRpcCheckpoint>(
+                serde_json::json!({"hosts":{},"statuses":{"/h#s1":status}}),
+            )
+            .unwrap()
+        };
+        hand_rpc_checkpoint(Some(key), "mon_RPC", checkpoint("unbound"));
+        bind_and_drain(key, &mut writer, 2.0).await;
+        hand_rpc_checkpoint(Some(key), "mon_RPC", checkpoint("busy"));
+        hand_rpc_checkpoint(None, "mon_RPC", checkpoint("nokey"));
+        writer.flush(3.0).await;
         unbind_terminal_manifest_writer(key);
-        assert_eq!(*seen.lock().unwrap(), ["mon_bound"]);
+        hand_rpc_checkpoint(Some(key), "mon_RPC", checkpoint("after-unbind"));
+        writer.flush(4.0).await;
+        let saved = writer.store.read().await.unwrap().unwrap();
+        assert_eq!(
+            saved["monitors"][0]["rpcCheckpoint"]["statuses"]["/h#s1"],
+            "busy"
+        );
     }
 
     #[test]
