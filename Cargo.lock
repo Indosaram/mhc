@@ -5870,7 +5870,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "hex",
