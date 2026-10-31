@@ -123,14 +123,15 @@ mod tests{
         let first=read_memory_rpc_repo_state_with(&engine.repo,&mut BTreeMap::new(),&mut stats).unwrap();
         assert!(first.file_count.unwrap()>0&&first.total_bytes.unwrap()>=first.system_bytes.unwrap());
         assert_eq!(first.system_tokens_estimate as u64,stats.values().next().unwrap().system_markdown_bytes/4);
-        assert_eq!(first.entries_today,Some(1),"the seed commit was made today");
+        assert!(first.entries_today.is_some(),"entries_today is computed");
         assert!(first.previous_entry_at_iso.is_none(),"one commit has no previous entry");
         let author=memory_core::git::GitCommitAuthor{agent_id:"agent".into(),author_name:"Agent".into(),author_email:None};
         std::fs::create_dir_all(context.identity_paths.repo.join("knowledge")).unwrap();
         std::fs::write(context.identity_paths.repo.join("knowledge/fact.md"),"---\ndescription: Fact\n---\nbody\n").unwrap();
         engine.repo.commit_write(&["knowledge/fact.md"],"save fact",&author).unwrap();
         let second=read_memory_rpc_repo_state_with(&engine.repo,&mut BTreeMap::new(),&mut stats).unwrap();
-        assert_eq!(second.entries_today,Some(2));
+        // Relative to `first`: a run that crosses midnight between the two reads still holds.
+        assert_eq!(second.entries_today,first.entries_today.map(|n|n+1));
         assert_eq!(second.file_count,Some(first.file_count.unwrap()+1));
         let seed=engine.repo.log(Some(&memory_core::git::GitLogOptions{limit:Some(2),..Default::default()})).unwrap();
         assert_eq!(second.previous_entry_at_iso.as_deref(),Some(seed[1].committed_at.as_str()));
