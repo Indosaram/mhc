@@ -96,6 +96,8 @@ pub struct MicroUsageView {
     pub cache_read: u64,
     pub cache_write: u64,
     pub total_cost: f64,
+    /// Some turn had no known price, so `total_cost` is a lower bound (senpi#3844).
+    pub total_cost_unknown: bool,
     pub last_cache_hit_rate: Option<f64>,
     pub context_tokens: Option<u64>,
     pub context_window: u64,
