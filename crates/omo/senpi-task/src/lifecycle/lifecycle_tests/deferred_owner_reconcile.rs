@@ -210,6 +210,9 @@ impl Fixture {
         deps.host_endpoint = Some(Arc::new(NoHostEndpoint));
         deps.signaller = Some(signaller.clone());
         deps.orphan_kill_delay_ms = Some(0);
+        // The 5 s live-parent scan is unfenced; it must not race the gated passes below.
+        deps.live_parent_recovery =
+            Some(crate::lifecycle::live_parent_recovery::RecoverySchedule::Disabled);
         deps.host_retry = Some(crate::lifecycle::HostSessionRetryPolicy {
             daemon_loss_backoff_ms: startup_backoff_ms,
             deferred_retry_backoff_ms: vec![1, 2],

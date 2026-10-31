@@ -78,6 +78,9 @@ fn harness(
     deps.host_endpoint = Some(Arc::new(NoHostEndpoint));
     deps.signaller = Some(signaller.clone());
     deps.orphan_kill_delay_ms = Some(0);
+    // The 5 s live-parent scan is unfenced; it must not race the gated passes below.
+    deps.live_parent_recovery =
+        Some(crate::lifecycle::live_parent_recovery::RecoverySchedule::Disabled);
     deps.respawn = Some(Arc::new(move |_, _| {
         counted.fetch_add(1, Ordering::SeqCst);
         RespawnResult::Failed {
