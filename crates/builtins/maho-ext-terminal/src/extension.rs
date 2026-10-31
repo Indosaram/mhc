@@ -661,10 +661,10 @@ async fn create_rpc_monitor_call(
     monitors: &Arc<Mutex<crate::monitor_registry::MonitorRegistry>>,
     lifecycle: Option<&mut crate::terminal_state::TerminalStateLifecycle>,
 ) -> TerminalToolResult {
-    if input.get("human_input").and_then(Value::as_bool) == Some(true) {
-        return error_result(
-            "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
-        );
+    if let Some(refused) =
+        crate::tools::monitor_rpc::precheck_create(input, crate::tools::monitor_rpc::MonitorSource::Rpc)
+    {
+        return refused;
     }
     if input.get("persistent").and_then(Value::as_bool) == Some(true)
         && let Some(refused) = crate::tools::monitor_manifest_binding::durable_admission_error(
@@ -2116,6 +2116,15 @@ mod tests {
             (
                 json!({"description":"d","target":"all","human_input":true}),
                 "human_input applies to command monitors; an rpc watch reports session status, not a person's text.",
+            ),
+            // monitor.ts:189: wakes_per_hour is refused on an rpc watch, ahead of human_input.
+            (
+                json!({"description":"d","target":"all","wakes_per_hour":12,"human_input":true}),
+                "wakes_per_hour applies to persistent command monitors (command with persistent: true); other watches are not wake-paced.",
+            ),
+            (
+                json!({"description":"d","target":"all","persistent":true,"wakes_per_hour":12}),
+                "wakes_per_hour applies to persistent command monitors (command with persistent: true); other watches are not wake-paced.",
             ),
         ] {
             let error = (monitor.execute)(maho_tools::definition::ToolCall {
