@@ -531,3 +531,114 @@ async fn origin_bound_resource_read_refreshes_first_and_redacts_the_failure() {
     );
     connection.dispose().await.expect("dispose");
 }
+
+/// An `ExtensionUi` registered with an enforced private-form binding whose presenter is ready.
+fn enforced_private_form_ui() -> (
+    Arc<dyn maho_ext_api::ExtensionUi>,
+    maho_ai::utils::abort::AbortController,
+) {
+    use maho_ai::utils::abort::AbortController;
+    use maho_core::mcp_form_types::{
+        McpFormBinding, McpFormOutcome, McpFormOutcomeKind, McpFormOutcomeSource,
+        McpFormPresentation,
+    };
+    use maho_core::mcp_mrtr_presentations::register_mcp_mrtr_presentation;
+
+    let host = AbortController::new();
+    let presentation = McpFormPresentation {
+        signal: host.signal(),
+        ready: Arc::new(|| true),
+        present: Arc::new(|_| {
+            futures::FutureExt::boxed(async {
+                McpFormOutcome {
+                    kind: McpFormOutcomeKind::ProcessingFailure,
+                    source: McpFormOutcomeSource::HostTermination,
+                }
+            })
+        }),
+        synchronize: None,
+    };
+    let binding = McpFormBinding {
+        epoch: "epoch".into(),
+        signal: host.signal(),
+        capture: Arc::new(move || Some(presentation.clone())),
+        dispose: Arc::new(|| {}),
+        version: None,
+        subscribe: None,
+    };
+    let ui: Arc<dyn maho_ext_api::ExtensionUi> =
+        Arc::new(crate::command_notify_redaction::RecordingUi::default());
+    register_mcp_mrtr_presentation(ui.clone(), host.signal(), None, Some(binding));
+    (ui, host)
+}
+
+fn write_http_server(agent_dir: &Path, url: &str) {
+    std::fs::write(
+        agent_dir.join("mcp.json"),
+        json!({"mcpServers": {"fx": {
+            "type": "http",
+            "url": url,
+            "auth": false,
+            "exposure": "direct",
+            "lifecycle": "lazy",
+            "connectTimeoutMs": 5000,
+        }}})
+        .to_string(),
+    )
+    .expect("global mcp.json");
+}
+
+/// A service's pooled connection for `fx` (the physical connection every lease on that pool shares).
+async fn pooled_connection(service: &maho_ext_mcp::service::McpService) -> Arc<ServerConnection> {
+    let connection = &service.connections["fx"];
+    assert!(connection.shared.is_some(), "an HTTP server is pooled");
+    connection.entry.lock().await.connection.clone()
+}
+
+/// Row 08 (host-registry.ts `attachShared` through service-connection.ts): two sessions on one host registry
+/// that declare the same server but differ in legacy-form policy land in different pools, while two sessions
+/// with the same policy share one physical connection.
+#[tokio::test]
+async fn sessions_with_different_legacy_form_policies_never_share_a_pool() {
+    use maho_ext_mcp::{host_registry::HostMcpRegistry, service::McpService};
+    use std::collections::BTreeMap;
+
+    let stub = crate::reference_support::HeaderStub::start().await;
+    let agent = tempfile::tempdir().expect("agent dir");
+    write_http_server(agent.path(), &stub.url);
+    let registry = Arc::new(HostMcpRegistry::default());
+    let (enforced_ui, _host) = enforced_private_form_ui();
+    let plain_ui = || -> Arc<dyn maho_ext_api::ExtensionUi> {
+        Arc::new(crate::command_notify_redaction::RecordingUi::default())
+    };
+    let mut services = Vec::new();
+    for (owner, ui) in [
+        (5152_08_1, plain_ui()),
+        (5152_08_2, plain_ui()),
+        (5152_08_3, enforced_ui),
+    ] {
+        let mut service = McpService::new(registry.clone(), owner);
+        service.set_elicitation_ui(Some(ui));
+        service
+            .attach_session(agent.path(), agent.path(), &BTreeMap::new(), true, &[])
+            .await
+            .expect("attach");
+        services.push(service);
+    }
+    let plain = pooled_connection(&services[0]).await;
+    let peer = pooled_connection(&services[1]).await;
+    let private = pooled_connection(&services[2]).await;
+    assert!(
+        Arc::ptr_eq(&plain, &peer),
+        "the same legacy-form policy shares one pooled connection"
+    );
+    assert!(
+        !Arc::ptr_eq(&plain, &private),
+        "an enforced private-form session never joins a plain session's pool"
+    );
+    for mut service in services {
+        service.dispose().await.expect("dispose");
+    }
+    registry.dispose().await.expect("registry dispose");
+    stub.close().await;
+}
