@@ -168,10 +168,19 @@ pub fn stream_anthropic_subscription(
         });
         let account_fallback = crate::settings::account_fallback(&deps.settings);
         // senpi `residentAuthLaneMessages`: the account this session's SDK transcript lives under is preferred while
-        // it can serve (senpi#2891).
+        // it can serve (senpi#2891). Only the resident lane passes it; a one-shot turn has no transcript to follow.
+        let resident_lane = options.as_ref().is_some_and(|options| {
+            options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main)
+        }) && deps
+            .settings
+            .values
+            .get("resumeMode")
+            .and_then(serde_json::Value::as_str)
+            != Some("off");
         let preferred_account = match options
             .as_ref()
             .and_then(|options| options.stream.session_id.as_deref())
+            .filter(|_| resident_lane)
         {
             Some(session) => {
                 let registry = deps.registry.lock().await;
@@ -298,7 +307,7 @@ pub fn stream_anthropic_subscription(
             let mut configuration = crate::options::build_query_configuration(crate::options::QueryOptionsInput { model: &model_json, context: &context_json, stream_options: &options_json, settings: &deps.settings, lane, cwd: &deps.cwd, agent_dir: &deps.agent_dir, config_directory: ".omo", tools: Some(&resolved.sdk_tools), executable: deps.executable.to_str() })?;
             asked_legacy_long_context = crate::context_window::asks_legacy_long_context(configuration["model"].as_str());
             if options.as_ref().is_none_or(|options| options.tool_choice != Some(maho_ai::types::ToolChoice::None)) && !resolved.custom_tools.is_empty() { configuration["customTools"] = json!(resolved.custom_tools); }
-            let resident = options.as_ref().filter(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main) && deps.settings.values.get("resumeMode").and_then(serde_json::Value::as_str) != Some("off")).and_then(|options| options.stream.session_id.as_deref());
+            let resident = options.as_ref().filter(|_| resident_lane).and_then(|options| options.stream.session_id.as_deref());
             if resident.is_none() && options.as_ref().is_some_and(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main)) {
                 mapper.output.diagnostics.get_or_insert_with(Vec::new).push(maho_ai::utils::diagnostics::AssistantMessageDiagnostic { kind: "claude_sdk_oauth_session_continuity".into(), timestamp: (deps.now)(), error: None, details: Some({ let off = deps.settings.values.get("resumeMode").and_then(serde_json::Value::as_str) == Some("off"); let mut details = json!({"kind":"disabled","reason":if off {"resume_mode_off"} else {"registry_miss"}}); if off { details["settingSource"] = json!(deps.settings.resume_mode_source.unwrap_or("global")); } details }.as_object().expect("details").clone()) });
             }
