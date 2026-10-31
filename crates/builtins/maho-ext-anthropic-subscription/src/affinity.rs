@@ -168,17 +168,32 @@ mod tests {
                 source: AccountSource::Login,
                 blocked_until: None,
                 block_reason: None,
+                ..Default::default()
             })
             .into()
     }
     #[test]
     fn mixed_blocks_are_not_classified_as_auth() {
         let mut pool = accounts();
-        for account in &mut pool { account.blocked_until = Some(100.0); }
+        for account in &mut pool {
+            account.blocked_until = Some(100.0);
+        }
         pool[0].block_reason = Some("auth_error".into());
-        assert_eq!(select_account(&pool, &Default::default(), 1.0).unwrap_err().block_reason, None);
-        for account in &mut pool { account.block_reason = Some("auth_error".into()); }
-        assert_eq!(select_account(&pool, &Default::default(), 1.0).unwrap_err().block_reason, Some("auth_error"));
+        assert_eq!(
+            select_account(&pool, &Default::default(), 1.0)
+                .unwrap_err()
+                .block_reason,
+            None
+        );
+        for account in &mut pool {
+            account.block_reason = Some("auth_error".into());
+        }
+        assert_eq!(
+            select_account(&pool, &Default::default(), 1.0)
+                .unwrap_err()
+                .block_reason,
+            Some("auth_error")
+        );
     }
     #[test]
     fn key_precedence() {

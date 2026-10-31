@@ -255,6 +255,7 @@ mod tests {
             source: AccountSource::Login,
             blocked_until: until,
             block_reason: Some("auth_error".into()),
+            ..Default::default()
         }
     }
 
