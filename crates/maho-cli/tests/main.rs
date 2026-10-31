@@ -70,6 +70,8 @@ pub mod host_runtime;
 pub mod image_convert;
 #[path = "image_process.rs"]
 pub mod image_process;
+#[path = "image_processing.rs"]
+pub mod image_processing;
 #[path = "image_resize.rs"]
 pub mod image_resize;
 #[path = "import_entry.rs"]
