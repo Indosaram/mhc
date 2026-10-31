@@ -808,6 +808,37 @@ pub async fn mount_agent_session_runtime(
         Some(launch_config.launch_profile()),
     );
     runtime.set_project_trust_override(config.project_trust_override);
+    // senpi `projectTrustByCwd` and `createServices` for a replacement in another project: the shared cache
+    // first, then this factory's resolution. Runtime-hosted replacements pass no `projectTrustContext`, so
+    // senpi's context has `hasUI: false` (not the initial runtime): the extension event, the saved decision and
+    // `defaultProjectTrust` decide, and nothing is asked.
+    runtime.set_project_trust_cache(Some(config.project_trust_by_cwd.clone()));
+    let resolver_config = config.clone();
+    let resolver: maho_core::agent_session_runtime::ProjectTrustResolver = Arc::new(move |cwd: String, preset: Option<String>| {
+        let config = resolver_config.clone();
+        Box::pin(async move {
+            let profile = AgentSessionLaunchProfile {
+                cwd: cwd.clone(),
+                permission_preset: preset,
+                ..Default::default()
+            };
+            let resolved = resolve_launch_project_trust(
+                &config,
+                &cwd,
+                to_project_trust_mode(config.app_mode),
+                false,
+                Box::new(|_, _| None),
+                Some(&profile),
+            )
+            .await;
+            maho_core::agent_session_runtime::ResolvedProjectTrust {
+                trusted: resolved.trusted,
+                trust_from_full_access: resolved.trust_from_full_access,
+                warnings: resolved.warnings,
+            }
+        }) as maho_core::agent_session_runtime::ProjectTrustResolution
+    });
+    runtime.set_project_trust_resolver(Some(resolver));
     Ok(MountedRuntime {
         runtime,
         diagnostics,
