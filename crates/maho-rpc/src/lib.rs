@@ -23,7 +23,6 @@ pub mod event_output_buffer;
 pub mod extension_ui_response;
 pub mod handoff_activity;
 pub mod held_input_commands;
-pub mod host_admission;
 pub mod host_attach_hold;
 pub mod host_capabilities;
 pub mod host_child_exit;
