@@ -51,6 +51,7 @@ pub mod host_command;
 pub mod host_handover_args;
 pub mod host_request;
 pub mod host_runtime;
+pub mod host_session_command;
 #[cfg(feature = "omo")]
 pub mod host_transport;
 pub mod initial_message;
@@ -111,5 +112,7 @@ pub mod user_extensions;
 #[cfg(not(feature = "omo"))]
 pub mod usage_stats;
 // ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
+pub mod continue_moved;
 pub mod cross_project_session;
+pub mod print_then_exit;
 pub mod session_opening;

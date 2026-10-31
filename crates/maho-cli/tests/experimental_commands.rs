@@ -163,3 +163,16 @@ async fn executing_the_commands_hands_the_built_command_to_the_context_action() 
     assert!(client.execute(&args(&["--continue", "--resume"]), context.clone()).await.expect("no action error").is_err());
     assert_eq!(*context.clients.lock().unwrap(), vec![Some("hello".to_owned())]);
 }
+
+/// senpi `cli/experimental/cli.ts`: the `experimental` group dispatches `server`/`client` to their parsers and answers
+/// anything else with the group's own error.
+#[test]
+fn experimental_group_dispatches_server_and_client_and_rejects_others() {
+    use maho_cli::cli::experimental::cli::{parse, ExperimentalInvocation};
+    assert!(matches!(parse(&args(&["client", "-e", "hi"])), Ok(ExperimentalInvocation::Client(_))));
+    assert!(matches!(parse(&args(&["server"])), Ok(ExperimentalInvocation::Server(_))));
+    for argv in [&[][..], &["bogus"][..]] {
+        assert_eq!(parse(&args(argv)).err(), Some(vec!["Expected experimental command: server or client".to_owned()]));
+    }
+    assert_eq!(parse(&args(&["client", "one", "two"])).is_err(), parse_client(&args(&["one", "two"])).is_err());
+}

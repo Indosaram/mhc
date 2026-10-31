@@ -289,3 +289,85 @@ pub fn resolve_startup_theme(setting: Option<&str>, colorfgbg: Option<&str>) -> 
     }
     Ok(resolution.theme)
 }
+
+/// senpi `OFFICIAL_PACKAGE_NAME`/`OFFICIAL_APP_NAME`/`OFFICIAL_CONFIG_DIR_NAME`.
+const OFFICIAL_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
+const OFFICIAL_APP_NAME: &str = "pi";
+const OFFICIAL_CONFIG_DIR_NAME: &str = ".pi";
+
+/// senpi `DistributionMetadata`.
+pub struct DistributionMetadata<'a> {
+    pub package_name: &'a str,
+    pub app_name: &'a str,
+    pub config_dir_name: &'a str,
+}
+
+fn is_official_distribution(metadata: &DistributionMetadata<'_>) -> bool {
+    metadata.package_name == OFFICIAL_PACKAGE_NAME && metadata.app_name == OFFICIAL_APP_NAME && metadata.config_dir_name == OFFICIAL_CONFIG_DIR_NAME
+}
+
+/// senpi `shouldRunFirstTimeSetup` with its inputs explicit: the official Pi distribution, experimental features on,
+/// the default agent directory (no `<PREFIX>_CODING_AGENT_DIR`), and no `settings.json` yet.
+pub fn should_run_first_time_setup_with(metadata: &DistributionMetadata<'_>, experimental: bool, agent_dir_override: Option<&str>, settings_path: &Path) -> bool {
+    is_official_distribution(metadata) && experimental && agent_dir_override.is_none_or(str::is_empty) && !settings_path.exists()
+}
+
+/// senpi `shouldRunFirstTimeSetup()` for this process. mhc and its brands are never the official Pi distribution
+/// (there is no npm `PACKAGE_NAME`; the app is the brand name), so this is always false and the first-time setup dialog
+/// (`showFirstTimeSetup`) is never shown, exactly as upstream behaves for any fork or rebrand.
+pub fn should_run_first_time_setup() -> bool {
+    let app_name = maho_core::config::app_name();
+    let config_dir_name = maho_core::config::config_dir_name();
+    let agent_dir_override = std::env::var(maho_core::config::env_agent_dir_var()).ok();
+    should_run_first_time_setup_with(
+        &DistributionMetadata { package_name: "", app_name: &app_name, config_dir_name: &config_dir_name },
+        maho_core::experimental::are_experimental_features_enabled(),
+        agent_dir_override.as_deref(),
+        Path::new(&maho_core::config::get_settings_path()),
+    )
+}
+
+#[cfg(test)]
+mod first_time_setup_tests {
+    use super::*;
+
+    const OFFICIAL: DistributionMetadata<'static> = DistributionMetadata { package_name: OFFICIAL_PACKAGE_NAME, app_name: OFFICIAL_APP_NAME, config_dir_name: OFFICIAL_CONFIG_DIR_NAME };
+
+    fn settings() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("settings.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn returns_true_when_experimental_default_agent_dir_and_no_settings_json() {
+        let (_dir, path) = settings();
+        assert!(should_run_first_time_setup_with(&OFFICIAL, true, None, &path));
+    }
+
+    #[test]
+    fn returns_false_when_experimental_features_are_disabled() {
+        let (_dir, path) = settings();
+        assert!(!should_run_first_time_setup_with(&OFFICIAL, false, None, &path));
+    }
+
+    #[test]
+    fn returns_false_when_a_custom_agent_dir_is_set() {
+        let (dir, path) = settings();
+        assert!(!should_run_first_time_setup_with(&OFFICIAL, true, Some(&dir.path().to_string_lossy()), &path));
+    }
+
+    #[test]
+    fn returns_false_when_settings_json_already_exists() {
+        let (_dir, path) = settings();
+        std::fs::write(&path, "{}").expect("settings");
+        assert!(!should_run_first_time_setup_with(&OFFICIAL, true, None, &path));
+    }
+
+    #[test]
+    fn a_rebranded_distribution_never_runs_first_time_setup() {
+        let (_dir, path) = settings();
+        let maho = DistributionMetadata { package_name: "", app_name: "maho", config_dir_name: ".omo" };
+        assert!(!should_run_first_time_setup_with(&maho, true, None, &path));
+    }
+}

@@ -19,6 +19,21 @@ pub fn consume_internal_process_role(env: &mut std::collections::BTreeMap<String
     env.remove(INTERNAL_PROCESS_ENV);
     Ok(role)
 }
+/// senpi `getInternalProcessRole`: read and validate the role from the real process environment without consuming it.
+pub fn get_internal_process_role() -> Result<Option<InternalProcessRole>, String> {
+    parse_internal_process_role(std::env::var(INTERNAL_PROCESS_ENV).ok().as_deref())
+}
+/// senpi `consumeInternalProcessRole` over the real process environment: read, validate, then remove the role so
+/// descendants do not inherit it. An invalid role is an error and stays set, as upstream throws before the delete.
+/// Removing a variable is only sound while the process is single-threaded (see `maho_process_env`).
+pub fn consume_process_internal_role() -> Result<Option<InternalProcessRole>, String> {
+    let current: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let mut env: std::collections::BTreeMap<String, String> = current.clone().into_iter().collect();
+    let role = consume_internal_process_role(&mut env)?;
+    maho_process_env::apply(&current, &env.into_iter().collect());
+    Ok(role)
+}
+/// senpi `terminateInternalProcess`: force the child to exit (SIGKILL on Unix) and wait until it can no longer take ownership.
 pub async fn terminate_internal_process(child: &mut tokio::process::Child) -> std::io::Result<()> {
     if child.try_wait()?.is_none() { child.start_kill()?; child.wait().await?; }
     Ok(())
