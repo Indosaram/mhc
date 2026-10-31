@@ -162,4 +162,43 @@ mod tests {
         peer.write_all(&[2; 32]).await.expect("w");
         assert!(transport.admit(socket).await.is_none());
     }
+
+    fn sealed(key: [u8; 32]) -> InternalHostTransport {
+        InternalHostTransport {
+            watchdog_config: None,
+            key: Some(key),
+            secret: None,
+            public_endpoint: None,
+            require_token: false,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_keyed_host_admits_a_sealed_round_trip_and_refuses_another_key() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let transport = sealed([7; 32]);
+        let (socket, peer) = tokio::io::duplex(4096);
+        let client =
+            crate::internal_channel::connect_internal_connection(peer, &[7; 32], Some(5000));
+        let (hop, client) = tokio::join!(transport.admit(socket), client);
+        let mut hop = hop.expect("admitted");
+        let mut client = client.expect("sealed client");
+        client.write_all(b"{\"type\":\"ping\"}\n").await.expect("w");
+        client.flush().await.expect("f");
+        let mut request = [0u8; 16];
+        hop.read_exact(&mut request).await.expect("r");
+        assert_eq!(&request, b"{\"type\":\"ping\"}\n");
+        hop.write_all(b"pong\n").await.expect("w");
+        hop.flush().await.expect("f");
+        let mut reply = [0u8; 5];
+        client.read_exact(&mut reply).await.expect("r");
+        assert_eq!(&reply, b"pong\n");
+
+        let (socket, peer) = tokio::io::duplex(4096);
+        let client =
+            crate::internal_channel::connect_internal_connection(peer, &[8; 32], Some(5000));
+        let (hop, client) = tokio::join!(transport.admit(socket), client);
+        assert!(hop.is_none());
+        assert_eq!(client.err().expect("refused").0, "host_identity_unproven");
+    }
 }

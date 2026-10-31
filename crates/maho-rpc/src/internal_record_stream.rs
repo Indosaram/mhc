@@ -284,6 +284,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn derives_the_independent_s2c_hkdf_key() {
+        // HKDF-SHA256(ikm=[7;32], salt=[11;32]||[13;32], info="senpi-rpc-internal s2c", 32), computed independently.
+        let mut salt = CLIENT.to_vec();
+        salt.extend_from_slice(&SERVER);
+        assert_eq!(
+            hex::encode(derive(&KEY, &salt, InternalDirection::S2c)),
+            "1502be6dfe733a9d081ec07bf76bdea99ff2593594647a0862f146d0e477b8af"
+        );
+    }
+
     #[tokio::test]
     async fn preserves_a_131_kib_jsonl_line_across_records_and_backpressure() {
         let (a, b) = tokio::io::duplex(32);
