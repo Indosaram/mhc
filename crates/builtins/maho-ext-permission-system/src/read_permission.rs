@@ -11,15 +11,17 @@ use std::path::{Path, PathBuf};
 
 /// Shipped payload roots, not user-discovered skill or extension directories (senpi
 /// `getBundledResourceRoots`): themes, export template, interactive assets, docs and examples
-/// under the package directory, the directory of the running binary, and the materialized imagegen
-/// skill.
+/// under the package directory and the materialized imagegen skill. Neither the bare package
+/// directory nor the directory of the running binary is a root: upstream's compiled-binary branch
+/// never adds a real install directory, and widening to it would auto-approve any file that sits
+/// next to the binary (for example `~/.cargo/bin` or `/usr/local/bin`).
 ///
 /// DIVERGENCE: mhc links its builtin extensions into the binary, so there are no bundled npm
 /// packages (`bundledBuiltinExtensions`) to add; the imagegen skill lives where
 /// `maho_ext_imagegen::embedded_skill_path` materializes it (computed here without writing it).
 pub fn bundled_resource_roots() -> Vec<PathBuf> {
     let package = PathBuf::from(maho_core::config::get_package_dir());
-    let mut roots = vec![
+    vec![
         package.join("theme"),
         package.join("export-html"),
         package.join("assets"),
@@ -28,15 +30,7 @@ pub fn bundled_resource_roots() -> Vec<PathBuf> {
         std::env::temp_dir()
             .join(format!("maho-imagegen-{}", env!("CARGO_PKG_VERSION")))
             .join("skill"),
-        package,
-    ];
-    if let Some(binary_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    {
-        roots.push(binary_dir);
-    }
-    roots
+    ]
 }
 
 fn uniq(values: impl IntoIterator<Item = String>) -> Vec<String> {
