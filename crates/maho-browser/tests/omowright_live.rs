@@ -1,7 +1,6 @@
 //! omowright frames, network snoop, trace and stealth against a real Chromium, when
 //! `$MAHO_BROWSER_TEST_PATH` names one (each test prints why it skipped otherwise).
 use maho_browser::browser::{Browser, LaunchOptions};
-use maho_browser::launch::stealth::StealthState;
 use maho_browser::page::network_snoop::{EntryMatch, SnoopOptions};
 use maho_browser::page::trace::TraceOptions;
 use maho_browser::page::{NAVIGATION_TIMEOUT, SnapshotOptions, WaitUntil};
@@ -116,9 +115,8 @@ fn snoop_and_trace_record_a_navigation() {
 fn stealth_hides_webdriver_and_headless_markers() {
     let Some(mut browser) = launch() else { return };
     assert_eq!(browser.open("main", None, WaitUntil::Load), Ok(true));
+    // A launched headless browser patches every tab it opens.
     let page = browser.tab("main").unwrap_or_else(|| panic!("no tab"));
-    page.apply_stealth(&mut StealthState::default())
-        .unwrap_or_else(|error| panic!("{error}"));
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let url = write(dir.path(), "s.html", "<title>S</title>");
     assert_eq!(
