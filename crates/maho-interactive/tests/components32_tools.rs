@@ -59,6 +59,12 @@ fn word_diff_reports_a_pure_insertion_as_one_added_run() {
 }
 
 #[test]
+fn word_diff_handles_whitespace_prefix_length_mismatch() {
+    let changes = diff_words("a delete", "a    insert");
+    assert!(!changes.is_empty());
+}
+
+#[test]
 fn diff_render_colours_removed_and_added_lines_and_highlights_intra_line_changes() {
     let rendered = render_diff("-1 old value\n+1 new value\n 2 kept", &theme());
     let lines: Vec<&str> = rendered.split('\n').collect();

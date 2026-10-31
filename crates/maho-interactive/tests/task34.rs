@@ -104,6 +104,23 @@ fn ask_user_option_replaces_previously_typed_answer() {
 }
 
 #[test]
+fn ask_user_component_empty_questions_does_not_panic() {
+    let request = QuestionRequest {
+        request_id: "req1".into(),
+        questions: vec![],
+        wait_for_answer: false,
+        timeout_ms: 0,
+    };
+    let captured = Rc::new(RefCell::new(None));
+    let sink = Rc::clone(&captured);
+    let _component = AskUserQuestionComponent::new(
+        request,
+        Box::new(move |response| *sink.borrow_mut() = Some(response)),
+        AskUserQuestionOptions::new(theme()),
+    );
+}
+
+#[test]
 fn ask_user_question_matches_pinned_golden() {
     install_keybindings();
     let fixture = golden("task34-ask.json");
