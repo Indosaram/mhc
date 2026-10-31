@@ -1,6 +1,8 @@
 use crate::{host_protocol_info::HostProtocolInfo,socket_ownership::{SocketFileIdentity,stat_socket_identity}};
 pub const DEFAULT_HANDOFF_READINESS_MS:u64=30_000;
-pub struct SuccessorLaunchOptions{pub launch:crate::host_launch::HostLaunch,pub env:std::collections::HashMap<String,String>,pub instance_id:String,pub generation:u64,pub launch_profile_id:String,pub readiness_ms:u64}
+pub struct SuccessorLaunchOptions{pub launch:crate::host_launch::HostLaunch,pub env:std::collections::HashMap<String,String>,pub instance_id:String,pub generation:u64,pub launch_profile_id:String,pub readiness_ms:u64,
+    /// senpi `inheritOwnerPipe`: the predecessor's owner is this process, so the successor watches its pipe too.
+    pub owner_pipe:Option<crate::host_lifecycle_activity::OwnerPipe>}
 pub struct RunningSuccessor{pub child:tokio::process::Child,pub protocol:HostProtocolInfo}
 pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket:&str,replaced:SocketFileIdentity,options:SuccessorLaunchOptions)->std::io::Result<Result<RunningSuccessor,crate::host_handoff::HandoffRefusal>>{
     let mut stderr_options=std::fs::OpenOptions::new();stderr_options.create(true).append(true);
@@ -10,7 +12,8 @@ pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket
     // replacement against the host it replaces.
     let bootstrap=crate::mcp_presenter_bootstrap::take_presenter_bootstrap();
     let enforce=crate::mcp_presenter_bootstrap::presenter_enforcement()||context.host.capabilities.iter().any(|capability|capability==crate::host_capabilities::MCP_FORM_PRESENTER_CAPABILITY);
-    let args:Vec<String>=options.launch.args.iter().cloned().chain(crate::mcp_presenter_bootstrap::presenter_launch_args(bootstrap.is_some(),enforce)).collect();
+    let owner_pipe=options.owner_pipe;
+    let args:Vec<String>=options.launch.args.iter().cloned().chain(owner_pipe.iter().flat_map(|pipe|pipe.args())).chain(crate::mcp_presenter_bootstrap::presenter_launch_args(bootstrap.is_some(),enforce)).collect();
     let env=options.env;
     let configure=|command:&mut tokio::process::Command|{command.env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr);#[cfg(unix)] command.process_group(0);};
     #[cfg(unix)]
@@ -18,6 +21,7 @@ pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket
     #[cfg(not(unix))]
     let(mut child,presenter_enrollment)={drop(bootstrap);let mut command=tokio::process::Command::new(&options.launch.command);command.args(&args);configure(&mut command);(command.spawn()?,None::<tokio::task::JoinHandle<()>>)};
     let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
+    if let Some(pipe)=owner_pipe{pipe.keep(pid);}
     let result:std::io::Result<Option<HostProtocolInfo>>=async{
         let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(options.readiness_ms);
         loop{
