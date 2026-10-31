@@ -68,6 +68,8 @@ pub struct RpcSessionRegistry {
     worker_refusal: Option<(u64, u64)>,
     /// A session worker's own registry: its host owns the acceptance lane, so the isolate opens none.
     pub worker_isolate: bool,
+    /// The compact-updates flag as this registry sees it; `None` reads the process environment.
+    pub compact_updates: Option<bool>,
 }
 pub enum OpenAdmission {
     Create(String),
@@ -249,7 +251,10 @@ impl RpcSessionRegistry {
         entry.durable_session_id = Some(runtime.session().session_id());
         entry.session_path = runtime.session().session_file();
         // senpi `openSession`: the lane bootstraps from the manager's journal before admission.
-        if maho_core::engine_socket_flag::compact_updates_enabled() && !self.worker_isolate {
+        let compact_updates = self
+            .compact_updates
+            .unwrap_or_else(maho_core::engine_socket_flag::compact_updates_enabled);
+        if compact_updates && !self.worker_isolate {
             let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::default();
             let transcript = runtime
                 .session()

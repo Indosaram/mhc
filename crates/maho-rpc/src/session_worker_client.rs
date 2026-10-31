@@ -1257,4 +1257,226 @@ mod tests {
             assert!(!is_security_notice_state(&snapshot), "{snapshot}");
         }
     }
+
+    /// senpi 4272-worker-frame-order: a client bound to an ordered acceptance lane, with the frames'
+    /// credits, failures and routed lane cuts observable without spawning a worker process.
+    struct OrderedClient {
+        inner: Arc<ClientInner>,
+        lane: crate::session_registry::SharedAcceptanceLane,
+        outbox: tokio::sync::mpsc::UnboundedReceiver<String>,
+        killed: tokio::sync::oneshot::Receiver<()>,
+        failures: Arc<std::sync::Mutex<Vec<String>>>,
+        routed: Arc<std::sync::Mutex<Vec<u64>>>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn ordered_client() -> OrderedClient {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::new(
+            Some(crate::compact_content_store::CompactContentStoreOptions {
+                dir: dir.path().display().to_string(),
+                ..Default::default()
+            }),
+            None,
+        );
+        lane.bootstrap(Default::default(), Some("nonce".into()));
+        let lane = Arc::new(std::sync::Mutex::new(lane));
+        let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let routed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (outbox_tx, outbox) = tokio::sync::mpsc::unbounded_channel();
+        let (kill, killed) = tokio::sync::oneshot::channel();
+        let failed = Arc::clone(&failures);
+        let observed = Arc::clone(&lane);
+        let routes = Arc::clone(&routed);
+        let callbacks = SessionWorkerCallbacks {
+            reserve: Box::new(|_: &str| crate::session_worker_protocol::SessionWriteGrant::Granted),
+            reconcile: Box::new(|_: &[String], _: Option<&str>| {}),
+            // The lane's cut as routing sees it: the frame was applied before it was routed.
+            output: Box::new(move |_: Value, _: Option<String>| {
+                let mut lane = lock(&observed);
+                let root = lane.freeze();
+                lane.release(&root);
+                lock(&routes).push(root.sequence);
+            }),
+            request_close: Box::new(|| {}),
+            failure: Box::new(move |error: &str| lock(&failed).push(error.to_owned())),
+            exit: Box::new(|| {}),
+            security: None,
+        };
+        let inner = Arc::new(ClientInner {
+            state: std::sync::Mutex::new(ClientState {
+                snapshot: None,
+                stopped: false,
+                closing: false,
+                exited: false,
+                binding_ready: true,
+                display_revision: 0.,
+                capabilities: Vec::new(),
+                bound_session: Some("s".into()),
+                controls: WorkerControls::default(),
+                connection_roles: None,
+            }),
+            requests: Default::default(),
+            outbox: outbox_tx,
+            kill: std::sync::Mutex::new(Some(kill)),
+            exited: tokio::sync::watch::channel(false).1,
+            settled: tokio::sync::watch::channel(0).0,
+            callbacks,
+            grants: None,
+            started: std::time::Instant::now(),
+            limit_mirror: std::sync::Mutex::new(None),
+            acceptance: Some(Arc::clone(&lane)),
+            expected_ordinal: std::sync::Mutex::new(0),
+        });
+        OrderedClient {
+            inner,
+            lane,
+            outbox,
+            killed,
+            failures,
+            routed,
+            _dir: dir,
+        }
+    }
+
+    fn frame(ordinal: u64, signal: u64) -> crate::session_worker_protocol::SessionWorkerWire {
+        crate::session_worker_protocol::SessionWorkerWire::Output {
+            record: serde_json::json!({"type":"agent_start"}),
+            connection: None,
+            signal,
+            activity: crate::session_worker_protocol::WorkerActivity {
+                busy: false,
+                handoff_busy: None,
+                streaming: false,
+            },
+            snapshot: None,
+            ordinal: Some(ordinal),
+            recovery: None,
+            transitions: None,
+            bootstrap: None,
+        }
+    }
+
+    impl OrderedClient {
+        /// Every credit the host has posted so far, as `(signal, code)`.
+        fn credits(&mut self) -> Vec<(u64, i32)> {
+            let mut credits = Vec::new();
+            while let Ok(line) = self.outbox.try_recv() {
+                if let Ok(crate::session_worker_protocol::HostToSessionWorker::Credit {
+                    signal,
+                    code,
+                    ..
+                }) = serde_json::from_str(line.trim_end())
+                {
+                    credits.push((signal, code));
+                }
+            }
+            credits
+        }
+        fn cut(&self) -> (String, u64) {
+            let mut lane = lock(&self.lane);
+            let root = lane.freeze();
+            lane.release(&root);
+            (root.session_epoch, root.sequence)
+        }
+        /// Takes the lane out so its settled store is retired and idle before the tempdir goes.
+        async fn finish(self) {
+            let mut lane = std::mem::take(&mut *lock(&self.lane));
+            lane.retire(crate::session_acceptance_lane::RetireReason::Close);
+            lane.idle().await;
+        }
+    }
+
+    const GRANTED: i32 = crate::session_worker_protocol::WORKER_CREDIT_CODES.granted;
+    const CONFLICT: i32 = crate::session_worker_protocol::WORKER_CREDIT_CODES.conflict;
+
+    /// One accepted frame, then `frames`; returns the cut before and after them.
+    fn deliver_after_first(frames: &[(u64, u64)]) -> (OrderedClient, (String, u64), (String, u64)) {
+        let mut client = ordered_client();
+        client.inner.receive(frame(0, 100));
+        assert_eq!(client.credits(), [(100, GRANTED)]);
+        let before = client.cut();
+        for (ordinal, signal) in frames {
+            client.inner.receive(frame(*ordinal, *signal));
+        }
+        let after = client.cut();
+        (client, before, after)
+    }
+
+    // senpi 4272-worker-frame-order: a frame applies to the lane before it is routed, so before its credit.
+    #[tokio::test]
+    async fn in_order_frames_apply_to_the_lane_before_routing() {
+        let mut client = ordered_client();
+        let (epoch, start) = client.cut();
+        for ordinal in 0..3 {
+            client.inner.receive(frame(ordinal, 10 + ordinal));
+        }
+        assert_eq!(*lock(&client.routed), [start + 1, start + 2, start + 3]);
+        assert_eq!(
+            client.credits(),
+            [(10, GRANTED), (11, GRANTED), (12, GRANTED)]
+        );
+        assert!(lock(&client.failures).is_empty());
+        assert_eq!(client.cut(), (epoch, start + 3));
+        assert!(!lock(&client.lane).retired());
+        client.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_skipped_frame_ordinal_is_denied_and_fails_the_incarnation_with_frame_gap() {
+        let (mut client, before, after) = deliver_after_first(&[(2, 7)]);
+        assert_eq!(client.credits(), [(7, CONFLICT)]);
+        assert_eq!(*lock(&client.failures), ["session_worker_frame_gap"]);
+        assert!(
+            lock(&client.lane).retired(),
+            "WorkerFailed retires the lane"
+        );
+        assert_eq!(after, before, "nothing was accepted from the frame");
+        assert_eq!(lock(&client.routed).len(), 1, "the frame was never routed");
+        assert!(client.killed.try_recv().is_ok(), "the incarnation is ended");
+        client.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_repeated_frame_ordinal_is_denied_and_fails_the_incarnation_with_frame_duplicate() {
+        let (mut client, before, after) = deliver_after_first(&[(0, 7)]);
+        assert_eq!(client.credits(), [(7, CONFLICT)]);
+        assert_eq!(*lock(&client.failures), ["session_worker_frame_duplicate"]);
+        assert!(lock(&client.lane).retired());
+        assert_eq!(after, before);
+        assert_eq!(lock(&client.routed).len(), 1);
+        assert!(client.killed.try_recv().is_ok());
+        client.finish().await;
+    }
+
+    // A reorder reaches the host as the later frame first: a gap; the late frame finds a failed
+    // incarnation and is refused too, with no second failure and no acceptance.
+    #[tokio::test]
+    async fn reordered_frames_are_both_denied_with_one_frame_gap_failure() {
+        let (mut client, before, after) = deliver_after_first(&[(2, 7), (1, 8)]);
+        assert_eq!(client.credits(), [(7, CONFLICT), (8, CONFLICT)]);
+        assert_eq!(*lock(&client.failures), ["session_worker_frame_gap"]);
+        assert!(lock(&client.lane).retired());
+        assert_eq!(after, before);
+        assert_eq!(lock(&client.routed).len(), 1);
+        client.finish().await;
+    }
+
+    #[tokio::test]
+    async fn any_worker_failure_retires_the_incarnation_lane() {
+        let mut client = ordered_client();
+        client
+            .inner
+            .receive(crate::session_worker_protocol::SessionWorkerWire::Failure {
+                error: "boom".into(),
+            });
+        assert_eq!(*lock(&client.failures), ["boom"]);
+        assert!(lock(&client.lane).retired());
+        let accepted = lock(&client.lane).accept(&serde_json::json!({"type":"agent_start"}), None);
+        assert!(accepted.is_none(), "the retired lane accepts nothing more");
+        client.inner.receive(frame(0, 9));
+        assert_eq!(client.credits(), [(9, CONFLICT)]);
+        assert_eq!(lock(&client.failures).len(), 1);
+        client.finish().await;
+    }
 }
