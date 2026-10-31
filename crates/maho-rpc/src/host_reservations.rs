@@ -10,6 +10,9 @@ pub const SESSION_PATH_RETRY_AFTER_MS: u64 = 2000;
 #[serde(rename_all = "camelCase")]
 pub struct SessionPathOwner {
     pub instance_id: String,
+    /// The public socket of the host that made the claim (senpi `host_socket`); absent on a stdio host's claim.
+    #[serde(rename = "host_socket", skip_serializing_if = "Option::is_none")]
+    pub host_socket: Option<String>,
     pub pid: u32,
     pub process_start_time: Option<String>,
     pub session_path: String,
@@ -156,19 +159,31 @@ pub fn claim_owner_identity(owner: &SessionPathOwner) -> ClaimIdentity {
     if !process_is_running(owner.pid) {
         return ClaimIdentity::Gone;
     }
-    let Some(recorded) = &owner.process_start_time else {
+    let Some(recorded) = owner.process_start_time.as_deref().and_then(start_time_ms) else {
         return ClaimIdentity::Unproven;
     };
-    match read_process_start_time(owner.pid) {
+    // Recorded identities may carry another form than this probe reads: compare the parsed instant, never the
+    // raw text (senpi `sameProcessStartMs`).
+    match read_process_start_time(owner.pid)
+        .as_deref()
+        .and_then(start_time_ms)
+    {
         None => ClaimIdentity::Unproven,
-        Some(current) => {
-            if recorded == &current {
+        Some(observed) => {
+            if maho_tool_child::group_ownership::same_process_start_ms(
+                Some(recorded),
+                Some(observed),
+            ) {
                 ClaimIdentity::Proven
             } else {
                 ClaimIdentity::Gone
             }
         }
     }
+}
+/// senpi `processStartTimeMs`: a recorded or observed start identity as milliseconds since the epoch.
+fn start_time_ms(identity: &str) -> Option<f64> {
+    maho_tool_child::group_ownership::process_start_time_ms(identity)
 }
 pub fn claim_owner_is_live(owner: &SessionPathOwner) -> bool {
     claim_owner_identity(owner) != ClaimIdentity::Gone
@@ -177,6 +192,7 @@ fn read_owner(file: &Path) -> Option<SessionPathOwner> {
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
     Some(SessionPathOwner {
         instance_id: value["instanceId"].as_str()?.into(),
+        host_socket: value["host_socket"].as_str().map(str::to_owned),
         pid: u32::try_from(value["pid"].as_u64()?).ok()?,
         session_path: value["sessionPath"].as_str()?.into(),
         process_start_time: value["processStartTime"].as_str().map(str::to_owned),
@@ -284,6 +300,7 @@ fn advance_session_fence(session_file: &str) -> std::io::Result<()> {
 pub struct SessionPathReservations {
     paths: crate::host_daemon_paths::HostDaemonPaths,
     instance_id: String,
+    public_socket: Option<String>,
     pid: u32,
     start_time: Option<String>,
     held: HashSet<String>,
@@ -293,16 +310,103 @@ impl SessionPathReservations {
         Self {
             paths: crate::host_daemon_paths::host_daemon_directory_paths(daemon_dir),
             instance_id,
+            public_socket: None,
             pid,
             start_time: read_process_start_time(pid),
             held: HashSet::new(),
         }
+    }
+    /// The public socket every claim names (senpi `publicSocket`).
+    pub fn with_public_socket(mut self, public_socket: Option<String>) -> Self {
+        self.public_socket = public_socket;
+        self
+    }
+    /// Live processes registered to this daemon - claim owners and every generation's host child - never inferred
+    /// from a holder's own labels (senpi `holderPids`). This process is never one. With `observed_starts`, only a
+    /// pid already probed by the caller is classified, against the start it observed.
+    pub fn holder_pids(
+        &self,
+        observed_starts: Option<&std::collections::HashMap<u32, Option<f64>>>,
+    ) -> Vec<u32> {
+        let mut candidates: Vec<(u32, Option<String>)> =
+            read_session_path_claims(&self.paths.reservations_dir)
+                .into_iter()
+                .map(|claim| (claim.owner.pid, claim.owner.process_start_time))
+                .collect();
+        for entry in fs::read_dir(&self.paths.generations_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        {
+            let record = crate::host_daemon_state::parse_json(
+                crate::host_daemon_state::read_file_or_undefined(
+                    &entry.path().join("host-child.pid"),
+                )
+                .ok()
+                .flatten()
+                .as_deref(),
+            );
+            let Some(record) = record else { continue };
+            let Some(pid) = record
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+            else {
+                continue;
+            };
+            candidates.push((
+                pid,
+                record
+                    .get("processStartTime")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            ));
+        }
+        let mut by_pid: std::collections::BTreeMap<u32, Vec<Option<String>>> = Default::default();
+        for (pid, start) in candidates {
+            if pid != std::process::id() {
+                by_pid.entry(pid).or_default().push(start);
+            }
+        }
+        by_pid
+            .into_iter()
+            .filter(|(pid, starts)| {
+                if !process_is_live(*pid) {
+                    return false;
+                }
+                let observed = match observed_starts {
+                    // Only foreign-looking holders need family classification; their probes were already done.
+                    Some(observed) => match observed.get(pid) {
+                        None => return false,
+                        Some(start) => *start,
+                    },
+                    None => read_process_start_time(*pid)
+                        .as_deref()
+                        .and_then(start_time_ms),
+                };
+                observed.is_some()
+                    && starts.iter().any(|start| {
+                        start
+                            .as_deref()
+                            .and_then(start_time_ms)
+                            .is_some_and(|recorded| {
+                                maho_tool_child::group_ownership::same_process_start_ms(
+                                    Some(recorded),
+                                    observed,
+                                )
+                            })
+                    })
+            })
+            .map(|(pid, _)| pid)
+            .collect()
     }
     fn publish(&self, session_path: &str, attached: bool) -> std::io::Result<()> {
         #[cfg(unix)]
         use std::os::unix::fs::DirBuilderExt;
         let owner = SessionPathOwner {
             instance_id: self.instance_id.clone(),
+            host_socket: self.public_socket.clone(),
             pid: self.pid,
             process_start_time: self.start_time.clone(),
             session_path: session_path.into(),
@@ -401,6 +505,18 @@ impl BoundPathReservations {
     pub fn set_attached(&mut self, session_path: &str, attached: bool) {
         let report = &mut self.report;
         self.inner.set_attached(session_path, attached, report);
+    }
+    /// senpi `holderPids`.
+    pub fn holder_pids(
+        &self,
+        observed_starts: Option<&std::collections::HashMap<u32, Option<f64>>>,
+    ) -> Vec<u32> {
+        self.inner.holder_pids(observed_starts)
+    }
+    /// senpi `publicSocket`: every claim names the public socket of the host that made it.
+    pub fn with_public_socket(mut self, public_socket: Option<String>) -> Self {
+        self.inner = self.inner.with_public_socket(public_socket);
+        self
     }
 }
 /// This endpoint's daemon directory: the claims live in it, and the pointer they are read
@@ -552,6 +668,7 @@ mod tests {
         let pointer = paths.pointer_file.clone();
         let owner = SessionPathOwner {
             instance_id: "one".into(),
+            host_socket: None,
             pid: std::process::id(),
             process_start_time: read_process_start_time(std::process::id()),
             session_path: "/session".into(),
@@ -567,7 +684,8 @@ mod tests {
             matches!(standing_owner(owner.clone(),&paths),StandingVerdict::Stands(stands) if stands.current==Some(true))
         );
         let mut recycled = owner;
-        recycled.process_start_time = Some("not-current".into());
+        // A parseable start that is not this process's: the pid was recycled.
+        recycled.process_start_time = Some("1".into());
         assert!(!claim_owner_is_live(&recycled));
         assert_eq!(claim_owner_identity(&recycled), ClaimIdentity::Gone);
         let mut unrecorded = recycled;
@@ -585,6 +703,7 @@ mod tests {
         assert!(!process_is_running(pid));
         let owner = SessionPathOwner {
             instance_id: "z".into(),
+            host_socket: None,
             pid,
             process_start_time: read_process_start_time(pid),
             session_path: "/session".into(),
@@ -597,6 +716,48 @@ mod tests {
         let paths = crate::host_daemon_paths::host_daemon_directory_paths(temp.path());
         fs::write(&paths.pointer_file, r#"{"instance_id":"z"}"#).unwrap();
         assert_eq!(standing_owner(owner, &paths), StandingVerdict::Released);
+    }
+    /// 1893-generation-records-and-claims / issue-2951-worker-claims: claims name their host socket, and the holder
+    /// set is the live claim owners plus every generation's host child, never this process and never a recycled pid.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn claims_name_the_public_socket_and_holders_are_proven_registered_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut sleeper = std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .unwrap();
+        let pid = sleeper.id();
+        let start = read_process_start_time(pid);
+        let mut reservations =
+            create_session_path_reservations(temp.path(), "one".into(), Some(pid), |error| {
+                panic!("{error}")
+            })
+            .with_public_socket(Some("/public.sock".into()));
+        assert!(reservations.claim("/session", true).is_none());
+        let claims = read_session_path_claims(&temp.path().join("reservations"));
+        assert_eq!(claims[0].owner.host_socket.as_deref(), Some("/public.sock"));
+        let generation = temp.path().join("generations/g1");
+        fs::create_dir_all(&generation).unwrap();
+        fs::write(
+            generation.join("host-child.pid"),
+            serde_json::json!({"pid":std::process::id(),"processStartTime":read_process_start_time(std::process::id())}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(reservations.holder_pids(None), vec![pid]);
+        let observed =
+            std::collections::HashMap::from([(pid, start.as_deref().and_then(start_time_ms))]);
+        assert_eq!(reservations.holder_pids(Some(&observed)), vec![pid]);
+        let recycled = std::collections::HashMap::from([(pid, Some(0.0))]);
+        assert!(reservations.holder_pids(Some(&recycled)).is_empty());
+        assert!(
+            reservations
+                .holder_pids(Some(&Default::default()))
+                .is_empty()
+        );
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(reservations.holder_pids(None).is_empty());
     }
     #[test]
     fn unproven_stale_heartbeat_claim_is_presumed_done_and_fenced_on_takeover() {
@@ -612,6 +773,7 @@ mod tests {
         fs::write(&paths.pointer_file, r#"{"instance_id":"other"}"#).unwrap();
         let owner = SessionPathOwner {
             instance_id: "old".into(),
+            host_socket: None,
             pid: std::process::id(),
             process_start_time: None,
             session_path: temp.path().join("s.jsonl").to_string_lossy().into_owned(),
