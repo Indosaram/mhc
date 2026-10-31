@@ -12,7 +12,12 @@
 //! `createChromeApi`.
 //!
 //! PORT-DIVERGENCE: requests block the calling thread (a reader thread feeds responses) instead of
-//! returning promises, so there is no `AbortSignal`; the timeout is the cancellation. Listener
+//! returning promises. The `AbortSignal` option is a [`CancelToken`] passed to
+//! [`NativeMessagingHost::request_cancellable`] with the same outcomes: an already-cancelled
+//! token or a cancel while queued rejects with `ABORT_ERR`; a cancel after the mutation was sent
+//! also disconnects, because its completion is indeterminate; a cancel after the response changes
+//! nothing. `onDisconnect` is [`HostOptions::on_disconnect`], called once on the thread that
+//! closed the connection, with no host lock held. Listener
 //! panics are not caught (JS isolates thrown listener errors). `createChromeApi`'s standalone
 //! fallbacks come from omowright `src/chrome.js`, which is not ported: unsupported calls fail with
 //! the upstream "requires the extension bridge" error.
@@ -97,6 +102,13 @@ impl std::fmt::Display for BridgeError {
 
 fn protocol(message: &str) -> BridgeError {
     BridgeError::Protocol(message.to_owned())
+}
+
+fn aborted(name: &str) -> BridgeError {
+    BridgeError::Command {
+        code: Some("ABORT_ERR".into()),
+        message: format!("bridge command aborted: {name}"),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -624,6 +636,77 @@ fn now_ms() -> u64 {
 
 /// Receives every accepted event envelope.
 pub type EventListener = Box<dyn Fn(&Value) + Send + Sync>;
+/// Told once why the connection closed (`onDisconnect`).
+pub type DisconnectListener = Box<dyn Fn(&BridgeError) + Send + Sync>;
+
+/// `AbortSignal` for [`NativeMessagingHost::request_cancellable`]. Clones share one flag.
+#[derive(Clone, Default)]
+pub struct CancelToken {
+    inner: Arc<CancelInner>,
+}
+
+#[derive(Default)]
+struct CancelInner {
+    cancelled: std::sync::atomic::AtomicBool,
+    /// Hosts with a request waiting on this token (`addEventListener("abort")`).
+    waiters: Mutex<HashMap<u64, std::sync::Weak<HostShared>>>,
+    next_waiter: AtomicU64,
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `controller.abort()`: requests waiting on this token stop waiting.
+    pub fn cancel(&self) {
+        self.inner.cancelled.store(true, Ordering::SeqCst);
+        let hosts: Vec<_> = self
+            .inner
+            .waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        for host in hosts {
+            // Taking the state lock orders this wake-up after the waiter's flag check.
+            let _state = host.lock();
+            host.changed.notify_all();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Requests currently registered on this token (abort listeners not yet removed).
+    pub fn waiters(&self) -> usize {
+        self.inner
+            .waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    fn register(&self, host: &Arc<HostShared>) -> u64 {
+        let id = self.inner.next_waiter.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, Arc::downgrade(host));
+        id
+    }
+
+    fn unregister(&self, id: u64) {
+        self.inner
+            .waiters
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+    }
+}
 
 /// `createNativeMessagingHost` options.
 pub struct HostOptions {
@@ -633,6 +716,7 @@ pub struct HostOptions {
     pub command_timeout: Duration,
     pub max_pending: usize,
     pub on_event: Option<EventListener>,
+    pub on_disconnect: Option<DisconnectListener>,
 }
 
 impl HostOptions {
@@ -644,6 +728,7 @@ impl HostOptions {
             command_timeout: Duration::from_secs(30),
             max_pending: 256,
             on_event: None,
+            on_disconnect: None,
         }
     }
 }
@@ -688,10 +773,15 @@ impl HostShared {
 
     fn disconnect(&self, error: BridgeError) {
         let mut state = self.lock();
-        if state.closed.is_none() {
-            state.closed = Some(error);
+        let first = state.closed.is_none();
+        if first {
+            state.closed = Some(error.clone());
         }
         self.changed.notify_all();
+        drop(state);
+        if first && let Some(on_disconnect) = &self.options.on_disconnect {
+            on_disconnect(&error);
+        }
     }
 
     fn write(&self, value: &Value) -> Result<(), BridgeError> {
@@ -977,6 +1067,29 @@ impl NativeMessagingHost {
         params: Value,
         timeout: Option<Duration>,
     ) -> Result<Value, BridgeError> {
+        self.request_inner(name, params, timeout, None)
+    }
+
+    /// [`Self::request`] with `{ signal }`: cancelling `cancel` while the mutation is queued
+    /// rejects it with `ABORT_ERR`; once it was sent, the rejection also disconnects (completion
+    /// is indeterminate).
+    pub fn request_cancellable(
+        &self,
+        name: &str,
+        params: Value,
+        timeout: Option<Duration>,
+        cancel: &CancelToken,
+    ) -> Result<Value, BridgeError> {
+        self.request_inner(name, params, timeout, Some(cancel))
+    }
+
+    fn request_inner(
+        &self,
+        name: &str,
+        params: Value,
+        timeout: Option<Duration>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Value, BridgeError> {
         let timeout = timeout.unwrap_or(self.shared.options.command_timeout);
         let request_id = random_hex();
         let command = json!({"protocol": PROTOCOL, "type": "command", "requestId": request_id, "name": name, "params": params});
@@ -1002,13 +1115,20 @@ impl NativeMessagingHost {
             if !command_valid(&command) {
                 return Err(protocol("invalid command parameters"));
             }
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                return Err(aborted(name));
+            }
             state.admitted += 1;
             ticket = state.next_ticket;
             state.next_ticket += 1;
             state.queue.push_back(ticket);
             self.shared.changed.notify_all();
         }
-        let outcome = self.run(ticket, name, &request_id, &command, timeout);
+        let registration = cancel.map(|token| (token, token.register(&self.shared)));
+        let outcome = self.run(ticket, name, &request_id, &command, timeout, cancel);
+        if let Some((token, id)) = registration {
+            token.unregister(id);
+        }
         let mut state = self.shared.lock();
         state.admitted -= 1;
         state.queue.retain(|queued| *queued != ticket);
@@ -1023,6 +1143,7 @@ impl NativeMessagingHost {
         request_id: &str,
         command: &Value,
         timeout: Duration,
+        cancel: Option<&CancelToken>,
     ) -> Result<Value, BridgeError> {
         let deadline = Instant::now() + timeout;
         let mut started = false;
@@ -1033,6 +1154,18 @@ impl NativeMessagingHost {
             }
             if let Some(error) = &state.closed {
                 return Err(error.clone());
+            }
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                // `failIndeterminate("ABORT_ERR")`.
+                if started {
+                    state.in_flight = None;
+                    drop(state);
+                    self.shared.disconnect(BridgeError::Command {
+                        code: Some("ABORT_ERR".into()),
+                        message: "mutation completion is indeterminate".into(),
+                    });
+                }
+                return Err(aborted(name));
             }
             if !started && state.queue.front() == Some(&ticket) && state.in_flight.is_none() {
                 state.in_flight = Some(request_id.to_owned());
@@ -1051,12 +1184,12 @@ impl NativeMessagingHost {
                     code: Some("TIMEOUT".into()),
                     message: format!("bridge command timed out: {name}"),
                 };
-                if started && state.closed.is_none() {
-                    state.closed = Some(BridgeError::Command {
+                if started {
+                    drop(state);
+                    self.shared.disconnect(BridgeError::Command {
                         code: Some("TIMEOUT".into()),
                         message: "mutation completion is indeterminate".into(),
                     });
-                    self.shared.changed.notify_all();
                 }
                 return Err(error);
             }
@@ -1770,6 +1903,170 @@ mod tests {
         );
         assert!(!host.is_connected());
         assert!(pipe.nothing_sent());
+    }
+
+    fn create(
+        host: &NativeMessagingHost,
+        title: &str,
+        cancel: &CancelToken,
+    ) -> std::thread::JoinHandle<Result<Value, BridgeError>> {
+        let host = host.clone();
+        let cancel = cancel.clone();
+        let title = title.to_owned();
+        std::thread::spawn(move || {
+            host.request_cancellable(
+                "bookmarks.create",
+                json!({"details": {"title": title}}),
+                None,
+                &cancel,
+            )
+        })
+    }
+
+    #[test]
+    fn abort_after_a_received_mutation_response_does_not_disconnect_the_bridge() {
+        let (host, mut pipe) = connect(HostOptions::new(EXTENSION_ID));
+        let cancel = CancelToken::new();
+        let request = create(&host, "done", &cancel);
+        let sent = pipe.read_one();
+        respond(&pipe, &sent, json!({"id": "1", "title": "done"}));
+        let result = request.join().ok().and_then(Result::ok);
+        assert_eq!(result, Some(json!({"id": "1", "title": "done"})));
+        cancel.cancel();
+        assert!(host.is_connected());
+        host.close();
+    }
+
+    #[test]
+    fn settled_mutations_remove_abort_listeners_and_timers() {
+        let mut options = HostOptions::new(EXTENSION_ID);
+        options.command_timeout = Duration::from_secs(60);
+        let (host, mut pipe) = connect(options);
+        let cancel = CancelToken::new();
+        let request = create(&host, "done", &cancel);
+        let sent = pipe.read_one();
+        // The request is past admission once its command was written.
+        assert_eq!(cancel.waiters(), 1);
+        respond(&pipe, &sent, json!({"id": "1", "title": "done"}));
+        assert!(request.join().ok().is_some_and(|result| result.is_ok()));
+        assert_eq!(cancel.waiters(), 0);
+        cancel.cancel();
+        assert!(host.is_connected());
+        host.close();
+    }
+
+    #[test]
+    fn write_rejection_removes_the_abort_listener() {
+        let mut options = HostOptions::new(EXTENSION_ID);
+        options.max_pending = 1;
+        options.command_timeout = Duration::from_secs(60);
+        let (host, mut pipe) = connect(options);
+        let first = create(&host, "one", &CancelToken::new());
+        let sent = pipe.read_one();
+        let cancel = CancelToken::new();
+        let bounded = host.request_cancellable(
+            "bookmarks.create",
+            json!({"details": {"title": "x", "url": "https://example.com/"}}),
+            None,
+            &cancel,
+        );
+        assert_eq!(bounded.err(), Some(protocol("BOUNDED_TRANSPORT")));
+        assert_eq!(cancel.waiters(), 0);
+        respond(&pipe, &sent, json!({"id": "1", "title": "one"}));
+        assert!(first.join().ok().is_some_and(|result| result.is_ok()));
+        host.close();
+    }
+
+    #[test]
+    fn request_with_an_already_aborted_signal_rejects_instead_of_hanging() {
+        let mut options = HostOptions::new(EXTENSION_ID);
+        options.command_timeout = Duration::from_secs(60);
+        let (host, pipe) = connect(options);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let result = host.request_cancellable(
+            "bookmarks.create",
+            json!({"details": {"title": "x", "url": "https://example.com/"}}),
+            None,
+            &cancel,
+        );
+        assert_eq!(
+            result.as_ref().err().and_then(BridgeError::code),
+            Some("ABORT_ERR")
+        );
+        assert!(host.is_connected());
+        assert!(pipe.nothing_sent());
+        host.close();
+    }
+
+    #[test]
+    fn abort_rejects_a_queued_mutation_and_disconnects_a_started_one_as_indeterminate() {
+        let disconnects = Arc::new(Mutex::new(Vec::<BridgeError>::new()));
+        let mut options = HostOptions::new(EXTENSION_ID);
+        options.command_timeout = Duration::from_secs(60);
+        options.on_disconnect = Some(Box::new({
+            let disconnects = Arc::clone(&disconnects);
+            move |error: &BridgeError| {
+                disconnects
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(error.clone());
+            }
+        }));
+        let (host, mut pipe) = connect(options);
+        let started_cancel = CancelToken::new();
+        let started = create(&host, "one", &started_cancel);
+        let _ = pipe.read_one();
+        let queued_cancel = CancelToken::new();
+        let queued = create(&host, "two", &queued_cancel);
+        // Wait (bounded, on the host condvar) until the second request is admitted and queued.
+        {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut state = host.shared.lock();
+            while state.admitted < 2 && Instant::now() < deadline {
+                state = host
+                    .shared
+                    .changed
+                    .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+            assert_eq!(state.admitted, 2);
+        }
+        queued_cancel.cancel();
+        let queued = queued.join().ok().and_then(Result::err);
+        assert_eq!(
+            queued.as_ref().and_then(BridgeError::code),
+            Some("ABORT_ERR")
+        );
+        assert!(host.is_connected(), "a queued abort leaves the bridge up");
+        assert!(pipe.nothing_sent(), "the aborted mutation was never sent");
+
+        started_cancel.cancel();
+        let started = started.join().ok().and_then(Result::err);
+        assert_eq!(
+            started.as_ref().and_then(BridgeError::code),
+            Some("ABORT_ERR")
+        );
+        assert!(host.wait_disconnected(Duration::from_secs(5)));
+        let later = host.request(
+            "bookmarks.create",
+            json!({"details": {"title": "three"}}),
+            None,
+        );
+        assert!(
+            later
+                .err()
+                .is_some_and(|error| error.message().contains("indeterminate"))
+        );
+        host.close();
+        let seen = disconnects
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        assert_eq!(seen.len(), 1, "onDisconnect fires once");
+        assert_eq!(seen[0].code(), Some("ABORT_ERR"));
+        assert!(seen[0].message().contains("indeterminate"));
     }
 
     #[test]
