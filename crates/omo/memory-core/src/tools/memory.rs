@@ -236,6 +236,9 @@ fn run_memory_tool_inner(
     }
 
     let root = &repo.dir;
+    // Pin `memory.ts:69`: unrelated dirty files fail before anything is written, so a refused
+    // write never leaves its own file behind to make the next write fail too.
+    repo.clean_check().map_err(|e| err(e.to_string()))?;
     let mut affected_relative_paths: Vec<String> = Vec::new();
     let mut stripped_paths = Vec::new();
     let claim = params.provenance.as_ref().and_then(|p| p.claim.as_ref());
