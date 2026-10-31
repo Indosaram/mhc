@@ -29219,6 +29219,139 @@ mod tests {
         );
     }
 
+    /// senpi 3131-spent-account.test.ts "uses the held target for %s compaction without calling the spent
+    /// provider" (manual and pre-prompt): a spent account whose transcript holds a downswitch summarizes on
+    /// the held target, and the spent primary is never called.
+    async fn held_target_compacts_without_calling_the_spent_provider(pre_prompt: bool) {
+        use maho_ai::providers::faux::{
+            FauxModelDefinition, FauxResponseStep, RegisterFauxProviderOptions,
+            faux_assistant_message, faux_provider,
+        };
+        let (session, primary_provider) =
+            spent_account_session(&[], serde_json::json!({"keepRecentTokens":1})).await;
+        let target_provider = faux_provider(RegisterFauxProviderOptions {
+            provider: Some("usable".to_owned()),
+            tokens_per_second: Some(0.0),
+            models: Some(vec![FauxModelDefinition {
+                id: "target".to_owned(),
+                context_window: Some(372_000),
+                max_tokens: Some(32_000),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        })
+        .expect("valid target provider");
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(target_provider.provider.clone());
+        runtime
+            .register_provider(
+                "usable",
+                crate::provider_composer::ProviderConfigInput {
+                    config: crate::model_config_schema::ModelsJsonProvider {
+                        api_key: Some("faux-key".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .expect("auth");
+        let target = session
+            .model_runtime()
+            .get_model("usable", "target")
+            .expect("missing target fixture");
+        let primary = session.model();
+        for text in ["large live context ".repeat(30_000), "continue".to_owned()] {
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(
+                    serde_json::json!({"role":"user","content":[{"type":"text","text":text}],"timestamp":1}),
+                )
+            });
+            let mut response = faux_assistant_message("earlier response", Default::default());
+            response.provider = primary.provider.clone();
+            response.model = primary.id.clone();
+            response.usage.input = 320_000;
+            response.usage.total_tokens = 321_000;
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(serde_json::to_value(response).expect("assistant"))
+            });
+        }
+        session.rebuild_session_context().expect("context");
+        session
+            .set_model(target.clone())
+            .await
+            .expect("held switch");
+        assert_eq!(
+            session.pending_model_switch().expect("pending").model.id,
+            "target"
+        );
+        let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let step = || {
+            let requests = requests.clone();
+            FauxResponseStep::Factory(Arc::new(move |_context, _options, _state, model| {
+                lock(&requests).push(format!("{}/{}", model.provider, model.id));
+                Box::pin(std::future::ready(faux_assistant_message(
+                    "a usable model summary",
+                    Default::default(),
+                )))
+            }))
+        };
+        target_provider.set_responses(vec![step(), step(), step()]);
+        let reduced = Arc::new(Mutex::new(0usize));
+        let observed = reduced.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::ResumeContextReduced { .. }) {
+                *lock(&observed) += 1;
+            }
+        }));
+        let primary_calls_before = spent_primary_calls(&primary_provider);
+
+        if pre_prompt {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                session.prompt("continue after switching", Default::default()),
+            )
+            .await
+            .expect("bounded pre-prompt turn")
+            .expect("pre-prompt turn");
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(10), session.compact(None))
+                .await
+                .expect("bounded manual compaction")
+                .expect("manual compaction");
+        }
+
+        let requests = lock(&requests).clone();
+        assert_eq!(requests.first().map(String::as_str), Some("usable/target"));
+        assert!(!requests.iter().any(|request| request == "faux/primary"));
+        assert_eq!(spent_primary_calls(&primary_provider), primary_calls_before);
+        let compaction = session
+            .with_session_manager(|manager| manager.entries())
+            .into_iter()
+            .rev()
+            .find(|entry| entry["type"] == "compaction")
+            .expect("compaction entry");
+        assert!(
+            compaction["summary"]
+                .as_str()
+                .is_some_and(|summary| summary.contains("a usable model summary"))
+        );
+        assert_eq!(*lock(&reduced), 0);
+        if pre_prompt {
+            assert_eq!(session.model().provider, "usable");
+            assert!(session.pending_model_switch().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn held_target_serves_manual_compaction_without_calling_the_spent_provider() {
+        held_target_compacts_without_calling_the_spent_provider(false).await;
+    }
+
+    #[tokio::test]
+    async fn held_target_serves_pre_prompt_compaction_without_calling_the_spent_provider() {
+        held_target_compacts_without_calling_the_spent_provider(true).await;
+    }
+
     /// senpi `_resolveCompactionModel` (healthy session): an override on a spent provider keeps the session
     /// model.
     #[tokio::test]
