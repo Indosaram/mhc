@@ -289,6 +289,81 @@ mod tests {
         assert!(!prompt.contains("Current working directory:"));
     }
 
+    // senpi test/dynamic-prompt/build.test.ts cases not covered above.
+    #[test]
+    fn the_intent_gate_forces_verbalization() {
+        let prompt = build_dynamic_system_prompt(&options());
+        assert!(prompt.contains("I read this as"));
+        assert!(!prompt.contains("Keep the routing decision internal"));
+    }
+
+    #[test]
+    fn working_the_task_and_verification_carry_their_disciplines() {
+        let prompt = build_dynamic_system_prompt(&options());
+        assert!(prompt.contains("loosely relevant"));
+        assert!(prompt.contains("Stop searching when"));
+        for tier in ["V1", "V2", "V3"] {
+            assert!(prompt.contains(tier), "{tier}");
+        }
+    }
+
+    #[test]
+    fn policies_are_language_agnostic_and_style_names_the_smallest_change() {
+        let prompt = build_dynamic_system_prompt(&options());
+        assert!(prompt.contains("Hard Blocks"));
+        assert!(!prompt.contains("as any"));
+        assert!(!prompt.contains("ts-ignore"));
+        assert!(prompt.contains("Smallest correct change"));
+    }
+
+    #[test]
+    fn renders_the_handoff_section_exactly_once() {
+        assert_eq!(
+            build_dynamic_system_prompt(&options())
+                .matches("## Handoff")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn no_tuning_section_by_default() {
+        assert!(!build_dynamic_system_prompt(&options()).contains("## Model Notes"));
+    }
+
+    // senpi#2093: date and cwd reach the model as an environment-context message instead.
+    #[test]
+    fn carries_no_working_directory_and_is_byte_identical_across_directories() {
+        let mut first = options();
+        first.cwd = "/test/project".to_string();
+        let prompt = build_dynamic_system_prompt(&first);
+        assert!(!prompt.contains("Current date:"));
+        assert!(!prompt.contains("Current working directory:"));
+        assert!(!prompt.contains("/test/project"));
+        let mut second = options();
+        second.cwd = "C:\\Users\\test\\other".to_string();
+        assert_eq!(build_dynamic_system_prompt(&second), prompt);
+    }
+
+    #[test]
+    fn excludes_skills_with_disable_model_invocation() {
+        let mut options = options();
+        let mut hidden = skill("hidden-skill");
+        hidden.disable_model_invocation = true;
+        options.skills = vec![hidden];
+        assert!(!build_dynamic_system_prompt(&options).contains("hidden-skill"));
+    }
+
+    #[test]
+    fn includes_custom_prompt_guidelines() {
+        let mut options = options();
+        options.prompt_guidelines = vec!["Use read to examine files instead of cat or sed.".into()];
+        assert!(
+            build_dynamic_system_prompt(&options)
+                .contains("Use read to examine files instead of cat or sed.")
+        );
+    }
+
     #[test]
     fn the_workstation_dialect_is_forwarded() {
         let mut options = options();

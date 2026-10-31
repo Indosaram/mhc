@@ -171,8 +171,17 @@ pub fn replace_file_atomically(
     let written = write_durably(temp, chunks, &target, file_path, &mut captured)
         .and_then(|()| std::fs::rename(&temp_path, &target.path));
     if let Err(error) = written {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(error);
+        // A temp file that cannot be removed is reported with the write error (upstream AggregateError).
+        return match std::fs::remove_file(&temp_path) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "session file rewrite failed and its temporary file could not be removed: {error}; {cleanup}"
+                ),
+            )),
+        };
     }
     sync_directory(&directory)?;
     drop(captured);
@@ -243,5 +252,13 @@ mod tests {
             std::fs::metadata(&real).expect("stat").permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn creates_a_missing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("new.jsonl");
+        replace_file_atomically(&target, &[b"x\n".as_slice()], None).expect("replace");
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "x\n");
     }
 }
