@@ -25,7 +25,7 @@ fn config_value(raw:&RawValue,depth:usize)->Result<Value,serde_json::Error> {
 fn string(raw:&Value,key:&str)->Option<String> { raw.get(key).and_then(Value::as_str).filter(|s|!s.is_empty()).map(str::to_owned) }
 fn number(raw:&Value,key:&str)->Option<f64> { raw.get(key).and_then(Value::as_f64).filter(|n|n.is_finite()) }
 fn strings(raw:&Value,key:&str)->Option<Vec<String>> { raw.get(key)?.as_array()?.iter().map(|value|value.as_str().map(str::to_owned)).collect() }
-fn provider(value:&str)->Option<SearchProvider> { Some(match value { "exa"=>SearchProvider::Exa,"tavily"=>SearchProvider::Tavily,"brave"=>SearchProvider::Brave,"duckduckgo-html"=>SearchProvider::DuckduckgoHtml,"deepseek"=>SearchProvider::Deepseek,"serper"=>SearchProvider::Serper,"google-cse"=>SearchProvider::GoogleCse,"google"=>SearchProvider::Google,"z-ai"=>SearchProvider::Zai,"openai"=>SearchProvider::Openai,"codex"=>SearchProvider::Codex,"anthropic"=>SearchProvider::Anthropic,"perplexity"=>SearchProvider::Perplexity,"xai"=>SearchProvider::Xai,"kimi"=>SearchProvider::Kimi,_=>return None }) }
+fn provider(value:&str)->Option<SearchProvider> { Some(match value { "exa"=>SearchProvider::Exa,"tavily"=>SearchProvider::Tavily,"brave"=>SearchProvider::Brave,"duckduckgo-html"=>SearchProvider::DuckduckgoHtml,"deepseek"=>SearchProvider::Deepseek,"serper"=>SearchProvider::Serper,"google-cse"=>SearchProvider::GoogleCse,"google"=>SearchProvider::Google,"z-ai"=>SearchProvider::Zai,"openai"=>SearchProvider::Openai,"codex"=>SearchProvider::Codex,"chatgpt-subscription"=>SearchProvider::ChatgptSubscription,"anthropic"=>SearchProvider::Anthropic,"perplexity"=>SearchProvider::Perplexity,"xai"=>SearchProvider::Xai,"kimi"=>SearchProvider::Kimi,_=>return None }) }
 fn entry(raw:&Value)->Option<SearchProviderEntry> {
     raw.as_object()?;
     let kind=raw.get("provider").and_then(Value::as_str).and_then(provider).or_else(||raw.get("backend").and_then(Value::as_str).and_then(provider))?;
@@ -57,7 +57,7 @@ pub fn validate_provider_config(entry:&SearchProviderEntry)->Result<(),(ConfigLo
     let missing=|message:String|Err((ConfigLoadFailureReason::MissingApiKey,message));
     if config.provider==SearchProvider::GoogleCse && config.search_engine_id.as_ref().is_none_or(String::is_empty) { return missing("Provider google-cse requires searchEngineId.".into()); }
     if config.api_key.as_ref().is_none_or(String::is_empty) { match config.provider {
-        SearchProvider::Openai|SearchProvider::Codex=>return missing(format!("Provider {} requires apiKey for hosted Responses API search.",config.provider.as_str())),provider if super::search::is_keyless_provider(provider)=>{},_=>return missing(format!("Provider {} requires apiKey.",config.provider.as_str())),
+        SearchProvider::Openai|SearchProvider::Codex=>return missing(format!("Provider {} requires apiKey for hosted Responses API search.",config.provider.as_str())),provider if super::search::is_keyless_provider(provider)||super::session_login_entries::is_session_login_provider(provider)=>{},_=>return missing(format!("Provider {} requires apiKey.",config.provider.as_str())),
     } }
     Ok(())
 }

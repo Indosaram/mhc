@@ -39,8 +39,7 @@ pub fn emit_asked(
 }
 /// `AskUserClosedEvent` payload: `{ requestId, status, resolvedBy? }`.
 pub fn ask_user_closed_payload(request_id: &str, response: &QuestionResponse) -> serde_json::Value {
-    let mut payload =
-        json!({"requestId": request_id, "status": status_name(response.status)});
+    let mut payload = json!({"requestId": request_id, "status": status_name(response.status)});
     if let Some(resolved_by) = response.resolved_by {
         payload["resolvedBy"] = json!(resolved_by.as_str());
     }

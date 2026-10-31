@@ -278,6 +278,14 @@ impl ModelRegistry {
                 blocked: account.blocked,
                 pinned: account.pinned,
                 unused: account.unused,
+                blocked_models: account
+                    .blocked_models
+                    .into_iter()
+                    .map(|block| maho_ext_api::CredentialAccountBlockedModel {
+                        model: block.model,
+                        until: block.until,
+                    })
+                    .collect(),
                 source: match account.source {
                     crate::credential_accounts::CredentialAccountSource::Login => {
                         maho_ext_api::CredentialAccountSource::Login

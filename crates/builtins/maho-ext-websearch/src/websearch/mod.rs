@@ -10,6 +10,7 @@ pub mod hosted_routes;
 pub mod html_document;
 pub mod route_attempts;
 pub mod search_model;
+pub mod session_login_entries;
 /// Engine providers ported by the ledger lane. `providers/mod.rs` (and the `SearchProvider`
 /// dispatch in it) belongs to senpi-builtins-b, so these compile here until that lane lists them.
 #[path = "providers"]

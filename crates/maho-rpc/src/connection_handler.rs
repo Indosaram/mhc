@@ -1052,8 +1052,8 @@ async fn handle_session_command_with_sink(
         },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state_with_dialogs(session,current_abort_source(session,last_abort_source),Vec::new())))),
         RpcCommandBody::ResumeSession=>("resume_session",session.resume_session().await.map(|()|None)),
-        // The session keeps no draft-activity state in this port; the validated command is acknowledged (kind is a closed enum).
-        RpcCommandBody::RecordUserActivity{..}=>("record_user_activity",Ok(None)),
+        // senpi `session.recordUserActivity("draft")`: the only accepted kind (closed enum) reaches the session's activity listeners.
+        RpcCommandBody::RecordUserActivity{..}=>{session.record_user_activity(maho_core::agent_session::UserActivityKind::Draft);("record_user_activity",Ok(None))},
         RpcCommandBody::GetTree => {
             fn tree_node(node: maho_core::session_manager::SessionTreeNode) -> serde_json::Value {
                 let mut value = serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>()});

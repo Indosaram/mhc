@@ -352,6 +352,18 @@ tokio::task_local! {
     /// call; here it travels in a task-local so `ctx.session_manager` stays one stable adapter.
     static PROVIDER_EXCLUDE_PATH: Option<String>;
 }
+/// The message of a caught listener panic (`error instanceof Error ? error.message : String(error)`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(failure) = payload.downcast_ref::<ExtensionFailure>() {
+        failure.message.clone()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else {
+        "user activity listener panicked".to_owned()
+    }
+}
 /// Wrap a dispatch handler so its invocation carries the per-extension provider-exclusion path.
 /// Every dispatch site iterates `handlers()`, so this single wrapper keeps the path available
 /// without allocating a fresh `ctx.session_manager` per dispatch.
@@ -389,6 +401,8 @@ struct ContextSessionManager {
     runtime: ExtensionRuntime,
     reload: ReloadState,
     provider_runner: Option<ExtensionRunner>,
+    /// The runner's error listeners, for failures raised outside a dispatch (`runner.emitError`).
+    errors: ErrorListener,
 }
 impl ContextSessionManager {
     fn active(&self) {
@@ -697,6 +711,52 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings {
         self.active();
         self.actions.get_prompt_cache_keep_alive_settings()
+    }
+    fn on_user_activity(
+        &self,
+        listener: maho_ext_api::UserActivityListener,
+    ) -> Option<maho_ext_api::UserActivityUnsubscribe> {
+        self.active();
+        let extension_path = PROVIDER_EXCLUDE_PATH
+            .try_with(|path| path.clone())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| RUNTIME_EXTENSION_PATH.to_owned());
+        let errors = Arc::clone(&self.errors);
+        // A listener outliving its runtime (reload, shutdown) is never invoked again.
+        let runtime = self.runtime.clone();
+        let unsubscribe = self
+            .actions
+            .on_user_activity(std::sync::Arc::new(move |kind| {
+                if runtime.assert_active().is_err() {
+                    return;
+                }
+                // senpi catches a throwing listener and reports it through `runner.emitError`.
+                if let Err(payload) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(kind)))
+                {
+                    errors(&ExtensionError {
+                        extension_path: extension_path.clone(),
+                        event: "user_activity".into(),
+                        error: panic_message(payload.as_ref()),
+                        stack: None,
+                    });
+                }
+            }));
+        // senpi `trackEventBusSubscription`: the subscription ends with this runtime.
+        Some(
+            self.runtime
+                .track_subscription(unsubscribe.unwrap_or_else(|| Box::new(|| {}))),
+        )
+    }
+    fn get_prompt_cache_prefix_request(
+        &self,
+        options: maho_ext_api::PromptCachePrefixRequestOptions,
+    ) -> ExtensionFuture<'_, maho_ext_api::PromptCachePrefixResult> {
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            self.actions.get_prompt_cache_prefix_request(options).await
+        })
     }
     fn get_look_at_settings(&self) -> LookAtSettings {
         self.active();
@@ -1147,6 +1207,7 @@ impl ExtensionRunner {
             runtime: self.runtime.clone(),
             reload: Arc::clone(&self.reload),
             provider_runner: None,
+            errors: self.error_sink(),
         });
         *self
             .context_session_manager
@@ -1491,6 +1552,7 @@ impl ExtensionRunner {
                         runtime: self.runtime.clone(),
                         reload: Arc::clone(&self.reload),
                         provider_runner: Some(provider_runner),
+                        errors: self.error_sink(),
                     }) as Arc<dyn SessionManager>
                 })
                 .clone();
@@ -1661,6 +1723,16 @@ impl ExtensionRunner {
         };
         self.reclaim_handles();
         outcome.map(|()| emitted)
+    }
+    /// The bound error listeners as one sink, for errors raised after the dispatch returned.
+    fn error_sink(&self) -> ErrorListener {
+        let listeners = self.error_listeners.clone();
+        let session = self.session_error_listener.clone();
+        Arc::new(move |error: &ExtensionError| {
+            for listener in listeners.iter().chain(&session) {
+                listener(error);
+            }
+        })
     }
     pub fn emit_error(&mut self, error: ExtensionError) {
         for listener in &self.error_listeners {

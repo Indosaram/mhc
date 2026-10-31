@@ -130,6 +130,7 @@ pub fn account(name: &str, pinned: bool) -> CredentialAccountSummary {
         source: maho_ext_api::CredentialAccountSource::Login,
         blocked: false,
         pinned,
+        blocked_models: Vec::new(),
         unused: false,
     }
 }

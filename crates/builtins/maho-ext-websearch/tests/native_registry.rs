@@ -61,3 +61,21 @@ async fn active_native_route_searches_on_the_chosen_model_with_the_session_fallb
     assert_eq!(ignored.providers[0].config.model.as_deref(),Some("gpt-5"));
     assert_eq!(ignored.providers[0].fallback_model,None);
 }
+/// Upstream `tool.ts:96-101`: the "no usable provider" check runs after the native route is
+/// added, so a websearch.json holding only a login-less `chatgpt-subscription` entry still
+/// searches through the session's native route instead of failing.
+#[tokio::test]
+async fn login_less_subscription_entry_falls_through_to_the_native_route(){
+    let active=model("gpt-5","api.openai.com");
+    let registry=std::sync::Arc::new(Registry{models:vec![],calls:Default::default()});let live:std::sync::Arc<dyn ModelRegistry>=registry.clone();
+    let config=WebsearchConfig{auto:true,fallback:true,strategy:RoutingStrategy::Priority,native_model:None,providers:vec![SearchProviderEntry{config:SearchProviderConfig::new(SearchProvider::ChatgptSubscription),priority:None,weight:None,fallback_model:None}]};
+    let tool=maho_ext_websearch::websearch::tool::create_web_search_tool_with_registry(std::sync::Arc::new(move ||ConfigLoadResult::Ok{config:config.clone(),source:"fixture".into()}),Some(active),Some(live),Default::default());
+    let progress=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let captured=progress.clone();
+    // The first progress update precedes any network call; failing it stops the search there.
+    let result=(tool.execute)(maho_tools::definition::ToolCall{id:"login-less",params:serde_json::json!({"query":"native fallthrough"}),signal:Default::default(),context:None,on_update:Some(std::sync::Arc::new(move|update|{captured.lock().expect("progress lock").push(update.details.expect("progress details"));Err(maho_tools::definition::ToolError::Message("stop before network".into()))}))}).await;
+    assert!(matches!(result,Err(maho_tools::definition::ToolError::Message(ref message)) if message=="stop before network"),"{result:?}");
+    let progress=progress.lock().expect("progress lock");
+    assert_eq!(progress.len(),1);assert_eq!(progress[0]["phase"],"searching");
+    assert_eq!(progress[0]["providerLabels"].as_array().expect("labels").len(),1);
+    assert_eq!(*registry.calls.lock().expect("auth calls"),["gpt-5"]);
+}

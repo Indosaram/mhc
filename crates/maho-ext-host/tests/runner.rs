@@ -1634,6 +1634,7 @@ async fn removal_notification_runs_after_invalidation_without_reviving_context()
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     runner.bind_context_actions(actions).unwrap();
     runner.invalidate("replaced");
@@ -1894,6 +1895,7 @@ async fn idle_wait_rejects_context_invalidated_during_host_wait() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let mut ctx = runner.create_context().unwrap();
@@ -1954,6 +1956,7 @@ fn retained_tool_context_getters_reject_invalidated_runtime() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let context = runner.create_context().unwrap();
@@ -1990,6 +1993,7 @@ fn retained_context_actions_cannot_bypass_runtime_invalidation() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     runner.bind_context_actions(host.clone()).unwrap();
     let context = runner.create_context().unwrap();
@@ -3643,7 +3647,9 @@ struct ContextActions {
     revision: std::sync::atomic::AtomicU64,
     aborted: Mutex<Option<AbortSource>>,
     monitor: Mutex<Option<PrivateMonitorFixture>>,
+    activity: ActivityListeners,
 }
+type ActivityListeners = Arc<Mutex<Vec<(u64, UserActivityListener)>>>;
 impl ExtensionSessionSettings for ContextActions {
     fn get_retry_fallback_settings(&self) -> RetryFallbackSettings {
         RetryFallbackSettings {
@@ -3672,6 +3678,18 @@ impl ExtensionSessionSettings for ContextActions {
     }
 }
 impl ExtensionContextActions for ContextActions {
+    fn on_user_activity(&self, listener: UserActivityListener) -> Option<UserActivityUnsubscribe> {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.activity.lock().unwrap().push((id, listener));
+        let activity = Arc::clone(&self.activity);
+        Some(Box::new(move || {
+            activity
+                .lock()
+                .unwrap()
+                .retain(|(existing, _)| *existing != id)
+        }))
+    }
     fn set_approved_monitor_parent(
         &self,
         id: &str,
@@ -3907,12 +3925,67 @@ impl ExtensionContextActions for ContextActions {
         None
     }
 }
+/// senpi runner.ts `onUserActivity`: a listener failure is reported through the runner's error
+/// listeners instead of escaping into the host, and the subscription ends with the runtime.
+#[test]
+fn user_activity_listener_failures_are_reported_and_retirement_unsubscribes() {
+    let actions = Arc::new(ContextActions {
+        revision: std::sync::atomic::AtomicU64::new(0),
+        aborted: Mutex::new(None),
+        monitor: Mutex::new(None),
+        activity: Default::default(),
+    });
+    let mut runner = runner(vec![]);
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&errors);
+    runner.on_error(Arc::new(move |error: &ExtensionError| {
+        seen.lock().unwrap().push(error.clone())
+    }));
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let context = runner.create_context().unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&calls);
+    let _unsubscribe = context
+        .on_user_activity(Arc::new(move |kind: UserActivityKind| {
+            recorded.lock().unwrap().push(kind);
+            panic!("listener failed");
+        }))
+        .unwrap()
+        .expect("host reports activity");
+    let deliver = |kind| {
+        let listeners: Vec<_> = actions
+            .activity
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, listener)| Arc::clone(listener))
+            .collect();
+        for listener in listeners {
+            listener(kind);
+        }
+    };
+
+    deliver(UserActivityKind::Draft);
+    assert_eq!(*calls.lock().unwrap(), [UserActivityKind::Draft]);
+    let reported = errors.lock().unwrap().clone();
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0].event, "user_activity");
+    assert_eq!(reported[0].extension_path, RUNTIME_EXTENSION_PATH);
+    assert_eq!(reported[0].error, "listener failed");
+
+    // Retirement releases the host-side subscription, not just silences it.
+    runner.invalidate("replaced");
+    assert!(actions.activity.lock().unwrap().is_empty());
+    deliver(UserActivityKind::Prompt);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
 #[tokio::test]
 async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() {
     let actions = Arc::new(ContextActions {
         revision: std::sync::atomic::AtomicU64::new(1),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
@@ -4012,6 +4085,7 @@ fn retained_context_companions_read_live_tier_and_guard_capability_access() {
         revision: std::sync::atomic::AtomicU64::new(1),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
@@ -4142,6 +4216,7 @@ async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
         revision: std::sync::atomic::AtomicU64::new(1),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![
         extension("first", EventKind::BeforeAgentStart, prompt("1")),
@@ -4166,6 +4241,7 @@ fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
@@ -4210,6 +4286,7 @@ async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
@@ -4454,6 +4531,7 @@ async fn concurrent_context_reload_requests_share_one_host_operation() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
@@ -4491,6 +4569,7 @@ async fn nested_kernel_invocations_restore_outer_capability_scope() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions).unwrap();
@@ -4672,6 +4751,7 @@ async fn handler_provider_preparation_excludes_its_owner_without_reentering_sess
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     runner.emit(ExtensionEvent::AgentStart).await.unwrap();
@@ -4685,6 +4765,7 @@ async fn context_session_manager_identity_is_stable_across_dispatches() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let first = runner.create_context().unwrap();
@@ -4706,6 +4787,7 @@ async fn cached_context_adapter_does_not_retain_the_runner_through_a_cycle() {
         revision: std::sync::atomic::AtomicU64::new(0),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let observed = Arc::downgrade(&actions);
     let mut runner = runner(vec![extension("a", EventKind::BeforeAgentStart, none())]);
@@ -5413,6 +5495,7 @@ fn retained_context_observes_live_mcp_declarations() {
             revision: std::sync::atomic::AtomicU64::new(0),
             aborted: Mutex::new(None),
             monitor: Mutex::new(None),
+            activity: Default::default(),
         }))
         .unwrap();
     let retained = runner.create_context().unwrap();
@@ -5459,6 +5542,7 @@ fn retained_context_forwards_complete_resolved_settings_without_snapshotting() {
         revision: std::sync::atomic::AtomicU64::new(23),
         aborted: Mutex::new(None),
         monitor: Mutex::new(None),
+        activity: Default::default(),
     });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
