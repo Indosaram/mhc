@@ -37,10 +37,13 @@ use crate::engine_run_pause::RunPauseSource;
 pub type DagGuidanceDelivery =
     Arc<dyn Fn(&str, &GuidanceInput) -> Result<Option<String>, String> + Send + Sync>;
 
+pub type SchedulerOptionsCallback =
+    Arc<dyn Fn(&DagRunRecordV1) -> Option<DagSchedulerOptions> + Send + Sync>;
+
 pub struct DagRunPauseSourcePorts {
     pub barrier: AdmissionBarrier,
     pub records: RecordsCallback,
-    pub options: Arc<dyn Fn(&DagRunRecordV1) -> Option<DagSchedulerOptions> + Send + Sync>,
+    pub options: SchedulerOptionsCallback,
     pub pauses: Arc<DagPauseStore>,
     pub retire: RetireCallback,
     pub prepare_resume: Arc<dyn Fn(&str) + Send + Sync>,
