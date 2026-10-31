@@ -36,7 +36,7 @@ use crate::session_record_accounting::{QueueNode,SessionRecordAccounting};
 impl RecordQueue{
     fn resize(&mut self,index:usize){let _=self.accounting.replace(&mut self.records[index]);}
     fn remove_at(&mut self,index:usize){self.accounting.unlink(&mut self.records,index);}
-    pub fn append(&mut self,value:Value){let line=crate::jsonl::serialize_json_line(&value).unwrap_or_default();self.append_line(value,line);}
+    pub fn append(&mut self,value:Value)->Result<(),serde_json::Error>{let line=crate::jsonl::serialize_json_line(&value)?;self.append_line(value,line);Ok(())}
     /// Retained records and their JSONL bytes.
     pub fn buffered(&self)->(usize,usize){(self.accounting.count,self.accounting.bytes)}
     /// `append` with the record's already-serialized JSONL line.
@@ -142,9 +142,9 @@ impl SessionWriterActor{
         if terminal&&scheduler.sealed.insert(session_id.into()){
             let mut lifecycle=serde_json::json!({"type":"session_closed","sessionId":session_id});
             if let Some(reason)=reason{lifecycle["reason"]=reason.into();}
-            scheduler.enqueue(session_id,None,lifecycle);
+            scheduler.enqueue(session_id,None,lifecycle).map_err(|error|error.to_string())?;
         }
-        response["sessionId"]=session_id.into();scheduler.enqueue(session_id,None,response);
+        response["sessionId"]=session_id.into();scheduler.enqueue(session_id,None,response).map_err(|error|error.to_string())?;
         let _=self.state.send_replace(Ok(false));self.changed.notify_one();Ok(())
     }
     /// senpi `bufferedRecordCount` / `bufferedByteLength`: queued records plus the one being written, O(1).
@@ -169,9 +169,10 @@ impl SessionRecordScheduler{
         }
         Ok(())
     }
-    pub fn enqueue(&mut self,session_id:&str,target_id:Option<&str>,value:Value){
-        let line=crate::jsonl::serialize_json_line(&value).unwrap_or_default();
-        self.enqueue_keyed((target_id.map(str::to_owned),session_id.to_owned()),value,line);
+    /// A record that cannot serialize is refused with the serializer error, never queued as an empty line.
+    pub fn enqueue(&mut self,session_id:&str,target_id:Option<&str>,value:Value)->Result<(),serde_json::Error>{
+        let line=crate::jsonl::serialize_json_line(&value)?;
+        self.enqueue_keyed((target_id.map(str::to_owned),session_id.to_owned()),value,line);Ok(())
     }
     /// Untargeted `enqueue` reusing the line the caller already serialized for its overflow check.
     fn enqueue_line(&mut self,session_id:&str,value:Value,line:String){self.enqueue_keyed((None,session_id.to_owned()),value,line);}
@@ -353,8 +354,8 @@ impl McpFormsUnbind{
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
     fn delta(text:&str)->Value{json!({"type":"message_update","message":{"content":text},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":text,"partial":{}}})}
-    #[test]fn compact_snapshots_merge_deltas_but_keep_latest_full(){let mut queue=RecordQueue::default();queue.append(delta("a"));queue.append(delta("b"));queue.append(delta("c"));let first=queue.pop().unwrap();assert!(first["message"].is_null());assert_eq!(first["assistantMessageEvent"]["delta"],"ab");assert_eq!(queue.pop().unwrap()["message"]["content"],"c");assert!(queue.pop().is_none());}
-    #[test]fn ordering_barrier_prevents_compaction_across_response(){let mut queue=RecordQueue::default();queue.append(delta("a"));queue.append(json!({"type":"response"}));queue.append(delta("b"));assert!(!queue.pop().unwrap()["message"].is_null());assert_eq!(queue.pop().unwrap()["type"],"response");assert_eq!(queue.pop().unwrap()["assistantMessageEvent"]["delta"],"b");}
+    #[test]fn compact_snapshots_merge_deltas_but_keep_latest_full(){let mut queue=RecordQueue::default();queue.append(delta("a")).unwrap();queue.append(delta("b")).unwrap();queue.append(delta("c")).unwrap();let first=queue.pop().unwrap();assert!(first["message"].is_null());assert_eq!(first["assistantMessageEvent"]["delta"],"ab");assert_eq!(queue.pop().unwrap()["message"]["content"],"c");assert!(queue.pop().is_none());}
+    #[test]fn ordering_barrier_prevents_compaction_across_response(){let mut queue=RecordQueue::default();queue.append(delta("a")).unwrap();queue.append(json!({"type":"response"})).unwrap();queue.append(delta("b")).unwrap();assert!(!queue.pop().unwrap()["message"].is_null());assert_eq!(queue.pop().unwrap()["type"],"response");assert_eq!(queue.pop().unwrap()["assistantMessageEvent"]["delta"],"b");}
     #[test]fn incomplete_delta_is_an_ordering_barrier_for_snapshots_and_tool_updates(){
         let mut queue=RecordQueue::default();
         let mut incomplete=delta("incomplete");incomplete["assistantMessageEvent"].as_object_mut().unwrap().remove("contentIndex");
@@ -362,18 +363,18 @@ impl McpFormsUnbind{
         let tool_before=json!({"type":"tool_execution_update","toolCallId":"t","value":1});
         let tool_after=json!({"type":"tool_execution_update","toolCallId":"t","value":2});
         let expected=[before,tool_before,incomplete,tool_after,after];
-        for record in &expected{queue.append(record.clone());}
+        for record in &expected{queue.append(record.clone()).unwrap();}
         for record in expected{assert_eq!(queue.pop(),Some(record));}
         assert!(queue.pop().is_none());
     }
-    #[test]fn tool_updates_replace_only_same_key_until_barrier(){let mut queue=RecordQueue::default();queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":1}));queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":2}));assert_eq!(queue.pop().unwrap()["value"],2);assert!(queue.pop().is_none());}
-    #[test]fn scheduler_round_robins_only_after_current_record_drains(){let mut scheduler=SessionRecordScheduler::default();scheduler.enqueue("a",None,json!({"n":1}));scheduler.enqueue("a",None,json!({"n":2}));scheduler.enqueue("b",None,json!({"n":3}));assert_eq!(scheduler.next_record().unwrap().1["n"],1);assert!(scheduler.next_record().is_none());scheduler.enqueue("a",None,json!({"n":4}));scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],3);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],2);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],4);scheduler.acknowledge_write();assert!(scheduler.next_record().is_none());}
+    #[test]fn tool_updates_replace_only_same_key_until_barrier(){let mut queue=RecordQueue::default();queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":1})).unwrap();queue.append(json!({"type":"tool_execution_update","toolCallId":"t","value":2})).unwrap();assert_eq!(queue.pop().unwrap()["value"],2);assert!(queue.pop().is_none());}
+    #[test]fn scheduler_round_robins_only_after_current_record_drains(){let mut scheduler=SessionRecordScheduler::default();scheduler.enqueue("a",None,json!({"n":1})).unwrap();scheduler.enqueue("a",None,json!({"n":2})).unwrap();scheduler.enqueue("b",None,json!({"n":3})).unwrap();assert_eq!(scheduler.next_record().unwrap().1["n"],1);assert!(scheduler.next_record().is_none());scheduler.enqueue("a",None,json!({"n":4})).unwrap();scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],3);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],2);scheduler.acknowledge_write();assert_eq!(scheduler.next_record().unwrap().1["n"],4);scheduler.acknowledge_write();assert!(scheduler.next_record().is_none());}
     /// 3913-writer-accounting "walks only a linear number of bytes during a 3000-record burst": the totals are kept
     /// per node, never re-summed, and drain to zero.
     #[tokio::test]async fn a_burst_keeps_running_totals_that_drain_to_zero(){
         let mut scheduler=SessionRecordScheduler::default();
         let mut expected=0;
-        for index in 0..3000{let record=json!({"type":"event","index":index});expected+=crate::jsonl::serialize_json_line(&record).unwrap().len();scheduler.enqueue("session",None,record);}
+        for index in 0..3000{let record=json!({"type":"event","index":index});expected+=crate::jsonl::serialize_json_line(&record).unwrap().len();scheduler.enqueue("session",None,record).unwrap();}
         assert_eq!(scheduler.buffered_size(),(3000,expected));
         let mut sink=Vec::new();scheduler.drain(&mut sink).await.unwrap();
         assert_eq!(sink.len(),expected);
@@ -383,8 +384,8 @@ impl McpFormsUnbind{
     #[tokio::test]async fn byte_totals_stay_exact_through_tool_replacement_and_delta_merging(){
         let mut scheduler=SessionRecordScheduler::default();
         for index in 0..20{
-            scheduler.enqueue("session",None,json!({"type":"tool_execution_update","toolCallId":"tool","partialResult":"é".repeat(index)}));
-            scheduler.enqueue("session",None,json!({"type":"message_update","message":{"text":"é".repeat(index)},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"é","partial":{}}}));
+            scheduler.enqueue("session",None,json!({"type":"tool_execution_update","toolCallId":"tool","partialResult":"é".repeat(index)})).unwrap();
+            scheduler.enqueue("session",None,json!({"type":"message_update","message":{"text":"é".repeat(index)},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"é","partial":{}}})).unwrap();
         }
         let (count,bytes)=scheduler.buffered_size();
         let mut sink=Vec::new();scheduler.drain(&mut sink).await.unwrap();
