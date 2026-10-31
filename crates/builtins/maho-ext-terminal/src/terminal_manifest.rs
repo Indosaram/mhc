@@ -146,6 +146,9 @@ impl TerminalManifestWriter {
         );
         self.persist(now).await;
     }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
     /// The session's terminal state dir (`<sessionDir>/extensions/terminal`) the store lives in.
     pub fn terminal_dir(&self) -> Option<&std::path::Path> {
         std::path::Path::new(self.store.file_path()).parent()

@@ -20,7 +20,7 @@ pub fn monitor_schema() -> Value {
     "event":{"type":"string","enum":["create","modify"],"description":"File branch only: which file event fires the watch (defaults to create)."},
     "filter":{"type":"string","description":"Only PTY output lines matching this regex become monitor events."},
     "timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS,"description":"Watcher deadline in milliseconds (default 300000; ignored when persistent)."},
-    "persistent":{"type":"boolean","description":"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; max 5 per session; stop one with kill_bash."},
+    "persistent":{"type":"boolean","description":"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; no per-session cap unless the terminal.maxDurableMonitors setting sets one; stop one with kill_bash."},
     "bash_id":{"type":"string","description":"Rearm: paused monitor id (mon_ or bash_id) to resume; omit for all paused."},
     "wakes_per_hour":{"type":"integer","minimum":1,"maximum":3600,"description":"Persistent command branch only: average wakes an hour for this watch (default: terminal.monitorWakesPerHour, 12). Lines matched between wakes are batched into the next one, never dropped; raise it for a chat bridge that needs quicker replies."}}})
 }
@@ -327,25 +327,26 @@ pub fn execute_configured_monitor_in(
     result
 }
 
-/// Upstream `durableAdmissionError`: refuse a durable create once the session's bound writer
-/// already holds MAX_DURABLE_MONITORS restart-surviving monitors, before any spawn or registration.
+/// Upstream `durableAdmissionError` for a monitor tool call: only a persistent create is capped,
+/// by `terminal.maxDurableMonitors` (no cap when unset), before any spawn or registration. The
+/// count covers the bound writer's durable entries and the specs queued for a writer.
 pub fn durable_admission_error(
     input: &Value,
+    max_durable_monitors: Option<usize>,
+    session_key: Option<&str>,
     writer: Option<&crate::terminal_manifest::TerminalManifestWriter>,
 ) -> Option<TerminalToolResult> {
     let create = input.get("command").and_then(Value::as_str).is_some()
         || input.get("path").and_then(Value::as_str).is_some();
     let persistent = input.get("persistent").and_then(Value::as_bool) == Some(true);
-    if input.get("action").and_then(Value::as_str) == Some("rearm")
-        || !persistent
-        || !create
-        || writer.is_none_or(|writer| writer.durable_count() < MAX_DURABLE_MONITORS)
-    {
+    if input.get("action").and_then(Value::as_str) == Some("rearm") || !persistent || !create {
         return None;
     }
-    Some(error_result(format!(
-        "Cannot start another persistent monitor: this session already holds {MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first."
-    )))
+    super::monitor_manifest_binding::durable_admission_error(
+        max_durable_monitors,
+        session_key,
+        writer,
+    )
 }
 /// Upstream `handMonitorSpec` input: the spec captured at the monitor call site for a successful create.
 pub fn monitor_registration(
@@ -424,6 +425,7 @@ pub async fn execute_monitor_recorded(
     cwd: &std::path::Path,
     approved_parent: Option<&std::path::Path>,
     writer: Option<&mut crate::terminal_manifest::TerminalManifestWriter>,
+    max_durable_monitors: Option<usize>,
 ) -> TerminalToolResult {
     let Some(writer) = writer else {
         return execute_configured_monitor(
@@ -436,7 +438,13 @@ pub async fn execute_monitor_recorded(
             &crate::settings::TERMINAL_SETTINGS_DEFAULTS,
         );
     };
-    if let Some(refused) = durable_admission_error(input, Some(&*writer)) {
+    let session_key = writer.session_id().to_owned();
+    if let Some(refused) = durable_admission_error(
+        input,
+        max_durable_monitors,
+        Some(&session_key),
+        Some(&*writer),
+    ) {
         return refused;
     }
     let result = execute_configured_monitor(
@@ -638,6 +646,7 @@ pub(crate) mod tests {
             dir.path(),
             Some(&approved),
             Some(&mut writer),
+            None,
         )
         .await;
         assert!(result.is_error.is_none());
@@ -761,13 +770,16 @@ pub(crate) mod tests {
             manager.teardown().unwrap();
         }
     }
+    /// terminal-durable-admission.test.ts: with no `terminal.maxDurableMonitors` every persistent
+    /// create is admitted; with a cap of 3 the 4th is refused before any registration or spawn.
     #[tokio::test]
-    async fn durable_admission_rejects_before_file_registration() {
+    async fn durable_admission_is_uncapped_by_default_and_refuses_past_the_setting() {
         let dir = tempfile::tempdir().unwrap();
         let mut manager = TerminalManager::default();
         let mut registry = MonitorRegistry::new(|_| {});
-        let mut writer = crate::terminal_manifest::TerminalManifestWriter::new(dir.path(), "s");
-        for index in 0..MAX_DURABLE_MONITORS {
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(dir.path(), "admission-uncapped");
+        for index in 0..12 {
             let result = execute_monitor_recorded(
                 &mut manager,
                 &mut registry,
@@ -775,6 +787,28 @@ pub(crate) mod tests {
                 dir.path(),
                 None,
                 Some(&mut writer),
+                None,
+            )
+            .await;
+            assert!(result.is_error.is_none(), "{:?}", result.content);
+        }
+        assert_eq!(writer.durable_count(), 12);
+        registry.dispose();
+        manager.teardown().unwrap();
+
+        let mut manager = TerminalManager::default();
+        let mut registry = MonitorRegistry::new(|_| {});
+        let mut writer =
+            crate::terminal_manifest::TerminalManifestWriter::new(dir.path(), "admission-capped");
+        for index in 0..3 {
+            let result = execute_monitor_recorded(
+                &mut manager,
+                &mut registry,
+                &json!({"description":"watch","path":format!("capped-{index}"),"persistent":true}),
+                dir.path(),
+                None,
+                Some(&mut writer),
+                Some(3),
             )
             .await;
             assert!(result.is_error.is_none());
@@ -787,12 +821,30 @@ pub(crate) mod tests {
             dir.path(),
             None,
             Some(&mut writer),
+            Some(3),
         )
         .await;
         assert_eq!(result.is_error, Some(true));
+        assert!(
+            result.content[0]
+                .text
+                .contains("terminal.maxDurableMonitors")
+        );
         assert_eq!(registry.snapshot().len(), before);
-        assert_eq!(writer.durable_count(), MAX_DURABLE_MONITORS);
-        assert_eq!(manager.active_size().unwrap(), MAX_DURABLE_MONITORS);
+        assert_eq!(writer.durable_count(), 3);
+        assert_eq!(manager.active_size().unwrap(), 3);
+        // An ephemeral create is never capped.
+        let ephemeral = execute_monitor_recorded(
+            &mut manager,
+            &mut registry,
+            &json!({"description":"ephemeral","path":"ephemeral"}),
+            dir.path(),
+            None,
+            Some(&mut writer),
+            Some(3),
+        )
+        .await;
+        assert!(ephemeral.is_error.is_none());
         registry.dispose();
         assert_eq!(manager.active_size().unwrap(), 0);
     }
