@@ -92,7 +92,8 @@ pub async fn open_rpc_observer(
     let (stream, secret) = if needs_handshake {
         let secret = read_socket_secret(std::path::Path::new(&socket_secret_path(socket_path)?))
             .map_err(|error| error.to_string())?;
-        let address = resolve_socket_transport_address(socket_path, "linux", Some(secret.as_slice()))?;
+        let address =
+            resolve_socket_transport_address(socket_path, "linux", Some(secret.as_slice()))?;
         let stream = tokio::net::UnixStream::connect(address)
             .await
             .map_err(|error| error.to_string())?;
