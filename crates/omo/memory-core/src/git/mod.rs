@@ -59,6 +59,10 @@ mod path_state_tests;
 #[path = "repo_tests.rs"]
 mod repo_tests;
 
+#[cfg(test)]
+#[path = "repo_secret_tests.rs"]
+mod repo_secret_tests;
+
 
 #[cfg(test)]
 #[path = "repo_maintenance_tests.rs"]
