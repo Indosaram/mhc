@@ -25,6 +25,8 @@ mod guarded;
 mod integration_source;
 #[path = "integration_suite.rs"]
 mod integration_suite;
+#[path = "multi_mode.rs"]
+mod multi_mode;
 #[path = "native_persistence.rs"]
 mod native_persistence;
 #[path = "non_interactive.rs"]
