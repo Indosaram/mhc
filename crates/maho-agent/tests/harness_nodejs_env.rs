@@ -17,6 +17,9 @@ use maho_agent::harness::types::{
     ShellOutputCaptureOptions, ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate,
     TextLineReader,
 };
+use maho_agent::harness::utils::shell_output::{
+    ShellCaptureOptions, ShellChunkHandler, execute_shell_with_capture,
+};
 use maho_ai::utils::abort::{AbortController, AbortReason};
 use serde_json::json;
 
@@ -867,6 +870,60 @@ async fn returns_callback_errors_from_exec_stream_handlers() {
     assert_eq!(error.code, ExecutionErrorCode::CallbackError);
     assert_eq!(error.message, "callback failed");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The six upstream `it.each` rows reject with a string, a plain object and an `Error`. Rust chunk
+/// handlers fail with a `String`, so each rejected value is represented by its string form and the
+/// assertion is that this exact value becomes the `callback_error` cause. An awaited `Err` cannot
+/// escape as an unhandled rejection; the bounded timeout asserts the execution still settles.
+#[tokio::test]
+async fn returns_async_on_chunk_failures_without_an_unhandled_rejection() {
+    let rows = [
+        ("stdout", "harness async stdout failed".to_string()),
+        (
+            "stdout",
+            json!({ "stream": "stdout", "failure": true }).to_string(),
+        ),
+        ("stdout", "Error: harness async stdout failed".to_string()),
+        ("stderr", "harness async stderr failed".to_string()),
+        (
+            "stderr",
+            json!({ "stream": "stderr", "failure": true }).to_string(),
+        ),
+        ("stderr", "Error: harness async stderr failed".to_string()),
+    ];
+    for (index, (stream, callback_error)) in rows.into_iter().enumerate() {
+        let dir = unique_dir(&format!("asyncchunk{index}"));
+        let env = env_for(&dir);
+        let redirect = if stream == "stderr" { " >&2" } else { "" };
+        let rejected = callback_error.clone();
+        let on_chunk: ShellChunkHandler = std::sync::Arc::new(move |_, _, _| {
+            let rejected = rejected.clone();
+            Box::pin(async move { Err(rejected) })
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            execute_shell_with_capture(
+                &env,
+                &format!("head -c 100001 /dev/zero | tr '\\0' x{redirect}"),
+                Some(ShellCaptureOptions {
+                    on_chunk: Some(on_chunk),
+                    ..Default::default()
+                }),
+                &bg_context(),
+            ),
+        )
+        .await
+        .expect("execution settles");
+        let error = result.expect_err("onChunk failure fails the execution");
+        assert_eq!(error.code, ExecutionErrorCode::CallbackError, "{stream}");
+        assert_eq!(
+            error.cause.as_deref(),
+            Some(callback_error.as_str()),
+            "{stream}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[tokio::test]
