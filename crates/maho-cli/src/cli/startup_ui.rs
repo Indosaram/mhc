@@ -547,7 +547,7 @@ impl StartupTui {
             &mut self.terminal,
             TERMINAL_QUERY_TIMEOUT_MS,
             now,
-            Some(Box::new(move |colors| *late.borrow_mut() = Some(colors))),
+            Some(Box::new(move |colors: maho_tui::terminal_colors::TerminalColors| *late.borrow_mut() = Some(colors))),
         );
         self.colors_query = Some(ticket);
         self.on_colors = Some(on_colors);
@@ -633,7 +633,7 @@ pub fn create_startup_tui(settings: &maho_core::settings_manager::SettingsManage
 /// re-resolve the theme setting against them when they arrive.
 pub fn start_startup_tui(ui: &mut StartupTui, theme_setting: Option<String>) {
     ui.start();
-    ui.query_terminal_colors(Box::new(move |themes| themes.resolve_setting(theme_setting.as_deref())));
+    ui.query_terminal_colors(Box::new(move |themes: &StartupThemes| themes.resolve_setting(theme_setting.as_deref())));
 }
 
 /// senpi `showFirstTimeSetup(settingsManager)`: the experimental first-time setup dialog; a
@@ -657,8 +657,8 @@ pub fn run_first_time_setup(ui: &mut StartupTui, settings: &mut maho_core::setti
     let component = Rc::new(RefCell::new(FirstTimeSetupComponent::new(FirstTimeSetupOptions {
         detected_theme: ui.themes.terminal_theme(),
         theme,
-        on_theme_preview: Box::new(move |name| *preview.borrow_mut() = Some(name)),
-        on_submit: Box::new(move |result| *submitted.borrow_mut() = Some(Some(result))),
+        on_theme_preview: Box::new(move |name: String| *preview.borrow_mut() = Some(name)),
+        on_submit: Box::new(move |result: FirstTimeSetupResult| *submitted.borrow_mut() = Some(Some(result))),
         on_cancel: Box::new(move || *cancelled.borrow_mut() = Some(None)),
     })));
     let mounted: Rc<RefCell<dyn maho_tui::tui::Component>> = component.clone();
@@ -666,7 +666,7 @@ pub fn run_first_time_setup(ui: &mut StartupTui, settings: &mut maho_core::setti
     ui.screen.base_mut().set_focus(Some(mounted));
     // The terminal's colors regenerate the system theme; re-rendering rebuilds the dialog with it.
     let current_preview = preview_theme.clone();
-    ui.query_terminal_colors(Box::new(move |themes| themes.load(&current_preview.borrow())));
+    ui.query_terminal_colors(Box::new(move |themes: &StartupThemes| themes.load(&current_preview.borrow())));
     let result = (|| {
         while outcome.borrow().is_none() {
             let recolored = ui.poll()?;
