@@ -681,8 +681,29 @@ pub fn build_rpc_session_state_with_dialogs(
     }
     state
 }
+/// The classic `get_protocol_info` capabilities that precede the tool-runtime and negotiated ones (senpi
+/// connection-handler.ts), `entries_tail` last.
+const CLASSIC_CAPABILITIES: [&str; 17] = [
+    "multi_session",
+    crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY,
+    crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY,
+    "session_lifecycle",
+    crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY,
+    crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY,
+    crate::client_admission_record::DURABLE_CLIENT_MESSAGE_ID_CAPABILITY,
+    crate::effect_record::EFFECT_LEDGER_CAPABILITY,
+    crate::rpc_types::STEER_WHEN_IDLE_CAPABILITY,
+    "continue_from_leaf",
+    "eval_cells",
+    "auth_key_verify",
+    crate::rpc_types::QUEUED_MESSAGE_REVISION_CAPABILITY,
+    "tool_barrier",
+    crate::rpc_types::USER_ACTIVITY_CAPABILITY,
+    crate::custom_capability::RESUME_SESSION_CAPABILITY,
+    crate::custom_capability::ENTRIES_TAIL_CAPABILITY,
+];
 /// The leading capabilities of the classic `get_protocol_info` list that precede the negotiated ones.
-const CLASSIC_BASE_CAPABILITIES: usize = 6;
+const CLASSIC_BASE_CAPABILITIES: usize = CLASSIC_CAPABILITIES.len();
 pub async fn handle_session_command(
     session: &AgentSession,
     command: &RpcCommand,
@@ -1187,8 +1208,11 @@ async fn handle_session_command_with_sink(
             let cwd=std::env::current_dir().map(|cwd|cwd.to_string_lossy().into_owned()).unwrap_or_default();
             let mut data=crate::protocol_identity::host_launch_profile(&argv,&cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&env));
             // senpi v2026.10.27-2: the classic binding answers get_snapshot, the UI-answer ledger and backward `tail` pages too.
-            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::SNAPSHOT_CURSOR_CAPABILITY.to_owned(),crate::custom_capability::UI_ANSWER_LEDGER_CAPABILITY.to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned(),crate::custom_capability::ENTRIES_TAIL_CAPABILITY.to_owned()];
-            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if !capabilities.contains(&capability){capabilities.push(capability);}}
+            // senpi connection-handler.ts classic list; `retry_fallback_command` is conditional upstream and this binding
+            // carries no `retry_fallback` command, so it is not advertised.
+            let mut capabilities=CLASSIC_CAPABILITIES.map(str::to_owned).to_vec();
+            // Client flags cannot advertise a host guard this classic binding does not run.
+            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if capability!=crate::custom_capability::SESSION_HELD_CAPABILITY&&!capabilities.contains(&capability){capabilities.push(capability);}}
             data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
             data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
             data["capabilities"]=serde_json::json!(capabilities);
@@ -2767,8 +2791,19 @@ mod new_session_tests {
                 "multi_session",
                 "snapshot_cursor",
                 "ui_answer_ledger",
+                "session_lifecycle",
                 "auto_title_sessions",
                 "media_placeholders",
+                "durable_client_message_id",
+                "effect_ledger",
+                "steer_when_idle",
+                "continue_from_leaf",
+                "eval_cells",
+                "auth_key_verify",
+                "queued_message_revision",
+                "tool_barrier",
+                "user_activity",
+                "resume_session",
                 "entries_tail"
             ]
         );
