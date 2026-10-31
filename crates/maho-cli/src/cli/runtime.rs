@@ -164,16 +164,6 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     );
     indicator.during_surface_write(|| report_startup_settings_diagnostics(&startup_settings));
     if mode == AppMode::Rpc && parsed.multi_session {
-        // senpi v2026.10.27-2 main.ts hands `presenterBootstrapFd`/`mcpPresenterEnforcement` to
-        // `runMultiSessionHost`. OPEN: maho-rpc has no presenter-aware host entry
-        // (`run_multi_session_host_with_presenter`, senpi-rpc-rest-31 / host-09), so a host asked
-        // to enforce presenters refuses to start instead of serving without enforcement.
-        if parsed.presenter_bootstrap_fd.is_some() || parsed.mcp_presenter_enforcement {
-            return Err(
-                "--mcp-presenter-fd and --mcp-presenter-enforcement are not supported by this build's host yet"
-                    .to_owned(),
-            );
-        }
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
         // upstream it starts only after the stdout takeover and the migrations above, and never
@@ -207,6 +197,25 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
             super::args::SessionRuntime::InProcess => {
                 super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref())
                     .map_err(|error| error.to_string())?
+            }
+        };
+        // senpi v2026.10.27-2 main.ts hands `presenterBootstrapFd`/`mcpPresenterEnforcement` to
+        // `runMultiSessionHost`: enforcement is host deployment policy, and descriptor 4 is the
+        // inherited enrollment channel the socket host opens its presenter control with.
+        let core = match std::sync::Arc::try_unwrap(core) {
+            Ok(core) => std::sync::Arc::new(
+                core.with_mcp_presenter_enforcement(parsed.mcp_presenter_enforcement)
+                    .with_presenter_bootstrap_fd(parsed.presenter_bootstrap_fd.map(|fd| fd as i32)),
+            ),
+            Err(core)
+                if parsed.presenter_bootstrap_fd.is_none() && !parsed.mcp_presenter_enforcement =>
+            {
+                core
+            }
+            Err(_) => {
+                return Err(
+                    "the rpc host core is shared before its presenter policy is set".to_owned(),
+                );
             }
         };
         // senpi main.ts:1361-1363: the host polls subscription limits too, unless offline.
