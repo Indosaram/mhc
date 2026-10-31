@@ -21,6 +21,8 @@ pub mod control_inventory;
 pub mod diagnose;
 #[path = "elicitation.rs"]
 pub mod elicitation;
+#[path = "expose_call.rs"]
+pub mod expose_call;
 #[path = "faux_session.rs"]
 pub mod faux_session;
 #[path = "health.rs"]
