@@ -1,4 +1,5 @@
 //! Signed-in device adapter. Credentials remain in the host's OS credential store.
+use crate::sync_session_deferred::{SyncSessionDeferredError, is_keychain_approval_pending};
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -39,7 +40,12 @@ pub struct DeviceAccount {
 }
 impl DeviceAccount {
     pub async fn signed_out(&self) -> Result<bool, String> {
-        Ok(self.store.read().await?.is_none())
+        match self.store.read().await {
+            Ok(credentials) => Ok(credentials.is_none()),
+            // A keychain waiting for its approval dialog is not a signed-out device.
+            Err(error) if is_keychain_approval_pending(&error).is_some() => Ok(false),
+            Err(error) => Err(error),
+        }
     }
     pub async fn access_token(&self) -> Result<String, String> {
         let _guard = self.refresh.lock().await;
@@ -100,9 +106,26 @@ pub fn create_cli_account_source(
     let store =
         store.unwrap_or_else(|| super::credential_store::OsCredentialStore::for_origin(&api));
     let client = reqwest::Client::new();
+    // A keychain waiting for its approval dialog is not a signed-out device: sync defers this pass and retries.
     Ok(Arc::new(move || {
         let (api, store, client) = (api.clone(), store.clone(), client.clone());
         Box::pin(async move {
+            resolve_account(api, store, client).await.map_err(|error| {
+                match is_keychain_approval_pending(&error) {
+                    Some(message) => SyncSessionDeferredError::new(message).to_string(),
+                    None => error,
+                }
+            })
+        })
+    }))
+}
+async fn resolve_account(
+    api: String,
+    store: Arc<dyn CredentialStore>,
+    client: reqwest::Client,
+) -> Result<Option<Arc<DeviceAccount>>, String> {
+    {
+        {
             let Some(credentials) = store.read().await? else {
                 return Ok(None);
             };
@@ -134,8 +157,8 @@ pub fn create_cli_account_source(
                 client,
                 refresh: tokio::sync::Mutex::new(()),
             })))
-        })
-    }))
+        }
+    }
 }
 async fn access_token(
     api: &str,
@@ -224,5 +247,35 @@ mod tests {
         ] {
             assert!(create_cli_account_source(Some(api), &Default::default(), None).is_err());
         }
+    }
+    struct PendingStore;
+    impl CredentialStore for PendingStore {
+        fn read(&self) -> AccountFuture<'_, Option<Value>> {
+            Box::pin(async {
+                Err(crate::sync_session_deferred::keychain_approval_pending(
+                    "approve it",
+                ))
+            })
+        }
+        fn write(&self, _: Value) -> AccountFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+        fn clear(&self) -> AccountFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    #[tokio::test]
+    async fn a_pending_keychain_defers_the_session_instead_of_signing_out() {
+        let source = create_cli_account_source(
+            Some("http://127.0.0.1:1"),
+            &Default::default(),
+            Some(Arc::new(PendingStore)),
+        )
+        .unwrap();
+        let error = source().await.err().expect("deferred");
+        assert_eq!(
+            crate::sync_session_deferred::is_sync_session_deferred(&error),
+            Some("approve it")
+        );
     }
 }

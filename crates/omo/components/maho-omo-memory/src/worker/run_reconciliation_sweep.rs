@@ -38,6 +38,8 @@ pub struct ReflectionOrphanSweepContext<'a> {
     pub now_ms: f64,
     pub logger: Option<&'a dyn ReflectionSweepLogger>,
     pub defer_on_scheduler_contention: bool,
+    /// Cancels observation only.
+    pub signal: Option<&'a maho_ext_api::AbortSignal>,
 }
 
 /// Port of `sweepReflectionRunOrphans`: leftovers are maintenance, never a reason to fail the pass
@@ -46,12 +48,14 @@ pub struct ReflectionOrphanSweepContext<'a> {
 pub fn sweep_reflection_run_orphans(
     context: &ReflectionOrphanSweepContext<'_>,
 ) -> Result<(), String> {
+    super::run_liveness::throw_if_aborted(context.signal)?;
     let state = match context.reservation.read_state_with_wait(if context.defer_on_scheduler_contention { Some(0) } else { None }) {
         Ok(state) => state,
         Err(memory_core::reflection::ReservationError::Contention(_)) if context.defer_on_scheduler_contention => return Ok(()),
         Err(error) => return Err(error.to_string()),
     };
     let live_run_ids = collect_live_run_ids(context, &state)?;
+    super::run_liveness::throw_if_aborted(context.signal)?;
     if !context.identity.paths.repo.join(".git").exists() {
         return Ok(());
     }
@@ -291,6 +295,7 @@ mod tests {
             now_ms: now,
             logger: Some(&logger),
             defer_on_scheduler_contention: false,
+            signal: None,
         });
 
         assert_eq!(result, Ok(()));
@@ -327,6 +332,7 @@ mod tests {
             now_ms: memory_core::support::time::now_millis() as f64 + HOUR_MS,
             logger: None,
             defer_on_scheduler_contention: false,
+            signal: None,
         });
 
         assert_eq!(result, Ok(()));
@@ -347,6 +353,7 @@ mod tests {
             now_ms: memory_core::support::time::now_millis() as f64,
             logger: None,
             defer_on_scheduler_contention: false,
+            signal: None,
         });
 
         assert_eq!(result, Ok(()));
@@ -375,6 +382,7 @@ mod tests {
             now_ms: 0.0,
             logger: Some(&logger),
             defer_on_scheduler_contention: false,
+            signal: None,
         });
 
         assert_eq!(result, Ok(()));
@@ -400,6 +408,7 @@ mod tests {
             now_ms: HOUR_MS,
             logger: Some(&logger),
             defer_on_scheduler_contention: false,
+            signal: None,
         });
         assert_eq!(missing_result, Ok(()));
         assert!(logger.warnings.lock().unwrap().is_empty());
@@ -411,6 +420,7 @@ mod tests {
             now_ms: HOUR_MS,
             logger: Some(&logger),
             defer_on_scheduler_contention: false,
+            signal: None,
         });
         assert_eq!(uninitialized_result, Ok(()));
         assert!(logger.warnings.lock().unwrap().is_empty());
@@ -427,6 +437,7 @@ mod tests {
             now_ms: memory_core::support::time::now_millis() as f64,
             logger: Some(&logger),
             defer_on_scheduler_contention: false,
+            signal: None,
         });
 
         assert_eq!(result, Ok(()));
@@ -445,6 +456,7 @@ mod tests {
             now_ms: memory_core::support::time::now_millis() as f64 + HOUR_MS,
             logger: Some(&logger),
             defer_on_scheduler_contention: false,
+            signal: None,
         });
 
         assert_eq!(result, Ok(()));

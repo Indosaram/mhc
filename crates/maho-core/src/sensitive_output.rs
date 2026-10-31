@@ -57,6 +57,9 @@ pub fn redact_sensitive_token_values(text: &str, replacement: &str) -> String {
     )
 }
 
+/// pi-ai's credential-shape scanner, re-exported so maho-core and omo callers share one implementation.
+pub use maho_ai::utils::secret_redaction::redact_credential_shapes_with as redact_credential_shapes;
+
 /// Every sink of provider error text uses this: the session's own rules (environment assignments, resolved config
 /// references) and pi-ai's value-based credential redaction, the same rules the provider stream applies.
 pub fn redact_secrets(text: &str, replacement: &str) -> String {
@@ -173,6 +176,59 @@ mod tests {
         assert_eq!(
             redact_sensitive_token_values("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ", "<gone>"),
             "<gone>"
+        );
+    }
+
+    #[test]
+    fn env_assignment_needs_a_credential_word_after_the_first_letter() {
+        assert_eq!(
+            redact_sensitive_output("MY_SECRET_VALUE=abc"),
+            "MY_SECRET_VALUE=[REDACTED]"
+        );
+        assert_eq!(redact_sensitive_output("PATH=/usr/bin"), "PATH=/usr/bin");
+        assert_eq!(redact_sensitive_output("SECRET=abc"), "SECRET=abc");
+        assert_eq!(redact_sensitive_output("XSECRET=abc"), "XSECRET=[REDACTED]");
+    }
+
+    #[test]
+    fn long_env_name_stays_linear() {
+        let text = format!("{}=value", "A".repeat(200_000));
+        assert_eq!(redact_sensitive_output(&text), text);
+    }
+
+    #[test]
+    fn redacts_credential_shapes_beyond_github_tokens() {
+        let r = |t: &str| redact_credential_shapes(t, "[X]");
+        assert_eq!(r("key sk-abcdefgh12345 end"), "key [X] end");
+        assert_eq!(r("id AKIAABCDEFGHIJKLMNOP."), "id [X].");
+        assert_eq!(r("AKIAABCDEFGHIJKLMNOPQ"), "AKIAABCDEFGHIJKLMNOPQ");
+        assert_eq!(r("gho_ABCDEFGHIJKLMNOPQRSTUV"), "[X]");
+        assert_eq!(r("xoxb-1234567890-abc"), "[X]");
+        assert_eq!(r("AIza0123456789012345678901234567890"), "[X]");
+        assert_eq!(r("eyJhbGciOiJIUzI1.eyJzdWIxMjM.c2lnbmF0dXJl"), "[X]");
+    }
+
+    #[test]
+    fn shapes_only_match_at_a_word_start() {
+        let r = |t: &str| redact_credential_shapes(t, "[X]");
+        assert_eq!(r("disk-abcdefghijkl"), "disk-abcdefghijkl");
+        assert_eq!(r("https://h/path/sk-abcdefgh1234"), "https://h/path/[X]");
+        assert_eq!(r("sk-ab"), "sk-ab");
+    }
+
+    #[test]
+    fn percent_encoded_prefix_is_read_as_what_it_encodes() {
+        let r = |t: &str| redact_credential_shapes(t, "[X]");
+        assert_eq!(r("x%3Dsk-abcdefgh1234"), "x%3D[X]");
+        assert_eq!(r("a=%2"), "a=%2");
+    }
+
+    #[test]
+    fn non_ascii_text_survives_redaction() {
+        let r = |t: &str| redact_credential_shapes(t, "[X]");
+        assert_eq!(
+            r("caf\u{e9} \u{1f600} sk-abcdefgh1234 \u{1f600}"),
+            "caf\u{e9} \u{1f600} [X] \u{1f600}"
         );
     }
 }
