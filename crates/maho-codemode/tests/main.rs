@@ -134,6 +134,8 @@ mod session_env;
 
 #[path = "settings.rs"]
 mod settings;
+#[path = "settled_snapshot_budget.rs"]
+mod settled_snapshot_budget;
 #[path = "start_recovery.rs"]
 mod start_recovery;
 #[path = "status_events.rs"]
