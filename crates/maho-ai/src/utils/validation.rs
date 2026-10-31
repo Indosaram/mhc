@@ -21,6 +21,34 @@ pub fn strict_errors(
         .collect()
 }
 
+/// `strict_errors` with each issue's keyword and missing required properties, for protocol-owned
+/// validators that report Ajv-shaped errors (`instance_path`, `keyword`, `message`, `requiredProperties`).
+pub fn strict_issues(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Vec<super::tool_argument_validator::ToolArgumentValidationError> {
+    engine::errors(schema, value)
+        .into_iter()
+        .map(
+            |issue| super::tool_argument_validator::ToolArgumentValidationError {
+                instance_path: issue.instance_path,
+                keyword: issue.keyword.to_owned(),
+                message: Some(issue.message),
+                params: if issue.required_properties.is_empty() {
+                    serde_json::Map::new()
+                } else {
+                    [(
+                        "requiredProperties".to_owned(),
+                        serde_json::Value::from(issue.required_properties),
+                    )]
+                    .into_iter()
+                    .collect()
+                },
+            },
+        )
+        .collect()
+}
+
 /// Check recovered arguments without applying the normal tool-argument coercions.
 pub(crate) fn check_recovered_arguments(
     schema: &serde_json::Value,
