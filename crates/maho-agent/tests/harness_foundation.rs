@@ -54,7 +54,7 @@ fn user(text: &str) -> AgentMessage {
 }
 
 fn failed_assistant(stop_reason: StopReason, tool_call_id: &str) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage { credential_served_recently: None,
         failure_source: None,
         timing: None,
         prompt_cache_breakpoint: None,

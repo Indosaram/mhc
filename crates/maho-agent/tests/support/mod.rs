@@ -84,7 +84,7 @@ pub fn test_model() -> Model {
 }
 
 pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> AssistantMessage {
-    AssistantMessage {
+    AssistantMessage { credential_served_recently: None,
         failure_source: None,
         timing: None,
         prompt_cache_breakpoint: None,

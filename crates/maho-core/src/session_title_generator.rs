@@ -285,7 +285,7 @@ mod tests {
     }
 
     fn assistant_with_text(text: &str) -> AssistantMessage {
-        AssistantMessage {
+        AssistantMessage { credential_served_recently: None,
             thinking_level: None,
             provider_diagnostic: None,
             prompt_cache_breakpoint: None,
