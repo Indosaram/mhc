@@ -13,6 +13,8 @@ globalThis.packages = Object.freeze({
 globalThis.__senpi_import__ = async (source, options) => {
   const context = globalThis.__senpi_module_context__;
   const specifier = String(source);
+  const kernelBun = globalThis[Symbol.for('senpi.kernel.bun')];
+  if (specifier === 'bun' && kernelBun) return { ...(await import('bun')), WebView: kernelBun.WebView, default: kernelBun };
   const match = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i.exec(specifier);
   let target = specifier;
   if (match) {
