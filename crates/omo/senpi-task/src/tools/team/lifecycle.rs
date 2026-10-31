@@ -280,7 +280,7 @@ pub fn run_team_create(
     params: &TeamCreateInput,
 ) -> Result<AgentToolResult<TeamCreateDetails>, TeamToolServiceError> {
     let has_name = params.team_name.as_deref().is_some_and(|name| !name.is_empty());
-    let has_inline = params.inline_spec.is_some();
+    let has_inline = params.inline_spec.as_ref().is_some_and(|v| !v.is_null());
     if !has_name && !has_inline {
         return Ok(tool_result(
             "Provide team_name or inline_spec.",
@@ -291,7 +291,7 @@ pub fn run_team_create(
     }
 
     let input = match &params.inline_spec {
-        Some(raw) => match coerce_inline_spec(raw) {
+        Some(raw) if !raw.is_null() => match coerce_inline_spec(raw) {
             Ok(spec) => CreateTeamToolInput {
                 team_name: None,
                 inline_spec: Some(spec),
@@ -300,7 +300,7 @@ pub fn run_team_create(
                 return Ok(tool_result(&reason, TeamCreateDetails::InvalidArguments { reason: reason.clone() }));
             }
         },
-        None => CreateTeamToolInput {
+        _ => CreateTeamToolInput {
             team_name: params.team_name.clone(),
             inline_spec: None,
         },
