@@ -200,5 +200,29 @@ mod tests {
         }
         assert!(stripped_message_update(&agent_message,&A::ToolcallStart{content_index:1,partial}).is_none());
     }
+    // senpi test/print-mode-fallback-notice.test.ts: the fallback notices go to stderr in both modes.
+    #[test] fn fallback_notices_are_stderr_diagnostics() {
+        use maho_ext_api::AgentSessionEvent;
+        let applied=AgentSessionEvent::RetryFallbackApplied{from:"anthropic/claude-opus-4-6".into(),to:"openai/gpt-4o".into(),chain_key:"anthropic/claude-opus-4-6".into(),reason:"billing".into()};
+        assert_eq!(fallback_diagnostic(&applied).as_deref(),Some("Model fallback: anthropic/claude-opus-4-6 -> openai/gpt-4o (billing)\n"));
+        let exhausted=AgentSessionEvent::RetryFallbackExhausted{chain_key:"anthropic/claude-opus-4-6".into(),last_error:"all models unavailable".into()};
+        assert_eq!(fallback_diagnostic(&exhausted).as_deref(),Some("Model fallback exhausted: anthropic/claude-opus-4-6 (all models unavailable)\n"));
+        let reverted=AgentSessionEvent::RetryFallbackReverted{from:"openai/gpt-4o".into(),to:"anthropic/claude-opus-4-6".into()};
+        assert_eq!(fallback_diagnostic(&reverted).as_deref(),Some("Model fallback reverted: openai/gpt-4o -> anthropic/claude-opus-4-6\n"));
+    }
+    // senpi test/print-mode.test.ts: an aborted or errored last assistant fails the run in both modes, and a
+    // terminating tool result trailing the final answer leaves the text result intact.
+    #[test] fn last_assistant_decides_the_exit_status_in_text_and_json() {
+        let aborted=message(json!([]),"aborted",Some("user aborted"));
+        assert_eq!(format_print_result(Some(&aborted)).unwrap(),PrintOutput{stdout:String::new(),stderr:"user aborted\n".into(),exit_code:1});
+        assert!(json_run_failed(Some(&aborted)));
+        let recovered=message(json!([{"type":"text","text":"recovered"}]),"stop",None);
+        assert_eq!(format_print_result(Some(&recovered)).unwrap().exit_code,0);
+        assert!(!json_run_failed(Some(&recovered)));
+        let final_answer=message(json!([{"type":"text","text":"final answer"}]),"stop",None);
+        let messages=[maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(final_answer)))];
+        let last=messages.iter().rev().find_map(|message|message.as_assistant());
+        assert_eq!(format_print_result(last).unwrap().stdout,"final answer\n");
+    }
     #[test] fn absent_assistant_outputs_nothing() { assert_eq!(format_print_result(None).unwrap(),PrintOutput::default()); }
 }
