@@ -743,3 +743,95 @@ async fn request_origins_end_when_credentials_change_or_the_server_is_undeclared
     registry.dispose().await.expect("registry dispose");
     stub.close().await;
 }
+
+/// Row 12 (senpi 3796-mcp-project-env.test.ts `reconnects a project skill server with its edited env`): the
+/// connection identity keeps the project declaration's hash, so an env-only edit of a project skill server
+/// re-keys it and the next connect runs the new declaration.
+#[tokio::test]
+async fn project_skill_server_rekeys_when_only_its_env_changes() {
+    use maho_ext_mcp::{
+        host_registry::HostMcpRegistry,
+        service::McpService,
+        skills::{SkillLike, parse_skill_mcp_declarations},
+    };
+    use std::collections::BTreeMap;
+
+    let root = tempfile::tempdir().expect("project root");
+    let agent = tempfile::tempdir().expect("agent dir");
+    let receipt = root.path().join("edit-receipt.json");
+    let fixture = crate::support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts");
+    let script = format!(
+        "import {{writeFileSync}} from \"node:fs\";writeFileSync({},JSON.stringify({{ref:process.env.REF}}));await import({});",
+        json!(receipt),
+        json!(fixture),
+    );
+    let declare = |reference: &str| {
+        std::fs::write(
+            root.path().join("mcp.json"),
+            json!({"probe": {
+                "command": crate::support::node(),
+                "args": ["-e", script],
+                "env": {"REF": reference},
+            }})
+            .to_string(),
+        )
+        .expect("skill sidecar");
+        parse_skill_mcp_declarations(&[SkillLike {
+            name: "carrier".into(),
+            file_path: root.path().join("SKILL.md"),
+            base_dir: root.path().into(),
+            scope: Some("project".into()),
+            ..Default::default()
+        }])
+    };
+    let read_receipt = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&receipt).expect("receipt")).expect("json")
+    };
+    let registry = Arc::new(HostMcpRegistry::default());
+    let mut service = McpService::new(registry.clone(), 3796);
+    service
+        .attach_session(root.path(), agent.path(), &BTreeMap::new(), true, &[])
+        .await
+        .expect("attach");
+
+    let warnings = service
+        .attach_skill_mcp_servers(&declare("lit1"))
+        .await
+        .expect("first declaration");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let first = service.connections["probe"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    service
+        .connect_server("probe")
+        .await
+        .expect("first connect");
+    assert_eq!(read_receipt(), json!({"ref": "lit1"}));
+
+    let warnings = service
+        .attach_skill_mcp_servers(&declare("lit2"))
+        .await
+        .expect("edited declaration");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    service.reconnect_server("probe").await.expect("reconnect");
+    let second = service.connections["probe"]
+        .entry
+        .lock()
+        .await
+        .connection
+        .clone();
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "the env edit re-keyed the server"
+    );
+    service
+        .connect_server("probe")
+        .await
+        .expect("second connect");
+    assert_eq!(read_receipt(), json!({"ref": "lit2"}));
+    service.dispose().await.expect("dispose");
+    registry.dispose().await.expect("registry dispose");
+}
