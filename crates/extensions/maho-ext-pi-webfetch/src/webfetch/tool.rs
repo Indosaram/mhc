@@ -11,9 +11,18 @@ pub fn definition() -> ToolDefinition {
             "format":{"type":"string","enum":["markdown","text","html"],"description":"The format to return the content in. Defaults to markdown."},
             "timeout":{"type":"number","description":"Optional timeout in seconds. Maximum 120."}}}),
         Arc::new(|call| Box::pin(async move {
+            // upstream tool.ts hands `signal` to `fetchUrl`. This body's signal carries no reason, so the bridge aborts
+            // with the DOM default and the fetcher picks that or the body phase's "Request aborted".
+            let (signal, params) = (call.signal, call.params);
+            let controller = maho_ai::utils::abort::AbortController::new();
+            let forward = async {
+                signal.cancelled().await;
+                controller.abort(None);
+                std::future::pending::<std::convert::Infallible>().await
+            };
             let result = tokio::select! { biased;
-                () = call.signal.cancelled() => return Err(ToolError::Message("Request aborted".into())),
-                result = execute(call.params, None, None) => result.map_err(|error| ToolError::Message(error.message))?,
+                never = forward => match never {},
+                result = execute(params, Some(controller.signal()), None) => result.map_err(|error| ToolError::Message(error.message))?,
             };
             let text = result.content.iter().find_map(|block| match block {
                 maho_ext_api::ContentBlock::Text(text) => Some(text.text.clone()), _ => None,
