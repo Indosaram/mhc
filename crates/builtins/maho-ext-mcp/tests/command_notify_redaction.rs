@@ -51,8 +51,8 @@ impl ModelRegistry for TestRegistry {
 
 /// Records every notification the `/mcp` command emits.
 #[derive(Default)]
-struct RecordingUi {
-    notifications: Mutex<Vec<(String, NotificationType)>>,
+pub struct RecordingUi {
+    pub notifications: Mutex<Vec<(String, NotificationType)>>,
 }
 impl ExtensionUi for RecordingUi {
     fn select<'a>(
