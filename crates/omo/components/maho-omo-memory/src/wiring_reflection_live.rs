@@ -123,8 +123,15 @@ impl MemoryReflectionLiveWiring {
     ) -> Result<(), String> {
         let mut ui = ui;
         let mut drained = false;
-        if let Some(live) = live {
+        let mut live = live;
+        let denied = context.memory_write_denied;
+        if let Some(live) = live.as_mut() {
             live.refresh_initial_status(&context);
+        }
+        // A memory-write-denied session never drains the identity's pending reflection completions:
+        // they stay pending for an owner session (`crate::write_policy`), and its transcript stays
+        // free of reflection notices.
+        if let Some(live) = live.filter(|_| !denied) {
             let dir = context.identity_paths.reflection.join("completions");
             match crate::worker::completion_delivery::consume_pending_reflection_completions(
                 &dir,
@@ -296,6 +303,97 @@ mod tests {
         fn health(&mut self) -> &mut dyn crate::worker::health_alert::ReflectionHealthLiveSession {
             self
         }
+    }
+    fn pending_completion(
+        paths: &memory_core::identity::layout::MemoryIdentityPaths,
+        finished: &str,
+    ) {
+        use crate::worker::completion_contracts::{
+            CompletionDelivery, DeliveryStatus, ReflectionCompletionRecord,
+        };
+        crate::worker::completion_records::write_completion_record(
+            &paths.reflection.join("completions"),
+            &ReflectionCompletionRecord {
+                schema_version: 1,
+                run_id: "run-1".into(),
+                identity: "agent".into(),
+                category: "quick".into(),
+                model: None,
+                thinking: None,
+                conversation_ids: vec![],
+                trigger: memory_core::reflection::machine::ReflectionTrigger::Manual,
+                origin: None,
+                outcome: "merged".into(),
+                reason: None,
+                detail: None,
+                started_at: finished.into(),
+                finished_at: finished.into(),
+                duration_ms: None,
+                merged_commit_sha: None,
+                files_changed: None,
+                consecutive_failures: None,
+                delivery: CompletionDelivery {
+                    status: DeliveryStatus::Pending,
+                    session_id: None,
+                    consumed_at: None,
+                },
+            },
+        )
+        .unwrap();
+    }
+    #[test]
+    fn a_denied_bind_leaves_pending_completions_for_the_owner() {
+        use crate::worker::completion_contracts::REFLECTION_COMPLETION_ENTRY_TYPE;
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        crate::engine_session::prepare_memory_engine_session("agent", &paths, Default::default())
+            .unwrap();
+        let context = MemoryIdentityContext::new(
+            "agent".into(),
+            paths.clone(),
+            crate::binding::MemorySessionBinding {
+                identity: "agent".into(),
+                repo_path_hash: "hash".into(),
+                bound_at: 0.0,
+            },
+        );
+        let finished = "2026-08-16T12:00:00.000Z";
+        let now = chrono::DateTime::parse_from_rfc3339(finished)
+            .unwrap()
+            .timestamp_millis();
+        pending_completion(&paths, finished);
+        let api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let mut wiring = MemoryReflectionLiveWiring::default();
+        let mut denied = Live::default();
+        wiring.attach("denied");
+        wiring
+            .bind(
+                "denied",
+                context.clone().with_memory_write_denied(true),
+                &api,
+                now,
+                None,
+                Some(&mut denied),
+            )
+            .unwrap();
+        assert_eq!(denied.initial, 1);
+        assert!(
+            denied.entries.is_empty(),
+            "a denied session consumes no completion: {:?}",
+            denied.entries
+        );
+        // Positive control: the same pending record is still delivered to the next owner bind.
+        let mut owner = Live::default();
+        wiring.attach("session");
+        wiring
+            .bind("session", context, &api, now, None, Some(&mut owner))
+            .unwrap();
+        assert_eq!(owner.entries, [REFLECTION_COMPLETION_ENTRY_TYPE]);
     }
     #[test]
     fn bind_refreshes_initial_status_and_drains_pending_completions() {

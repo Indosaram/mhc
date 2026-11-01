@@ -117,7 +117,29 @@ pub fn finalize_claimed_facts_run(
             });
         }
     };
-    if records.is_empty() && agreements.is_empty() {
+    // Owner-forgotten or corrected content is never re-learned from a replayed transcript; an
+    // unreadable suppression store fails the run rather than risk resurrecting it. `apply` filters
+    // again under the memory-write lock, which a forget landing after this point also holds.
+    let records = match memory_core::receipts::owner::SuppressionSet::for_repo(&repo.dir) {
+        Ok(set) => records
+            .into_iter()
+            .filter(|record| !set.suppresses(record.text()))
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            fail(
+                terminal,
+                FactsFailureReason::InvalidExtraction,
+                &format!("memory suppression unreadable: {error}"),
+                None,
+            )?;
+            return Ok(FactsLaunchResult::Failed {
+                run_id: ledger.run_id.clone(),
+            });
+        }
+    };
+    // A recorded applyRecovery still goes through the apply, which rolls back what a crashed
+    // attempt left in the tree when a forget has since suppressed its records.
+    if records.is_empty() && agreements.is_empty() && ledger.apply_recovery.is_none() {
         terminal
             .succeed(
                 run_dir,
@@ -396,5 +418,67 @@ mod tests {
                 }
             );
         }
+    }
+    #[test]
+    fn an_unreadable_suppression_store_fails_the_run_before_any_apply() {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, ledger, failures) = setup(root.path(), false, 0);
+        std::fs::write(
+            root.path().join("extraction.jsonl"),
+            r#"{"scope":"project","text":"A brand new fact","date":"2026-08-12"}"#,
+        )
+        .unwrap();
+        let store = repo
+            .dir
+            .parent()
+            .unwrap()
+            .join(memory_core::identity::layout::RUNTIME_DIRNAME)
+            .join(memory_core::receipts::owner::SUPPRESSIONS_FILE);
+        std::fs::create_dir_all(&store).unwrap();
+        let head = repo.head().unwrap();
+        let mut io = Io { consumed: 0 };
+        let result = finalize_claimed_facts_run(
+            root.path(),
+            &repo,
+            &ledger,
+            &mut FactsTerminalWrites {
+                failures: &failures,
+                io: &mut io,
+            },
+            &mut |_, _| panic!("an unreadable suppression store must not apply"),
+        )
+        .unwrap();
+        assert!(matches!(result, FactsLaunchResult::Failed { .. }), "{result:?}");
+        let entries = failures.read_failures().unwrap().entries;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].last_reason, FactsFailureReason::InvalidExtraction);
+        assert_eq!(repo.head().unwrap(), head, "nothing is committed");
+    }
+    #[test]
+    fn every_record_suppressed_inside_the_apply_publishes_no_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, ledger, failures) = setup(root.path(), false, 0);
+        std::fs::write(
+            root.path().join("extraction.jsonl"),
+            r#"{"scope":"project","text":"A brand new fact","date":"2026-08-12"}"#,
+        )
+        .unwrap();
+        let mut io = Io { consumed: 0 };
+        assert!(matches!(
+            finalize_claimed_facts_run(
+                root.path(),
+                &repo,
+                &ledger,
+                &mut FactsTerminalWrites {
+                    failures: &failures,
+                    io: &mut io
+                },
+                &mut |_, _| Ok(Some(Applied::Unchanged))
+            )
+            .unwrap(),
+            FactsLaunchResult::NoFacts { .. }
+        ));
+        assert!(failures.read_failures().unwrap().entries.is_empty());
+        assert!(root.path().join("final.json").exists());
     }
 }

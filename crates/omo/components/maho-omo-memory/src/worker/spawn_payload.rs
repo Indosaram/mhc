@@ -133,6 +133,12 @@ fn task_prompt(run: &ReservedRun, worktree: &Path, transcript: &Path) -> String 
 pub fn prepare_reflection_spawn(
     input: PrepareReflectionSpawnInput<'_>,
 ) -> Result<ReflectionSpawnArgs, std::io::Error> {
+    // Owner-retracted lines (forgotten or corrected) the reflection or dream child must not write
+    // back; an unreadable suppression store refuses the launch (fail closed).
+    let do_not_record =
+        memory_core::receipts::owner::SuppressionSet::for_repo(&input.worktree.parent.dir)
+            .map_err(std::io::Error::other)?
+            .do_not_record();
     let session_dir = input
         .reflection_sessions_dir
         .join(safe_run_id(&input.run.run_id)?);
@@ -200,7 +206,11 @@ pub fn prepare_reflection_spawn(
     )?;
     std::fs::write(
         &prompt,
-        task_prompt(input.run, &input.worktree.dir, &transcript),
+        format!(
+            "{}{}",
+            task_prompt(input.run, &input.worktree.dir, &transcript),
+            memory_core::receipts::owner::render_do_not_record(&do_not_record)
+        ),
     )?;
     if let (Some(skills), Some(memory), Some(state), Some(policy), Some(tokens), Some(audit_path)) = (
         &skills_usage,
@@ -470,6 +480,8 @@ pub struct PrepareFactsSpawnInput<'a> {
     pub run_id: &'a str,
     pub run_dir: &'a Path,
     pub payload: FactsLaunchPayload<'a>,
+    /// Owner-retracted lines the child must not record (`memory_core::receipts::owner::render_do_not_record`).
+    pub do_not_record: &'a [String],
     pub agreements: bool,
     pub record_limits: Option<FactsRecordLimits>,
     pub model: &'a str,
@@ -568,7 +580,10 @@ pub fn prepare_facts_spawn(
     if let Some(thinking) = input.thinking {
         args.extend(["--thinking".into(), thinking.into()]);
     }
-    args.push(format!("Extract durable facts from this payload and record each accepted fact with record_fact.\n\n{payload_text}"));
+    args.push(format!(
+        "Extract durable facts from this payload and record each accepted fact with record_fact.{}\n\n{payload_text}",
+        memory_core::receipts::owner::render_do_not_record(input.do_not_record)
+    ));
     Ok(FactsSpawnArgs {
         run_id: input.run_id.into(),
         attempt: input.attempt.unwrap_or(1),
@@ -762,6 +777,7 @@ mod tests {
             run_id: "facts",
             run_dir: root.path(),
             payload: (&payload).into(),
+            do_not_record: &[],
             agreements: false,
             record_limits: None,
             model: "extension/model",
@@ -931,6 +947,7 @@ mod tests {
             run_id: "facts",
             run_dir: root.path(),
             payload: (&payload).into(),
+            do_not_record: &[],
             agreements: false,
             record_limits: None,
             model: "p/m",
@@ -974,6 +991,7 @@ mod tests {
                 run_id: "facts",
                 run_dir: root.path(),
                 payload: (&payload).into(),
+                do_not_record: &[],
                 agreements: false,
                 record_limits: None,
                 model: "p/m",
@@ -1008,5 +1026,58 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn reflection_and_facts_children_receive_the_do_not_record_constraint() {
+        let root = tempfile::tempdir().unwrap();
+        let (run, worktree, policy) = reflection_fixture(root.path());
+        let runtime =
+            memory_core::identity::layout::build_identity_paths(root.path(), "agent").runtime;
+        memory_core::receipts::owner::append_suppressions(
+            &runtime,
+            memory_core::receipts::owner::SUPPRESSION_FORGET,
+            "Use the QA remote host.",
+            None,
+            "forget-1",
+        )
+        .unwrap();
+        let args =
+            prepare_reflection_spawn(reflection_input(root.path(), &run, &worktree, &policy))
+                .unwrap();
+        let prompt = std::fs::read_to_string(&args.paths.prompt).unwrap();
+        assert!(
+            prompt.contains("Never record, restate or paraphrase")
+                && prompt.ends_with("\n- use the qa remote host"),
+            "{prompt}"
+        );
+        let lines = vec!["use the qa remote host".to_owned()];
+        let payload = payload();
+        let facts = prepare_facts_spawn(PrepareFactsSpawnInput {
+            run_id: "facts",
+            run_dir: &root.path().join("facts-run"),
+            payload: (&payload).into(),
+            do_not_record: &lines,
+            agreements: false,
+            record_limits: None,
+            model: "p/m",
+            thinking: None,
+            load_extensions: None,
+            attempt: None,
+            hard_deadline_at: None,
+            next_attempt: None,
+            env: Default::default(),
+            launch: Launcher {
+                command: "maho".into(),
+                prefix_args: vec![],
+            },
+            now_ms: 0.0,
+        })
+        .unwrap();
+        let task = facts.args.last().unwrap();
+        assert!(
+            task.starts_with("Extract durable facts from this payload and record each accepted fact with record_fact.\n\nThe owner retracted"),
+            "{task}"
+        );
+        assert!(task.contains("\n- use the qa remote host\n\n"), "{task}");
     }
 }
