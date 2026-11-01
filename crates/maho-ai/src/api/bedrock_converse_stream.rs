@@ -27,7 +27,7 @@ use crate::utils::diagnostics::{
 use crate::utils::event_stream::{
     AssistantMessageEventStream, create_assistant_message_event_stream,
 };
-use crate::utils::json_parse::parse_streaming_json;
+use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::prompt_cache_ttl::{
     get_bedrock_model_match_candidates, supports_one_hour_cache_ttl, supports_prompt_caching,
 };
@@ -178,6 +178,7 @@ fn create_output(model: &Model) -> AssistantMessage {
 struct BlockMeta {
     content_block_index: Option<usize>,
     partial_json: String,
+    partial_json_parsed_len: usize,
     redacted_chunks: Option<Vec<Vec<u8>>>,
 }
 
@@ -201,6 +202,13 @@ fn flush_redacted_content(meta: &mut BlockMeta, block: &mut ContentBlock) {
 
 fn finalize_streaming_block(meta: &mut BlockMeta, block: &mut ContentBlock) {
     meta.content_block_index = None;
+    if let ContentBlock::ToolCall(call) = block
+        && !meta.partial_json.is_empty()
+        && meta.partial_json_parsed_len != meta.partial_json.len()
+    {
+        let parsed = parse_streaming_json(Some(&meta.partial_json));
+        call.arguments = parsed.as_object().cloned().unwrap_or_default();
+    }
     meta.partial_json.clear();
     flush_redacted_content(meta, block);
 }
@@ -1621,6 +1629,7 @@ fn handle_content_block_start(
     blocks.push(BlockMeta {
         content_block_index: Some(content_block_index as usize),
         partial_json: String::new(),
+        partial_json_parsed_len: 0,
         redacted_chunks: None,
     });
     sink.push(AssistantMessageEvent::ToolcallStart {
@@ -1655,6 +1664,7 @@ fn handle_content_block_delta(
             blocks.push(BlockMeta {
                 content_block_index: Some(content_block_index),
                 partial_json: String::new(),
+                partial_json_parsed_len: 0,
                 redacted_chunks: None,
             });
             index = Some(blocks.len() - 1);
@@ -1684,9 +1694,14 @@ fn handle_content_block_delta(
         if matches!(output.content.get(index), Some(ContentBlock::ToolCall(_))) {
             let meta = &mut blocks[index];
             meta.partial_json.push_str(input);
-            let parsed = parse_streaming_json(Some(&meta.partial_json));
-            if let Some(ContentBlock::ToolCall(call)) = output.content.get_mut(index) {
-                call.arguments = parsed.as_object().cloned().unwrap_or_default();
+            let total_len = meta.partial_json.len();
+            // PERF-DIVERGENCE(senpi packages/ai/src/api/bedrock-converse-stream.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+            if should_reparse_streaming_json(total_len, meta.partial_json_parsed_len) {
+                let parsed = parse_streaming_json(Some(&meta.partial_json));
+                meta.partial_json_parsed_len = total_len;
+                if let Some(ContentBlock::ToolCall(call)) = output.content.get_mut(index) {
+                    call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                }
             }
             sink.push(AssistantMessageEvent::ToolcallDelta {
                 content_index: index,
@@ -1708,6 +1723,7 @@ fn handle_content_block_delta(
         blocks.push(BlockMeta {
             content_block_index: Some(content_block_index),
             partial_json: String::new(),
+            partial_json_parsed_len: 0,
             redacted_chunks: None,
         });
         index = Some(blocks.len() - 1);

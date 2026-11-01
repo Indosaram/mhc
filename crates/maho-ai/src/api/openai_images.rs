@@ -158,9 +158,10 @@ async fn run_generate(
         }
     );
 
+    // PERF-DIVERGENCE(senpi openai-images.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
     let client = options
         .and_then(|options| options.request.fetch.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut request_headers = reqwest::header::HeaderMap::new();
     request_headers.insert(
         reqwest::header::AUTHORIZATION,
