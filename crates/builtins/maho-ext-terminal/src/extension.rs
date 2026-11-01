@@ -35,11 +35,13 @@ fn bind_completion(
     notifier: Arc<Mutex<crate::notify::TerminalNotifier>>,
     lifecycle: Lifecycle,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let mut exit = manager
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&id)?
-        .subscribe_exit();
+    let handle = {
+        let mut manager = manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        manager.get(&id)?.completion_handle()
+    };
+    let mut exit = handle.exit_receiver();
     Some(tokio::spawn(async move {
         loop {
             if exit.borrow_and_update().is_some() {
@@ -61,15 +63,7 @@ fn bind_completion(
                 .record_background_exit(&id, manifest_now_ms())
                 .await;
         }
-        let view = {
-            let mut manager = manager
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(runtime) = manager.get(&id) else {
-                return;
-            };
-            crate::tools::context::TerminalExitView::of_runtime(runtime)
-        };
+        let view = handle.exit_view();
         send_completion_notice(&id, &view, &sender, &delivery, &notifier);
     }))
 }
@@ -1807,5 +1801,138 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+    struct NotificationCaptureActions {
+        sent: Arc<Mutex<Vec<CustomMessage>>>,
+    }
+    impl ExtensionActions for NotificationCaptureActions {
+        fn send_message(
+            &self,
+            message: CustomMessage,
+            _options: SendMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            self.sent.lock().unwrap().push(message);
+            Ok(())
+        }
+        fn send_user_message(
+            &self,
+            _content: UserMessageContent,
+            _options: SendUserMessageOptions,
+        ) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn append_entry(
+            &self,
+            _custom_type: &str,
+            _data: Option<JsonValue>,
+        ) -> Result<(), ExtensionFailure> {
+            Ok(())
+        }
+        fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_completion_preserves_notice_under_capacity_eviction_with_lifecycle_gated() {
+        let dir = tempfile::tempdir().unwrap();
+        let sent_messages = Arc::new(Mutex::new(Vec::new()));
+        let runtime = ExtensionRuntime::default();
+        runtime.bind(Arc::new(NotificationCaptureActions {
+            sent: sent_messages.clone(),
+        }));
+        let api = Arc::new(ExtensionApi::new(
+            LoadedExtension::new("terminal", dir.path().to_owned(), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            runtime,
+        ));
+        let manager = Arc::new(Mutex::new(TerminalManager::new(1)));
+        let id1 = manager
+            .lock()
+            .unwrap()
+            .create(
+                "cmd1",
+                crate::shared::test_sh_options("stty -echo; printf 'first_completion_tail'; exit 0"),
+            )
+            .unwrap();
+        let backgrounds: Backgrounds = Arc::new(Mutex::new(indexmap::IndexMap::new()));
+        backgrounds.lock().unwrap().insert(
+            id1.clone(),
+            crate::session_bundle::BackgroundSession {
+                id: id1.clone(),
+                description: "test".to_owned(),
+                started_at_ms: 0.0,
+            },
+        );
+        let delivery = Arc::new(Mutex::new(Some(crate::notify::NotificationDelivery::Steer)));
+        let notifier = Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
+
+        // Hold the lifecycle lock BEFORE bind_completion to gate the completion task at the lifecycle await.
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(None));
+        let gate = lifecycle.lock().await;
+
+        let mut exit_watch = {
+            let mut mgr = manager.lock().unwrap();
+            mgr.get(&id1).unwrap().subscribe_exit()
+        };
+
+        let task = bind_completion(
+            id1.clone(),
+            manager.clone(),
+            backgrounds.clone(),
+            api.clone(),
+            delivery.clone(),
+            notifier.clone(),
+            lifecycle.clone(),
+        )
+        .expect("task handle");
+
+        // Await session 1 exit before triggering eviction.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while exit_watch.borrow_and_update().is_none() {
+                exit_watch.changed().await.expect("exit sender");
+            }
+        })
+        .await
+        .expect("id1 exit");
+
+        // While completion callback is gated on the lifecycle lock, capacity eviction occurs:
+        // allocating session 2 at max_sessions=1 succeeds without capacity error and evicts id1 from manager.
+        let id2 = manager
+            .lock()
+            .unwrap()
+            .create("cmd2", crate::shared::test_sh_options("exit 0"))
+            .expect("session creation succeeds without capacity error");
+        assert_ne!(id2, id1);
+        assert_eq!(manager.lock().unwrap().size(), 1);
+        assert!(manager.lock().unwrap().get(&id1).is_none(), "id1 is evicted from manager");
+
+        // Release the lifecycle gate so completion callback can proceed to view reading and notice sending.
+        drop(gate);
+
+        // Await completion task to finish.
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("completion task must finish")
+            .expect("join ok");
+
+        // Assert actual sent notification was delivered and contains the session output tail.
+        let messages = sent_messages.lock().unwrap();
+        assert_eq!(messages.len(), 1, "exactly one completion message must be sent");
+        assert_eq!(
+            messages[0].custom_type,
+            crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE
+        );
+        let content_text = match &messages[0].content[0] {
+            ToolContent::Text { text, .. } => text,
+            _ => panic!("expected text content"),
+        };
+        assert!(
+            content_text.contains("first_completion_tail"),
+            "notification must contain output tail, got: {content_text}"
+        );
+
+        manager.lock().unwrap().teardown().unwrap();
     }
 }

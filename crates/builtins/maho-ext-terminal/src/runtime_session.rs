@@ -44,6 +44,40 @@ pub struct OutputObserverGuard {
     observers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     sender: tokio::sync::mpsc::UnboundedSender<String>,
 }
+
+#[derive(Clone)]
+pub struct TerminalCompletionHandle {
+    exit: tokio::sync::watch::Receiver<Option<Result<PtyExit, String>>>,
+    output: Arc<Mutex<OutputState>>,
+}
+
+impl TerminalCompletionHandle {
+    pub fn exit_receiver(&self) -> tokio::sync::watch::Receiver<Option<Result<PtyExit, String>>> {
+        self.exit.clone()
+    }
+    pub fn exit_result(&self) -> Option<PtyExit> {
+        self.exit
+            .borrow()
+            .as_ref()
+            .and_then(|result| result.as_ref().ok().cloned())
+    }
+    pub fn full_output(&self) -> Result<String, RuntimeError> {
+        Ok(lossy_utf16(
+            self.output
+                .lock()
+                .map_err(|_| RuntimeError::Poisoned)?
+                .buffer
+                .iter()
+                .copied(),
+        ))
+    }
+    pub fn exit_view(&self) -> crate::tools::context::TerminalExitView {
+        crate::tools::context::TerminalExitView::new(
+            self.exit_result(),
+            self.full_output().unwrap_or_default(),
+        )
+    }
+}
 impl OutputObserverGuard {
     pub fn dispose(self) -> bool {
         let Ok(mut observers) = self.observers.lock() else {
@@ -329,6 +363,12 @@ impl TerminalRuntimeSession {
     }
     pub fn subscribe_exit(&self) -> tokio::sync::watch::Receiver<Option<Result<PtyExit, String>>> {
         self.exit_signal.clone()
+    }
+    pub fn completion_handle(&self) -> TerminalCompletionHandle {
+        TerminalCompletionHandle {
+            exit: self.exit_signal.clone(),
+            output: Arc::clone(&self.output),
+        }
     }
     pub fn subscribe_output(
         &self,
@@ -867,5 +907,29 @@ mod tests {
         runtime.wait(Duration::from_secs(5))?;
         assert!(receiver.try_recv().is_err());
         runtime.dispose()
+    }
+
+    #[tokio::test]
+    async fn completion_handle_captures_output_and_exit_across_disposal() -> Result<(), RuntimeError> {
+        let runtime = TerminalRuntimeSession::start(
+            "echo",
+            crate::shared::test_sh_options("stty -echo; printf 'handle_output'; exit 0"),
+        )?;
+        let handle = runtime.completion_handle();
+        let mut exit = handle.exit_receiver();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while exit.borrow_and_update().is_none() {
+                exit.changed().await.expect("exit sender");
+            }
+        })
+        .await
+        .map_err(|_| RuntimeError::WaitTimeout)?;
+
+        runtime.dispose()?;
+
+        let view = handle.exit_view();
+        assert_eq!(view.exit_result.as_ref().and_then(|e| e.exit_code), Some(0));
+        assert!(view.full_output().contains("handle_output"));
+        Ok(())
     }
 }
