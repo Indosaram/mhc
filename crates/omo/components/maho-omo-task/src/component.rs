@@ -524,6 +524,7 @@ impl TaskComponent {
             EventKind::SessionBeforeSwitch,
             EventKind::SessionBeforeCompact,
             EventKind::SessionCompact,
+            EventKind::SessionCompactFailed,
             EventKind::SessionShutdown,
             EventKind::ModelSelect,
             EventKind::AgentEnd,
@@ -694,7 +695,10 @@ impl TaskComponent {
                                 .lock()
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .mark(TransitionReason::Compacting, Some(session)),
-                            ExtensionEvent::SessionCompact(_) => {
+                            // SAFETY-DIVERGENCE(senpi session-transition-bridge.ts): upstream subscribes only to
+                            // session_before_compact/session_compact; resolve failed compactions so transitions clear and flush.
+                            ExtensionEvent::SessionCompact(_)
+                            | ExtensionEvent::SessionCompactFailed { .. } => {
                                 component
                                     .transitions
                                     .lock()
