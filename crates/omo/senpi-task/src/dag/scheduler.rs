@@ -1149,11 +1149,13 @@ pub(crate) fn finish_settled_run(
         || !snapshot.nodes.iter().all(|node| is_terminal_node_state(node.state)) {
         return Ok(());
     }
-    // Another scheduler or revival can commit between the snapshot and append.
+    // Another scheduler or revival can commit between the snapshot and append. The journal holds ONE
+    // predicate, so keep the manager's terminal-transition dedupe alongside the run-terminal guard.
     journal.set_skip_duplicate(Arc::new(|record, payload| {
-        matches!(payload, DagRunEventPayload::RunCompleted { .. } | DagRunEventPayload::RunFailed { .. })
-            && (record.status != crate::dag::types::DagRunStatus::Running
-                || !record.nodes.iter().all(|node| is_terminal_node_state(node.state)))
+        crate::dag::manager::skip_duplicate_terminal_transition(record, payload)
+            || (matches!(payload, DagRunEventPayload::RunCompleted { .. } | DagRunEventPayload::RunFailed { .. })
+                && (record.status != crate::dag::types::DagRunStatus::Running
+                    || !record.nodes.iter().all(|node| is_terminal_node_state(node.state))))
     }));
     if let Some(failed) = primary_failure(&snapshot) {
         let error = failed.error.clone().unwrap_or_else(|| {
