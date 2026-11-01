@@ -45,7 +45,7 @@ use crate::utils::error_body::{
 };
 use crate::utils::hash::short_hash;
 use crate::utils::headers::headers_to_record;
-use crate::utils::json_parse::parse_streaming_json;
+use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::provider_env::get_provider_env_value;
 use crate::utils::provider_retry::{
@@ -1963,6 +1963,7 @@ struct StreamingToolCall {
     name: String,
     arguments: Map<String, Value>,
     partial_args: Option<String>,
+    partial_args_parsed_len: usize,
     custom_input: Option<CustomToolInput>,
     stream_index: Option<usize>,
 }
@@ -2227,6 +2228,7 @@ impl StreamState {
                     name: name.to_owned(),
                     arguments,
                     partial_args: custom_input_property.is_none().then(String::new),
+                    partial_args_parsed_len: 0,
                     custom_input: custom_input_property.map(|property| CustomToolInput {
                         property,
                         json_buffer: GrammarToolInputJsonBuffer::default(),
@@ -2844,13 +2846,21 @@ async fn run_stream_inner(
                     {
                         delta_text = arguments.to_owned();
                         if let Some(StreamBlock::ToolCall(block)) = state.blocks.get_mut(index) {
-                            let mut partial = block.partial_args.clone().unwrap_or_default();
+                            let partial = block.partial_args.get_or_insert_with(String::new);
                             partial.push_str(arguments);
-                            block.partial_args = Some(partial.clone());
-                            block.arguments = parse_streaming_json(Some(partial.as_str()))
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default();
+                            let total_len = partial.len();
+                            // PERF-DIVERGENCE(senpi packages/ai/src/api/openai-completions.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+                            if should_reparse_streaming_json(
+                                total_len,
+                                block.partial_args_parsed_len,
+                            ) {
+                                block.arguments =
+                                    parse_streaming_json(block.partial_args.as_deref())
+                                        .as_object()
+                                        .cloned()
+                                        .unwrap_or_default();
+                                block.partial_args_parsed_len = total_len;
+                            }
                         }
                     } else if let Some(custom_input) = tool_call
                         .get("custom")

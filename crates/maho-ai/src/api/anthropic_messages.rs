@@ -62,7 +62,9 @@ use crate::utils::event_stream::{
     AssistantMessageEventStream, create_assistant_message_event_stream,
 };
 use crate::utils::headers::{headers_to_record, provider_headers_to_record};
-use crate::utils::json_parse::{parse_json_with_repair, parse_streaming_json};
+use crate::utils::json_parse::{
+    parse_json_with_repair, parse_streaming_json, should_reparse_streaming_json,
+};
 use crate::utils::pi_user_agent::get_pi_user_agent;
 use crate::utils::prompt_cache_ttl::{get_anthropic_compat, is_anthropic_api_base_url};
 use crate::utils::provider_env::get_provider_env_value;
@@ -2787,6 +2789,7 @@ struct StreamState {
     output: AssistantMessage,
     indices: Vec<Option<usize>>,
     partial_json: Vec<Option<String>>,
+    partial_json_parsed_len: Vec<usize>,
     input_transformations: Option<Vec<Value>>,
     usage_model: Model,
     is_oauth_token: bool,
@@ -2806,6 +2809,7 @@ impl StreamState {
         self.output.content.push(block);
         self.indices.push(Some(index));
         self.partial_json.push(None);
+        self.partial_json_parsed_len.push(0);
         self.output.content.len() - 1
     }
 }
@@ -3110,11 +3114,19 @@ fn handle_content_block_delta(
             ) {
                 let scratch = state.partial_json[content_index].get_or_insert_with(String::new);
                 scratch.push_str(&partial);
-                let parsed = parse_streaming_json(Some(scratch));
-                if let Some(ContentBlock::ToolCall(call)) =
-                    state.output.content.get_mut(content_index)
-                {
-                    call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                let total_len = scratch.len();
+                // PERF-DIVERGENCE(senpi packages/ai/src/api/anthropic-messages.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+                if should_reparse_streaming_json(
+                    total_len,
+                    state.partial_json_parsed_len[content_index],
+                ) {
+                    let parsed = parse_streaming_json(Some(scratch));
+                    state.partial_json_parsed_len[content_index] = total_len;
+                    if let Some(ContentBlock::ToolCall(call)) =
+                        state.output.content.get_mut(content_index)
+                    {
+                        call.arguments = parsed.as_object().cloned().unwrap_or_default();
+                    }
                 }
                 sink.push(AssistantMessageEvent::ToolcallDelta {
                     content_index,
@@ -3176,10 +3188,7 @@ fn handle_content_block_stop(
             });
         }
         Some(ContentBlock::ToolCall(_)) => {
-            let partial_json = state.partial_json[content_index]
-                .clone()
-                .unwrap_or_default();
-            state.partial_json[content_index] = None;
+            let partial_json = state.partial_json[content_index].take().unwrap_or_default();
             let parsed = parse_streaming_json(Some(&partial_json));
             if let Some(ContentBlock::ToolCall(call)) = state.output.content.get_mut(content_index)
             {
@@ -3295,10 +3304,15 @@ fn strip_streaming_scratch(state: &mut StreamState) {
         let Some(partial_json) = state.partial_json[content_index].take() else {
             continue;
         };
-        if let Some(ContentBlock::ProviderNative(native)) =
-            state.output.content.get_mut(content_index)
-        {
-            native.raw = merge_provider_native_input(&native.raw, &partial_json);
+        match state.output.content.get_mut(content_index) {
+            Some(ContentBlock::ProviderNative(native)) => {
+                native.raw = merge_provider_native_input(&native.raw, &partial_json);
+            }
+            Some(ContentBlock::ToolCall(call)) => {
+                let parsed = parse_streaming_json(Some(&partial_json));
+                call.arguments = parsed.as_object().cloned().unwrap_or_default();
+            }
+            _ => {}
         }
     }
 }
@@ -3866,6 +3880,7 @@ async fn run_stream(
         output,
         indices: Vec::new(),
         partial_json: Vec::new(),
+        partial_json_parsed_len: Vec::new(),
         input_transformations: None,
         usage_model: model.clone(),
         is_oauth_token: false,
