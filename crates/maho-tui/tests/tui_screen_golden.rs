@@ -5222,6 +5222,59 @@ mod alt_screen_controls {
         assert!(alt.tui.is_following_output());
     }
 
+    /// senpi's `setCapabilities({ images: "iterm2", ... })` / `resetCapabilitiesCache()` pair is
+    /// `with_capabilities`, which pins the capabilities to this test's thread so the alt screen's
+    /// save/disable/restore of iTerm2 images and the `Image` fallback never touch the cache that
+    /// parallel tests read.
+    #[test]
+    fn does_not_emit_kitty_graphics_commands_or_osc_133_zones_in_iterm2() {
+        use maho_tui::components::image::{Image, ImageOptions, ImageTheme};
+        use maho_tui::terminal_capabilities::ImageProtocol as CapabilityImageProtocol;
+        use maho_tui::terminal_image::{TerminalCapabilities, get_capabilities, with_capabilities};
+        use maho_tui::terminal_text::ImageDimensions;
+
+        let iterm2 = TerminalCapabilities {
+            images: Some(CapabilityImageProtocol::Iterm2),
+            true_color: true,
+            hyperlinks: true,
+            ..Default::default()
+        };
+        let writes = with_capabilities(iterm2, || {
+            let mut alt = Alt::new(20, 3);
+            alt.tui.base.add_child(lines(vec![
+                "\x1b]133;B\x07\x1b]133;C\x07\x1b]133;A\x07content".into(),
+            ]));
+            alt.tui.base.add_child(Rc::new(RefCell::new(Image::new(
+                "AAAA",
+                "image/png",
+                ImageTheme {
+                    fallback_color: Rc::new(|value: &str| value.to_owned()),
+                },
+                ImageOptions {
+                    filename: Some("example.png".into()),
+                    ..Default::default()
+                },
+                Some(ImageDimensions {
+                    width_px: 10,
+                    height_px: 10,
+                }),
+            ))));
+            alt.start();
+            alt.tui.before_terminal_stop(&mut alt.terminal, true);
+            alt.tui.after_terminal_stop(&mut alt.terminal, false);
+            // Stopping restores the capabilities the alt screen disabled while it was active.
+            assert_eq!(
+                get_capabilities().images,
+                Some(CapabilityImageProtocol::Iterm2)
+            );
+            alt.terminal.writes
+        });
+        assert!(!writes.contains("\x1b_G"));
+        assert!(!writes.contains("\x1b]133;"));
+        assert!(!writes.contains("\x1b]1337;File="));
+        assert!(writes.contains("[Image:"));
+    }
+
     #[test]
     fn clears_stale_iterm2_image_placements_when_they_leave_the_viewport() {
         let mut alt = Alt::new(20, 3);

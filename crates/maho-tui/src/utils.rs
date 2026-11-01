@@ -151,6 +151,21 @@ pub fn __width_cache_stats() -> Option<WidthCacheStats> {
     }))
 }
 
+/// senpi `autocompleteSeparatorRegex` as one regex class: whitespace, or CJK punctuation
+/// (`\p{Punctuation}` in a CJK script extension, plus the fullwidth/typographic list).
+pub const AUTOCOMPLETE_SEPARATOR_CLASS: &str = r"[\s[\p{P}&&[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Bopomofo}]]，．：；！？（）［］｛｝“”‘’…—]";
+/// The complement of [`AUTOCOMPLETE_SEPARATOR_CLASS`] (senpi's `(?:(?!separator).)`).
+pub const AUTOCOMPLETE_NON_SEPARATOR_CLASS: &str = r"[^\s[\p{P}&&[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Bopomofo}]]，．：；！？（）［］｛｝“”‘’…—]";
+
+/// `autocompleteSeparatorRegex.test(ch)`.
+pub fn is_autocomplete_separator(ch: char) -> bool {
+    static SEPARATOR: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!("^{AUTOCOMPLETE_SEPARATOR_CLASS}$")).expect("valid separator class")
+    });
+    let mut buf = [0u8; 4];
+    SEPARATOR.is_match(ch.encode_utf8(&mut buf))
+}
+
 /// `cjkBreakRegex.test(segment)`: any Han/Hiragana/Katakana/Hangul/Bopomofo code point.
 pub fn is_cjk_break(segment: &str) -> bool {
     segment.chars().any(|c| has(c, CJK))
