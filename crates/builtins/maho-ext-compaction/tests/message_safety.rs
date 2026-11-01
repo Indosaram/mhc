@@ -77,7 +77,7 @@ fn duplicate_dangling_ids_get_one_result() {
 fn zero_timestamp_uses_supplied_clock() {
     let mut input = assistant("call", "toolUse", false);
     if let Message::Assistant(assistant) = &mut input {
-        assistant.timestamp = 0;
+        std::sync::Arc::make_mut(assistant).timestamp = 0;
     }
     let output = repair_orphaned_tool_results(&[input], 99);
     let Message::ToolResult(result) = &output[1] else {
@@ -147,7 +147,7 @@ fn incomplete_call_with_real_result_is_preserved() {
 fn custom_incomplete_error_is_preserved() {
     let mut input = assistant("call", "toolUse", true);
     if let Message::Assistant(message) = &mut input
-        && let ContentBlock::ToolCall(call) = &mut message.content[0]
+        && let ContentBlock::ToolCall(call) = &mut std::sync::Arc::make_mut(message).content[0]
     {
         call.error_message = Some("custom reason".into());
     }

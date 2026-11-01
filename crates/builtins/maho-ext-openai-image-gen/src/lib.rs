@@ -61,7 +61,7 @@ impl Extension for OpenAiImageGen {
             if let ExtensionEvent::MessageEnd {message} = event
                 && let Some(assistant) = message.as_assistant()
                 && let Some(replaced) = externalize::externalize_native_images(assistant,&ctx.cwd) {
-                return Ok(EventResult::MessageEnd {message:Some(maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replaced))))});
+                return Ok(EventResult::MessageEnd {message:Some(maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(replaced))))});
             }
             Ok(EventResult::None)
         })));

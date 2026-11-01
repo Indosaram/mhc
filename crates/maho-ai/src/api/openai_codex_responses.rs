@@ -1340,7 +1340,7 @@ async fn process_web_socket_stream(
                 let context = Context {
                     active_tool_names: None,
                     system_prompt: None,
-                    messages: vec![crate::types::Message::Assistant(Box::new(output.clone()))],
+                    messages: vec![crate::types::Message::Assistant(std::sync::Arc::new(output.clone()))],
                     tools: None,
                 };
                 let response_items: Vec<Value> = convert_responses_messages(
