@@ -50,6 +50,7 @@ pub mod tool_schema_compat;
 pub use crate::types::{tool_name_match, transcript};
 pub mod typebox_helpers;
 pub mod unavailable_tool_text;
+pub mod utf8_stream;
 pub mod uuid;
 pub mod validation;
 pub mod visible_text;
