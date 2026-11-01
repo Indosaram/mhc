@@ -53,7 +53,7 @@ fn user(text: &str) -> AgentMessage {
 }
 
 fn failed_assistant(stop_reason: StopReason, tool_call_id: &str) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(AssistantMessage {
+    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(AssistantMessage {
         failure_source: None,
         timing: None,
         prompt_cache_breakpoint: None,
@@ -118,8 +118,9 @@ fn kept_assistant(tool_call_id: &str) -> AgentMessage {
     else {
         unreachable!("failed_assistant always builds an assistant message");
     };
-    message.stop_reason = StopReason::ToolUse;
-    message.content = vec![ContentBlock::ToolCall(ToolCall {
+    let m = std::sync::Arc::make_mut(&mut message);
+    m.stop_reason = StopReason::ToolUse;
+    m.content = vec![ContentBlock::ToolCall(ToolCall {
         id: tool_call_id.to_string(),
         name: "bash".to_string(),
         arguments: Map::from_iter([("command".to_string(), json!("ls"))]),

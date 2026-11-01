@@ -390,7 +390,7 @@ pub fn micro_compact_assistant_text(
         if saved < options.min_savings_tokens {
             continue;
         }
-        assistant.content = vec![ContentBlock::text(candidate)];
+        std::sync::Arc::make_mut(assistant).content = vec![ContentBlock::text(candidate)];
         result.tokens_saved += saved;
         result.messages_modified += 1;
     }

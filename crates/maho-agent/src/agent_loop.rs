@@ -48,7 +48,7 @@ async fn send(emit: &AgentEventSink, event: AgentEvent) {
 }
 
 fn assistant_event(message: &AssistantMessage) -> AgentMessage {
-    AgentMessage::Llm(Message::Assistant(Box::new(message.clone())))
+    AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(message.clone())))
 }
 
 /// Start an agent loop with a new prompt message.
@@ -1426,7 +1426,7 @@ async fn emit_message_update(
     updated: AssistantMessage,
     event: AssistantMessageEvent,
 ) {
-    let message = AgentMessage::Llm(Message::Assistant(Box::new(updated)));
+    let message = AgentMessage::Llm(Message::Assistant(std::sync::Arc::new(updated)));
     if let Some(last) = context.messages.last_mut() {
         *last = message.clone();
     }

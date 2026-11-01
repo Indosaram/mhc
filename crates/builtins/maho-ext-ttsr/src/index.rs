@@ -68,7 +68,7 @@ fn handle(state:&mut State,api:&ExtensionApi,event:&ExtensionEvent,ctx:&Extensio
                 if !record_remediation_injection(api,owner_name(outcome.owner),&outcome.observed_rules.into_iter().map(|owner|owner_name(owner).into()).collect::<Vec<_>>(),outcome.retry_mode)? { return Ok(EventResult::None); }
                 if outcome.nudge.is_some() { state.pending_nudge=outcome.nudge; }
                 let replacement=match outcome.replacement { StreamReplacement::Truncated(message)=>*message,StreamReplacement::ErrorShell(shell)=>{ let mut message=assistant.clone(); message.content=shell.content; message.stop_reason=shell.stop_reason; message.error_message=Some(shell.error_message); message } };
-                return Ok(EventResult::MessageEnd { message:Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replacement)))) });
+                return Ok(EventResult::MessageEnd { message:Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(replacement)))) });
             } else if let Some(text)=text { state.repetitive_turns.record_completed_turn(&text); }
         },
         ExtensionEvent::AgentSettled=>{

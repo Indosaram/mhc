@@ -1573,7 +1573,7 @@ mod tests {
                     content: UserContent::Text("go".into()),
                     timestamp: 0,
                 }),
-                Message::Assistant(Box::new(assistant.clone())),
+                Message::Assistant(std::sync::Arc::new(assistant.clone())),
                 result.clone(),
             ],
             ..Default::default()
@@ -1589,7 +1589,7 @@ mod tests {
         let signed_context = Context {
             messages: vec![
                 context.messages[0].clone(),
-                Message::Assistant(Box::new(assistant)),
+                Message::Assistant(std::sync::Arc::new(assistant)),
                 result,
             ],
             ..Default::default()

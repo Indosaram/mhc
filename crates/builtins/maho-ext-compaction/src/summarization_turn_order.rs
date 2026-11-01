@@ -6,7 +6,7 @@ pub fn normalize_summarization_turn_order(messages:&[Message])->Vec<Message> {
             && let Message::Assistant(current)=message
             && !matches!(previous.stop_reason,StopReason::Error|StopReason::Aborted)
             && !matches!(current.stop_reason,StopReason::Error|StopReason::Aborted) {
-            previous.content.extend(current.content.iter().cloned());continue;
+            std::sync::Arc::make_mut(previous).content.extend(current.content.iter().cloned());continue;
         }
         merged.push(message.clone());
     }
