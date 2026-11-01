@@ -1,7 +1,9 @@
 //! Embeds the release trust root (the minisign public key used by `mhc update`) into the binary.
 //!
-//! * `MHC_RELEASE_PUBKEY_FILE` selects the key file (default `<repo>/mhc-release.pub`); a relative path is
-//!   resolved against the repository root. A missing file embeds `None`.
+//! * `MHC_RELEASE_PUBKEY_FILE` selects the key file; a relative path is resolved against the repository root.
+//!   A missing file embeds `None`. Without it, unversioned debug-profile builds (local `cargo test`) embed the
+//!   test fixture so the update integration tests run with no environment; every other build embeds
+//!   `<repo>/mhc-release.pub`.
 //! * `MHC_RELEASE_CHANNEL` is `release` | `candidate`; it defaults to `release` when `MHC_BUILD_VERSION` is set
 //!   and to `dev` otherwise. Release builds must embed a key that is not the test fixture; candidate builds must
 //!   embed the test fixture; a versioned build without any key fails.
@@ -32,16 +34,18 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MHC_BUILD_VERSION");
     println!("cargo:rerun-if-changed={}", fixture_file.display());
 
+    let versioned = std::env::var("MHC_BUILD_VERSION").is_ok_and(|value| !value.trim().is_empty());
+    let debug_profile = std::env::var("PROFILE").is_ok_and(|profile| profile == "debug");
     let key_file = match std::env::var_os("MHC_RELEASE_PUBKEY_FILE").filter(|value| !value.is_empty()) {
         Some(value) => {
             let path = PathBuf::from(value);
             if path.is_absolute() { path } else { repo_root.join(path) }
         }
+        None if debug_profile && !versioned => fixture_file.clone(),
         None => repo_root.join("mhc-release.pub"),
     };
     println!("cargo:rerun-if-changed={}", key_file.display());
 
-    let versioned = std::env::var("MHC_BUILD_VERSION").is_ok_and(|value| !value.trim().is_empty());
     let channel = match std::env::var("MHC_RELEASE_CHANNEL").ok().filter(|value| !value.is_empty()) {
         Some(value) => value,
         None if versioned => "release".to_owned(),
