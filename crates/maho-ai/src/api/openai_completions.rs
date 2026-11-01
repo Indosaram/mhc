@@ -2478,6 +2478,20 @@ pub fn stream_with_transport(
     stream
 }
 
+/// The next SSE chunk, raced against the turn's abort signal: an abort wins (it is polled first) and
+/// answers the aborted error, so the caller returns and drops the stream with its HTTP response.
+async fn next_chunk_or_abort<S>(chunks: &mut S, signal: Option<&AbortSignal>) -> Result<Option<S::Item>, OpenAiCompletionsError>
+where
+    S: futures::Stream + Unpin,
+{
+    let Some(signal) = signal else { return Ok(chunks.next().await) };
+    tokio::select! {
+        biased;
+        () = signal.cancelled() => Err(OpenAiCompletionsError::protocol("Request was aborted")),
+        chunk = chunks.next() => Ok(chunk),
+    }
+}
+
 async fn create_request(
     model: &Model,
     transport: &Arc<dyn ChatTransport>,
@@ -2680,7 +2694,11 @@ async fn run_stream_inner(
 
     let mut state = StreamState::default();
     let mut chunks = chunk_stream;
-    while let Some(chunk) = chunks.next().await {
+    // The abort signal covers the body as well as the headers (openai-node hands the signal to
+    // `fetch`, which aborts the body read too): an abort while the provider holds the stream open
+    // returns at once, and dropping `chunks` drops the response, so the connection is closed
+    // instead of left waiting for bytes the aborted turn will never read.
+    while let Some(chunk) = next_chunk_or_abort(&mut chunks, signal.as_ref()).await? {
         let chunk = chunk?;
         if let Some(options) = options {
             options
