@@ -82,7 +82,7 @@ fn emit_ended(
 }
 fn file_settle_reason(summary: &str) -> MonitorEndedReason {
     match summary {
-        "watcher timed_out" => MonitorEndedReason::Timeout,
+        "watcher timed_out" | "watcher expired" => MonitorEndedReason::Timeout,
         "watcher killed" => MonitorEndedReason::Killed,
         "watcher disposed" => MonitorEndedReason::Disposed,
         _ => MonitorEndedReason::Exit,
@@ -1448,6 +1448,55 @@ mod registry_tests {
         assert!(events.iter().any(|event| event.id == file_id));
         runtime.dispose().unwrap();
     }
+    #[tokio::test]
+    async fn persistent_file_watcher_expiry_reports_timeout_reason() {
+        let (ended_sender, mut ended) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new_with_ended(
+            |_| {},
+            move |event| {
+                ended_sender.send(event).unwrap();
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watched");
+        std::fs::write(&path, b"initial").unwrap();
+        let manifest = crate::restore::parse_terminal_manifest(
+            &serde_json::json!({
+                "monitors": [{
+                    "monitorId": "mon_expiring",
+                    "sessionId": "s",
+                    "description": "watch expiry",
+                    "runtimeKind": "file",
+                    "durabilityClass": "checkpointed-file",
+                    "path": "watched",
+                    "cwd": dir.path().to_string_lossy(),
+                    "event": "modify",
+                    "createdAt": 1,
+                    "expiresAt": 10.0,
+                    "persistent": true,
+                    "suspended": false,
+                    "lastCheckpoint": crate::durable_file::file_checkpoint(&path).unwrap(),
+                    "deliveryPaused": false,
+                    "fireWindow": {"startMs": 1, "count": 0}
+                }],
+                "backgroundSessions": [],
+                "updatedAt": 1
+            }),
+            "s",
+        )
+        .unwrap();
+        let monitor = &manifest.monitors[0];
+        let (runtime_id, _) = registry
+            .restore_persistent_file(monitor, &path, 0.0)
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), ended.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.id, runtime_id);
+        assert_eq!(event.reason, MonitorEndedReason::Timeout);
+        registry.dispose();
+    }
 }
 
 #[cfg(test)]
@@ -1591,5 +1640,32 @@ mod tests {
         assert_eq!(registry.wake_pacing("bash_2"), None);
         assert_eq!(registry.wake_pacing("missing"), None);
         registry.records.lock().unwrap().clear();
+    }
+    #[test]
+    fn file_settle_reason_maps_expiry_and_timeout_to_timeout_reason() {
+        assert_eq!(
+            file_settle_reason("watcher timed_out"),
+            MonitorEndedReason::Timeout
+        );
+        assert_eq!(
+            file_settle_reason("watcher expired"),
+            MonitorEndedReason::Timeout
+        );
+        assert_eq!(
+            file_settle_reason("watcher killed"),
+            MonitorEndedReason::Killed
+        );
+        assert_eq!(
+            file_settle_reason("watcher disposed"),
+            MonitorEndedReason::Disposed
+        );
+        assert_eq!(
+            file_settle_reason("watcher completed"),
+            MonitorEndedReason::Exit
+        );
+        assert_eq!(
+            file_settle_reason("watcher error: permission denied"),
+            MonitorEndedReason::Exit
+        );
     }
 }
