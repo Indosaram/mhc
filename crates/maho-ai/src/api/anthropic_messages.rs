@@ -2669,7 +2669,8 @@ async fn send_request(
 ) -> Result<reqwest::Response, AnthropicStreamError> {
     let base_url = client.base_url.trim_end_matches('/');
     let url = format!("{base_url}/v1/messages");
-    let http_client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi anthropic.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let http_client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let mut body = prepared.params.clone();
     let mut headers = request_headers(client, model, api_key);
     if let Some(betas) = body.remove("betas") {

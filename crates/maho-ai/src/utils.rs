@@ -18,6 +18,7 @@ pub mod github_copilot_tool_limit;
 pub mod gzip_request_body;
 pub mod hash;
 pub mod headers;
+pub mod http_client;
 pub mod js;
 pub mod json_parse;
 pub mod lazy;

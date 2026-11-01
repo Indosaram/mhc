@@ -639,7 +639,8 @@ async fn drive(
     let url = client.stream_generate_content_url(&model.id);
     let headers = client.headers.clone();
     let auth = Some(GoogleAuth::ApiKey(api_key.clone()));
-    let http = reqwest::Client::new();
+    // PERF-DIVERGENCE(senpi google-generative-ai.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let http = crate::utils::http_client::shared_http_client();
     let body = request_body(&params, false)?;
     let response = retry_google_request(
         move || {

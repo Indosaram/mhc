@@ -2353,9 +2353,10 @@ impl StreamState {
 }
 
 fn default_transport(options: Option<&OpenAiCompletionsOptions>) -> Arc<dyn ChatTransport> {
+    // PERF-DIVERGENCE(senpi openai-completions.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
     let client = options
         .and_then(|options| options.stream.request.fetch.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     Arc::new(ReqwestTransport::new(client))
 }
 
