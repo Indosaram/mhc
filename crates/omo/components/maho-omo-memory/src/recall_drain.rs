@@ -155,6 +155,8 @@ fn deliver(options: &RecallDrainOptionsView, session_id: &str) -> Option<Deliver
         None => Vec::new(),
     };
     let nudges = recall_drain_union(&from_queue, &from_file);
+    // Pending nudges written before a forget are filtered again at delivery.
+    let nudges = crate::owner_memory::drop_suppressed_nudges(&context, "recall", &nudges, &*options.warn);
     let injection = build_recall_injection(&nudges, session_id)?;
     if let Err(error) = mark_recall_surfaced(&(options.ledger_for)(&context), session_id, &nudges) {
         (options.warn)(&format!("memory recall ledger mark skipped: {error}"));
