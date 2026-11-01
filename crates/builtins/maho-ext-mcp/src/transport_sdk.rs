@@ -1507,6 +1507,8 @@ impl McpClient {
         })
     }
     pub async fn close(&self) -> Result<(), McpError> {
+        // SDK `Client.close()` fires `onclose` for every transport: close observers (`on_mcp_client_close`) end.
+        self.closed.send_replace(true);
         // sdk-bridge.ts close(): dispose the subscriptions (aborting listen streams) before closing the transport.
         if let Some(route) = self.modern.get() {
             route.subscriptions.dispose();
