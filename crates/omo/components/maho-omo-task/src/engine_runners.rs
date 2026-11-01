@@ -5,13 +5,24 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const TASK_CHILD_UI_ONLY_TOOL_NAMES: [&str; 2] = ["memory", "memory_apply_patch"];
-pub const TASK_CHILD_PARENT_SESSION_TOOL_NAMES: [&str; 6] = [
+/// Tools that act on the PARENT session's own state (its eval kernel, monitors, background terminals,
+/// todo list, goal, wakeups, session file). A shared tool runs on the parent session, so a child calling
+/// one would drive the parent's state and its notifications would wake the parent instead of the child.
+/// Upstream shares only omo-registered tools, so children never see these.
+pub const TASK_CHILD_PARENT_SESSION_TOOL_NAMES: [&str; 13] = [
     "eval",
     "monitor",
     "bash_output",
     "bash_input",
     "bash_resize",
     "kill_bash",
+    "todo",
+    "create_goal",
+    "get_goal",
+    "update_goal",
+    "schedule_wakeup",
+    "relocate_session",
+    "list_relocation_targets",
 ];
 pub struct InProcessRunnerBuildContext {
     pub shared_parent_tools: Vec<senpi_task::runners::in_process::shared_tool_filter::ChildToolRef>,
