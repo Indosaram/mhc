@@ -133,6 +133,8 @@ pub trait ChildSession: Send + Sync {
         None
     }
     fn abort(&self) -> Result<(), HostError>;
+    /// Drops steering and follow-up messages queued on the session but not yet delivered.
+    fn clear_queued_input(&self) {}
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe;
     fn get_last_assistant_text(&self) -> Option<String>;
     fn park_idle_memory(&self) {}
@@ -588,6 +590,13 @@ impl ManagedChildHandle for InProcessChildHandle {
 
     fn abort(&self) -> Result<(), HostError> {
         self.abort_turn()
+    }
+
+    /// A cancel without abort lets the running turn reach its outcome boundary, but the session's
+    /// queued steering/follow-up messages would each start another turn and keep the cancelled child
+    /// working. Drop them so the turn in flight is the last one.
+    fn mark_stopping(&self) {
+        self.session.clear_queued_input();
     }
 
     fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe {
