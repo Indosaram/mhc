@@ -281,7 +281,16 @@ pub struct QueuedInput {
     pub text: String,
     pub mode: StreamingBehavior,
     pub enqueue_order: u64,
+    /// senpi `queuedId`: session-unique id of this queued input (`q_<n>`), stable until it is delivered or removed.
+    pub queued_id: String,
+    /// senpi `revision`: 1 when queued, +1 on every edit; a change can name the revision it was based on (senpi#3459).
+    pub revision: u64,
+    /// senpi `ClientMessageIdentity.clientMessageId` of the input, when it was admitted with one.
+    pub client_message_id: Option<String>,
 }
+
+/// senpi `QueuedInputChange`: what a dequeue or edit of one queued input did.
+pub use crate::pending_input_session::QueuedInputChangeOutcome as QueuedInputChange;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClearedQueue {
@@ -626,6 +635,12 @@ struct AgentSessionState {
     queued_input_order: Vec<QueuedInput>,
     queued_input_ages: crate::queued_input_age::QueuedInputAges,
     next_queued_input_order: u64,
+    /// senpi `_nextQueuedId`.
+    next_queued_id: u64,
+    /// senpi `_queuedMessages`: the message queued for each `queuedId`, so removal and edits hit the native queue.
+    queued_messages: Vec<(String, AgentMessage)>,
+    /// senpi `_deliveredQueuedIds`: recently delivered ids (bounded), so a late change answers `already_delivered`.
+    delivered_queued_ids: std::collections::VecDeque<String>,
     post_compaction_deferred_steering_messages: Vec<AgentMessage>,
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
     prompt_start_pending: bool,
@@ -973,6 +988,8 @@ pub struct AgentSessionInner {
     lifecycle: Mutex<crate::lifecycle_ledger::LifecycleLedger>,
     external_admission: crate::external_admission::ExternalAdmission,
     held_inputs: Mutex<crate::held_inputs::HeldInputs>,
+    /// senpi `_pendingInputs`: identified queued input in durable custody (senpi#3549). Set once the session exists.
+    pending_inputs: std::sync::OnceLock<Arc<crate::pending_input_session::SessionPendingInputs>>,
     delivered_held_inputs: Mutex<Vec<(String, u64)>>,
     held_preparation: tokio::sync::Mutex<()>,
     reserved_held_inputs: Mutex<BTreeSet<String>>,
@@ -996,6 +1013,8 @@ pub struct AgentSessionInner {
     recovery_identity: Mutex<Option<crate::session_recovery_identity::SessionRecoveryIdentity>>,
     /// senpi `_structuredLane` (senpi#4272).
     structured_lane: crate::structured_session_lane::StructuredSessionLane,
+    /// senpi `_unregisterMemoryReport`: a no-op unless `SENPI_MEMORY_REPORT=1`; released on dispose.
+    memory_report_unregister: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
@@ -1060,6 +1079,10 @@ pub struct AgentSessionInner {
     /// senpi `runtimeHost.setBeforeSessionInvalidate`: runs once a replacement or reload proceeds,
     /// right before the extension runtime is invalidated and the next `session_start` re-registers UI.
     before_session_invalidate: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// senpi `onBeforeSessionReplace` for a session replaced in place (new, switch/import, fork): runs after the
+    /// outgoing `session_shutdown` handlers and before its extension runtime is invalidated.
+    before_session_replace: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
+    next_before_session_replace: AtomicU64,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
     monitor_generation: AtomicU64,
@@ -3787,10 +3810,12 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
                     to,
                     chain_key,
                     reason,
+                    limit,
                 } => AgentSessionEvent::RetryFallbackApplied {
                     from,
                     to,
                     chain_key,
+                    limit,
                     reason: match reason {
                         FallbackReason::Transient => "transient",
                         FallbackReason::Refusal => "refusal",
@@ -3799,8 +3824,12 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
                     }
                     .to_owned(),
                 },
-                FallbackEvent::Reverted { from, to } => {
-                    AgentSessionEvent::RetryFallbackReverted { from, to }
+                FallbackEvent::Reverted { from, to, stranded } => {
+                    AgentSessionEvent::RetryFallbackReverted {
+                        from,
+                        to,
+                        cause: stranded.then(|| "fallback-unusable".to_owned()),
+                    }
                 }
             });
         }
@@ -3994,6 +4023,126 @@ fn without_deleted_headers(headers: Option<ProviderHeaders>) -> Option<BTreeMap<
             .filter_map(|(key, value)| value.map(|value| (key, value)))
             .collect()
     })
+}
+
+/// senpi `_mintQueuedId`: the next session-unique queued-input id, `q_<n>`.
+fn mint_queued_id(state: &mut AgentSessionState) -> String {
+    state.next_queued_id += 1;
+    format!("q_{}", state.next_queued_id)
+}
+
+/// senpi `_changeQueuedInput`'s edit: the same user message with its text replaced, its images kept.
+fn with_user_text(message: &AgentMessage, text: &str) -> AgentMessage {
+    let Some(maho_ai::types::Message::User(user)) = message.try_as_llm() else {
+        return message.clone();
+    };
+    let images: Vec<ImageContent> = match &user.content {
+        maho_ai::types::UserContent::Text(_) => Vec::new(),
+        maho_ai::types::UserContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                maho_ai::types::ContentBlock::Image(image) => Some(image.clone()),
+                _ => None,
+            })
+            .collect(),
+    };
+    let mut content = vec![maho_ai::types::ContentBlock::Text(
+        maho_ai::types::TextContent {
+            text: text.to_owned(),
+            ..Default::default()
+        },
+    )];
+    content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
+    maho_ai::types::Message::User(maho_ai::types::UserMessage {
+        content: maho_ai::types::UserContent::Blocks(content),
+        timestamp: user.timestamp,
+    })
+    .into()
+}
+
+/// The session JSONL as the pending-input store's journal session (upstream passes `sessionManager`).
+struct SessionJournal(std::sync::Weak<AgentSessionInner>);
+
+impl SessionJournal {
+    fn session(&self) -> Option<AgentSession> {
+        self.0.upgrade().map(|inner| AgentSession { inner })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::pending_input_journal::JournalSession for SessionJournal {
+    fn append_custom_entry(&self, custom_type: &str, data: Value) {
+        if let Some(session) = self.session() {
+            session.with_session_manager_mut(|manager| {
+                manager.append_custom(custom_type, Some(data));
+            });
+        }
+    }
+    async fn persist_header_now(&self) -> Result<(), String> {
+        match self.session() {
+            Some(session) => {
+                session.with_session_manager_mut(|manager| manager.persist_header_now())
+            }
+            None => Ok(()),
+        }
+    }
+    fn entries(&self) -> Vec<Value> {
+        self.session()
+            .map(|session| session.with_session_manager(|manager| manager.entries()))
+            .unwrap_or_default()
+    }
+    fn session_file(&self) -> Option<String> {
+        self.session().and_then(|session| {
+            session.with_session_manager(|manager| manager.session_file().map(str::to_owned))
+        })
+    }
+    fn is_persisted(&self) -> bool {
+        self.session()
+            .is_some_and(|session| session.with_session_manager(|manager| manager.is_persisted()))
+    }
+    fn is_transcript_flushed(&self) -> bool {
+        self.session()
+            .is_some_and(|session| session.with_session_manager(|manager| manager.is_flushed()))
+    }
+}
+
+/// senpi `registerMemoryReportSession(this, {...})`: read only when a report is requested; a dropped session
+/// reports empty figures until its dispose unregisters it.
+struct SessionMemoryReportSource(std::sync::Weak<AgentSessionInner>);
+
+impl crate::memory_report::memory_report_registry::MemoryReportSessionSource
+    for SessionMemoryReportSource
+{
+    fn session_id(&self) -> String {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner }.session_id())
+            .unwrap_or_default()
+    }
+    fn session_file(&self) -> Option<String> {
+        self.0
+            .upgrade()
+            .and_then(|inner| AgentSession { inner }.session_file())
+    }
+    fn resident_store(&self) -> crate::session_resident_store_size::ResidentStoreSize {
+        self.0
+            .upgrade()
+            .map(|inner| {
+                let stats = AgentSession { inner }
+                    .with_session_manager(|manager| manager.resident_store_stats());
+                crate::session_resident_store_size::ResidentStoreSize {
+                    entries: stats.blob_count,
+                    approx_bytes: stats.blob_bytes,
+                }
+            })
+            .unwrap_or_default()
+    }
+    fn reporters(&self) -> Vec<maho_ext_api::NamedMemoryReporter> {
+        self.0
+            .upgrade()
+            .map(|inner| AgentSession { inner }.extension_memory_reporters())
+            .unwrap_or_default()
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -4306,6 +4455,9 @@ impl AgentSession {
             queued_input_order: Vec::new(),
             queued_input_ages: Default::default(),
             next_queued_input_order: 0,
+            next_queued_id: 0,
+            queued_messages: Vec::new(),
+            delivered_queued_ids: std::collections::VecDeque::new(),
             post_compaction_deferred_steering_messages: Vec::new(),
             post_compaction_deferred_follow_up_messages: Vec::new(),
             prompt_start_pending: false,
@@ -4392,6 +4544,7 @@ impl AgentSession {
                 agent,
                 lifecycle: Mutex::new(lifecycle),
                 held_inputs: Mutex::new(held_inputs),
+                pending_inputs: std::sync::OnceLock::new(),
                 delivered_held_inputs: Mutex::new(Vec::new()),
                 held_preparation: tokio::sync::Mutex::new(()),
                 reserved_held_inputs: Mutex::new(BTreeSet::new()),
@@ -4408,6 +4561,7 @@ impl AgentSession {
                 structured_lane: crate::structured_session_lane::StructuredSessionLane::new(
                     internal_channel,
                 ),
+                memory_report_unregister: Mutex::new(None),
                 recovery_identity: Mutex::new(
                     crate::engine_socket_flag::compact_updates_enabled()
                         .then(crate::session_recovery_identity::SessionRecoveryIdentity::default),
@@ -4495,6 +4649,8 @@ impl AgentSession {
                 extension_rpc_event_forward: Mutex::new(None),
                 settings_source_subscription: Mutex::new(None),
                 before_session_invalidate: Mutex::new(None),
+                before_session_replace: Mutex::new(Vec::new()),
+                next_before_session_replace: AtomicU64::new(0),
                 settled_delivery: Mutex::new(
                     crate::agent_settled_delivery::AgentSettledDelivery::new(),
                 ),
@@ -4670,7 +4826,21 @@ impl AgentSession {
             }));
         lock(&session.lifecycle).release_restore_barrier();
         session.install_agent_next_turn_refresh();
+        session.install_pending_inputs();
+        // A no-op unless SENPI_MEMORY_REPORT=1: the report reads these only when it is requested.
+        *lock(&session.inner.memory_report_unregister) = Some(
+            crate::memory_report::memory_report_registry::register_memory_report_session(
+                session.memory_report_owner(),
+                Arc::new(SessionMemoryReportSource(Arc::downgrade(&session.inner))),
+                &crate::config::current_env(),
+            ),
+        );
         Ok(session)
+    }
+
+    /// The key this session's memory report source is registered under (senpi keys by object identity).
+    pub fn memory_report_owner(&self) -> u64 {
+        Arc::as_ptr(&self.inner) as usize as u64
     }
 
     fn state(&self) -> MutexGuard<'_, AgentSessionState> {
@@ -5121,7 +5291,7 @@ impl AgentSession {
                     let ids = state
                         .queued_input_order
                         .iter()
-                        .map(|input| input.enqueue_order.to_string())
+                        .map(|input| input.queued_id.clone())
                         .collect::<Vec<_>>();
                     state
                         .queued_input_ages
@@ -6660,6 +6830,15 @@ impl AgentSession {
     pub fn wake_source_counts(&self) -> crate::session_activity::ActiveCounts {
         self.state().wake_sources.active_counts()
     }
+    /// senpi `activeWakeSources`: the sources that currently publish live work.
+    pub fn active_wake_sources(&self) -> Vec<String> {
+        self.state()
+            .wake_sources
+            .active_sources()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
     pub fn paused_notice_count(&self) -> usize {
         lock(&self.engine_turn_hold).notice_count()
     }
@@ -7704,9 +7883,12 @@ impl AgentSession {
         enqueue_order: Option<u64>,
         source: Option<InputSource>,
     ) {
-        self.record_queued_input(&text, mode, enqueue_order);
+        let queued_id = self.record_queued_input(&text, mode, enqueue_order, None, None);
         let message = make_user_message(&text, images);
         self.remember_input_source(&message, Some(source.unwrap_or(InputSource::Interactive)));
+        self.state()
+            .queued_messages
+            .push((queued_id, message.clone()));
         let defer = {
             let state = self.state();
             state.prompt_start_pending && state.post_compaction_assistant_generation.is_some()
@@ -11669,6 +11851,7 @@ impl AgentSession {
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::New)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| manager.new_session(options));
         self.finish_session_replacement(maho_ext_api::SessionReason::New, previous)
@@ -11734,6 +11917,7 @@ impl AgentSession {
         let previous_cwd = self.cwd();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Resume)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         // Nothing writes to the replaced manager any more, so it releases its writer claim.
         self.with_session_manager_mut(|manager| std::mem::replace(manager, target).dispose());
@@ -12100,6 +12284,7 @@ impl AgentSession {
         });
         self.emit_session_shutdown(maho_ext_api::SessionReason::Fork)
             .await;
+        self.run_before_session_replace();
         self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| {
             manager.new_session(Some(crate::session_manager::NewSessionOptions {
@@ -16473,6 +16658,31 @@ impl AgentSession {
         Ok(())
     }
 
+    /// senpi `onBeforeSessionReplace` for this session's in-place replacements (new, switch, import, fork; never
+    /// reload or dispose). Returns the id [`Self::remove_before_session_replace`] takes.
+    pub fn on_before_session_replace(&self, listener: Arc<dyn Fn() + Send + Sync>) -> u64 {
+        let id = self
+            .next_before_session_replace
+            .fetch_add(1, Ordering::Relaxed);
+        lock(&self.before_session_replace).push((id, listener));
+        id
+    }
+
+    /// Removes a listener [`Self::on_before_session_replace`] added.
+    pub fn remove_before_session_replace(&self, id: u64) {
+        lock(&self.before_session_replace).retain(|(listener, _)| *listener != id);
+    }
+
+    fn run_before_session_replace(&self) {
+        let listeners: Vec<_> = lock(&self.before_session_replace)
+            .iter()
+            .map(|(_, listener)| listener.clone())
+            .collect();
+        for listener in listeners {
+            listener();
+        }
+    }
+
     /// senpi `setBeforeSessionInvalidate`.
     pub fn set_before_session_invalidate(&self, callback: Option<Arc<dyn Fn() + Send + Sync>>) {
         *lock(&self.before_session_invalidate) = callback;
@@ -19662,6 +19872,9 @@ impl AgentSession {
             return;
         }
         self.structured_lane.dispose();
+        if let Some(unregister) = lock(&self.inner.memory_report_unregister).take() {
+            unregister();
+        }
         lock(&self.inner.nested_host_calls).clear();
         let disposers = std::mem::take(&mut *lock(&self.inner.tool_context_disposers));
         for dispose in disposers {
@@ -19765,34 +19978,342 @@ impl AgentSession {
 
     fn release_queued_deliveries(&self, _tickets: &[String], _cause: &str) {}
 
-    #[allow(dead_code)] // consumed by the steer/follow-up queue entry points in the queue slice
-    fn record_queued_input(&self, text: &str, mode: StreamingBehavior, enqueue_order: Option<u64>) {
+    /// senpi `_recordQueuedInput`: the queued record at revision 1, under the id the store admitted it with or a
+    /// newly minted one.
+    fn record_queued_input(
+        &self,
+        text: &str,
+        mode: StreamingBehavior,
+        enqueue_order: Option<u64>,
+        client_message_id: Option<String>,
+        admitted_queued_id: Option<String>,
+    ) -> String {
         let mut state = self.state();
         let order = enqueue_order.unwrap_or_else(|| {
             state.next_queued_input_order += 1;
             state.next_queued_input_order
         });
         state.next_queued_input_order = state.next_queued_input_order.max(order);
+        let queued_id = admitted_queued_id.unwrap_or_else(|| mint_queued_id(&mut state));
         state
             .queued_input_ages
-            .note_queued(&order.to_string(), chrono::Utc::now().timestamp_millis());
+            .note_queued(&queued_id, chrono::Utc::now().timestamp_millis());
         state.queued_input_order.push(QueuedInput {
             text: text.to_owned(),
             mode,
             enqueue_order: order,
+            queued_id: queued_id.clone(),
+            revision: 1,
+            client_message_id,
         });
+        queued_id
     }
 
-    #[allow(dead_code)] // consumed by the steer/follow-up delivery path in the queue slice
+    /// senpi `_removeQueuedInput`: a queued input reached a turn; forget its record and remember its id as
+    /// delivered.
     fn remove_queued_input(&self, text: &str, mode: StreamingBehavior) {
         let mut state = self.state();
-        if let Some(index) = state
+        let Some(index) = state
             .queued_input_order
             .iter()
             .position(|message| message.mode == mode && message.text == text)
-        {
-            state.queued_input_order.remove(index);
+        else {
+            return;
+        };
+        let delivered = state.queued_input_order.remove(index);
+        state
+            .queued_messages
+            .retain(|(queued_id, _)| *queued_id != delivered.queued_id);
+        state.delivered_queued_ids.push_back(delivered.queued_id);
+        if state.delivered_queued_ids.len() > 256 {
+            state.delivered_queued_ids.pop_front();
         }
+    }
+
+    /// senpi `dequeueQueuedInput`: removes one queued input before it reaches a turn, from the visible lists and
+    /// the native queue alike. An input already drained into a turn answers `already_delivered`.
+    pub fn dequeue_queued_input(
+        &self,
+        queued_id: &str,
+        expected_revision: Option<u64>,
+    ) -> QueuedInputChange {
+        self.change_queued_input_now(queued_id, None, expected_revision)
+    }
+
+    /// senpi `editQueuedInput`: replaces the text of one queued input in place, keeping its order and identity,
+    /// and bumps its revision.
+    pub fn edit_queued_input(
+        &self,
+        queued_id: &str,
+        text: &str,
+        expected_revision: Option<u64>,
+    ) -> QueuedInputChange {
+        self.change_queued_input_now(queued_id, Some(text), expected_revision)
+    }
+
+    /// senpi `changeQueuedInput`: removes (`text: None`) or edits one queued input. An input in durable custody
+    /// (admitted with a client id) changes in its record first and in the native queue in the same gated step;
+    /// any other input changes as `dequeue_queued_input` / `edit_queued_input` do.
+    pub async fn change_queued_input(
+        &self,
+        queued_id: &str,
+        text: Option<String>,
+        expected_revision: Option<u64>,
+        effect_id: Option<String>,
+    ) -> Result<QueuedInputChange, String> {
+        let client_message_id = self
+            .state()
+            .queued_input_order
+            .iter()
+            .find(|input| input.queued_id == queued_id)
+            .and_then(|input| input.client_message_id.clone());
+        if let (Some(client_message_id), Some(pending)) =
+            (client_message_id, self.pending_inputs.get())
+        {
+            let native_text = text.clone();
+            let durable = pending
+                .change(
+                    crate::pending_input_session::QueuedInputChangeRequest {
+                        client_message_id,
+                        text,
+                        expected_revision,
+                        effect_id,
+                    },
+                    || self.change_queued_input_now(queued_id, native_text.as_deref(), None),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(outcome) = durable {
+                return Ok(outcome);
+            }
+            return Ok(self.change_queued_input_now(
+                queued_id,
+                native_text.as_deref(),
+                expected_revision,
+            ));
+        }
+        Ok(self.change_queued_input_now(queued_id, text.as_deref(), expected_revision))
+    }
+
+    /// senpi `_changeQueuedInput`: synchronous from the revision check to the change, so nothing else on the
+    /// session can land in between.
+    fn change_queued_input_now(
+        &self,
+        queued_id: &str,
+        next_text: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> QueuedInputChange {
+        let changed = {
+            let mut guard = self.state();
+            // A plain `&mut` so the fields below borrow apart.
+            let state = &mut *guard;
+            let Some(index) = state
+                .queued_input_order
+                .iter()
+                .position(|input| input.queued_id == queued_id)
+            else {
+                return if state.delivered_queued_ids.iter().any(|id| id == queued_id) {
+                    QueuedInputChange::AlreadyDelivered
+                } else {
+                    QueuedInputChange::NotFound
+                };
+            };
+            let record = state.queued_input_order[index].clone();
+            let message = state
+                .queued_messages
+                .iter()
+                .find(|(id, _)| id == queued_id)
+                .map(|(_, message)| message.clone());
+            // Only user input is queued by id; anything else cannot be edited, and must not be removed by an edit.
+            let is_user = message
+                .as_ref()
+                .is_some_and(|message| message.role() == "user");
+            if next_text.is_some() && !is_user {
+                return QueuedInputChange::NotFound;
+            }
+            let next_message = match (next_text, &message) {
+                (Some(text), Some(message)) if is_user => Some(with_user_text(message, text)),
+                _ => None,
+            };
+            // Equal queued messages are told apart by their place among the inputs queued in the same mode.
+            let occurrence = message.as_ref().map_or(0, |message| {
+                state.queued_input_order[..index]
+                    .iter()
+                    .filter(|input| input.mode == record.mode)
+                    .filter(|input| {
+                        state
+                            .queued_messages
+                            .iter()
+                            .any(|(id, queued)| *id == input.queued_id && queued == message)
+                    })
+                    .count()
+            });
+            let deferred = match record.mode {
+                StreamingBehavior::Steer => &state.post_compaction_deferred_steering_messages,
+                StreamingBehavior::FollowUp => &state.post_compaction_deferred_follow_up_messages,
+            };
+            let deferred_index = message.as_ref().and_then(|message| {
+                deferred
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, queued)| *queued == message)
+                    .nth(occurrence)
+                    .map(|(position, _)| position)
+            });
+            let queue = match record.mode {
+                StreamingBehavior::Steer => maho_agent::types::PendingQueue::Steering,
+                StreamingBehavior::FollowUp => maho_agent::types::PendingQueue::FollowUp,
+            };
+            if expected_revision.is_some_and(|expected| expected != record.revision) {
+                // An input that already left the native queue answers already_delivered, as without a revision;
+                // replacing the message with itself is a read-only probe of that queue.
+                let queued = message.as_ref().is_some_and(|message| {
+                    deferred_index.is_some()
+                        || self.agent.change_queued_message(
+                            queue,
+                            message,
+                            occurrence,
+                            Some(message.clone()),
+                        )
+                });
+                return if queued {
+                    QueuedInputChange::Conflict
+                } else {
+                    QueuedInputChange::AlreadyDelivered
+                };
+            }
+            let still_queued = message.as_ref().is_some_and(|message| {
+                deferred_index.is_some()
+                    || self.agent.change_queued_message(
+                        queue,
+                        message,
+                        occurrence,
+                        next_message.clone(),
+                    )
+            });
+            if !still_queued {
+                return QueuedInputChange::AlreadyDelivered;
+            }
+            if let Some(position) = deferred_index {
+                let deferred = match record.mode {
+                    StreamingBehavior::Steer => {
+                        &mut state.post_compaction_deferred_steering_messages
+                    }
+                    StreamingBehavior::FollowUp => {
+                        &mut state.post_compaction_deferred_follow_up_messages
+                    }
+                };
+                match &next_message {
+                    None => {
+                        deferred.remove(position);
+                    }
+                    Some(next) => deferred[position] = next.clone(),
+                }
+            }
+            let text_occurrence = state.queued_input_order[..index]
+                .iter()
+                .filter(|input| input.mode == record.mode && input.text == record.text)
+                .count();
+            let texts = match record.mode {
+                StreamingBehavior::Steer => &mut state.steering_messages,
+                StreamingBehavior::FollowUp => &mut state.follow_up_messages,
+            };
+            let text_index = texts
+                .iter()
+                .enumerate()
+                .filter(|(_, text)| **text == record.text)
+                .nth(text_occurrence)
+                .map(|(position, _)| position);
+            match (next_text, next_message) {
+                (Some(text), Some(next_message)) => {
+                    if let Some(position) = text_index {
+                        texts[position] = text.to_owned();
+                    }
+                    state.queued_input_order[index] = QueuedInput {
+                        text: text.to_owned(),
+                        revision: record.revision + 1,
+                        ..record
+                    };
+                    if let Some(slot) = state
+                        .queued_messages
+                        .iter_mut()
+                        .find(|(id, _)| id == queued_id)
+                    {
+                        slot.1 = next_message;
+                    }
+                    QueuedInputChange::Edited
+                }
+                _ => {
+                    if let Some(position) = text_index {
+                        texts.remove(position);
+                    }
+                    state.queued_input_order.remove(index);
+                    state.queued_messages.retain(|(id, _)| id != queued_id);
+                    QueuedInputChange::Removed
+                }
+            }
+        };
+        self.emit_queue_update();
+        changed
+    }
+
+    /// senpi `getQueuedInputs`: the queued inputs sorted by enqueue order, each with its `queuedId` and revision.
+    pub fn get_queued_inputs(&self) -> Vec<QueuedInput> {
+        self.get_queued_input_order()
+    }
+
+    /// senpi `getPendingInputs`: the pending inputs in durable custody, and an explicit outcome for each id the
+    /// caller already knows.
+    pub async fn get_pending_inputs(
+        &self,
+        known_client_message_ids: &[String],
+    ) -> Result<crate::pending_input_session::PendingInputSnapshot, String> {
+        let Some(pending) = self.pending_inputs.get() else {
+            return Ok(crate::pending_input_session::PendingInputSnapshot {
+                lifetime_id: String::new(),
+                through_cursor: 0,
+                inputs: Vec::new(),
+                outcomes: known_client_message_ids
+                    .iter()
+                    .map(|client_message_id| {
+                        crate::pending_input_session::PendingInputOutcome::NotAdmitted {
+                            client_message_id: client_message_id.clone(),
+                        }
+                    })
+                    .collect(),
+            });
+        };
+        pending
+            .snapshot(known_client_message_ids)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// senpi constructor: `this._pendingInputs = new SessionPendingInputs({ sessionManager, nextQueuedId })`,
+    /// sharing the session's queue-id counter. A session file that already journals pending inputs opens the
+    /// store now.
+    ///
+    /// GAP: upstream also installs the store's queue port on the agent, publishes `pending_input_update`, and
+    /// admits identified steer/follow-up input into the store (`_enqueueQueuedInput`); core's queue entry points
+    /// carry no client id yet, so nothing here admits into the store and the port stays uninstalled.
+    fn install_pending_inputs(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        let next_weak = weak.clone();
+        let pending = crate::pending_input_session::SessionPendingInputs::new(
+            crate::pending_input_session::SessionPendingInputsOptions {
+                session_manager: Arc::new(SessionJournal(weak)),
+                next_queued_id: Arc::new(move || {
+                    next_weak
+                        .upgrade()
+                        .map(|inner| mint_queued_id(&mut AgentSession { inner }.state()))
+                        .unwrap_or_default()
+                }),
+                on_change: None,
+                journal: None,
+                client_message_id_of: Arc::new(|_| None),
+            },
+        );
+        let _ = self.pending_inputs.set(pending);
     }
 
     /// Clear all queued messages and return them. `ordered` preserves the recovery order across
@@ -19806,6 +20327,7 @@ impl AgentSession {
             steering = std::mem::take(&mut state.steering_messages);
             follow_up = std::mem::take(&mut state.follow_up_messages);
             ordered = std::mem::take(&mut state.queued_input_order);
+            state.queued_messages.clear();
             state.post_compaction_deferred_steering_messages.clear();
             state.post_compaction_deferred_follow_up_messages.clear();
             if abort_will_follow && (!steering.is_empty() || !follow_up.is_empty()) {
@@ -20387,6 +20909,37 @@ impl AgentSession {
         }
     }
 
+    /// senpi `session.extensionRunner.emit(event)` for a `session_control_wake` event (the control
+    /// endpoints' wake pass). A handler's failure is reported through the runner's error listeners, as
+    /// senpi's `emit` does; only an inactive runner fails the pass. No bound runner is a no-op.
+    pub async fn emit_session_control_wake(&self, event: &Value) -> Result<(), String> {
+        let strings = |value: &Value| -> Vec<String> {
+            value
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let reason = event["reason"].as_str().unwrap_or("inbox").to_owned();
+        let reasons = strings(&event["reasons"]);
+        let delivery_ids = event
+            .get("delivery_ids")
+            .filter(|ids| ids.is_array())
+            .map(strings);
+        let mut guard = self.extension_runner.lock().await.clone();
+        let Some(runner) = guard.as_mut() else {
+            return Ok(());
+        };
+        runner
+            .emit_session_control_wake(reason, reasons, delivery_ids)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
     /// senpi `emitSessionShutdownEvent(runner, {reason: "quit"}, {processExit})`: with `process_exit` the
     /// handlers share the total quit budget counted from this request (senpi#3711).
     pub async fn emit_session_shutdown_for_quit(&self, process_exit: bool) {
@@ -20422,6 +20975,9 @@ impl AgentSession {
                 text: input.text,
                 mode: input.mode,
                 enqueue_order: input.enqueue_order,
+                queued_id: input.queued_id,
+                revision: input.revision,
+                client_message_id: input.client_message_id,
             })
             .collect();
         self.emit(AgentSessionEvent::QueueUpdate {
@@ -20895,6 +21451,113 @@ impl AgentSession {
             level,
             selection.map(|selection| ThinkingSelection { level, ..selection }),
         )
+    }
+
+    /// senpi `getThinkingLevelForModel(model)`: the level a switch to `model` would run at, where it comes from, and
+    /// the levels the model supports. The candidates are senpi `_getThinkingForModelSwitch`'s: this session's memory,
+    /// the global per-model level, the model's own default, then the configured default.
+    ///
+    /// ADAPTATION: senpi answers the current model with its tracked `_thinkingLevelSource`; this session does not
+    /// track the source of the level in force, so the current model reports its live level with the source the same
+    /// candidate chain names.
+    pub fn thinking_level_for_model(
+        &self,
+        model: &Model,
+    ) -> (
+        ModelThinkingLevel,
+        crate::session_thinking_memory::ThinkingLevelSource,
+        Vec<ModelThinkingLevel>,
+    ) {
+        use crate::session_thinking_memory::ThinkingLevelSource as Source;
+        let available = crate::thinking_levels::get_supported_thinking_levels(model);
+        let parse = |level: &str| {
+            ModelThinkingLevel::ALL
+                .into_iter()
+                .find(|candidate| candidate.as_str() == level)
+        };
+        let candidates = [
+            (
+                self.get_session_model_thinking_level(&model.provider, &model.id)
+                    .and_then(|level| parse(&level)),
+                Source::Session,
+            ),
+            (
+                self.with_settings_manager(|manager| {
+                    manager
+                        .get_value("modelThinkingLevels")
+                        .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id)))
+                        .and_then(Value::as_str)
+                        .and_then(parse)
+                }),
+                Source::Global,
+            ),
+            (model.default_thinking_level, Source::ModelDefault),
+            (
+                self.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel"))
+                    .and_then(|level| parse(&level)),
+                Source::Default,
+            ),
+        ];
+        let (requested, source) = candidates
+            .into_iter()
+            .find_map(|(level, source)| level.map(|level| (level, source)))
+            .unwrap_or((ModelThinkingLevel::Medium, Source::Default));
+        let current = self.model();
+        if models_are_equal(Some(&current), Some(model)) {
+            return (self.thinking_level(), source, available);
+        }
+        let level = clamp_thinking_level(requested, &available);
+        let source = if level != requested && source != Source::Default {
+            Source::Clamped
+        } else {
+            source
+        };
+        (level, source, available)
+    }
+
+    /// Why `continue_from_leaf` would refuse now (senpi's `ContinueFromLeafError` checks), so a caller can answer
+    /// with the error's code.
+    pub fn continue_from_leaf_refusal(
+        &self,
+    ) -> Option<crate::continue_from_leaf::ContinueFromLeafError> {
+        use crate::continue_from_leaf::{ContinueFromLeafCode, ContinueFromLeafError};
+        if self.is_streaming() {
+            return Some(ContinueFromLeafError::new(ContinueFromLeafCode::Streaming));
+        }
+        let messages = self.messages();
+        let Some(leaf) = messages.last() else {
+            return Some(ContinueFromLeafError::new(
+                ContinueFromLeafCode::NothingToContinue,
+            ));
+        };
+        // Only an answer can be continued; a prompt left as the leaf (an edited one) is retried, not continued.
+        (leaf.role() != "assistant")
+            .then(|| ContinueFromLeafError::new(ContinueFromLeafCode::LeafNotAssistant))
+    }
+
+    /// senpi `continueFromLeaf()`: continues the conversation from its last answer with no new prompt, as a hidden
+    /// `continue-from-leaf` custom message that triggers a turn.
+    ///
+    /// ADAPTATION: senpi answers once the turn was admitted (its `agent_start`, or a delegation). The native custom
+    /// message starts its turn on a spawned task and reports a start-time failure from the send itself, so this
+    /// answers once the send accepted the turn; a later failure is a normal turn error event, as upstream.
+    pub async fn continue_from_leaf(&self) -> Result<(), String> {
+        if let Some(refusal) = self.continue_from_leaf_refusal() {
+            return Err(refusal.to_string());
+        }
+        self.send_custom_message_content(
+            crate::continue_from_leaf::CONTINUE_FROM_LEAF_CUSTOM_TYPE.to_owned(),
+            maho_agent::harness::messages::CustomMessageContent::Text(
+                crate::continue_from_leaf::CONTINUE_FROM_LEAF_DIRECTIVE.to_owned(),
+            ),
+            false,
+            None,
+            maho_ext_api::SendMessageOptions {
+                trigger_turn: true,
+                deliver_as: None,
+            },
+        )
+        .await
     }
 
     // Relocation API (senpi session-relocation.ts, session-control-actions.ts)
@@ -26192,8 +26855,8 @@ mod tests {
     #[test]
     fn clear_queue_returns_messages_in_recovery_order() {
         let session = test_session();
-        session.record_queued_input("b", StreamingBehavior::FollowUp, Some(2));
-        session.record_queued_input("a", StreamingBehavior::Steer, Some(1));
+        session.record_queued_input("b", StreamingBehavior::FollowUp, Some(2), None, None);
+        session.record_queued_input("a", StreamingBehavior::Steer, Some(1), None, None);
         session.state().steering_messages.push("a".to_owned());
         session.state().follow_up_messages.push("b".to_owned());
         let cleared = session.clear_queue(false);
@@ -26252,6 +26915,334 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// The user texts of the agent's native queues, steering then follow-up (the order a turn delivers them in).
+    fn native_queued_texts(session: &AgentSession) -> Vec<String> {
+        let mut messages = session
+            .agent
+            .queued_messages(maho_agent::types::PendingQueue::Steering);
+        messages.extend(
+            session
+                .agent
+                .queued_messages(maho_agent::types::PendingQueue::FollowUp),
+        );
+        messages.iter().map(user_message_text).collect()
+    }
+
+    /// Delivers the native queue's next message as a turn would: the agent's `message_start` of that user message.
+    async fn deliver_next_queued(session: &AgentSession) {
+        let message = session
+            .agent
+            .peek_queued_messages(true)
+            .into_iter()
+            .next()
+            .expect("a queued message");
+        assert!(session.agent.remove_queued_message(&message));
+        session
+            .process_agent_event(
+                maho_agent::types::AgentEvent::MessageStart {
+                    message,
+                    streaming: None,
+                },
+                maho_ai::utils::abort::AbortController::new().signal(),
+            )
+            .await;
+    }
+
+    /// senpi test/suite/regressions/1971-queued-input-dequeue-edit.test.ts: "removes only the dequeued steer from
+    /// both queues and delivers the other".
+    #[tokio::test]
+    async fn dequeue_removes_only_that_steer_from_both_queues() {
+        let session = test_session();
+        session
+            .steer("drop me", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        session
+            .steer("keep me", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        let queued = session.get_queued_inputs();
+        let (first, second) = (queued[0].clone(), queued[1].clone());
+        assert!(first.queued_id.starts_with("q_") && first.queued_id[2..].parse::<u64>().is_ok());
+        assert_ne!(second.queued_id, first.queued_id);
+
+        assert_eq!(
+            session.dequeue_queued_input(&first.queued_id, None),
+            QueuedInputChange::Removed
+        );
+        assert_eq!(session.get_steering_messages(), ["keep me"]);
+        assert_eq!(
+            session
+                .get_queued_inputs()
+                .iter()
+                .map(|input| input.queued_id.clone())
+                .collect::<Vec<_>>(),
+            [second.queued_id.clone()]
+        );
+        assert_eq!(native_queued_texts(&session), ["keep me"]);
+        deliver_next_queued(&session).await;
+
+        assert_eq!(
+            session.dequeue_queued_input(&second.queued_id, None),
+            QueuedInputChange::AlreadyDelivered
+        );
+        assert_eq!(
+            session.dequeue_queued_input("q_999", None),
+            QueuedInputChange::NotFound
+        );
+    }
+
+    /// senpi 1971: "delivers the edited text in the input's original place".
+    #[tokio::test]
+    async fn an_edit_keeps_the_input_in_its_original_place() {
+        let session = test_session();
+        session
+            .steer("first steer", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        session
+            .follow_up("typo follw-up", None, QueuedInputOptions::default())
+            .await
+            .expect("follow_up");
+        let follow_up = session
+            .get_queued_inputs()
+            .into_iter()
+            .find(|input| input.mode == StreamingBehavior::FollowUp)
+            .expect("follow-up");
+
+        assert_eq!(
+            session.edit_queued_input(&follow_up.queued_id, "fixed follow-up", None),
+            QueuedInputChange::Edited
+        );
+        assert_eq!(session.get_follow_up_messages(), ["fixed follow-up"]);
+        assert_eq!(
+            native_queued_texts(&session),
+            ["first steer", "fixed follow-up"]
+        );
+    }
+
+    /// senpi 1971: "tells two queued inputs with the same text apart".
+    #[tokio::test]
+    async fn two_queued_inputs_with_the_same_text_are_told_apart() {
+        let session = test_session();
+        session
+            .steer("same", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        session
+            .steer("same", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        let second = session.get_queued_inputs()[1].clone();
+
+        assert_eq!(
+            session.edit_queued_input(&second.queued_id, "changed", None),
+            QueuedInputChange::Edited
+        );
+        assert_eq!(session.get_steering_messages(), ["same", "changed"]);
+        assert_eq!(native_queued_texts(&session), ["same", "changed"]);
+    }
+
+    /// senpi test/suite/regressions/3459-queued-input-expected-revision.test.ts: "starts every queued input at
+    /// revision 1 and bumps it on each edit".
+    #[tokio::test]
+    async fn every_queued_input_starts_at_revision_one_and_each_edit_bumps_it() {
+        let session = test_session();
+        session
+            .steer("draft", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        let input = session.get_queued_inputs()[0].clone();
+        assert_eq!(input.revision, 1);
+
+        assert_eq!(
+            session.edit_queued_input(&input.queued_id, "second", Some(1)),
+            QueuedInputChange::Edited
+        );
+        assert_eq!(session.get_queued_inputs()[0].revision, 2);
+        assert_eq!(
+            session.edit_queued_input(&input.queued_id, "third", None),
+            QueuedInputChange::Edited
+        );
+        assert_eq!(session.get_queued_inputs()[0].revision, 3);
+        assert_eq!(native_queued_texts(&session), ["third"]);
+    }
+
+    /// senpi 3459: "refuses the second of two edits based on the same revision and keeps the first".
+    #[tokio::test]
+    async fn a_second_edit_on_the_same_revision_conflicts_and_the_first_is_kept() {
+        let session = test_session();
+        session
+            .steer("draft", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        let seen = session.get_queued_inputs()[0].clone();
+
+        assert_eq!(
+            session.edit_queued_input(&seen.queued_id, "client B", Some(seen.revision)),
+            QueuedInputChange::Edited
+        );
+        assert_eq!(
+            session.edit_queued_input(&seen.queued_id, "client A", Some(seen.revision)),
+            QueuedInputChange::Conflict
+        );
+        let current = session.get_queued_inputs();
+        assert_eq!(current.len(), 1);
+        assert_eq!(
+            (
+                current[0].queued_id.as_str(),
+                current[0].text.as_str(),
+                current[0].revision
+            ),
+            (seen.queued_id.as_str(), "client B", 2)
+        );
+        assert_eq!(session.get_steering_messages(), ["client B"]);
+        assert_eq!(native_queued_texts(&session), ["client B"]);
+    }
+
+    /// senpi 3459: "refuses a dequeue based on a revision another edit replaced, then removes it at the current
+    /// revision".
+    #[tokio::test]
+    async fn a_stale_dequeue_conflicts_and_the_current_revision_removes() {
+        let session = test_session();
+        session
+            .follow_up("draft", None, QueuedInputOptions::default())
+            .await
+            .expect("follow_up");
+        let seen = session.get_queued_inputs()[0].clone();
+        assert_eq!(
+            session.edit_queued_input(&seen.queued_id, "edited by B", Some(1)),
+            QueuedInputChange::Edited
+        );
+
+        assert_eq!(
+            session.dequeue_queued_input(&seen.queued_id, Some(1)),
+            QueuedInputChange::Conflict
+        );
+        assert_eq!(session.get_follow_up_messages(), ["edited by B"]);
+        assert_eq!(
+            session.dequeue_queued_input(&seen.queued_id, Some(2)),
+            QueuedInputChange::Removed
+        );
+        assert!(native_queued_texts(&session).is_empty());
+    }
+
+    /// senpi 3459: "answers not_found or already_delivered rather than conflict once the input is gone".
+    #[tokio::test]
+    async fn a_gone_input_answers_not_found_or_already_delivered_not_conflict() {
+        let session = test_session();
+        session
+            .steer("removed first", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        session
+            .steer("delivered", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        let queued = session.get_queued_inputs();
+        let (removed, delivered) = (queued[0].clone(), queued[1].clone());
+        assert_eq!(
+            session.dequeue_queued_input(&removed.queued_id, None),
+            QueuedInputChange::Removed
+        );
+        assert_eq!(
+            session.edit_queued_input(&removed.queued_id, "late", Some(7)),
+            QueuedInputChange::NotFound
+        );
+        deliver_next_queued(&session).await;
+        assert_eq!(
+            session.edit_queued_input(&delivered.queued_id, "late", Some(7)),
+            QueuedInputChange::AlreadyDelivered
+        );
+        assert_eq!(
+            session.dequeue_queued_input(&delivered.queued_id, Some(7)),
+            QueuedInputChange::AlreadyDelivered
+        );
+    }
+
+    /// senpi 3459: "refuses a stale revision on an input held back after a compaction, and edits it at the current
+    /// one".
+    #[tokio::test]
+    async fn a_deferred_post_compaction_input_is_revision_checked_and_edited() {
+        let session = test_session();
+        // The post-compaction window: queued input waits in the deferred lists until the next prompt starts.
+        {
+            let mut state = session.state();
+            state.prompt_start_pending = true;
+            state.post_compaction_assistant_generation = Some(0);
+        }
+        session
+            .follow_up("deferred draft", None, QueuedInputOptions::default())
+            .await
+            .expect("follow_up");
+        assert!(native_queued_texts(&session).is_empty());
+        let seen = session.get_queued_inputs()[0].clone();
+        assert_eq!(
+            session.edit_queued_input(&seen.queued_id, "edited once", Some(1)),
+            QueuedInputChange::Edited
+        );
+
+        assert_eq!(
+            session.edit_queued_input(&seen.queued_id, "stale edit", Some(1)),
+            QueuedInputChange::Conflict
+        );
+        assert_eq!(
+            session.dequeue_queued_input(&seen.queued_id, Some(1)),
+            QueuedInputChange::Conflict
+        );
+        let current = session.get_queued_inputs();
+        assert_eq!(
+            (current[0].text.as_str(), current[0].revision),
+            ("edited once", 2)
+        );
+        assert_eq!(session.get_follow_up_messages(), ["edited once"]);
+        assert_eq!(
+            session.edit_queued_input(&seen.queued_id, "edited twice", Some(2)),
+            QueuedInputChange::Edited
+        );
+        let current = session.get_queued_inputs();
+        assert_eq!(
+            (current[0].text.as_str(), current[0].revision),
+            ("edited twice", 3)
+        );
+        let deferred = session
+            .state()
+            .post_compaction_deferred_follow_up_messages
+            .clone();
+        assert_eq!(
+            deferred.iter().map(user_message_text).collect::<Vec<_>>(),
+            ["edited twice"]
+        );
+    }
+
+    /// senpi `getPendingInputs` with nothing in durable custody: no inputs, and every known id `not_admitted`.
+    #[tokio::test]
+    async fn pending_inputs_answer_every_known_id_not_admitted_when_nothing_is_held() {
+        let session = test_session();
+        session
+            .steer("plain", None, QueuedInputOptions::default())
+            .await
+            .expect("steer");
+        let snapshot = session
+            .get_pending_inputs(&["c-1".to_owned(), "never-sent".to_owned()])
+            .await
+            .expect("snapshot");
+        assert!(snapshot.inputs.is_empty());
+        assert_eq!(snapshot.through_cursor, 0);
+        assert!(!snapshot.lifetime_id.is_empty());
+        assert_eq!(
+            snapshot.outcomes,
+            vec![
+                crate::pending_input_session::PendingInputOutcome::NotAdmitted {
+                    client_message_id: "c-1".into()
+                },
+                crate::pending_input_session::PendingInputOutcome::NotAdmitted {
+                    client_message_id: "never-sent".into()
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -26419,6 +27410,66 @@ mod tests {
                 ModelThinkingLevel::Off,
                 Some(explicit_thinking_selection(ModelThinkingLevel::Off))
             )
+        );
+    }
+
+    #[test]
+    fn a_models_thinking_level_names_the_candidate_it_came_from() {
+        use crate::session_thinking_memory::ThinkingLevelSource;
+        let session = test_session();
+        let mut reasoning = test_model();
+        reasoning.id = "faux-other".into();
+        reasoning.reasoning = true;
+        let mut plain = test_model();
+        plain.id = "faux-plain".into();
+        let (level, source, _) = session.thinking_level_for_model(&reasoning);
+        assert_eq!(
+            (level, source),
+            (ModelThinkingLevel::Medium, ThinkingLevelSource::Default)
+        );
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([(
+                "modelThinkingLevels".into(),
+                serde_json::json!({"faux/faux-other": "low", "faux/faux-plain": "high"}),
+            )]));
+        });
+        let (level, source, _) = session.thinking_level_for_model(&reasoning);
+        assert_eq!(
+            (level, source),
+            (ModelThinkingLevel::Low, ThinkingLevelSource::Global)
+        );
+        // A remembered level the model cannot run is clamped, and says so.
+        let (level, source, available) = session.thinking_level_for_model(&plain);
+        assert_eq!(
+            (level, source, available),
+            (
+                ModelThinkingLevel::Off,
+                ThinkingLevelSource::Clamped,
+                vec![ModelThinkingLevel::Off]
+            )
+        );
+    }
+
+    #[test]
+    fn continue_from_leaf_refuses_an_empty_session_and_a_prompt_leaf() {
+        use crate::continue_from_leaf::ContinueFromLeafCode;
+        let session = test_session();
+        assert_eq!(
+            session
+                .continue_from_leaf_refusal()
+                .map(|refusal| refusal.code),
+            Some(ContinueFromLeafCode::NothingToContinue)
+        );
+        let prompt: AgentMessage = serde_json::from_value(
+            serde_json::json!({"role": "user", "content": "hi", "timestamp": 0}),
+        )
+        .expect("message");
+        session.agent.set_messages(vec![prompt]);
+        assert_eq!(
+            session
+                .continue_from_leaf_refusal()
+                .map(|refusal| refusal.code),
+            Some(ContinueFromLeafCode::LeafNotAssistant)
         );
     }
 
@@ -34799,11 +35850,10 @@ mod tests {
             .register_control_endpoint(
                 crate::extensions::session_control_types::RegisterControlEndpointOptions {
                     inbox_dir: "/tmp/inbox".into(),
-                    drain: Arc::new(
-                        |_: Value| -> futures::future::BoxFuture<'static, Option<Value>> {
-                            Box::pin(async { None })
-                        },
-                    ),
+                    drain: Arc::new(|_: Value| {
+                        Box::pin(async { Ok(None) })
+                            as futures::future::BoxFuture<'static, Result<Option<Value>, String>>
+                    }),
                     is_session_referenced: None,
                 },
             )
@@ -36670,6 +37720,27 @@ mod tests {
             session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
             Some(reply_id.to_owned())
         );
+    }
+
+    /// senpi `onBeforeSessionReplace`: an in-place replacement runs the listener once, while the outgoing identity is
+    /// still current; a removed listener does not run.
+    #[tokio::test]
+    async fn before_session_replace_runs_once_per_replacement_on_the_outgoing_session() {
+        let session = test_session();
+        let id = session.session_id();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let weak = session.weak_accessor();
+        let record = seen.clone();
+        let listener = session.on_before_session_replace(Arc::new(move || {
+            if let Some(session) = weak() {
+                lock(&record).push(session.session_id());
+            }
+        }));
+        assert!(session.new_session(None).await.expect("new"));
+        assert_eq!(*lock(&seen), [id]);
+        session.remove_before_session_replace(listener);
+        assert!(session.new_session(None).await.expect("new"));
+        assert_eq!(lock(&seen).len(), 1);
     }
 
     #[tokio::test]

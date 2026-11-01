@@ -39,8 +39,6 @@ mod footer_corpus;
 mod foundation;
 #[path = "grok_mermaid_edges.rs"]
 mod grok_mermaid_edges;
-#[path = "keybinding_hints_global.rs"]
-mod keybinding_hints_global;
 #[path = "mermaid_golden.rs"]
 mod mermaid_golden;
 #[path = "mermaid_transformer.rs"]
@@ -70,12 +68,13 @@ mod runtime35_widget_clock;
 #[cfg(unix)]
 #[path = "session_control_endpoint.rs"]
 mod session_control_endpoint;
+#[cfg(windows)]
+#[path = "session_control_win32.rs"]
+mod session_control_win32;
 #[path = "task33_search.rs"]
 mod task33_search;
 #[path = "task33_selectors.rs"]
 mod task33_selectors;
-#[path = "task34.rs"]
-mod task34;
 #[path = "tui_render_root.rs"]
 mod tui_render_root;
 #[path = "upstream_regressions.rs"]

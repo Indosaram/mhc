@@ -150,6 +150,9 @@ pub async fn run(
             auto_trust_on_reload_cwd,
             initial_title_prompt: initial.initial_title_prompt.clone(),
             mcp_presenter_enforcement: parsed.mcp_presenter_enforcement,
+            local_mcp_presenter: Some(Arc::new(
+                crate::cli::mcp_local_presenter::register_local_mcp_presenter,
+            )),
         },
     );
     *mode

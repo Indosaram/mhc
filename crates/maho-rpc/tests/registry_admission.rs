@@ -39,14 +39,11 @@ async fn pending_open_owns_path_and_durable_id_before_runtime_creation() {
         panic!("expected create")
     };
     assert_eq!(registry.size(), 1);
-    assert_eq!(
-        registry
-            .admit_open(profile(cwd, Some(path.clone()), None, false), false, 0.)
-            .err()
-            .unwrap()
-            .code,
-        "session_path_in_use"
-    );
+    // senpi `attachToOpenSession`: a reopen of a path still opening waits on that open instead of failing.
+    assert!(matches!(
+        registry.admit_open(profile(cwd, Some(path.clone()), None, false), false, 0.),
+        Ok(OpenAdmission::Wait { .. })
+    ));
     assert_eq!(
         registry
             .admit_open(profile(cwd, None, Some("durable"), false), false, 0.)

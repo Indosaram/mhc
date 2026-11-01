@@ -1,5 +1,30 @@
 pub type SendCallback = std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 use crate::session_attribution::{SessionActivityRegistry, ToolAttributionSpans};
+/// senpi `QueuedInput` on the wire (`get_state.ordered`, `clear_queue.ordered`, `queue_update.ordered`). The
+/// state and event projections pass it through `client_facing_identity`; `clear_queue` answers it as is.
+pub fn queued_input_json(
+    text: &str,
+    mode: maho_ext_api::StreamingBehavior,
+    enqueue_order: u64,
+    queued_id: &str,
+    revision: u64,
+    client_message_id: Option<&str>,
+) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    if let Some(id) = client_message_id {
+        value.insert("clientMessageId".into(), id.into());
+    }
+    value.insert("text".into(), text.into());
+    let mode = match mode {
+        maho_ext_api::StreamingBehavior::Steer => "steer",
+        maho_ext_api::StreamingBehavior::FollowUp => "followUp",
+    };
+    value.insert("mode".into(), mode.into());
+    value.insert("enqueueOrder".into(), enqueue_order.into());
+    value.insert("queuedId".into(), queued_id.into());
+    value.insert("revision".into(), revision.into());
+    serde_json::Value::Object(value)
+}
 pub fn session_event_record(
     event: &maho_ext_api::AgentSessionEvent,
 ) -> Result<serde_json::Value, serde_json::Error> {
@@ -149,8 +174,13 @@ pub fn session_event_record(
             to,
             chain_key,
             reason,
+            limit,
         } => {
-            json!({"type":"retry_fallback_applied","from":from,"to":to,"chainKey":chain_key,"reason":reason})
+            let mut record = json!({"type":"retry_fallback_applied","from":from,"to":to,"chainKey":chain_key,"reason":reason});
+            if let Some(limit) = limit {
+                record["limit"] = serde_json::to_value(limit)?;
+            }
+            record
         }
         E::RetryFallbackExhausted {
             chain_key,
@@ -159,8 +189,12 @@ pub fn session_event_record(
         E::RetryFallbackSucceeded { model, chain_key } => {
             json!({"type":"retry_fallback_succeeded","model":model,"chainKey":chain_key})
         }
-        E::RetryFallbackReverted { from, to } => {
-            json!({"type":"retry_fallback_reverted","from":from,"to":to})
+        E::RetryFallbackReverted { from, to, cause } => {
+            let mut record = json!({"type":"retry_fallback_reverted","from":from,"to":to});
+            if let Some(cause) = cause {
+                record["cause"] = cause.clone().into();
+            }
+            record
         }
         E::ModelChanged {
             model,
@@ -281,7 +315,8 @@ pub fn session_event_record(
             follow_up,
             ordered,
         } => {
-            json!({"type":"queue_update","steering":steering,"followUp":follow_up,"ordered":ordered.iter().map(|input|json!({"text":input.text,"mode":match input.mode{maho_ext_api::StreamingBehavior::Steer=>"steer",maho_ext_api::StreamingBehavior::FollowUp=>"followUp"},"enqueueOrder":input.enqueue_order})).collect::<Vec<_>>()})
+            // senpi session-record-stream: the minted ids are taken out of the projection (`clientFacingIdentity`).
+            json!({"type":"queue_update","steering":steering,"followUp":follow_up,"ordered":ordered.iter().map(|input|crate::client_admission_record::client_facing_identity(queued_input_json(&input.text,input.mode,input.enqueue_order,&input.queued_id,input.revision,input.client_message_id.as_deref()))).collect::<Vec<_>>()})
         }
         E::ToolHookStatus(event) => {
             let mut record = json!({"type":"tool_hook_status","hookRunId":event.hook_run_id,"hookName":match event.hook_name{maho_ext_api::ToolHookName::PreToolUse=>"PreToolUse",maho_ext_api::ToolHookName::PostToolUse=>"PostToolUse"},"toolName":event.tool_name,"toolCallId":event.tool_call_id,"extensionPath":event.extension_path,"statusMessage":event.status_message,"startedAt":event.started_at});
@@ -372,6 +407,34 @@ pub fn session_event_record(
         }
     })
 }
+thread_local! {
+    /// The recovery carrier the correlation stage forwards with the record it is writing now (senpi `carryRecovery`
+    /// keeps it on the record object). A turn's prefix is buffered and flushed during a later emit, so the session's
+    /// emitting carrier would name the later record; the forwarded one is the record's own.
+    static FORWARDED_CARRIER: std::cell::RefCell<Vec<Option<maho_core::session_recovery_identity::RecoveryCarrier>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+/// Runs `write` with `carrier` as the forwarded carrier of the record it writes.
+fn with_forwarded_carrier(
+    carrier: Option<maho_core::session_recovery_identity::RecoveryCarrier>,
+    write: impl FnOnce(),
+) {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            FORWARDED_CARRIER.with(|stack| {
+                stack.borrow_mut().pop();
+            });
+        }
+    }
+    FORWARDED_CARRIER.with(|stack| stack.borrow_mut().push(carrier));
+    let _pop = Pop;
+    write();
+}
+/// The carrier forwarded with the record being written, when the correlation stage is writing one.
+fn forwarded_carrier() -> Option<Option<maho_core::session_recovery_identity::RecoveryCarrier>> {
+    FORWARDED_CARRIER.with(|stack| stack.borrow().last().cloned())
+}
 /// The binding's acceptance step (senpi `createRpcSessionBinding.enqueueRecord`): accepted before the
 /// writer serializes or routes the record; a `session_replaced` is the next incarnation's bootstrap.
 ///
@@ -414,7 +477,7 @@ impl BindingAcceptance {
             .session
             .with_session_manager_mut(|manager| manager.drain_transcript());
         lane.apply_transcript(&transitions);
-        let carrier = self.session.recovery_carrier(record);
+        let carrier = forwarded_carrier().unwrap_or_else(|| self.session.recovery_carrier(record));
         lane.accept(record, carrier.as_ref());
     }
 }
@@ -508,6 +571,9 @@ pub struct RpcSessionBinding {
     security_subscription: std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
     relocation_subscription:
         std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>,
+    /// senpi `sink.writeStructured`: the session's structured lane, held only behind the compact-updates flag.
+    structured_subscription:
+        std::sync::Mutex<Option<maho_core::structured_session_lane::StructuredSubscription>>,
     connection_roles: Option<SharedConnectionRoles>,
     /// senpi `bindMcpForms(session, ui)`: the session's private form binding and the writer state that owns it.
     mcp_forms: std::sync::Mutex<
@@ -527,6 +593,20 @@ pub struct RpcSessionBinding {
 /// Writes one private `mcp_form_reply` raw to the sending connection, outside every session queue.
 pub type PresenterReply = std::sync::Arc<dyn Fn(Option<&str>, &serde_json::Value) + Send + Sync>;
 /// The connection roles one host (or one worker isolate) keeps, shared with every binding it creates (senpi#3811).
+/// The correlation stage a binding's records pass through (senpi `new ClientMessageEvents(output, () =>
+/// ClientAdmissions.forSession(session).hasIdentities)`). Only a ledger that already exists is read.
+fn new_client_message_events(
+    sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+    route: String,
+) -> crate::client_message_events::ClientMessageEvents {
+    crate::client_message_events::ClientMessageEvents::new(
+        move |record, carrier| with_forwarded_carrier(carrier, || sink(record)),
+        move || {
+            crate::client_admissions::ClientAdmissions::existing(&route)
+                .is_some_and(|admissions| admissions.has_identities())
+        },
+    )
+}
 pub type SharedConnectionRoles =
     std::sync::Arc<std::sync::Mutex<crate::connection_roles::ConnectionRoles>>;
 /// Builds an RPC binding for one live session: input lines route through the handler and every
@@ -538,6 +618,7 @@ pub async fn create_rpc_session_binding(
     sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>,
     capabilities: Vec<String>,
     connection_roles: Option<SharedConnectionRoles>,
+    control_socket: Option<String>,
 ) -> RpcSessionBinding {
     let hold_sink = sink.clone();
     let hold_subscription = session.on_extension_event(
@@ -555,17 +636,35 @@ pub async fn create_rpc_session_binding(
     let event_sink = sink.clone();
     let last_abort_source: crate::connection_handler::LastAbortSource = Default::default();
     let (event_session, event_abort_source) = (session.weak_accessor(), last_abort_source.clone());
+    // The routing handle is the key this session's admission ledger is published under.
+    let event_route = session_id.clone();
+    // senpi session-record-stream.ts: records go through client-message correlation, enabled once the session's
+    // admission ledger has seen a client identity.
+    let carrier_session = session.weak_accessor();
+    let correlated = std::sync::Mutex::new(new_client_message_events(
+        event_sink.clone(),
+        event_route.clone(),
+    ));
     let subscription = session.subscribe(std::sync::Arc::new(move |event| {
         let record = match event_session() {
-            Some(session) => crate::connection_handler::rpc_session_event_record(
+            Some(session) => crate::connection_handler::rpc_session_event_record_routed(
                 &session,
                 event,
                 &event_abort_source,
+                Some(&event_route),
             ),
             None => session_event_record(event),
         };
         match record {
-            Ok(record) => event_sink(record),
+            // senpi session-record-stream: the record keeps the carrier the session attached while emitting it.
+            Ok(record) => {
+                let carrier =
+                    carrier_session().and_then(|session| session.recovery_carrier(&record));
+                correlated
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .accept(record, carrier)
+            }
             Err(error) => {
                 event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))
             }
@@ -587,6 +686,7 @@ pub async fn create_rpc_session_binding(
             sink.clone(),
             capabilities,
             Some(shutdown),
+            control_socket,
         )
         .await;
     handler.last_abort_source = last_abort_source;
@@ -603,12 +703,40 @@ pub async fn create_rpc_session_binding(
         hold_subscription: std::sync::Mutex::new(Some(hold_subscription)),
         security_subscription: std::sync::Mutex::new(Some(security_subscription)),
         relocation_subscription: Default::default(),
+        structured_subscription: Default::default(),
         connection_roles,
         mcp_forms: Default::default(),
         presenters: Default::default(),
     }
 }
 impl RpcSessionBinding {
+    /// senpi session-binding.ts `writeStructured` (only when `structuredLaneEnabled()`): the session's structured
+    /// records, tagged with this routing handle, go to `lanes` while `scope` is open; never to a legacy destination.
+    pub fn install_structured_lane(
+        &self,
+        session: &maho_core::agent_session::AgentSession,
+        lanes: crate::session_structured_lanes::SessionStructuredLanes,
+        scope: maho_ai::node::provider_scope::ProviderScope,
+    ) {
+        let tag = self.session_id.clone();
+        let output: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
+            std::sync::Arc::new(move |mut record: serde_json::Value| {
+                if scope.state() == maho_ai::node::provider_scope::ScopeState::Closed {
+                    return;
+                }
+                record["sessionId"] = tag.clone().into();
+                lanes.accept(&tag, &record);
+            });
+        // An agent built outside the session layer has no structured lane; the legacy records still flow.
+        let subscription = crate::structured_session_records::subscribe_structured_session_records(
+            session, output,
+        )
+        .ok();
+        *self
+            .structured_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = subscription;
+    }
     pub fn keep_relocation_subscription(
         &self,
         subscription: maho_core::agent_session::AgentSessionSubscription,
@@ -778,6 +906,10 @@ impl RpcSessionBinding {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
+        self.structured_subscription
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.subscription
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -788,6 +920,66 @@ impl RpcSessionBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// senpi `carryRecovery`: a record the correlation stage writes keeps its own carrier, even when it is written
+    /// during a later emit (a flushed turn prefix); outside a forwarded write no carrier is claimed.
+    #[test]
+    fn a_forwarded_record_keeps_its_own_recovery_carrier() {
+        let carrier = maho_core::session_recovery_identity::RecoveryCarrier {
+            message_id: "m1".into(),
+            epoch: "e".into(),
+            durable_entry_id: None,
+        };
+        assert_eq!(forwarded_carrier(), None);
+        let mut seen = None;
+        with_forwarded_carrier(Some(carrier.clone()), || {
+            with_forwarded_carrier(None, || assert_eq!(forwarded_carrier(), Some(None)));
+            seen = forwarded_carrier();
+        });
+        assert_eq!(seen, Some(Some(carrier)));
+        assert_eq!(forwarded_carrier(), None);
+    }
+    // senpi session-record-stream.ts: correlation runs once the route's admission ledger has a client identity; a
+    // turn's records then carry the input that caused them.
+    #[tokio::test]
+    async fn binding_records_are_correlated_once_the_route_has_client_identities() {
+        use crate::client_admissions::ClientAdmissions;
+        use crate::effect_session::EffectSession;
+        let route = "binding-correlation";
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink_written = written.clone();
+        let sink: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
+            std::sync::Arc::new(move |record| sink_written.lock().unwrap().push(record));
+        let mut events = new_client_message_events(sink, route.into());
+        let user = serde_json::json!({"type":"message_start","message":{"role":"user","clientMessageId":"m1"}});
+        let turn = serde_json::json!({"type":"turn_end"});
+        // No ledger yet: records pass through untouched.
+        events.accept(user.clone(), None);
+        events.accept(turn.clone(), None);
+        assert_eq!(*written.lock().unwrap(), vec![user.clone(), turn.clone()]);
+        written.lock().unwrap().clear();
+        let session: std::sync::Arc<dyn EffectSession> = std::sync::Arc::new(
+            crate::client_admissions::test_session::FakeSession::new(route),
+        );
+        let ledger = ClientAdmissions::for_session(&session).await;
+        ledger
+            .admit(
+                &serde_json::json!({"type":"prompt","message":"hi","clientMessageId":"m1"}),
+                |_| -> futures::future::BoxFuture<
+                    'static,
+                    Result<crate::client_admission_record::AdmissionDisposition, String>,
+                > {
+                    Box::pin(async {
+                        Ok(crate::client_admission_record::AdmissionDisposition::Started)
+                    })
+                },
+            )
+            .await
+            .unwrap();
+        events.accept(user, None);
+        events.accept(turn, None);
+        assert_eq!(written.lock().unwrap()[1]["clientMessageId"], "m1");
+        ClientAdmissions::forget(route);
+    }
     #[test]
     fn attribution_commits_before_event_publication_and_dispose_closes_spans() {
         let activity = SessionActivityRegistry::default();

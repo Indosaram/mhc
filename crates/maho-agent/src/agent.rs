@@ -288,6 +288,33 @@ impl PendingMessageQueue {
         }
     }
 
+    /// senpi `PendingMessageQueue.remove/replace` by identity: Rust messages are values, so the `occurrence`-th
+    /// equal message stands for that object. `None` removes it; false once it was drained.
+    fn change_nth(
+        &mut self,
+        message: &AgentMessage,
+        occurrence: usize,
+        next: Option<AgentMessage>,
+    ) -> bool {
+        let Some(index) = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| *m == message)
+            .nth(occurrence)
+            .map(|(index, _)| index)
+        else {
+            return false;
+        };
+        match next {
+            Some(next) => self.messages[index] = next,
+            None => {
+                self.messages.remove(index);
+            }
+        }
+        true
+    }
+
     fn clear(&mut self) {
         self.messages.clear();
         self.clear_generation += 1;
@@ -651,6 +678,11 @@ impl Agent {
         steering
     }
 
+    /// Every message still waiting in `queue`, in queue order, whatever its drain mode.
+    pub fn queued_messages(&self, queue: PendingQueue) -> Vec<AgentMessage> {
+        lock(self.pending_queue(queue)).messages.clone()
+    }
+
     /// Returns true when `message` is still waiting in either pending queue.
     pub fn contains_queued_message(&self, message: &AgentMessage) -> bool {
         lock(&self.inner.steering_queue)
@@ -667,6 +699,22 @@ impl Agent {
     pub fn remove_queued_message(&self, message: &AgentMessage) -> bool {
         lock(&self.inner.steering_queue).remove(message)
             || lock(&self.inner.follow_up_queue).remove(message)
+    }
+
+    /// senpi `removeQueuedMessage` / `replaceQueuedMessage`: remove (`next: None`) or replace, keeping its place,
+    /// one queued message; false once it was drained into a turn. Replacing a message with itself is a read-only
+    /// probe of whether it is still queued.
+    ///
+    /// ADAPTATION: upstream finds the message object by identity in either queue; Rust messages are values, so
+    /// the caller names the queue and which of the equal messages in it it means (`occurrence`, 0-based).
+    pub fn change_queued_message(
+        &self,
+        queue: PendingQueue,
+        message: &AgentMessage,
+        occurrence: usize,
+        next: Option<AgentMessage>,
+    ) -> bool {
+        lock(self.pending_queue(queue)).change_nth(message, occurrence, next)
     }
 
     /// Active abort signal for the current run, if any.

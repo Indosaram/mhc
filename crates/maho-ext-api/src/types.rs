@@ -1836,6 +1836,17 @@ pub struct ExtensionUiDialogOptions {
     pub ephemeral: bool,
     pub signal: Option<AbortSignal>,
     pub timeout_ms: Option<u64>,
+    /// The key a host hands `maho_core::mcp_form_types::mark_mcp_form_presented` once this dialog is
+    /// actually on screen (senpi keys the callback by the dialog options object). Not an RPC field.
+    pub presented: Option<DialogPresentedKey>,
+}
+/// Identity of one dialog's options for the private MCP form presented mark.
+#[derive(Clone)]
+pub struct DialogPresentedKey(pub Arc<dyn std::any::Any + Send + Sync>);
+impl std::fmt::Debug for DialogPresentedKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DialogPresentedKey")
+    }
 }
 /// A clickable action shown beside a string-array widget.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3324,9 +3335,12 @@ pub enum ExtensionEvent {
         should_continue: bool,
         context: JsonValue,
     },
+    /// senpi `SessionControlWakeEvent`: `reason` is the batch's highest-priority reason, `reasons`
+    /// every reason it covers; `delivery_ids` are the deliveries a `wake` command named.
     SessionControlWake {
-        source: String,
         reason: String,
+        reasons: Vec<String>,
+        delivery_ids: Option<Vec<String>>,
     },
     ToolActivated {
         tool_names: Vec<String>,
@@ -6968,6 +6982,8 @@ pub enum AgentSessionEvent {
         to: String,
         chain_key: String,
         reason: String,
+        /// Set when a usage limit caused the switch: `Model` binds one model, `Account` the whole provider.
+        limit: Option<maho_ai::types::UsageLimitScope>,
     },
     RetryFallbackSucceeded {
         model: String,
@@ -6976,6 +6992,9 @@ pub enum AgentSessionEvent {
     RetryFallbackReverted {
         from: String,
         to: String,
+        /// `fallback-unusable`: the fallback could not serve (billing or an account limit), so the session returned
+        /// early.
+        cause: Option<String>,
     },
     RetryFallbackExhausted {
         chain_key: String,
@@ -7079,6 +7098,11 @@ pub struct QueuedInput {
     pub text: String,
     pub mode: StreamingBehavior,
     pub enqueue_order: u64,
+    /// senpi `queuedId`: the id `dequeue_message` / `edit_queued_message` name (`q_<n>`).
+    pub queued_id: String,
+    /// senpi `revision`: 1 when queued, +1 on every edit (senpi#3459).
+    pub revision: u64,
+    pub client_message_id: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct ModelBudget {

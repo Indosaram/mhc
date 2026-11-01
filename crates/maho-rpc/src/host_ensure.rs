@@ -5,6 +5,11 @@ pub struct LockedHostEnsure {
     pub registration: Option<crate::host_daemon_registration::RegisteredHost>,
     pub protocol: Option<crate::host_protocol_info::HostProtocolInfo>,
     pub decision: crate::host_decision::HostDecision,
+    /// The client and policy the decision was made for, so a stopping generation's exit re-runs it.
+    pub client: crate::host_decision::HostDecisionClient,
+    pub policy: crate::host_decision::HostDecisionPolicy,
+    /// senpi `stoppingTimeoutMs`: how long a matching stopping generation is waited out, capped by the stop budget.
+    pub stopping_timeout_ms: Option<u64>,
 }
 pub struct StartedHost {
     pub child: tokio::process::Child,
@@ -36,6 +41,38 @@ pub async fn ensure_prepared_host(
 ) -> std::io::Result<EnsuredHost> {
     use crate::host_decision::{HostDecision, RefuseReason};
     let socket = normalize_socket_path(socket);
+    // senpi `stopDeadline`: one budget for every stopping generation this ensure waits out.
+    let budget_ms = crate::host_ensure_stop::stop_wait_budget_ms(&std::env::vars().collect());
+    let stop_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(
+            prepared
+                .stopping_timeout_ms
+                .map_or(budget_ms, |timeout| timeout.min(budget_ms)),
+        );
+    // senpi `ensureHostLocked`: a matching stopping generation is waited out and discovery runs again under
+    // the same lock; anything else stopping is refused.
+    while matches!(
+        prepared.decision,
+        HostDecision::Refuse {
+            reason: RefuseReason::HostStopping,
+            ..
+        }
+    ) && prepared.protocol.is_some()
+    {
+        if !wait_out_stopping_generation(&prepared, socket, stop_deadline).await {
+            return Ok(EnsuredHost::Refused("host_stopping"));
+        }
+        let (registration, protocol, decision) = discover_host(
+            &prepared.paths,
+            socket,
+            &mut prepared.client,
+            prepared.policy,
+        )
+        .await?;
+        prepared.registration = registration;
+        prepared.protocol = protocol;
+        prepared.decision = decision;
+    }
     let attached_pid = prepared
         .registration
         .as_ref()
@@ -78,8 +115,11 @@ pub async fn ensure_prepared_host(
             }));
         }
         HostDecision::Handoff { .. } => {
+            // senpi `upgradeGeneration` -> `handoffHostLocked`: the upgrade runs under this ensure's lock, so no
+            // second ensure can start or stop beside it. A refused handoff attaches.
+            let result = crate::host_handoff::handoff_host_locked(socket, agent_dir, handoff).await;
             prepared.lock.release().map_err(std::io::Error::other)?;
-            return match crate::host_handoff::handoff_host(socket, agent_dir, handoff).await? {
+            return match result? {
                 Ok(successor) => Ok(EnsuredHost::HandedOff(successor)),
                 Err(_) => Ok(EnsuredHost::Reused { pid: attached_pid }),
             };
@@ -561,7 +601,36 @@ pub async fn prepare_ensure_host(
         Default::default(),
     )
     .await?;
-    let registration = crate::host_daemon_registration::read_host_registration(&paths)?;
+    let policy = if policy == crate::host_decision::HostDecisionPolicy::Upgrade {
+        policy
+    } else {
+        crate::host_decision::HostDecisionPolicy::Never
+    };
+    let (registration, protocol, decision) =
+        discover_host(&paths, socket, &mut client, policy).await?;
+    Ok(LockedHostEnsure {
+        paths,
+        lock,
+        registration,
+        protocol,
+        decision,
+        client,
+        policy,
+        stopping_timeout_ms: None,
+    })
+}
+/// The discovery an ensure runs under its lock: the registration, the running host's answer, and the decision.
+async fn discover_host(
+    paths: &crate::host_daemon_paths::HostDaemonPaths,
+    socket: &str,
+    client: &mut crate::host_decision::HostDecisionClient,
+    policy: crate::host_decision::HostDecisionPolicy,
+) -> std::io::Result<(
+    Option<crate::host_daemon_registration::RegisteredHost>,
+    Option<crate::host_protocol_info::HostProtocolInfo>,
+    crate::host_decision::HostDecision,
+)> {
+    let registration = crate::host_daemon_registration::read_host_registration(paths)?;
     let registered_here = registration.as_ref().filter(|registered| {
         registered
             .socket
@@ -572,12 +641,7 @@ pub async fn prepare_ensure_host(
         crate::host_daemon_registration::written_by_this_process(registered.writer.as_ref())
     });
     let protocol = crate::host_probe::probe_protocol_info(socket, 2000).await;
-    let policy = if policy == crate::host_decision::HostDecisionPolicy::Upgrade {
-        policy
-    } else {
-        crate::host_decision::HostDecisionPolicy::Never
-    };
-    let mut decision = crate::host_decision::decide_host_action(&client, protocol.as_ref(), policy);
+    let mut decision = crate::host_decision::decide_host_action(client, protocol.as_ref(), policy);
     if matches!(
         decision,
         crate::host_decision::HostDecision::Fallback { .. }
@@ -588,13 +652,54 @@ pub async fn prepare_ensure_host(
             warning: None,
         };
     }
-    Ok(LockedHostEnsure {
-        paths,
-        lock,
-        registration,
-        protocol,
-        decision,
-    })
+    Ok((registration, protocol, decision))
+}
+/// senpi `ensureHostLocked`'s stopping branch: a typed stop is not permission to signal or overwrite a foreign
+/// generation, so only the registered generation the stopping host names is waited out - both its supervisor
+/// and its host child gone - and discovery then runs again under the same lock. `false` refuses `host_stopping`.
+async fn wait_out_stopping_generation(
+    prepared: &LockedHostEnsure,
+    socket: &str,
+    deadline: tokio::time::Instant,
+) -> bool {
+    // senpi `registeredHere`: the record about this endpoint, live or not - the wait is for it to be gone.
+    let Some(registered) = prepared.registration.as_ref().filter(|registered| {
+        registered
+            .socket
+            .as_deref()
+            .is_none_or(|recorded| recorded == socket)
+    }) else {
+        return false;
+    };
+    if prepared
+        .protocol
+        .as_ref()
+        .and_then(|protocol| protocol.instance_id.as_deref())
+        != Some(registered.instance_id.as_str())
+    {
+        return false;
+    }
+    let pid_file = crate::host_ensure_stop::DaemonPidFile {
+        pid: registered.pid,
+        process_start_time: registered.process_start_time.clone(),
+    };
+    let generation =
+        crate::host_daemon_paths::generation_paths(&prepared.paths, &registered.instance_id);
+    loop {
+        let gone = crate::host_ensure_stop::resolve_pid_file_ownership(
+            &pid_file,
+            crate::host_reservations::read_process_start_time,
+        ) == crate::host_ensure_stop::PidFileOwnership::Gone;
+        if gone && crate::host_stalled_evidence::host_child_alive(&generation, |_| {}) != Some(true)
+        {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        tokio::time::sleep(remaining.min(std::time::Duration::from_millis(50))).await;
+    }
 }
 pub fn normalize_socket_path(value: &str) -> &str {
     value.strip_prefix("unix://").unwrap_or(value)
@@ -715,9 +820,10 @@ async fn ensure_host_in_key_root(
         HostUpgradePolicy::Never => crate::host_decision::HostDecisionPolicy::Never,
         HostUpgradePolicy::IfEngineDiffers => crate::host_decision::HostDecisionPolicy::Upgrade,
     };
-    let prepared = prepare_ensure_host(&socket, &agent_dir, client, decision_policy)
+    let mut prepared = prepare_ensure_host(&socket, &agent_dir, client, decision_policy)
         .await
         .map_err(|error| EnsureHostError::Io(std::io::Error::other(error.to_string())))?;
+    prepared.stopping_timeout_ms = options.stopping_timeout_ms;
     let supervisor_args =
         ensure_supervisor_args(&socket, &agent_dir.to_string_lossy(), &options.host_args);
     let launch = crate::host_launch::default_host_launch(&supervisor_args)?;
@@ -859,6 +965,70 @@ mod tests {
         let options = EnsureHostOptions::default();
         assert_eq!(options.upgrade, HostUpgradePolicy::Never);
         assert_eq!(options.readiness_ms, 10_000);
+    }
+    async fn stopping_ensure(
+        temp: &std::path::Path,
+        socket: &str,
+        registered_instance: &str,
+        stopping_instance: &str,
+    ) -> LockedHostEnsure {
+        let paths = crate::host_daemon_paths::create_host_daemon_paths(socket, temp);
+        crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();
+        let lock = crate::ownership_safe_lock::acquire_ownership_safe_lock(
+            &temp.join(format!("{registered_instance}-{stopping_instance}.lock")),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        LockedHostEnsure {
+            paths,
+            lock,
+            registration: Some(crate::host_daemon_registration::RegisteredHost {
+                // No process holds pid u32::MAX, so the registered supervisor reads as gone.
+                pid: u32::MAX,
+                process_start_time: Some("start".into()),
+                socket: Some(socket.into()),
+                instance_id: registered_instance.into(),
+                generation: 0.,
+                writer: None,
+            }),
+            protocol: crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({
+                "protocolVersion": 1, "serverVersion": "1", "capabilities": [],
+                "instanceId": stopping_instance, "lifecycle": "stopping"
+            })),
+            decision: crate::host_decision::HostDecision::Refuse {
+                reason: crate::host_decision::RefuseReason::HostStopping,
+                upgradeable: false,
+            },
+            client: crate::host_decision::HostDecisionClient {
+                protocol_version: 1,
+                required_capabilities: vec![],
+                identity: maho_core::engine_build_identity::engine_build_identity().clone(),
+                launch_profile: None,
+                started_by_us: false,
+                platform: "linux".into(),
+            },
+            policy: crate::host_decision::HostDecisionPolicy::Never,
+            stopping_timeout_ms: Some(0),
+        }
+    }
+    /// senpi `ensureHostLocked`: only the registered generation the stopping host names is waited out, and one
+    /// whose supervisor and host child are both gone ends the wait at once; a foreign stopping host refuses.
+    #[tokio::test(start_paused = true)]
+    async fn only_the_registered_stopping_generation_is_waited_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("h.sock");
+        let socket = socket.to_str().unwrap();
+        let deadline = tokio::time::Instant::now();
+        let ours = stopping_ensure(temp.path(), socket, "gen-a", "gen-a").await;
+        assert!(wait_out_stopping_generation(&ours, socket, deadline).await);
+        let foreign = stopping_ensure(temp.path(), socket, "gen-a", "gen-b").await;
+        assert!(!wait_out_stopping_generation(&foreign, socket, deadline).await);
+        let mut elsewhere = stopping_ensure(temp.path(), socket, "gen-c", "gen-c").await;
+        if let Some(registered) = elsewhere.registration.as_mut() {
+            registered.socket = Some("/other.sock".into());
+        }
+        assert!(!wait_out_stopping_generation(&elsewhere, socket, deadline).await);
     }
     #[tokio::test]
     async fn ensure_refuses_a_foreign_writer_without_starting() {

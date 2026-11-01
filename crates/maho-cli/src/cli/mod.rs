@@ -70,6 +70,7 @@ pub mod kibitzer_coordinator;
 pub mod kibitzer_tools;
 pub mod list_models;
 pub mod list_tips;
+pub mod mcp_local_presenter;
 pub mod memory_report_build;
 pub mod memory_report_registry;
 pub mod memory_report_write;

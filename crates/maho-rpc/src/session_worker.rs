@@ -442,6 +442,7 @@ impl WorkerState {
                                 sink,
                                 display.capabilities,
                                 Some(std::sync::Arc::clone(&self.roles)),
+                                crate::host_session_control::profile_host_socket(&session.runtime),
                             ),
                         )
                         .await,

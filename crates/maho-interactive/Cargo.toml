@@ -40,6 +40,7 @@ rustix = { version = "=1.1.4", features = ["process"] }
 [dev-dependencies]
 tempfile = "=3.27.0"
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../maho-ext-host" }
 
 [lints]
 workspace = true
@@ -47,3 +48,9 @@ workspace = true
 [[test]]
 name = "integration"
 path = "tests/main.rs"
+
+# Tests that swap the process-global keybindings run in their own process: the integration binary
+# has unlocked writers (InteractiveMode::new, /reload, /keybindings) and readers of that global.
+[[test]]
+name = "global_keybindings"
+path = "tests/global_keybindings_main.rs"
