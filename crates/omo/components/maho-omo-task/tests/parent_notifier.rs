@@ -314,7 +314,7 @@ fn different_runs_keep_their_own_receipts_and_failures() {
     assert_eq!(receipts[1].1.state(), DeliveryState::Pending);
     assert_eq!(caller.state(), DeliveryState::Pending);
     receipts[1].1.delivered();
-    assert_eq!(caller.state(), DeliveryState::Delivered);
+    assert_eq!(caller.state(), DeliveryState::Failed);
     let failures = failures.lock().expect("failures");
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].0, vec!["st_a".to_string()]);
@@ -379,4 +379,518 @@ fn a_retired_coordinator_refuses_instead_of_claiming_delivery() {
         *failures.lock().expect("failures"),
         vec![vec!["st_retired".to_string()]]
     );
+}
+
+#[test]
+fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persisted_exactly_once() {
+    use senpi_task::completion::{
+        CompletionNotifierDeps, CompletionRequest, FlushInput, FlushResult, ParentState,
+        create_completion_notifier,
+    };
+    use senpi_task::state::{TaskRecordInput, TaskStatus, create_task_record};
+    use senpi_task::store::{StateDirConfig, TaskRecordStore};
+
+    struct CapturingCoordinator(Mutex<Vec<(String, senpi_task::completion::DeliveryCallbacks)>>);
+    impl CompletionCoordinator for CapturingCoordinator {
+        fn enqueue(
+            &self,
+            key: &str,
+            _: &str,
+            _: &ParentNotifierMessage,
+            callbacks: senpi_task::completion::DeliveryCallbacks,
+        ) -> Result<bool, HostError> {
+            self.0.lock().expect("keys").push((key.into(), callbacks));
+            Ok(true)
+        }
+        fn schedule_flush(&self) {}
+        fn flush_soon(&self) {}
+    }
+
+    let coordinator = Arc::new(CapturingCoordinator(Mutex::new(Vec::new())));
+    let failed_hook = Arc::new(Mutex::new(Vec::<(Vec<String>, String)>::new()));
+    let hook = failed_hook.clone();
+    let notifier = Arc::new(TaskParentNotifier {
+        actions: Arc::new(Actions::default()),
+        coordinator: Some(coordinator.clone()),
+        is_streaming: Arc::new(|| false),
+        on_delivery_failed: Some(Arc::new(move |ids, error| {
+            hook.lock().expect("failures").push((ids.to_vec(), error));
+        })),
+    });
+
+    let root = tempfile::tempdir().expect("root");
+    let store = Arc::new(TaskRecordStore::new(&StateDirConfig {
+        project_dir: root.path().into(),
+        task_state_dir: None,
+    }));
+
+    let mut record_a = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "session-p".into(),
+            root_session_id: "session-p".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("record_a");
+    record_a.task_id = "st_first".into();
+    record_a.status = TaskStatus::Completed;
+    record_a.final_response = Some("finished first".into());
+    store.save(&record_a).expect("save record_a");
+
+    let mut record_b = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "session-p".into(),
+            root_session_id: "session-p".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("record_b");
+    record_b.task_id = "st_second".into();
+    record_b.status = TaskStatus::Completed;
+    record_b.final_response = Some("finished second".into());
+    store.save(&record_b).expect("save record_b");
+
+    let completion = create_completion_notifier(CompletionNotifierDeps::new(
+        notifier.clone(),
+        store.clone(),
+    ));
+
+    // Buffer both completions
+    completion
+        .notify_terminal(&CompletionRequest {
+            record: record_a.clone(),
+            parent_state: ParentState::Compacting,
+            run_in_background: true,
+            tokens: None,
+        })
+        .expect("notify a");
+    completion
+        .notify_terminal(&CompletionRequest {
+            record: record_b.clone(),
+            parent_state: ParentState::Compacting,
+            run_in_background: true,
+            tokens: None,
+        })
+        .expect("notify b");
+
+    assert_eq!(completion.buffered_count("session-p"), 2);
+
+    // Flush the buffered batch
+    let flush_result = completion
+        .flush_buffered(&FlushInput {
+            session_id: "session-p".into(),
+            replaced: false,
+        })
+        .expect("flush");
+
+    assert_eq!(flush_result, FlushResult::Pending(2));
+
+    let receipts = coordinator.0.lock().expect("keys").clone();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].0, "task-completion:st_first");
+    assert_eq!(receipts[1].0, "task-completion:st_second");
+
+    // First of two injections fails, second delivers
+    receipts[0].1.failed(HostError {
+        message: "injection 0 network error".into(),
+    });
+    receipts[1].1.delivered();
+
+    // Verify first is retried / not marked notified
+    let loaded_a = store.load("st_first").expect("load a").expect("a exists");
+    assert_eq!(
+        loaded_a.notification.notified_epoch, -1,
+        "first was not delivered so notified_epoch must not advance"
+    );
+    assert_eq!(
+        loaded_a.notification.notification_failed_epoch, Some(0),
+        "first failure must be recorded"
+    );
+
+    // Verify second is marked notified exactly once
+    let loaded_b = store.load("st_second").expect("load b").expect("b exists");
+    assert_eq!(
+        loaded_b.notification.notified_epoch, 0,
+        "second delivered so notified_epoch must be marked"
+    );
+
+    // First was re-buffered for retry, second was NOT re-buffered
+    assert_eq!(completion.buffered_count("session-p"), 1);
+
+    // Clear captured coordinator calls
+    coordinator.0.lock().expect("keys").clear();
+
+    // Second flush: only the failed first entry is retried!
+    let second_flush = completion
+        .flush_buffered(&FlushInput {
+            session_id: "session-p".into(),
+            replaced: false,
+        })
+        .expect("second flush");
+    assert_eq!(second_flush, FlushResult::Pending(1));
+
+    let retry_receipts = coordinator.0.lock().expect("keys").clone();
+    assert_eq!(retry_receipts.len(), 1, "only st_first should be retried");
+    assert_eq!(retry_receipts[0].0, "task-completion:st_first");
+
+    // Settle the retry successfully
+    retry_receipts[0].1.delivered();
+
+    let reloaded_a = store.load("st_first").expect("load a").expect("a exists");
+    assert_eq!(
+        reloaded_a.notification.notified_epoch, 0,
+        "first now marked notified after successful retry"
+    );
+
+    let reloaded_b = store.load("st_second").expect("load b").expect("b exists");
+    assert_eq!(
+        reloaded_b.notification.notified_epoch, 0,
+        "second remains notified exactly once, no duplicates"
+    );
+    assert_eq!(completion.buffered_count("session-p"), 0);
+}
+
+#[test]
+fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persisted_exactly_once() {
+    use senpi_task::completion::{
+        CompletionNotifierDeps, CompletionRequest, FlushInput, FlushResult, ParentState,
+        create_completion_notifier,
+    };
+    use senpi_task::state::{TaskRecordInput, TaskStatus, create_task_record};
+    use senpi_task::store::{StateDirConfig, TaskRecordStore};
+
+    struct CapturingCoordinator(Mutex<Vec<(String, senpi_task::completion::DeliveryCallbacks)>>);
+    impl CompletionCoordinator for CapturingCoordinator {
+        fn enqueue(
+            &self,
+            key: &str,
+            _: &str,
+            _: &ParentNotifierMessage,
+            callbacks: senpi_task::completion::DeliveryCallbacks,
+        ) -> Result<bool, HostError> {
+            self.0.lock().expect("keys").push((key.into(), callbacks));
+            Ok(true)
+        }
+        fn schedule_flush(&self) {}
+        fn flush_soon(&self) {}
+    }
+
+    let coordinator = Arc::new(CapturingCoordinator(Mutex::new(Vec::new())));
+    let failed_hook = Arc::new(Mutex::new(Vec::<(Vec<String>, String)>::new()));
+    let hook = failed_hook.clone();
+    let notifier = Arc::new(TaskParentNotifier {
+        actions: Arc::new(Actions::default()),
+        coordinator: Some(coordinator.clone()),
+        is_streaming: Arc::new(|| false),
+        on_delivery_failed: Some(Arc::new(move |ids, error| {
+            hook.lock().expect("failures").push((ids.to_vec(), error));
+        })),
+    });
+
+    let root = tempfile::tempdir().expect("root");
+    let store = Arc::new(TaskRecordStore::new(&StateDirConfig {
+        project_dir: root.path().into(),
+        task_state_dir: None,
+    }));
+
+    let mut record_a = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "session-p".into(),
+            root_session_id: "session-p".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("record_a");
+    record_a.task_id = "st_first".into();
+    record_a.status = TaskStatus::Completed;
+    record_a.final_response = Some("finished first".into());
+    store.save(&record_a).expect("save record_a");
+
+    let mut record_b = create_task_record(
+        TaskRecordInput {
+            parent_session_id: "session-p".into(),
+            root_session_id: "session-p".into(),
+            ..Default::default()
+        },
+        Some(1),
+    )
+    .expect("record_b");
+    record_b.task_id = "st_second".into();
+    record_b.status = TaskStatus::Completed;
+    record_b.final_response = Some("finished second".into());
+    store.save(&record_b).expect("save record_b");
+
+    let completion = create_completion_notifier(CompletionNotifierDeps::new(
+        notifier.clone(),
+        store.clone(),
+    ));
+
+    // Buffer both completions
+    completion
+        .notify_terminal(&CompletionRequest {
+            record: record_a.clone(),
+            parent_state: ParentState::Compacting,
+            run_in_background: true,
+            tokens: None,
+        })
+        .expect("notify a");
+    completion
+        .notify_terminal(&CompletionRequest {
+            record: record_b.clone(),
+            parent_state: ParentState::Compacting,
+            run_in_background: true,
+            tokens: None,
+        })
+        .expect("notify b");
+
+    assert_eq!(completion.buffered_count("session-p"), 2);
+
+    // Flush the buffered batch
+    let flush_result = completion
+        .flush_buffered(&FlushInput {
+            session_id: "session-p".into(),
+            replaced: false,
+        })
+        .expect("flush");
+
+    assert_eq!(flush_result, FlushResult::Pending(2));
+
+    let receipts = coordinator.0.lock().expect("keys").clone();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].0, "task-completion:st_first");
+    assert_eq!(receipts[1].0, "task-completion:st_second");
+
+    // Order 2: First delivers, second fails!
+    receipts[0].1.delivered();
+    receipts[1].1.failed(HostError {
+        message: "injection 1 network error".into(),
+    });
+
+    // Verify first is marked notified exactly once
+    let loaded_a = store.load("st_first").expect("load a").expect("a exists");
+    assert_eq!(
+        loaded_a.notification.notified_epoch, 0,
+        "first delivered so notified_epoch must be marked"
+    );
+
+    // Verify second is retried / not marked notified
+    let loaded_b = store.load("st_second").expect("load b").expect("b exists");
+    assert_eq!(
+        loaded_b.notification.notified_epoch, -1,
+        "second was not delivered so notified_epoch must not advance"
+    );
+    assert_eq!(
+        loaded_b.notification.notification_failed_epoch, Some(0),
+        "second failure must be recorded"
+    );
+
+    // Second was re-buffered for retry, first was NOT re-buffered
+    assert_eq!(completion.buffered_count("session-p"), 1);
+
+    // Clear captured coordinator calls
+    coordinator.0.lock().expect("keys").clear();
+
+    // Second flush: only the failed second entry is retried!
+    let second_flush = completion
+        .flush_buffered(&FlushInput {
+            session_id: "session-p".into(),
+            replaced: false,
+        })
+        .expect("second flush");
+    assert_eq!(second_flush, FlushResult::Pending(1));
+
+    let retry_receipts = coordinator.0.lock().expect("keys").clone();
+    assert_eq!(retry_receipts.len(), 1, "only st_second should be retried");
+    assert_eq!(retry_receipts[0].0, "task-completion:st_second");
+
+    // Settle the retry successfully
+    retry_receipts[0].1.delivered();
+
+    let reloaded_a = store.load("st_first").expect("load a").expect("a exists");
+    assert_eq!(
+        reloaded_a.notification.notified_epoch, 0,
+        "first remains notified exactly once, no duplicates"
+    );
+
+    let reloaded_b = store.load("st_second").expect("load b").expect("b exists");
+    assert_eq!(
+        reloaded_b.notification.notified_epoch, 0,
+        "second now marked notified after successful retry"
+    );
+    assert_eq!(completion.buffered_count("session-p"), 0);
+}
+
+#[test]
+fn batch_enqueue_settles_failed_when_all_injections_fail() {
+    use senpi_task::completion::DeliveryState;
+    struct PerKey(Mutex<Vec<(String, senpi_task::completion::DeliveryCallbacks)>>);
+    impl CompletionCoordinator for PerKey {
+        fn enqueue(
+            &self,
+            key: &str,
+            _: &str,
+            _: &ParentNotifierMessage,
+            callbacks: senpi_task::completion::DeliveryCallbacks,
+        ) -> Result<bool, HostError> {
+            self.0.lock().expect("keys").push((key.into(), callbacks));
+            Ok(true)
+        }
+        fn schedule_flush(&self) {}
+        fn flush_soon(&self) {}
+    }
+    let coordinator = Arc::new(PerKey(Mutex::new(Vec::new())));
+    let notifier = TaskParentNotifier {
+        actions: Arc::new(Actions::default()),
+        coordinator: Some(coordinator.clone()),
+        is_streaming: Arc::new(|| false),
+        on_delivery_failed: None,
+    };
+    let message = completion_message(&["st_1", "st_2"]);
+    let caller = senpi_task::completion::DeliveryCallbacks::new(|_| {});
+    notifier
+        .enqueue_with_callbacks(&message, caller.clone())
+        .expect("enqueue");
+    let receipts = coordinator.0.lock().expect("keys");
+    receipts[0].1.failed(HostError {
+        message: "1 failed".into(),
+    });
+    assert_eq!(caller.state(), DeliveryState::Pending);
+    receipts[1].1.failed(HostError {
+        message: "2 failed".into(),
+    });
+    assert_eq!(caller.state(), DeliveryState::Failed);
+}
+
+#[test]
+fn batch_enqueue_settles_failed_when_first_delivers_and_second_fails() {
+    use senpi_task::completion::DeliveryState;
+    struct PerKey(Mutex<Vec<(String, senpi_task::completion::DeliveryCallbacks)>>);
+    impl CompletionCoordinator for PerKey {
+        fn enqueue(
+            &self,
+            key: &str,
+            _: &str,
+            _: &ParentNotifierMessage,
+            callbacks: senpi_task::completion::DeliveryCallbacks,
+        ) -> Result<bool, HostError> {
+            self.0.lock().expect("keys").push((key.into(), callbacks));
+            Ok(true)
+        }
+        fn schedule_flush(&self) {}
+        fn flush_soon(&self) {}
+    }
+    let coordinator = Arc::new(PerKey(Mutex::new(Vec::new())));
+    let notifier = TaskParentNotifier {
+        actions: Arc::new(Actions::default()),
+        coordinator: Some(coordinator.clone()),
+        is_streaming: Arc::new(|| false),
+        on_delivery_failed: None,
+    };
+    let message = completion_message(&["st_1", "st_2"]);
+    let caller = senpi_task::completion::DeliveryCallbacks::new(|_| {});
+    notifier
+        .enqueue_with_callbacks(&message, caller.clone())
+        .expect("enqueue");
+    let receipts = coordinator.0.lock().expect("keys");
+    receipts[0].1.delivered();
+    assert_eq!(caller.state(), DeliveryState::Pending);
+    receipts[1].1.failed(HostError {
+        message: "2 failed".into(),
+    });
+    assert_eq!(caller.state(), DeliveryState::Failed);
+}
+
+#[test]
+fn batch_enqueue_settles_delivered_only_when_all_injections_deliver() {
+    use senpi_task::completion::DeliveryState;
+    struct PerKey(Mutex<Vec<(String, senpi_task::completion::DeliveryCallbacks)>>);
+    impl CompletionCoordinator for PerKey {
+        fn enqueue(
+            &self,
+            key: &str,
+            _: &str,
+            _: &ParentNotifierMessage,
+            callbacks: senpi_task::completion::DeliveryCallbacks,
+        ) -> Result<bool, HostError> {
+            self.0.lock().expect("keys").push((key.into(), callbacks));
+            Ok(true)
+        }
+        fn schedule_flush(&self) {}
+        fn flush_soon(&self) {}
+    }
+    let coordinator = Arc::new(PerKey(Mutex::new(Vec::new())));
+    let notifier = TaskParentNotifier {
+        actions: Arc::new(Actions::default()),
+        coordinator: Some(coordinator.clone()),
+        is_streaming: Arc::new(|| false),
+        on_delivery_failed: None,
+    };
+    let message = completion_message(&["st_1", "st_2"]);
+    let caller = senpi_task::completion::DeliveryCallbacks::new(|_| {});
+    notifier
+        .enqueue_with_callbacks(&message, caller.clone())
+        .expect("enqueue");
+    let receipts = coordinator.0.lock().expect("keys");
+    receipts[0].1.delivered();
+    assert_eq!(caller.state(), DeliveryState::Pending);
+    receipts[1].1.delivered();
+    assert_eq!(caller.state(), DeliveryState::Delivered);
+}
+
+#[test]
+fn partial_enqueue_error_after_accepted_receipt_settles_caller_failed_without_rejection() {
+    struct PartialRefusalCoordinator {
+        receipts: Mutex<Vec<senpi_task::completion::DeliveryCallbacks>>,
+    }
+    impl CompletionCoordinator for PartialRefusalCoordinator {
+        fn enqueue(
+            &self,
+            key: &str,
+            _: &str,
+            _: &ParentNotifierMessage,
+            callbacks: senpi_task::completion::DeliveryCallbacks,
+        ) -> Result<bool, HostError> {
+            if key == "task-completion:st_accepted" {
+                self.receipts.lock().expect("receipts").push(callbacks);
+                Ok(true)
+            } else {
+                Ok(false) // second detail refused (retired coordinator)
+            }
+        }
+        fn schedule_flush(&self) {}
+        fn flush_soon(&self) {}
+    }
+
+    let coordinator = Arc::new(PartialRefusalCoordinator {
+        receipts: Mutex::new(Vec::new()),
+    });
+    let failures = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let hook = failures.clone();
+    let notifier = TaskParentNotifier {
+        actions: Arc::new(Actions::default()),
+        coordinator: Some(coordinator.clone()),
+        is_streaming: Arc::new(|| false),
+        on_delivery_failed: Some(Arc::new(move |ids, _| {
+            hook.lock().expect("failures").push(ids.to_vec());
+        })),
+    };
+    let message = completion_message(&["st_accepted", "st_refused"]);
+    let caller = senpi_task::completion::DeliveryCallbacks::new(|_| {});
+    // Must return Ok(()) so already accepted entry is not retried as a synchronous rejection
+    let result = notifier.enqueue_with_callbacks(&message, caller.clone());
+    assert!(result.is_ok(), "partial enqueue after accepted receipt must not return Err");
+    assert_eq!(caller.state(), senpi_task::completion::DeliveryState::Pending);
+
+    // Settle the accepted receipt from coordinator
+    let accepted_receipts = coordinator.receipts.lock().expect("receipts").clone();
+    assert_eq!(accepted_receipts.len(), 1);
+    accepted_receipts[0].delivered();
+
+    // Since one entry was refused, batch settlement fails per all-success contract
+    assert_eq!(caller.state(), senpi_task::completion::DeliveryState::Failed);
+    // Failure hook was called for the refused entry
+    assert_eq!(*failures.lock().expect("failures"), vec![vec!["st_refused".to_string()]]);
 }
