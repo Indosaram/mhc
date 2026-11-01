@@ -433,7 +433,7 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
         Some(1),
     )
     .expect("record_a");
-    record_a.task_id = "st_first".into();
+    record_a.task_id = "st_0000000a".into();
     record_a.status = TaskStatus::Completed;
     record_a.final_response = Some("finished first".into());
     store.save(&record_a).expect("save record_a");
@@ -447,7 +447,7 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
         Some(1),
     )
     .expect("record_b");
-    record_b.task_id = "st_second".into();
+    record_b.task_id = "st_0000000b".into();
     record_b.status = TaskStatus::Completed;
     record_b.final_response = Some("finished second".into());
     store.save(&record_b).expect("save record_b");
@@ -489,8 +489,8 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
 
     let receipts = coordinator.0.lock().expect("keys").clone();
     assert_eq!(receipts.len(), 2);
-    assert_eq!(receipts[0].0, "task-completion:st_first");
-    assert_eq!(receipts[1].0, "task-completion:st_second");
+    assert_eq!(receipts[0].0, "task-completion:st_0000000a");
+    assert_eq!(receipts[1].0, "task-completion:st_0000000b");
 
     // First of two injections fails, second delivers
     receipts[0].1.failed(HostError {
@@ -499,7 +499,7 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
     receipts[1].1.delivered();
 
     // Verify first is retried / not marked notified
-    let loaded_a = store.load("st_first").expect("load a").expect("a exists");
+    let loaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
     assert_eq!(
         loaded_a.notification.notified_epoch, -1,
         "first was not delivered so notified_epoch must not advance"
@@ -510,7 +510,7 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
     );
 
     // Verify second is marked notified exactly once
-    let loaded_b = store.load("st_second").expect("load b").expect("b exists");
+    let loaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
     assert_eq!(
         loaded_b.notification.notified_epoch, 0,
         "second delivered so notified_epoch must be marked"
@@ -532,19 +532,19 @@ fn batch_delivery_per_entry_order1_first_fails_second_delivers_retried_and_persi
     assert_eq!(second_flush, FlushResult::Pending(1));
 
     let retry_receipts = coordinator.0.lock().expect("keys").clone();
-    assert_eq!(retry_receipts.len(), 1, "only st_first should be retried");
-    assert_eq!(retry_receipts[0].0, "task-completion:st_first");
+    assert_eq!(retry_receipts.len(), 1, "only st_0000000a should be retried");
+    assert_eq!(retry_receipts[0].0, "task-completion:st_0000000a");
 
     // Settle the retry successfully
     retry_receipts[0].1.delivered();
 
-    let reloaded_a = store.load("st_first").expect("load a").expect("a exists");
+    let reloaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
     assert_eq!(
         reloaded_a.notification.notified_epoch, 0,
         "first now marked notified after successful retry"
     );
 
-    let reloaded_b = store.load("st_second").expect("load b").expect("b exists");
+    let reloaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
     assert_eq!(
         reloaded_b.notification.notified_epoch, 0,
         "second remains notified exactly once, no duplicates"
@@ -604,7 +604,7 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
         Some(1),
     )
     .expect("record_a");
-    record_a.task_id = "st_first".into();
+    record_a.task_id = "st_0000000a".into();
     record_a.status = TaskStatus::Completed;
     record_a.final_response = Some("finished first".into());
     store.save(&record_a).expect("save record_a");
@@ -618,7 +618,7 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
         Some(1),
     )
     .expect("record_b");
-    record_b.task_id = "st_second".into();
+    record_b.task_id = "st_0000000b".into();
     record_b.status = TaskStatus::Completed;
     record_b.final_response = Some("finished second".into());
     store.save(&record_b).expect("save record_b");
@@ -660,8 +660,8 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
 
     let receipts = coordinator.0.lock().expect("keys").clone();
     assert_eq!(receipts.len(), 2);
-    assert_eq!(receipts[0].0, "task-completion:st_first");
-    assert_eq!(receipts[1].0, "task-completion:st_second");
+    assert_eq!(receipts[0].0, "task-completion:st_0000000a");
+    assert_eq!(receipts[1].0, "task-completion:st_0000000b");
 
     // Order 2: First delivers, second fails!
     receipts[0].1.delivered();
@@ -670,14 +670,14 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
     });
 
     // Verify first is marked notified exactly once
-    let loaded_a = store.load("st_first").expect("load a").expect("a exists");
+    let loaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
     assert_eq!(
         loaded_a.notification.notified_epoch, 0,
         "first delivered so notified_epoch must be marked"
     );
 
     // Verify second is retried / not marked notified
-    let loaded_b = store.load("st_second").expect("load b").expect("b exists");
+    let loaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
     assert_eq!(
         loaded_b.notification.notified_epoch, -1,
         "second was not delivered so notified_epoch must not advance"
@@ -703,19 +703,19 @@ fn batch_delivery_per_entry_order2_first_delivers_second_fails_retried_and_persi
     assert_eq!(second_flush, FlushResult::Pending(1));
 
     let retry_receipts = coordinator.0.lock().expect("keys").clone();
-    assert_eq!(retry_receipts.len(), 1, "only st_second should be retried");
-    assert_eq!(retry_receipts[0].0, "task-completion:st_second");
+    assert_eq!(retry_receipts.len(), 1, "only st_0000000b should be retried");
+    assert_eq!(retry_receipts[0].0, "task-completion:st_0000000b");
 
     // Settle the retry successfully
     retry_receipts[0].1.delivered();
 
-    let reloaded_a = store.load("st_first").expect("load a").expect("a exists");
+    let reloaded_a = store.load("st_0000000a").expect("load a").expect("a exists");
     assert_eq!(
         reloaded_a.notification.notified_epoch, 0,
         "first remains notified exactly once, no duplicates"
     );
 
-    let reloaded_b = store.load("st_second").expect("load b").expect("b exists");
+    let reloaded_b = store.load("st_0000000b").expect("load b").expect("b exists");
     assert_eq!(
         reloaded_b.notification.notified_epoch, 0,
         "second now marked notified after successful retry"
