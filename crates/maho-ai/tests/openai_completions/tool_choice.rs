@@ -189,6 +189,7 @@ async fn preserves_z_ai_thinking_when_replaying_reasoning_content() {
         StopReason::ToolUse,
     );
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
+        let assistant = std::sync::Arc::make_mut(assistant);
         assistant.provider = "zai".to_owned();
         assistant.model = "glm-5.2".to_owned();
     }
@@ -456,6 +457,7 @@ async fn replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_
     let model = catalog_model("xiaomi", "mimo-v2.6-pro");
     let mut replayed = assistant(vec![tool_call("call_1", "read", json!({ "path": "README.md" }))], StopReason::ToolUse);
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
+        let assistant = std::sync::Arc::make_mut(assistant);
         assistant.provider = "xiaomi".to_owned();
         assistant.model = "mimo-v2.6-pro".to_owned();
     }
@@ -531,6 +533,7 @@ async fn replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content() {
         StopReason::Stop,
     );
     if let maho_ai::types::Message::Assistant(assistant) = &mut replayed {
+        let assistant = std::sync::Arc::make_mut(assistant);
         assistant.provider = "opencode-go".to_owned();
         assistant.model = "kimi-k2.7-code".to_owned();
     }

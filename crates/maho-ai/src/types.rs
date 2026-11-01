@@ -1365,7 +1365,7 @@ pub enum Message {
     #[serde(rename = "user")]
     User(UserMessage),
     #[serde(rename = "assistant")]
-    Assistant(Box<AssistantMessage>),
+    Assistant(std::sync::Arc<AssistantMessage>),
     #[serde(rename = "toolResult")]
     ToolResult(ToolResultMessage),
     #[serde(rename = "configurationUpdate")]

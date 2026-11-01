@@ -676,6 +676,7 @@ impl Extension for TerminalExtension {
             Ok(EventResult::None)
         })}));
         let bash_sender = sender.clone();
+        let shutdown_sender = sender.clone();
         let lifecycle_delivery = completion_delivery.clone();
         let lifecycle_notifier = notifier.clone();
         let lifecycle_monitors = monitors.clone();
@@ -1406,7 +1407,6 @@ impl Extension for TerminalExtension {
             }),
         );
         let shutdown_bundle = bundle.clone();
-        let shutdown_sender = sender.clone();
         api.on(
             EventKind::SessionShutdown,
             Arc::new(move |_, _| {

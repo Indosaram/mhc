@@ -4255,7 +4255,7 @@ mod cache_checkpoint_tests {
                 assistant.stop_reason = StopReason::ToolUse;
                 context
                     .messages
-                    .push(Message::Assistant(Box::new(assistant)));
+                    .push(Message::Assistant(std::sync::Arc::new(assistant)));
                 context
                     .messages
                     .push(Message::ToolResult(ToolResultMessage {

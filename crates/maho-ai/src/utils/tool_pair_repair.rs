@@ -122,7 +122,7 @@ mod tests {
                 })
             })
             .collect();
-        Message::Assistant(Box::new(message))
+        Message::Assistant(std::sync::Arc::new(message))
     }
 
     fn tool_result(id: &str, name: &str, timestamp: i64, text: &str) -> Message {

@@ -261,7 +261,7 @@ pub fn transform_messages(
 
                 let mut next = assistant.as_ref().clone();
                 next.content = transformed_content;
-                transformed.push(Message::Assistant(Box::new(next)));
+                transformed.push(Message::Assistant(std::sync::Arc::new(next)));
             }
         }
     }

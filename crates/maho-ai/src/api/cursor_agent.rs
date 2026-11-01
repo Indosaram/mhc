@@ -6863,7 +6863,7 @@ mod tests {
                 content: crate::types::UserContent::Text("read the file".to_owned()),
                 timestamp: 0,
             }),
-            Message::Assistant(Box::new(AssistantMessage {
+            Message::Assistant(std::sync::Arc::new(AssistantMessage {
                 content: vec![
                     text_block("reading"),
                     ContentBlock::ToolCall(ToolCall {

@@ -115,6 +115,7 @@ async fn still_emits_tools_empty_for_anthropic_lite_llm_proxy_when_conversation_
     let model = base_model(&[]);
     let mut call = assistant(vec![tool_call("t1", "noop", json!({}))], StopReason::ToolUse);
     if let maho_ai::types::Message::Assistant(assistant) = &mut call {
+        let assistant = std::sync::Arc::make_mut(assistant);
         assistant.api = "openai-completions".to_owned();
         assistant.provider = "openai".to_owned();
         assistant.model = "gpt-4o-mini".to_owned();

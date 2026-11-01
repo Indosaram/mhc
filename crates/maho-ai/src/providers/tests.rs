@@ -451,7 +451,7 @@ async fn faux_simulates_prompt_caching_per_session_id() {
     assert_eq!(first.usage.cache_read, 0);
     assert!(first.usage.cache_write > 0);
 
-    context.messages.push(Message::Assistant(Box::new(first)));
+    context.messages.push(Message::Assistant(std::sync::Arc::new(first)));
     context.messages.push(user_message("follow up"));
 
     let second = streams
