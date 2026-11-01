@@ -152,3 +152,53 @@ async fn late_listener_request_delivers_active_count_without_children_changing()
     assert!(matches!(received.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     drop(subscription);
 }
+
+#[tokio::test]
+async fn worker_continues_after_manager_list_panic_and_delivers_later_state_request() {
+    use maho_omo_task::resumption_channel_emitter::{OwnedResumptionChannels, RESUMPTION_CHANNEL_STATE_REQUEST_EVENT};
+    struct PanickingManager {
+        record: TaskRecord,
+        calls: AtomicUsize,
+    }
+    impl ResumptionChannelManager for PanickingManager {
+        fn list(&self, _: &str) -> Vec<TaskRecord> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("manager list panic on first call");
+            }
+            vec![self.record.clone()]
+        }
+        fn was_background(&self, _: &str) -> bool { true }
+        fn is_owned_team_member(&self, _: &TaskRecord, _: &str) -> bool { panic!("background must short-circuit ownership") }
+    }
+    let record = create_task_record(TaskRecordInput::default(), Some(1)).expect("record");
+    let manager = Arc::new(PanickingManager {
+        record: record.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let events = EventBus::default();
+    let owner = OwnedResumptionChannels::new(events.clone(), manager.clone(), Arc::new(|| Some("session".into()))).expect("owner");
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), owner.emit_session_start())
+        .await
+        .expect("startup deadline")
+        .expect("startup");
+
+    let (emitted, received) = std::sync::mpsc::channel();
+    let subscription = events.on(RESUMPTION_CHANNEL_STATE_EVENT, Arc::new(move |event| {
+        emitted.send(event.clone()).expect("event receiver");
+    }));
+    assert!(matches!(received.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+
+    events.emit(RESUMPTION_CHANNEL_STATE_REQUEST_EVENT, &serde_json::json!({}));
+    let snapshot = received.recv_timeout(std::time::Duration::from_secs(5)).expect("snapshot after request");
+    assert_eq!(snapshot["source"], "senpi-task");
+    assert_eq!(snapshot["activeCount"], 1);
+    assert_eq!(snapshot["channels"][0]["id"], record.task_id);
+    assert!(matches!(received.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+
+    owner.dispose();
+    assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).expect("disposal clear")["activeCount"], 0);
+    assert!(matches!(received.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+    assert_eq!(manager.calls.load(Ordering::SeqCst), 2);
+    drop(subscription);
+}
