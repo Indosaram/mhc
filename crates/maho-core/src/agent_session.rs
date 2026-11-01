@@ -550,6 +550,10 @@ pub fn provider_retry_watchdog_abort_message(
     }
 }
 
+/// Host refusal of a prompt-dispatched extension command: `(name, args, source of the registering
+/// extension)` -> `Some(reason)` refuses.
+pub type ExtensionCommandGate = Arc<dyn Fn(&str, &str, &maho_ext_api::SourceInfo) -> Option<String> + Send + Sync>;
+
 // Staged for slices S2..S8: each field is populated by construction and consumed by the slice that
 // owns the corresponding TS member; the attribute is dropped once every slice lands.
 #[allow(dead_code)]
@@ -564,6 +568,13 @@ struct AgentSessionState {
     eval_only_tool_names: Option<BTreeSet<String>>,
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
+    /// Names a registration offered that `excluded_tool_names` withheld: lets a caller tell a real
+    /// excluded tool from an exclusion naming nothing.
+    withheld_excluded_tool_names: BTreeSet<String>,
+    /// Host refusal of prompt-dispatched extension commands (`/name args`).
+    extension_command_gate: Option<ExtensionCommandGate>,
+    /// The host marked the session's role restrictive: client-submitted user bash is refused.
+    user_bash_denied: bool,
     base_tools_override: Option<BTreeMap<String, AgentTool>>,
     base_tool_definitions: BTreeMap<String, ToolDefinition>,
     tool_registry: BTreeMap<String, AgentTool>,
@@ -3971,6 +3982,9 @@ impl AgentSession {
             ),
             allowed_tool_names: name_set(config.allowed_tool_names),
             excluded_tool_names: name_set(config.excluded_tool_names),
+            withheld_excluded_tool_names: BTreeSet::new(),
+            extension_command_gate: None,
+            user_bash_denied: false,
             base_tools_override: config.base_tools_override,
             base_tool_definitions: BTreeMap::new(),
             tool_registry: BTreeMap::new(),
@@ -12013,6 +12027,11 @@ impl AgentSession {
         exclude_from_context: bool,
         id: Option<String>,
     ) -> Result<maho_tools::bash_executor::BashResult, String> {
+        // A session the host marked restrictive (a role policy that withholds bash) runs no terminal
+        // command, client-submitted user bash included. Plain tool exclusions restrict only the model.
+        if self.state().user_bash_denied {
+            return Err("bash_excluded: this session's role policy withholds bash, so user bash commands are refused".to_owned());
+        }
         match self.user_bash_hook(command, exclude_from_context).await? {
             maho_ext_api::EventResult::UserBash {
                 result: Some(result),
@@ -12652,6 +12671,11 @@ impl AgentSession {
         let Some(command) = runner.get_command(name) else {
             return Ok(false);
         };
+        // A gated session refuses the command before it runs; the prompt fails with the typed reason.
+        let gate = self.state().extension_command_gate.clone();
+        if let Some(refusal) = gate.and_then(|gate| gate(name, args, &command.command.source_info)) {
+            return Err(refusal);
+        }
         let info = &command.command.source_info;
         self.emit(AgentSessionEvent::CommandInvocation { command: serde_json::json!({"name":name,"source":"extension","syntax":"slash",
             "sourceInfo":{"path":info.path,"source":info.source,"scope":match info.scope {
@@ -14264,14 +14288,21 @@ impl AgentSession {
             })
         });
         let mut state = self.state();
+        // An exclusion entry ending in `*` withholds every tool name with that prefix.
+        if state.excluded_tool_names.as_ref().is_some_and(|names| {
+            names.contains(&definition.name)
+                || names.iter().any(|name| {
+                    name.strip_suffix('*')
+                        .is_some_and(|prefix| definition.name.starts_with(prefix))
+                })
+        }) {
+            state.withheld_excluded_tool_names.insert(definition.name);
+            return;
+        }
         if state
             .allowed_tool_names
             .as_ref()
             .is_some_and(|names| !names.contains(&definition.name))
-            || state
-                .excluded_tool_names
-                .as_ref()
-                .is_some_and(|names| names.contains(&definition.name))
         {
             return;
         }
@@ -14308,6 +14339,37 @@ impl AgentSession {
                 source_info,
             },
         );
+    }
+
+    /// Every tool name a registration offered but the session's exclusion list withheld.
+    pub fn withheld_excluded_tool_names(&self) -> Vec<String> {
+        self.state().withheld_excluded_tool_names.iter().cloned().collect()
+    }
+
+    /// The session's tool exclusion entries (names and `prefix*` patterns), carried into a
+    /// replacement session.
+    pub fn excluded_tool_names(&self) -> Option<Vec<String>> {
+        self.state().excluded_tool_names.as_ref().map(|names| names.iter().cloned().collect())
+    }
+
+    /// Installs the host's refusal of prompt-dispatched extension commands: `Some(reason)` from the
+    /// gate fails the prompt before the command runs. Replacement sessions inherit it.
+    pub fn set_extension_command_gate(&self, gate: Option<ExtensionCommandGate>) {
+        self.state().extension_command_gate = gate;
+    }
+
+    pub fn extension_command_gate(&self) -> Option<ExtensionCommandGate> {
+        self.state().extension_command_gate.clone()
+    }
+
+    /// Marks the session's role restrictive, refusing client-submitted user bash. Replacement
+    /// sessions inherit it.
+    pub fn set_user_bash_denied(&self, denied: bool) {
+        self.state().user_bash_denied = denied;
+    }
+
+    pub fn user_bash_denied(&self) -> bool {
+        self.state().user_bash_denied
     }
 
     pub fn replace_custom_tool(&self, definition: ToolDefinition) -> Result<(), String> {
@@ -17091,14 +17153,33 @@ impl AgentSession {
     }
 
     pub async fn extension_runner_request(&self, name: &str, data: Value) -> Result<Value, String> {
+        self.extension_runner_request_typed(name, data)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    /// [`Self::extension_runner_request`] keeping the handler's failure `code` (the RPC `errorCode`).
+    pub async fn extension_runner_request_typed(
+        &self,
+        name: &str,
+        data: Value,
+    ) -> Result<Value, maho_ext_api::ExtensionFailure> {
         self.extension_runner
             .lock()
             .await
             .clone()
-            .ok_or_else(|| "Extension runner is not bound".to_owned())?
+            .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Extension runner is not bound"))?
             .handle_rpc_request(name, data)
             .await
-            .map_err(|error| error.message)
+    }
+
+    /// Whether the bound extension runner serves the RPC request `name`; `false` when unbound.
+    pub async fn extension_runner_has_rpc_handler(&self, name: &str) -> bool {
+        self.extension_runner
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|runner| runner.has_rpc_handler(name))
     }
 
     pub async fn loaded_extension_surfaces(&self) -> Vec<Value> {
@@ -22400,6 +22481,82 @@ mod tests {
             .first()
             .map(user_message_text)
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn excluded_names_and_prefix_patterns_are_withheld_and_recorded() {
+        let session = AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory("/tmp", None, None),
+            settings_manager: SettingsManager::from_storage(Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false),
+            cwd: "/tmp".to_owned(), agent_dir: Some("/tmp/maho-agent".to_owned()), fallback_now: None, retry_random: None,
+            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: BTreeMap::new(), custom_tools: Vec::new(),
+            model_runtime: Some(ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
+            model_registry: None, uses_default_stream_function: Some(true), initial_active_tool_names: None, default_tool_names: None,
+            eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: Some(vec!["bash".to_owned(), "task_*".to_owned()]),
+            base_tools_override: None, session_start_event: None, auto_title_sessions: None,
+        }).expect("session");
+        for name in ["bash", "task_send", "tasks", "read"] {
+            session.register_tool_definition(test_definition(name), empty_source_info(), test_tool(name));
+        }
+        let registered = session.get_all_tools().into_iter().map(|tool| tool.name).collect::<BTreeSet<_>>();
+        assert_eq!(registered, BTreeSet::from(["read".to_owned(), "tasks".to_owned()]));
+        assert_eq!(session.withheld_excluded_tool_names(), ["bash", "task_send"]);
+    }
+
+    fn bash_excluded_session(temp: &tempfile::TempDir) -> AgentSession {
+        let cwd = temp.path().to_string_lossy().into_owned();
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory(&cwd, None, None),
+            settings_manager: SettingsManager::from_storage(Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false),
+            cwd: cwd.clone(), agent_dir: Some(temp.path().join("agent").to_string_lossy().into_owned()), fallback_now: None, retry_random: None,
+            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: BTreeMap::new(), custom_tools: Vec::new(),
+            model_runtime: Some(ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() }).expect("valid model runtime")),
+            model_registry: None, uses_default_stream_function: Some(true), initial_active_tool_names: None, default_tool_names: None,
+            eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: Some(vec!["bash".to_owned()]),
+            base_tools_override: None, session_start_event: None, auto_title_sessions: None,
+        }).expect("session")
+    }
+
+    #[tokio::test]
+    async fn a_restrictive_role_refuses_user_bash_before_any_shell_runs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session = bash_excluded_session(&temp);
+        session.set_user_bash_denied(true);
+        let Err(refused) = session.execute_user_bash("touch user-bash-ran", None, true, None).await else {
+            panic!("user bash ran in a restrictive-role session");
+        };
+        assert!(refused.starts_with("bash_excluded: "), "{refused}");
+        assert!(!temp.path().join("user-bash-ran").exists(), "no shell ran");
+    }
+
+    #[tokio::test]
+    async fn plain_bash_exclusion_keeps_user_bash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session = bash_excluded_session(&temp);
+        let hook_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:user-bash>", session.cwd().into(), Default::default());
+        let runs = hook_runs.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::UserBash, vec![Arc::new(move |_, _| {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(maho_ext_api::EventResult::UserBash { operations: None, result: Some(maho_tools::bash_executor::BashResult {
+                output: "user bash ran".into(), exit_code: Some(0), cancelled: false, truncated: false, full_output_path: None,
+            }) }) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        // `--exclude-tools bash` / `tools_exclude=bash` hide bash from the model, not from the user.
+        let result = session.execute_user_bash("echo hi", None, true, None).await;
+        assert_eq!(result.map(|result| result.output), Ok("user bash ran".to_owned()), "a plain bash exclusion keeps `!cmd`");
+        assert_eq!(hook_runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Control: the host's restrictive flag refuses before the user-bash path runs.
+        session.set_user_bash_denied(true);
+        let Err(refused) = session.execute_user_bash("echo hi", None, true, None).await else {
+            panic!("a restrictive role must refuse user bash");
+        };
+        assert!(refused.starts_with("bash_excluded: "), "{refused}");
+        assert_eq!(hook_runs.load(std::sync::atomic::Ordering::SeqCst), 1, "the refusal precedes the user-bash hook");
+        session.dispose().await;
     }
 
     #[test]
