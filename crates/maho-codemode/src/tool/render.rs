@@ -252,7 +252,7 @@ impl maho_tui::tui::Component for EvalCard {
         self.ticker.rendered();
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0);
         // Clock-derived so the frame keeps advancing when a partial update rebuilds the card.
-        let spinner_frame=self.spinner_frame.or_else(||self.ticker.live.get().then(||(now as u64/LIVE_ELAPSED_TICK_MS) as usize));
+        let spinner_frame=self.spinner_frame.or_else(||self.ticker.live.get().then_some((now as u64/LIVE_ELAPSED_TICK_MS) as usize));
         let context=EvalRenderContext {expanded:self.expanded,has_result:self.has_result,is_partial:self.is_partial,is_error:self.is_error,show_images:self.show_images,image_protocol:self.image_protocol.clone(),spinner_frame,
             now,theme:self.theme.clone(),cwd:self.cwd.clone()};
         let request=super::eval_request::parse_eval_request(&self.args);
