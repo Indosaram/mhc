@@ -5,6 +5,14 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const TASK_CHILD_UI_ONLY_TOOL_NAMES: [&str; 2] = ["memory", "memory_apply_patch"];
+pub const TASK_CHILD_PARENT_SESSION_TOOL_NAMES: [&str; 6] = [
+    "eval",
+    "monitor",
+    "bash_output",
+    "bash_input",
+    "bash_resize",
+    "kill_bash",
+];
 pub struct InProcessRunnerBuildContext {
     pub shared_parent_tools: Vec<senpi_task::runners::in_process::shared_tool_filter::ChildToolRef>,
     pub max_depth: u32,
@@ -108,6 +116,7 @@ pub fn build_in_process_runner(
             shared_parent_tools: build.shared_parent_tools,
             ui_only_tool_names: TASK_CHILD_UI_ONLY_TOOL_NAMES
                 .iter()
+                .chain(TASK_CHILD_PARENT_SESSION_TOOL_NAMES.iter())
                 .map(|name| (*name).into())
                 .collect(),
             max_depth: Some(build.max_depth.saturating_add(1).max(1)),
