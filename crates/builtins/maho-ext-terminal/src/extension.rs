@@ -1406,6 +1406,7 @@ impl Extension for TerminalExtension {
             }),
         );
         let shutdown_bundle = bundle.clone();
+        let shutdown_sender = sender.clone();
         api.on(
             EventKind::SessionShutdown,
             Arc::new(move |_, _| {
@@ -1466,7 +1467,7 @@ impl Extension for TerminalExtension {
                 })
             }),
         );
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();Box::pin(async move {
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();let sender=shutdown_sender.clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason!=maho_ext_api::types::SessionReason::Reload) {notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();}
             let session_id=ctx.session_manager.session_id().to_owned();
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
@@ -1476,6 +1477,15 @@ impl Extension for TerminalExtension {
                 // registry.ts teardown is awaited: release the bundle lock so none is held
                 // across the exit-grace awaits and the runtime thread is not blocked.
                 let manager={let mut live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.begin_teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?.then(||live.manager.clone())};
+                // Upstream teardown disposes the registry and `onMonitorState([])` publishes the empty
+                // set. Here the telemetry task that would forward it is already aborted, so publish it
+                // directly; otherwise wake-source consumers keep the last non-zero monitor count.
+                if manager.is_some() {
+                    let payload=monitor_state_payload(&[]);
+                    sender.events.emit("terminal_monitor_state",&payload);
+                    if let Err(error)=sender.rpc_emit("terminal_monitor_state",&payload) {maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));}
+                    sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":0,"monitors":[]}));
+                }
                 if let Some(manager)=manager {crate::manager::teardown_shared(&manager).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;}
                 crate::session_bundle::teardown_parked_bundle_async(&session_id).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
             }
