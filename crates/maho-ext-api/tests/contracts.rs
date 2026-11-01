@@ -1233,3 +1233,23 @@ fn extension_ui_default_request_render_reports_unavailable_capability() {
         "the unavailable reason must be carried on the failure"
     );
 }
+
+#[test]
+fn background_task_status_serde_roundtrip_preserves_counts() {
+    let status = BackgroundTaskStatus {
+        running: 2,
+        completed: 5,
+        total: 10,
+        queued: 1,
+        paused: 1,
+        failed: 1,
+    };
+    let json = serde_json::to_string(&status).expect("serialize");
+    let parsed: BackgroundTaskStatus = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed, status);
+    assert!(!parsed.is_empty());
+    assert!(!parsed.is_cleared());
+    let empty = BackgroundTaskStatus::default();
+    assert!(empty.is_empty());
+    assert!(empty.is_cleared());
+}

@@ -84,6 +84,7 @@ pub struct FooterSnapshot {
 }
 pub struct FooterComponent {
     pub snapshot: FooterSnapshot,
+    pub now_ms: u64,
     pub auto_compact_enabled: bool,
     pub compaction_delegated: bool,
 }
@@ -108,6 +109,47 @@ const STATUS_ORDER: &[(&str, Option<u8>)] = &[
     ("ext:nested-agents:status", Some(10)),
 ];
 const UNKNOWN_STATUS_FOLD_PRIORITY: u8 = 30;
+fn background_tasks(statuses: &BTreeMap<String, String>) -> Option<maho_ext_api::BackgroundTaskStatus> {
+    let mut total = None;
+    for key in ["omo-task", "omo-dag"] {
+        if let Some(value) = statuses.get(key)
+            && let Ok(counts) = serde_json::from_str::<maho_ext_api::BackgroundTaskStatus>(value)
+        {
+            let sum = total.get_or_insert_with(maho_ext_api::BackgroundTaskStatus::default);
+            sum.running += counts.running;
+            sum.completed += counts.completed;
+            sum.total += counts.total;
+            sum.queued += counts.queued;
+            sum.paused += counts.paused;
+            sum.failed += counts.failed;
+        }
+    }
+    total
+}
+
+pub(crate) fn background_status_animating(statuses: &BTreeMap<String, String>) -> bool {
+    background_tasks(statuses).is_some_and(|tasks| tasks.running > 0)
+        || statuses.get("monitors").is_some_and(|status| monitor_watching(status))
+}
+fn monitor_watching(status: &str) -> bool {
+    maho_tui::utils::strip_terminal_sequences(status).split_whitespace().nth(3) == Some("watching")
+}
+pub(crate) fn background_task_text(statuses: &BTreeMap<String, String>, now_ms: u64) -> Option<String> {
+    let tasks = background_tasks(statuses)?;
+    let mut parts = Vec::new();
+    if tasks.running > 0 {
+        let frame = crate::tool_progress::tool_spinner_glyph(i64::try_from(now_ms / 100).unwrap_or(0));
+        let plural = if tasks.running == 1 { "" } else { "s" };
+        parts.push(format!("{frame} {} task{plural} running", tasks.running));
+    }
+    if tasks.total > 0 {
+        parts.push(format!("{}{}/{} done", if tasks.running == 0 { "tasks " } else { "" }, tasks.completed, tasks.total));
+    }
+    if tasks.queued > 0 && tasks.running == 0 { parts.push(format!("{} queued", tasks.queued)); }
+    if tasks.paused > 0 { parts.push(format!("{} paused", tasks.paused)); }
+    if tasks.failed > 0 { parts.push(format!("{} failed", tasks.failed)); }
+    Some(parts.join(" · "))
+}
 const SYNC_BLOCKED_SUFFIX: &str = " sync blocked";
 fn format_money(value: f64) -> String {
     if value != 0. && value.abs() < 0.01 {
@@ -251,6 +293,7 @@ impl FooterComponent {
     pub fn new(snapshot: FooterSnapshot) -> Self {
         Self {
             snapshot,
+            now_ms: 0,
             auto_compact_enabled: true,
             compaction_delegated: false,
         }
@@ -485,6 +528,7 @@ impl FooterComponent {
     }
     fn render_status(&self, width: usize, theme: &Theme) -> Option<String> {
         let statuses = &self.snapshot.extension_statuses;
+        let tasks = background_task_text(statuses, self.now_ms);
         let mut entries: Vec<(FooterGroup, Option<u8>)> = Vec::new();
         let mut push = |key: &str, value: &str, priority: Option<u8>| {
             let text = sanitize_status(value);
@@ -495,8 +539,29 @@ impl FooterComponent {
             }
         };
         for (key, priority) in STATUS_ORDER {
+            if *key == "omo-task" || *key == "omo-dag" {
+                if *key == "omo-task" && let Some(tasks) = &tasks {
+                    push("omo-task", tasks, *priority);
+                }
+                if let Some(value) = statuses.get(*key)
+                    && serde_json::from_str::<maho_ext_api::BackgroundTaskStatus>(value).is_err()
+                {
+                    push(key, value, *priority);
+                }
+                continue;
+            }
             if let Some(value) = statuses.get(*key) {
-                push(key, value.as_str(), *priority);
+                if *key == "monitors" && monitor_watching(value) {
+                    let frame = match (self.now_ms / 150) % 4 {
+                        0 => "◜",
+                        1 => "◝",
+                        2 => "◞",
+                        _ => "◟",
+                    };
+                    push(key, &value.replacen('◉', frame, 1), *priority);
+                } else {
+                    push(key, value.as_str(), *priority);
+                }
             }
         }
         for (key, value) in statuses {
@@ -746,6 +811,42 @@ mod tests {
             let (last, color) = group.runs.last().unwrap();
             assert_eq!((last.trim_start(), *color), ("2 failed", ThemeColor::Error), "{text}");
             assert_eq!(group.plain(), text);
+        }
+    }
+
+    #[test]
+    fn background_counts_merge_and_motion_stops_when_inactive() {
+        let mut statuses = BTreeMap::from([
+            ("omo-task".into(), serde_json::to_string(&maho_ext_api::BackgroundTaskStatus { running: 1, completed: 2, total: 3, ..Default::default() }).unwrap()),
+            ("omo-dag".into(), serde_json::to_string(&maho_ext_api::BackgroundTaskStatus { running: 2, completed: 2, total: 6, queued: 2, ..Default::default() }).unwrap()),
+        ]);
+        let counts = background_tasks(&statuses).unwrap();
+        assert_eq!((counts.running, counts.completed, counts.total, counts.queued), (3, 4, 9, 2));
+        assert!(background_status_animating(&statuses));
+        statuses.clear();
+        statuses.insert("monitors".into(), "◉ 1 monitor muted".into());
+        assert!(!background_status_animating(&statuses));
+        statuses.insert("monitors".into(), "◉ 1 monitor watching".into());
+        assert!(background_status_animating(&statuses));
+    }
+
+    #[test]
+    fn background_frames_advance_without_changing_layout() {
+        let theme = Theme::builtin("dark", crate::theme::ColorMode::Truecolor).unwrap();
+        let mut footer = FooterComponent::new(FooterSnapshot {
+            extension_statuses: BTreeMap::from([
+                ("omo-task".into(), serde_json::to_string(&maho_ext_api::BackgroundTaskStatus { running: 3, completed: 4, total: 9, ..Default::default() }).unwrap()),
+                ("monitors".into(), "◉ 1 monitor watching · log (3s)".into()),
+            ]),
+            ..Default::default()
+        });
+        for width in [40, 80, 120] {
+            footer.now_ms = 0;
+            let first = footer.render(width, &theme).unwrap();
+            footer.now_ms = 150;
+            let second = footer.render(width, &theme).unwrap();
+            assert_ne!(first, second);
+            for line in first.iter().chain(&second) { assert!(visible_width(line) <= width); }
         }
     }
 }
