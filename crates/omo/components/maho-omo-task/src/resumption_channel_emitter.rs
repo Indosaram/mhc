@@ -56,9 +56,33 @@ impl OwnedResumptionChannels {
         let shutdown = emitter.clone(); let stop = Arc::new(tokio::sync::Notify::new()); let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("task-resumption".into()).spawn(move || {
             for job in &receiver {
-                let completed = runtime.block_on(async { tokio::select! { biased; () = stopping.notified() => false, () = job.future => true } });
-                if !completed { break; }
-                let _ = job.completed.send(());
+                let EmissionJob { future, completed } = job;
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    runtime.block_on(async {
+                        tokio::select! {
+                            biased;
+                            () = stopping.notified() => false,
+                            () = future => true,
+                        }
+                    })
+                }));
+                match outcome {
+                    Ok(true) => {
+                        let _ = completed.send(());
+                    }
+                    Ok(false) => {
+                        break;
+                    }
+                    Err(payload) => {
+                        let message = payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|value| (*value).to_owned()))
+                            .unwrap_or_else(|| "task resumption emission job panicked".to_owned());
+                        maho_ext_api::diagnostic(&message);
+                        let _ = completed.send(());
+                    }
+                }
             }
             for job in receiver.try_iter() { drop(job); }
             runtime.block_on(shutdown.emit_shutdown());
