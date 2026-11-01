@@ -254,7 +254,8 @@ pub fn read_memory_receipts(
     })
 }
 
-fn under_receipts_lock<T, F>(runtime_dir: &Path, operation: F) -> Result<T, String>
+/// Runs `operation` holding the identity's `receipts` lock (shared with [`super::owner`]).
+pub(crate) fn under_receipts_lock<T, F>(runtime_dir: &Path, operation: F) -> Result<T, String>
 where
     F: FnOnce() -> Result<T, String>,
 {
