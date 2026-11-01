@@ -1069,7 +1069,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .status_log
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(statuses.iter().any(|(key, text)| key == "omo-dag" && text.as_deref().is_some_and(|text| text.starts_with("dag "))), "registered DAG did not publish its footer status: {statuses:?}");
+        assert!(statuses.iter().any(|(key, text)| key == "omo-dag" && text.as_deref().is_some_and(|text| serde_json::from_str::<BackgroundTaskStatus>(text).is_ok())), "registered DAG did not publish its footer status: {statuses:?}");
     }
     println!("PASS registered DAG live wake source and shutdown clear");
     component.dispose();

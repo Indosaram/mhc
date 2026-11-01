@@ -1053,6 +1053,23 @@ pub struct SkillProvenance {
     pub selected_root: String,
     pub project_root: Option<String>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BackgroundTaskStatus {
+    pub running: usize,
+    pub completed: usize,
+    pub total: usize,
+    pub queued: usize,
+    pub paused: usize,
+    pub failed: usize,
+}
+impl BackgroundTaskStatus {
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+    pub fn is_cleared(&self) -> bool {
+        self.total == 0 || (self.running == 0 && self.queued == 0 && self.paused == 0 && self.failed == 0)
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SkillAllowedSet {
     pub roots: Vec<String>,

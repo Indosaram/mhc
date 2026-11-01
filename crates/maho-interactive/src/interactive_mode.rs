@@ -900,6 +900,7 @@ pub struct InteractiveMode {
     /// A state change the next host frame must show (senpi `requestRender`); taken by
     /// [`InteractiveMode::take_frame_rebuild`].
     frame_dirty: bool,
+    background_footer_animating: bool,
     /// Whether an editor autocomplete request was outstanding at the last poll.
     autocomplete_pending: bool,
     /// Bumped on every session event so the memoized local footer stats follow the session.
@@ -1240,6 +1241,7 @@ impl InteractiveMode {
     }
     fn frame_animating(&self) -> bool {
         !self.agent_idle
+            || (self.footer.is_none() && self.background_footer_animating)
             || self.provisional_working
             || self.working_started_ms.is_some()
             || self.pending_turn.is_some()
@@ -2891,6 +2893,7 @@ impl InteractiveMode {
             pending_dialog_external_edit: Default::default(),
             footer_poll_ms: None,
             frame_dirty: true,
+            background_footer_animating: false,
             autocomplete_pending: false,
             footer_event_generation: 0,
             footer_stats_cache: RefCell::new(None),
@@ -12010,6 +12013,7 @@ impl InteractiveMode {
     /// indicator state. Statuses and terminal-input listeners were cleared by the hook itself.
     fn reset_extension_ui(&mut self) {
         self.footer_data.clear_extension_statuses();
+        self.background_footer_animating = false;
         use crate::interactive_extension_ui::UiRequest;
         self.handle_ui_request(UiRequest::SideColumn(None));
         self.footer = None;
@@ -12078,7 +12082,12 @@ impl InteractiveMode {
                 self.footer_data.set_subagent_cost(cost);
                 self.editor_host.request_render();
             }
-            UiRequest::WidgetFrame => self.editor_host.request_render(),
+            UiRequest::WidgetFrame => {
+                self.background_footer_animating = crate::components::footer::background_status_animating(
+                    &self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
+                self.editor_host.request_render();
+            }
             UiRequest::ResetExtensionUi => self.reset_extension_ui(),
             UiRequest::WidgetFactory(key, factory, options) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(
@@ -14582,6 +14591,7 @@ impl InteractiveMode {
             }
         }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
+        footer.now_ms = self.clock_ms();
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
         footer.set_compaction_delegated(self.compaction_delegated);
         footer.snapshot.extension_statuses = self

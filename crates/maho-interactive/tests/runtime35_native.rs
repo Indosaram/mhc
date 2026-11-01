@@ -1666,6 +1666,30 @@ async fn native_shell_submission_renders_and_persists_without_model_turn() {
     assert!(mode.render(80).join("\n").contains("shell-output"));
 }
 
+#[test]
+fn background_footer_keeps_idle_host_animating_until_status_clears() {
+    use maho_ext_api::{BackgroundTaskStatus, ExtensionUi};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.render(120);
+    mode.take_frame_rebuild(0.0);
+    assert!(!mode.take_frame_rebuild(16.0));
+    let status = serde_json::to_string(&BackgroundTaskStatus { running: 1, total: 1, ..Default::default() }).unwrap();
+    mode.extension_ui.set_status("omo-task", Some(&status));
+    mode.render(120);
+    mode.take_frame_rebuild(32.0);
+    assert!(mode.take_frame_rebuild(48.0));
+    mode.extension_ui.set_status("omo-task", None);
+    mode.extension_ui.set_status("monitors", Some("◉ 1 monitor watching"));
+    mode.render(120);
+    mode.take_frame_rebuild(64.0);
+    assert!(mode.take_frame_rebuild(80.0));
+    mode.extension_ui.set_status("monitors", Some("◉ 1 monitor muted"));
+    mode.render(120);
+    mode.take_frame_rebuild(96.0);
+    assert!(!mode.take_frame_rebuild(112.0));
+}
+
 #[tokio::test]
 async fn bare_model_selector_cancels_and_releases_native_composer() {
     use maho_tui::tui::Component;
