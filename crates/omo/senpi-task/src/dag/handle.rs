@@ -4,6 +4,8 @@
 // contract so no caller can observe a half-applied terminal state.
 
 use std::collections::HashMap;
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use crate::dag::journal::{DagJournalListener, DagJournalUnsubscribe, subscribe_dag_journal};
@@ -148,6 +150,35 @@ struct RunWaiters {
 /// One wait slot per run: the waiters plus the condvar that wakes them.
 type WaiterSlot = Arc<(Mutex<RunWaiters>, Condvar)>;
 
+#[derive(Default)]
+pub struct DagWaitCancellation {
+    cancelled: AtomicBool,
+    slot: Mutex<Option<std::sync::Weak<(Mutex<RunWaiters>, Condvar)>>>,
+}
+impl DagWaitCancellation {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(std::sync::Weak::upgrade);
+        if let Some(slot) = slot {
+            let _state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
+            slot.1.notify_all();
+        }
+    }
+}
+thread_local! {
+    static WAIT_CANCELLATION: RefCell<Option<Arc<DagWaitCancellation>>> = const { RefCell::new(None) };
+}
+pub fn with_dag_wait_cancellation<T>(cancel: Arc<DagWaitCancellation>, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Arc<DagWaitCancellation>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WAIT_CANCELLATION.with(|slot| { slot.replace(self.0.take()); });
+        }
+    }
+    let _restore = Restore(WAIT_CANCELLATION.with(|slot| slot.replace(Some(cancel))));
+    work()
+}
+
 struct Inner {
     store: Arc<DagFileStore>,
     subscribe: DagSubscribe,
@@ -203,7 +234,7 @@ impl Inner {
 
     fn slot(&self, run_id: &DagRunId) -> WaiterSlot {
         let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(waiters.entry(run_id.clone()).or_insert_with(|| {
+        let slot = Arc::clone(waiters.entry(run_id.clone()).or_insert_with(|| {
             Arc::new((
                 Mutex::new(RunWaiters {
                     resolved: None,
@@ -212,7 +243,9 @@ impl Inner {
                 }),
                 Condvar::new(),
             ))
-        }))
+        }));
+        slot.0.lock().unwrap_or_else(PoisonError::into_inner).waiter_count += 1;
+        slot
     }
 
     fn settle(&self, run_id: &DagRunId, result: DagRunResult) {
@@ -234,21 +267,35 @@ impl Inner {
     }
 
     fn wait(self_arc: &Arc<Self>, run_id: &DagRunId, parent_session_id: &str) -> Result<DagRunResult, DagWaitError> {
+        let cancel = WAIT_CANCELLATION.with(|slot| slot.borrow().clone());
         let record = self_arc.owned_record(run_id, parent_session_id)?;
-        if is_terminal_run_status(record.status) {
+        if is_terminal_run_status(record.status) || cancel.as_ref().is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
             return Ok(self_arc.project_result(record));
         }
         let slot = self_arc.slot(run_id);
-        {
-            let mut state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
-            state.waiter_count += 1;
-        }
         Inner::register(self_arc, run_id, &slot);
+        if let Some(cancel) = &cancel {
+            *cancel.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&slot));
+        }
         let (state, condvar) = &*slot;
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             if let Some(result) = &state.resolved {
                 return Ok(result.clone());
+            }
+            if cancel.as_ref().is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+                drop(state);
+                let unsubscribers = {
+                    let mut waiters = self_arc.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut state = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
+                    state.waiter_count -= 1;
+                    if state.waiter_count == 0 && waiters.get(run_id).is_some_and(|current| Arc::ptr_eq(current, &slot)) {
+                        waiters.remove(run_id);
+                        std::mem::take(&mut state.unsubscribers)
+                    } else { Vec::new() }
+                };
+                for unsubscribe in unsubscribers { unsubscribe(); }
+                return Ok(self_arc.project_result(self_arc.owned_record(run_id, parent_session_id)?));
             }
             state = condvar
                 .wait(state)

@@ -1136,26 +1136,41 @@ fn run_frontier(
         }
     }
 
-    let snapshot = context.journal.snapshot();
+    finish_settled_run(&context.journal, &context.now)?;
+    Ok(context.journal.snapshot())
+}
+
+pub(crate) fn finish_settled_run(
+    journal: &Arc<DagJournal<DagRunRecordV1>>,
+    now: &Arc<dyn Fn() -> i64 + Send + Sync>,
+) -> Result<(), crate::dag::store::DagStoreError> {
+    let snapshot = journal.snapshot();
+    if snapshot.status != crate::dag::types::DagRunStatus::Running
+        || !snapshot.nodes.iter().all(|node| is_terminal_node_state(node.state)) {
+        return Ok(());
+    }
+    // Another scheduler or revival can commit between the snapshot and append. The journal holds ONE
+    // predicate, so keep the manager's terminal-transition dedupe alongside the run-terminal guard.
+    journal.set_skip_duplicate(Arc::new(|record, payload| {
+        crate::dag::manager::skip_duplicate_terminal_transition(record, payload)
+            || (matches!(payload, DagRunEventPayload::RunCompleted { .. } | DagRunEventPayload::RunFailed { .. })
+                && (record.status != crate::dag::types::DagRunStatus::Running
+                    || !record.nodes.iter().all(|node| is_terminal_node_state(node.state))))
+    }));
     if let Some(failed) = primary_failure(&snapshot) {
         let error = failed.error.clone().unwrap_or_else(|| {
-            node_error(
-                &failed.id,
-                DagNodeErrorCode::StartFailed,
-                "DAG node failed",
-                &context.now,
-            )
+            node_error(&failed.id, DagNodeErrorCode::StartFailed, "DAG node failed", now)
         });
-        context.journal.append(DagRunEventPayload::RunFailed {
+        journal.append_maybe(DagRunEventPayload::RunFailed {
             error,
             counts: count_nodes(&snapshot.nodes),
         })?;
     } else {
-        context.journal.append(DagRunEventPayload::RunCompleted {
+        journal.append_maybe(DagRunEventPayload::RunCompleted {
             counts: count_nodes(&snapshot.nodes),
         })?;
     }
-    Ok(context.journal.snapshot())
+    Ok(())
 }
 
 fn attached_is_empty(context: &DagSchedulerContext) -> bool {
