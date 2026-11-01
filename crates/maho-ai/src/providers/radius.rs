@@ -169,6 +169,7 @@ pub fn radius_provider(options: Option<RadiusProviderOptions>) -> Arc<dyn Provid
         name,
         gateway,
         streams: builtin_api_streams("pi-messages"),
-        fetch: options.fetch.clone().unwrap_or_default(),
+        // PERF-DIVERGENCE(senpi radius.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+        fetch: options.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client),
     })
 }

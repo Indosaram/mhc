@@ -91,9 +91,10 @@ async fn hydrate_image_url(
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("OpenAI images response URL must use HTTP or HTTPS".into());
     }
+    // PERF-DIVERGENCE(senpi openai-images-result.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
     let client = options
         .and_then(|options| options.request.fetch.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(crate::utils::http_client::shared_http_client);
     let signal = options.and_then(|options| options.request.signal.as_ref());
     let request = client.get(url).send();
     let response = match signal {

@@ -357,7 +357,8 @@ pub fn ollama_provider(
             .as_deref()
             .unwrap_or(DEFAULT_OLLAMA_CLOUD_URL),
     )?;
-    let fetch = options.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi ollama.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let fetch = options.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let base_url = format!("{host}/v1");
     let fetch_models: FetchModels = {
         let host = host.clone();
