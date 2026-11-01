@@ -490,12 +490,3 @@ fn spawned_by_is_ignored_with_a_warning_when_resuming_or_forking() {
     }
     assert_eq!(spawned_by_ignored_warning(&parse(&["--resume"])), None);
 }
-// senpi v2026.10.27-2: the TUI has no presenter authority yet, so enforcement is refused, not dropped.
-#[test]
-fn tui_refuses_mcp_presenter_enforcement() {
-    assert_eq!(
-        tui_presenter_enforcement_refusal(&parse(&["--mcp-presenter-enforcement"])),
-        Some("--mcp-presenter-enforcement is not supported by this build's interactive mode yet")
-    );
-    assert_eq!(tui_presenter_enforcement_refusal(&parse(&[])), None);
-}

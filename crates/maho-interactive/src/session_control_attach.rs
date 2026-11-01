@@ -169,10 +169,13 @@ impl ControlAttachments {
             let Some(session) = projected.upgrade() else {
                 return;
             };
-            let Ok(record) = maho_rpc::connection_handler::rpc_session_event_record(
+            // The routing handle (this terminal's session id) keys the session's admission ledger.
+            let route = session.session_id();
+            let Ok(record) = maho_rpc::connection_handler::rpc_session_event_record_routed(
                 &session,
                 event,
                 &last_abort_source,
+                Some(&route),
             ) else {
                 return;
             };

@@ -40,6 +40,8 @@ pub struct EnsureHostOptions {
     /// senpi `owner: "caller"`: opt in to this caller process's lifetime. Attach holds remain independently
     /// releasable.
     pub owner: bool,
+    /// Maximum wait for an already-stopping generation; capped by the normal stop budget.
+    pub stopping_timeout_ms: Option<u64>,
 }
 impl Default for EnsureHostOptions {
     fn default() -> Self {
@@ -54,6 +56,7 @@ impl Default for EnsureHostOptions {
             readiness_ms: 10_000,
             key_root: None,
             owner: false,
+            stopping_timeout_ms: None,
         }
     }
 }

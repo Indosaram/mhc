@@ -59,6 +59,22 @@ pub fn theme_from_extension(
     crate::theme::Theme::from_json(json, mode)
 }
 
+/// The private-dialog half of `ExtensionUIDialogOptions` a host acts on: an ephemeral answer is no
+/// human admission under `--mcp-presenter-enforcement`, and `presented` is marked once on screen.
+#[derive(Clone, Debug, Default)]
+pub struct PrivateDialog {
+    pub ephemeral: bool,
+    pub presented: Option<maho_ext_api::DialogPresentedKey>,
+}
+impl PrivateDialog {
+    fn of(options: &ExtensionUiDialogOptions) -> Self {
+        Self {
+            ephemeral: options.ephemeral,
+            presented: options.presented.clone(),
+        }
+    }
+}
+
 pub enum UiRequest {
     SubagentCost(Option<f64>),
     WidgetFrame,
@@ -68,11 +84,13 @@ pub enum UiRequest {
         options: Vec<String>,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
+        private: PrivateDialog,
     },
     Input {
         title: String,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Option<String>>,
+        private: PrivateDialog,
     },
     Notify(String, NotificationType),
     Widget(String, Option<WidgetContent>, ExtensionWidgetOptions),
@@ -218,6 +236,34 @@ impl InteractiveExtensionUi {
             &serde_json::json!({"active": true, "label": label, "id": id}),
         );
         Some(BlockedHostDialog { emit, id })
+    }
+    /// senpi `showExtensionConfirm(title, message)` called by the host itself (not through the
+    /// extension context): no `withBlockedHostDialog` bracket, and the dialog is not ephemeral, so the
+    /// answer is a human admission.
+    pub fn host_confirm<'a>(&'a self, title: &'a str, message: &'a str) -> UiFuture<'a, bool> {
+        self.show_confirm(title, message, ExtensionUiDialogOptions::default(), None)
+    }
+    /// senpi `showExtensionConfirm`: a Yes/No selector.
+    fn show_confirm<'a>(
+        &'a self,
+        title: &str,
+        message: &str,
+        opts: ExtensionUiDialogOptions,
+        blocked: Option<BlockedHostDialog>,
+    ) -> UiFuture<'a, bool> {
+        let title = format!("{title}\n{message}");
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.send(UiRequest::Select {
+            title,
+            options: vec!["Yes".into(), "No".into()],
+            timeout_ms: opts.timeout_ms,
+            reply,
+            private: PrivateDialog::of(&opts),
+        });
+        Box::pin(async move {
+            let _blocked = blocked;
+            Self::wait(receiver, opts).await.as_deref() == Some("Yes")
+        })
     }
     /// An ephemeral dialog whose signal is already aborted is never shown (senpi returns undefined).
     fn settled_ephemeral(opts: &ExtensionUiDialogOptions) -> bool {
@@ -460,6 +506,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             options: options.to_vec(),
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
@@ -477,18 +524,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             return Box::pin(async { false });
         }
         let blocked = self.block_host_dialog(title, &opts);
-        let title = format!("{title}\n{message}");
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        self.send(UiRequest::Select {
-            title,
-            options: vec!["Yes".into(), "No".into()],
-            timeout_ms: opts.timeout_ms,
-            reply,
-        });
-        Box::pin(async move {
-            let _blocked = blocked;
-            Self::wait(receiver, opts).await.as_deref() == Some("Yes")
-        })
+        self.show_confirm(title, message, opts, blocked)
     }
     fn input<'a>(
         &'a self,
@@ -505,6 +541,7 @@ impl ExtensionUi for InteractiveExtensionUi {
             title: title.into(),
             timeout_ms: opts.timeout_ms,
             reply,
+            private: PrivateDialog::of(&opts),
         });
         Box::pin(async move {
             let _blocked = blocked;
@@ -856,6 +893,29 @@ mod tests {
             requests.try_recv().is_err(),
             "an aborted ephemeral dialog is never shown"
         );
+        assert!(channels.lock().expect("channels").is_empty());
+    }
+
+    // senpi `chooseResumePath(..., { confirm: (title, message) => this.showExtensionConfirm(title,
+    // message) })`: the host's own confirm is not bracketed and is not ephemeral (admitHumanAnswer runs).
+    #[tokio::test]
+    async fn the_host_confirm_skips_the_blocked_bracket_and_is_not_ephemeral() {
+        let (ui, mut requests) = InteractiveExtensionUi::channel(Theme::default());
+        let channels = recording_emitter(&ui);
+        let answer = ui.host_confirm("Rebind", "sure?");
+        let Ok(UiRequest::Select {
+            title,
+            reply,
+            private,
+            ..
+        }) = requests.try_recv()
+        else {
+            panic!("the host confirm is shown as a selector");
+        };
+        assert_eq!(title, "Rebind\nsure?");
+        assert!(!private.ephemeral && private.presented.is_none());
+        drop(reply.send(Some("Yes".into())));
+        assert!(answer.await);
         assert!(channels.lock().expect("channels").is_empty());
     }
 

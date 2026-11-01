@@ -127,9 +127,13 @@ pub(crate) fn stripped_message_update(message:&maho_ext_api::AgentMessage,event:
     Some(serde_json::to_value(assistant.usage).map(|usage|json!({"type":"message_update","message":{"role":"assistant","usage":usage},"assistantMessageEvent":event})))
 }
 pub fn fallback_diagnostic(event:&maho_ext_api::AgentSessionEvent)->Option<String>{use maho_ext_api::AgentSessionEvent;match event{
-    AgentSessionEvent::RetryFallbackApplied{from,to,reason,..}=>Some(format!("Model fallback: {from} -> {to} ({reason})\n")),
+    // senpi print-mode.ts: a usage limit names what hit it instead of the bare reason.
+    AgentSessionEvent::RetryFallbackApplied{from,to,reason,limit,..}=>Some(format!("Model fallback: {from} -> {to} ({})\n",maho_core::retry_fallback::usage_limit::usage_limit_cause(from,*limit).unwrap_or_else(||reason.clone()))),
     AgentSessionEvent::RetryFallbackExhausted{chain_key,last_error}=>Some(format!("Model fallback exhausted: {chain_key} ({last_error})\n")),
-    AgentSessionEvent::RetryFallbackReverted{from,to}=>Some(format!("Model fallback reverted: {from} -> {to}\n")),
+    AgentSessionEvent::RetryFallbackReverted{from,to,cause}=>{
+        let cause=if cause.as_deref()==Some("fallback-unusable"){format!(" ({from} cannot serve right now)")}else{String::new()};
+        Some(format!("Model fallback reverted: {from} -> {to}{cause}\n"))
+    },
     _=>None,
 }}
 /// Whether the last assistant message ended the run in failure (senpi print-mode `failed`).
@@ -203,12 +207,21 @@ mod tests {
     // senpi test/print-mode-fallback-notice.test.ts: the fallback notices go to stderr in both modes.
     #[test] fn fallback_notices_are_stderr_diagnostics() {
         use maho_ext_api::AgentSessionEvent;
-        let applied=AgentSessionEvent::RetryFallbackApplied{from:"anthropic/claude-opus-4-6".into(),to:"openai/gpt-4o".into(),chain_key:"anthropic/claude-opus-4-6".into(),reason:"billing".into()};
+        let applied=AgentSessionEvent::RetryFallbackApplied{from:"anthropic/claude-opus-4-6".into(),to:"openai/gpt-4o".into(),chain_key:"anthropic/claude-opus-4-6".into(),reason:"billing".into(),limit:None};
         assert_eq!(fallback_diagnostic(&applied).as_deref(),Some("Model fallback: anthropic/claude-opus-4-6 -> openai/gpt-4o (billing)\n"));
         let exhausted=AgentSessionEvent::RetryFallbackExhausted{chain_key:"anthropic/claude-opus-4-6".into(),last_error:"all models unavailable".into()};
         assert_eq!(fallback_diagnostic(&exhausted).as_deref(),Some("Model fallback exhausted: anthropic/claude-opus-4-6 (all models unavailable)\n"));
-        let reverted=AgentSessionEvent::RetryFallbackReverted{from:"openai/gpt-4o".into(),to:"anthropic/claude-opus-4-6".into()};
+        let reverted=AgentSessionEvent::RetryFallbackReverted{from:"openai/gpt-4o".into(),to:"anthropic/claude-opus-4-6".into(),cause:None};
         assert_eq!(fallback_diagnostic(&reverted).as_deref(),Some("Model fallback reverted: openai/gpt-4o -> anthropic/claude-opus-4-6\n"));
+    }
+    // senpi print-mode.ts `usageLimitCause(from, limit) ?? reason` and the `fallback-unusable` revert suffix.
+    #[test] fn a_usage_limit_names_what_hit_it_and_a_stranded_revert_says_why() {
+        use maho_ext_api::AgentSessionEvent;
+        let applied=|limit|AgentSessionEvent::RetryFallbackApplied{from:"anthropic/claude-opus-4-6".into(),to:"openai/gpt-4o".into(),chain_key:"anthropic/claude-opus-4-6".into(),reason:"billing".into(),limit};
+        assert_eq!(fallback_diagnostic(&applied(Some(maho_ai::types::UsageLimitScope::Model))).as_deref(),Some("Model fallback: anthropic/claude-opus-4-6 -> openai/gpt-4o (anthropic/claude-opus-4-6 hit its usage limit)\n"));
+        assert_eq!(fallback_diagnostic(&applied(Some(maho_ai::types::UsageLimitScope::Account))).as_deref(),Some("Model fallback: anthropic/claude-opus-4-6 -> openai/gpt-4o (the anthropic account hit its usage limit, so its other models were skipped)\n"));
+        let stranded=AgentSessionEvent::RetryFallbackReverted{from:"openai/gpt-4o".into(),to:"anthropic/claude-opus-4-6".into(),cause:Some("fallback-unusable".into())};
+        assert_eq!(fallback_diagnostic(&stranded).as_deref(),Some("Model fallback reverted: openai/gpt-4o -> anthropic/claude-opus-4-6 (openai/gpt-4o cannot serve right now)\n"));
     }
     // senpi test/print-mode.test.ts: an aborted or errored last assistant fails the run in both modes, and a
     // terminating tool result trailing the final answer leaves the text result intact.

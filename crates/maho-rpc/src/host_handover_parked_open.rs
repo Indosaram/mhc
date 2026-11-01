@@ -178,6 +178,7 @@ mod tests {
             retry_fallback: None,
             holder_endpoint: None,
             spawned_by: None,
+            session_start_reason: None,
         }
     }
 

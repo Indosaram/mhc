@@ -94,6 +94,8 @@ pub mod list_models;
 pub mod lane38_process_boundary_probe;
 #[path = "management_http.rs"]
 pub mod management_http;
+#[path = "mcp_local_presenter.rs"]
+pub mod mcp_local_presenter;
 #[cfg(feature = "omo")]
 #[path = "memory_recall_entry.rs"]
 pub mod memory_recall_entry;

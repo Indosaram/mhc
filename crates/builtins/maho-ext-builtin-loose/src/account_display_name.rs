@@ -52,7 +52,7 @@ pub async fn account_display_name_command(ctx:&maho_ext_api::ExtensionContext,pr
 pub async fn prompt_account_display_name(ctx:&maho_ext_api::ExtensionContext,receipt:Option<&maho_ai::auth::types::AccountLoginReceipt>){
     let Some(receipt)=receipt.filter(|receipt|receipt.origin==maho_ai::auth::types::AccountLoginOrigin::Generated)else{return;};
     if ctx.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted){return;}
-    let answer=ctx.ui.input(&format!("Display name for account {} (optional)",receipt.name),Some("Leave blank to keep the account ID"),maho_ext_api::ExtensionUiDialogOptions{signal:ctx.signal.clone(),timeout_ms:None}).await;
+    let answer=ctx.ui.input(&format!("Display name for account {} (optional)",receipt.name),Some("Leave blank to keep the account ID"),maho_ext_api::ExtensionUiDialogOptions{signal:ctx.signal.clone(),timeout_ms:None,..Default::default()}).await;
     let Some(answer)=answer.filter(|answer|!answer.trim().is_empty())else{return;};
     if ctx.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted){return;}
     match ctx.model_registry.rename_credential_account(&receipt.provider_id,&receipt.name,Some(&answer)).await{

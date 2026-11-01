@@ -1,6 +1,7 @@
 //! Senpi-compatible headless JSONL protocol and print-mode support.
 pub mod abort_grace;
 pub mod accepted_transcript;
+pub mod agent_effect_session;
 pub mod automatic_input_gate;
 pub mod child_reaper;
 pub mod child_reaper_syscalls;
@@ -50,6 +51,7 @@ pub mod event_output_buffer;
 pub mod extension_ui_response;
 pub mod get_entries_command;
 pub mod get_entries_page;
+pub mod memory_report_command;
 pub mod get_snapshot;
 pub mod handoff_activity;
 pub mod held_input_commands;
@@ -138,6 +140,7 @@ pub mod host_stop_generation;
 pub mod host_stop_intent;
 pub mod host_stop_start_time;
 pub mod host_successor;
+pub mod host_successor_profile;
 pub mod host_supersession;
 pub mod host_supervisor_log;
 pub mod host_supervisor_poll;

@@ -133,6 +133,9 @@ fn queued_input(value: &Value) -> Option<QueuedInput> {
         text: get(value, "text")?,
         mode: streaming_behavior(value.get("mode")?.as_str()?)?,
         enqueue_order: get(value, "enqueueOrder")?,
+        queued_id: get(value, "queuedId").unwrap_or_default(),
+        revision: get(value, "revision").unwrap_or(1),
+        client_message_id: get(value, "clientMessageId"),
     })
 }
 
@@ -253,6 +256,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
             to: get(record, "to")?,
             chain_key: get(record, "chainKey")?,
             reason: get(record, "reason")?,
+            limit: get(record, "limit"),
         }),
         "retry_fallback_exhausted" => Some(E::RetryFallbackExhausted {
             chain_key: get(record, "chainKey")?,
@@ -265,6 +269,7 @@ pub fn session_event_from_record(record: &Value) -> Option<AgentSessionEvent> {
         "retry_fallback_reverted" => Some(E::RetryFallbackReverted {
             from: get(record, "from")?,
             to: get(record, "to")?,
+            cause: get(record, "cause"),
         }),
         "model_changed" => Some(E::ModelChanged {
             model: get(record, "model")?,
@@ -543,6 +548,9 @@ mod tests {
                     text: "t".into(),
                     mode: StreamingBehavior::Steer,
                     enqueue_order: 7,
+                    queued_id: "q_3".into(),
+                    revision: 2,
+                    client_message_id: Some("c-1".into()),
                 }],
             },
             AgentSessionEvent::SessionToolChild {

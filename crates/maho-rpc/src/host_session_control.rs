@@ -12,7 +12,9 @@
 //!
 //! Every wake runs a pass, so a drain failure that repeats is reported once (`control drain failed: <reason>`) until a
 //! pass succeeds again (senpi#1df92e349e).
-use crate::session_control_wake::{DrainResult, WakeScheduler, empty_result};
+use crate::session_control_wake::{
+    DrainResult, InboxWatch, WakeScheduler, empty_result, watch_inbox,
+};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -46,12 +48,12 @@ struct Active {
     scheduler: WakeScheduler,
     _idle: EdgeSubscription,
     _emitted: EdgeSubscription,
-    inbox: Option<notify::RecommendedWatcher>,
+    inbox: InboxWatch,
 }
 
 impl Active {
     fn release(self) {
-        drop(self.inbox);
+        self.inbox.stop();
         self.scheduler.dispose();
     }
 }
@@ -130,7 +132,7 @@ impl HostSessionControl {
     ///
     /// Passes run on the tokio runtime current at the call. Called outside one, it answers
     /// `Failed { reason: "no tokio runtime" }` and leaves any earlier registration in place.
-    pub fn register(
+    pub async fn register(
         &self,
         inbox_dir: &std::path::Path,
         drain: ControlDrain,
@@ -154,30 +156,24 @@ impl HostSessionControl {
         let idle = self.session.on_idle(wake("idle"));
         let emitted = self.session.on_emitted(wake("emitted"));
         let inbox_wake = wake("inbox");
-        let inbox = match watch_inbox(
-            inbox_dir,
-            Arc::new(move |_: &notify::Event| inbox_wake()),
-            {
-                let report = self.report.clone();
-                Arc::new(move |error: String| {
-                    report(format!("control inbox watch failed: {error}"))
-                })
-            },
-        ) {
+        let mut inbox = match watch_inbox(inbox_dir, inbox_wake, {
+            let report = self.report.clone();
+            Arc::new(move |error: String| report(format!("control inbox watch failed: {error}")))
+        })
+        .await
+        {
             Ok(inbox) => inbox,
-            Err(error) => {
+            Err(reason) => {
                 drop((idle, emitted));
                 scheduler.dispose();
-                return ControlRegistration::Failed {
-                    reason: error.to_string(),
-                };
+                return ControlRegistration::Failed { reason };
             }
         };
         let mut state = self.state();
         // A rebind may dispose this host while the watch arms; a registration it outlived stays inert.
         if state.disposed {
             drop(state);
-            drop(inbox);
+            inbox.stop();
             scheduler.dispose();
             return ControlRegistration::Unsupported {
                 reason: "unsupported_mode",
@@ -185,19 +181,25 @@ impl HostSessionControl {
         }
         state.next_id += 1;
         let id = state.next_id;
+        let armed = std::mem::replace(&mut inbox.armed, Box::pin(async {}));
         if let Some(previous) = state.active.replace(Active {
             id,
             scheduler: scheduler.clone(),
             _idle: idle,
             _emitted: emitted,
-            inbox: Some(inbox),
+            inbox,
         }) {
             previous.release();
         }
         drop(state);
-        // Anything that reached the inbox before the watch was armed is picked up by this first pass. ADAPTATION:
-        // `notify` arms synchronously, so senpi's second pass on `armed` is the same edge and is not repeated.
+        // Anything that reached the inbox before this point is picked up by this first pass, and anything written
+        // after it but before the watch was armed (no event for it) by the pass once arming settled. A disposed
+        // scheduler answers that second request at once.
         drop(scheduler.request("inbox", &[]));
+        tokio::spawn(async move {
+            armed.await;
+            drop(scheduler.request("inbox", &[]));
+        });
         ControlRegistration::Registered {
             socket,
             registration: id,
@@ -256,47 +258,96 @@ impl HostSessionControl {
     }
 }
 
-/// Whether an inbox event changed an entry (senpi `fs.watch` "rename" and "change": created, removed, renamed or
-/// written). inotify also reports opens, reads and closes, which libuv never surfaces; the drain opens the entries it
-/// reads, so waking on those would re-wake the drain forever.
-fn inbox_entry_changed(kind: &notify::EventKind) -> bool {
-    !matches!(kind, notify::EventKind::Access(_))
+/// senpi `runtimeHost.launchProfile?.sessionContext?.host_socket`: the public socket the session was opened on.
+pub fn profile_host_socket(
+    runtime: &maho_core::agent_session_runtime::AgentSessionRuntime,
+) -> Option<String> {
+    runtime
+        .launch_profile()?
+        .session_context
+        .as_ref()?
+        .get("host_socket")
+        .cloned()
 }
 
-/// One watch on the inbox directory (senpi `watchInbox`): any change to an entry that is not the engine's own wakes
-/// the drain; `on_change` gets the event.
-fn watch_inbox(
-    inbox_dir: &std::path::Path,
-    on_change: Arc<dyn Fn(&notify::Event) + Send + Sync>,
-    on_error: Arc<dyn Fn(String) + Send + Sync>,
-) -> std::io::Result<notify::RecommendedWatcher> {
-    use notify::Watcher;
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(inbox_dir)?;
-    let mut watcher =
-        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
-            Ok(event) if !inbox_entry_changed(&event.kind) => {}
-            Ok(event) => {
-                let engine_only = !event.paths.is_empty()
-                    && event.paths.iter().all(|path| {
-                        path.file_name()
-                            .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.starts_with(INBOX_ENGINE_ENTRY_PREFIX))
-                    });
-                if !engine_only {
-                    on_change(&event);
+/// The live `AgentSession` a host serves, as the control edges read it.
+pub struct AgentControlSession(pub maho_core::agent_session::AgentSession);
+
+impl ControlSession for AgentControlSession {
+    fn emit_wake(&self, event: Value) -> BoxFuture<'static, ()> {
+        let session = self.0.clone();
+        Box::pin(async move {
+            // senpi `extensionRunner.emit(event)`: an extension handler failure is the runner's own report and
+            // never fails the pass.
+            if let Err(error) = session.emit_session_control_wake(&event).await {
+                eprintln!("senpi rpc session control wake: {error}");
+            }
+        })
+    }
+    fn on_idle(&self, listener: Arc<dyn Fn() + Send + Sync>) -> EdgeSubscription {
+        Box::new(self.0.subscribe(Arc::new(move |event| {
+            if matches!(event, maho_ext_api::AgentSessionEvent::AgentIdle) {
+                listener();
+            }
+        })))
+    }
+    fn on_emitted(&self, listener: Arc<dyn Fn() + Send + Sync>) -> EdgeSubscription {
+        Box::new(
+            self.0
+                .external_admission()
+                .on_emitted(Arc::new(move |_delivery| listener())),
+        )
+    }
+}
+
+/// senpi `HostSessionControl implements ControlEndpointHost`: what `pi.session.registerControlEndpoint` reaches in a
+/// session this host serves.
+impl maho_core::session_control_actions::ControlEndpointHost for Arc<HostSessionControl> {
+    fn register(
+        &self,
+        options: maho_core::extensions::session_control_types::RegisterControlEndpointOptions,
+    ) -> BoxFuture<'_, maho_core::extensions::session_control_types::SessionControlRegistration>
+    {
+        use maho_core::extensions::session_control_types::{
+            ControlEndpointUnsupported, SessionControlRegistration,
+        };
+        Box::pin(async move {
+            let drain = options.drain.clone();
+            let drain: ControlDrain = Arc::new(move |event| {
+                let drain = drain.clone();
+                Box::pin(async move { Ok(drain(event).await) })
+            });
+            match self
+                .as_ref()
+                .register(std::path::Path::new(&options.inbox_dir), drain)
+                .await
+            {
+                ControlRegistration::Registered {
+                    socket,
+                    registration,
+                } => {
+                    let control = Arc::downgrade(self);
+                    SessionControlRegistration::Registered {
+                        socket,
+                        dispose: Arc::new(move || {
+                            if let Some(control) = control.upgrade() {
+                                control.dispose_registration(registration);
+                            }
+                            Box::pin(async { Ok(()) })
+                        }),
+                    }
+                }
+                ControlRegistration::Unsupported { .. } => {
+                    SessionControlRegistration::Unsupported {
+                        reason: ControlEndpointUnsupported::UnsupportedMode,
+                    }
+                }
+                ControlRegistration::Failed { reason } => {
+                    SessionControlRegistration::Failed { reason }
                 }
             }
-            Err(error) => on_error(error.to_string()),
         })
-        .map_err(std::io::Error::other)?;
-    watcher
-        .watch(inbox_dir, notify::RecursiveMode::NonRecursive)
-        .map_err(std::io::Error::other)?;
-    Ok(watcher)
+    }
 }
 
 #[cfg(test)]
@@ -363,7 +414,7 @@ mod tests {
             })
         });
         let ControlRegistration::Registered { socket, .. } =
-            control.register(&temp.path().join("inbox"), drain)
+            control.register(&temp.path().join("inbox"), drain).await
         else {
             panic!("a host with a public socket registers");
         };
@@ -383,83 +434,47 @@ mod tests {
         );
     }
 
-    /// The drain opens the entries it reads: an open (and its close) must not wake, or the drain re-wakes itself.
-    /// The backend delivers one watch's events in order, so a wake on the open would arrive before the create's.
-    /// Portable: macOS reports canonical paths (`/private/var/...`), so the dir is canonicalized and events are
-    /// compared by file name; FSEvents may replay the pre-watch creation (and write) of `held`, which is skipped - only
-    /// an access to `held` reaching `on_change` is the regression.
+    /// senpi host-session-control.ts: a registration runs one pass at once and one more once its inbox watch armed,
+    /// so an entry written before the watch could see it is still drained.
     #[tokio::test]
-    async fn opening_an_inbox_entry_does_not_wake() {
+    async fn a_registration_drains_at_once_and_again_once_its_watch_armed() {
         let temp = tempfile::tempdir().unwrap();
-        let inbox = temp.path().join("inbox");
-        std::fs::create_dir_all(&inbox).unwrap();
-        let inbox = std::fs::canonicalize(&inbox).unwrap();
-        std::fs::write(inbox.join("held"), "{}").unwrap();
-        let (woke_tx, mut woke) = tokio::sync::mpsc::unbounded_channel();
-        let _watch = watch_inbox(
-            &inbox,
-            Arc::new(move |event: &notify::Event| {
-                let _ = woke_tx.send(event.clone());
-            }),
-            Arc::new(|error: String| panic!("inbox watch failed: {error}")),
-        )
-        .unwrap();
-        std::fs::read_to_string(inbox.join("held")).unwrap();
-        std::fs::write(inbox.join("arrived"), "{}").unwrap();
-        let names = |event: &notify::Event| -> Vec<String> {
-            event
-                .paths
-                .iter()
-                .filter_map(|path| path.file_name())
-                .map(|name| name.to_string_lossy().into_owned())
-                .collect()
-        };
-        let first = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let event = woke.recv().await.expect("the watch stays armed");
-                let replayed = !matches!(event.kind, notify::EventKind::Access(_))
-                    && names(&event) == ["held"];
-                if !replayed {
-                    return event;
+        let (control, _session, _) = control(Some("/tmp/host.sock"));
+        let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release) = tokio::sync::oneshot::channel::<()>();
+        let release = Arc::new(Mutex::new(Some(release)));
+        let drain: ControlDrain = Arc::new(move |event: Value| {
+            let _ = started_tx.send(event["reason"].clone());
+            let held = release.lock().unwrap().take();
+            Box::pin(async move {
+                // The first pass is held so the armed edge lands while it runs and merges into one more pass.
+                if let Some(held) = held {
+                    let _ = held.await;
                 }
-            }
-        })
-        .await
-        .expect("the created entry wakes");
-        assert_eq!(names(&first), ["arrived"], "{first:?}");
-    }
-
-    #[test]
-    fn every_entry_change_but_an_access_wakes() {
-        use notify::EventKind;
-        use notify::event::{
-            AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
+                Ok(None)
+            })
+        });
+        assert!(matches!(
+            control.register(&temp.path().join("inbox"), drain).await,
+            ControlRegistration::Registered { .. }
+        ));
+        let next = |started: &mut tokio::sync::mpsc::UnboundedReceiver<Value>| {
+            tokio::time::timeout(std::time::Duration::from_secs(30), started.recv())
         };
-        assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Data(
-            DataChange::Content
-        ))));
-        assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Any)));
-        assert!(inbox_entry_changed(&EventKind::Create(CreateKind::File)));
-        assert!(inbox_entry_changed(&EventKind::Remove(RemoveKind::File)));
-        assert!(inbox_entry_changed(&EventKind::Modify(ModifyKind::Name(
-            RenameMode::To
-        ))));
-        assert!(!inbox_entry_changed(&EventKind::Access(AccessKind::Open(
-            AccessMode::Any
-        ))));
-        assert!(!inbox_entry_changed(&EventKind::Access(AccessKind::Close(
-            AccessMode::Read
-        ))));
+        assert_eq!(next(&mut started).await.unwrap().unwrap(), "inbox");
+        release_tx.send(()).unwrap();
+        assert_eq!(next(&mut started).await.unwrap().unwrap(), "inbox");
+        control.dispose();
     }
 
     #[test]
     fn registering_outside_a_runtime_fails_instead_of_panicking() {
         let temp = tempfile::tempdir().unwrap();
         let (control, _, _) = control(Some("/tmp/host.sock"));
-        let ControlRegistration::Failed { reason } = control.register(
+        let ControlRegistration::Failed { reason } = futures::executor::block_on(control.register(
             &temp.path().join("inbox"),
             Arc::new(|_| Box::pin(async { Ok(None) })),
-        ) else {
+        )) else {
             panic!("a registration outside a runtime fails");
         };
         assert_eq!(reason, "no tokio runtime");
@@ -471,7 +486,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (control, session, _) = control(None);
         assert!(matches!(
-            control.register(temp.path(), Arc::new(|_| Box::pin(async { Ok(None) }))),
+            control
+                .register(temp.path(), Arc::new(|_| Box::pin(async { Ok(None) })))
+                .await,
             ControlRegistration::Unsupported {
                 reason: "unsupported_mode"
             }
