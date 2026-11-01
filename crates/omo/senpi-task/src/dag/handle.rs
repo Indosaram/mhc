@@ -149,11 +149,12 @@ struct RunWaiters {
 
 /// One wait slot per run: the waiters plus the condvar that wakes them.
 type WaiterSlot = Arc<(Mutex<RunWaiters>, Condvar)>;
+type WeakWaiterSlot = std::sync::Weak<(Mutex<RunWaiters>, Condvar)>;
 
 #[derive(Default)]
 pub struct DagWaitCancellation {
     cancelled: AtomicBool,
-    slot: Mutex<Option<std::sync::Weak<(Mutex<RunWaiters>, Condvar)>>>,
+    slot: Mutex<Option<WeakWaiterSlot>>,
 }
 impl DagWaitCancellation {
     pub fn cancel(&self) {
