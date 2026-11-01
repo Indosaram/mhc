@@ -36,6 +36,42 @@ pub const SESSION_RELOCATION_CAPABILITY: &str = "session_relocation";
 /// The capability a client's handshake carries when it can present an MCP grant decision (senpi `grant_select`);
 /// only such a connection is ever asked, and only its answer counts.
 pub const GRANT_SELECT_CAPABILITY: &str = "grant_select";
+/// The host honors `context.memory_write = "deny"`: recall-only memory, sticky across resume.
+pub const MEMORY_WRITE_DENY_CAPABILITY: &str = "memory_write_deny";
+/// A `memory_write = "deny"` session never registers the effect set (maho-omo-memory
+/// `MEMORY_WRITE_DENY_EXCLUDED_TOOL_NAMES`: shells and process steering, `eval`, `apply_patch`, the
+/// LSP/ast-grep writers, `generate_image`, `computer`, the child-session spawners) nor the
+/// `task_*`/`team_*` tool families. It refuses every MCP tool outside the remote read-only
+/// allowlist, prompt-dispatched extension commands outside a builtin read-only allowlist, and
+/// client-submitted user bash. Not covered: `write`/`edit` stay registered unless the client
+/// excludes them (`tools_exclude`; the memory root is guarded either way), and non-MCP tools of
+/// user-installed third-party extensions are not refused.
+pub const MEMORY_WRITE_DENY_EFFECTS_CAPABILITY: &str = "memory_write_deny_effects";
+/// The host honors `context.effect_tools = "deny"`: the session never registers that same effect set
+/// (the `task_*`/`team_*` families included) while its memory writes stay allowed; sticky across
+/// resume like `memory_write`. It refuses every MCP tool outside the remote read-only allowlist and
+/// the `omo-memory` memory tools, prompt-dispatched extension commands outside the builtin read-only
+/// allowlist and the memory commands, and client-submitted user bash; the open requires memory.
+/// Not covered: `write`/`edit` stay registered unless the client excludes them (`tools_exclude`),
+/// and non-MCP tools of user-installed third-party extensions are not refused.
+pub const EFFECT_TOOLS_DENY_CAPABILITY: &str = "effect_tools_deny";
+/// The host honors `context.tools_exclude`: listed tools are never registered for the session.
+pub const TOOLS_EXCLUDE_CAPABILITY: &str = "tools_exclude";
+/// The host registers the typed supervisor work tools for `context.supervisor_tools = "work"`.
+pub const SUPERVISOR_WORK_TOOLS_CAPABILITY: &str = "supervisor_work_tools";
+/// The memory extension serves session-routed `memory_receipts` extension requests: owner teach
+/// receipts idempotent by source message id, with distinct accepted/persisted/applied states.
+/// Like `memory_forget`, it names what this build serves; a session whose memory extension did not
+/// register its handlers (memory disabled or unbound) answers every [`OWNER_MEMORY_REQUESTS`] name
+/// with errorCode [`MEMORY_UNAVAILABLE_ERROR_CODE`], never an untyped unknown-request error.
+pub const MEMORY_RECEIPTS_CAPABILITY: &str = "memory_receipts";
+/// The memory extension serves BOTH `memory_forget` and `memory_correct`, each with replay
+/// suppression and idempotent receipts; there is no separate correct capability.
+pub const MEMORY_FORGET_CAPABILITY: &str = "memory_forget";
+/// The extension request names behind `memory_receipts` and `memory_forget`.
+pub const OWNER_MEMORY_REQUESTS: [&str; 3] = ["memory_receipts", "memory_forget", "memory_correct"];
+/// errorCode of an owner memory request no handler serves in this session.
+pub const MEMORY_UNAVAILABLE_ERROR_CODE: &str = "memory_unavailable";
 pub const RPC_CLIENT_CAPABILITIES_ENV: &str = "SENPI_RPC_CLIENT_CAPABILITIES";
 pub const DEFAULT_CUSTOM_EXTENSION_LABEL: &str = "custom UI component";
 

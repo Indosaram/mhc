@@ -4,6 +4,9 @@ pub const RPC_HOST_EMPTY_EXIT_MS_ENV: &str = "SENPI_RPC_HOST_EMPTY_EXIT_MS";
 pub const RPC_CLOSE_GRACE_MS_ENV: &str = "SENPI_RPC_CLOSE_GRACE_MS";
 pub const DEFAULT_SESSION_IDLE_EVICTION_MS: f64 = 30. * 60_000.;
 pub const DEFAULT_HOST_EMPTY_EXIT_MS: f64 = 15. * 60_000.;
+/// `session_closed` reason of a session parked for a generation handoff (the only end that writes a
+/// park record).
+const HANDOFF_PARKED_REASON: &str = "handoff_parked";
 #[derive(Debug, PartialEq)]
 pub struct HostIdlePolicy {
     pub idle_eviction_ms: f64,
@@ -418,6 +421,13 @@ impl HostCore {
             SESSION_KIND_CAPABILITY,
             AUTO_TITLE_PER_SESSION_CAPABILITY,
             DURABLE_SESSION_ID_CAPABILITY,
+            MEMORY_WRITE_DENY_CAPABILITY,
+            MEMORY_WRITE_DENY_EFFECTS_CAPABILITY,
+            EFFECT_TOOLS_DENY_CAPABILITY,
+            TOOLS_EXCLUDE_CAPABILITY,
+            SUPERVISOR_WORK_TOOLS_CAPABILITY,
+            MEMORY_RECEIPTS_CAPABILITY,
+            MEMORY_FORGET_CAPABILITY,
         ]
         .into_iter()
         .chain(std::iter::once(
@@ -625,11 +635,17 @@ impl HostCore {
         self.forget_session(session_id);
         true
     }
-    /// Parks one settled session for a handoff (senpi `evictIdleSession(sessionId,"handoff_parked")`):
+    /// Parks one settled session for a handoff (senpi `evictIdleSession(sessionId,"handoff_parked")`).
+    async fn park_session(&self, session_id: &str) {
+        self.end_session(session_id, HANDOFF_PARKED_REASON).await;
+    }
+    /// Ends one open session regardless of attachments (a handoff park, the stdio peer's departure):
     /// the routing handle ends exactly as a close ends it, the terminal record names the reason (and
     /// the file a retained session reopens by) so a client is not told the session vanished, and
-    /// every attachment is drained because a drain ends the shared session.
-    async fn park_session(&self, session_id: &str) {
+    /// every attachment is drained because the shared session ends. Only a handoff park writes the
+    /// park record the next generation reopens from.
+    async fn end_session(&self, session_id: &str, reason: &str) {
+        let parking = reason == HANDOFF_PARKED_REASON;
         if let Some(workers) = &self.workers {
             let record = workers
                 .with_entry(session_id, |entry| {
@@ -641,7 +657,8 @@ impl HostCore {
                         entry.context_overlay.as_ref(),
                     )
                 })
-                .flatten();
+                .flatten()
+                .filter(|_| parking);
             let Some(retained) = workers.force_close(session_id) else {
                 return;
             };
@@ -651,7 +668,7 @@ impl HostCore {
             if let Ok(value) =
                 serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
                     session_id: session_id.into(),
-                    reason: Some("handoff_parked".into()),
+                    reason: Some(reason.into()),
                     session_path: retained,
                 })
             {
@@ -679,7 +696,8 @@ impl HostCore {
                 entry.durable_session_id.as_deref(),
                 &entry.profile,
                 entry.context_overlay.as_ref(),
-            );
+            )
+            .filter(|_| parking);
             entry.close.attachments = 0;
             entry.close.state = crate::session_registry::RpcSessionState::Closing;
             (retained, record)
@@ -700,13 +718,26 @@ impl HostCore {
         if let Ok(value) =
             serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed {
                 session_id: session_id.into(),
-                reason: Some("handoff_parked".into()),
+                reason: Some(reason.into()),
                 session_path: retained,
             })
         {
             self.route(session_id, None, value);
         }
         self.forget_session(session_id);
+    }
+    /// Ends every session the host still holds once its stdio peer is gone (stdin EOF). The closes
+    /// run together; each awaits its worker's actual exit (the close grace quarantines a stuck one),
+    /// so no owned session process outlives the host.
+    async fn end_all_sessions(&self, reason: &str) {
+        let handles = self
+            .list_rows(true)
+            .await
+            .iter()
+            .filter_map(|row| row["sessionId"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        futures::future::join_all(handles.iter().map(|handle| self.end_session(handle, reason)))
+            .await;
     }
     /// Releases the RETAINED sessions a dropped connection still owned (senpi `releaseConnection`
     /// -> `releaseOwnedSession` for `retainOnDisconnect` entries): a retained session is never closed
@@ -812,6 +843,12 @@ impl HostCore {
         message: impl Into<String>,
         session_id: Option<String>,
     ) {
+        // A typed open failure (`invalid_session_context`) carries its machine code in `errorCode`.
+        let error = message.into();
+        let error_code = (command == "open_session")
+            .then(|| crate::rpc_input_validation::open_session_error_code(&error))
+            .flatten()
+            .map(str::to_owned);
         self.respond(
             connection,
             &crate::rpc_types::RpcResponse {
@@ -820,8 +857,8 @@ impl HostCore {
                 command: command.into(),
                 session_id,
                 result: crate::rpc_types::RpcResponseResult::Error {
-                    error: message.into(),
-                    error_code: None,
+                    error,
+                    error_code,
                     error_data: None,
                 },
             },
@@ -1518,6 +1555,13 @@ impl HostCore {
             crate::rpc_input_validation::retry_fallback_error(retry_fallback.as_ref())
         {
             return Err(invalid(reason));
+        }
+        // Session-role policy shape errors are typed `invalid_session_context` before any admission.
+        if let Some(error) = crate::rpc_input_validation::session_policy_error(context.as_ref()) {
+            return Err(OpenRefusal::plain(format!(
+                "{}: {error}",
+                crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+            )));
         }
         let profile = crate::session_registry::RpcSessionLaunchProfile {
             runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
@@ -2637,6 +2681,32 @@ mod handoff_tests {
             1
         );
     }
+    /// Every capability the Ferryx supervisor requires is advertised exactly once.
+    #[tokio::test]
+    async fn protocol_info_advertises_every_supervisor_capability() {
+        let capabilities = idle_core().advertised_capabilities();
+        for required in [
+            "multi_session",
+            "session_context",
+            "durable_session_id",
+            "memory_write_deny",
+            "memory_write_deny_effects",
+            "effect_tools_deny",
+            "tools_exclude",
+            "supervisor_work_tools",
+            "memory_receipts",
+            "memory_forget",
+        ] {
+            assert_eq!(
+                capabilities
+                    .iter()
+                    .filter(|capability| *capability == required)
+                    .count(),
+                1,
+                "{required}: {capabilities:?}"
+            );
+        }
+    }
     #[tokio::test]
     async fn protocol_info_names_the_hosts_tool_runtime_and_drops_a_negotiated_one() {
         let core = std::sync::Arc::try_unwrap(idle_core())
@@ -2829,38 +2899,9 @@ pub async fn run_multi_session_host_with_signals(
         }
     }
 }
-#[cfg(not(unix))]
-async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
-    use tokio::io::AsyncReadExt;
-    let mut input = tokio::io::stdin();
-    let mut reader = crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS)
-        .map_err(std::io::Error::other)?;
-    let mut chunk = [0u8; 8192];
-    loop {
-        let count = input.read(&mut chunk).await?;
-        let records = if count == 0 {
-            reader.finish()
-        } else {
-            reader.push(&chunk[..count])
-        };
-        for record in records {
-            let crate::jsonl::LineRecord::Line(line) = record else {
-                continue;
-            };
-            core.handle(None, &line)
-                .await
-                .map_err(std::io::Error::other)?;
-        }
-        if count == 0 {
-            core.default_writer
-                .flush()
-                .await
-                .map_err(std::io::Error::other)?;
-            return Ok(());
-        }
-    }
-}
-#[cfg(unix)]
+/// The stdio host on every platform: each inbound line becomes its own in-flight command, polled
+/// alongside stdin, so one session's streaming turn never holds back another session's commands,
+/// an abort, or `get_protocol_info`. Only the socket listener is platform-gated.
 async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
     use tokio::io::AsyncReadExt;
     let mut input = tokio::io::stdin();
@@ -2883,7 +2924,15 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
         let count = tokio::select! {
             result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if let Err(error)=result{break Err(std::io::Error::other(error));}continue;},
             exit=&mut empty_exit,if !empty_exit_done=>{empty_exit_done=true;if matches!(exit,Ok(true)){break core.default_writer.flush().await.map_err(std::io::Error::other);}continue;},
-            count=input.read(&mut chunk)=>match count{Ok(count)=>count,Err(error)=>break Err(error)},
+            count=input.read(&mut chunk)=>count,
+        };
+        // A failed read loses the peer exactly as EOF does: its sessions end before the error returns.
+        let count = match count {
+            Ok(count) => count,
+            Err(error) => {
+                shut_down_stdio(&core, commands).await;
+                break Err(error);
+            }
         };
         let records = if count == 0 {
             reader.finish()
@@ -2898,7 +2947,7 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
             commands.push(Box::pin(async move { core.handle(None, &line).await }) as HostCommand);
         }
         if count == 0 {
-            drop(commands);
+            shut_down_stdio(&core, commands).await;
             break core
                 .default_writer
                 .flush()
@@ -2911,9 +2960,22 @@ async fn run_stdio_host(core: std::sync::Arc<HostCore>) -> std::io::Result<()> {
     empty_exit.abort();
     result
 }
-#[cfg(any(unix, windows))]
+/// Stdin reached EOF (or failed), so the peer is gone: every OPEN session is ended (each worker's
+/// actual exit awaited) while the commands still in flight keep being polled, so an answer the peer
+/// already asked for is still written. Whatever is still in flight once those sessions are gone is
+/// dropped - including an `open_session` that had not finished: that session is not ended here, and
+/// a worker it already spawned ends with the host's runtime (its child handle is kill-on-drop).
+async fn shut_down_stdio(core: &HostCore, mut commands: Vec<HostCommand>) {
+    let mut ending = std::pin::pin!(core.end_all_sessions("host_shutdown"));
+    loop {
+        tokio::select! {
+            biased;
+            result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if let Err(error)=result{eprintln!("senpi rpc stdio command failed during shutdown: {error}");}},
+            ()=&mut ending=>break,
+        }
+    }
+}
 type HostCommand = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
-#[cfg(any(unix, windows))]
 async fn poll_host_commands(commands: &mut Vec<HostCommand>) -> Result<(), String> {
     let (index, result) = std::future::poll_fn(|cx| {
         for (index, command) in commands.iter_mut().enumerate() {
