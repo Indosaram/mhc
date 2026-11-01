@@ -397,7 +397,7 @@ fn given_a_parent_model_runtime_when_the_child_session_is_constructed_then_nativ
 #[test]
 fn given_task_team_and_dag_orchestration_names_when_classified_then_only_orchestration_names_match()
 {
-    for name in ["dag", "task", "task_create", "task_send", "team_create"] {
+    for name in ["dag", "workflow", "task", "task_create", "task_send", "team_create"] {
         assert!(is_task_or_team_family_tool(name), "{name}");
     }
     for name in ["grep", "taskmaster"] {
