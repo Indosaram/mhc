@@ -351,7 +351,7 @@ pub fn watch_revived_task(
             reason: crate::dag::types::DagNodeTransitionReason::Succeeded,
         })
         .map_err(|error| error.to_string())?;
-    Ok(())
+    crate::dag::scheduler::finish_settled_run(&journal, &now).map_err(|error| error.to_string())
 }
 
 fn fail_revived_node(
@@ -371,16 +371,16 @@ fn fail_revived_node(
     let mut errors = BTreeMap::new();
     errors.insert(node_id.clone(), error);
     let current = current_record(options, &run_id).map_err(|error| error.to_string())?;
-    control_journal(options, current, errors)
-        .map_err(|error| error.to_string())?
+    let journal = control_journal(options, current, errors).map_err(|error| error.to_string())?;
+    journal
         .append(DagRunEventPayload::NodeTransitioned {
             node_id: node_id.clone(),
             from: DagNodeState::Running,
             to: DagNodeState::Failed,
             reason: crate::dag::types::DagNodeTransitionReason::Failed,
         })
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::dag::scheduler::finish_settled_run(&journal, now).map_err(|error| error.to_string())
 }
 
 fn revived_failure(status: TaskStatus, message: Option<&str>) -> (DagNodeErrorCode, String) {
