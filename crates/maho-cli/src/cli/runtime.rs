@@ -156,13 +156,26 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     maho_core::timings::time("runMigrations", maho_core::timings::TimingLabel::Main);
     // senpi main.ts:1032-1034: the startup-cwd settings manager reports its diagnostics once, then is
     // used only for the sessionDir lookup and the startup selectors during session selection.
-    let startup_settings = maho_core::settings_manager::SettingsManager::create(
+    let mut startup_settings = maho_core::settings_manager::SettingsManager::create(
         &cwd_text,
         &agent_dir,
         &maho_core::config::home_dir(),
         true,
     );
     indicator.during_surface_write(|| report_startup_settings_diagnostics(&startup_settings));
+    // senpi main.ts:1320-1331: the experimental first-time setup (theme choice and analytics
+    // opt-in) runs before any runtime service is created, so the chosen settings apply everywhere.
+    if mode == AppMode::Interactive
+        && !parsed.help
+        && parsed.list_models.is_none()
+        && !parsed.list_tips
+        && super::startup_ui::should_run_first_time_setup()
+    {
+        indicator.during_surface_write(|| {
+            super::startup_ui::show_first_time_setup(&mut startup_settings)
+        })?;
+        maho_core::timings::time("firstTimeSetup", maho_core::timings::TimingLabel::Main);
+    }
     if mode == AppMode::Rpc && parsed.multi_session {
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like

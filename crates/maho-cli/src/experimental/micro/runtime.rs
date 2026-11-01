@@ -1123,19 +1123,32 @@ impl MicroController for MicroRuntime {
     }
 }
 
-/// senpi `logLostLockStopFailure`. Names only: error messages can carry absolute session paths.
-fn log_lost_lock_stop_failure(debug_log: &DebugLog, error: &Error) {
+/// senpi `errorFields`: the error name, plus its code when it has one. A gated-storage refusal
+/// carries the `FileLockLostError` code as its message prefix (see `lock_gated_storage`), so the
+/// code is that prefix; nothing else of the message is kept.
+fn lost_lock_error_fields(error: &Error) -> serde_json::Value {
     let name = match error {
         Error::Storage(_) => "StorageError",
         Error::Faulted(_) => "Faulted",
         Error::Closed => "Closed",
         _ => "Error",
     };
+    let lock_lost = maho_core::file_lock::FileLockLostError::CODE;
+    match error {
+        Error::Storage(message) if message.starts_with(&format!("{lock_lost}:")) => {
+            serde_json::json!({"name": name, "code": lock_lost})
+        }
+        _ => serde_json::json!({"name": name}),
+    }
+}
+
+/// senpi `logLostLockStopFailure`. Names and codes only: error messages can carry absolute session paths.
+fn log_lost_lock_stop_failure(debug_log: &DebugLog, error: &Error) {
     debug_log(
         "micro session stop after a lost lock failed",
         &serde_json::json!({
             "event": "micro_lost_lock_stop_failed",
-            "error": {"name": name},
+            "error": lost_lock_error_fields(error),
         })
         .to_string(),
     );
@@ -1298,4 +1311,21 @@ fn model_ref(value: Option<&JsonValue>) -> Option<ModelRef> {
         provider: value.get("provider")?.as_str()?.to_owned(),
         model_id: value.get("modelId")?.as_str()?.to_owned(),
     })
+}
+
+#[cfg(test)]
+mod lost_lock_log_tests {
+    use super::*;
+
+    #[test]
+    fn a_gated_storage_refusal_logs_its_lock_lost_code_and_no_message() {
+        let fields = lost_lock_error_fields(&Error::Storage("ELOCKLOST: /home/user/.pi/session.jsonl".to_owned()));
+        assert_eq!(fields, serde_json::json!({"name": "StorageError", "code": "ELOCKLOST"}));
+    }
+
+    #[test]
+    fn other_errors_log_their_name_only() {
+        assert_eq!(lost_lock_error_fields(&Error::Storage("disk full".to_owned())), serde_json::json!({"name": "StorageError"}));
+        assert_eq!(lost_lock_error_fields(&Error::Closed), serde_json::json!({"name": "Closed"}));
+    }
 }
