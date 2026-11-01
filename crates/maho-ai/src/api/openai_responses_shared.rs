@@ -1022,14 +1022,29 @@ fn map_stop_reason(
 
 /// One SSE frame's `data:` payloads, or `None` for a keep-alive / `[DONE]` frame.
 fn parse_sse_event(raw: &str) -> Result<Option<ResponsesEvent>, ResponsesStreamError> {
-    let data = raw
+    let mut lines = raw
         .split("\r\n")
         .flat_map(|line| line.split('\n'))
         .flat_map(|line| line.split('\r'))
         .filter(|line| line.starts_with("data:"))
-        .map(|line| line[5..].trim_start())
-        .collect::<Vec<_>>()
-        .join("\n");
+        .map(|line| line[5..].trim_start());
+    // PERF-DIVERGENCE(senpi openai-responses-shared.ts): upstream joins the `data:` lines of a frame into a new string; this port borrows the line directly when the frame has exactly one and only joins for multi-line frames; output is identical.
+    let first = lines.next().unwrap_or("");
+    let joined;
+    let data = match lines.next() {
+        None => first,
+        Some(second) => {
+            let mut text = String::from(first);
+            text.push('\n');
+            text.push_str(second);
+            for line in lines {
+                text.push('\n');
+                text.push_str(line);
+            }
+            joined = text;
+            joined.as_str()
+        }
+    };
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return Ok(None);
@@ -1042,16 +1057,28 @@ fn parse_sse_event(raw: &str) -> Result<Option<ResponsesEvent>, ResponsesStreamE
 /// Longest alternative in the SSE boundary pattern (`\r\n\r\n`).
 const MAX_SSE_BOUNDARY_LEN: usize = 4;
 
+/// Length of the SSE boundary starting at the head of `bytes`, trying the alternatives of
+/// `\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n` in that order.
+fn sse_boundary_len_at(bytes: &[u8]) -> Option<usize> {
+    match bytes {
+        [b'\r', b'\n', b'\r', b'\n', ..] => Some(4),
+        [b'\r', b'\n', b'\r', ..] | [b'\r', b'\n', b'\n', ..] | [b'\r', b'\r', b'\n', ..] => {
+            Some(3)
+        }
+        [b'\n', b'\r', b'\n', ..] => Some(3),
+        [b'\r', b'\r', ..] | [b'\n', b'\r', ..] | [b'\n', b'\n', ..] => Some(2),
+        _ => None,
+    }
+}
+
 /// Finds the first SSE boundary at or after `from`; returns the absolute index and length.
 /// The pattern has no anchors or lookaround, so a match starting at `from` or later is the
 /// same as a full-buffer search when no match starts before `from`.
+// PERF-DIVERGENCE(senpi openai-responses-shared.ts): upstream splits frames with a regex; this port scans bytes, trying the same alternatives in the same order at each position; output is identical.
 fn find_sse_boundary(buffer: &str, from: usize) -> Option<(usize, usize)> {
-    static BOUNDARY_RE: std::sync::LazyLock<Option<fancy_regex::Regex>> =
-        std::sync::LazyLock::new(|| {
-            fancy_regex::Regex::new("\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n").ok()
-        });
-    let found = BOUNDARY_RE.as_ref()?.find(&buffer[from..]).ok()??;
-    Some((from + found.start(), found.end() - found.start()))
+    let bytes = buffer.as_bytes();
+    (from..bytes.len())
+        .find_map(|index| sse_boundary_len_at(&bytes[index..]).map(|length| (index, length)))
 }
 
 /// Where to resume the boundary search after a miss over the whole of `buffer`: no match can
@@ -1127,8 +1154,10 @@ pub async fn process_responses_stream(
     let mut buffer = String::new();
     let mut body = body;
     let mut search_from = 0;
+    let mut utf8 = crate::utils::utf8_stream::Utf8ChunkDecoder::default();
     while let Some(chunk) = read_chunk(&mut body, &state).await? {
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // DIVERGENCE(senpi openai-responses-shared.ts): a multibyte character split across two network chunks is carried to the next chunk instead of becoming two U+FFFD; Node's TextDecoder in stream mode keeps split characters, so this matches upstream behavior. A truncated tail at stream end is never framed (the buffer tail is dropped), so no flush is needed.
+        utf8.push(&chunk, &mut buffer);
         while let Some((index, length)) = find_sse_boundary(&buffer, search_from) {
             let raw: String = buffer[..index].to_owned();
             buffer.drain(..index + length);
@@ -2480,5 +2509,45 @@ mod tests {
             assert_eq!(frames, expected, "chunk_len {chunk_len}");
             assert_eq!(buffer, full, "chunk_len {chunk_len}");
         }
+    }
+
+    #[test]
+    fn byte_boundary_scan_matches_the_regex_for_every_short_input() {
+        // Given: the original regex and every string over {\r, \n, a} up to length 7
+        let regex = fancy_regex::Regex::new("\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n")
+            .expect("boundary regex");
+        let alphabet = ['\r', '\n', 'a'];
+        let mut inputs = vec![String::new()];
+        let mut level = vec![String::new()];
+        for _ in 0..7 {
+            level = level
+                .iter()
+                .flat_map(|prefix| alphabet.iter().map(move |c| format!("{prefix}{c}")))
+                .collect();
+            inputs.extend(level.iter().cloned());
+        }
+        for input in &inputs {
+            for from in 0..=input.len() {
+                // When
+                let found = find_sse_boundary(input, from);
+                // Then: same (index, length) as the regex
+                let expected = regex
+                    .find(&input[from..])
+                    .expect("regex run")
+                    .map(|m| (from + m.start(), m.end() - m.start()));
+                assert_eq!(found, expected, "input {input:?} from {from}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_sse_event_joins_multiline_data_and_skips_done() {
+        // Given / When / Then
+        let single = parse_sse_event("event: x\r\ndata:  {\"a\":1}  ").expect("parse");
+        assert_eq!(single.expect("event").value, json!({"a": 1}));
+        let multi = parse_sse_event("data: {\"a\":\ndata: 1}").expect("parse");
+        assert_eq!(multi.expect("event").value, json!({"a": 1}));
+        assert!(parse_sse_event("data: [DONE]").expect("parse").is_none());
+        assert!(parse_sse_event(": keep-alive").expect("parse").is_none());
     }
 }
