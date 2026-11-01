@@ -229,8 +229,12 @@ impl Operation {
                 .as_ref()
                 .is_some_and(|form| (form.ready)()),
             Some(origin) => {
+                // Upstream's abort listener runs synchronously; read the signal too, not only the watcher's flag.
                 !self.state.presentation_lost.load(Ordering::Acquire)
-                    && origin.presentation.is_some()
+                    && origin
+                        .presentation
+                        .as_ref()
+                        .is_some_and(|presentation| !presentation.signal.aborted())
             }
             None => false,
         };
@@ -335,7 +339,9 @@ impl Operation {
                 let (Some(origin), Some(presentation)) = (origin, presentation) else {
                     return Err(code(McpMrtrErrorCode::ProcessingUnavailable));
                 };
-                if self.state.presentation_lost.load(Ordering::Acquire) {
+                if self.state.presentation_lost.load(Ordering::Acquire)
+                    || presentation.signal.aborted()
+                {
                     return Err(code(McpMrtrErrorCode::ProcessingUnavailable));
                 }
                 let consent = AbortSignal::default();
@@ -572,12 +578,20 @@ pub async fn mcp_request_with_clock(
             outgoing.extend(continuation.clone());
             let mut meta = metadata.clone();
             meta.insert(CAPABILITIES_KEY.into(), operation.request_capabilities());
+            // Upstream wraps `onprogress` per attempt; the SDK overwrites `_meta.progressToken` with its own key.
+            let progress_token = operation.on_progress.as_ref().map(|_| {
+                let token = Value::from(format!("mrtr:{}", NEXT_PROGRESS_TOKEN.fetch_add(1, Ordering::Relaxed)));
+                meta.insert("progressToken".into(), token.clone());
+                (token, client.notifications.subscribe())
+            });
             outgoing.insert("_meta".into(), Value::Object(meta));
             operation.check()?;
             let attempt_timeout = Duration::from_secs_f64((timeout_ms.min(remaining).max(0.0)) / 1000.0);
-            let response = client
-                .request_guarded(method, Value::Object(outgoing), attempt_timeout, Some(&attempt.signal), Some(operation.guard(true)))
-                .await?;
+            let request = client.request_guarded(method, Value::Object(outgoing), attempt_timeout, Some(&attempt.signal), Some(operation.guard(true)));
+            let response = match (progress_token, operation.on_progress.as_deref()) {
+                (Some((token, updates)), Some(on_progress)) => forward_progress(request, updates, &token, &operation, on_progress).await,
+                _ => request.await,
+            }?;
             drop(attempt);
             let Value::Object(mut result) = response else {
                 return Err(code(McpMrtrErrorCode::InvalidResult));
@@ -607,6 +621,11 @@ pub async fn mcp_request_with_clock(
                         }
                         // Cancellation has its own request lifetime, independent of the aborted tool call.
                         let checked = signal.is_some();
+                        // Upstream rejects the follower with the abort reason, so a CONTEXT_CHANGED stop never sends
+                        // `tasks/cancel`; the tool signal carries no reason, so the stop is read from the operation.
+                        if !checked && operation.state.failure().is_some_and(|failure| failure.code == McpMrtrErrorCode::ContextChanged) {
+                            return Err(McpMrtrError::new(McpMrtrErrorCode::ContextChanged));
+                        }
                         let guard_operation = operation.clone();
                         let guard: DispatchGuard = Arc::new(move |snapshot: Option<String>| {
                             let changed = guard_operation.origin.as_ref().is_some_and(|origin| origin_changed(origin, guard_operation.generation));
@@ -716,6 +735,53 @@ pub async fn mcp_request_with_clock(
                 )
                 .into()),
             }
+        }
+    }
+}
+
+static NEXT_PROGRESS_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Upstream attempt `onprogress`: progress for this attempt reaches the caller only while the operation is
+/// still live, finite, and stripped to `{progress, total?}`; it never extends the operation deadline.
+async fn forward_progress(
+    request: impl std::future::Future<Output = Result<Value, McpError>>,
+    mut updates: tokio::sync::broadcast::Receiver<Value>,
+    token: &Value,
+    operation: &Operation,
+    on_progress: &(dyn Fn(Value) + Send + Sync),
+) -> Result<Value, McpError> {
+    tokio::pin!(request);
+    let mut open = true;
+    loop {
+        tokio::select! {
+            biased;
+            update = updates.recv(), if open => match update {
+                Ok(message) => {
+                    let Some(params) = message.get("params").filter(|_| {
+                        message.get("method").and_then(Value::as_str) == Some("notifications/progress")
+                    }) else {
+                        continue;
+                    };
+                    if params.get("progressToken") != Some(token) || operation.check().is_err() {
+                        continue;
+                    }
+                    let finite = |value: &Value| value.as_f64().is_some_and(f64::is_finite);
+                    if !params.get("progress").is_some_and(finite)
+                        || params.get("total").is_some_and(|total| !finite(total))
+                    {
+                        continue;
+                    }
+                    let mut progress = Map::new();
+                    progress.insert("progress".into(), params["progress"].clone());
+                    if let Some(total) = params.get("total") {
+                        progress.insert("total".into(), total.clone());
+                    }
+                    on_progress(Value::Object(progress));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => open = false,
+            },
+            result = &mut request => return result,
         }
     }
 }
