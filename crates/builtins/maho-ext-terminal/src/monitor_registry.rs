@@ -892,8 +892,14 @@ impl MonitorRegistry {
                     publish_snapshot(&records,&files,&transitions);
                     while let Ok(chunk)=output.try_recv() {let current=*guard.lock().expect("runaway guard");for event in record.consume(&chunk,now_ms(),&current) {emit(event);}}
                     let (reason,exit_code)=match &result {Ok(exit)=>(if exit.timed_out {MonitorEndedReason::Timeout} else if exit.cancelled {MonitorEndedReason::Killed} else {MonitorEndedReason::Exit},exit.exit_code),Err(_)=>(MonitorEndedReason::Exit,None)};
-                    let summary=match result {Ok(result)=>format!("watcher {}{}",crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned()),result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})"))),Err(error)=>format!("watcher error: {error}")};
-                    if let Some(event)=record.settle(summary,now_ms()) {emit(event);}
+                    // A stream watch (`tail -F | grep`) that already delivered matches never exits on its own, so
+                    // reaching its deadline is the expected end, not a failure: settle it without a wake-up summary.
+                    // The ended event below still reports the timeout. A watch that matched nothing keeps the summary.
+                    let quiet=matches!(&result,Ok(exit) if exit.timed_out) && record.snapshot.fire_count.unwrap_or(0)>0;
+                    if quiet {record.dispose();} else {
+                        let summary=match result {Ok(result)=>format!("watcher {}{}",crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned()),result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})"))),Err(error)=>format!("watcher error: {error}")};
+                        if let Some(event)=record.settle(summary,now_ms()) {emit(event);}
+                    }
                     emit_ended(&ended,&record.snapshot,reason,exit_code,now_ms());
                     return;
                 }
@@ -1317,6 +1323,81 @@ mod registry_tests {
         );
         assert!(event.fire_count >= 1);
         assert!(ended.try_recv().is_err());
+        registry.dispose();
+        runtime.dispose().unwrap();
+    }
+    #[tokio::test]
+    async fn deadline_after_delivered_lines_ends_without_a_wake_summary() {
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let (ended_sender, mut ended) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new_with_ended(
+            move |event| {
+                sender.send(event).unwrap();
+            },
+            move |event| {
+                ended_sender.send(event).unwrap();
+            },
+        );
+        let runtime = crate::runtime_session::TerminalRuntimeSession::start(
+            "stream",
+            crate::shared::test_sh_options("stty -echo; printf 'ready\\n'; read value")
+                .timeout(std::time::Duration::from_millis(500)),
+        )
+        .unwrap();
+        registry
+            .register(
+                &runtime,
+                CommandMonitor::new(
+                    MonitorSnapshotEntry {
+                        id: "bash_1".to_owned(),
+                        ..Default::default()
+                    },
+                    None,
+                ),
+            )
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), ended.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.reason, MonitorEndedReason::Timeout);
+        assert!(matches!(events.try_recv(),Ok(MonitorEvent::Line {line,..}) if line=="ready"));
+        assert!(events.try_recv().is_err());
+        assert!(registry.snapshot().is_empty());
+        registry.dispose();
+        runtime.dispose().unwrap();
+    }
+    #[tokio::test]
+    async fn deadline_without_matches_still_reports_timed_out() {
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = MonitorRegistry::new(move |event| {
+            sender.send(event).unwrap();
+        });
+        let runtime = crate::runtime_session::TerminalRuntimeSession::start(
+            "gate",
+            crate::shared::test_sh_options("read value")
+                .timeout(std::time::Duration::from_millis(500)),
+        )
+        .unwrap();
+        registry
+            .register(
+                &runtime,
+                CommandMonitor::new(
+                    MonitorSnapshotEntry {
+                        id: "bash_1".to_owned(),
+                        ..Default::default()
+                    },
+                    Some(fancy_regex::Regex::new("^READY$").unwrap()),
+                ),
+            )
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event,MonitorEvent::Summary {summary,..} if summary.starts_with("watcher timed_out"))
+        );
         registry.dispose();
         runtime.dispose().unwrap();
     }
