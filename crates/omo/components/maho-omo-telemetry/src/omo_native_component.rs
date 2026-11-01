@@ -1207,7 +1207,7 @@ mod tests {
             &api,
             ExtensionEvent::TurnEnd {
                 turn_index: 1,
-                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message(
+                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
                     "hello",
                     Default::default(),
                 )))),
@@ -1244,7 +1244,7 @@ mod tests {
             &api,
             ExtensionEvent::TurnEnd {
                 turn_index: 1,
-                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message(
+                message: maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(maho_ai::providers::faux::faux_assistant_message(
                     "hello",
                     Default::default(),
                 )))),

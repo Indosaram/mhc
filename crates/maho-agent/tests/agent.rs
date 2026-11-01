@@ -265,7 +265,7 @@ async fn continue_run_from_assistant_tail_without_queue_is_refused() {
     let agent = agent_with(unused_stream_fn());
     agent.set_messages(vec![
         user_message("hi"),
-        AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant(
+        AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant(
             vec![text_block("done")],
             StopReason::Stop,
         )))),

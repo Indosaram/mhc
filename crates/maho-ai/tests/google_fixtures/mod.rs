@@ -139,7 +139,7 @@ pub fn image(data: &str, mime_type: &str) -> ContentBlock {
 
 /// An assistant turn the adapters replay (`role: "assistant"` with the provider metadata attached).
 pub fn assistant(model: &Model, content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
-    Message::Assistant(Box::new(AssistantMessage {
+    Message::Assistant(std::sync::Arc::new(AssistantMessage {
         failure_source: None,
         timing: None,
         thinking_level: None,

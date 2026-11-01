@@ -351,3 +351,54 @@ async fn a_persistent_monitor_created_through_the_registered_tool_is_recorded_in
     assert_eq!(monitors[0]["monitorId"], monitor_id);
     assert_eq!(monitors[0]["suspended"], true);
 }
+
+#[tokio::test]
+async fn shutdown_publishes_an_empty_monitor_wake_source_after_a_live_monitor() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = context(dir.path());
+    let api = api(dir.path());
+    let (sender, mut states) = tokio::sync::mpsc::unbounded_channel();
+    let _subscription = api.events.on(
+        "wake_source_state",
+        Arc::new(move |state| {
+            if state["source"] == "terminal-monitors" {
+                sender.send(state["activeCount"].clone()).expect("monitor state");
+            }
+        }),
+    );
+    start(&api, &ctx, SessionReason::Startup).await;
+    let monitor = api
+        .registered
+        .tools
+        .iter()
+        .find(|tool| tool.definition.name == "monitor")
+        .expect("monitor tool");
+    (monitor.definition.execute)(maho_tools::definition::ToolCall {
+        id: "live",
+        params: serde_json::json!({"description":"stdin watch","command":"cat"}),
+        signal: Default::default(),
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect("monitor starts");
+    let live = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if states.recv().await.expect("state stream") == 1 {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(live.is_ok(), "the live monitor is published as one wake source");
+    shutdown(&api, &ctx, SessionReason::Quit).await;
+    let mut last = None;
+    while let Ok(count) = states.try_recv() {
+        last = Some(count);
+    }
+    assert_eq!(
+        last,
+        Some(serde_json::json!(0)),
+        "shutdown leaves no stale monitor wake count"
+    );
+}

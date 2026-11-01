@@ -1640,7 +1640,7 @@ mod queue_ownership_tests {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
             agent.process_events(AgentEvent::TurnEnd {
-                message: maho_ai::types::Message::Assistant(Box::new(message)).into(),
+                message: maho_ai::types::Message::Assistant(std::sync::Arc::new(message)).into(),
                 tool_results: Vec::new(),
             }),
         )
