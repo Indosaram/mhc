@@ -1,22 +1,43 @@
 import { plugin } from "bun";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 const source = process.env.SENPI_SRC;
 if (!source) throw new Error("SENPI_SRC is required");
-const pin = Bun.spawn(["git", "-C", source, "rev-parse", "HEAD"], { stdout: "pipe" });
-const revision = await new Response(pin.stdout).text();
-if (await pin.exited !== 0 || revision.trim() !== "903b83367545bea516f35fc7f7c7cb692847988d") {
-  throw new Error("notice fixture source must match the pinned commit");
+const PIN = "903b83367545bea516f35fc7f7c7cb692847988d";
+const git = async (...args) => {
+  const child = Bun.spawn(["git", "-C", source, ...args], { stdout: "pipe", stderr: "pipe" });
+  const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  if (await child.exited !== 0) throw new Error(`git ${args.join(" ")} in ${source}: ${err.trim()}`);
+  return out;
+};
+// A checkout on another commit still renders the pinned bytes: the pinned component files are
+// extracted from git under the checkout's node_modules, so their bare imports resolve there.
+let root = source;
+if ((await git("rev-parse", "HEAD")).trim() !== PIN) {
+  root = resolve(source, "node_modules/.cache/mhc-notice-pin", PIN);
+  if (!existsSync(resolve(root, "packages/tui/src/index.ts"))) {
+    const staging = `${root}.${process.pid}.tmp`;
+    rmSync(staging, { recursive: true, force: true });
+    mkdirSync(staging, { recursive: true });
+    const tar = Bun.spawn(["git", "-C", source, "archive", "--format=tar", PIN, "packages/tui/src", "packages/coding-agent/src/core/extensions/notice"], { stdout: "pipe", stderr: "pipe" });
+    const untar = Bun.spawn(["tar", "-x", "-C", staging], { stdin: tar.stdout, stderr: "pipe" });
+    if (await tar.exited !== 0 || await untar.exited !== 0) {
+      throw new Error(`${source} cannot provide pinned commit ${PIN}: ${(await new Response(tar.stderr).text()).trim()}`);
+    }
+    rmSync(root, { recursive: true, force: true });
+    renameSync(staging, root);
+  }
 }
 plugin({
   name: "notice-source-tui",
   setup(build) {
     build.onResolve({ filter: /^@earendil-works\/pi-tui$/ }, () => ({
-      path: resolve(source, "packages/tui/src/index.ts"),
+      path: resolve(root, "packages/tui/src/index.ts"),
     }));
   },
 });
-const { buildNoticeBox } = await import(resolve(source, "packages/coding-agent/src/core/extensions/notice/box.ts"));
+const { buildNoticeBox } = await import(resolve(root, "packages/coding-agent/src/core/extensions/notice/box.ts"));
 const cases = [
   ["basic", { title: "Title", why: "Why", extra: [{ text: "Extra", tone: "warning" }], expandedLine: "Detail" }],
   ["empty", { title: "", why: "", extra: [{ text: "" }], expandedLine: "" }],
