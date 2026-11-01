@@ -258,9 +258,9 @@ pub fn transform_messages(
                     }
                 }
 
-                let mut assistant = *assistant;
+                let mut assistant = std::sync::Arc::unwrap_or_clone(assistant);
                 assistant.content = transformed_content;
-                Message::Assistant(Box::new(assistant))
+                Message::Assistant(std::sync::Arc::new(assistant))
             }
         })
         .collect();
@@ -398,7 +398,7 @@ mod tests {
     }
 
     fn assistant_message(content: Vec<ContentBlock>, stop_reason: StopReason) -> Message {
-        Message::Assistant(Box::new(AssistantMessage {
+        Message::Assistant(std::sync::Arc::new(AssistantMessage {
             failure_source: None,
             timing: None,
             error_cause: None,

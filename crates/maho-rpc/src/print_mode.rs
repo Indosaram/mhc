@@ -175,7 +175,7 @@ mod tests {
     #[test] fn missing_error_uses_terminal_status() { let message=message(json!([]),"aborted",None);assert_eq!(format_print_result(Some(&message)).unwrap().stderr,"Request aborted\n"); }
     #[test] fn stripped_message_update_matches_full_record_json_event() {
         let partial=message(json!([{"type":"text","text":"ab"},{"type":"toolCall","id":"c1","name":"bash","arguments":{"x":1}}]),"stop",None);
-        let agent_message=maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(partial.clone())));
+        let agent_message=maho_ext_api::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(partial.clone())));
         let tool_call:maho_ai::types::ToolCall=serde_json::from_value(json!({"id":"c1","name":"bash","arguments":{"x":1}})).unwrap();
         use maho_ai::types::AssistantMessageEvent as A;
         let events=vec![A::Start{partial:partial.clone()},A::TextStart{content_index:0,partial:partial.clone()},A::TextDelta{content_index:0,delta:"b".into(),partial:partial.clone()},A::TextEnd{content_index:0,content:"ab".into(),partial:partial.clone()},A::ThinkingStart{content_index:0,partial:partial.clone()},A::ThinkingDelta{content_index:0,delta:"t".into(),partial:partial.clone()},A::ThinkingEnd{content_index:0,content:"t".into(),partial:partial.clone()},A::ToolcallDelta{content_index:1,delta:"{".into(),partial:partial.clone()},A::ToolcallEnd{content_index:1,tool_call,partial:partial.clone()}];

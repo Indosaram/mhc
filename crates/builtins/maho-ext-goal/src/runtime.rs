@@ -931,7 +931,7 @@ mod tests {
                 maho_ai::providers::faux::faux_assistant_message("", Default::default());
             assistant.stop_reason = stop;
             let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
-                Box::new(assistant),
+                std::sync::Arc::new(assistant),
             ));
             runtime
                 .event(
@@ -1035,7 +1035,7 @@ mod tests {
             assistant.stop_reason = maho_ai::types::StopReason::Error;
             assistant.error_message = Some("provider transport unavailable".into());
             let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
-                Box::new(assistant),
+                std::sync::Arc::new(assistant),
             ));
             runtime
                 .event(
@@ -1085,7 +1085,7 @@ mod tests {
                 .insert(goal.id.clone(), 1);
         }
         let message =
-            maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(
+            maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(
                 maho_ai::providers::faux::faux_assistant_message("done", Default::default()),
             )));
         runtime
@@ -1342,6 +1342,7 @@ mod tests {
         if let maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) =
             &mut message
         {
+            let assistant = std::sync::Arc::make_mut(assistant);
             assistant.api = "openai-codex-responses".into();
             assistant.stop_reason = maho_ai::types::StopReason::Error;
             assistant.error_message = Some(
@@ -1393,7 +1394,7 @@ mod tests {
         assistant.model = "claude-test".into();
         assistant.error_message = Some("401 Unauthorized".into());
         let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
-            Box::new(assistant),
+            std::sync::Arc::new(assistant),
         ));
         let blocked = runtime
             .event(

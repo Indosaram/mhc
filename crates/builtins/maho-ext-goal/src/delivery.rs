@@ -811,7 +811,7 @@ mod tests {
         );
         let event = maho_core::agent_abort_provenance::AgentEndEvent {
             messages: vec![maho_agent::types::AgentMessage::Llm(
-                maho_ai::types::Message::Assistant(Box::new(
+                maho_ai::types::Message::Assistant(std::sync::Arc::new(
                     maho_ai::providers::faux::faux_assistant_message(
                         "Continuing parser work.",
                         Default::default(),
@@ -864,7 +864,7 @@ mod tests {
         );
         let mut question = event.clone();
         question.messages = vec![maho_agent::types::AgentMessage::Llm(
-            maho_ai::types::Message::Assistant(Box::new(
+            maho_ai::types::Message::Assistant(std::sync::Arc::new(
                 maho_ai::providers::faux::faux_assistant_message(
                     "Which parser?",
                     Default::default(),
@@ -992,7 +992,7 @@ mod tests {
         assistant.stop_reason = maho_ai::types::StopReason::Error;
         assistant.error_message = Some("provider transport unavailable".into());
         let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(
-            Box::new(assistant),
+            std::sync::Arc::new(assistant),
         ));
         runtime
             .event(

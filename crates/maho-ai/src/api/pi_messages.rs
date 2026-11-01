@@ -1044,7 +1044,7 @@ mod tests {
             message.content = vec![ContentBlock::text("stable")];
             let original = serde_json::to_value(&message).expect("message");
             let context = Context {
-                messages: vec![Message::Assistant(Box::new(message.clone()))],
+                messages: vec![Message::Assistant(std::sync::Arc::new(message.clone()))],
                 ..Context::default()
             };
             let actual = context_payload(&context)["messages"][0].clone();
