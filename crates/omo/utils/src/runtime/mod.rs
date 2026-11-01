@@ -4,6 +4,7 @@ mod file;
 mod git_bash;
 mod platform;
 mod spawn;
+mod std_handles;
 mod which;
 
 pub use file::{RuntimeFile, bun_file, bun_write};
@@ -12,6 +13,7 @@ pub use git_bash::{
     resolve_git_bash, resolve_git_bash_for_current_process,
 };
 pub use platform::{node_arch, node_platform};
+pub use std_handles::keep_std_handles_private;
 pub use spawn::{
     AbortController, AbortRegistration, AbortSignal, SpawnOptions, SpawnSyncResult, SpawnedProcess,
     StdioMode, spawn, spawn_sync,
