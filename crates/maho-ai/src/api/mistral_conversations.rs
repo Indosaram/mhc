@@ -1095,7 +1095,8 @@ async fn drive(
     let base_url = model.base_url.trim_end_matches('/');
     let url = format!("{base_url}/v1/chat/completions");
     let headers = build_mistral_headers(model, &api_key, options);
-    let client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi mistral-conversations.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let body = to_mistral_wire_payload(&payload).to_string();
 
     let timeout_ms = options.request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);

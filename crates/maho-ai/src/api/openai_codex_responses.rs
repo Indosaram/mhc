@@ -1978,9 +1978,10 @@ async fn drive(
             reqwest::header::HeaderValue::from_static("zstd"),
         );
     }
-    let sse_body: Vec<u8> = compressed_body.unwrap_or_else(|| body_json.clone().into_bytes());
+    let sse_body: Bytes = Bytes::from(compressed_body.unwrap_or_else(|| body_json.clone().into_bytes()));
 
-    let client = options.request.fetch.clone().unwrap_or_default();
+    // PERF-DIVERGENCE(senpi openai-codex-responses.ts): upstream builds a new SDK client per request but Bun fetch shares a keep-alive agent; this port reuses one pooled reqwest client. Requests are identical.
+    let client = options.request.fetch.clone().unwrap_or_else(crate::utils::http_client::shared_http_client);
     let url = resolve_codex_url(Some(model.base_url.as_str()));
     let max_retries = options.request.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
     let signal = options.request.signal.clone();
