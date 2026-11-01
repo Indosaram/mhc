@@ -615,8 +615,13 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
             }
             let result = wait(run_id, &parent)?;
             let res_status = result["status"].as_str().unwrap_or_default();
+            let message = if matches!(res_status, "completed" | "failed" | "cancelled") {
+                format!("Dag run {run_id} finished with status {res_status}.")
+            } else {
+                format!("Dag run {run_id} is {res_status}; waiting was interrupted.")
+            };
             Ok(tool_text(
-                format!("Dag run {run_id} finished with status {res_status}."),
+                message,
                 json!({
                     "kind": "waited",
                     "run_id": run_id,
@@ -980,11 +985,25 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
                 // TS awaits these actions; `wait` (and scheduler bookkeeping) block on condvars here, so run
                 // them off the async executor. Blocking a current-thread runtime stalls its I/O driver,
                 // which the in-process children's provider streams depend on, and deadlocks the run.
-                tokio::task::spawn_blocking(move || run_dag_tool(&deps, input))
-                    .await
-                    .map_err(|error| {
-                        ToolError::Message(format!("workflow tool worker failed: {error}"))
-                    })?
+                let cancellation = Arc::new(senpi_task::dag::handle::DagWaitCancellation::default());
+                struct CancelOnDrop(Arc<senpi_task::dag::handle::DagWaitCancellation>);
+                impl Drop for CancelOnDrop {
+                    fn drop(&mut self) { self.0.cancel(); }
+                }
+                let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+                if call.signal.is_aborted() { cancellation.cancel(); }
+                let worker_cancellation = cancellation.clone();
+                let mut worker = tokio::task::spawn_blocking(move || {
+                    senpi_task::dag::handle::with_dag_wait_cancellation(worker_cancellation, || run_dag_tool(&deps, input))
+                });
+                let result = tokio::select! {
+                    result = &mut worker => result,
+                    () = call.signal.cancelled() => {
+                        cancellation.cancel();
+                        worker.await
+                    }
+                };
+                result.map_err(|error| ToolError::Message(format!("workflow tool worker failed: {error}")))?
             })
         }),
     );

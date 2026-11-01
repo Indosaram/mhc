@@ -1,6 +1,6 @@
 use std::sync::{Arc,Mutex};
 use maho_ext_api::EventBus;
-use maho_omo_task::{dag_wake_source::{create_dag_wake_source,DagWakeSource,DagWakeSourceDeps,DAG_WAKE_SOURCE_STATE_EVENT},dag_status_ui::DagStatusUiManager,dag_tool::{DagToolDeps,run_dag_tool}};
+use maho_omo_task::{dag_wake_source::{create_dag_wake_source,DagWakeSource,DagWakeSourceDeps,DAG_WAKE_SOURCE_STATE_EVENT,DAG_WAKE_SOURCE_STATE_REQUEST_EVENT},dag_status_ui::DagStatusUiManager,dag_tool::{DagToolDeps,run_dag_tool}};
 use senpi_task::dag::{manager::{DagManager,DagRunSummary,DagManagerOptions,create_dag_manager},store::{DagStoreConfig,DagStoreOptions,create_dag_file_store},types::DagRunSnapshot};
 use serde_json::{Value,json};
 struct Runs { manager:DagManager,ghost:bool }
@@ -27,4 +27,35 @@ fn fixture(ghost:bool)->(tempfile::TempDir,DagWakeSource,Arc<Mutex<Vec<Value>>>,
     let (_root,mut source,events,_subscription)=fixture(false); let original=source.manager.snapshot("run-1","parent").expect("snapshot"); let mut second=original.clone(); second.run_id="run-2".into(); second.name="second".into(); second.started_at=Some("1970-01-01T00:00:02.000Z".into()); let runs=Arc::new(Snapshots(Mutex::new(vec![original]))); source.manager=runs.clone(); source.publish_live(); runs.0.lock().expect("runs").push(second); source.publish_live();
     { let events=events.lock().expect("events"); assert_eq!(events[0]["activeCount"],1); assert_eq!(events[1]["activeCount"],2); assert_eq!(events[1]["channels"][1]["startedAtMs"],2000); }
     for run in runs.0.lock().expect("runs").iter_mut() { run.status=senpi_task::dag::types::DagRunStatus::Completed; } source.publish_live(); assert_eq!(events.lock().expect("events")[2],json!({"source":"omo-dag","kind":"children","activeCount":0,"channels":[]}));
+}
+
+#[test]
+fn request_live_snapshot_without_start_event() {
+    let (_root, source, events, _subscription) = fixture(false);
+    events.lock().expect("events").clear();
+    source.events.emit(DAG_WAKE_SOURCE_STATE_REQUEST_EVENT, &json!({}));
+    let captured = events.lock().expect("events");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0],
+        json!({
+            "source": "omo-dag",
+            "kind": "children",
+            "activeCount": 1,
+            "channels": [{
+                "id": "run-1",
+                "description": "release",
+                "startedAtMs": 1000
+            }]
+        })
+    );
+}
+
+#[test]
+fn request_after_shutdown_does_not_emit() {
+    let (_root, source, events, _subscription) = fixture(false);
+    source.emit_shutdown();
+    events.lock().expect("events").clear();
+    source.events.emit(DAG_WAKE_SOURCE_STATE_REQUEST_EVENT, &json!({}));
+    assert_eq!(events.lock().expect("events").len(), 0);
 }
