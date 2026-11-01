@@ -287,6 +287,9 @@ pub enum AttachmentEvent {
 
 pub type RebindSession = Box<dyn Fn(&AgentSession) + Send + Sync>;
 pub type SessionInvalidateHook = Box<dyn Fn() + Send + Sync>;
+/// Checks the entries of a persisted session a runtime would switch into (`switch_session`,
+/// import) before the current session is replaced; an error refuses the switch.
+pub type SwitchGuard = Box<dyn Fn(&[serde_json::Value]) -> Result<(), String> + Send + Sync>;
 
 /// Owns the current AgentSession plus its cwd-bound services.
 pub struct AgentSessionRuntime {
@@ -306,6 +309,10 @@ pub struct AgentSessionRuntime {
     browser_engine: Option<String>,
     /// The hold on the active session's file; released when the session is replaced or disposed.
     session_hold: std::sync::Mutex<Option<crate::schedule::runner_lease::SessionHold>>,
+    /// Custom entries every replacement session (new, fork, switch, import) records before its
+    /// extensions bind, e.g. the host's durable session-role policy.
+    replacement_entries: Vec<(String, serde_json::Value)>,
+    switch_guard: Option<SwitchGuard>,
 }
 
 impl AgentSessionRuntime {
@@ -330,6 +337,8 @@ impl AgentSessionRuntime {
             prompt_surface: None,
             browser_engine: None,
             session_hold: std::sync::Mutex::new(None),
+            replacement_entries: Vec::new(),
+            switch_guard: None,
         }
     }
 
@@ -428,6 +437,21 @@ impl AgentSessionRuntime {
         self.before_session_invalidate = callback;
     }
 
+    /// Records `data` as a `custom_type` entry in every session this runtime replaces into, unless
+    /// that session already holds the identical entry.
+    pub fn record_on_replacement(&mut self, custom_type: &str, data: serde_json::Value) {
+        self.replacement_entries.push((custom_type.to_owned(), data));
+    }
+
+    /// Installs the host check every switch target must pass, e.g. that it keeps the session role.
+    pub fn set_switch_guard(&mut self, guard: Option<SwitchGuard>) {
+        self.switch_guard = guard;
+    }
+
+    fn check_switch_target(&self, manager: &crate::session_manager::SessionManager) -> Result<(), String> {
+        self.switch_guard.as_ref().map_or(Ok(()), |guard| guard(&manager.entries()))
+    }
+
     /// Attachment transitions are ordered by the RPC entry's lifecycle owner.
     pub async fn emit_attachment_event(&self, event: AttachmentEvent) {
         self.session
@@ -477,6 +501,7 @@ impl AgentSessionRuntime {
             options.cwd_override.as_deref(),
             None,
         )?;
+        self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume)
@@ -709,6 +734,7 @@ impl AgentSessionRuntime {
             cwd_override,
             None,
         )?;
+        self.check_switch_target(&manager)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume)
@@ -805,6 +831,7 @@ impl AgentSessionRuntime {
             session_manager: Some(manager),
             settings_manager: Some(settings),
             tools: Some(self.session.get_active_tool_names()),
+            exclude_tools: self.session.excluded_tool_names(),
             custom_tools: self.session.replacement_custom_tools(),
             resource_inputs: self.session.resource_loader_inputs(),
             auto_title_sessions: self
@@ -820,6 +847,8 @@ impl AgentSessionRuntime {
             }),
             ..Default::default()
         };
+        let command_gate = self.session.extension_command_gate();
+        let user_bash_denied = self.session.user_bash_denied();
         self.session.abort().await;
         self.session
             .runtime_shutdown_to(reason, target_session_file)
@@ -835,6 +864,22 @@ impl AgentSessionRuntime {
         }
         if let Some(engine) = &self.browser_engine {
             created.session.set_browser_engine(engine.clone());
+        }
+        created.session.set_extension_command_gate(command_gate);
+        created.session.set_user_bash_denied(user_bash_denied);
+        for (custom_type, data) in &self.replacement_entries {
+            let recorded = created.session.with_session_manager(|manager| {
+                manager.entries().iter().any(|entry| {
+                    entry["type"] == "custom"
+                        && entry["customType"] == custom_type.as_str()
+                        && entry["data"] == *data
+                })
+            });
+            if !recorded {
+                created.session.with_session_manager_mut(|manager| {
+                    manager.append_custom(custom_type, Some(data.clone()))
+                });
+            }
         }
         let replacement = match self
             .session
