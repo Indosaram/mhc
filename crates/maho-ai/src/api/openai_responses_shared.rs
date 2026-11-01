@@ -34,7 +34,7 @@ use crate::types::{
 };
 use crate::utils::event_stream::AssistantMessageEventStream;
 use crate::utils::hash::short_hash;
-use crate::utils::json_parse::parse_streaming_json;
+use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::sanitize_unicode::sanitize_surrogates;
 
 pub use crate::api::responses_completion_grace::RESPONSES_COMPLETION_GRACE_MS;
@@ -820,6 +820,7 @@ struct Slot {
     kind: SlotKind,
     content_index: usize,
     partial_json: Option<String>,
+    partial_json_parsed_len: usize,
     custom_input: Option<CustomToolInput>,
 }
 
@@ -834,6 +835,7 @@ impl Slot {
             kind,
             content_index,
             partial_json: None,
+            partial_json_parsed_len: 0,
             custom_input: None,
         }
     }
@@ -1580,17 +1582,17 @@ fn handle_event(
                 return Ok(());
             }
             let content_index = slot.content_index;
-            let partial_json = {
-                let slot = state.output_slots.get_mut(&output_index).expect("checked");
-                let partial_json = slot.partial_json.get_or_insert_with(String::new);
-                partial_json.push_str(&delta);
-                partial_json.clone()
-            };
-            if let Some(ContentBlock::ToolCall(block)) = output.content.get_mut(content_index) {
-                block.arguments = parse_streaming_json(Some(&partial_json))
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default();
+            let slot = state.output_slots.get_mut(&output_index).expect("checked");
+            let partial_json = slot.partial_json.get_or_insert_with(String::new);
+            partial_json.push_str(&delta);
+            let total_len = partial_json.len();
+            // PERF-DIVERGENCE(senpi packages/ai/src/api/openai-responses-shared.ts): upstream re-parses the whole argument buffer on every delta; this port re-parses small buffers every delta and large ones at geometric intervals, and always at block end. Final arguments are identical.
+            if should_reparse_streaming_json(total_len, slot.partial_json_parsed_len) {
+                let parsed = parse_streaming_json(slot.partial_json.as_deref());
+                slot.partial_json_parsed_len = total_len;
+                if let Some(ContentBlock::ToolCall(block)) = output.content.get_mut(content_index) {
+                    block.arguments = parsed.as_object().cloned().unwrap_or_default();
+                }
             }
             let slot = state.output_slots.get(&output_index).expect("checked");
             push_tool_call_delta(slot, Some(delta), output, stream);
@@ -1642,6 +1644,7 @@ fn handle_event(
                 kind: SlotKind::ToolCall,
                 content_index,
                 partial_json: None,
+                partial_json_parsed_len: 0,
                 custom_input: None,
             };
             push_tool_call_delta(&slot, delta, output, stream);
@@ -1660,6 +1663,7 @@ fn handle_event(
                 kind: SlotKind::ToolCall,
                 content_index,
                 partial_json: None,
+                partial_json_parsed_len: 0,
                 custom_input: None,
             };
             push_tool_call_delta(&slot, delta, output, stream);
@@ -1833,6 +1837,7 @@ fn handle_event(
                     kind: SlotKind::ToolCall,
                     content_index,
                     partial_json: None,
+                    partial_json_parsed_len: 0,
                     custom_input: None,
                 };
                 push_tool_call_delta(&slot, delta, output, stream);
