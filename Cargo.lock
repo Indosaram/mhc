@@ -3722,6 +3722,7 @@ dependencies = [
  "maho-tool-child",
  "maho-tools",
  "maho-tui",
+ "maho-utils",
  "maho-workflow",
  "maho-workpool",
  "maho-x-search",
@@ -5356,6 +5357,7 @@ dependencies = [
 name = "maho-omo-config-core"
 version = "0.0.0"
 dependencies = [
+ "dirs",
  "hex",
  "jiff",
  "libc",
