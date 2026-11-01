@@ -103,7 +103,7 @@ pub(super) fn estimate(messages: &[StoredMessage], omit_errors:bool) -> Result<u
     let mut native=Vec::new();
     for message in messages { match message.decode()? {
         Message::System(_) => {},
-        Message::Assistant(m) => if !omit_errors || !matches!(m.stop_reason,StopReason::Error|StopReason::Aborted) { native.push(maho_ai::types::Message::Assistant(m)); },
+        Message::Assistant(m) => if !omit_errors || !matches!(m.stop_reason,StopReason::Error|StopReason::Aborted) { native.push(maho_ai::types::Message::Assistant(std::sync::Arc::from(m))); },
         Message::User(m) => native.push(maho_ai::types::Message::User(m)),
         Message::ToolResult(m) => native.push(maho_ai::types::Message::ToolResult(*m)),
     } }

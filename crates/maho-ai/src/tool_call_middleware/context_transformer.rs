@@ -196,7 +196,7 @@ pub fn transform_context(context: &Context, protocol: &dyn ToolCallProtocol) -> 
 fn transform_message(message: &Message, protocol: &dyn ToolCallProtocol) -> Message {
     match message {
         Message::Assistant(assistant) => {
-            Message::Assistant(Box::new(transform_assistant_message(assistant, protocol)))
+            Message::Assistant(std::sync::Arc::new(transform_assistant_message(assistant, protocol)))
         }
         Message::ToolResult(tool_result) => {
             Message::User(transform_tool_result_message(tool_result, protocol))
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn should_convert_assistant_message_tool_calls_to_text() {
-        let assistant_turn = Message::Assistant(Box::new(plain_assistant(vec![
+        let assistant_turn = Message::Assistant(std::sync::Arc::new(plain_assistant(vec![
             ContentBlock::text("Let me check the weather"),
             ContentBlock::ToolCall(ToolCall {
                 id: "call_123".into(),
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn should_pass_through_an_assistant_message_without_tool_calls_unchanged() {
         let assistant_turn =
-            Message::Assistant(Box::new(plain_assistant(vec![ContentBlock::text(
+            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::text(
                 "Hello there",
             )])));
         let context = Context {
@@ -739,7 +739,7 @@ mod tests {
     fn should_handle_a_complex_conversation_history() {
         let messages = vec![
             user_message("What's the weather?"),
-            Message::Assistant(Box::new(plain_assistant(vec![
+            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![
                 ContentBlock::text("I'll check"),
                 ContentBlock::ToolCall(ToolCall {
                     id: "call_1".into(),
@@ -765,7 +765,7 @@ mod tests {
                 is_error: false,
                 timestamp: 2,
             }),
-            Message::Assistant(Box::new(plain_assistant(vec![ContentBlock::text(
+            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::text(
                 "It's rainy in Tokyo",
             )]))),
         ];
@@ -790,7 +790,7 @@ mod tests {
     }
 
     fn flagged_tool_call_message() -> Message {
-        Message::Assistant(Box::new(plain_assistant(vec![ContentBlock::ToolCall(
+        Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::ToolCall(
             ToolCall {
                 id: "call_flagged".into(),
                 name: "get_weather".into(),
@@ -877,7 +877,7 @@ mod tests {
     #[test]
     fn replays_flagged_calls_byte_identically_to_unflagged_calls() {
         let unflagged =
-            Message::Assistant(Box::new(plain_assistant(vec![ContentBlock::ToolCall(
+            Message::Assistant(std::sync::Arc::new(plain_assistant(vec![ContentBlock::ToolCall(
                 ToolCall {
                     id: "call_123".into(),
                     name: "get_weather".into(),

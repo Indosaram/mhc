@@ -14,7 +14,7 @@ fn hint_nullish_coalescing_does_not_skip_nonstring_primary_argument() {
     let mut input: Vec<_> = (0..2).flat_map(|index|pair(index,"read")).collect();
     for index in [0,2] {
         if let Message::Assistant(message) = &mut input[index]
-            && let ContentBlock::ToolCall(call) = &mut message.content[0] {
+            && let ContentBlock::ToolCall(call) = &mut std::sync::Arc::make_mut(message).content[0] {
             call.arguments = serde_json::from_value(json!({"path":17,"file_path":"must-not-use"})).unwrap();
         }
     }

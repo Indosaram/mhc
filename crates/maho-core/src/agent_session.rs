@@ -4578,7 +4578,7 @@ impl AgentSession {
                             AgentMessage::Llm(maho_ai::types::Message::Assistant(original)),
                             AgentMessage::Llm(maho_ai::types::Message::Assistant(rewritten)),
                         ) if original.error_cause.is_some() => {
-                            rewritten.error_cause = original.error_cause;
+                            std::sync::Arc::make_mut(rewritten).error_cause = original.error_cause;
                         }
                         (
                             AgentMessage::Llm(maho_ai::types::Message::ToolResult(original)),
@@ -8601,7 +8601,7 @@ impl AgentSession {
         if let AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) =
             &mut messages[index]
         {
-            assistant.error_message = Some(hinted.clone());
+            std::sync::Arc::make_mut(assistant).error_message = Some(hinted.clone());
         }
         self.agent.set_messages(messages);
         self.state().message_revision += 1;
@@ -11187,7 +11187,7 @@ impl AgentSession {
             entry_id,
             options,
             Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(
-                Box::new(replacement),
+                std::sync::Arc::new(replacement),
             ))),
         )
         .await
@@ -17967,7 +17967,7 @@ impl AgentSession {
             message: AgentMessage::Llm(maho_ai::types::Message::Assistant(message)),
         }) = &mut event
         {
-            **message = crate::retry_fallback::usage_limit::describe_usage_limit_message(message);
+            *message = std::sync::Arc::new(crate::retry_fallback::usage_limit::describe_usage_limit_message(message));
         }
         self.log_session_event(&event);
         // PERF-DIVERGENCE(senpi agent-session.ts): upstream iterates its listener array; the port cloned the whole listener Vec per event, so we snapshot one copy-on-write Arc instead. Snapshot-at-emit semantics are unchanged.
@@ -20333,7 +20333,7 @@ mod tests {
             maho_ai::providers::faux::faux_assistant_message("", Default::default());
         assistant.stop_reason = StopReason::Error;
         assistant.error_cause = Some(cause);
-        let original = AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(assistant)));
+        let original = AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(assistant)));
         session.agent.set_messages(vec![original.clone()]);
         let mut extension = maho_ext_api::LoadedExtension::new(
             "<inline:advice>",
@@ -20350,6 +20350,7 @@ mod tests {
                 if let AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant)) =
                     &mut message
                 {
+                    let assistant = std::sync::Arc::make_mut(assistant);
                     assistant.error_message = Some("replacement advice".into());
                     assistant.error_cause = None;
                 }
@@ -25025,14 +25026,14 @@ mod tests {
             timestamp: 1,
         };
         let asst_msg =
-            AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(asst.clone())));
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(asst.clone())));
         assert_eq!(
             message_fingerprint(Some(&asst_msg)),
             "7:10:20:30:15:5:false"
         );
 
         asst.usage.context_usage = Some(None);
-        let asst_null = AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(asst)));
+        let asst_null = AgentMessage::Llm(maho_ai::types::Message::Assistant(std::sync::Arc::new(asst)));
         assert_eq!(
             message_fingerprint(Some(&asst_null)),
             "7:10:20:30:undefined:undefined:true"
@@ -31856,7 +31857,7 @@ mod tests {
         pending_assistant.usage.total_tokens = 200_000;
         pending_assistant.stop_reason = StopReason::Error;
         pending_assistant.error_message = Some("prompt is too long".into());
-        let pending_assistant = AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(
+        let pending_assistant = AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(
             pending_assistant,
         )));
         session
@@ -32048,7 +32049,7 @@ mod tests {
         );
         let mut event = Box::pin(session.process_agent_event(
             maho_agent::types::AgentEvent::MessageEnd {
-                message: AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(
+                message: AgentMessage::from(maho_ai::types::Message::Assistant(std::sync::Arc::new(
                     assistant,
                 ))),
             },
