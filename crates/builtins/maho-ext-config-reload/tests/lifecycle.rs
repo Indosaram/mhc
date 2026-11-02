@@ -7,6 +7,12 @@ use maho_ext_api::{
 use maho_ext_config_reload::watch_engine::WatchClock;
 use std::{path::Path, sync::Arc};
 
+/// The reload handoff lives in a process-wide registry keyed `"classic"` for every session without a
+/// provider scope, and a quitting session deletes that key. Tests in this binary share one process,
+/// so any test whose session quits or reloads under that key holds this lock for its whole run; a
+/// parallel quit would otherwise drop another test's in-flight handoff and its reload never lands.
+static CLASSIC_HANDOFF: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct RetryClock {
     now: Arc<std::sync::Mutex<tokio::time::Instant>>,
     armed: tokio::sync::mpsc::UnboundedSender<(tokio::time::Instant, tokio::time::Instant)>,
@@ -272,6 +278,7 @@ fn native_registration_replay_and_live_publication_use_consumer_admission() {
 }
 #[tokio::test]
 async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -348,6 +355,7 @@ async fn compacting_change_retries_and_completes_real_session_reload() {
 
 #[tokio::test]
 async fn external_handoff_change_is_rejected_under_its_registration_id() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_core::{
         model_runtime::{CreateModelRuntimeOptions, ModelRuntime},
         sdk::{CreateAgentSessionOptions, create_agent_session},
@@ -566,6 +574,7 @@ async fn real_reload(veto_once: bool) {
 }
 
 async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_core::{
         model_runtime::{CreateModelRuntimeOptions, ModelRuntime},
         sdk::{CreateAgentSessionOptions, create_agent_session},
@@ -788,6 +797,7 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
 
 #[tokio::test]
 async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
@@ -863,6 +873,7 @@ async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery()
 
 #[tokio::test]
 async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     // Given
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
@@ -954,6 +965,7 @@ async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
 
 #[tokio::test]
 async fn watcher_awaits_registered_validator_and_cancellation_discards_its_result() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let external = tempfile::tempdir().unwrap();
@@ -1305,6 +1317,7 @@ fn registers_native_start_idle_and_shutdown_hooks() {
 }
 #[tokio::test]
 async fn missing_prompt_directory_rearms_before_observing_its_files() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
@@ -1375,6 +1388,7 @@ async fn missing_prompt_directory_rearms_before_observing_its_files() {
 /// config file in it still must, naming only that file, and so must that `.omo` being removed.
 #[tokio::test]
 async fn omo_directory_creation_is_not_a_config_change_but_its_config_file_is() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
