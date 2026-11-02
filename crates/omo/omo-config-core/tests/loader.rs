@@ -1180,6 +1180,8 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
             "ttl_ms": 86_400_000,
             "wait": { "default_ms": 60_000, "max_ms": 600_000, "min_ms": 5_000 },
             "warnings": { "unavailable_categories": true },
+            "completion_transport_limit": 8000,
+            "completion_batch_limit": 24000,
         },
         "teams": {},
     });

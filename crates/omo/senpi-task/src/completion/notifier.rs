@@ -178,6 +178,7 @@ impl Inner {
             BuildDetailsOptions {
                 tokens,
                 state_dir: self.deps.state_dir.as_deref(),
+                completion_transport_limit: self.deps.completion_transport_limit,
             },
         )
     }

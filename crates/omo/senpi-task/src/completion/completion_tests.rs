@@ -631,6 +631,80 @@ fn explicit_tokens_win_over_run_stats() {
     assert_eq!(details.tokens, Some(42));
 }
 
+#[test]
+fn completion_result_capped_to_config_limit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let result = "x".repeat(50_000);
+    let details = build_completion_details(
+        &TaskRecord {
+            final_response: Some(result.clone()),
+            ..completed_record()
+        },
+        BuildDetailsOptions {
+            tokens: None,
+            state_dir: Some(dir.path()),
+            completion_transport_limit: Some(8000),
+        },
+    );
+    assert_eq!(details.final_response.encode_utf16().count(), 8_000);
+    assert_eq!(details.final_response, "x".repeat(8_000));
+    let file = details.final_response_file.expect("spill file");
+    assert!(file.starts_with("local://"));
+    let spill_path = &file["local://".len()..];
+    assert_eq!(std::fs::read_to_string(spill_path).expect("spill"), result);
+
+    let details_4000 = build_completion_details(
+        &TaskRecord {
+            final_response: Some(result.clone()),
+            ..completed_record()
+        },
+        BuildDetailsOptions {
+            tokens: None,
+            state_dir: Some(dir.path()),
+            completion_transport_limit: Some(4000),
+        },
+    );
+    assert_eq!(details_4000.final_response.encode_utf16().count(), 4_000);
+
+    let details_500 = build_completion_details(
+        &TaskRecord {
+            final_response: Some(result),
+            ..completed_record()
+        },
+        BuildDetailsOptions {
+            tokens: None,
+            state_dir: Some(dir.path()),
+            completion_transport_limit: Some(500),
+        },
+    );
+    assert_eq!(details_500.final_response.encode_utf16().count(), 1_000);
+}
+
+#[test]
+fn utf16_boundary_cut() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut text = "a".repeat(7999);
+    text.push('🦀');
+    text.push_str(&"b".repeat(100));
+
+    let details = build_completion_details(
+        &TaskRecord {
+            final_response: Some(text.clone()),
+            ..completed_record()
+        },
+        BuildDetailsOptions {
+            tokens: None,
+            state_dir: Some(dir.path()),
+            completion_transport_limit: Some(8000),
+        },
+    );
+    assert_eq!(details.final_response, "a".repeat(7999));
+    assert_eq!(details.final_response.encode_utf16().count(), 7999);
+    let file = details.final_response_file.expect("spill file");
+    let spill_path = &file["local://".len()..];
+    assert_eq!(std::fs::read_to_string(spill_path).expect("spill"), text);
+}
+
 // ---- completion/notifier.test.ts ------------------------------------------------------------------
 
 #[test]
