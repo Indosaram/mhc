@@ -696,6 +696,27 @@ mod signature_cases {
         assert_eq!(verify_archive(Some(&key), &path, Some(&sign(b"archive bytes")), SIGNED, false), Ok(()));
     }
 
+    // `minisign -S -l` with the fixture key over b"archive bytes"; windows-x86_64 of v2026.11.01 shipped this mode.
+    const LEGACY_SIGNATURE: &str = "untrusted comment: signature from minisign secret key\n\
+        RWRI29mJoYqJ9pqZDXNIbFIn2Dih4i2HBDAL7wv5QLZi30sgf44TkgmEzRZFp2e5yHFtukDXfTWrGSl5JFnHocPUH/c+Nb427Ac=\n\
+        trusted comment: mhc test legacy\n\
+        9VhAr5CEzGNxtWF/EiWQNdX7m8OLtiSzczg938dyYF9b/Vl+wRmnpbuJtUCskMNM3B1tTeDPMT8/8+vyvaT7AA==\n";
+
+    #[test]
+    fn legacy_signature_is_accepted() {
+        let (_dir, path) = archive(b"archive bytes");
+        let key = pubkey();
+        assert_eq!(verify_archive(Some(&key), &path, Some(LEGACY_SIGNATURE), SIGNED, false), Ok(()));
+    }
+
+    #[test]
+    fn tampered_archive_with_legacy_signature_is_rejected() {
+        let (_dir, path) = archive(b"archive bytez");
+        let key = pubkey();
+        let result = verify_archive(Some(&key), &path, Some(LEGACY_SIGNATURE), SIGNED, true);
+        assert!(matches!(result, Err(SignatureError::Invalid(_))), "{result:?}");
+    }
+
     #[test]
     fn tampered_archive_is_rejected() {
         let signature = sign(b"archive bytes");
