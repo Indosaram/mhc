@@ -43,6 +43,17 @@ fn a_claim_before_any_check_is_unsupported() {
 }
 
 #[test]
+fn hedged_claim_without_check_is_unknown() {
+    let verdict = verdict_for(
+        edit_result("e1", "src/a.ts"),
+        "I think tests should pass.",
+        Vec::new(),
+    );
+    assert_eq!(verdict.status, ClaimStatus::Unknown);
+    assert_eq!(verdict.reason, None);
+}
+
+#[test]
 fn a_claim_after_a_failed_check_is_unsupported() {
     let before = [edit_result("e1", "src/a.ts"), failing_test("t1")].concat();
     let verdict = verdict_for(before, "All tests pass.", Vec::new());

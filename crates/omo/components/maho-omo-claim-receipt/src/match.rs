@@ -1,6 +1,6 @@
 //! Port of `claim-receipt/match.ts`: match each claim to the evidence visible when it was made.
 
-use crate::classify::{Claim, ClaimKind};
+use crate::classify::{Claim, ClaimKind, ClaimStrength};
 use crate::evidence::{CheckEvidence, CheckKind, CheckOutcome, EditEvidence, Timeline};
 
 /// What the answer's claim turned out to be.
@@ -160,7 +160,7 @@ fn judge(claim: &Claim, checks: &[CheckEvidence], edits: &[EditEvidence]) -> Cla
         // observed result, is flagged. A lookup (reading or searching a file) is never a check run:
         // it proves only that something exists.
         let ran_any_check = checks.iter().any(|check| check.kind != CheckKind::Lookup);
-        if claim.reported || ran_any_check {
+        if claim.reported || ran_any_check || claim.strength == ClaimStrength::Hedged {
             return base;
         }
         return ClaimVerdict {
