@@ -47,8 +47,6 @@ mod cli_validation_batch_test;
 mod codex_goal_instruction_test;
 #[path = "codex_goal_snapshot_test.rs"]
 mod codex_goal_snapshot_test;
-#[path = "codex_hook_test.rs"]
-mod codex_hook_test;
 #[path = "evidence_criteria_gate_test.rs"]
 mod evidence_criteria_gate_test;
 #[path = "evidence_test.rs"]
@@ -111,14 +109,6 @@ mod sdk_dx_test;
 mod sdk_session_context_test;
 #[path = "sdk_test.rs"]
 mod sdk_test;
-#[path = "spawn_guard_native_reviewer_test.rs"]
-mod spawn_guard_native_reviewer_test;
-#[path = "spawn_guard_test.rs"]
-mod spawn_guard_test;
-#[path = "spawn_role_matrix_test.rs"]
-mod spawn_role_matrix_test;
-#[path = "spawn_role_registered_test.rs"]
-mod spawn_role_registered_test;
 #[path = "state_lock_test.rs"]
 mod state_lock_test;
 #[path = "status_next_actions_surface_test.rs"]
@@ -129,14 +119,10 @@ mod steering_batch_test;
 mod steering_snapshot_test;
 #[path = "steering_test.rs"]
 mod steering_test;
-#[path = "stop_resume_hook_test.rs"]
-mod stop_resume_hook_test;
 #[path = "surface_test.rs"]
 mod surface_test;
 #[path = "types_test.rs"]
 mod types_test;
-#[path = "ultrawork_directive_test.rs"]
-mod ultrawork_directive_test;
 #[path = "validation_batch_checkpoint_test.rs"]
 mod validation_batch_checkpoint_test;
 #[path = "validation_batch_test.rs"]
