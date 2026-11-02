@@ -53,3 +53,9 @@ impl TaskSettings {
         }
     }
 }
+
+impl Default for TaskSettings {
+    fn default() -> Self {
+        Self::from_resolved(&serde_json::json!({}))
+    }
+}

@@ -1203,6 +1203,17 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "default": 262144
+            },
+            "completion_transport_limit": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 64000,
+              "default": 8000
+            },
+            "completion_batch_limit": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 24000
             }
           },
           "required": [],
