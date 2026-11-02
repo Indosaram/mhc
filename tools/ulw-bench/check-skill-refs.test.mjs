@@ -50,6 +50,40 @@ describe("check-skill-refs rules", () => {
 		assert.equal(findings.length, 0)
 	})
 
+	const visualQaContext = {
+		filePath: join(repoRoot, "assets/omo-latest/skills/visual-qa/SKILL.md"),
+		repoRoot,
+		skillDir: join(repoRoot, "assets/omo-latest/skills/visual-qa"),
+	}
+
+	it("rule (b): accepts sibling-qualified skill path", () => {
+		const f1 = checkLine("documented in `frontend/references/perfection/detect.md`", 1, visualQaContext)
+		assert.deepEqual(f1, [])
+		const f2 = checkLine("bun <frontend skill dir>/scripts/detect/cli.ts --json <url>", 2, visualQaContext)
+		assert.deepEqual(f2, [])
+	})
+
+	it("rule (b): accepts path that exists in a sibling skill named on the line", () => {
+		const findings = checkLine("the `browser` skill's `references/owned-engine/README.md` covers it", 1, visualQaContext)
+		assert.deepEqual(findings, [])
+	})
+
+	it("rule (b): accepts sibling path when the sibling is named in the enclosing paragraph", () => {
+		const ctx = { ...visualQaContext, paragraph: "(staged in the `browser` skill; load it through\nthat skill's `scripts/omowright.mjs` from js eval)" }
+		assert.deepEqual(checkLine("that skill's `scripts/omowright.mjs` from js eval)", 2, ctx), [])
+		const missing = checkLine("that skill's `scripts/nonexistent_sibling_tool.mjs`", 2, ctx)
+		assert.equal(missing.length, 2)
+	})
+
+	it("rule (b): still flags a path missing in both current and named sibling skill", () => {
+		const f1 = checkLine("the `browser` skill's `references/nonexistent_sibling_doc.md`", 1, visualQaContext)
+		assert.equal(f1.length, 1)
+		assert.equal(f1[0].rule, "b")
+		const f2 = checkLine("see `frontend/references/perfection/nonexistent.md`", 2, visualQaContext)
+		assert.equal(f2.length, 1)
+		assert.equal(f2[0].rule, "b")
+	})
+
 	const researchContext = {
 		filePath: join(repoRoot, "assets/omo-latest/skills/ulw-research/SKILL.md"),
 		repoRoot,
