@@ -224,8 +224,9 @@ where
 
         let commit_msg = format!("merge(reflection): {}", input.summary);
         let trailer_msg = format!("Omo-Run: {}", input.run_id);
-        // `worktree-integration.ts`: the merge commit runs the memory hooks like any memory
-        // commit, so it gets the commit budget and must not end in auto maintenance.
+        // SAFETY-DIVERGENCE(reflection/worktree-integration.ts): upstream disables auto
+        // maintenance on this merge but keeps its 30s budget; the merge commit runs the memory
+        // hooks like any memory commit, so this port gives it the commit budget as well.
         let mut merge_argv: Vec<&str> = NO_AUTO_MAINTENANCE.to_vec();
         merge_argv.extend([
             "merge",
