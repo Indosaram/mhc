@@ -162,3 +162,16 @@ async fn a_gate_reviewer_spawn_carries_the_flags_once_and_other_spawns_are_untou
         .await;
     assert_eq!(later["prompt"], json!("Again."));
 }
+
+#[tokio::test]
+async fn no_claims_skips_branch_snapshot() {
+    let harness = Harness::new(&[], true);
+    harness.input(InputSource::Interactive).await;
+    let entries = vec![user_input("hi"), answer("Here is the plain summary you asked for.")];
+    let result = harness.finish(entries).await;
+    assert!(result.is_none());
+    assert_eq!(
+        harness.branch.branch_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}

@@ -119,7 +119,7 @@ static CLAIM_RULES: &[ClaimRule] = &[
     ClaimRule {
         id: "test.ko-passed",
         kind: ClaimKind::Test,
-        pattern: r"통과(?:했|합니다|해요|함|됐|된다|될|할)",
+        pattern: r"통과(?:했|합니다|해요|함|됐|된다)",
     },
     ClaimRule {
         id: "test.ko-count",
@@ -219,7 +219,7 @@ static HEDGE: LazyLock<FancyRegex> = LazyLock::new(|| {
     pattern(r"(?i)\b(?:should|would|ought to|expected to|likely|probably|presumably|i think|i believe|i assume|might)\b|거예요|겁니다|거야|것\s*같|거\s*같|듯|아마|예상|(?:할|될|일)\s*(?:거|것)")
 });
 static HANDOFF_LINE: LazyLock<FancyRegex> =
-    LazyLock::new(|| pattern(r"(?i)^(?:Ask|Now|Next|wanted):"));
+    LazyLock::new(|| pattern(r"(?i)^(?:Ask|Now|Next|wanted|For you):"));
 static CONDITIONAL: LazyLock<FancyRegex> = LazyLock::new(|| {
     pattern(r"(?i)\b(?:if|once|when|whenever|whether|until|unless|as soon as|as each)\b|(?:하|되|으|이|라)면(?=[\s,.]|$)|(?:할|될)\s*때")
 });
@@ -357,9 +357,112 @@ pub struct Span {
     pub end: usize,
 }
 
+fn is_blank_line(line: &str) -> bool {
+    line.chars().all(|c| c.is_whitespace() || c == '\0')
+}
+
+fn is_heading_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(|c: char| c.is_whitespace() || c == '\0');
+    if trimmed.starts_with('#') {
+        let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&hashes) {
+            let rest = &trimmed[hashes..];
+            return rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '\0');
+        }
+    }
+    false
+}
+
+fn is_list_marker_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(|c: char| c.is_whitespace() || c == '\0');
+    if let Some(rest) = trimmed
+        .strip_prefix('-')
+        .or_else(|| trimmed.strip_prefix('*'))
+        .or_else(|| trimmed.strip_prefix('+'))
+        .or_else(|| trimmed.strip_prefix('•'))
+        .or_else(|| trimmed.strip_prefix('\u{2022}'))
+        .or_else(|| trimmed.strip_prefix('✅'))
+        .or_else(|| trimmed.strip_prefix('✔'))
+        .or_else(|| trimmed.strip_prefix('☑'))
+        .or_else(|| trimmed.strip_prefix("\u{2705}"))
+        .or_else(|| trimmed.strip_prefix("\u{2714}"))
+        .or_else(|| trimmed.strip_prefix("\u{2611}"))
+    {
+        let rest = rest.strip_prefix('\u{fe0f}').unwrap_or(rest);
+        return rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '\0');
+    }
+    let digits = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 {
+        let after_digits = &trimmed[digits..];
+        if let Some(rest) = after_digits
+            .strip_prefix('.')
+            .or_else(|| after_digits.strip_prefix(')'))
+        {
+            return rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '\0');
+        }
+    }
+    false
+}
+
+fn is_handoff_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(|c: char| c.is_whitespace() || c == '\0');
+    HANDOFF_LINE.is_match(trimmed).unwrap_or(false)
+}
+
+#[must_use]
+pub fn join_soft_newlines(text: &str) -> String {
+    let mut bytes = text.as_bytes().to_vec();
+    let len = bytes.len();
+    let mut prev_line_start = 0usize;
+
+    for i in 0..len {
+        if bytes[i] == b'\n' {
+            let line_end = if i > 0 && bytes[i - 1] == b'\r' {
+                i - 1
+            } else {
+                i
+            };
+            let prev_line = &text[prev_line_start..line_end];
+            let after = &text[i + 1..];
+            let next_line_end = after
+                .bytes()
+                .position(|b| b == b'\n')
+                .map_or(after.len(), |pos| {
+                    if pos > 0 && after.as_bytes()[pos - 1] == b'\r' {
+                        pos - 1
+                    } else {
+                        pos
+                    }
+                });
+            let next_line = &after[..next_line_end];
+
+            let is_single_nl = !(i > 0 && bytes[i - 1] == b'\n')
+                && !(i > 1 && bytes[i - 1] == b'\r' && bytes[i - 2] == b'\n');
+
+            if is_single_nl
+                && !is_blank_line(prev_line)
+                && !is_heading_line(prev_line)
+                && !is_blank_line(next_line)
+                && !is_heading_line(next_line)
+                && !is_list_marker_line(next_line)
+                && !is_handoff_line(next_line)
+            {
+                bytes[i] = b' ';
+                if i > 0 && bytes[i - 1] == b'\r' {
+                    bytes[i - 1] = b' ';
+                }
+            }
+            prev_line_start = i + 1;
+        }
+    }
+
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_owned())
+}
+
 #[must_use]
 pub fn split_sentences(masked: &str) -> Vec<Span> {
-    let characters: Vec<(usize, char)> = masked.char_indices().collect();
+    let joined = join_soft_newlines(masked);
+    let characters: Vec<(usize, char)> = joined.char_indices().collect();
     let mut spans: Vec<Span> = Vec::new();
     let mut start = 0usize;
     for (position, (index, character)) in characters.iter().enumerate() {
@@ -374,15 +477,15 @@ pub fn split_sentences(masked: &str) -> Vec<Span> {
         } else {
             *index
         };
-        if has_visible(&masked[start..end]) {
+        if has_visible(&joined[start..end]) {
             spans.push(Span { start, end });
         }
         start = end;
     }
-    if has_visible(&masked[start..]) {
+    if has_visible(&joined[start..]) {
         spans.push(Span {
             start,
-            end: masked.len(),
+            end: joined.len(),
         });
     }
     spans
@@ -458,10 +561,11 @@ fn is_admission(text: &str) -> bool {
 #[must_use]
 pub fn classify_claims(text: &str) -> Vec<Claim> {
     let masked = mask_quoted_prose(text);
-    let spans = split_sentences(&masked);
+    let joined = join_soft_newlines(&masked);
+    let spans = split_sentences(&joined);
     let mut claims: Vec<Claim> = Vec::new();
     for (position, span) in spans.iter().enumerate() {
-        let Some(sentence) = masked.get(span.start..span.end) else {
+        let Some(sentence) = joined.get(span.start..span.end) else {
             continue;
         };
         let Some(found) = find_claim(sentence) else {
@@ -476,7 +580,7 @@ pub fn classify_claims(text: &str) -> Vec<Claim> {
             .get(from..to)
             .unwrap_or(&[])
             .iter()
-            .map(|neighbour| masked.get(neighbour.start..neighbour.end).unwrap_or(""))
+            .map(|neighbour| joined.get(neighbour.start..neighbour.end).unwrap_or(""))
             .collect::<Vec<_>>()
             .join(" ");
         let admitted = is_admission(&neighbours);

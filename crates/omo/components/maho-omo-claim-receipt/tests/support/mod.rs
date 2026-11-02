@@ -138,16 +138,24 @@ pub fn failing_test(call_id: &str) -> Vec<Value> {
 
 /// A branch that the harness can rewrite between dispatches.
 #[derive(Clone)]
-pub struct Branch(Arc<Mutex<Vec<Value>>>);
+pub struct Branch {
+    entries: Arc<Mutex<Vec<Value>>>,
+    pub branch_calls: Arc<AtomicUsize>,
+    pub tail_calls: Arc<AtomicUsize>,
+}
 
 impl Branch {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(Vec::new())))
+        Self {
+            entries: Arc::new(Mutex::new(Vec::new())),
+            branch_calls: Arc::new(AtomicUsize::new(0)),
+            tail_calls: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub fn set(&self, entries: Vec<Value>) {
         *self
-            .0
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = entries;
     }
@@ -180,9 +188,10 @@ impl SessionManager for TestSession {
     }
 
     fn get_branch(&self) -> Vec<SessionEntry> {
+        self.branch.branch_calls.fetch_add(1, Ordering::SeqCst);
         let entries = self
             .branch
-            .0
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
@@ -199,8 +208,42 @@ impl SessionManager for TestSession {
             .collect()
     }
 
-    fn get_leaf_id(&self) -> Option<String> {
-        None
+    fn get_branch_tail(
+        &self,
+        min_entries: usize,
+        satisfied: &mut dyn FnMut(&JsonValue) -> bool,
+    ) -> (usize, Vec<SessionEntry>) {
+        self.branch.tail_calls.fetch_add(1, Ordering::SeqCst);
+        let data = self
+            .branch
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let len = data.len();
+        let mut start = len;
+        let mut done = false;
+        while start > 0 && (len - start < min_entries || !done) {
+            start -= 1;
+            if !done {
+                done = satisfied(&data[start]);
+            }
+        }
+        let tail = data[start..]
+            .iter()
+            .enumerate()
+            .map(|(offset, value)| {
+                let index = start + offset;
+                SessionEntry {
+                    id: value["id"].as_str().map_or_else(|| format!("id{index}"), str::to_owned),
+                    parent_id: None,
+                    timestamp: "2026-01-01T00:00:00.000Z".to_owned(),
+                    kind: value["type"].as_str().unwrap_or("message").to_owned(),
+                    data: value.clone(),
+                }
+            })
+            .collect();
+        (len, tail)
     }
 
     fn get_session_name(&self) -> Option<String> {
