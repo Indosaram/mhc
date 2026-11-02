@@ -7,6 +7,12 @@ use maho_ext_api::{
 use maho_ext_config_reload::watch_engine::WatchClock;
 use std::{path::Path, sync::Arc};
 
+/// The reload handoff lives in a process-wide registry keyed `"classic"` for every session without a
+/// provider scope, and a quitting session deletes that key. Tests in this binary share one process,
+/// so any test whose session quits or reloads under that key holds this lock for its whole run; a
+/// parallel quit would otherwise drop another test's in-flight handoff and its reload never lands.
+static CLASSIC_HANDOFF: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct RetryClock {
     now: Arc<std::sync::Mutex<tokio::time::Instant>>,
     armed: tokio::sync::mpsc::UnboundedSender<(tokio::time::Instant, tokio::time::Instant)>,
@@ -272,6 +278,7 @@ fn native_registration_replay_and_live_publication_use_consumer_admission() {
 }
 #[tokio::test]
 async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -348,6 +355,7 @@ async fn compacting_change_retries_and_completes_real_session_reload() {
 
 #[tokio::test]
 async fn external_handoff_change_is_rejected_under_its_registration_id() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_core::{
         model_runtime::{CreateModelRuntimeOptions, ModelRuntime},
         sdk::{CreateAgentSessionOptions, create_agent_session},
@@ -566,6 +574,7 @@ async fn real_reload(veto_once: bool) {
 }
 
 async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_core::{
         model_runtime::{CreateModelRuntimeOptions, ModelRuntime},
         sdk::{CreateAgentSessionOptions, create_agent_session},
@@ -788,6 +797,7 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
 
 #[tokio::test]
 async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
@@ -863,6 +873,7 @@ async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery()
 
 #[tokio::test]
 async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     // Given
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
@@ -954,6 +965,7 @@ async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
 
 #[tokio::test]
 async fn watcher_awaits_registered_validator_and_cancellation_discards_its_result() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let external = tempfile::tempdir().unwrap();
@@ -1305,6 +1317,7 @@ fn registers_native_start_idle_and_shutdown_hooks() {
 }
 #[tokio::test]
 async fn missing_prompt_directory_rearms_before_observing_its_files() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
     use maho_ext_config_reload::protocol::*;
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
@@ -1359,6 +1372,107 @@ async fn missing_prompt_directory_rearms_before_observing_its_files() {
         .unwrap()
         .unwrap();
     assert_eq!(change["paths"], serde_json::json!([path]));
+    let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
+        reason: SessionReason::Quit,
+        target_session_file: None,
+        signal: None,
+    });
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx)
+        .await
+        .unwrap();
+}
+
+/// The omo registration watches every ancestor for `/.omo` so a config file appearing there is
+/// discovered. The session's task store creating `<project>/.omo/senpi-task` on a fresh project's
+/// first task changes no config file and must not reload the session; a `.omo` arriving with a
+/// config file in it still must, naming only that file, and so must that `.omo` being removed.
+#[tokio::test]
+async fn omo_directory_creation_is_not_a_config_change_but_its_config_file_is() {
+    let _handoff = CLASSIC_HANDOFF.lock().await;
+    use maho_ext_config_reload::protocol::*;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let events = EventBus::default();
+    let (ready_sender, mut ready) = tokio::sync::mpsc::unbounded_channel();
+    let (change_sender, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    let _ready = events.on(
+        CONFIG_WATCH_READY,
+        Arc::new(move |value| {
+            ready_sender.send(value.clone()).unwrap();
+        }),
+    );
+    let _changes = events.on(
+        CONFIG_WATCH_CHANGED,
+        Arc::new(move |value| {
+            change_sender.send(value.clone()).unwrap();
+        }),
+    );
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        events.clone(),
+        ExtensionRuntime::default(),
+    );
+    maho_ext_config_reload::ConfigReload.register(&mut api);
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    ctx.is_idle_fn = Arc::new(|| false);
+    let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        reason: SessionReason::Startup,
+        initial_model_provenance: None,
+        previous_session_file: None,
+        attended: None,
+    });
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx)
+        .await
+        .unwrap();
+    ready.try_recv().unwrap();
+    // The ancestor targets the omo config watcher registers while neither directory has a `.omo`.
+    let ancestor = |path: &Path| maho_ext_api::ConfigWatchTargetSpec {
+        path: path.into(),
+        kind: maho_ext_api::ConfigWatchTargetKind::Dir,
+        filter_globs: vec!["/.omo".into(), "/.omo/omo.jsonc".into(), "/.omo/omo.json".into()],
+    };
+    events.publish_config_watch(
+        "omo",
+        maho_ext_api::RegisteredConfigWatch {
+            id: "omo".into(),
+            display_name: ".omo config".into(),
+            targets: vec![ancestor(&project), ancestor(&home)],
+            validate: Arc::new(|_| Box::pin(async { Ok(maho_ext_api::ConfigWatchValidation::Ok) })),
+        },
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // When: the task store creates the project's `.omo`, then a user `.omo` arrives holding a config.
+    std::fs::create_dir_all(project.join(".omo/senpi-task")).unwrap();
+    let staged = tempfile::tempdir_in(root.path()).unwrap();
+    std::fs::write(staged.path().join("omo.jsonc"), "{}").unwrap();
+    let user = home.join(".omo");
+    std::fs::rename(staged.path(), &user).unwrap();
+    // Then: the only change delivered is the config file; neither `.omo` directory counts.
+    let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        change,
+        serde_json::json!({"registrationId":"omo","paths":[user.join("omo.jsonc")],"deferred":true})
+    );
+    // When: the whole user `.omo` is removed. Then: the removal of its config file is delivered.
+    std::fs::remove_dir_all(&user).unwrap();
+    let removal = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        removal,
+        serde_json::json!({"registrationId":"omo","paths":[user.join("omo.jsonc")],"deferred":true})
+    );
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent {
         reason: SessionReason::Quit,
         target_session_file: None,
