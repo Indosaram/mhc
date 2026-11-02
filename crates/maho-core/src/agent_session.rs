@@ -3745,6 +3745,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs once inside the idle release, after it read the runtime messages and before it commits
+    /// the tokenized copy, so a test can force a park into that window.
+    static IDLE_RELEASE_BEFORE_COMMIT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 type ToolChildHostTargets = Arc<
     Mutex<
         Vec<(
@@ -13442,6 +13450,10 @@ impl AgentSession {
             })
             .collect();
         store.spill_resident();
+        #[cfg(test)]
+        if let Some(hook) = IDLE_RELEASE_BEFORE_COMMIT.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
         self.agent.set_messages(messages);
         self.runtime_messages_tokenized
             .store(true, Ordering::SeqCst);
@@ -22644,6 +22656,58 @@ mod tests {
         assert_eq!(
             session.get_last_assistant_text().as_deref(),
             Some(large_reply.as_str())
+        );
+        let rehydrated = session.messages();
+        assert_eq!(rehydrated.len(), 2);
+        assert_eq!(user_message_text(&rehydrated[0]), large_user);
+    }
+
+    #[test]
+    fn idle_release_never_restores_messages_into_a_child_parked_mid_release() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let mut manager = SessionManager::create("/workspace", Some(&dir), None);
+        let large_user = "u".repeat(48 * 1024);
+        let large_reply = "a".repeat(24 * 1024);
+        manager.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": large_user }],
+            "timestamp": 1
+        }));
+        manager.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": large_reply }],
+            "api": "faux",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": maho_ai::types::Usage::default(),
+            "stopReason": "stop",
+            "timestamp": 2
+        }));
+        let session = test_session_with_manager(manager);
+        session.rebuild_session_context().expect("rebuild context");
+        assert_eq!(session.agent.state().messages().len(), 2);
+
+        // Force a park into the window between the release's transcript read and its commit.
+        let parked_mid_release = std::rc::Rc::new(std::cell::Cell::new(false));
+        let parker = session.clone();
+        let parked_flag = parked_mid_release.clone();
+        IDLE_RELEASE_BEFORE_COMMIT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                parker.park_idle_child_memory();
+                parked_flag.set(parker.agent.state().messages().is_empty());
+            }));
+        });
+
+        session.release_idle_runtime_messages();
+
+        assert!(
+            parked_mid_release.get(),
+            "the park must run inside the release window and clear the runtime messages"
+        );
+        assert!(
+            session.agent.state().messages().is_empty(),
+            "a release that read the transcript before a park must not restore it into the parked child"
         );
         let rehydrated = session.messages();
         assert_eq!(rehydrated.len(), 2);
