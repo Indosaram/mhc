@@ -1001,3 +1001,118 @@ async fn shell_tool_result_activates_the_footer_immediately()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn code_only_turn_continues() {
+    let (api, actions, _) = register_status();
+    end(&api).await;
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "edit".into(),
+        tool_call_id: "id".into(),
+        input: serde_json::json!({}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context())
+        .await
+        .expect("dispatch");
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn read_only_turns_stop_after_two() {
+    let (api, actions, _) = register_status();
+    end(&api).await;
+    end(&api).await;
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn two_idle_turns_stop() {
+    let (api, actions, _) = register_status();
+    end(&api).await;
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+}
+
+#[tokio::test]
+async fn bash_without_loop_dir_skips_status() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = calls.clone();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("loop", "/tmp/nonexistent".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    maho_omo_ulw_loop::index::UlwLoopComponent {
+        logger: None,
+        read_status: Some(Arc::new(move |_| {
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                maho_omo_ulw_loop::omo_command::CommandResult {
+                    code: 0,
+                    stdout: r#"{"ok":true,"plan":{"goals":[]}}"#.into(),
+                }
+            })
+        })),
+    }
+    .register(&mut api);
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+        tool_name: "bash".into(),
+        tool_call_id: "id".into(),
+        input: serde_json::json!({}),
+        content: Vec::new(),
+        details: None,
+        is_error: false,
+        usage: None,
+    });
+    api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context())
+        .await
+        .expect("dispatch");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn status_calls_constant_over_300_unchanged_results() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = calls.clone();
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    maho_omo_ulw_loop::index::UlwLoopComponent {
+        logger: None,
+        read_status: Some(Arc::new(move |_| {
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                maho_omo_ulw_loop::omo_command::CommandResult {
+                    code: 0,
+                    stdout: r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into(),
+                }
+            })
+        })),
+    }
+    .register(&mut api);
+    for _ in 0..300 {
+        let mut event = ExtensionEvent::ToolResult(ToolResultEvent {
+            tool_name: "create_goal".into(),
+            tool_call_id: "id".into(),
+            input: serde_json::json!({}),
+            content: Vec::new(),
+            details: None,
+            is_error: false,
+            usage: None,
+        });
+        api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context())
+            .await
+            .expect("dispatch");
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
