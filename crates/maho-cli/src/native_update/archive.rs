@@ -81,7 +81,8 @@ pub fn extract(archive: &Path, root: &Path, zipped: bool) -> Result<PathBuf, Str
         for index in 0..zip.len() {
             let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
             let is_dir = entry.is_dir();
-            let Some(path) = destination(root, entry.name(), &mut seen, is_dir)? else {
+            let name = entry.name().map_err(|e| e.to_string())?.into_owned();
+            let Some(path) = destination(root, &name, &mut seen, is_dir)? else {
                 continue;
             };
             let mode = entry
