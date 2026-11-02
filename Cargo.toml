@@ -181,6 +181,8 @@ members = [
     "crates/vendor/maho-grep",
     "crates/vendor/maho-pty",
 ]
+# Patched crates.io dependencies; not workspace members, so they keep their upstream lints.
+exclude = ["crates/vendor/portable-pty"]
 
 [workspace.package]
 version = "0.0.0"
@@ -258,3 +260,6 @@ debug = "line-tables-only"
 # at the cost of slower compilation and increased link memory.
 codegen-units = 16
 
+[patch.crates-io]
+# close_random_fds must not allocate between fork and exec (child hung in the allocator on macOS).
+portable-pty = { path = "crates/vendor/portable-pty" }
