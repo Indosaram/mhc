@@ -6,6 +6,8 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 use crate::git::exec::{GitExec, system_git_exec};
+use crate::git::repo::{COMMIT_TIMEOUT_MS, NO_AUTO_MAINTENANCE};
+use crate::git::repo_tests::RecordingExec;
 use crate::git::{GitMemoryRepo, GitMemoryRepoOptions, GitSeedFile, InitializeGitRepoOptions};
 
 use crate::reflection::completion_repair::{
@@ -283,4 +285,29 @@ fn given_a_tip_without_recorded_drops_when_read_back_then_nothing_is_reported() 
         .expect("read trailers");
 
     assert_eq!(read_back, Vec::new());
+}
+
+/// The squash commit is a memory commit: it runs with the commit budget and without auto
+/// maintenance (`repo.ts`), while the reads around it keep the git budget.
+#[test]
+fn given_a_dropped_path_when_squashed_then_the_commit_gets_the_commit_budget_without_auto_maintenance() {
+    let fixture = fixture(&[("reference/keep.md", GOOD), ("reference/leak.md", LEAK)]);
+    write_files(&fixture.dir, &[("reference/keep.md", GOOD.replace("body", "edited body").as_str())]);
+    write_files(&fixture.dir, &[("reference/leak.md", LEAK.replace("leak body", "new leak").as_str())]);
+    let tip = commit_all(fixture.exec.as_ref(), &fixture.dir, "edit both");
+    let dropped = BTreeSet::from(["reference/leak.md".to_string()]);
+    let recording = RecordingExec::system();
+
+    squash_without_paths(recording.as_ref(), &fixture.dir, &fixture.base, &tip, &dropped, &[])
+        .expect("squash");
+
+    let (argv, timeout) = recording.call_with("commit");
+    assert_eq!(&argv[..4], &NO_AUTO_MAINTENANCE.map(str::to_string)[..], "{argv:?}");
+    assert_eq!(
+        &argv[4..],
+        &["-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "--no-verify", "-m", "edit both (kept valid entries)\n"]
+            .map(str::to_string)[..],
+    );
+    assert_eq!(timeout, COMMIT_TIMEOUT_MS, "{argv:?}");
+    assert_eq!(recording.call_with("reset").1, 30_000, "reads keep the git budget");
 }

@@ -443,9 +443,25 @@ fn commit_times_ignore_follow_and_signature_settings() {
 }
 
 /// Records every argv and timeout it runs, then runs the real git.
-struct RecordingExec {
-    inner: Arc<dyn super::exec::GitExec>,
-    calls: std::sync::Mutex<Vec<(Vec<String>, u64)>>,
+pub(crate) struct RecordingExec {
+    pub(crate) inner: Arc<dyn super::exec::GitExec>,
+    pub(crate) calls: std::sync::Mutex<Vec<(Vec<String>, u64)>>,
+}
+
+impl RecordingExec {
+    pub(crate) fn system() -> Arc<Self> {
+        Arc::new(Self { inner: super::exec::system_git_exec(), calls: Default::default() })
+    }
+
+    /// The recorded call whose argv contains `command`, with its timeout.
+    pub(crate) fn call_with(&self, command: &str) -> (Vec<String>, u64) {
+        let calls = self.calls.lock().unwrap();
+        calls
+            .iter()
+            .find(|(argv, _)| argv.iter().any(|arg| arg == command))
+            .cloned()
+            .unwrap_or_else(|| panic!("no git {command} call in {calls:?}"))
+    }
 }
 
 impl super::exec::GitExec for RecordingExec {
