@@ -7,6 +7,7 @@ use omo_config_core::{
     find_project_config_paths_farthest_first, is_omo_telemetry_enabled, load_omo_config,
     merge_omo_config_records, resolve_home_dir, resolve_omo_config_paths, resolve_omo_config_view,
     resolve_omo_profile_name, resolve_user_omo_config_directory, resolve_user_omo_config_path,
+    to_posix_path,
 };
 use serde_json::{Map, Value, json};
 
@@ -697,11 +698,10 @@ fn load_survives_malformed_and_unreadable_configs_with_typed_diagnostics() {
     let project = format!("{home}/project");
     let cwd = format!("{project}/child");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    let unreadable_path = format!("{project}/.omo/omo.jsonc");
-    write_file(
-        &format!("{home}/.omo/omo.jsonc"),
-        r#"{"task":{"default_concurrency":"five"}}"#,
-    );
+    // The loader asks its file system for posix-form paths, so the fake keys are posix form.
+    let unreadable_path = to_posix_path(&format!("{project}/.omo/omo.jsonc"));
+    let user_path = to_posix_path(&format!("{home}/.omo/omo.jsonc"));
+    write_file(&user_path, r#"{"task":{"default_concurrency":"five"}}"#);
     write_file(&unreadable_path, r#"{"task":{"default_concurrency":3}}"#);
 
     let mut file_system = FakeReadFileSystem {
@@ -709,7 +709,7 @@ fn load_survives_malformed_and_unreadable_configs_with_typed_diagnostics() {
         ..FakeReadFileSystem::default()
     };
     file_system.files.insert(
-        format!("{home}/.omo/omo.jsonc"),
+        user_path,
         r#"{"task":{"default_concurrency":"five"}}"#.to_string(),
     );
     file_system.files.insert(
@@ -761,7 +761,7 @@ fn load_reads_the_user_json_and_prefers_jsonc_when_both_exist() {
     });
     assert_eq!(json_only.diagnostics, vec![]);
     assert_eq!(json_only.config["task"]["default_concurrency"], json!(9));
-    assert_eq!(json_only.sources[0].path, json_path);
+    assert_eq!(json_only.sources[0].path, to_posix_path(&json_path));
     assert_eq!(json_only.sources[0].scope, "user");
     assert!(json_only.sources[0].exists && json_only.sources[0].loaded);
 
@@ -785,7 +785,7 @@ fn load_reads_the_user_json_and_prefers_jsonc_when_both_exist() {
     });
     assert_eq!(both.diagnostics, vec![]);
     assert_eq!(both.config["task"]["default_concurrency"], json!(4));
-    assert_eq!(both.sources[0].path, jsonc_path);
+    assert_eq!(both.sources[0].path, to_posix_path(&jsonc_path));
 }
 
 #[test]
@@ -811,7 +811,7 @@ fn load_tolerates_a_schema_key_without_diagnostics() {
     });
 
     assert_eq!(result.diagnostics, vec![]);
-    assert_eq!(result.sources[0].path, user_path);
+    assert_eq!(result.sources[0].path, to_posix_path(&user_path));
     assert_eq!(result.config["task"]["default_concurrency"], json!(3));
     assert_eq!(result.config["$schema"], json!(schema_url));
 }
@@ -845,11 +845,12 @@ fn load_reads_ancestor_project_configs_when_cwd_is_outside_home() {
     });
 
     assert_eq!(result.config["task"]["default_concurrency"], json!(7));
+    let elsewhere_path = to_posix_path(&format!("{root_path}/elsewhere/.omo/omo.jsonc"));
     assert!(
         result
             .sources
             .iter()
-            .any(|source| source.path == format!("{root_path}/elsewhere/.omo/omo.jsonc"))
+            .any(|source| source.path == elsewhere_path)
     );
 }
 
@@ -1538,16 +1539,18 @@ fn prune_fixture() -> (tempfile::TempDir, String, String) {
     (root, home, cwd)
 }
 
+/// Writes the user config under `home` and returns the path the loader reports for it.
 fn write_user_config(home: &str, content: &str) -> String {
     let path = format!("{home}/.omo/omo.json");
     write_file(&path, content);
-    path
+    to_posix_path(&path)
 }
 
+/// Writes the project config under `home` and returns the path the loader reports for it.
 fn write_project_config(home: &str, content: &str) -> String {
     let path = format!("{home}/project/.omo/omo.jsonc");
     write_file(&path, content);
-    path
+    to_posix_path(&path)
 }
 
 fn load_default(home: &str, cwd: &str) -> omo_config_core::LoadOmoConfigResult {
@@ -2200,4 +2203,69 @@ fn retired_section_names_survive_as_nested_application_keys() {
         json!({ "enabled": true })
     );
     assert_eq!(result.config["categories"]["quick"]["tools"]["dori"], json!(true));
+}
+
+/// Runs `work` on its own thread and fails when it has not finished within the bound, so a
+/// non-terminating path walk fails the test instead of hanging the test run.
+#[cfg(windows)]
+fn terminates<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(work()));
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the project config walk must terminate")
+}
+
+// Drive letters are roots only on Windows (`posix_path`); elsewhere `C:` is a plain segment.
+#[cfg(windows)]
+#[test]
+fn resolve_home_dir_keeps_a_windows_drive_home() {
+    let home = terminates(|| resolve_home_dir(&env_of(&[("HOME", r"C:\Users\alice")])));
+    assert_eq!(home, "C:/Users/alice");
+}
+
+#[cfg(windows)]
+#[test]
+fn project_paths_walk_a_windows_drive_path_up_to_the_drive_root() {
+    let (paths, checked) = terminates(|| {
+        let file_system = project_file_system(&["C:"], &[]);
+        let paths = find_project_config_paths_farthest_first(
+            r"C:\work\project",
+            r"C:\Users\alice",
+            &file_system,
+            None,
+        );
+        (paths, file_system.checked.borrow().clone())
+    });
+    assert_eq!(paths, vec![project_config_path("C:")]);
+    // Each visited directory has its `.omo` directory looked up exactly once; a found config
+    // file is looked up twice (existence, then the symlink guard), so count directories.
+    let visited_omo_directories: Vec<String> = checked
+        .into_iter()
+        .filter(|path| path.ends_with("/.omo"))
+        .collect();
+    assert_eq!(
+        visited_omo_directories,
+        vec![
+            "C:/work/project/.omo".to_string(),
+            "C:/work/.omo".to_string(),
+            "C:/.omo".to_string(),
+        ],
+        "the walk visits each ancestor once and stops at the drive root"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn project_paths_stop_at_a_windows_drive_home() {
+    let paths = terminates(|| {
+        let file_system = project_file_system(&["C:/Users/alice", "C:/Users/alice/work"], &[]);
+        find_project_config_paths_farthest_first(
+            r"C:\Users\alice\work\src",
+            r"C:\Users\alice",
+            &file_system,
+            Some(r"C:\Users\alice"),
+        )
+    });
+    assert_eq!(paths, vec![project_config_path("C:/Users/alice/work")]);
 }

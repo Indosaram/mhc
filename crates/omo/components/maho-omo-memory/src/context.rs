@@ -23,6 +23,9 @@ pub struct MemoryIdentityContext {
     pub project_scope: Option<ProjectScope>,
     pub binding: MemorySessionBinding,
     pub ledger: std::sync::Arc<std::sync::Mutex<MemoryPendingLedger>>,
+    /// The bound session is memory-write-denied (see [`crate::write_policy`]): recall stays on and
+    /// every memory mutation route refuses.
+    pub memory_write_denied: bool,
 }
 
 impl MemoryIdentityContext {
@@ -30,7 +33,12 @@ impl MemoryIdentityContext {
     /// the RPC snapshot share; clones of this context share it too.
     pub fn new(identity: String, identity_paths: MemoryIdentityPaths, binding: MemorySessionBinding) -> Self {
         let durable_root=identity_paths.root.clone();
-        Self { identity, identity_paths, durable_root, project_scope: None, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())) }
+        Self { identity, identity_paths, durable_root, project_scope: None, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())), memory_write_denied: false }
+    }
+
+    pub fn with_memory_write_denied(mut self, denied: bool) -> Self {
+        self.memory_write_denied = denied;
+        self
     }
 
     pub fn with_durable_root(mut self, durable_root: std::path::PathBuf) -> Self { self.durable_root=durable_root; self }

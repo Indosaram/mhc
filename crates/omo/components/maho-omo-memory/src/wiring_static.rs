@@ -148,6 +148,7 @@ pub fn register_memory_static(
             ..Default::default()
         },
     );
+    crate::write_policy::register_memory_write_guard(api, options.resolve_context.clone());
     crate::guard::register_memory_guard(
         api,
         options.resolve_context.clone(),

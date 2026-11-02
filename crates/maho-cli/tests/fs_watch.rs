@@ -42,7 +42,14 @@ async fn watcher_symlink_root_delivers_relative_filename() {
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let watcher = watch_with_error_handler(&symlink, move |kind, name| { let _ = sender.send((kind.to_owned(), name)); }, || panic!("watch error"), false).unwrap();
     std::fs::write(symlink.join("changed"), b"data").unwrap();
-    let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap().unwrap();
+    // FSEvents can first report the watched root itself (an empty relative name), e.g. the `real`
+    // directory created just before the watch started; wait for the file's own event.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = receiver.recv().await.unwrap();
+            if event.1.as_deref() != Some("") { break event; }
+        }
+    }).await.unwrap();
     assert!(matches!(event.0.as_str(), "rename" | "change"));
     assert_eq!(event.1.as_deref(), Some("changed"));
     close_watcher(Some(watcher));

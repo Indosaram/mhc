@@ -4,7 +4,8 @@ use omo_config_core::issue::PathSegment;
 use omo_config_core::writer::types::FsError;
 use omo_config_core::{
     LoadOmoConfigOptions, OmoConfigEdit, OmoConfigEnv, OmoConfigWriteFileSystem,
-    StdWriteFileSystem, UpdateOmoConfigOptions, load_omo_config, update_omo_config,
+    StdWriteFileSystem, UpdateOmoConfigOptions, load_omo_config, to_posix_path,
+    update_omo_config,
 };
 use serde_json::json;
 
@@ -89,8 +90,9 @@ fn editing_a_commented_project_config_twice_keeps_comments_and_distinct_backups(
     let second = update_omo_config(&second).expect("second write");
 
     let content = std::fs::read_to_string(&config_path).expect("content");
-    assert_eq!(first.path, config_path);
-    assert_eq!(second.path, config_path);
+    // The writer reports posix-form paths.
+    assert_eq!(first.path, to_posix_path(&config_path));
+    assert_eq!(second.path, to_posix_path(&config_path));
     assert!(content.contains("// task settings stay documented"));
     assert!(content.contains("\"default_concurrency\": 3"));
     assert!(content.contains("\"default_ms\": 12000"));
@@ -120,12 +122,13 @@ fn a_pinned_timestamp_still_yields_distinct_backup_paths() {
     second.timestamp = Some(pinned);
     let second = update_omo_config(&second).expect("second write");
 
+    let reported_backup = to_posix_path(&format!("{config_path}.bak.2026-07-06T00-00-00-000Z"));
     assert_eq!(
         first.backup_path,
-        Some(format!("{config_path}.bak.2026-07-06T00-00-00-000Z"))
+        Some(reported_backup.clone())
     );
     let second_backup = second.backup_path.clone().expect("second backup");
-    assert!(second_backup.starts_with(&format!("{config_path}.bak.2026-07-06T00-00-00-000Z")));
+    assert!(second_backup.starts_with(&reported_backup));
     assert_ne!(second.backup_path, first.backup_path);
     assert!(std::path::Path::new(first.backup_path.as_deref().expect("path")).exists());
     assert!(std::path::Path::new(&second_backup).exists());
@@ -172,7 +175,7 @@ fn editing_a_missing_user_config_creates_it_with_the_header() {
     let result = update_omo_config(&options).expect("write");
 
     let content = std::fs::read_to_string(&config_path).expect("content");
-    assert_eq!(result.path, config_path);
+    assert_eq!(result.path, to_posix_path(&config_path));
     assert!(content.contains("// OMO configuration"));
     assert!(content.contains("\"default_concurrency\": 6"));
 }
@@ -199,7 +202,7 @@ fn editing_an_existing_project_json_preserves_the_path_and_the_settings() {
         ..LoadOmoConfigOptions::default()
     });
 
-    assert_eq!(result.path, config_path);
+    assert_eq!(result.path, to_posix_path(&config_path));
     assert!(!std::path::Path::new(&shadow_path).exists());
     assert_eq!(loaded.config["task"]["default_concurrency"], json!(9));
     assert_eq!(loaded.config["task"]["wait"]["default_ms"], json!(12000));
@@ -228,7 +231,7 @@ fn editing_an_existing_user_json_preserves_the_path_and_the_settings() {
         ..LoadOmoConfigOptions::default()
     });
 
-    assert_eq!(result.path, config_path);
+    assert_eq!(result.path, to_posix_path(&config_path));
     assert!(!std::path::Path::new(&shadow_path).exists());
     assert_eq!(loaded.config["task"]["default_concurrency"], json!(9));
     assert_eq!(loaded.config["task"]["wait"]["default_ms"], json!(12000));
@@ -343,7 +346,7 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
     options.edits = vec![edit(&["task", "default_concurrency"], json!(3))];
     let created = update_omo_config(&options).expect("write");
 
-    assert_eq!(created.path, format!("{home}/.omo/omo.jsonc"));
+    assert_eq!(created.path, to_posix_path(&format!("{home}/.omo/omo.jsonc")));
     assert!(
         std::fs::read_to_string(format!("{legacy_dir}/omo.jsonc"))
             .expect("legacy content")
@@ -362,12 +365,12 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
     second_options.edits = vec![edit(&["task", "default_concurrency"], json!(4))];
     let edited = update_omo_config(&second_options).expect("write");
 
-    assert_eq!(edited.path, json_path);
+    assert_eq!(edited.path, to_posix_path(&json_path));
     assert_eq!(
         std::path::Path::new(&edited.path)
             .parent()
             .map(|parent| omo_config_core::to_posix_path(&parent.to_string_lossy())),
-        Some(format!("{second_home}/.omo"))
+        Some(to_posix_path(&format!("{second_home}/.omo")))
     );
 }
 

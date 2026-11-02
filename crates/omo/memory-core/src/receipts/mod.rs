@@ -1,4 +1,5 @@
 pub mod kill_point;
+pub mod owner;
 #[allow(clippy::module_inception)] // mirrors the TS receipts/receipts.ts layout
 pub mod receipts;
 

@@ -24,6 +24,8 @@ pub struct FauxSession {
     settings: Option<Value>,
     faux_models: Vec<maho_ai::providers::faux::FauxModelDefinition>,
     native_response_factory: Option<maho_ai::providers::faux::FauxResponseFactory>,
+    session_context: std::collections::BTreeMap<String, String>,
+    seed_entries: Option<Vec<Value>>,
 }
 
 impl FauxSession {
@@ -37,6 +39,8 @@ impl FauxSession {
             settings: None,
             faux_models: Vec::new(),
             native_response_factory: None,
+            session_context: Default::default(),
+            seed_entries: None,
         }
     }
 
@@ -57,6 +61,18 @@ impl FauxSession {
     /// Seed the global settings document (e.g. retry/fallback chains) for native runs.
     pub fn with_settings(mut self, settings: Value) -> Self {
         self.settings = Some(settings);
+        self
+    }
+
+    /// Host-supplied session context (`open_session.context`) the native extensions see.
+    pub fn with_session_context(mut self, context: std::collections::BTreeMap<String, String>) -> Self {
+        self.session_context = context;
+        self
+    }
+
+    /// Resume fixture: the session starts from these persisted entries (header included).
+    pub fn with_session_entries(mut self, entries: Vec<Value>) -> Self {
+        self.seed_entries = Some(entries);
         self
     }
 
@@ -206,7 +222,10 @@ impl FauxSession {
                 })
                 .collect(),
             cwd,
-            maho_ext_api::ExtensionSessionProfile::default(),
+            maho_ext_api::ExtensionSessionProfile {
+                session_context: self.session_context.clone(),
+                ..Default::default()
+            },
         )
     }
 
@@ -258,7 +277,11 @@ impl FauxSession {
                 stream_fn: Some(stream_fn),
                 ..Default::default()
             }),
-            session_manager: maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(
+                cwd,
+                None,
+                self.seed_entries.clone(),
+            ),
             settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
                 Box::new(match &self.settings {
                     Some(settings) => {
@@ -455,6 +478,11 @@ impl NativeSession {
         self.temp.path()
     }
 
+    /// The live session, e.g. to answer RPC commands (`extension_request`) against it.
+    pub fn agent_session(&self) -> &maho_core::agent_session::AgentSession {
+        &self.session
+    }
+
     /// Runs the registered extension tool `name` exactly as the session would.
     pub async fn execute_tool(
         &self,
@@ -469,6 +497,18 @@ impl NativeSession {
             )
             .await
             .map_err(|error| error.message)
+    }
+
+    /// Runs the registered slash command `name` with `args` exactly as the host dispatches it.
+    pub async fn execute_command(&self, name: &str, args: &str) -> Result<(), String> {
+        let command = self.runner.get_command(name).ok_or_else(|| format!("unknown command /{name}"))?;
+        let context = self.runner.create_context().map_err(|error| error.message)?;
+        (command.command.handler)(args, &context).await.map_err(|error| error.message)
+    }
+
+    /// The session's persisted entries (header first), e.g. to seed a resumed session.
+    pub fn entries(&self) -> Vec<Value> {
+        self.session.with_session_manager(|manager| manager.header().into_iter().chain(manager.entries()).collect())
     }
 
     /// Switches the active model, as `session.setModel` does.

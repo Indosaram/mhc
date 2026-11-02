@@ -353,7 +353,10 @@ impl MemoryWiring {
                     let wiring = bind_wiring.clone();
                     let api = bind_handle.clone();
                     let identity = identity.clone();
-                    let facts = facts(&identity, context);
+                    // A memory-write-denied bind never builds the facts extractor.
+                    let facts = (!identity.memory_write_denied)
+                        .then(|| facts(&identity, context))
+                        .transpose();
                     let reconcile = reconcile.clone();
                     let now = now.clone();
                     let warn = journal_warn.clone();
@@ -385,7 +388,8 @@ impl MemoryWiring {
                             api.events.clone(),
                             api.runtime.clone(),
                         );
-                        let work = reconcile(identity.clone());
+                        // Built lazily: a memory-write-denied bind never starts the recovery work.
+                        let reconcile_identity = identity.clone();
                         wiring
                             .after_bind(
                                 &mut api,
@@ -397,7 +401,7 @@ impl MemoryWiring {
                                 },
                                 Some(&mut ui),
                                 Some(&mut live),
-                                || work,
+                                move || reconcile(reconcile_identity),
                                 facts?,
                                 |session, error| {
                                     warn(&format!("journal reconcile failed: {session}: {error}"))
@@ -497,6 +501,9 @@ impl MemoryWiring {
         wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||->std::collections::BTreeMap<String,crate::context::MemoryIdentityContext>{
             rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
         }),std::sync::Arc::new(move||rpc_now() as i64),Some(apply_facts)).map_err(|error|error.to_string())?;
+        // Owner teach/forget/correct receipts; after the static prompt handler so `applied` sees the recall.
+        crate::owner_memory::register_owner_memory(api, component.clone(), options.warn.clone())
+            .map_err(|error| error.to_string())?;
         let state = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
             std::path::PathBuf,
             crate::sync_runner::SyncRepoStatus,
@@ -574,16 +581,33 @@ impl MemoryWiring {
         ui: Option<&mut (dyn MemoryFooterUi + Send)>,
         live: Option<&mut (dyn crate::wiring_reflection_live::ReflectionBindLive + Send)>,
         reconcile: impl FnOnce() -> F,
-        facts: crate::facts_wiring::MemoryFactsWiringOptions,
+        facts: Option<crate::facts_wiring::MemoryFactsWiringOptions>,
         warn: impl FnOnce(&str, &memory_core::journal::store::JournalError),
     ) -> Result<(), String> {
+        // A memory-write-denied session keeps recall and the read-only surfaces, but feeds no
+        // background work: no maintenance, recovery, journal, facts extraction (`crate::write_policy`).
+        let denied = input.identity.memory_write_denied;
         self.runtime
             .contexts
             .insert(input.session_id.into(), input.identity.clone());
         self.reflection_live.attach(input.session_id);
-        self.maintenance.schedule(input.identity.clone());
+        if !denied {
+            self.maintenance.schedule(input.identity.clone());
+        }
         crate::policy_guard::register_memory_filesystem_policy(Some(api), Some(&input.identity))
             .map_err(|error| error.to_string())?;
+        if denied {
+            return self.reflection_live.bind(
+                input.session_id,
+                input.identity,
+                api,
+                input.now_ms,
+                ui.map(|ui| ui as &mut dyn MemoryFooterUi),
+                live.map(|live| live as &mut dyn crate::wiring_reflection_live::ReflectionBindLive),
+            );
+        }
+        let facts =
+            facts.ok_or("memory facts wiring options are missing for a write-enabled bind")?;
         reconcile().await?;
         // Session-start reconciliation runs once per session; a holder that dies after it is only
         // recoverable from a later turn, which is what `recover_stale_holder_after_turn` does.
@@ -819,7 +843,7 @@ impl MemoryWiring {
         // A holder that died after this session reconciled would keep the reflection lock for good, so each
         // later settled turn settles a provably dead one before anything else queues behind it.
         self.recover_stale_holder_after_turn(session, &identity);
-        if !entries.is_empty() {
+        if !entries.is_empty() && !identity.memory_write_denied {
             self.runtime
                 .journal_wiring_for(&identity)
                 .reconcile_session(Some(session), entries, warn)
@@ -864,6 +888,12 @@ impl MemoryWiring {
         now: &(dyn Fn() -> f64 + Sync),
         warn: &mut (dyn FnMut(&str, Option<&str>) + Send),
     ) {
+        // A memory-write-denied session runs no shutdown evaluator (the shutdown dream): closing it
+        // never reserves nor launches memory work (`crate::write_policy`).
+        let denied = self
+            .runtime
+            .resolve_context(session)
+            .is_some_and(|context| context.memory_write_denied);
         // Upstream `onSessionShutdown` calls `w.dispose()` synchronously and never awaits `settled()`: an in-flight
         // maintenance run is cancelled and winds down in the background instead of being joined on the shutdown path.
         self.maintenance.dispose();
@@ -888,7 +918,11 @@ impl MemoryWiring {
         {
             facts.cancel_active().await;
         }
-        let evaluators = std::mem::take(&mut self.evaluators);
+        let evaluators = if denied {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.evaluators)
+        };
         let evaluators = {
             let mut drain = crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps {
                 wiring: self,
@@ -900,7 +934,9 @@ impl MemoryWiring {
             drain.run(reason, session, deadline, now, warn).await;
             std::mem::take(&mut drain.evaluators)
         };
-        self.evaluators = evaluators;
+        if !denied {
+            self.evaluators = evaluators;
+        }
         self.unbind(session);
     }
     pub fn register_shutdown_evaluator(
@@ -929,7 +965,13 @@ impl crate::shutdown_drain::ShutdownDrainSteps for MemoryShutdownSteps<'_> {
         signal: crate::shutdown_drain::ShutdownSignal,
     ) -> crate::shutdown_drain::ShutdownWork<'a> {
         Box::pin(async move {
-            let Some(identity) = self.wiring.runtime.resolve_context(session).cloned() else {
+            let Some(identity) = self
+                .wiring
+                .runtime
+                .resolve_context(session)
+                .filter(|context| !context.memory_write_denied)
+                .cloned()
+            else {
                 return Ok(());
             };
             self.wiring
@@ -953,6 +995,7 @@ impl crate::shutdown_drain::ShutdownDrainSteps for MemoryShutdownSteps<'_> {
                 .wiring
                 .runtime
                 .resolve_context(session)
+                .filter(|context| !context.memory_write_denied)
                 .map(|context| context.identity.clone())
             else {
                 return Ok(());
@@ -1000,6 +1043,7 @@ impl crate::shutdown_drain::ShutdownDrainSteps for MemoryShutdownSteps<'_> {
                 .wiring
                 .runtime
                 .resolve_context(session)
+                .filter(|context| !context.memory_write_denied)
                 .map(|context| context.identity.clone())
             else {
                 return Ok(());
@@ -1061,6 +1105,50 @@ mod tests {
                 .await;
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), count);
         }
+    }
+    #[tokio::test]
+    async fn a_denied_session_shutdown_runs_no_evaluator_and_keeps_them_for_the_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut wiring = create_memory_wiring(MemoryWiringOptions {
+            runtime: Default::default(),
+            skills_usage: Default::default(),
+        });
+        wiring.register_shutdown_evaluator(Box::new(Evaluator(calls.clone())));
+        let denied = crate::context::MemoryIdentityContext::new(
+            "agent".into(),
+            paths.clone(),
+            crate::binding::create_memory_binding("agent", "repo", 0.0),
+        )
+        .with_memory_write_denied(true);
+        wiring.runtime.contexts.insert("denied".into(), denied);
+        wiring
+            .on_session_shutdown(
+                crate::shutdown_drain::ShutdownReason::Quit,
+                "denied",
+                1500.0,
+                &|| 0.0,
+                &mut |step, error| panic!("{step}: {error:?}"),
+            )
+            .await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "closing a denied session launches no shutdown dream"
+        );
+        assert!(wiring.runtime.resolve_context("denied").is_none());
+        // Positive control: the evaluator is retained and still runs for the next (owner) session.
+        wiring
+            .on_session_shutdown(
+                crate::shutdown_drain::ShutdownReason::Quit,
+                "session",
+                1500.0,
+                &|| 0.0,
+                &mut |step, error| panic!("{step}: {error:?}"),
+            )
+            .await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
     #[tokio::test]
     async fn registered_dream_triggers_run_shutdown_dream_only_on_quit() {
@@ -1173,7 +1261,7 @@ mod tests {
                     assert!(!paths.transcripts.join("session").exists());
                     Ok(())
                 },
-                facts,
+                Some(facts),
                 |_, error| panic!("{error}"),
             )
             .await

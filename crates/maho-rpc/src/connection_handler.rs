@@ -1095,7 +1095,15 @@ async fn handle_session_command_with_sink(
         RpcCommandBody::ExtensionRequest{name,data}=>{
             let name=name.trim();
             if name.is_empty(){("extension_request",Err("Extension RPC request name cannot be empty".into()))}
-            else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(Some))}
+            else if crate::custom_capability::OWNER_MEMORY_REQUESTS.contains(&name)&&!session.extension_runner_has_rpc_handler(name).await{
+                // An advertised owner memory request this session does not serve is typed.
+                return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"extension_request".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("memory is unavailable in this session: no handler serves {name}"),error_code:Some(crate::custom_capability::MEMORY_UNAVAILABLE_ERROR_CODE.into()),error_data:default_error_data(session,"extension_request")}});
+            }
+            else {match session.extension_runner_request_typed(name,data.clone().unwrap_or(serde_json::Value::Null)).await{
+                Ok(value)=>("extension_request",Ok(Some(value))),
+                // The handler's typed failure code travels as `errorCode`.
+                Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"extension_request".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code,error_data:default_error_data(session,"extension_request")}}),
+            }}
         },
         RpcCommandBody::SetClientInfo{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_client_info".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}}),
         RpcCommandBody::GetProtocolInfo=>{
@@ -2851,6 +2859,44 @@ mod new_session_tests {
             response["error"],
             "Extension RPC request name cannot be empty"
         );
+    }
+    #[tokio::test]
+    async fn unserved_owner_memory_requests_are_typed_memory_unavailable() {
+        // No memory extension registered its handlers in this session.
+        let session = session();
+        for name in crate::custom_capability::OWNER_MEMORY_REQUESTS {
+            let response = serde_json::to_value(
+                handle_session_command(
+                    &session,
+                    &serde_json::from_value(serde_json::json!({"id":"m","type":"extension_request","name":name,"data":{"sourceId":"s","receiptId":"rcpt_x"}}))
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(response["success"], false, "{name}");
+            assert_eq!(
+                response["errorCode"],
+                crate::custom_capability::MEMORY_UNAVAILABLE_ERROR_CODE,
+                "{name}: {response}"
+            );
+        }
+        // Any other unserved request keeps its untyped error.
+        let other = serde_json::to_value(
+            handle_session_command(
+                &session,
+                &serde_json::from_value(
+                    serde_json::json!({"type":"extension_request","name":"other_request"}),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(other["success"], false);
+        assert!(other.get("errorCode").is_none(), "{other}");
     }
     #[tokio::test]
     async fn get_auth_providers_dispatches_provider_statuses() {
