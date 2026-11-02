@@ -49,7 +49,10 @@ impl Host {
 
     fn launch(extra: &[&str], home: tempfile::TempDir, agent: Option<std::path::PathBuf>) -> Self {
         let cwd = home.path().join("project");
-        std::fs::create_dir_all(&cwd).expect("project dir");
+        // The project's `.omo` exists before the host starts: the session's task store creates
+        // `.omo/senpi-task` on first use, and a `.omo` appearing mid-session is a config change the
+        // config-reload watcher answers with a session reload that races the test's first prompt.
+        std::fs::create_dir_all(cwd.join(".omo")).expect("project dir");
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"));
         command
             .current_dir(&cwd)
