@@ -70,7 +70,7 @@ When an un-armed session receives an effective keyword invocation:
 When an already-armed session receives another user prompt containing an active keyword:
 1. The engine notes that the session was already armed.
 2. The full contract is NOT re-sent.
-3. Instead, a lightweight reminder notice is emitted, stating that the mode is already armed, that the earlier injected directive remains in effect, and that execution should proceed under those terms.
+3. Instead, a short notice is emitted in place of the contract. Its wording and wrapper markup are the implementer's own; the notice only has to tell the model that no new contract text follows because the copy already in the conversation still applies.
 
 ### 2.3 Compaction Handling and Re-arm Policy
 Session compaction compresses historical messages to reclaim context:
@@ -150,11 +150,7 @@ The engine monitors tool execution to provide sizing and delegation reminders:
 6. The tool result did not report an error.
 
 ### 6.2 Injected Content
-When triggered, the engine appends a structured advisory notice to the tool result output conveying four core principles:
-1. **Sizing**: Evaluate the complete task count, breadth, and overall complexity across the task list before taking action.
-2. **Delegation economics**: Compute whether parallel subagents yield net speedups versus process spawning and coordination costs; delegate disjoint write scopes and keep sequential or small items in the primary session.
-3. **Transparent communication**: Inform the user explicitly about which subagents are launched for which tasks and why, or explain why tasks are handled directly; never delegate or serialize silently.
-4. **Task state freshness**: Keep the todo list continuously synchronized by updating status immediately upon task transitions, adding newly discovered tasks without delay, and pruning abandoned items.
+When triggered, the engine appends one advisory text block, written by the implementer, to the tool result output. Its required outcome: before starting the first item, the model first weighs how much work the whole new list represents, judged by its number of items and the effort each one implies; it then makes an explicit choice between handing items to parallel child agents and working them itself, bases that choice on whether the items can proceed independently and whether parallelism actually saves time once its setup cost is counted, and states the choice and its reason to the user. The block also asks that the checklist keep mirroring reality for the rest of the run.
 
 ### 6.3 Compaction Reset
 When session compaction occurs, the single-latch reminder state is reset. The next `todo init` call with 3+ items after compaction is eligible to receive the reminder.
@@ -168,9 +164,9 @@ The crate exports capabilities required by telemetry, command handlers, and test
 ### 7.1 Input Classification
 - **Capability**: Analyze prompt text and determine arming eligibility, keyword counts, and routing classification without mutating state.
 - **Return Data**:
-  - `matched_ulw`: Boolean indicating whether the `ulw` keyword matched.
-  - `matched_ultrawork`: Boolean indicating whether the `ultrawork` keyword matched.
-  - `occurrence_count`: Total count of visible keyword occurrences.
+  - `short_form_seen`: Boolean indicating whether the `ulw` keyword matched.
+  - `long_form_seen`: Boolean indicating whether the `ultrawork` keyword matched.
+  - `visible_mentions`: Total count of visible keyword occurrences.
   - `effective`: Boolean indicating whether the input triggers an active injection or arming change.
   - Lifecycle stage: Whether this is an initial arming, a subsequent reminder, a post-compaction re-arm, or none.
   - Routing classification: Whether invocation is direct, skill expansion, skill arguments, embedded, or none.
@@ -227,56 +223,56 @@ This section defines the transport boundaries for child task completion delivery
 
 ## 10. Test Vectors
 
-The following 38 test vectors specify expected behavior across all functional areas. All examples are newly invented:
+The following 39 test vectors specify expected behavior across all functional areas. All examples are newly invented:
 
 ### Group A: Standalone Positive Keywords
 1. **Input**: `"ulw please audit the authentication module"`
-   - **Expected**: `effective: true`, `matched_ulw: true`, `matched_ultrawork: false`, `occurrence_count: 1`, action: first-time arming, route: direct prompt.
+   - **Expected**: `effective: true`, `short_form_seen: true`, `long_form_seen: false`, `visible_mentions: 1`, action: first-time arming, route: direct prompt.
 2. **Input**: `"ULTRAWORK refactor the database connector"`
-   - **Expected**: `effective: true`, `matched_ulw: false`, `matched_ultrawork: true`, `occurrence_count: 1`, action: first-time arming, route: direct prompt.
+   - **Expected**: `effective: true`, `short_form_seen: false`, `long_form_seen: true`, `visible_mentions: 1`, action: first-time arming, route: direct prompt.
 3. **Input**: `"Use ulw for planning and ultrawork for implementation"`
-   - **Expected**: `effective: true`, `matched_ulw: true`, `matched_ultrawork: true`, `occurrence_count: 2`, action: first-time arming, route: direct prompt.
+   - **Expected**: `effective: true`, `short_form_seen: true`, `long_form_seen: true`, `visible_mentions: 2`, action: first-time arming, route: direct prompt.
 4. **Input**: `"프로젝트 전체를 ulw 모드로 점검해줘"`
-   - **Expected**: `effective: true`, `matched_ulw: true`, `matched_ultrawork: false`, `occurrence_count: 1`, action: first-time arming.
+   - **Expected**: `effective: true`, `short_form_seen: true`, `long_form_seen: false`, `visible_mentions: 1`, action: first-time arming.
 5. **Input**: `"버그 원인을 ultrawork 방식으로 분석해"`
-   - **Expected**: `effective: true`, `matched_ulw: false`, `matched_ultrawork: true`, `occurrence_count: 1`, action: first-time arming.
+   - **Expected**: `effective: true`, `short_form_seen: false`, `long_form_seen: true`, `visible_mentions: 1`, action: first-time arming.
 
 ### Group B: Quoted and Fenced Inactive Contexts
 6. **Input**: `"Command to run: \"ulw execute\""`
-   - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+   - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 7. **Input**: `"He recommended “ultrawork” during the standup"`
-   - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+   - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 8. **Input**: `"Run the script using `ulw start`"`
-   - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+   - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 9. **Input**: `"```bash\nulw test --all\n```"`
-   - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+   - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 10. **Input**: `"~~~markdown\nultrawork active\n~~~"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 11. **Input**: `"> Note: always run ulw before deploy"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 12. **Input**: `"Documentation: https://example.org/docs/ulw/getting-started"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 13. **Input**: `"<custom-reminder-tag>ulw is active</custom-reminder-tag>"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: no visible keyword.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: no visible keyword.
 14. **Input**: `"Prompt already carrying directive wrapper tags"`
     - **Expected**: `effective: false`, route: embedded directive, suppression: embedded directive present.
 
 ### Group C: Negated Mentions
 15. **Input**: `"Please do not use ulw for this query; keep it simple"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: prohibitive phrasing detected.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: prohibitive phrasing detected.
 16. **Input**: `"Don't enable ultrawork mode on quick fixes"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: prohibitive phrasing detected.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: prohibitive phrasing detected.
 17. **Input**: `"Never run ulw on read-only repositories"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: prohibitive phrasing detected.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: prohibitive phrasing detected.
 18. **Input**: `"dont trigger ultrawork until tests pass"`
-    - **Expected**: `effective: false`, `occurrence_count: 0`, suppression: prohibitive phrasing detected.
+    - **Expected**: `effective: false`, `visible_mentions: 0`, suppression: prohibitive phrasing detected.
 
 ### Group D: Identifier and Path Boundaries
 19. **Input**: `"Check the ulw-loop status in the terminal"`
     - **Expected**: `effective: false`, suppression: compound identifier reference.
 20. **Input**: `"Review the plan in ulw-plan file"`
     - **Expected**: `effective: false`, suppression: compound identifier reference.
-21. **Input**: `"Inspect my_ulw_helper function"`
+21. **Input**: `"Inspect parse_ulw_flags function"`
     - **Expected**: `effective: false`, suppression: compound identifier reference.
 22. **Input**: `"Binary is at target/release/ulw.exe"`
     - **Expected**: `effective: false`, suppression: compound identifier reference.
