@@ -4458,15 +4458,22 @@ impl EventBus {
     pub fn bind_runtime(&mut self, runtime: ExtensionRuntime) {
         self.runtime = Some(runtime);
     }
-    fn assert_active_or_panic(&self) {
+    /// Fails once this bus's registration scope failed or its bound runtime was invalidated by a
+    /// reload or session replacement.
+    pub fn assert_active(&self) -> Result<(), ExtensionFailure> {
         if self
             .registration_stale
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            std::panic::panic_any(ExtensionFailure::new("Extension factory failed to load"));
+            return Err(ExtensionFailure::new("Extension factory failed to load"));
         }
-        if let Some(runtime) = &self.runtime {
-            runtime.assert_active_or_panic();
+        self.runtime
+            .as_ref()
+            .map_or(Ok(()), ExtensionRuntime::assert_active)
+    }
+    fn assert_active_or_panic(&self) {
+        if let Err(error) = self.assert_active() {
+            std::panic::panic_any(error);
         }
     }
     pub fn invalidate_registration(&self) {
@@ -4534,6 +4541,16 @@ impl EventBus {
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
         self.assert_active_or_panic();
+        self.deliver(channel, data);
+    }
+    /// [`Self::emit`] for background work that can outlive its runtime: a stale bus drops the
+    /// publication and returns the stale-runtime failure instead of panicking.
+    pub fn try_emit(&self, channel: &str, data: &JsonValue) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        self.deliver(channel, data);
+        Ok(())
+    }
+    fn deliver(&self, channel: &str, data: &JsonValue) {
         if channel == "config-watch:unregister"
             && let Some(id) = data.get("id").and_then(JsonValue::as_str)
         {
@@ -4593,6 +4610,20 @@ impl EventBus {
     /// Publish the same borrowed native object to every matching subscriber.
     pub fn emit_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
         self.assert_active_or_panic();
+        self.deliver_native(channel, data);
+    }
+    /// [`Self::emit_native`] for background work that can outlive its runtime: a stale bus drops
+    /// the publication and returns the stale-runtime failure instead of panicking.
+    pub fn try_emit_native<T: Send + Sync + 'static>(
+        &self,
+        channel: &str,
+        data: &T,
+    ) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        self.deliver_native(channel, data);
+        Ok(())
+    }
+    fn deliver_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
         let handlers = self
             .state
             .lock()
