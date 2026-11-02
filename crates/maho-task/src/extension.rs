@@ -278,22 +278,12 @@ impl Shared {
         };
         manager.set_steer_channel(self.steer.clone());
         if let Some(sender) = &self.sender {
-            let sender = Arc::clone(sender);
-            let callback: SettledCallback = Arc::new(move |record, text| {
-                let _ = sender.send_message(
-                    CustomMessage {
-                        custom_type: RESULT_MESSAGE_TYPE.to_owned(),
-                        content: vec![ToolContent::text(text)],
-                        display: true,
-                        details: Some(json!({"id": record.id, "status": record.status.as_str()})),
-                    },
-                    SendMessageOptions {
-                        trigger_turn: true,
-                        deliver_as: Some(DeliverAs::FollowUp),
-                    },
-                );
-            });
-            manager.set_on_settled(Some(callback));
+            crate::transport::bind_settled_batcher(
+                &manager,
+                Arc::clone(sender),
+                self.settings.completion_transport_limit,
+                self.settings.completion_batch_limit,
+            );
         }
         manager
     }
