@@ -30,8 +30,10 @@ pub fn normalize_relative_path(filename: &Path) -> Option<PathBuf> {
     (!normalized.as_os_str().is_empty()).then_some(normalized)
 }
 pub struct WatchTarget { pub id: String, pub kind: WatchKind, pub path: PathBuf, pub allow_list: Option<Vec<PathBuf>>, pub filter: Option<WatchFilter> }
+/// `directories` lists the changed paths that are an allowed directory appearing or vanishing,
+/// as opposed to a file whose content was created, edited or removed.
 #[derive(Default)]
-pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf> }
+pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf>, pub directories: Vec<PathBuf> }
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
@@ -180,6 +182,7 @@ impl ConfigReloadWatchEngine {
     }
     fn evaluate_paths(&mut self, paths: Option<&BTreeSet<PathBuf>>) -> Result<RealChange, std::io::Error> {
         let mut changes = BTreeMap::new();
+        let mut directories = BTreeSet::new();
         if self.closed { return Ok(RealChange::default()); }
         for (target, state) in self.targets.iter().zip(&mut self.states) {
             let next = if let Some(paths) = paths {
@@ -196,14 +199,14 @@ impl ConfigReloadWatchEngine {
             } else { scan(target, self.on_error.as_ref(), &self.hash_file)? };
             for (path, hash) in &next.hashes { if state.hashes.get(path) != Some(hash) { changes.insert(path.clone(), (!state.hashes.contains_key(path), false)); } }
             for path in state.hashes.keys() { if !next.hashes.contains_key(path) { changes.insert(path.clone(), (false, true)); } }
-            for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { changes.insert(path.clone(), (true, false)); } }
-            for path in &state.allowed_directories { if !next.allowed_directories.contains(path) { changes.insert(path.clone(), (false, true)); } }
+            for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { directories.insert(path.clone()); changes.insert(path.clone(), (true, false)); } }
+            for path in &state.allowed_directories { if !next.allowed_directories.contains(path) { directories.insert(path.clone()); changes.insert(path.clone(), (false, true)); } }
             *state = next;
         }
         let changed_paths = changes.keys().cloned().collect();
         let created = changes.iter().filter(|(_, flags)| flags.0).map(|(path, _)| path.clone()).collect();
         let deleted = changes.iter().filter(|(_, flags)| flags.1).map(|(path, _)| path.clone()).collect();
-        Ok(RealChange { changed_paths, created, deleted })
+        Ok(RealChange { changed_paths, created, deleted, directories: directories.into_iter().collect() })
     }
 }
 fn matches(target: &WatchTarget, relative: &Path) -> bool {
