@@ -2,21 +2,27 @@
 
 ## OVERVIEW
 
-`SKILL.md` is the research orchestration contract (team-first saturation, claim graph, convergence, delivery). `scripts/` is the deliverable runtime that contract calls: `report-tools.mjs`, a zero-dependency Node CLI for the deliverable phase (outcome manifest, static and layout gates, bounded repair, format extraction). `references/` holds the edition-neutral deliverable contract and the defect glossary. In mhc this directory is shipped as-is from `assets/omo-latest/skills/ulw-research`; there is no second edition and no sync step.
+`SKILL.md` is the always-read core of the research orchestration contract (tools, activation, authority, success criteria, team roster, Phase 0-4 summaries, synthesis template, search craft, failure modes) and ends with a routing table: one row per reference, "Read when <condition>". Every `references/*.md` opens with the same condition as its first line (`Read this when <condition>.`), so the core and the reference never disagree about when it loads. `scripts/` is the deliverable runtime that contract calls: `report-tools.mjs`, a zero-dependency Node CLI for the deliverable phase (outcome manifest, static and layout gates, bounded repair, format extraction). `references/` holds everything that loads only on its trigger: a chat-shaped answer with no document deliverable reads `SKILL.md` alone (plus `mass-collection.md` for MASS research); a document deliverable (PDF, DOCX, slides, standalone HTML) loads the deliverable contract, the collection and delivery detail, the epistemic artifacts, fidelity, the fact ledger, the gates glossary, and the visualization playbook. Cross-links between references are conditional pointers, never an unconditional "read X" chain. In mhc this directory is shipped as-is from `assets/omo-latest/skills/ulw-research`; there is no second edition and no sync step.
 
 ## STRUCTURE
 
 ```
 ulw-research/
-├── SKILL.md                         # shared-edition prose contract (router to the references)
-├── references/
-│   ├── deliverable-phase.md         # lanes, state, destination defaults, interview, memory episodes, design spec, gates, repair, manifest, command reference
+├── SKILL.md                         # always-read core; routing table says when each reference loads
+├── references/                      # each file opens with "Read this when <condition>."
+│   ├── research-collection.md       # document deliverable or detail beyond the core: Phase 0 journal, role protocols, Phase 2 expansion, excursions, convergence
+│   ├── research-delivery.md         # document deliverable or detail beyond the core: Phase 3 verify-by-code, Phase 3b claim graph, Phase 4 synthesis
+│   ├── epistemic.md                 # document deliverable: the five instrumentation artifacts + SYNTHESIS section
+│   ├── mass-collection.md           # MASS research or collection through the workflow tool
+│   ├── fidelity.md                  # writing the ## Fidelity block, fidelity questions, fact-command fidelity refusals
+│   ├── markdown-blocks.md           # CommonMark block boundaries for structured Markdown output
+│   ├── deliverable-phase.md         # document deliverable requested: lanes, state, destination defaults, interview, memory episodes, design spec, gates, repair, manifest, command reference
 │   ├── report-gates.md              # one row per defect code: severity, integrity, what it detects, how to fix
 │   ├── report-visualization.md      # which visual fits which finding, render commands (charts, Mermaid, PlotNeuralNet), quality bar, visual QA checklist
 │   ├── fact-ledger-grammar.md       # the one definition of a valid fact ledger; its per-kind table is rendered from KIND_RULES
 │   ├── fact-ledger.md               # working guide to the ledger: files, row fields, locators, operations
 │   ├── fidelity-claim-kinds.md      # claim kinds a sentence can be marked with (data-claim-kind); its table is rendered from CLAIM_KINDS
-│   ├── unit-rules.md                # per-operation unit rules for derived facts; the reviewer's checklist for unit-rules.mjs
+│   └── unit-rules.md                # per-operation unit rules for derived facts; the reviewer's checklist for unit-rules.mjs
 └── scripts/
     ├── report-tools.mjs             # CLI entry + dispatcher (COMMANDS, run, main)
     ├── report-tools-commands.mjs    # one function per subcommand

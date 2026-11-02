@@ -1,3 +1,5 @@
+Read this when computing or verifying derived unit algebra, compatible conversions, and composite units.
+
 # Unit rules for derived facts
 
 The one definition of which unit a derived or converted fact row carries, and the reviewer's checklist for
