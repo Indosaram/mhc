@@ -25,9 +25,34 @@ use crate::scheduler::{DeferredScheduler, DeferredTask, TurnBarrier};
 
 pub const WAKE_CUSTOM_TYPE: &str = "omo-senpi:wake";
 pub const DETAIL_SEPARATOR: &str = "\n\n";
-/// Upstream `IdleInjectionRetiredError` default message: handed to every still-queued injection's
-/// `on_delivery_failed` when the coordinator is retired on session shutdown.
+pub const DEFAULT_COMPLETION_BATCH_LIMIT: usize = 24_000;
 pub const RETIRED_ERROR_MESSAGE: &str = "idle-injection coordinator retired on session shutdown; injection not delivered";
+
+fn read_configured_completion_batch_limit() -> usize {
+    let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions::default());
+    loaded
+        .config
+        .get("task")
+        .and_then(|task| task.get("completion_batch_limit"))
+        .and_then(JsonValue::as_u64)
+        .map(|limit| usize::try_from(limit).unwrap_or(DEFAULT_COMPLETION_BATCH_LIMIT))
+        .unwrap_or(DEFAULT_COMPLETION_BATCH_LIMIT)
+}
+
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+fn utf16_prefix(value: &str, limit: usize) -> &str {
+    let mut units = 0;
+    for (index, ch) in value.char_indices() {
+        units += ch.len_utf16();
+        if units > limit {
+            return &value[..index];
+        }
+    }
+    value
+}
 
 fn source_rank(source: IdleInjectionSource) -> u8 {
     match source {
@@ -96,6 +121,8 @@ struct Inner {
     soon_scheduled: AtomicBool,
     retired: AtomicBool,
     barrier: Arc<TurnBarrier>,
+    batch_limit: Mutex<Option<usize>>,
+    state_dir: Mutex<Option<PathBuf>>,
 }
 
 /// The concrete `IdleInjectionCoordinator` queue (`idle_injection::IdleInjectionCoordinator`).
@@ -117,8 +144,28 @@ impl IdleInjectionQueue {
                 soon_scheduled: AtomicBool::new(false),
                 retired: AtomicBool::new(false),
                 barrier,
+                batch_limit: Mutex::new(None),
+                state_dir: Mutex::new(None),
             }),
         }
+    }
+
+    pub fn set_batch_limit(&self, limit: usize) {
+        *self.inner.batch_limit.lock().unwrap_or_else(PoisonError::into_inner) = Some(limit);
+    }
+
+    pub fn with_batch_limit(self, limit: usize) -> Self {
+        self.set_batch_limit(limit);
+        self
+    }
+
+    pub fn set_state_dir(&self, dir: impl Into<PathBuf>) {
+        *self.inner.state_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir.into());
+    }
+
+    pub fn with_state_dir(self, dir: impl Into<PathBuf>) -> Self {
+        self.set_state_dir(dir);
+        self
     }
 
     /// Upstream default: the composition's batch window, with the idle-edge hand-off on the same
@@ -171,11 +218,116 @@ impl IdleInjectionQueue {
             ordered
         };
         let collapsed = ordered.len();
+        let batch_limit = self
+            .inner
+            .batch_limit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(read_configured_completion_batch_limit);
+
+        let total_unbounded_len = if ordered.is_empty() {
+            0
+        } else {
+            let content_len: usize = ordered.iter().map(|inj| utf16_len(&inj.content)).sum();
+            let sep_len = (ordered.len() - 1) * utf16_len(DETAIL_SEPARATOR);
+            content_len + sep_len
+        };
+
+        let (content, fitting_count) = if total_unbounded_len <= batch_limit {
+            let joined = ordered
+                .iter()
+                .map(|injection| injection.content.as_str())
+                .collect::<Vec<_>>()
+                .join(DETAIL_SEPARATOR);
+            let count = ordered.len();
+            (joined, count)
+        } else {
+            let state_dir = self
+                .inner
+                .state_dir
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .unwrap_or_else(|| std::env::temp_dir().join("omo-completion-manifests"));
+            let dir = if state_dir.ends_with("completion-manifests") {
+                state_dir
+            } else {
+                state_dir.join("completion-manifests")
+            };
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                eprintln!("failed to create completion manifest dir {}: {error}", dir.display());
+            }
+            let manifest_filename = format!("wake-manifest-{}.txt", uuid::Uuid::new_v4().simple());
+            let manifest_path = dir.join(manifest_filename);
+            let manifest_url = format!("local://{}", manifest_path.display());
+
+            let mut fitting_k = 0;
+            let sep_units = utf16_len(DETAIL_SEPARATOR);
+
+            let mut current_content_units = 0;
+            for (idx, injection) in ordered.iter().enumerate() {
+                let next_k = idx + 1;
+                let entry_units = utf16_len(&injection.content);
+                let new_content_units = if idx == 0 {
+                    entry_units
+                } else {
+                    current_content_units + sep_units + entry_units
+                };
+
+                let remaining = ordered.len() - next_k;
+                if remaining == 0 {
+                    if new_content_units <= batch_limit {
+                        fitting_k = next_k;
+                        current_content_units = new_content_units;
+                    }
+                    break;
+                }
+                let trailing_line = format!("{remaining} more task results: {manifest_url}");
+                let trailing_units = sep_units + utf16_len(&trailing_line);
+
+                if new_content_units + trailing_units <= batch_limit {
+                    fitting_k = next_k;
+                    current_content_units = new_content_units;
+                } else {
+                    break;
+                }
+            }
+
+            let remaining_count = ordered.len() - fitting_k;
+            let remaining_content = ordered[fitting_k..]
+                .iter()
+                .map(|inj| inj.content.as_str())
+                .collect::<Vec<_>>()
+                .join(DETAIL_SEPARATOR);
+
+            if let Err(error) = std::fs::write(&manifest_path, &remaining_content) {
+                eprintln!("failed to write completion manifest {}: {error}", manifest_path.display());
+            }
+
+            let trailing_line = format!("{remaining_count} more task results: {manifest_url}");
+            let final_content = if fitting_k == 0 {
+                if utf16_len(&trailing_line) <= batch_limit {
+                    trailing_line
+                } else {
+                    utf16_prefix(&trailing_line, batch_limit).to_string()
+                }
+            } else {
+                let prefix = ordered[..fitting_k]
+                    .iter()
+                    .map(|inj| inj.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join(DETAIL_SEPARATOR);
+                format!("{prefix}{DETAIL_SEPARATOR}{trailing_line}")
+            };
+
+            (final_content, fitting_k)
+        };
+
         let message = IdleInjectionMessage {
             custom_type: WAKE_CUSTOM_TYPE,
-            content: ordered.iter().map(|injection| injection.content.as_str()).collect::<Vec<_>>().join(DETAIL_SEPARATOR),
+            content,
             display: false,
-            details: ordered
+            details: ordered[..fitting_count]
                 .iter()
                 .filter_map(|injection| {
                     injection.custom_type.as_ref().map(|custom_type| IdleInjectionDetail {

@@ -231,6 +231,7 @@ pub struct CompletionNotifierDeps {
     pub schedule: Option<CompletionRetrySchedule>,
     pub get_parent_state: Option<Arc<dyn Fn() -> ParentState + Send + Sync>>,
     pub get_current_session_id: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    pub completion_transport_limit: Option<usize>,
 }
 
 impl CompletionNotifierDeps {
@@ -242,6 +243,7 @@ impl CompletionNotifierDeps {
             schedule: None,
             get_parent_state: None,
             get_current_session_id: None,
+            completion_transport_limit: None,
         }
     }
 }

@@ -5224,6 +5224,7 @@ dependencies = [
  "maho-omo-bundled-skills",
  "maho-omo-claim-receipt",
  "maho-omo-comment-checker",
+ "maho-omo-config-core",
  "maho-omo-config-startup",
  "maho-omo-config-watch",
  "maho-omo-desktop-toolkit",
