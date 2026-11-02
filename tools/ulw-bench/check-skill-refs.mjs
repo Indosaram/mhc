@@ -11,45 +11,23 @@ export const DEFAULT_SKILL_NAMES = [
 	"ulw-execute",
 	"ulw-plan",
 	"ulw-research",
-	"visual-qa",
 ]
 
-export const REGISTERED_REPORT_TOOLS_COMMANDS = new Set([
-	"check",
-	"layout-probe",
-	"repair decide",
-	"outcome init",
-	"outcome set",
-	"outcome gate",
-	"outcome render",
-	"outcome state",
-	"outcome verify",
-	"outcome finish",
-	"outcome briefing",
-	"format-extract",
-	"fact add",
-	"fact quote",
-	"fact retract",
-	"fact export",
-	"fact fill",
-	"fact verify",
-	"fact derive",
-	"fact pairs",
-	"fact meaning-check",
-	"fact polish-apply",
-	"fact polish-diff",
-	"source snapshot",
-	"source refresh",
-	"source probe-conversion",
-	"claims index",
-	"repair",
-	"outcome",
-	"fact",
-	"source",
-	"claims",
-	"help",
-	"--help",
-])
+// Dynamically fetch registered commands
+let REGISTERED_REPORT_TOOLS_COMMANDS = new Set()
+try {
+	const reportTools = await import("../../assets/omo-latest/skills/ulw-research/scripts/report-tools.mjs")
+	for (const cmd of reportTools.COMMANDS) {
+		REGISTERED_REPORT_TOOLS_COMMANDS.add(cmd)
+	}
+	// Add subcommands manually since COMMANDS only has top-level
+	const subcommands = ["fact add", "fact quote", "fact retract", "fact export", "fact fill", "fact verify", "fact derive", "fact pairs", "fact meaning-check", "fact polish-apply", "fact polish-diff"]
+	for (const sub of subcommands) {
+		REGISTERED_REPORT_TOOLS_COMMANDS.add(sub)
+	}
+} catch (e) {
+	console.error("Warning: Could not dynamically load report-tools.mjs commands", e)
+}
 
 function stripPathDecorations(raw) {
 	return raw
