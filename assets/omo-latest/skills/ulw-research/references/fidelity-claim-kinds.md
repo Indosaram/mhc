@@ -1,3 +1,5 @@
+Read this when classifying claims into typed kinds, checking accepted row types, or auditing defect codes.
+
 # Fidelity Claim Kinds
 
 A report sentence states a plain fact or quote by default. When it claims more than that (that we ran or checked something, that a number is derived, that it is an assumption), the writer marks the claim kind in the placeholder, fill renders the mark as the `data-claim-kind` attribute on the element it writes, and the fidelity gate checks that every marked fact cites a ledger row the kind accepts. The gate never infers a claim kind from wording: an unmarked sentence is checked as a plain fact or quote (so an unmarked `assumed` row is a `claim_kind_mismatch`: an unmarked assumption reads as a fact and needs its `{{A:F12:label}}` mark), and only the unmarked-warning rule raises a warning (severity minor, never blocking) when a sentence reads like the kind and cites a fact not marked with it.

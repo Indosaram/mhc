@@ -1,6 +1,6 @@
-# ulw-research - collection and exploration contract
+Read this when a document deliverable is requested, or the run needs more than the Phase 0-2 summary in SKILL.md: Phase 0 journal files, full role protocols and the example spawn, Phase 2 expansion steps, excursions, convergence.
 
-Read this before scoping or collecting sources: Phase 0 journal files, full role protocols, Phase 2 expansion steps, excursions, convergence.
+# ulw-research - collection and exploration contract
 
 ## Phase 0 — Decompose and open the journal
 

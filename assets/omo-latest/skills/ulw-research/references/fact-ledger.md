@@ -1,3 +1,5 @@
+Read this when a document deliverable is requested and you are snapshotting sources (including conversion probes) or registering, quoting, deriving, filling, or verifying numbers and claims in the verbatim fact ledger.
+
 # Fact ledger
 
 `$SESSION_DIR/fact-ledger.json` holds every number and every direct quotation a research run may put in front of a reader. Rows come only from a source snapshot (through a deterministic locator), from a script-computed derivation, or from an explicit assumption with a rationale. A report source never carries a typed value: it carries a placeholder, and `fact fill` renders the row. The validity rules (ids, per-kind columns, the status machine) are in [fact-ledger-grammar.md](fact-ledger-grammar.md); this file is the working guide.

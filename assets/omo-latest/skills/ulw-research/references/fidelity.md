@@ -1,6 +1,8 @@
+Read this when writing or re-entering the `## Fidelity` block of `brief.md`, asking the fidelity questions, or when a `fact` command refuses with `fidelity_interview_incomplete`, `brief_changed`, `derived_not_allowed`, or `source_outside_floor`.
+
 # ulw-research - source fidelity
 
-Read this when writing or re-entering the `## Fidelity` block of `brief.md`, asking the fidelity questions, or when a `fact` command refuses with `fidelity_interview_incomplete`, `brief_changed`, `derived_not_allowed`, or `source_outside_floor`. The inference step that decides each field is step 4 of [deliverable-phase.md](deliverable-phase.md) section 4.
+The inference step that decides each field is step 4 of [deliverable-phase.md](deliverable-phase.md) section 4.
 
 ## The fidelity fields and the lock
 
