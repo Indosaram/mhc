@@ -271,8 +271,9 @@ pub fn squash_without_paths(
         let message = lines.join("\n");
         let name_arg = format!("user.name={name}");
         let email_arg = format!("user.email={email}");
-        // The squash commit gets the memory commit budget and must not end in auto maintenance,
-        // like every other memory commit (`repo.ts`).
+        // SAFETY-DIVERGENCE(reflection/completion-repair.ts): upstream runs this commit with
+        // neither flag; it runs the memory hooks, so it gets the memory commit budget and must
+        // not end in auto maintenance, like every other memory commit (`repo.ts`).
         let mut commit_argv: Vec<&str> = NO_AUTO_MAINTENANCE.to_vec();
         commit_argv.extend([
             "-c",
