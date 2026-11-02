@@ -4280,8 +4280,8 @@
     "ulw-research": [
       {
         "path": "AGENTS.md",
-        "bytes": 8436,
-        "sha256": "647f12dd471757b1c92d2ab8b436cd0fe355164e8e4ed93b4996fcff9c6866a1",
+        "bytes": 8404,
+        "sha256": "28e705223965fa3a169bff4656292b3fd29974e958ac67256ca1a4a402d17c9e",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/AGENTS.md (MIT), mhc-adapted"
       },
       {
@@ -4292,15 +4292,21 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 36346,
-        "sha256": "df748a5925ecf4437f70b08d4e03556a85c8c46510c7c2a255f22cc288075f84",
+        "bytes": 25185,
+        "sha256": "035dbe58af2f02edee709bb720a424e3befc800b526cf8cee90a952b0a642ceb",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/SKILL.md (MIT), mhc-adapted"
       },
       {
         "path": "references/deliverable-phase.md",
-        "bytes": 50199,
-        "sha256": "32107955c08027e573632639e8803d9eeb4daba3f7f87138ff26c082d944a78e",
+        "bytes": 70689,
+        "sha256": "8f5b291cb294e2bd0fbd559d7c38439bded14c0afaf0451bab8e1a939101bf6f",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/deliverable-phase.md (MIT)"
+      },
+      {
+        "path": "references/epistemic.md",
+        "bytes": 2692,
+        "sha256": "d69839f52089489f141867a5676f25ce5136e57da43ab06b23bea80b5cf7f9bb",
+        "source": null
       },
       {
         "path": "references/fact-ledger-grammar.md",
@@ -4310,8 +4316,8 @@
       },
       {
         "path": "references/fact-ledger.md",
-        "bytes": 24940,
-        "sha256": "f4d164ea3201ca25114829a60af43a3a13a229893e77f856dc03f072edc9419b",
+        "bytes": 25653,
+        "sha256": "3b39cc40eb1605db8816fad3cc4303c392038a462356ab71f81217d0b6286e2a",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fact-ledger.md (MIT)"
       },
       {
@@ -4321,10 +4327,22 @@
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/fidelity-claim-kinds.md (MIT)"
       },
       {
+        "path": "references/fidelity.md",
+        "bytes": 10923,
+        "sha256": "1053ae0c2418fc46d52c45902458beffb86025ab1db5f3668e1dd635a2070f64",
+        "source": null
+      },
+      {
         "path": "references/markdown-blocks.md",
         "bytes": 721,
         "sha256": "b5fdbc9a147730739249d655f3ca57b33e256c72a518f6fc98707899d23bdafc",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/markdown-blocks.md (MIT)"
+      },
+      {
+        "path": "references/mass-collection.md",
+        "bytes": 1779,
+        "sha256": "afed66d686566d310f87f855c0414f2414fc42e3885c4d924af4def0deab2fdc",
+        "source": null
       },
       {
         "path": "references/report-gates.md",
@@ -4334,26 +4352,26 @@
       },
       {
         "path": "references/report-visualization.md",
-        "bytes": 15603,
-        "sha256": "e3ea103136975c0a46c482b0ecea15640ec49988ee84b5d1de47fd9c4baee48c",
+        "bytes": 15708,
+        "sha256": "f94b8298e1a72cb0d7b7067138bf7b60adf7f1235ba01c463464bb680ed77760",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/report-visualization.md (MIT)"
       },
       {
         "path": "references/research-collection.md",
-        "bytes": 27167,
-        "sha256": "8a261881b375432189d87123934a71609b9d448fbdfd93bfb016aeddc6599be6",
+        "bytes": 15145,
+        "sha256": "64707e237d848fb271a04f7127414000a5972af00acb413ea01f34e8f4161934",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-collection.md (MIT), mhc-adapted"
       },
       {
         "path": "references/research-delivery.md",
-        "bytes": 14622,
-        "sha256": "028c67a83b68aa994cfbf62651e82c8fa23e2a49ee2a9dc38a299986f8ebf6d2",
+        "bytes": 15573,
+        "sha256": "dacbad2c0824778b6cf69ec050969a50247120c47f122007b976dba5a8021a44",
         "source": "lazycodex@e809c369:plugins/omo/skills/ulw-research/references/research-delivery.md (MIT), mhc-adapted"
       },
       {
         "path": "references/unit-rules.md",
-        "bytes": 16592,
-        "sha256": "deff2524bd8e9f0d4d5ee1ceb114a8104bafa2c43a7294b01cbb93f913d63f24",
+        "bytes": 16391,
+        "sha256": "6d78afb98ce74e001732fd4999f43de962f6224ed41d76a4619aff3154a5e8fc",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-research/references/unit-rules.md (MIT)"
       },
       {
