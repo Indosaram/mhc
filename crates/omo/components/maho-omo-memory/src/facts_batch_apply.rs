@@ -8,9 +8,11 @@ use memory_core::{
         extraction::{
             FactsBatch, FactsExtractionError, FactsExtractionRecord, validate_facts_recovery,
         },
-        mutation_plan::{MutationPlanError, plan_facts_mutation},
+        mutation_plan::{MutationPlanError, facts_records_hash, plan_facts_mutation},
         person_routing::FactsPeopleRouting,
         recovery::{FactsRecoveryResult, find_facts_batch_receipt},
+        recovery_mutation::FactsMutationTransaction,
+        recovery_ownership::capture_owned_facts_state,
     },
     git::{GitCommitAuthor, GitLogOptions, GitMemoryRepo, errors::GitError},
 };
@@ -23,6 +25,7 @@ pub enum FactsApplyError {
     Recovery(memory_core::facts::recovery::FactsRecoveryError),
     Artifact(ArtifactError),
     Secret(String),
+    Suppression(String),
 }
 /// Prefix that carries a secret rejection (upstream `MemorySecretError`) through string-typed apply errors.
 pub const SECRET_REJECTION_PREFIX: &str = "memory secret rejected: ";
@@ -55,6 +58,8 @@ fn secret_like_record(
         })
         .then(|| "agreement record text matches a secret pattern".into())
 }
+/// `Unchanged` also answers a batch whose every record restated owner-forgotten or corrected
+/// content (nothing to commit).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Applied {
     Committed {
@@ -139,6 +144,14 @@ pub fn apply_facts_with_retries<T, E>(
     }
     Ok(None)
 }
+/// Applies a claimed facts batch; the caller holds the memory-write lock. The owner suppression
+/// store is re-read here, inside that lock (the same lock every forget and correct holds), so a
+/// forget that landed after the run's earlier filter still keeps its content out; an unreadable
+/// store fails the apply. A recorded `applyRecovery` planned for records a forget has since
+/// suppressed (a crash between plan and commit, then a forget, then the retry) no longer matches
+/// the records: on any records-hash mismatch, whatever that attempt applied is rolled back to its
+/// pre-state and the batch is planned again for the current records, so a forget never strands a
+/// half-applied tree. With nothing left to apply the rollback still runs before `Unchanged`.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_claimed(
     run_dir: &Path,
@@ -160,19 +173,61 @@ pub fn apply_claimed(
             affected_paths,
         });
     }
+    let suppressions = memory_core::receipts::owner::SuppressionSet::for_repo(&repo.dir)
+        .map_err(FactsApplyError::Suppression)?;
+    let records: Vec<FactsExtractionRecord> = records
+        .iter()
+        .filter(|record| !suppressions.suppresses(record.text()))
+        .cloned()
+        .collect();
     let batch = FactsBatch {
         batch_id: ledger.batch_id.clone(),
-        records: records.to_vec(),
+        records: records.clone(),
         agreements: (!agreements.is_empty()).then(|| agreements.to_vec()),
     };
     if ledger.apply_recovery.is_none()
-        && let Some(reason) = secret_like_record(records, agreements)
+        && let Some(reason) = secret_like_record(&records, agreements)
     {
         return Err(FactsApplyError::Secret(reason));
     }
-    let recovery = if let Some(recovery) = &ledger.apply_recovery {
-        validate_facts_recovery(recovery, &batch).map_err(FactsApplyError::Extraction)?;
-        recovery.clone()
+    let recorded = match &ledger.apply_recovery {
+        None => None,
+        Some(recovery) => match validate_facts_recovery(recovery, &batch) {
+            Ok(()) => Some(recovery.clone()),
+            Err(_)
+                if recovery.version == 1
+                    && recovery.batch_id == batch.batch_id
+                    && recovery.records_hash != facts_records_hash(&records, agreements) =>
+            {
+                match capture_owned_facts_state(repo, recovery).map_err(FactsApplyError::Git)? {
+                    Some(boundary) => {
+                        let mut transaction =
+                            FactsMutationTransaction::new(repo, recovery, &boundary);
+                        if let Err(error) = transaction.restore_pre_state() {
+                            transaction
+                                .rollback()
+                                .map_err(|rollback| FactsApplyError::Recovery(rollback.into()))?;
+                            return Err(FactsApplyError::Recovery(error.into()));
+                        }
+                    }
+                    // Nothing of that attempt is left in a clean tree (HEAD may have moved since).
+                    None if repo
+                        .status(&[] as &[&str])
+                        .map_err(FactsApplyError::Git)?
+                        .trim()
+                        .is_empty() => {}
+                    None => return Ok(Applied::ParentDirty { detail: None }),
+                }
+                None
+            }
+            Err(error) => return Err(FactsApplyError::Extraction(error)),
+        },
+    };
+    if records.is_empty() && agreements.is_empty() {
+        return Ok(Applied::Unchanged);
+    }
+    let recovery = if let Some(recovery) = recorded {
+        recovery
     } else {
         let mut on_event =
             |event: &AgreementEvent| log_agreement_event(warn, &ledger.batch_id, event);
@@ -414,6 +469,49 @@ mod tests {
         let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
         assert!(matches!(apply_claimed(&run,&ledger,&engine.repo,&[],&agreements,&policy,&people,"agent",&mut |_|{}).unwrap(),Applied::Committed{..}));
         let persisted:FactsRunLedger=crate::worker::run_artifacts::read_run_json(&run.join("ledger.json")).unwrap();assert_eq!(persisted.apply_recovery.unwrap().agreement_event_version,Some(1));
+    }
+    #[test]
+    fn suppressed_records_never_apply_and_an_unreadable_store_fails() {
+        let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
+        let run=root.path().join("run");std::fs::create_dir(&run).unwrap();let ledger=ledger();crate::worker::run_artifacts::write_run_json_atomic(&run.join("ledger.json"),&ledger,0o600).unwrap();
+        memory_core::receipts::owner::append_suppressions(&paths.runtime,memory_core::receipts::owner::SUPPRESSION_FORGET,"Project uses a durable journal",None,"forget-1").unwrap();
+        let records=vec![FactsExtractionRecord::Project{receipt:None,text:"Project uses a durable journal.".into(),date:"2026-08-12".into()}];let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
+        let head=engine.repo.head().unwrap();
+        assert_eq!(apply_claimed(&run,&ledger,&engine.repo,&records,&[],&AgreementsPolicy::default(),&people,"agent",&mut |_|{}).unwrap(),Applied::Unchanged);
+        let store=paths.runtime.join(memory_core::receipts::owner::SUPPRESSIONS_FILE);std::fs::remove_file(&store).unwrap();std::fs::create_dir(&store).unwrap();
+        assert!(matches!(apply_claimed(&run,&ledger,&engine.repo,&records,&[],&AgreementsPolicy::default(),&people,"agent",&mut |_|{}),Err(FactsApplyError::Suppression(_))));
+        assert_eq!(engine.repo.head().unwrap(),head);
+    }
+    #[test]
+    fn a_forget_between_a_crashed_apply_and_its_retry_rolls_the_stale_plan_back() {
+        // The last case changes the records without any suppression: any records-hash mismatch rolls back.
+        for (keep_one,suppress) in [(true,true),(false,true),(true,false)]{
+            let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
+            let run=root.path().join("run");std::fs::create_dir(&run).unwrap();let people=FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
+            let forgotten=FactsExtractionRecord::Project{receipt:None,text:"Project uses a durable journal".into(),date:"2026-08-12".into()};
+            let kept=FactsExtractionRecord::Project{receipt:None,text:"Project ships nightly builds".into(),date:"2026-08-12".into()};
+            let mut ledger=ledger();
+            let recovery=plan_facts_mutation(&engine.repo,&FactsBatch{batch_id:ledger.batch_id.clone(),records:vec![forgotten.clone(),kept.clone()],agreements:None},Some(&people),None,&AgreementsPolicy::default(),None).unwrap();
+            {
+                // The crashed attempt applied its post-state and never committed.
+                let boundary=capture_owned_facts_state(&engine.repo,&recovery).unwrap().unwrap();
+                let mut transaction=FactsMutationTransaction::new(&engine.repo,&recovery,&boundary);
+                transaction.restore_pre_state().unwrap();transaction.apply_post_state().unwrap();
+            }
+            assert!(!engine.repo.status(&[] as &[&str]).unwrap().trim().is_empty(),"the crash left the tree dirty");
+            ledger.head_before_apply=Some(recovery.head_before_apply.clone());ledger.apply_recovery=Some(recovery.clone());
+            crate::worker::run_artifacts::write_run_json_atomic(&run.join("ledger.json"),&ledger,0o600).unwrap();
+            if suppress{memory_core::receipts::owner::append_suppressions(&paths.runtime,memory_core::receipts::owner::SUPPRESSION_FORGET,"Project uses a durable journal",None,"forget-1").unwrap();}
+            let head=engine.repo.head().unwrap();
+            // The retry's records were already filtered by the finalize, before the apply.
+            let records=if keep_one{vec![kept.clone()]}else{Vec::new()};
+            let applied=apply_claimed(&run,&ledger,&engine.repo,&records,&[],&AgreementsPolicy::default(),&people,"agent",&mut |_|{}).unwrap();
+            assert!(engine.repo.status(&[] as &[&str]).unwrap().trim().is_empty(),"the stale post-state is rolled back");
+            let memory:String=engine.repo.ls_tree(Some("HEAD"),None).unwrap().iter().filter(|path|path.ends_with(".md")).map(|path|engine.repo.show("HEAD",path).unwrap()).collect();
+            assert!(!memory.contains("durable journal"),"{memory}");
+            if keep_one{assert!(matches!(applied,Applied::Committed{..}),"{applied:?}");assert!(memory.contains("nightly builds"),"{memory}");}
+            else{assert_eq!(applied,Applied::Unchanged);assert_eq!(engine.repo.head().unwrap(),head);}
+        }
     }
     #[test]
     fn foreign_dirty_worktree_is_retained() {

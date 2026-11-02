@@ -6,6 +6,13 @@ mod schedule_command;
 static GLOBAL_ALLOCATOR: maho_tool_child::allocator::MahoAllocator =
     maho_tool_child::allocator::ALLOCATOR;
 
+/// Stack of the thread that runs `run()`. Every tokio runtime this binary builds is current-thread,
+/// so every future - the RPC host, its session workers, the TUI - is polled on that one thread. The
+/// OS main-thread stack differs by platform (8 MiB on Linux and macOS, 1 MiB on Windows, which a
+/// debug-build stdio host overflowed), so the entry thread gets one explicit size on every OS, with
+/// headroom over the 8 MiB the Linux and macOS builds already run in. It is reserved, not committed.
+const ENTRY_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 fn main() {
     #[cfg(feature = "omo")]
     {
@@ -17,27 +24,33 @@ fn main() {
     }
     // senpi `internal-role.ts`: a process the engine started as a tool child becomes one before anything else runs.
     maho_cli::internal_role::run_internal_role();
-    #[cfg(windows)]
-    {
-        const STACK_SIZE: usize = 8 * 1024 * 1024;
-        let run_result = std::thread::Builder::new()
-            .name("mhc-main".into())
-            .stack_size(STACK_SIZE)
-            .spawn(run)
-            .expect("spawn runner thread")
-            .join();
-        match run_result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                use std::io::Write;
-                let _ = writeln!(std::io::stderr(), "{error}");
-                std::process::exit(1);
-            }
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
+    // Before anything can spawn: no descendant may keep this process's stdio pipes open behind its
+    // back (Windows inherits every inheritable handle; see `private_stdio`). A failure only loses
+    // that guarantee, so it is reported and startup continues.
+    #[cfg(feature = "omo")]
+    if let Err(error) = maho_cli::private_stdio::keep_std_handles_private() {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "Warning: could not keep stdio private from child processes: {error}"
+        );
     }
-    #[cfg(not(windows))]
-    if let Err(error) = run() {
+    // Named "main" so panic reports read exactly as they did on the OS main thread. The OS main
+    // thread only waits in `join`, so the process stays effectively single-threaded through the
+    // startup environment edits `run()` makes before it starts any other thread.
+    let entry = std::thread::Builder::new()
+        .name("main".to_owned())
+        .stack_size(ENTRY_THREAD_STACK_BYTES)
+        .spawn(run);
+    let result = match entry {
+        Ok(entry) => match entry.join() {
+            Ok(result) => result,
+            // The panic hook already reported it; keep the exit code a main-thread panic has.
+            Err(_) => std::process::exit(101),
+        },
+        Err(error) => Err(format!("failed to start the entry thread: {error}")),
+    };
+    if let Err(error) = result {
         // `eprintln!` panics when stderr is gone (a hung-up terminal), turning exit 1 into a 101
         // panic; report best-effort instead.
         use std::io::Write;

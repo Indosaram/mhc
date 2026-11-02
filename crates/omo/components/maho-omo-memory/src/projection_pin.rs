@@ -6,7 +6,10 @@
 //! line of the late `<memory_notice>` message instead. The pin is a session entry, so a resume, a
 //! host restart or a runtime reload reproduces the same bytes. It moves only where the prompt cache
 //! is already cold or the user asked for it: after a compaction, on `/recompile`, or when a history
-//! rewrite took the pinned commit away.
+//! rewrite took the pinned commit away - and after an owner forget or correct: a pin records the
+//! identity's suppression generation (`memory_core::receipts::owner::suppression_generation`), and
+//! a pin taken under an older generation repins to HEAD, so a pinned copy never keeps content the
+//! owner had removed. An unreadable generation repins on every turn (fail closed).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -46,6 +49,9 @@ pub struct ProjectionPinRecord {
     pub noticed_through: Option<String>,
     pub compaction_id: Option<String>,
     pub pinned_at_ms: f64,
+    /// The suppression generation the pin was taken under; `None` before the first forget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppression_generation: Option<String>,
 }
 
 /// Why a session stopped reusing its pinned revision.
@@ -55,6 +61,8 @@ pub enum ProjectionRepinReason {
     Compaction,
     Refresh,
     MissingRevision,
+    /// An owner forget or correct removed content after the pin was taken.
+    Suppression,
 }
 
 /// The revision a turn compiles at, plus the changes it must announce.
@@ -102,6 +110,8 @@ struct Resolved {
     compaction_id: Option<String>,
     state: Option<ProjectionPinRecord>,
     reason: Option<ProjectionRepinReason>,
+    /// The current suppression generation, read before any repin reads HEAD.
+    generation: Result<Option<String>, String>,
 }
 
 /// Port of `createProjectionPins`.
@@ -160,6 +170,9 @@ impl NativeProjectionPins {
         branch: &[SessionEntry],
     ) -> Result<Resolved, GitError> {
         let compaction_id = latest_compaction_id(branch);
+        // Read before HEAD is (re)read for a repin: a forget bumps the generation only after its
+        // removal commit, so a repin under the new generation always compiles without the content.
+        let generation = memory_core::receipts::owner::suppression_generation_for_repo(&repo.dir);
         let cached = self
             .live
             .lock()
@@ -181,6 +194,13 @@ impl NativeProjectionPins {
         };
         let reason = if stale_by_refresh {
             Some(ProjectionRepinReason::Refresh)
+        } else if let Some(state) = &state
+            && match &generation {
+                Ok(current) => state.suppression_generation != *current,
+                Err(_) => true,
+            }
+        {
+            Some(ProjectionRepinReason::Suppression)
         } else {
             self.repin_reason(
                 repo,
@@ -193,6 +213,7 @@ impl NativeProjectionPins {
             compaction_id,
             state,
             reason,
+            generation,
         })
     }
 
@@ -266,18 +287,25 @@ impl ProjectionPins for NativeProjectionPins {
             None
         };
         let Some(state) = pinned else {
+            // Once any forget happened (or the generation is unreadable), HEAD is read again after
+            // the generation, so the pin cannot land on a HEAD older than the removal it records.
+            let head = match &resolved.generation {
+                Ok(None) => input.head.clone(),
+                Ok(Some(_)) | Err(_) => input.repo.head()?,
+            };
             let fresh = ProjectionPinRecord {
                 version: 1,
                 session_id: input.session_id.to_string(),
-                revision: input.head.clone(),
-                noticed_through: input.head.clone(),
+                revision: head.clone(),
+                noticed_through: head.clone(),
                 compaction_id: resolved.compaction_id,
                 pinned_at_ms: self.now_ms(),
+                suppression_generation: resolved.generation.ok().flatten(),
             };
             self.store_live(input.session_id, fresh.clone());
             record(&fresh);
             return Ok(ProjectionTurn {
-                revision: input.head,
+                revision: head,
                 changes: None,
                 repinned: Some(reason.unwrap_or(ProjectionRepinReason::FirstTurn)),
                 sources: Vec::new(),
@@ -369,6 +397,10 @@ fn parse_pin_record(value: &Value) -> Option<ProjectionPinRecord> {
     if !pinned_at_ms.is_finite() {
         return None;
     }
+    let suppression_generation = match value.get("suppressionGeneration") {
+        None => None,
+        generation => nullable_string(generation)?,
+    };
     Some(ProjectionPinRecord {
         version: 1,
         session_id: session_id.to_string(),
@@ -376,6 +408,7 @@ fn parse_pin_record(value: &Value) -> Option<ProjectionPinRecord> {
         noticed_through,
         compaction_id,
         pinned_at_ms,
+        suppression_generation,
     })
 }
 
@@ -758,6 +791,7 @@ mod tests {
             noticed_through: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             compaction_id: None,
             pinned_at_ms: 0.0,
+            suppression_generation: None,
         };
         let pins = NativeProjectionPins::with_now(Box::new(|| 2.0));
         let branch = [pin_entry(&vanished)];
@@ -799,6 +833,50 @@ mod tests {
             .expect("peek"),
             pinned.revision
         );
+    }
+
+    #[test]
+    fn a_forget_after_the_pin_repins_live_and_resumed_sessions_to_head() {
+        let (dir, repo) = fixture();
+        let runtime = dir.path().join("runtime");
+        let pins = NativeProjectionPins::with_now(Box::new(|| 1.0));
+        let (first, records) = advance(&pins, &repo, &[], SESSION);
+        // The forget's removal commit lands, then its purge bumps the generation.
+        commit_as(&repo, "owner-forget", "system/persona.md", "scrubbed");
+        let generation = memory_core::receipts::owner::record_purge(&runtime, "rcpt_a", "forget-a").expect("purge");
+
+        let (live, live_records) = advance(&pins, &repo, &[], SESSION);
+        assert_ne!(live.revision, first.revision);
+        assert_eq!(live.revision, repo.head().expect("head"));
+        assert_eq!(live.repinned, Some(ProjectionRepinReason::Suppression));
+        assert_eq!(live_records[0].suppression_generation.as_deref(), Some(generation.as_str()));
+        let (settled, _) = advance(&pins, &repo, &[], SESSION);
+        assert_eq!(settled.repinned, None);
+        assert_eq!(settled.revision, live.revision);
+
+        // A resume or restart reading the pre-forget pin entry repins too.
+        let resumed = NativeProjectionPins::with_now(Box::new(|| 2.0));
+        let (after_resume, _) = advance(&resumed, &repo, &[pin_entry(&records[0])], SESSION);
+        assert_eq!(after_resume.revision, repo.head().expect("head"));
+        assert_eq!(after_resume.repinned, Some(ProjectionRepinReason::Suppression));
+        // A pin persisted under the current generation keeps its bytes.
+        let restarted = NativeProjectionPins::with_now(Box::new(|| 3.0));
+        let (kept, _) = advance(&restarted, &repo, &[pin_entry(&live_records[0])], SESSION);
+        assert_eq!(kept.repinned, None);
+        assert_eq!(kept.revision, live.revision);
+    }
+
+    #[test]
+    fn an_unreadable_suppression_generation_repins_every_turn() {
+        let (dir, repo) = fixture();
+        let pins = NativeProjectionPins::with_now(Box::new(|| 1.0));
+        advance(&pins, &repo, &[], SESSION);
+        std::fs::create_dir_all(dir.path().join("runtime").join(memory_core::receipts::owner::SUPPRESSIONS_FILE)).expect("directory in place of the store");
+        for _ in 0..2 {
+            let (turn, _) = advance(&pins, &repo, &[], SESSION);
+            assert_eq!(turn.repinned, Some(ProjectionRepinReason::Suppression));
+            assert_eq!(turn.revision, repo.head().expect("head"));
+        }
     }
 
     #[test]

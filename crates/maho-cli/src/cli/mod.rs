@@ -101,6 +101,9 @@ pub mod task_host;
 pub mod task_runners;
 #[cfg(feature = "omo")]
 pub mod task_session;
+#[cfg(feature = "omo")]
+pub mod session_policy;
+pub mod supervisor_work_tools;
 #[cfg(not(feature = "omo"))]
 pub mod team_view;
 pub mod tool_runtime;

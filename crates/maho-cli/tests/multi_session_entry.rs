@@ -108,7 +108,8 @@ fn a_profile_session_path_opens_that_session_with_the_profile_cwd() {
     assert_eq!(manager.cwd(), cwd.as_str());
 }
 
-#[cfg(unix)]
+/// Unix sockets, and on Windows the named pipe the logical path resolves to (`run_socket_host`).
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
     use maho_cli::cli::host_runtime::create_host_core;
@@ -150,4 +151,33 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
         .unwrap();
     assert!(result.is_ok());
     assert!(!socket.exists(), "the host removes the endpoint it bound");
+}
+
+/// Where the socket listener is not ported, a CLI-built host asked to listen refuses at once with an
+/// error instead of serving nothing until a client gives up. Windows serves named pipes, so this
+/// holds only off Unix and Windows (`run_multi_session_host_with_signals`).
+#[cfg(not(any(unix, windows)))]
+#[tokio::test]
+async fn a_cli_built_host_refuses_a_socket_listener_where_sockets_are_unsupported() {
+    use maho_cli::cli::host_runtime::create_host_core;
+    use maho_rpc::multi_session_host::{HostShutdownSignals, run_multi_session_host_with_signals};
+    use std::time::Duration;
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let socket = temp.path().join("rpc.sock");
+    let socket_text = socket.to_string_lossy().into_owned();
+    let core = create_host_core(rpc_config(&cwd, &cwd), &cwd, Some(socket_text.as_str()))
+        .expect("host core");
+    let signals = HostShutdownSignals {
+        watchdog: None,
+        empty_exit_ms: Some(2_000.0),
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_multi_session_host_with_signals(core, Some(socket_text), signals),
+    )
+    .await
+    .expect("the host answered the listen request at once");
+    assert!(result.is_err(), "a host that cannot listen reports it");
+    assert!(!socket.exists(), "a refused listener binds no endpoint");
 }

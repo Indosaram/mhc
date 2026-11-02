@@ -5827,10 +5827,9 @@ impl ExtensionApi {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .live_rpc_handlers
-                .insert(
-                    self.registered.identity.path.clone(),
-                    self.registered.rpc_handlers.clone(),
-                );
+                .entry(self.registered.identity.path.clone())
+                .or_default()
+                .extend(self.registered.rpc_handlers.clone());
         }
         Ok(())
     }

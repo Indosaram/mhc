@@ -352,3 +352,22 @@ fn given_resolve_source_when_accepting_then_source_is_recorded_on_nudge() {
     let normal = drained.iter().find(|n| n.path == "b.md").unwrap();
     assert_eq!(normal.source, None);
 }
+
+/// Owner forget/correct suppression (`memory_core::receipts::owner`): a nudge restating forgotten
+/// content is never written to pending, enqueued on the coordinator or marked surfaced.
+#[test]
+fn given_owner_forgotten_content_when_accepting_then_the_restating_nudge_is_never_delivered() {
+    let root = tempfile::tempdir().unwrap();
+    let context = context(root.path());
+    memory_core::receipts::owner::append_suppressions(&context.identity_paths.runtime, memory_core::receipts::owner::SUPPRESSION_FORGET, "Use the QA remote host for every build.", None, "forget-1").unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let coordinator = Arc::new(RemoveReentrantCoordinator { recorder: Arc::clone(&recorder), extra: "unused.md".to_string() });
+    let delivery = delivery(root.path(), Some(coordinator), Arc::clone(&recorder));
+    delivery.accept("s1", &context, &[nudge("a.md", "Remember: use the QA remote host for every build."), nudge("b.md", "Integration tests run nightly.")]);
+    assert_eq!(recorder.enqueued.lock().unwrap().clone(), vec!["kibitzer:b.md".to_string()]);
+    assert_eq!(RecallLedger::new(root.path().join("ledger")).surfaced_paths("s1"), std::collections::BTreeSet::from(["b.md".to_string()]));
+    // A batch that only restates forgotten content changes nothing.
+    delivery.accept("s1", &context, &[nudge("c.md", "The owner said use the qa remote host for every build")]);
+    assert_eq!(recorder.enqueued.lock().unwrap().clone(), vec!["kibitzer:b.md".to_string()]);
+    assert_eq!(pending_paths(root.path()), std::collections::BTreeSet::from(["b.md".to_string()]));
+}
