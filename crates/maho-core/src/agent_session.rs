@@ -1004,6 +1004,10 @@ pub struct AgentSessionInner {
     /// senpi `_runtimeMessagesTokenized`: the idle release tokenized the agent's runtime messages
     /// in place; the next reader or run re-materializes them through `runtime_messages()`.
     runtime_messages_tokenized: std::sync::atomic::AtomicBool,
+    /// Bumped by every child park that clears the runtime messages. The idle release captures it
+    /// before reading the transcript and commits its tokenized copy under this lock only when no
+    /// park ran in between, so a parked child never gets its messages back.
+    idle_park_generation: Mutex<u64>,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     lifecycle_fact_subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
     /// Forwards the bound runner's `senpi:extension-rpc-event` channel onto the session bus, so a
@@ -4199,6 +4203,7 @@ impl AgentSession {
                 settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
                 agent_run_active: std::sync::atomic::AtomicBool::new(false),
                 runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
+                idle_park_generation: Mutex::new(0),
                 wake_source_subscription: Mutex::new(None),
                 lifecycle_fact_subscriptions: Mutex::new(Vec::new()),
                 extension_rpc_event_forward: Mutex::new(None),
@@ -13429,6 +13434,7 @@ impl AgentSession {
     /// the native `SessionManager` keeps none (every view re-materializes from the store).
     fn release_idle_runtime_messages(&self) {
         self.state().abort_provenance = Default::default();
+        let park_generation = *lock(&self.idle_park_generation);
         let _ = self.with_session_manager_mut(|manager| manager.park_idle_memory());
         let store = self.with_session_manager(|manager| manager.resident_store().clone());
         store.spill_resident();
@@ -13454,19 +13460,30 @@ impl AgentSession {
         if let Some(hook) = IDLE_RELEASE_BEFORE_COMMIT.with(|slot| slot.borrow_mut().take()) {
             hook();
         }
-        self.agent.set_messages(messages);
-        self.runtime_messages_tokenized
-            .store(true, Ordering::SeqCst);
+        {
+            let generation = lock(&self.idle_park_generation);
+            if *generation == park_generation {
+                self.agent.set_messages(messages);
+                self.runtime_messages_tokenized
+                    .store(true, Ordering::SeqCst);
+            }
+        }
         maho_tool_child::allocator::reclaim_unused_heap();
     }
 
     pub fn park_idle_child_memory(&self) {
-        let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
-        if parked {
-            self.agent.set_messages(Vec::new());
-            self.runtime_messages_tokenized
-                .store(true, Ordering::SeqCst);
-        } else {
+        let parked = {
+            let mut generation = lock(&self.idle_park_generation);
+            let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
+            if parked {
+                *generation += 1;
+                self.agent.set_messages(Vec::new());
+                self.runtime_messages_tokenized
+                    .store(true, Ordering::SeqCst);
+            }
+            parked
+        };
+        if !parked {
             self.release_idle_runtime_messages();
         }
         maho_tool_child::allocator::reclaim_unused_heap();
