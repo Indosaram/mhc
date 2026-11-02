@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use crate::git::exec::system_git_exec;
+use crate::git::repo::{COMMIT_TIMEOUT_MS, NO_AUTO_MAINTENANCE};
+use crate::git::repo_tests::RecordingExec;
 use crate::git::{
     GitCommitAuthor, GitMemoryRepo, GitMemoryRepoOptions, GitMergeOptions, GitSeedFile,
     InitializeGitRepoOptions,
@@ -508,4 +510,38 @@ fn given_present_then_absent_resources_when_cleanup_repeats_then_both_receipts_c
         ],
     );
     assert_ne!(branch_ref.unwrap().code, 0);
+}
+
+/// `worktree-integration.ts`: the integration merge is a memory commit, so it runs with the commit
+/// budget and without auto maintenance; the reads around it keep the git budget.
+#[test]
+fn given_auto_integration_when_it_merges_then_the_merge_gets_the_commit_budget_without_auto_maintenance() {
+    let fix = fixture("budget");
+    commit_in_worktree(&fix.worktree, "budget.md", "budget\n");
+    let validation = validated_tip(&fix.worktree);
+    let recording = RecordingExec::system();
+    let mut worktree = fix.worktree.clone();
+    worktree.exec = recording.clone();
+
+    let result = integrate_validated_reflection(
+        &worktree,
+        IntegrateValidatedReflectionInput {
+            mode: ReflectionIntegrationMode::Auto,
+            run_id: "budget".to_string(),
+            summary: "budget".to_string(),
+            validated: validation.clone(),
+        },
+        |op| op(),
+    );
+    assert_eq!(result.outcome, ReflectionOutcome::Merged);
+
+    let (argv, timeout) = recording.call_with("--no-ff");
+    let mut expected: Vec<String> = NO_AUTO_MAINTENANCE.map(str::to_string).to_vec();
+    expected.extend(
+        ["merge", "--no-ff", validation.tip_sha.as_str(), "-m", "merge(reflection): budget", "-m", "Omo-Run: budget"]
+            .map(str::to_string),
+    );
+    assert_eq!(argv, expected);
+    assert_eq!(timeout, COMMIT_TIMEOUT_MS, "{argv:?}");
+    assert_eq!(recording.call_with("status").1, 30_000, "reads keep the git budget");
 }
