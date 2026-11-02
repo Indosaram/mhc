@@ -1,6 +1,6 @@
-# ulw-research - epistemic instrumentation
+Read this when a document deliverable is requested and you open the journal or write `intent-diff.md`, `claim-graph.md`, `observation-manifest.md`, `verification-economics.md`, `cause-disappearance.md`, or the `## Epistemic instrumentation` section of `SYNTHESIS.md`.
 
-Read this when opening the journal for a run that records claims (Phase 0), and before writing any of the five instrumentation artifacts below or the `## Epistemic instrumentation` section of `SYNTHESIS.md`.
+# ulw-research - epistemic instrumentation
 
 ## Epistemic instrumentation
 

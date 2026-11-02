@@ -230,20 +230,20 @@ High-yield combinations: official docs (`site:<docs domain>`), GitHub implementa
 
 ## Execution references
 
-These references continue this skill in phase order; their requirements remain binding. Read each one when its condition holds; a chat-shaped question with no document deliverable needs only the collection, epistemic, and delivery references:
+These references continue this skill; their requirements remain binding. Read each one only when its condition holds; a chat-shaped answer with no document deliverable needs none of them unless a row fires:
 
 | Reference | Read when |
 |---|---|
-| [research-collection.md](references/research-collection.md) | Read before scoping or collecting sources: Phase 0 journal files, full role protocols, Phase 2 expansion steps, excursions, convergence. |
+| [research-collection.md](references/research-collection.md) | Read when a document deliverable is requested, or the run needs more than the Phase 0-2 summary in SKILL.md: Phase 0 journal files, full role protocols and the example spawn, Phase 2 expansion steps, excursions, convergence. |
 | [mass-collection.md](references/mass-collection.md) | Read when the user asked for MASS research ("mass ulw research", "mulw research", "ulw mass research", in any language) or collection runs through the `workflow` tool. |
-| [epistemic.md](references/epistemic.md) | Read when opening the journal and before writing `intent-diff.md`, `claim-graph.md`, `observation-manifest.md`, `verification-economics.md`, or `cause-disappearance.md`. |
-| [research-delivery.md](references/research-delivery.md) | Read before verification, synthesis, and delivery: Phase 3 verification by code, Phase 3b claim graph locking, Phase 4 synthesis. |
-| [deliverable-phase.md](references/deliverable-phase.md) | Read when a document deliverable (PDF, DOCX, slides, or standalone HTML) is requested: lane and format interview, Phase 5 final materials, asset and assembly workers, delivery gates, meaning verifier, bounded repair, closing briefing. |
+| [epistemic.md](references/epistemic.md) | Read when a document deliverable is requested and you open the journal or write `intent-diff.md`, `claim-graph.md`, `observation-manifest.md`, `verification-economics.md`, `cause-disappearance.md`, or the `## Epistemic instrumentation` section of `SYNTHESIS.md`. |
+| [research-delivery.md](references/research-delivery.md) | Read when a document deliverable is requested, or the run needs more than the Phase 3-4 summary in SKILL.md: Phase 3 verification by code, Phase 3b claim graph locking, Phase 4 synthesis. |
+| [deliverable-phase.md](references/deliverable-phase.md) | Read when a document deliverable (PDF, DOCX, slides, or standalone HTML) is requested, before the brief is written and again before Phase 5: lane and format interview, Phase 5 final materials, asset and assembly workers, delivery gates, meaning verifier, bounded repair, closing briefing. |
 | [fidelity.md](references/fidelity.md) | Read when writing or re-entering the `## Fidelity` block of `brief.md`, asking the fidelity questions, or when a `fact` command refuses with `fidelity_interview_incomplete`, `brief_changed`, `derived_not_allowed`, or `source_outside_floor`. |
 | [fact-ledger.md](references/fact-ledger.md) | Read when a document deliverable is requested and you are snapshotting sources (including conversion probes) or registering, quoting, deriving, filling, or verifying numbers and claims in the verbatim fact ledger. |
 | [fact-ledger-grammar.md](references/fact-ledger-grammar.md) | Read when validating ledger row schemas, kind rules, transition errors, or grammar rules. |
 | [fidelity-claim-kinds.md](references/fidelity-claim-kinds.md) | Read when classifying claims into typed kinds, checking accepted row types, or auditing defect codes. |
 | [markdown-blocks.md](references/markdown-blocks.md) | Read when formatting CommonMark blocks, link closers, and structured Markdown output. |
 | [report-gates.md](references/report-gates.md) | Read when diagnosing static, fidelity, layout, or visual gate defects and defect code fixes. |
-| [report-visualization.md](references/report-visualization.md) | Read when plotting quantitative data charts, rendering Mermaid diagrams, or conducting reference comparisons. |
+| [report-visualization.md](references/report-visualization.md) | Read when the asset lanes start in the final-materials phase, or when plotting quantitative data charts, rendering Mermaid diagrams, or conducting reference comparisons. |
 | [unit-rules.md](references/unit-rules.md) | Read when computing or verifying derived unit algebra, compatible conversions, and composite units. |

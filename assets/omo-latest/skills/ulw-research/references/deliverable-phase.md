@@ -1,6 +1,8 @@
+Read this when a document deliverable (PDF, DOCX, slides, or standalone HTML) is requested, before the brief is written and again before Phase 5: lane and format interview, Phase 5 final materials, asset and assembly workers, delivery gates, meaning verifier, bounded repair, closing briefing.
+
 # ulw-research - deliverable phase contract
 
-Read this when a document deliverable (PDF, DOCX, slides, or standalone HTML) is requested: before the brief is written and again before Phase 5. It replaces the old blocking format question with a contract that never stalls collection: the deliverable is derived from the request and its destination, the requester is asked only what is genuinely missing, and every promise made about the output is tracked in a manifest until it is delivered, skipped, or blocked with a reason.
+This contract replaces the old blocking format question with a contract that never stalls collection: the deliverable is derived from the request and its destination, the requester is asked only what is genuinely missing, and every promise made about the output is tracked in a manifest until it is delivered, skipped, or blocked with a reason.
 
 Every helper named here is one command of the dispatcher:
 

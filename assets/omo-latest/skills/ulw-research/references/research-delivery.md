@@ -1,6 +1,8 @@
+Read this when a document deliverable is requested, or the run needs more than the Phase 3-4 summary in SKILL.md: Phase 3 verification by code, Phase 3b claim graph locking, Phase 4 synthesis.
+
 # ulw-research - delivery and verification contract
 
-Read this when executing Phase 3 verification by code, Phase 3b claim graph locking, or Phase 4 synthesis. The instrumentation artifacts those phases write are defined in [epistemic.md](epistemic.md).
+The instrumentation artifacts those phases write are defined in [epistemic.md](epistemic.md).
 
 ## Phase 3 — Verify contested claims by running code
 
