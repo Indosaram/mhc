@@ -37,10 +37,12 @@ The probe guarantees these converter outputs: CommonMark links and images (inlin
 
 Anything outside the guaranteed scope gets no allowance: every digit such a construct adds or reshapes is reported as altered (the safe direction: `fact add` refuses the number, it is never silently accepted). Recover with a verified text: `source snapshot --id S<n> --text <verified.txt> --replace`, then add from it. The probe's class table in the source repository has a row per example above that asserts the altered report, so the boundary is tested.
 
+`source snapshot --html` and `--url` probe their own conversion and print the numbers it altered (a footnote digit glued onto a value, a merged table cell); `fact add` then refuses those numbers with `conversion_altered_number`, so write a verified text of that source and replace the snapshot with `source snapshot --id S<n> --text <verified.txt> --replace` (refused while an active row cites the id: retract those rows first or use a new id), then add the fact from it. When you convert a document yourself, run `node "$SKILL_DIR/scripts/report-tools.mjs" source probe-conversion <raw-file> <converted-file>` and snapshot a verified `--text` instead before adding any number it lists as `altered`; `lost` is a warning only.
+
 
 ## Snapshot and locator contract
 
-This is the one definition; `SKILL.md` and the collection reference point here.
+This is the one definition; the collection reference points here.
 
 - **Raw means the captured bytes** of what the run fetched: the page HTML (`--url`, `--html`), a saved file (`--raw <file>`), a PDF, or a command's stdout (`--command`). `snapshot_sha256` is sha256 of `raw.bin`.
 - **A `--text` file is never raw.** `source snapshot --text <file>` alone registers a converted-only source (`kind: converted-only`, no `raw.bin`): `fact add` on it fails with `snapshot_not_raw`, and `fact quote` works but every quote carries the minor `quote_converted_only` warning (printed by `fact quote` with or without `--json`, and reported again by `fact verify`). `--raw <bytes> --text <extraction> --extractor NAME@VERSION` keeps the original bytes and declares the text their extraction (a PDF and its `pdftotext` output); `raw.bin` and `text.txt` are then both pinned (`sha256`, `text_sha256`). An HTML `--raw` file is read as a page, so the text only names the extractor. `--raw` with `--url`, `--html`, or `--command` is a usage error.

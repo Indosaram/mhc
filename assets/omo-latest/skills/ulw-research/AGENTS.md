@@ -61,7 +61,7 @@ ulw-research/
 - Each `.mjs` stays at or under 250 lines; split by responsibility, never by size.
 - The CLI never launches a browser. The layout probe is printed as one async expression; the orchestrator evaluates it through the browser skill's owned headless engine and passes the result back with `check --layout`.
 - Time is always injected (`--now`, `startedAt`); no module reads the clock inside a decision.
-- Tests are co-located given/when/then bun tests; CLI tests spawn `node` with bun removed from `PATH`. Fixtures live only under `scripts/tests/fixtures/`, are depersonalized, and never ship.
+- Tests are co-located given/when/then bun tests; CLI tests spawn `node` with bun removed from `PATH`. Fixtures are test-only, depersonalized, and never ship.
 - References and scripts carry no Hangul (Korean match strings are `\u` escapes).
 
 ## ANTI-PATTERNS
