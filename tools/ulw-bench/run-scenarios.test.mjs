@@ -115,19 +115,49 @@ test result: ok. 3 passed; 0 failed
     assert.equal(parsed.statusCallsConstant, true);
   });
 
-  it("marks a scenario as failed if outcome not met", async () => {
-    // Stub scenario with outcomeMet: false
-    const scenario = { id: "S-FAIL", name: "Fail", prompt: "fail", expectedOutcome: true };
-    const result = await executeScenarioRun({
-      bin: "false", // Simulate failure
-      model: "test-model",
-      scenario,
-      runIndex: 1,
-      fixtureDir: "/tmp",
-      maxInputTokens: 100,
-      outDir: "/tmp",
-    });
-    assert.strictEqual(result.outcomeMet, false);
-    assert.strictEqual(result.status, "failed");
+  it("marks a scenario as passed/failed based on fixture check", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ulw-test-outcome-"));
+    try {
+      createFixtureRepo(tmpDir);
+      
+      const scenario = { id: "S-TEST", name: "Test", prompt: "test", expectedOutcome: true };
+
+      // Case 1: Pass
+      // Fix math.rs
+      const mathPath = path.join(tmpDir, "src/math.rs");
+      const content = fs.readFileSync(mathPath, "utf8");
+      fs.writeFileSync(mathPath, content.replace("assert_eq!(add(2, 2), 5);", "assert_eq!(add(2, 2), 4);"), "utf8");
+      
+      const resultPass = await executeScenarioRun({
+        bin: "true", // Mock exit
+        model: "test-model",
+        scenario,
+        runIndex: 1,
+        fixtureDir: tmpDir,
+        maxInputTokens: 100,
+        outDir: "/tmp",
+      });
+      assert.strictEqual(resultPass.outcomeMet, true);
+      assert.strictEqual(resultPass.status, "completed");
+
+      // Case 2: Fail
+      // Break math.rs: remove the fix, restore the failing test
+      const contentFail = fs.readFileSync(mathPath, "utf8");
+      fs.writeFileSync(mathPath, contentFail.replace("assert_eq!(add(2, 2), 4);", "assert_eq!(add(2, 2), 5);"), "utf8");
+      
+      const resultFail = await executeScenarioRun({
+        bin: "true", 
+        model: "test-model",
+        scenario,
+        runIndex: 1,
+        fixtureDir: tmpDir,
+        maxInputTokens: 100,
+        outDir: "/tmp",
+      });
+      assert.strictEqual(resultFail.outcomeMet, false);
+      assert.strictEqual(resultFail.status, "failed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -108,10 +108,8 @@ export async function executeScenarioRun({
       // Determine if scenario met expected outcome
       let outcomeMet = true;
       if (scenario.expectedOutcome) {
-        // Simple assertion based on test result for now, 
-        // as scenarios/index.mjs doesn't seem to define complex outcome checks yet.
-        // Assuming success means exitCode 0 and testResult pass.
-        outcomeMet = exitCode === 0 && testResult.passed === true;
+        // Assert based on fixture test result: pass property
+        outcomeMet = exitCode === 0 && testResult.pass === true;
       }
 
       const record = {
