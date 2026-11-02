@@ -25,6 +25,19 @@ use super::worktree_mutation_queue::with_serialized_git_worktree_mutation;
 const INITIAL_COMMIT: &str = "Initialize memory repository";
 const EMPTY_INITIAL_COMMIT: &str = "Initialize empty memory repository";
 const GIT_TIMEOUT_MS: u64 = 30_000;
+/// `repo.ts` `COMMIT_TIMEOUT_MS`: `git commit` runs the memory hooks (each one starts the engine
+/// executable to check the staged files) on top of the write, which on a loaded host outlasts
+/// [`GIT_TIMEOUT_MS`]; a timed-out commit is still judged by what landed.
+pub const COMMIT_TIMEOUT_MS: u64 = 120_000;
+/// `no-auto-maintenance.ts`: a commit or merge must not end in `git maintenance run --auto`, whose
+/// background gc races the next writer outside every memory lock (omo #10177).
+pub const NO_AUTO_MAINTENANCE: [&str; 4] = ["-c", "maintenance.auto=false", "-c", "gc.auto=0"];
+
+fn no_auto_maintenance_argv(command: &str) -> Vec<String> {
+    let mut argv: Vec<String> = NO_AUTO_MAINTENANCE.iter().map(|arg| (*arg).to_string()).collect();
+    argv.push(command.to_string());
+    argv
+}
 
 /// High-level Git repository for memory storage operations.
 #[derive(Clone)]
@@ -122,11 +135,12 @@ impl GitMemoryRepo {
         }
 
         super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
-            let mut argv = vec!["commit".to_string(), "--allow-empty".to_string()];
+            let mut argv = no_auto_maintenance_argv("commit");
+            argv.push("--allow-empty".to_string());
             argv.extend(author_flags(&author));
             argv.push("-m".to_string());
             argv.push(EMPTY_INITIAL_COMMIT.to_string());
-            self.git(&argv)
+            self.git_with_timeout(&argv, COMMIT_TIMEOUT_MS)
         })?;
 
         self.require_head()
@@ -447,7 +461,7 @@ impl GitMemoryRepo {
         ref_name: &str,
         options: Option<&GitMergeOptions>,
     ) -> Result<String, GitError> {
-        let mut argv = vec!["merge".to_string()];
+        let mut argv = no_auto_maintenance_argv("merge");
         let no_ff = options.and_then(|o| o.no_ff).unwrap_or(true);
         if no_ff {
             argv.push("--no-ff".to_string());
@@ -539,11 +553,11 @@ impl GitMemoryRepo {
         let landed = super::commit_outcome::commit_judged_by_outcome(
             || {
                 super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
-                    let mut argv = vec!["commit".to_string()];
+                    let mut argv = no_auto_maintenance_argv("commit");
                     argv.extend(author_flags(author));
                     argv.push("-m".to_string());
                     argv.push(reason.to_string());
-                    self.git(&argv)
+                    self.git_with_timeout(&argv, COMMIT_TIMEOUT_MS)
                 })
             },
             || self.head(),
@@ -565,7 +579,11 @@ impl GitMemoryRepo {
     }
 
     fn git(&self, argv: &[String]) -> Result<GitExecResult, GitError> {
-        let res = self.git_result(argv)?;
+        self.git_with_timeout(argv, GIT_TIMEOUT_MS)
+    }
+
+    fn git_with_timeout(&self, argv: &[String], timeout_ms: u64) -> Result<GitExecResult, GitError> {
+        let res = self.git_result_with_timeout(argv, timeout_ms)?;
         if res.code != 0 {
             return Err(command_error(argv, &res));
         }
@@ -573,11 +591,15 @@ impl GitMemoryRepo {
     }
 
     fn git_result(&self, argv: &[String]) -> Result<GitExecResult, GitError> {
+        self.git_result_with_timeout(argv, GIT_TIMEOUT_MS)
+    }
+
+    fn git_result_with_timeout(&self, argv: &[String], timeout_ms: u64) -> Result<GitExecResult, GitError> {
         let mut env = BTreeMap::new();
         env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
         let opts = GitExecOptions {
             cwd: self.dir.clone(),
-            timeout_ms: GIT_TIMEOUT_MS,
+            timeout_ms,
             env,
             stdin: None,
         };
