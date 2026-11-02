@@ -72,12 +72,22 @@ pub trait GitExec: Send + Sync {
 impl dyn GitExec + '_ {
     /// Run `git` with string-slice arguments in `cwd` using the default 30s timeout.
     pub fn run_in(&self, cwd: &std::path::Path, args: &[&str]) -> std::io::Result<GitExecResult> {
+        self.run_in_with_timeout(cwd, args, 30_000)
+    }
+
+    /// Run `git` with string-slice arguments in `cwd` under `timeout_ms`.
+    pub fn run_in_with_timeout(
+        &self,
+        cwd: &std::path::Path,
+        args: &[&str],
+        timeout_ms: u64,
+    ) -> std::io::Result<GitExecResult> {
         let argv: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
         self.run(
             &argv,
             &GitExecOptions {
                 cwd: cwd.to_path_buf(),
-                timeout_ms: 30_000,
+                timeout_ms,
                 ..GitExecOptions::default()
             },
         )
