@@ -4214,8 +4214,8 @@
     "ulw-execute": [
       {
         "path": "SKILL.md",
-        "bytes": 27108,
-        "sha256": "89f242a51bb0db4eca4c1f26cd5988e136a34531616288a9e230489b786d40c7",
+        "bytes": 27110,
+        "sha256": "4e0664736de2834240ee0970d28bb4c4c809a379d034a896cb42cde61f7b67fd",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-execute/SKILL.md (MIT)"
       }
     ],
@@ -4266,8 +4266,8 @@
       },
       {
         "path": "scripts/plan-templates.mjs",
-        "bytes": 7191,
-        "sha256": "22b84faa8a4ce76d497f13c1460e920732b0527ae8e7ba136c7b5f2e936ac5dd",
+        "bytes": 7177,
+        "sha256": "d5a5685c6e7409d60ae08722665a89e6eeb48396769841c477d9e23259a31a85",
         "source": "lazycodex@75b01747:plugins/omo/skills/ulw-plan/scripts/plan-templates.mjs (MIT)"
       },
       {
