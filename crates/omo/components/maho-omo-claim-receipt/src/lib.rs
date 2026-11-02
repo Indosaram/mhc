@@ -16,7 +16,10 @@ pub mod signatures;
 pub mod verdict;
 
 pub use cell_commands::{cell_invoked_kinds, CellCheckKind, CellInvokedKinds};
-pub use classify::{classify_claims, mask_quoted_prose, split_sentences, Claim, ClaimKind, ClaimStrength};
+pub use classify::{
+    classify_claims, join_soft_newlines, mask_quoted_prose, split_sentences, Claim, ClaimKind,
+    ClaimStrength,
+};
 pub use evidence::{
     build_timeline, content_text, CheckEvidence, CheckKind, CheckOutcome, EditEvidence, Timeline,
 };
