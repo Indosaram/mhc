@@ -104,6 +104,15 @@ export async function executeScenarioRun({
 
     child.on("close", (exitCode) => {
       const testResult = checkFixtureTest(fixtureDir);
+      
+      // Determine if scenario met expected outcome
+      let outcomeMet = true;
+      if (scenario.expectedOutcome) {
+        // Simple assertion based on test result for now, 
+        // as scenarios/index.mjs doesn't seem to define complex outcome checks yet.
+        // Assuming success means exitCode 0 and testResult pass.
+        outcomeMet = exitCode === 0 && testResult.passed === true;
+      }
 
       const record = {
         scenarioId: scenario.id,
@@ -119,7 +128,8 @@ export async function executeScenarioRun({
         referencesRead: Array.from(referencesRead),
         reportToolsRan,
         fixtureTestResult: testResult,
-        status: overBudget ? "over-budget" : exitCode === 0 ? "completed" : "failed",
+        outcomeMet,
+        status: overBudget ? "over-budget" : (outcomeMet ? "completed" : "failed"),
       };
 
       const outPath = path.join(outDir, `${scenario.id}-run${runIndex}.json`);
@@ -221,6 +231,10 @@ async function main() {
     const summary = await runScenarios(parsed);
     if (!parsed.dryRun) {
       console.log(`Scenario run complete: ${summary.completed}/${summary.totalRuns} completed.`);
+      if (summary.failed > 0) {
+        console.error(`Error: ${summary.failed} scenario runs failed expectations.`);
+        process.exit(1);
+      }
     }
   } catch (err) {
     console.error(`Error: ${err.message}`);

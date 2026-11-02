@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { parseArgs, isSleepOnlyCall } from "./run-scenarios.mjs";
+import { parseArgs, isSleepOnlyCall, executeScenarioRun } from "./run-scenarios.mjs";
 import { SCENARIOS } from "./scenarios/index.mjs";
 import { createFixtureRepo, checkFixtureTest } from "./scenarios/fixture-generator.mjs";
 import { parseCounterLog } from "./collect-counters.mjs";
@@ -113,5 +113,21 @@ test result: ok. 3 passed; 0 failed
     assert.equal(parsed.contextTransformInvocations, 0);
     assert.equal(parsed.messageClones, 0);
     assert.equal(parsed.statusCallsConstant, true);
+  });
+
+  it("marks a scenario as failed if outcome not met", async () => {
+    // Stub scenario with outcomeMet: false
+    const scenario = { id: "S-FAIL", name: "Fail", prompt: "fail", expectedOutcome: true };
+    const result = await executeScenarioRun({
+      bin: "false", // Simulate failure
+      model: "test-model",
+      scenario,
+      runIndex: 1,
+      fixtureDir: "/tmp",
+      maxInputTokens: 100,
+      outDir: "/tmp",
+    });
+    assert.strictEqual(result.outcomeMet, false);
+    assert.strictEqual(result.status, "failed");
   });
 });
