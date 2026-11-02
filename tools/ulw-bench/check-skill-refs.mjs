@@ -48,6 +48,30 @@ function findSkillDir(filePath, repoRoot) {
 	return dirname(filePath)
 }
 
+// Sibling skills a skill-relative path may belong to: a `<sibling>/` or
+// `<sibling skill dir>/` prefix right before the path, or a sibling named on the
+// same line or enclosing paragraph ("the `frontend` skill's", "browser skill").
+function siblingSkillDirs(line, matchIndex, skillDir, paragraph = line) {
+	const skillsRoot = dirname(skillDir)
+	const names = []
+	const prefix = line.slice(0, matchIndex)
+	const prefixMatch = prefix.match(/(?:^|[^\w./-])<?([a-z0-9][a-z0-9-]*?)(?:[ -]skill[ -](?:dir|root)>)?\/$/i)
+	if (prefixMatch) names.push(prefixMatch[1])
+	const namedRegex = /`?\b([a-z0-9][a-z0-9-]*?)`?[ -]skill\b/gi
+	let m
+	while ((m = namedRegex.exec(paragraph)) !== null) names.push(m[1])
+	const dirs = []
+	for (const name of new Set(names.map((n) => n.toLowerCase()))) {
+		const dir = join(skillsRoot, name)
+		if (dir !== skillDir && existsSync(join(dir, "SKILL.md"))) dirs.push(dir)
+	}
+	return dirs
+}
+
+function existsInSibling(clean, line, matchIndex, context) {
+	return siblingSkillDirs(line, matchIndex, context.skillDir, context.paragraph ?? line).some((dir) => existsSync(join(dir, clean)))
+}
+
 export function checkLine(line, lineNum, context) {
 	const { filePath, repoRoot, skillDir } = context
 	const findings = []
@@ -71,7 +95,7 @@ export function checkLine(line, lineNum, context) {
 			if (clean.startsWith("scripts/")) {
 				const existsSkill = existsSync(join(skillDir, clean))
 				const existsRepo = existsSync(join(repoRoot, clean))
-				if (!existsSkill && !existsRepo) {
+				if (!existsSkill && !existsRepo && !existsInSibling(clean, line, btMatch.index + 1, context)) {
 					findings.push({ line: lineNum, rule: "a", message: `missing path in backticks: ${clean}`, match: raw })
 				}
 			} else {
@@ -92,7 +116,7 @@ export function checkLine(line, lineNum, context) {
 		const existsSkill = existsSync(join(skillDir, clean))
 		const existsFileDir = existsSync(join(dirname(filePath), clean))
 		const existsRepo = existsSync(join(repoRoot, clean))
-		if (!existsSkill && !existsFileDir && !existsRepo) {
+		if (!existsSkill && !existsFileDir && !existsRepo && !existsInSibling(clean, line, srMatch.index, context)) {
 			findings.push({ line: lineNum, rule: "b", message: `missing skill-relative path: ${clean}`, match: raw })
 		}
 	}
@@ -141,8 +165,18 @@ export function checkFile(filePath, repoRoot) {
 	const lines = content.split("\n")
 	const findings = []
 
+	// Enclosing paragraph (blank-line delimited) for sibling-skill name lookup.
+	const paragraphs = []
+	for (let start = 0; start < lines.length; ) {
+		let end = start
+		while (end < lines.length && lines[end].trim() !== "") end++
+		const text = lines.slice(start, Math.max(end, start + 1)).join("\n")
+		for (let k = start; k < Math.max(end, start + 1); k++) paragraphs[k] = text
+		start = Math.max(end, start + 1)
+	}
+
 	for (let i = 0; i < lines.length; i++) {
-		const lineFindings = checkLine(lines[i], i + 1, { filePath, repoRoot, skillDir })
+		const lineFindings = checkLine(lines[i], i + 1, { filePath, repoRoot, skillDir, paragraph: paragraphs[i] })
 		for (const f of lineFindings) {
 			findings.push({ file: relative(repoRoot, filePath), ...f })
 		}
