@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync, lstatSync, readdirSync, existsSync } from "node:fs";
+import { resolve, extname, join } from "node:path";
 
 /**
  * Tokenize input text into lowercase alphanumeric word tokens.
@@ -34,6 +33,29 @@ export function extractNgrams(words, n) {
 		ngrams.push(words.slice(i, i + n).join(" "));
 	}
 	return ngrams;
+}
+
+/**
+ * Recursively find all text files in a path.
+ *
+ * @param {string} path
+ * @returns {string[]}
+ */
+export function findFiles(path) {
+	const stats = lstatSync(path);
+	if (stats.isFile()) {
+		return [path];
+	}
+	let files = [];
+	for (const entry of readdirSync(path)) {
+		const fullPath = join(path, entry);
+		if (lstatSync(fullPath).isDirectory()) {
+			files = files.concat(findFiles(fullPath));
+		} else {
+			files.push(fullPath);
+		}
+	}
+	return files;
 }
 
 /**
@@ -82,111 +104,48 @@ export function findOverlap(textA, textB, n = 8, options = {}) {
 
 /**
  * Main CLI runner.
- * Usage: node ngram-overlap.mjs [--n <num>] [--per-line] [--json] <fileA> <fileB>
+ * Usage: node ngram-overlap.mjs <fileOrDirA> <fileOrDirB>
  */
-export function runCli(argv = process.argv.slice(2)) {
-	let n = 8;
-	let perLine = false;
-	let jsonOutput = false;
-	const files = [];
-
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		if (arg === "--n" || arg === "-n") {
-			const next = argv[++i];
-			if (!next) {
-				console.error("Missing value for --n");
-				process.exit(2);
-			}
-			n = Number.parseInt(next, 10);
-			if (Number.isNaN(n) || n <= 0) {
-				console.error(`Invalid --n value: ${next}`);
-				process.exit(2);
-			}
-		} else if (arg.startsWith("--n=")) {
-			n = Number.parseInt(arg.slice(4), 10);
-			if (Number.isNaN(n) || n <= 0) {
-				console.error(`Invalid --n value: ${arg}`);
-				process.exit(2);
-			}
-		} else if (arg === "--per-line") {
-			perLine = true;
-		} else if (arg === "--json") {
-			jsonOutput = true;
-		} else if (arg === "--help" || arg === "-h") {
-			console.log(
-				"Usage: node ngram-overlap.mjs [--n 8] [--per-line] [--json] <fileA> <fileB>",
-			);
-			process.exit(0);
-		} else if (!arg.startsWith("-")) {
-			files.push(arg);
-		} else {
-			console.error(`Unknown option: ${arg}`);
-			process.exit(2);
-		}
-	}
-
-	if (files.length !== 2) {
-		console.error(
-			"Error: exactly two file arguments are required: <fileA> <fileB>",
-		);
+export function runCli() {
+	const argv = process.argv.slice(2);
+	if (argv.length !== 2) {
+		console.error("Usage: node ngram-overlap.mjs <fileOrDirA> <fileOrDirB>");
 		process.exit(2);
 	}
 
-	const fileA = resolve(process.cwd(), files[0]);
-	const fileB = resolve(process.cwd(), files[1]);
+	const filesA = findFiles(argv[0]);
+	const filesB = findFiles(argv[1]);
 
-	let textA = "";
-	let textB = "";
-	try {
-		textA = readFileSync(fileA, "utf8");
-	} catch (err) {
-		console.error(`Failed to read fileA (${fileA}): ${err.message}`);
-		process.exit(2);
-	}
-	try {
-		textB = readFileSync(fileB, "utf8");
-	} catch (err) {
-		console.error(`Failed to read fileB (${fileB}): ${err.message}`);
+	if (filesA.length === 0 || filesB.length === 0) {
+		console.error("No files found in source sets.");
 		process.exit(2);
 	}
 
-	const matches = findOverlap(textA, textB, n, { perLine });
+	let totalWordsA = 0;
+	const textA = filesA.map(f => {
+		const content = readFileSync(f, "utf8");
+		totalWordsA += tokenizeWords(content).length;
+		return content;
+	}).join("\n");
+	
+	const textB = filesB.map(f => readFileSync(f, "utf8")).join("\n");
+	const totalWordsB = tokenizeWords(textB).length;
 
-	if (jsonOutput) {
-		console.log(
-			JSON.stringify(
-				{
-					n,
-					fileA,
-					fileB,
-					overlapCount: matches.length,
-					matches,
-				},
-				null,
-				2,
-			),
-		);
-	} else {
-		console.log(matches.length);
-		if (matches.length > 0) {
-			const sample = matches.slice(0, 5).map((m) => m.gram);
-			console.error(
-				`Found ${matches.length} matching ${n}-gram(s). Samples:\n  - ${sample.join("\n  - ")}`,
-			);
-		}
+	if (totalWordsA === 0 || totalWordsB === 0) {
+		console.error("No words found in source sets.");
+		process.exit(2);
 	}
 
+	const matches = findOverlap(textA, textB, 8);
 	if (matches.length > 0) {
+		console.log(`Found ${matches.length} matches.`);
 		process.exit(1);
 	}
+	console.log("No matches found.");
 	process.exit(0);
 }
 
-const isDirectCall =
-	process.argv[1] &&
-	resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isDirectCall) {
-	runCli();
+if (process.argv[1] && process.argv[1].endsWith("ngram-overlap.mjs")) {
+    runCli();
 }
+
