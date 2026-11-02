@@ -1,0 +1,24 @@
+# Provenance — maho-ultrawork Contract
+
+- **License**: MIT.
+- **Method**: Clean-room (**C**) authoring from specification `docs/cleanroom/specs/ultrawork-contract.md` and structural facts from MIT `assets/omo-latest/skills/ultrawork/SKILL.md`.
+- **Inputs Used**:
+  - `docs/cleanroom/specs/ultrawork-contract.md` (clean-room requirements, rule inventory, size budgets, scenario specifications).
+  - `assets/omo-latest/skills/ultrawork/SKILL.md` (permitted for frontmatter metadata, skill name, and file path facts only).
+  - `assets/omo-latest/skills/visual-qa/SKILL.md` (referenced for the bundled terminal capture script `scripts/tui-capture.mjs`).
+  - `tools/ulw-bench/check-skill-refs.mjs` (reference validation test harness).
+- **Inputs Strictly Excluded (Clean-Room Boundary)**:
+  - No `crates/omo/**` sources or history anywhere.
+  - No `directive.txt` or SUL references were opened, read, or quoted.
+  - No `/home/indo/code/oh-my-openagent` or `~/.bun/install/cache/omo-ai*` paths.
+  - No repository git history outside the clean-room export.
+- **Deliverables Authored in Fresh Prose**:
+  - `crates/maho-ultrawork/contract/core.md`: Complete core execution contract covering all 45 rules with disposition `core` and `condensed-core`, calibrated between 14,000 and 16,000 bytes (measured: 15,962 bytes).
+  - `crates/maho-ultrawork/contract/references/qa-channels.md`: Reference covering manual QA, protocol-level HTTP, browser, desktop GUI, and visual captures.
+  - `crates/maho-ultrawork/contract/references/delegation-and-teams.md`: Reference covering subagent dispatch, disjoint write scopes, task boards, and adversarial falsification.
+  - `crates/maho-ultrawork/contract/references/commits.md`: Reference covering conventional commit formatting and explicit authorization rules.
+  - `crates/maho-ultrawork/contract/references/review-gate.md`: Reference covering dual-trigger reviewer dispatch, delta re-reviews, and human escalation.
+  - `crates/maho-ultrawork/contract/references/tui-visual-qa.md`: Reference covering pseudoterminal capture via `scripts/tui-capture.mjs`, truecolor rendering, and glyph verification.
+  - `crates/maho-ultrawork/contract/COVERAGE.md`: Explicit mapping of every core/condensed-core rule (R1-R77) to its section heading in `core.md`.
+  - `assets/omo-latest/skills/ultrawork/SKILL.md`: Rewritten with frontmatter, complete core contract, and on-demand reference loading table.
+  - `assets/omo-latest/skills/ultrawork/references/*.md`: Shipped references synchronized with contract references.
