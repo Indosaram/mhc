@@ -1341,7 +1341,9 @@ mod registry_tests {
         let runtime = crate::runtime_session::TerminalRuntimeSession::start(
             "stream",
             crate::shared::test_sh_options("stty -echo; printf 'ready\\n'; read value")
-                .timeout(std::time::Duration::from_millis(500)),
+                // The deadline must land after the line: a ConPTY shell on a loaded Windows runner
+                // can take longer than a sub-second deadline to print anything at all.
+                .timeout(std::time::Duration::from_secs(10)),
         )
         .unwrap();
         registry
@@ -1356,12 +1358,18 @@ mod registry_tests {
                 ),
             )
             .unwrap();
-        let event = tokio::time::timeout(std::time::Duration::from_secs(5), ended.recv())
+        // Await the delivered line itself before the deadline, never a fixed wait.
+        let line = tokio::time::timeout(std::time::Duration::from_secs(60), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(line,MonitorEvent::Line {line,..} if line=="ready"));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(60), ended.recv())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(event.reason, MonitorEndedReason::Timeout);
-        assert!(matches!(events.try_recv(),Ok(MonitorEvent::Line {line,..}) if line=="ready"));
+        // The ended event is emitted after every line and summary of the watch, so nothing else came.
         assert!(events.try_recv().is_err());
         assert!(registry.snapshot().is_empty());
         registry.dispose();
