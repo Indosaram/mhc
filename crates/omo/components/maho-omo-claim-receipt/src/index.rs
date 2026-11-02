@@ -86,6 +86,25 @@ fn last_assistant_index(branch: &[Value]) -> Option<usize> {
     })
 }
 
+fn last_assistant_tail(ctx: &ExtensionContext) -> Option<Value> {
+    let (_, tail) = ctx.session_manager.get_branch_tail(1, &mut |data| {
+        data.get("type").and_then(Value::as_str) == Some("message")
+            && data.get("message").and_then(|m| m.get("role")).and_then(Value::as_str)
+                == Some("assistant")
+    });
+    tail.into_iter().rev().find_map(|entry| {
+        let mut value = entry.data;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("id".to_owned(), Value::String(entry.id));
+            object.insert("type".to_owned(), Value::String(entry.kind));
+        }
+        let is_assistant = value["type"].as_str() == Some("message")
+            && value["message"].is_object()
+            && value["message"]["role"].as_str() == Some("assistant");
+        is_assistant.then_some(value)
+    })
+}
+
 /// The claim-receipt component. `env` carries the memory-worker sentinels that exclude child runs.
 #[derive(Clone, Debug)]
 pub struct ClaimReceiptComponent {
@@ -218,11 +237,9 @@ impl Extension for ClaimReceiptComponent {
                     if read_agent_end_outcome(&ended).blocked_by.is_some() {
                         return Ok(EventResult::None);
                     }
-                    let branch = branch_entries(ctx);
-                    let Some(answer_index) = last_assistant_index(&branch) else {
+                    let Some(answer_entry) = last_assistant_tail(ctx) else {
                         return Ok(EventResult::None);
                     };
-                    let answer_entry = &branch[answer_index];
                     if !answer_entry["message"].is_object() {
                         return Ok(EventResult::None);
                     }
@@ -234,6 +251,15 @@ impl Extension for ClaimReceiptComponent {
                     }) {
                         return Ok(EventResult::None);
                     }
+                    let answer_text = crate::evidence::content_text(&content);
+                    let claims = crate::classify::classify_claims(&answer_text);
+                    if claims.is_empty() {
+                        return Ok(EventResult::None);
+                    }
+                    let branch = branch_entries(ctx);
+                    let Some(answer_index) = last_assistant_index(&branch) else {
+                        return Ok(EventResult::None);
+                    };
                     // Evaluation is synchronous here, so no user message can arrive mid-flight; the
                     // epoch guard below keeps a stale result from contaminating a newer epoch anyway.
                     let epoch = with_state(&sessions, &key, |state| state.epoch);
