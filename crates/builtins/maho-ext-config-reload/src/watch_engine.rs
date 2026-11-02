@@ -49,14 +49,24 @@ impl NativeWatchEngine {
         let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error)).map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()), source, close_completion: None, clock: Arc::new(TokioWatchClock) };
-        state.reconcile()?;
+        state.subscribe_wanted()?;
         Ok(state)
     }
     pub fn set_clock(&mut self, clock: Arc<dyn WatchClock>) { self.clock = clock; }
+    /// Re-aligns subscriptions with the scanned directories after a change. A directory first
+    /// subscribed here was scanned before its watch existed, so a file written into it in between
+    /// raised no event: queue a rescan of it so that file is still reported as a change.
     fn reconcile(&mut self) -> Result<(), String> {
+        for path in self.subscribe_wanted()? {
+            if self.sender.send(Some(path)).is_ok() { self.signal.notify_one(); }
+        }
+        Ok(())
+    }
+    fn subscribe_wanted(&mut self) -> Result<Vec<PathBuf>, String> {
         let wanted = self.engine.watched_directories();
         let removed: Vec<_> = self.subscriptions.keys().filter(|path| !wanted.contains(*path)).cloned().collect();
         for path in removed { if let Some(mut subscription) = self.subscriptions.remove(&path) { subscription.close()?; } }
+        let mut added = Vec::new();
         for path in wanted {
             if self.subscriptions.contains_key(&path) { continue; }
             let sender = self.sender.clone();
@@ -78,9 +88,10 @@ impl NativeWatchEngine {
                 if sender.send(affected).is_ok() { signal.notify_one(); }
             }), Arc::clone(&self.on_error))?;
             subscription.ready()?;
-            self.subscriptions.insert(path, subscription);
+            self.subscriptions.insert(path.clone(), subscription);
+            added.push(path);
         }
-        Ok(())
+        Ok(added)
     }
     pub fn next_change(&mut self, timeout: std::time::Duration) -> Result<RealChange, String> {
         let first = self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
