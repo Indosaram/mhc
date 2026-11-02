@@ -4882,14 +4882,14 @@
       },
       {
         "path": "CLEANROOM.md",
-        "bytes": 3442,
-        "sha256": "9f3c1e921669a5b3a2ad63aae8e4e67cfab37c3f120b1222a4f6f66b9e34c2a1",
+        "bytes": 3669,
+        "sha256": "d562655ff45c3ff62714d6085d348c22edae46151b85429a79e81fe3b4340ee4",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/CLEANROOM.md"
       },
       {
         "path": "SKILL.md",
-        "bytes": 49837,
-        "sha256": "a691fce99b7713ab2015bb6ddf613aa4130a59aca52db9815e36a5f9e6485845",
+        "bytes": 50712,
+        "sha256": "8e73b44e9263f920f38823315a7d4f8840e65fda7af824bf4385bc641171e92f",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/SKILL.md"
       },
       {
@@ -4939,6 +4939,12 @@
         "bytes": 1670,
         "sha256": "b05a453c673f6bd17a3a4a407e8694283effd2905d3b40025c41d27c77c79839",
         "source": "mhc clean-room (base lazycodex@75b01747 MIT where present): skills/visual-qa/scripts/png-synth.ts"
+      },
+      {
+        "path": "scripts/tui-capture.mjs",
+        "bytes": 15289,
+        "sha256": "4bb2fa70f5cc38f6dd470d8ea46962c985a04d4586ea1abe356550245c4edb99",
+        "source": null
       },
       {
         "path": "scripts/tui-grid.ts",
