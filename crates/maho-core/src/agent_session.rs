@@ -1004,6 +1004,10 @@ pub struct AgentSessionInner {
     /// senpi `_runtimeMessagesTokenized`: the idle release tokenized the agent's runtime messages
     /// in place; the next reader or run re-materializes them through `runtime_messages()`.
     runtime_messages_tokenized: std::sync::atomic::AtomicBool,
+    /// Bumped by every child park that clears the runtime messages. The idle release captures it
+    /// before reading the transcript and commits its tokenized copy under this lock only when no
+    /// park ran in between, so a parked child never gets its messages back.
+    idle_park_generation: Mutex<u64>,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     lifecycle_fact_subscriptions: Mutex<Vec<maho_ext_api::BusSubscription>>,
     /// Forwards the bound runner's `senpi:extension-rpc-event` channel onto the session bus, so a
@@ -3745,6 +3749,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs once inside the idle release, after it read the runtime messages and before it commits
+    /// the tokenized copy, so a test can force a park into that window.
+    static IDLE_RELEASE_BEFORE_COMMIT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 type ToolChildHostTargets = Arc<
     Mutex<
         Vec<(
@@ -4191,6 +4203,7 @@ impl AgentSession {
                 settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
                 agent_run_active: std::sync::atomic::AtomicBool::new(false),
                 runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
+                idle_park_generation: Mutex::new(0),
                 wake_source_subscription: Mutex::new(None),
                 lifecycle_fact_subscriptions: Mutex::new(Vec::new()),
                 extension_rpc_event_forward: Mutex::new(None),
@@ -13421,6 +13434,7 @@ impl AgentSession {
     /// the native `SessionManager` keeps none (every view re-materializes from the store).
     fn release_idle_runtime_messages(&self) {
         self.state().abort_provenance = Default::default();
+        let park_generation = *lock(&self.idle_park_generation);
         let _ = self.with_session_manager_mut(|manager| manager.park_idle_memory());
         let store = self.with_session_manager(|manager| manager.resident_store().clone());
         store.spill_resident();
@@ -13442,19 +13456,34 @@ impl AgentSession {
             })
             .collect();
         store.spill_resident();
-        self.agent.set_messages(messages);
-        self.runtime_messages_tokenized
-            .store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        if let Some(hook) = IDLE_RELEASE_BEFORE_COMMIT.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        {
+            let generation = lock(&self.idle_park_generation);
+            if *generation == park_generation {
+                self.agent.set_messages(messages);
+                self.runtime_messages_tokenized
+                    .store(true, Ordering::SeqCst);
+            }
+        }
         maho_tool_child::allocator::reclaim_unused_heap();
     }
 
     pub fn park_idle_child_memory(&self) {
-        let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
-        if parked {
-            self.agent.set_messages(Vec::new());
-            self.runtime_messages_tokenized
-                .store(true, Ordering::SeqCst);
-        } else {
+        let parked = {
+            let mut generation = lock(&self.idle_park_generation);
+            let parked = self.with_session_manager_mut(|manager| manager.park_idle_memory());
+            if parked {
+                *generation += 1;
+                self.agent.set_messages(Vec::new());
+                self.runtime_messages_tokenized
+                    .store(true, Ordering::SeqCst);
+            }
+            parked
+        };
+        if !parked {
             self.release_idle_runtime_messages();
         }
         maho_tool_child::allocator::reclaim_unused_heap();
@@ -22644,6 +22673,58 @@ mod tests {
         assert_eq!(
             session.get_last_assistant_text().as_deref(),
             Some(large_reply.as_str())
+        );
+        let rehydrated = session.messages();
+        assert_eq!(rehydrated.len(), 2);
+        assert_eq!(user_message_text(&rehydrated[0]), large_user);
+    }
+
+    #[test]
+    fn idle_release_never_restores_messages_into_a_child_parked_mid_release() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let mut manager = SessionManager::create("/workspace", Some(&dir), None);
+        let large_user = "u".repeat(48 * 1024);
+        let large_reply = "a".repeat(24 * 1024);
+        manager.append_message(serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": large_user }],
+            "timestamp": 1
+        }));
+        manager.append_message(serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": large_reply }],
+            "api": "faux",
+            "provider": "faux",
+            "model": "faux-1",
+            "usage": maho_ai::types::Usage::default(),
+            "stopReason": "stop",
+            "timestamp": 2
+        }));
+        let session = test_session_with_manager(manager);
+        session.rebuild_session_context().expect("rebuild context");
+        assert_eq!(session.agent.state().messages().len(), 2);
+
+        // Force a park into the window between the release's transcript read and its commit.
+        let parked_mid_release = std::rc::Rc::new(std::cell::Cell::new(false));
+        let parker = session.clone();
+        let parked_flag = parked_mid_release.clone();
+        IDLE_RELEASE_BEFORE_COMMIT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                parker.park_idle_child_memory();
+                parked_flag.set(parker.agent.state().messages().is_empty());
+            }));
+        });
+
+        session.release_idle_runtime_messages();
+
+        assert!(
+            parked_mid_release.get(),
+            "the park must run inside the release window and clear the runtime messages"
+        );
+        assert!(
+            session.agent.state().messages().is_empty(),
+            "a release that read the transcript before a park must not restore it into the parked child"
         );
         let rehydrated = session.messages();
         assert_eq!(rehydrated.len(), 2);
