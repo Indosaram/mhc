@@ -272,6 +272,8 @@ pub async fn run(
     // tracking. The `TuiBase.start()` sequence brackets `terminal.start`.
     let mut mouse_enabled =
         session.with_settings_manager(|settings| settings.get_terminal_mouse()) != "off";
+    // senpi `init()`: `takeOverInteractiveStderr()` immediately before `ui.start()`.
+    maho_interactive::interactive_stderr_guard::take_over_interactive_stderr();
     screen.base_mut().prepare_start();
     screen.before_terminal_start(
         &mut terminal,
