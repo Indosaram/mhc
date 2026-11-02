@@ -81,12 +81,17 @@ fn native_identity() -> std::result::Result<(u64, u64), String> {
         }
         #[cfg(windows)]
         {
-            let script = format!("$b=[DateTimeOffset](Get-CimInstance Win32_OperatingSystem).LastBootUpTime; $p=[DateTimeOffset](Get-Process -Id {}).StartTime; Write-Output ($b.ToUnixTimeMilliseconds().ToString() + ',' + $p.ToUnixTimeMilliseconds().ToString())", std::process::id());
-            let output = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output().map_err(|error| error.to_string())?;
-            if !output.status.success() { return Err(format!("process identity: {}", output.status)); }
-            let text = String::from_utf8_lossy(&output.stdout);
-            let (boot, start) = text.trim().split_once(',').ok_or("invalid process identity")?;
-            Ok((boot.parse::<u64>().map_err(|error| error.to_string())?, start.parse::<u64>().map_err(|error| error.to_string())? / 1000 * 1000))
+            // In process, never a `powershell`/WMI probe: that fork ran on every session open before the
+            // first write and took up to a minute on a loaded machine. Boot is wall clock minus uptime
+            // (`same_boot` tolerates the jitter); start is this process's creation FILETIME.
+            const FILETIME_UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+            let now = u64::try_from(std::time::SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis())
+                .map_err(|error| error.to_string())?;
+            let boot = now.checked_sub(winsafe::GetTickCount64()).ok_or("cannot read boot instant")?;
+            let (created, _, _, _) = winsafe::HPROCESS::GetCurrentProcess().GetProcessTimes().map_err(|error| format!("process identity: {error}"))?;
+            let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+            let start = ticks.checked_sub(FILETIME_UNIX_EPOCH_TICKS).ok_or("invalid process start")? / 10_000;
+            Ok((boot, start / 1000 * 1000))
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         { Err("session holder identity is unsupported on this platform".into()) }
