@@ -21,6 +21,13 @@ pub fn build_memory_report(session: &AgentSession, stamp: &str) -> Result<Value,
     if let Some(bytes) = maho_interactive::tui_renderer::previous_lines_bytes() {
         report["tui"] = json!({"previousLinesBytes": bytes});
     }
+    if let Some(heap) = maho_tool_child::allocator::heap_stats() {
+        report["heap"] = json!({
+            "allocator": "jemalloc", "allocated": heap.allocated, "active": heap.active,
+            "resident": heap.resident, "mapped": heap.mapped, "retained": heap.retained,
+            "metadata": heap.metadata
+        });
+    }
     #[cfg(target_os = "linux")]
     let report = {
         let mut report = report;

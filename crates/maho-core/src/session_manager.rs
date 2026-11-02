@@ -968,6 +968,15 @@ impl SessionManager {
         self.invalidate_entries_cache();
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_materialized_view(&self) -> bool {
+        self.entries_cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
     pub fn drop_materialized_cache(&self) {
         *self
             .entries_cache
@@ -2310,6 +2319,25 @@ impl SessionManager {
                 .collect();
         }
         self.compact_entries().as_ref().clone()
+    }
+
+    /// Visits the same entries as `entries()`, in the same order, without materializing them:
+    /// resident entries keep their spilled-string tokens. For readers that never look at large
+    /// string content (types, roles, usage), so a footer refresh does not rehydrate the history.
+    pub fn visit_history_unmaterialized(&self, visit: &mut dyn FnMut(&Value)) {
+        if self.mirror_trimmed && self.session_file.is_some() {
+            for entry in self.load_full_history_entries() {
+                if entry_type(&entry) != "session" {
+                    visit(&entry);
+                }
+            }
+            return;
+        }
+        for entry in &self.file_entries {
+            if entry_type(entry) != "session" {
+                visit(entry);
+            }
+        }
     }
 
     pub fn entry(&self, id: &str) -> Option<Value> {
