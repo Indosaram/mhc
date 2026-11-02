@@ -30,6 +30,20 @@ fn wrapped_line_negation_applies() {
 }
 
 #[test]
+fn fenced_code_is_not_joined() {
+    let input = "```\nline 1\nline 2\n```";
+    let joined = maho_omo_claim_receipt::classify::join_soft_newlines(input);
+    assert_eq!(joined, input);
+}
+
+#[test]
+fn wrapped_prose_still_joins() {
+    let input = "line 1\nline 2";
+    let joined = maho_omo_claim_receipt::classify::join_soft_newlines(input);
+    assert_eq!(joined, "line 1 line 2");
+}
+
+#[test]
 fn an_english_success_claim_is_found_as_asserted() {
     assert_eq!(
         shape("All tests pass."),

@@ -409,11 +409,17 @@ fn is_handoff_line(line: &str) -> bool {
     HANDOFF_LINE.is_match(trimmed).unwrap_or(false)
 }
 
+fn is_code_fence_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 #[must_use]
 pub fn join_soft_newlines(text: &str) -> String {
     let mut bytes = text.as_bytes().to_vec();
     let len = bytes.len();
     let mut prev_line_start = 0usize;
+    let mut in_fence = false;
 
     for i in 0..len {
         if bytes[i] == b'\n' {
@@ -436,10 +442,18 @@ pub fn join_soft_newlines(text: &str) -> String {
                 });
             let next_line = &after[..next_line_end];
 
+            let prev_is_fence = is_code_fence_line(prev_line);
+            if prev_is_fence {
+                in_fence = !in_fence;
+            }
+
             let is_single_nl = !(i > 0 && bytes[i - 1] == b'\n')
                 && !(i > 1 && bytes[i - 1] == b'\r' && bytes[i - 2] == b'\n');
 
             if is_single_nl
+                && !in_fence
+                && !prev_is_fence
+                && !is_code_fence_line(next_line)
                 && !is_blank_line(prev_line)
                 && !is_heading_line(prev_line)
                 && !is_blank_line(next_line)
