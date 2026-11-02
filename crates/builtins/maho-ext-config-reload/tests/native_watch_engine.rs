@@ -109,3 +109,40 @@ fn native_config_change_reaches_validation_and_pending_registration() {
     assert_eq!(reload_admission(pending.is_empty(), false, true, false, false, true), ReloadAdmission::ProbeVeto);
     engine.close().unwrap();
 }
+
+/// A watched `.omo` and the config file inside it can arrive in separate batches: the directory's
+/// event alone is a bare directory change, and the file may be written after the directory was
+/// scanned but before its own watch exists, so no event ever names it. The engine must still report
+/// that file. The fake watcher writes the file at the moment the directory's watch is created, the
+/// latest point the race allows, and never raises an event for it.
+#[tokio::test]
+async fn file_written_before_a_new_directory_watch_is_still_reported() {
+    use maho_ext_config_reload::watch_event_source::{FsWatchEventSource, NativeEventCallback};
+    use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
+    let root = tempfile::tempdir().unwrap();
+    let omo = root.path().join(".omo");
+    let config = omo.join("omo.jsonc");
+    let callbacks: Arc<Mutex<BTreeMap<PathBuf, NativeEventCallback>>> = Arc::default();
+    let registered = Arc::clone(&callbacks);
+    let late_config = config.clone();
+    let source = FsWatchEventSource::with_factory(Arc::new(move |path, _, listener| {
+        if path.file_name().is_some_and(|name| name == ".omo") { std::fs::write(&late_config, "{}")?; }
+        registered.lock().unwrap().insert(path.to_path_buf(), listener);
+        Ok(Box::new(()))
+    }));
+    let target = WatchTarget { id: "fixture".into(), kind: WatchKind::DirRecursive, path: root.path().into(), allow_list: Some(vec![".omo".into()]), filter: None };
+    let mut engine = NativeWatchEngine::with_source(vec![target], Arc::new(|error, _| panic!("{error}")), Duration::ZERO, source).unwrap();
+    std::fs::create_dir(&omo).unwrap();
+    {
+        let mut callbacks = callbacks.lock().unwrap();
+        let listener = callbacks.get_mut(root.path()).expect("root watch registered");
+        listener(Ok(notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Folder)).add_path(omo.clone())));
+    }
+    let directory = tokio::time::timeout(Duration::from_secs(5), engine.next_change_async()).await.unwrap().unwrap();
+    assert_eq!(directory.changed_paths, std::slice::from_ref(&omo));
+    assert_eq!(directory.directories, std::slice::from_ref(&omo));
+    let file = tokio::time::timeout(Duration::from_secs(5), engine.next_change_async()).await.unwrap().unwrap();
+    assert_eq!(file.created, [config]);
+    assert!(file.directories.is_empty());
+    engine.close_async().await.unwrap();
+}
