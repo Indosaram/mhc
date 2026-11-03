@@ -55,6 +55,17 @@ fn os_uptime_seconds() -> f64 {
             return (now_ms() / 1000.0 - boot).floor();
         }
     }
+    platform_uptime_seconds()
+}
+
+/// libuv's `uv_uptime` on Windows: whole seconds since boot from GetTickCount64.
+#[cfg(windows)]
+fn platform_uptime_seconds() -> f64 {
+    (winsafe::GetTickCount64() / 1000) as f64
+}
+
+#[cfg(not(windows))]
+fn platform_uptime_seconds() -> f64 {
     0.0
 }
 
