@@ -22,3 +22,16 @@
   - `crates/maho-ultrawork/contract/COVERAGE.md`: Explicit mapping of every core/condensed-core rule (R1-R77) to its section heading in `core.md`.
   - `assets/omo-latest/skills/ultrawork/SKILL.md`: Rewritten with frontmatter, complete core contract, and on-demand reference loading table.
   - `assets/omo-latest/skills/ultrawork/references/*.md`: Shipped references synchronized with contract references.
+
+# Provenance — maho-ultrawork Engine
+
+- **License**: MIT.
+- **Method**: Clean-room (**C**) implementation from `docs/cleanroom/specs/ultrawork.md` (sections 1-8 and the test vectors) in a fresh session.
+- **Inputs read**:
+  - `docs/cleanroom/specs/ultrawork.md` and `docs/cleanroom/specs/README-ulw.md` (interface facts: message type, reminder tags, `ultrawork-disabled`).
+  - `docs/cleanroom/specs/ultrawork-contract.md` (size budget for `build.rs`) and the contract files under `crates/maho-ultrawork/contract/` (consumed via `include_str!`, never edited).
+  - MIT tree for API shape only: `crates/maho-ext-api/src/types.rs` (events, results, flags, `CustomMessage`), `crates/maho-skills/src/extension.rs` (handler registration pattern), `crates/maho-task/Cargo.toml` (manifest pattern), `crates/builtins/maho-ext-todotools` and `maho-ext-goal` (shape of the `todo` tool result details), `tools/ulw-bench/` (file names only).
+  - `assets/omo-latest/skills/ultrawork/` (shipped copy checked against `contract/`).
+- **Inputs strictly excluded**: no `crates/omo/**`, no `/home/indo/code/oh-my-openagent`, no `~/.bun/install/cache/omo-ai*`, no `.omo/**`, no git history outside this export. This session never read or had access to any SUL source for the ultrawork engine.
+- **Authored in fresh prose/code**: all of `src/**`, `build.rs`, and `tests/**`, including the re-mention notice, the mass block and the todo advisory texts.
+- **Not built (by design)**: no context-transform handler, because there is a single contract variant for all models.
