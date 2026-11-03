@@ -67,7 +67,10 @@ fn global_relative_local_package_paths_persist_relative_to_settings_json() {
     let packages = fixture.global_packages();
     assert_eq!(packages.len(), 1);
     assert_eq!(
-        std::fs::canonicalize(fixture.agent().join(&packages[0])).unwrap(),
+        std::fs::canonicalize(maho_core::paths::lexical_resolve(
+            &fixture.agent().join(&packages[0]).to_string_lossy()
+        ))
+        .unwrap(),
         std::fs::canonicalize(&relative).unwrap()
     );
 }

@@ -69,7 +69,9 @@ fn missing_watch_path_reports_error_once() {
 async fn upstream_a_non_canonical_directory_path_still_delivers_events() {
     let directory = tempfile::Builder::new().prefix("senpi-1229-long-directory-name-").tempdir().unwrap();
     let long = directory.path().to_string_lossy().into_owned();
-    let output = std::process::Command::new("cmd.exe").args(["/d", "/s", "/c", &format!("for %I in (\"{long}\") do @echo %~sI")]).output().unwrap();
+    // Hand cmd.exe its command line verbatim: `arg` would escape the inner quotes as `\"`, which cmd
+    // does not understand, and the for-set would name a path that does not exist.
+    let output = std::os::windows::process::CommandExt::raw_arg(std::process::Command::new("cmd.exe").args(["/d", "/s", "/c"]), format!("\"for %I in (\"{long}\") do @echo %~sI\"")).output().unwrap();
     let alias = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if alias.is_empty() || alias == long {
         return; // the volume exposes no 8.3 alias (upstream skips this case too)
