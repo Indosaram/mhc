@@ -27,6 +27,13 @@ pub const DEFAULT_RESUME_PROMPT: &str =
 /// Called with the record and its `<task-result>` envelope when a background run settles.
 pub type SettledCallback = Arc<dyn Fn(&TaskRecord, &str) + Send + Sync>;
 
+/// Resolves once the delivery that reports a settled run has been handed over.
+pub type SettledAck = tokio::sync::oneshot::Receiver<()>;
+
+/// Like [`SettledCallback`], but hands back the [`SettledAck`] the settle waits for before waking
+/// its waiters, so a transport can batch results without blocking a runtime thread.
+pub type SettledAckCallback = Arc<dyn Fn(&TaskRecord, &str) -> SettledAck + Send + Sync>;
+
 pub struct TaskManagerOptions {
     pub state: StateDir,
     pub settings: TaskSettings,
@@ -94,6 +101,7 @@ pub struct TaskManager {
     steer: Mutex<Option<Arc<dyn crate::control::SteerChannel>>>,
     slots: Option<Arc<tokio::sync::Semaphore>>,
     on_settled: Mutex<Option<SettledCallback>>,
+    on_settled_ack: Mutex<Option<SettledAckCallback>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -153,6 +161,7 @@ impl TaskManager {
             steer: Mutex::default(),
             slots,
             on_settled: Mutex::default(),
+            on_settled_ack: Mutex::default(),
         })
     }
 
@@ -231,6 +240,11 @@ impl TaskManager {
     /// Sets the delivery callback for background results.
     pub fn set_on_settled(&self, callback: Option<SettledCallback>) {
         *lock(&self.on_settled) = callback;
+    }
+
+    /// Sets the delivery callback whose returned ack is awaited before waiters wake.
+    pub fn set_on_settled_ack(&self, callback: Option<SettledAckCallback>) {
+        *lock(&self.on_settled_ack) = callback;
     }
 
     fn is_live(&self, id: &str) -> bool {
@@ -531,7 +545,7 @@ impl TaskManager {
                     Some(follow_up) => {
                         // Each settled run of a background task is reported, also when queued
                         // messages start another run right away.
-                        manager.deliver(&settled);
+                        manager.deliver(&settled).await;
                         next = follow_up;
                     }
                     None => break settled,
@@ -548,17 +562,25 @@ impl TaskManager {
                 }
             }
             // Delivered before waiters wake, so a settled task has always been reported.
-            manager.deliver(&settled);
+            manager.deliver(&settled).await;
             let _ = done_tx.send(true);
         });
     }
 
-    fn deliver(&self, settled: &TaskRecord) {
+    async fn deliver(&self, settled: &TaskRecord) {
         if settled.background && !settled.quiet {
             let callback = lock(&self.on_settled).clone();
+            let ack_callback = lock(&self.on_settled_ack).clone();
+            if callback.is_none() && ack_callback.is_none() {
+                return;
+            }
+            let text = self.envelope(settled);
             if let Some(callback) = callback {
-                let text = self.envelope(settled);
                 callback(settled, &text);
+            }
+            if let Some(ack_callback) = ack_callback {
+                // A dropped sender also ends the wait: the waiter is released either way.
+                let _ = ack_callback(settled, &text).await;
             }
         }
     }

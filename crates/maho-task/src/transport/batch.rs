@@ -29,14 +29,11 @@ pub struct ChildCompletion {
 impl ChildCompletion {
     pub fn new(id: impl Into<String>, status: impl Into<String>, text: impl Into<String>) -> Self {
         let (id, status, text) = (id.into(), status.into(), text.into());
-        let details = json!({"id": &id, "status": &status, "response": &text, "text": &text});
+        let details = json!({"id": &id, "status": &status});
         Self { id, status, response: text.clone(), text, details, file_uri: None }
     }
     pub fn with_response(mut self, response: impl Into<String>) -> Self {
         self.response = response.into();
-        if let Some(map) = self.details.as_object_mut() {
-            map.insert("response".into(), json!(self.response));
-        }
         self
     }
     pub fn with_details(mut self, details: Value) -> Self {
@@ -118,28 +115,51 @@ pub struct WakeBatchResult {
 }
 
 impl WakeBatchResult {
+    /// Wake details: batch counters, the manifest pointer, and `{task_id, status, file_uri,
+    /// truncated}` per inline task. Task text lives only in the message content.
     pub fn to_details_value(&self) -> Value {
-        let mut map = serde_json::Map::new();
-        map.insert("batch_id".into(), json!(self.batch_id));
-        map.insert("inline_count".into(), json!(self.inline_tasks.len()));
-        map.insert("overflow_count".into(), json!(self.overflow_tasks.len()));
-        if let Some(uri) = &self.overflow_manifest_uri {
-            map.insert("manifest_uri".into(), json!(uri));
-            map.insert("uri".into(), json!(uri));
-        }
-        if let Some(err) = &self.manifest_error {
-            map.insert("manifest_error".into(), json!(err));
-        }
-        let inline_details: Vec<Value> = self.inline_tasks.iter().map(|t| {
-            let mut td = t.details.clone();
-            if let (Some(map), Some(uri)) = (td.as_object_mut(), &t.file_uri) {
-                map.entry("file_uri".to_string()).or_insert_with(|| json!(uri));
-            }
-            td
-        }).collect();
-        map.insert("tasks".into(), json!(inline_details));
-        Value::Object(map)
+        wake_details(
+            &self.inline_tasks,
+            WakeFacts {
+                batch_id: &self.batch_id,
+                overflow_count: self.overflow_tasks.len(),
+                manifest_uri: self.overflow_manifest_uri.as_deref(),
+                manifest_error: self.manifest_error.as_deref(),
+            },
+        )
     }
+}
+
+struct WakeFacts<'a> {
+    batch_id: &'a str,
+    overflow_count: usize,
+    manifest_uri: Option<&'a str>,
+    manifest_error: Option<&'a str>,
+}
+
+fn task_entry(task: &ChildCompletion) -> Value {
+    let uri = task
+        .file_uri
+        .as_deref()
+        .or_else(|| task.details.get("file_uri").and_then(Value::as_str));
+    let truncated = task.details.get("spilled").and_then(Value::as_bool) == Some(true)
+        || task.details.get("error").is_some();
+    json!({"task_id": task.id, "status": task.status, "file_uri": uri, "truncated": truncated})
+}
+
+fn wake_details(inline: &[ChildCompletion], facts: WakeFacts<'_>) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("batch_id".into(), json!(facts.batch_id));
+    map.insert("inline_count".into(), json!(inline.len()));
+    map.insert("overflow_count".into(), json!(facts.overflow_count));
+    if let Some(uri) = facts.manifest_uri {
+        map.insert("manifest_uri".into(), json!(uri));
+    }
+    if let Some(err) = facts.manifest_error {
+        map.insert("manifest_error".into(), json!(err));
+    }
+    map.insert("tasks".into(), Value::Array(inline.iter().map(task_entry).collect()));
+    Value::Object(map)
 }
 
 fn render_batch(header: Option<&str>, inline_tasks: &[ChildCompletion], trailer: Option<&str>) -> String {
@@ -155,19 +175,44 @@ fn render_batch(header: Option<&str>, inline_tasks: &[ChildCompletion], trailer:
     msg
 }
 
-/// The largest `k <= candidates.len()` whose message (the first `k` candidates plus
-/// `trailer(k)`) fits `limit`; `trailer(k)` describes every task left out of an inline set of `k`.
-fn select_inline(
-    header: Option<&str>,
-    candidates: &[ChildCompletion],
+/// What a wake with `k` inline tasks says about the tasks left out: the trailer line and the
+/// manifest facts that go into the details.
+struct Plan {
+    trailer: Option<String>,
+    manifest_uri: Option<String>,
+    manifest_error: Option<String>,
+}
+
+struct Budget<'a> {
+    header: Option<&'a str>,
+    batch_id: &'a str,
     limit: usize,
-    trailer: &dyn Fn(usize) -> Option<String>,
+    total: usize,
+}
+
+/// The largest `k <= candidates.len()` whose wake fits `limit`: the rendered message (the first
+/// `k` candidates plus the plan's trailer) plus the serialized details, both in UTF-16 units.
+fn select_inline(
+    candidates: &[ChildCompletion],
+    budget: &Budget<'_>,
+    plan: &dyn Fn(usize) -> Plan,
 ) -> usize {
     (0..=candidates.len())
         .rev()
         .find(|&k| {
-            let text = trailer(k);
-            count_utf16_code_units(&render_batch(header, &candidates[..k], text.as_deref())) <= limit
+            let plan = plan(k);
+            let content = render_batch(budget.header, &candidates[..k], plan.trailer.as_deref());
+            let details = wake_details(
+                &candidates[..k],
+                WakeFacts {
+                    batch_id: budget.batch_id,
+                    overflow_count: budget.total - k,
+                    manifest_uri: plan.manifest_uri.as_deref(),
+                    manifest_error: plan.manifest_error.as_deref(),
+                },
+            );
+            count_utf16_code_units(&content) + count_utf16_code_units(&details.to_string())
+                <= budget.limit
         })
         .unwrap_or(0)
 }
@@ -195,9 +240,16 @@ pub fn build_wake_batch(
     let manifest_uri = format!("local://{}", manifest_path.display());
 
     let total = tasks.len();
-    let uri_trailer =
-        |k: usize| (k < total).then(|| format!("{} more task results: {manifest_uri}", total - k));
-    let mut selected_inline = select_inline(options.header, tasks, limit, &uri_trailer);
+    let budget = Budget { header: options.header, batch_id: &batch_id, limit, total };
+    let uri_plan = |k: usize| {
+        let pointing = k < total;
+        Plan {
+            trailer: pointing.then(|| format!("{} more task results: {manifest_uri}", total - k)),
+            manifest_uri: pointing.then(|| manifest_uri.clone()),
+            manifest_error: None,
+        }
+    };
+    let mut selected_inline = select_inline(tasks, &budget, &uri_plan);
 
     let (overflow_manifest_path, overflow_manifest_uri, manifest_error) = if selected_inline == total {
         (None, None, None)
@@ -218,14 +270,15 @@ pub fn build_wake_batch(
         // The error trailer can be longer than the pointer it replaces: choose the inline set
         // again so the message stays within the limit.
         Some(err) => {
-            let error_trailer = |k: usize| {
-                Some(format!("{} more task results could not be saved: {err}", total - k))
+            let error_plan = |k: usize| Plan {
+                trailer: Some(format!("{} more task results could not be saved: {err}", total - k)),
+                manifest_uri: None,
+                manifest_error: Some(err.clone()),
             };
-            selected_inline =
-                select_inline(options.header, &tasks[..selected_inline], limit, &error_trailer);
-            error_trailer(selected_inline)
+            selected_inline = select_inline(&tasks[..selected_inline], &budget, &error_plan);
+            error_plan(selected_inline).trailer
         }
-        None => uri_trailer(selected_inline),
+        None => uri_plan(selected_inline).trailer,
     };
     let inline_tasks = tasks[..selected_inline].to_vec();
     let overflow_tasks = tasks[selected_inline..].to_vec();
@@ -255,24 +308,13 @@ pub fn deliver_batch(
         WakeBatchOptions::new(state_dir).with_limit(batch_limit),
         tasks,
     )?;
-    // A single task keeps its own details only when it went inline; an overflowed task's full
-    // response must not ride along in the details of a bounded wake.
-    let details = if let ([task], []) = (res.inline_tasks.as_slice(), res.overflow_tasks.as_slice()) {
-        let mut d = task.details.clone();
-        if let Some(map) = d.as_object_mut() {
-            map.insert("batch_id".into(), json!(res.batch_id));
-        }
-        d
-    } else {
-        res.to_details_value()
-    };
     sender
         .send_message(
             CustomMessage {
                 custom_type: crate::extension::RESULT_MESSAGE_TYPE.to_owned(),
                 content: vec![ToolContent::text(&res.message)],
                 display: true,
-                details: Some(details),
+                details: Some(res.to_details_value()),
             },
             SendMessageOptions {
                 trigger_turn: true,
