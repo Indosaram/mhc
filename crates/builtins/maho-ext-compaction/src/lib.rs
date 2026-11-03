@@ -812,7 +812,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 }
                 idle_since_end.store(false,std::sync::atomic::Ordering::SeqCst);
                 // PERF-DIVERGENCE(senpi compaction): upstream hands every session entry to the checkpoint lookup; we only materialize `custom` entries (the only ones it inspects) and move the owned strings instead of cloning them. The chosen checkpoint is identical.
-                let entries: Vec<_> = context.session_manager.get_entries().into_iter().filter(|entry| entry.kind == "custom").map(|entry| {
+                let entries: Vec<_> = context.session_manager.get_entries_of_kinds(&["custom"]).into_iter().map(|entry| {
                     let mut value = entry.data;
                     value["type"] = serde_json::Value::String(entry.kind);
                     value["id"] = serde_json::Value::String(entry.id);

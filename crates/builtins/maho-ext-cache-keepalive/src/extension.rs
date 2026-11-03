@@ -161,9 +161,12 @@ impl Extension for CacheKeepalive{
                     _=>{}
                 }
                 let restored=if kind==EventKind::SessionStart{
-                    let entries=ctx.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
-                    let snapshot=maho_core::session_manager::build_session_context(&entries,ctx.session_manager.get_leaf_id().as_deref());
-                    Some(snapshot.messages.into_iter().map(|value|serde_json::from_value::<AgentMessage>(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>())
+                    // PERF-DIVERGENCE(senpi cache-keepalive): same `buildSessionContext().messages`, but built by the host from its own view instead of from a copy of every session entry.
+                    let messages=ctx.session_manager.build_context_messages().unwrap_or_else(||{
+                        let entries=ctx.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+                        maho_core::session_manager::build_session_context(&entries,ctx.session_manager.get_leaf_id().as_deref()).messages
+                    });
+                    Some(messages.into_iter().map(|value|serde_json::from_value::<AgentMessage>(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>())
                 }else{None};
                 let retirement;
                 let mut rearm=matches!(kind,EventKind::AgentEnd|EventKind::AgentSettled|EventKind::ModelSelect|EventKind::SessionResumed);

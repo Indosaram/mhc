@@ -23,7 +23,7 @@ impl MemoryNudgeWiring {
                 let mut wiring=wiring.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut record=None;
                 match event {
-                    maho_ext_api::ExtensionEvent::SessionStart(_) if !id.is_empty()=>wiring.session_start(id,&context.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>()),
+                    maho_ext_api::ExtensionEvent::SessionStart(_) if !id.is_empty()=>wiring.session_start(id,&context.session_manager.get_entries_of_kinds(&["custom"]).into_iter().map(|entry|entry.data).collect::<Vec<_>>()),
                     maho_ext_api::ExtensionEvent::Input(input)=>wiring.input(&serde_json::json!({"type":"input","inputId":input.input_id,"source":if input.source==maho_ext_api::InputSource::Extension{"extension"}else{"interactive"}}),Some(id)),
                     maho_ext_api::ExtensionEvent::InputDisposition{input_id,disposition}=>record=wiring.input_disposition(&serde_json::json!({"type":"input_disposition","inputId":input_id,"disposition":match disposition {maho_ext_api::InputDisposition::Started=>"started",maho_ext_api::InputDisposition::Queued=>"queued",maho_ext_api::InputDisposition::Handled=>"handled",maho_ext_api::InputDisposition::Rejected=>"rejected"}})),
                     maho_ext_api::ExtensionEvent::ToolCall(call)=> {

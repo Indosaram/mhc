@@ -429,7 +429,15 @@ fn normalize_spec_name(value: Option<&str>) -> Option<String> {
 
 impl TaskManager {
     pub fn new(options: TaskManagerOptions) -> Self {
-        match options.store.list() {
+        // PERF-DIVERGENCE(senpi task manager): upstream lists (and copies) every record to find the
+        // highest id; this reads the id off each cached record and keeps none. Same floor.
+        let mut max_id: Option<String> = None;
+        match options.store.list_matching(|record| {
+            if max_id.as_deref().is_none_or(|max| record.task_id.as_str() > max) {
+                max_id = Some(record.task_id.clone());
+            }
+            false
+        }) {
             Ok(listed) => {
                 if !listed.diagnostics.is_empty() {
                     utils::logger::log(
@@ -437,8 +445,8 @@ impl TaskManager {
                         Some(&json!({ "count": listed.diagnostics.len() })),
                     );
                 }
-                if let Some(max_id) = listed.records.iter().map(|record| &record.task_id).max()
-                    && let Ok(parsed) = parse_task_id(max_id)
+                if let Some(max_id) = max_id
+                    && let Ok(parsed) = parse_task_id(&max_id)
                 {
                     sync_task_id_floor(parsed);
                 }
