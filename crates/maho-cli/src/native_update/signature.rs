@@ -35,7 +35,10 @@ impl std::error::Error for SignatureError {}
 
 /// The `mhc --version --verbose` identity lines: build channel and the embedded release key.
 pub fn build_info() -> String {
-    format!("channel: {RELEASE_CHANNEL}\nrelease-key: {}\n", RELEASE_PUBKEY.unwrap_or("none"))
+    format!(
+        "channel: {RELEASE_CHANNEL}\nrelease-key: {}\n",
+        RELEASE_PUBKEY.unwrap_or("none")
+    )
 }
 
 fn requires_signature(version: &str) -> bool {
@@ -63,7 +66,18 @@ pub fn verify_archive(
     let invalid = |error: &dyn std::fmt::Display| SignatureError::Invalid(error.to_string());
     let key = minisign_verify::PublicKey::from_base64(pubkey).map_err(|e| invalid(&e))?;
     let signature = minisign_verify::Signature::decode(signature).map_err(|e| invalid(&e))?;
-    let mut verifier = key.verify_stream(&signature).map_err(|e| invalid(&e))?;
+    let mut verifier = match key.verify_stream(&signature) {
+        Ok(verifier) => verifier,
+        // Legacy (non-prehashed) signatures sign the raw bytes, so they cannot be streamed. The minisign CLI and
+        // the installers accept them, and some published releases carry them.
+        Err(minisign_verify::Error::UnsupportedLegacyMode) => {
+            let bytes = std::fs::read(archive).map_err(|e| invalid(&e))?;
+            return key
+                .verify(&bytes, &signature, true)
+                .map_err(|e| invalid(&e));
+        }
+        Err(error) => return Err(invalid(&error)),
+    };
     let mut file = std::fs::File::open(archive).map_err(|e| invalid(&e))?;
     let mut buffer = vec![0u8; 1024 * 1024];
     loop {

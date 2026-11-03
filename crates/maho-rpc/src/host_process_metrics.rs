@@ -240,7 +240,19 @@ mod tests {
         } else {
             "linux"
         };
-        let metrics = read_host_process_metrics(std::process::id(), platform);
+        // Measured on a dedicated child, not this test process: the test binary's own tree holds
+        // whatever children concurrent tests spawned and have not reaped yet (the zombie-reader
+        // test leaves one on purpose), so `zombies` of our own pid is not ours to pin.
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the measured child");
+        let metrics = read_host_process_metrics(child.id(), platform);
+        child.kill().expect("end the measured child");
+        child.wait().expect("reap the measured child");
         assert!(metrics.rss_mb.is_some());
         assert_eq!(metrics.open_fds.is_some(), platform == "linux");
         assert_eq!(metrics.zombies, Some(0));

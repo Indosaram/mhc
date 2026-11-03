@@ -2608,6 +2608,13 @@ impl HostCore {
                     .collect::<std::collections::BTreeMap<String, String>>()
             })
         });
+        // Session-role policy shape errors are typed `invalid_session_context` before any admission.
+        if let Some(error) = crate::rpc_input_validation::session_policy_error(parsed_context.as_ref()) {
+            return Err(OpenRefusal::plain(format!(
+                "{}: {error}",
+                crate::rpc_types::RPC_ERROR_INVALID_SESSION_CONTEXT
+            )));
+        }
         let profile = crate::session_registry::RpcSessionLaunchProfile {
             runtime: maho_core::agent_session_runtime::AgentSessionLaunchProfile {
                 cwd: cwd.clone().unwrap_or_else(|| self.options.cwd.clone()),

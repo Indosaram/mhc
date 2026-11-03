@@ -108,7 +108,8 @@ fn a_profile_session_path_opens_that_session_with_the_profile_cwd() {
     assert_eq!(manager.cwd(), cwd.as_str());
 }
 
-#[cfg(unix)]
+/// Unix sockets, and on Windows the named pipe the logical path resolves to (`run_socket_host`).
+#[cfg(any(unix, windows))]
 #[tokio::test]
 async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
     use maho_cli::cli::host_runtime::create_host_core;
@@ -153,8 +154,9 @@ async fn a_cli_built_host_answers_the_protocol_and_exits_on_its_empty_window() {
 }
 
 /// Where the socket listener is not ported, a CLI-built host asked to listen refuses at once with an
-/// error instead of serving nothing until a client gives up.
-#[cfg(not(unix))]
+/// error instead of serving nothing until a client gives up. Windows serves named pipes, so this
+/// holds only off Unix and Windows (`run_multi_session_host_with_signals`).
+#[cfg(not(any(unix, windows)))]
 #[tokio::test]
 async fn a_cli_built_host_refuses_a_socket_listener_where_sockets_are_unsupported() {
     use maho_cli::cli::host_runtime::create_host_core;
