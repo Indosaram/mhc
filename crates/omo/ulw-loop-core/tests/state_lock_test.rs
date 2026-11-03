@@ -166,12 +166,14 @@ fn stale_lock_reclaim_admits_one_holder() {
 
     let barrier_holder = Arc::new(Barrier::new(2));
     let barrier_wait = barrier_holder.clone();
+    // A keeps the lock until B's attempt has ended, so B can only time out, never win a free lock.
+    let (b_done, a_may_release) = std::sync::mpsc::channel::<()>();
 
     let p1 = path.clone();
     let handle_a = std::thread::spawn(move || {
         with_state_lock(&p1, Some(&opts(2_000)), |_| {
             barrier_holder.wait();
-            std::thread::sleep(Duration::from_millis(150));
+            a_may_release.recv_timeout(Duration::from_secs(30)).expect("B finished");
             Ok::<_, UlwLoopError>("holder_a")
         })
     });
@@ -186,6 +188,7 @@ fn stale_lock_reclaim_admits_one_holder() {
     });
 
     let res_b = handle_b.join().unwrap();
+    b_done.send(()).unwrap();
     let res_a = handle_a.join().unwrap();
 
     assert_eq!(res_a.unwrap(), "holder_a");
