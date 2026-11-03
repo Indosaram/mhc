@@ -18,9 +18,12 @@ impl Config {
             let remaining = || deadline.checked_duration_since(std::time::Instant::now()).filter(|duration| !duration.is_zero()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "Herdr request timed out"));
             let mut stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
             stream.connect_timeout(&socket2::SockAddr::unix(&self.socket)?, remaining()?)?;
+            // Both timeouts are set before the write: once the peer has answered and closed,
+            // macOS rejects setsockopt on the socket with EINVAL, so a fast peer would turn a
+            // delivered request into an error.
             stream.set_write_timeout(Some(remaining()?))?;
-            stream.write_all(payload.as_bytes())?;
             stream.set_read_timeout(Some(remaining()?))?;
+            stream.write_all(payload.as_bytes())?;
             let mut buffer = [0; 1024];
             Ok(stream.read(&mut buffer)? > 0)
         }
