@@ -711,11 +711,15 @@ mod tests {
 
     #[test]
     fn lexical_resolve_folds_dot_segments_without_touching_the_filesystem() {
+        // A filesystem root (`/`, or the current drive's `D:\` on Windows, where a bare `/a` is
+        // drive-relative and `path.resolve` prefixes the drive too).
+        let current = std::env::current_dir().unwrap();
+        let root = current.ancestors().last().unwrap();
         assert_eq!(
-            lexical_resolve(Path::new("/a/b/../c/./d")),
-            PathBuf::from("/a/c/d")
+            lexical_resolve(&root.join("a/b/../c/./d")),
+            root.join("a").join("c").join("d")
         );
-        assert_eq!(lexical_resolve(Path::new("/../x")), PathBuf::from("/x"));
+        assert_eq!(lexical_resolve(&root.join("../x")), root.join("x"));
     }
 
     #[test]
