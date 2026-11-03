@@ -1,5 +1,5 @@
 //! Parent wake batch limiting and overflow manifests (`docs/cleanroom/specs/ultrawork.md` §9.2).
-use super::cap::count_utf16_code_units;
+use super::cap::{count_utf16_code_units, slice_utf16_bounded};
 use maho_ext_api::{CustomMessage, DeliverAs, ExtensionApi, SendMessageOptions, ToolContent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -155,6 +155,23 @@ fn render_batch(header: Option<&str>, inline_tasks: &[ChildCompletion], trailer:
     msg
 }
 
+/// The largest `k <= candidates.len()` whose message (the first `k` candidates plus
+/// `trailer(k)`) fits `limit`; `trailer(k)` describes every task left out of an inline set of `k`.
+fn select_inline(
+    header: Option<&str>,
+    candidates: &[ChildCompletion],
+    limit: usize,
+    trailer: &dyn Fn(usize) -> Option<String>,
+) -> usize {
+    (0..=candidates.len())
+        .rev()
+        .find(|&k| {
+            let text = trailer(k);
+            count_utf16_code_units(&render_batch(header, &candidates[..k], text.as_deref())) <= limit
+        })
+        .unwrap_or(0)
+}
+
 /// Builds a batched parent wake message according to §9.2.
 pub fn build_wake_batch(
     options: WakeBatchOptions<'_>,
@@ -177,28 +194,19 @@ pub fn build_wake_batch(
     let manifest_path = results_dir.join(format!("wake-overflow-{batch_id}.json"));
     let manifest_uri = format!("local://{}", manifest_path.display());
 
-    let mut selected_inline = 0;
-    for k in (0..=tasks.len()).rev() {
-        let trailer = (k < tasks.len()).then(|| format!("{} more task results: {manifest_uri}", tasks.len() - k));
-        let candidate = render_batch(options.header, &tasks[..k], trailer.as_deref());
-        if count_utf16_code_units(&candidate) <= limit {
-            selected_inline = k;
-            break;
-        }
-    }
+    let total = tasks.len();
+    let uri_trailer =
+        |k: usize| (k < total).then(|| format!("{} more task results: {manifest_uri}", total - k));
+    let mut selected_inline = select_inline(options.header, tasks, limit, &uri_trailer);
 
-    let inline_tasks = tasks[..selected_inline].to_vec();
-    let overflow_tasks = tasks[selected_inline..].to_vec();
-
-    let (overflow_manifest_path, overflow_manifest_uri, manifest_error) = if overflow_tasks.is_empty() {
+    let (overflow_manifest_path, overflow_manifest_uri, manifest_error) = if selected_inline == total {
         (None, None, None)
     } else {
-        let write_res = std::fs::create_dir_all(&results_dir).and_then(|_| {
-            let manifest = WakeOverflowManifest::new(&batch_id, overflow_tasks.clone());
-            let bytes = serde_json::to_vec_pretty(&manifest)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let write_res = std::fs::create_dir_all(&results_dir).and_then(|()| {
+            let manifest = WakeOverflowManifest::new(&batch_id, tasks[selected_inline..].to_vec());
+            let bytes = serde_json::to_vec_pretty(&manifest).map_err(std::io::Error::other)?;
             std::fs::write(&manifest_path, bytes)?;
-            Ok((manifest_path, manifest_uri))
+            Ok((manifest_path, manifest_uri.clone()))
         });
         match write_res {
             Ok((path, uri)) => (Some(path), Some(uri), None),
@@ -206,14 +214,24 @@ pub fn build_wake_batch(
         }
     };
 
-    let trailer = if overflow_tasks.is_empty() {
-        None
-    } else if let Some(err) = &manifest_error {
-        Some(format!("{} more task results could not be saved: {err}", overflow_tasks.len()))
-    } else {
-        Some(format!("{} more task results: {}", overflow_tasks.len(), overflow_manifest_uri.as_deref().unwrap_or_default()))
+    let trailer = match &manifest_error {
+        // The error trailer can be longer than the pointer it replaces: choose the inline set
+        // again so the message stays within the limit.
+        Some(err) => {
+            let error_trailer = |k: usize| {
+                Some(format!("{} more task results could not be saved: {err}", total - k))
+            };
+            selected_inline =
+                select_inline(options.header, &tasks[..selected_inline], limit, &error_trailer);
+            error_trailer(selected_inline)
+        }
+        None => uri_trailer(selected_inline),
     };
-    let message = render_batch(options.header, &inline_tasks, trailer.as_deref());
+    let inline_tasks = tasks[..selected_inline].to_vec();
+    let overflow_tasks = tasks[selected_inline..].to_vec();
+    let rendered = render_batch(options.header, &inline_tasks, trailer.as_deref());
+    // Only a header or trailer longer than the limit by itself reaches the slice.
+    let message = slice_utf16_bounded(&rendered, limit).0.to_owned();
 
     Ok(WakeBatchResult {
         batch_id,
@@ -237,8 +255,10 @@ pub fn deliver_batch(
         WakeBatchOptions::new(state_dir).with_limit(batch_limit),
         tasks,
     )?;
-    let details = if tasks.len() == 1 {
-        let mut d = tasks[0].details.clone();
+    // A single task keeps its own details only when it went inline; an overflowed task's full
+    // response must not ride along in the details of a bounded wake.
+    let details = if let ([task], []) = (res.inline_tasks.as_slice(), res.overflow_tasks.as_slice()) {
+        let mut d = task.details.clone();
         if let Some(map) = d.as_object_mut() {
             map.insert("batch_id".into(), json!(res.batch_id));
         }
@@ -259,6 +279,6 @@ pub fn deliver_batch(
                 deliver_as: Some(DeliverAs::FollowUp),
             },
         )
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     Ok(res)
 }

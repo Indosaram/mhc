@@ -2,7 +2,7 @@
 use crate::record::TaskRecord;
 use maho_ext_api::ExtensionApi;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Default per-child completion response limit (8,000 UTF-16 code units).
 pub const DEFAULT_COMPLETION_TRANSPORT_LIMIT: usize = 8_000;
@@ -95,8 +95,8 @@ pub fn cap_completion_response(options: CompletionCapOptions<'_>) -> std::io::Re
         Ok(file_path) => {
             let uri = format!("local://{}", file_path.display());
             let abs_path = file_path.display().to_string();
-            let pointer = format!("\n\nFull result: {} ({})", uri, abs_path);
-            let body = format!("{}{}", sliced, pointer);
+            let pointer = format!("\n\nFull result: {uri} ({abs_path})");
+            let body = format!("{sliced}{pointer}");
             Ok(json!({
                 "id": options.task_id,
                 "status": options.status,
@@ -111,8 +111,8 @@ pub fn cap_completion_response(options: CompletionCapOptions<'_>) -> std::io::Re
             }))
         }
         Err(error) => {
-            let note = format!("\n\nfull result could not be saved: {}", error);
-            let body = format!("{}{}", sliced, note);
+            let note = format!("\n\nfull result could not be saved: {error}");
+            let body = format!("{sliced}{note}");
             Ok(json!({
                 "id": options.task_id,
                 "status": options.status,
@@ -142,7 +142,7 @@ pub fn build_capped_result_envelope(
             MAX_COMPLETION_TRANSPORT_LIMIT,
         );
         let (sliced, _) = slice_utf16_bounded(raw_response, limit);
-        let body = format!("{}\n\nfull result could not be saved: {}", sliced, error);
+        let body = format!("{sliced}\n\nfull result could not be saved: {error}");
         json!({
             "id": record.id,
             "status": record.status.as_str(),
