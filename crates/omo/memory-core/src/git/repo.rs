@@ -32,6 +32,13 @@ pub const COMMIT_TIMEOUT_MS: u64 = 120_000;
 /// `no-auto-maintenance.ts`: a commit or merge must not end in `git maintenance run --auto`, whose
 /// background gc races the next writer outside every memory lock (omo #10177).
 pub const NO_AUTO_MAINTENANCE: [&str; 4] = ["-c", "maintenance.auto=false", "-c", "gc.auto=0"];
+/// The repository's initial commit carries only the caller's own seed files (or nothing), never an
+/// agent write, so it skips the pre-commit and commit-msg checks; `post-commit` (the mirror push)
+/// still runs. Divergence from `repo.ts`, whose seed commit runs the checks: each one starts the
+/// engine executable and a shell pipeline of ~20 git processes, and every memory init in a burst
+/// (many sessions opening at once on a loaded Windows host) paid that before its first write,
+/// outlasting [`COMMIT_TIMEOUT_MS`]. Every later commit still runs every check.
+const SKIP_COMMIT_CHECKS: &str = "--no-verify";
 
 fn no_auto_maintenance_argv(command: &str) -> Vec<String> {
     let mut argv: Vec<String> = NO_AUTO_MAINTENANCE.iter().map(|arg| (*arg).to_string()).collect();
@@ -130,13 +137,14 @@ impl GitMemoryRepo {
         if !paths.is_empty() {
             self.stage(&paths)?;
             if self.has_path_changes(&paths)? {
-                return Ok(self.commit_staged(INITIAL_COMMIT, &author)?.sha);
+                return Ok(self.commit_staged_with(INITIAL_COMMIT, &author, &[SKIP_COMMIT_CHECKS])?.sha);
             }
         }
 
         super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
             let mut argv = no_auto_maintenance_argv("commit");
             argv.push("--allow-empty".to_string());
+            argv.push(SKIP_COMMIT_CHECKS.to_string());
             argv.extend(author_flags(&author));
             argv.push("-m".to_string());
             argv.push(EMPTY_INITIAL_COMMIT.to_string());
@@ -550,10 +558,20 @@ impl GitMemoryRepo {
         reason: &str,
         author: &GitCommitAuthor,
     ) -> Result<GitCommitResult, GitError> {
+        self.commit_staged_with(reason, author, &[])
+    }
+
+    fn commit_staged_with(
+        &self,
+        reason: &str,
+        author: &GitCommitAuthor,
+        flags: &[&str],
+    ) -> Result<GitCommitResult, GitError> {
         let landed = super::commit_outcome::commit_judged_by_outcome(
             || {
                 super::repo_lock_sweep::with_stranded_git_lock_recovery(&self.dir, || {
                     let mut argv = no_auto_maintenance_argv("commit");
+                    argv.extend(flags.iter().map(|flag| (*flag).to_string()));
                     argv.extend(author_flags(author));
                     argv.push("-m".to_string());
                     argv.push(reason.to_string());
