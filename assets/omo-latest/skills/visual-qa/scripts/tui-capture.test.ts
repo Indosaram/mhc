@@ -1,7 +1,5 @@
 import { afterAll, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { createRequire } from "node:module"
-import { dirname } from "node:path"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -66,10 +64,26 @@ test("a missing @xterm/headless exits 2 naming the module", async () => {
 })
 
 test("falls back to the bun install cache under HOME outside the repo", async () => {
-	const real = dirname(createRequire(join(REPO, "tools/golden/package.json")).resolve("@xterm/headless/package.json"))
+	// Fake @xterm/headless laid out like a bun install cache entry: a minimal Terminal
+	// that records written text, so the test needs no installed dependencies.
 	const home = mkdtempSync(join(scratch, "cachehome-"))
-	mkdirSync(join(home, ".bun/install/cache/@xterm"), { recursive: true })
-	symlinkSync(real, join(home, ".bun/install/cache/@xterm/headless@9.9.9"))
+	const pkg = join(home, ".bun/install/cache/@xterm/headless@9.9.9")
+	mkdirSync(pkg, { recursive: true })
+	writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@xterm/headless", version: "9.9.9", main: "index.js" }))
+	writeFileSync(
+		join(pkg, "index.js"),
+		`exports.Terminal = class {
+	constructor(o) { this.text = ""; this.rows = o.rows }
+	get buffer() {
+		const lines = this.text.split("\\r\\n")
+		return { active: { viewportY: 0, getLine: (y) => ({ translateToString: () => lines[y] ?? "", getCell: () => undefined }) } }
+	}
+	write(s, cb) { this.text += s; if (cb) cb() }
+	onData() {}
+	dispose() {}
+}
+`,
+	)
 	const cwd = mkdtempSync(join(scratch, "outside-"))
 	const fixture = join(cwd, "f.ansi")
 	writeFileSync(fixture, "cache-ok\r\n")
