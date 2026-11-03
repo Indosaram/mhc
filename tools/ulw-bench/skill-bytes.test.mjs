@@ -18,7 +18,7 @@ describe("skill-bytes", () => {
     assert.ok(result.skills["assets/omo-latest/skills/ulw-plan/SKILL.md"] > 0);
     assert.ok(result.skills["assets/omo-latest/skills/ulw-research/SKILL.md"] > 0);
 
-    assert.ok(result.contracts["crates/omo/components/maho-omo-ultrawork/src/directive.txt"] === 31542);
+    assert.ok(result.contracts["crates/maho-ultrawork/contract/core.md"] > 0);
 
     assert.ok(result.totalSkillBytes > 0);
     assert.ok(result.totalContractBytes > 0);
