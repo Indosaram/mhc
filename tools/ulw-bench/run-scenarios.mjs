@@ -8,7 +8,7 @@ import readline from "node:readline";
 import { SCENARIOS } from "./scenarios/index.mjs";
 import { createFixtureRepo, checkFixtureTest } from "./scenarios/fixture-generator.mjs";
 import { createWaveTracker } from "./wave-tracker.mjs";
-import { parseArgs, printHelp, isSleepOnlyCall } from "./runner-helpers.mjs";
+import { parseArgs, printHelp, isSleepOnlyCall, DEFAULT_MAX_WALL_MS } from "./runner-helpers.mjs";
 
 export { parseArgs, printHelp, isSleepOnlyCall };
 
@@ -25,6 +25,7 @@ export async function executeScenarioRun({
   fixtureDir,
   maxInputTokens,
   outDir,
+  maxWallMs = DEFAULT_MAX_WALL_MS,
 }) {
   const toolCallNames = new Set();
   let inputTokens = 0;
@@ -35,6 +36,7 @@ export async function executeScenarioRun({
   const referencesRead = new Set();
   let reportToolsRan = false;
   let overBudget = false;
+  let timedOut = false;
   let finalText = "";
   const toolArgs = [];
 
@@ -53,6 +55,12 @@ export async function executeScenarioRun({
     if (headlessWait) {
       child.stdin.write(`${JSON.stringify({ type: "prompt", message: scenario.prompt })}\n`);
     }
+
+    const wallTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 2000).unref();
+    }, maxWallMs);
 
     const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
 
@@ -123,6 +131,7 @@ export async function executeScenarioRun({
     });
 
     child.on("close", (exitCode) => {
+      clearTimeout(wallTimer);
       const testResult = checkFixtureTest(fixtureDir);
       
       // Determine if scenario met expected outcome
@@ -153,7 +162,7 @@ export async function executeScenarioRun({
         reportToolsRan,
         fixtureTestResult: testResult,
         outcomeMet,
-        status: overBudget ? "over-budget" : (outcomeMet ? "completed" : "failed"),
+        status: overBudget ? "over-budget" : timedOut ? "timed-out" : (outcomeMet ? "completed" : "failed"),
       };
 
       const outPath = path.join(outDir, `${scenario.id}-run${runIndex}.json`);
@@ -216,6 +225,7 @@ export async function runScenarios(options) {
           runIndex: r,
           fixtureDir: tempDir,
           maxInputTokens: options.maxInputTokens,
+          maxWallMs: options.maxWallMs,
           outDir: options.out,
         });
 
@@ -235,6 +245,7 @@ export async function runScenarios(options) {
     totalRuns: allResults.length,
     completed: allResults.filter((r) => r.status === "completed").length,
     overBudget: allResults.filter((r) => r.status === "over-budget").length,
+    timedOut: allResults.filter((r) => r.status === "timed-out").length,
     failed: allResults.filter((r) => r.status === "failed").length,
     totalInputTokens,
     results: allResults,

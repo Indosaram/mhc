@@ -50,6 +50,12 @@ describe("wave-tracker", () => {
 });
 
 describe("session-bytes wake batches", () => {
+  it("parses a wake whose content is a plain string", () => {
+    const line = JSON.stringify({ type: "custom_message", customType: "omo-senpi:wake", content: `${wakeText("a", "abcd")}\n\n${wakeText("b", "ef")}` });
+    const r = parseSessionBytesFromLines([line]);
+    assert.deepEqual(r.childReportChars, [4, 2]);
+  });
+
   it("splits a multi-child wake into per-child report lengths", () => {
     const line = JSON.stringify({
       type: "custom_message",
@@ -64,6 +70,22 @@ describe("session-bytes wake batches", () => {
 });
 
 describe("executeScenarioRun headless wait", () => {
+  it("kills a run whose child never settles at the wall-clock cap and records timed-out", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ulw-wall-"));
+    try {
+      const bin = path.join(dir, "hang-mhc.mjs");
+      fs.writeFileSync(bin, `#!/usr/bin/env node
+process.stdin.on("data", () => process.stdout.write(${JSON.stringify(JSON.stringify(lifecycle("running", 1)) + "\n")}));
+setInterval(() => {}, 1000);
+`, { mode: 0o755 });
+      const scenario = { id: "S-H", name: "h", prompt: "go", waitForChildren: true, expectedOutcome: {} };
+      const r = await executeScenarioRun({ bin, model: "m", scenario, runIndex: 1, fixtureDir: dir, maxInputTokens: 1e9, outDir: dir, maxWallMs: 300 });
+      assert.equal(r.status, "timed-out");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps an rpc-mode run alive past the first wait until children settle, recording waves", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ulw-wave-"));
     try {

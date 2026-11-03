@@ -104,7 +104,7 @@ export function parseSessionBytesFromLines(lines) {
         reminder += line.length;
       } else if (isWakeType(customType)) {
         wake += line.length;
-        const text = (Array.isArray(obj.content) ? obj.content : []).map((c) => c?.text ?? "").join("");
+        const text = Array.isArray(obj.content) ? obj.content.map((c) => c?.text ?? "").join("") : String(obj.content ?? "");
         wakeBatches.push({ bytes: line.length, children: parseWakeChildren(text) });
       }
     } else if (obj.type === "message") {
