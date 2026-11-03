@@ -58,6 +58,9 @@ pub fn build_session_options(parsed: &Args, scoped: &[maho_core::model_resolver:
     let mut options = SessionOptions { model: None, initial_model_provenance: None, thinking_level: None, thinking_selection: None, scoped_models: scoped.to_vec(), no_tools: None, tools: parsed.tools.clone(), exclude_tools: parsed.exclude_tools.clone() };
     let mut diagnostics = Vec::new(); let mut cli_thinking_from_model = false;
     let thinking = parsed.thinking.as_deref().and_then(ModelThinkingLevel::parse);
+    if parsed.provider.is_some() && parsed.model.is_none() {
+        diagnostics.push(super::args::Diagnostic { error: true, message: format!("--provider requires --model (for example: --provider {} --model <pattern>)", parsed.provider.as_deref().unwrap_or_default()) });
+    }
     if parsed.model.as_ref().is_some_and(|model| !model.is_empty()) {
         let resolved = maho_core::model_resolver::resolve_cli_model(parsed.provider.as_deref(), parsed.model.as_deref(), thinking, runtime);
         if let Some(message) = resolved.parsed.warning { diagnostics.push(super::args::Diagnostic { error: false, message }); }

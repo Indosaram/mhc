@@ -23,7 +23,9 @@ tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "=1.1.4", features = ["process", "fs"] }
-tikv-jemallocator = "=0.7.0"
+# `stats` keeps jemalloc's per-arena counters so the memory report can split live heap from
+# allocator overhead; the counters are thread-cache local and cost no measurable allocation time.
+tikv-jemallocator = { version = "=0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "=0.7.1"
 
 # The feature also bakes `background_thread:true` into jemalloc's built-in conf; Mach-O jemalloc has

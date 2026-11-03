@@ -728,6 +728,7 @@ pub const RESERVED_MEMORY_REPORT_KEYS: &[&str] = &[
     "tuiRenderCache",
     "tui",
     "heapSnapshot",
+    "heap",
     "reporterErrors",
 ];
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
