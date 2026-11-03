@@ -2829,6 +2829,7 @@ async fn builtin_spent_account_without_usable_model_reports_the_account_limit_wi
 
 /// The native scenario drives a whole agent session inside one test future; unoptimized builds
 /// need more than the 2 MiB default test-thread stack for it (the shipped binary runs on 16 MiB).
+#[allow(dead_code)] // shared with examples/resume_compaction_native.rs, which includes this file
 fn on_large_stack<F: std::future::Future<Output = ()> + 'static>(body: fn() -> F) {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
