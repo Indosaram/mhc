@@ -9,3 +9,11 @@ final-status-level = "slow"
 [[profile.default.overrides]]
 filter = "package(maho-memory-core) & test(three_device_seeded_capture_model_converges_without_spliced_values)"
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# These drive the real `mhc` binary end to end (a host with session workers, or a print run whose
+# kibitzer child turn must deliver a nudge) against fixed per-event bounds. Beside a full shard on
+# a 4-core Windows runner the process startups alone outran those bounds, while the same tests
+# pass alone every time; they run with the runner to themselves instead of with longer bounds.
+[[profile.default.overrides]]
+filter = "package(maho-cli) & (test(/^memory_recall_entry::real_mount_/) | test(/^session_runtime_worker::supervisor_stdio_concurrent_/))"
+threads-required = "num-test-threads"

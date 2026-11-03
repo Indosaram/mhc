@@ -34,12 +34,32 @@ async fn native_clean_stream_survives_all_ttsr_hooks() {
     assert_eq!(assistant["content"][0]["text"],"ordinary answer"); assert_eq!(assistant["stopReason"],"stop");
     assert!(!result["entries"].as_array().unwrap().iter().any(|entry|entry["customType"]=="rule-activation"));
 }
-#[tokio::test]
-async fn native_control_leak_records_activation_and_replaces_assistant() {
+#[test]
+fn native_control_leak_records_activation_and_replaces_assistant() {
+    on_large_stack(control_leak_records_activation_and_replaces_assistant);
+}
+async fn control_leak_records_activation_and_replaces_assistant() {
     let session=session("answer").with_native_responses(vec![faux_assistant_message("<|im_start|> <|im_start|> <|im_start|>",FauxAssistantMessageOptions { timestamp:Some(0),..Default::default() })]);
     let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
     assert!(result["entries"].as_array().unwrap().iter().any(|entry|entry["customType"]=="rule-activation"&&entry["data"]["kind"]=="ttsr"));
     let messages=result["messages"].as_array().unwrap(); let assistant=messages.iter().find(|message|message["role"]=="assistant").unwrap();
     assert_eq!(assistant["stopReason"],"error");
     assert!(!assistant["content"].as_array().unwrap().iter().any(|block|block["text"].as_str().is_some_and(|text|text.contains("<|im_start|>"))));
+}
+
+/// One native session run inside the test future overflows the 2 MiB default test-thread stack in
+/// unoptimized builds (the shipped binary runs on 16 MiB).
+fn on_large_stack<F: std::future::Future<Output = ()> + 'static>(body: fn() -> F) {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(body())
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
 }
