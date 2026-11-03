@@ -7,7 +7,7 @@ mod types;
 
 pub mod dag_verification_directive;
 pub use notification::{
-    BuildDetailsOptions, FINAL_RESPONSE_TRANSPORT_LIMIT, build_completion_details,
+    BuildDetailsOptions, DEFAULT_COMPLETION_TRANSPORT_LIMIT, build_completion_details,
     build_completion_message, completion_message_lines, describe_parent_model_fallback,
 };
 pub use notifier::{CompletionNotifier, create_completion_notifier};
