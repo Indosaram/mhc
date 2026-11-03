@@ -38,4 +38,7 @@ pub struct McpConnectionEntry {
     /// (upstream `disposeListChanged`).
     pub list_changed_tasks:Vec<tokio::task::JoinHandle<()>>,
     pub list_changed_coalescer:Option<Arc<crate::notifications::McpListChangeCoalescer>>,
+    /// invocation.ts `owner: entry`: the dispatch owner of every operation this entry offers, stable
+    /// across re-registrations of its tools.
+    pub dispatch_owner:maho_ext_api::ToolDispatchOwner,
 }

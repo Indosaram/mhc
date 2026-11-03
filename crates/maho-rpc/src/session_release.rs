@@ -88,15 +88,18 @@ fn sealed_attempt(entries: &[Value], move_id: &str) -> Option<String> {
 pub fn prepare_outgoing_state(session_file: &str, move_id: &str) -> Result<StagedState, String> {
     let root = outgoing_state_dir(session_file, move_id);
     let sealed = sealed_attempt(&load_entries_from_file(session_file), move_id);
-    if root.exists() {
-        for entry in std::fs::read_dir(&root).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if Some(&name) == sealed.as_ref() {
-                continue;
-            }
-            std::fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => Some(entries),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries.into_iter().flatten() {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if Some(&name) == sealed.as_ref() {
+            continue;
         }
+        remove_dead_attempt(&entry.path())?;
     }
     let attempt = uuid::Uuid::new_v4().simple().to_string();
     let attempt = attempt.get(..16).unwrap_or(attempt.as_str()).to_owned();
@@ -106,6 +109,15 @@ pub fn prepare_outgoing_state(session_file: &str, move_id: &str) -> Result<Stage
         attempt,
         dir: dir.to_string_lossy().into_owned(),
     })
+}
+
+/// senpi `rm(dir, { recursive, force })`: an attempt folder already gone (a detached discard of the same dead attempt
+/// won the race) is removed, not a failure.
+fn remove_dead_attempt(path: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+        _ => Ok(()),
+    }
 }
 
 /// Abandons one attempt's staging folder: what it wrote is never bundled, and a retry stages afresh.
@@ -219,13 +231,14 @@ pub trait SessionReleasePort: ReleaseSettlePort {
     fn other_requests(&self, session_id: &str) -> usize;
     /// Clients attached to the session other than the connection asking for the release.
     fn other_attachments(&self, session_id: &str) -> u64;
-    /// Stages this release attempt's folder for a move (senpi `prepareOutgoingState`).
-    fn prepare_outgoing_state(
+    /// Stages this release attempt's folder for a move (senpi `prepareOutgoingState`, awaited: no sync fs on the move
+    /// path).
+    async fn prepare_outgoing_state(
         &self,
         session_path: &str,
         move_id: &str,
     ) -> Result<StagedState, ReleaseWriteError>;
-    /// Removes a staging folder an attempt that never sealed the file left behind.
+    /// Removes a staging folder an attempt that never sealed the file left behind, off the async workers.
     fn discard_outgoing_state(&self, dir: &str);
     /// Claims every attachment and tears the session down, sealing it as released. Its claim is taken before its
     /// first await. `false` when another close already owns the entry.
@@ -495,7 +508,9 @@ pub async fn release_session(
         // A move takes the extensions' out-of-folder state with it; they write it while their runtime is still live.
         let state_attempt = if command.reason_str() == Some("move") {
             let move_id = command.move_id.as_str().unwrap_or_default();
-            let staged_state = port.prepare_outgoing_state(&first.session_path, move_id)?;
+            let staged_state = port
+                .prepare_outgoing_state(&first.session_path, move_id)
+                .await?;
             let state_attempt = staged_state.attempt.clone();
             let dir = staged_state.dir.clone();
             staged = Some(staged_state);
@@ -630,6 +645,17 @@ mod tests {
     use crate::session_release_interrupt::{BoxFuture, SubscriptionGuard};
     use maho_core::agent_session::ClearedQueue;
     use maho_core::session_activity::SessionActivitySnapshot;
+    #[test]
+    fn a_dead_attempt_already_removed_by_a_detached_discard_does_not_fail_the_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp.path().join("s.jsonl").to_string_lossy().into_owned();
+        let first = prepare_outgoing_state(&session, "m").unwrap();
+        // The detached discard of the first attempt finishes between the retry's walk and its removal.
+        discard_outgoing_state(&first.dir);
+        assert_eq!(remove_dead_attempt(Path::new(&first.dir)), Ok(()));
+        let retry = prepare_outgoing_state(&session, "m").unwrap();
+        assert!(Path::new(&retry.dir).is_dir());
+    }
     use maho_core::session_move::ownership::{
         RefusedOwnership, RefusedState, SessionMovedAwayError,
     };
@@ -686,6 +712,9 @@ mod tests {
                         text,
                         mode: maho_ext_api::StreamingBehavior::Steer,
                         enqueue_order: order as u64,
+                        queued_id: format!("q_{}", order + 1),
+                        revision: 1,
+                        client_message_id: None,
                     })
                     .collect(),
             }
@@ -807,7 +836,7 @@ mod tests {
         fn other_attachments(&self, _: &str) -> u64 {
             self.other_attachments
         }
-        fn prepare_outgoing_state(
+        async fn prepare_outgoing_state(
             &self,
             _session_path: &str,
             move_id: &str,
@@ -918,7 +947,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_export_abandons_its_staging_and_answers_release_failed() {
         let fake = fake();
-        *fake.export_error.lock().unwrap() = Some("ext could not write its state for the move".into());
+        *fake.export_error.lock().unwrap() =
+            Some("ext could not write its state for the move".into());
         let port = port(&fake);
         let answer = release_session(&port, &mover(json!("m-1"))).await;
         assert_eq!(code(&answer), RPC_ERROR_RELEASE_FAILED);

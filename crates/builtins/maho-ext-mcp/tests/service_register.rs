@@ -7,8 +7,8 @@ use crate::support;
 fn seed_cache(agent_dir: &std::path::Path, name: &str, declaration: &maho_ext_api::RegisteredMcpServerDeclaration) {
     let mut wire = maho_ext_mcp::config_schema::ServerConfigWire::from(&declaration.config);
     wire.cwd.get_or_insert_with(|| declaration.registration_cwd.to_string_lossy().into_owned());
-    let hash = maho_ext_mcp::config::hash_config(&maho_ext_mcp::config::normalize_server(wire)).expect("hash the seeded server config");
-    maho_ext_mcp::catalog_cache::write_mcp_cached_server(agent_dir, name, maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash: hash, fetched_at: chrono::Utc::now().timestamp_millis() as f64, tools: vec![serde_json::json!({"name":"tool_1","inputSchema":{"type":"object"}})], resources: vec![], prompts: vec![], instructions: None}).expect("write the seeded mcp catalog");
+    let hash = maho_ext_mcp::config::hash_config(&maho_ext_mcp::config::normalize_server(wire), Some(agent_dir)).expect("hash the seeded server config");
+    maho_ext_mcp::catalog_cache::write_mcp_cached_server(agent_dir, name, maho_ext_mcp::catalog_cache::McpCachedServerCatalog {modern:false,credential_identity:None,config_hash: hash, fetched_at: chrono::Utc::now().timestamp_millis() as f64, tools: vec![serde_json::json!({"name":"tool_1","inputSchema":{"type":"object"}})], resources: vec![], prompts: vec![], instructions: None}).expect("write the seeded mcp catalog");
 }
 
 #[tokio::test]

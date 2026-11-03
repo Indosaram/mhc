@@ -368,3 +368,77 @@ fn test_non_origin_remote_reports_harness_sync() {
 
     assert!(res.result.contains("harness will sync after the turn"));
 }
+
+#[test]
+fn given_a_codex_patch_when_apply_patch_runs_then_it_applies_and_commits_through_the_memory_tool() {
+    let (_temp, repo) = fixture();
+    let lock = crate::tools::memory_apply_patch_test_support::RecordingLock::default();
+    let input = [
+        "*** Begin Patch",
+        "*** Add File: reference/patch.md",
+        "+---",
+        "+description: Patch note",
+        "+---",
+        "+written through memory",
+        "*** End Patch",
+    ]
+    .join("\n");
+
+    let res = run_memory_tool(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            command: Some("apply_patch".to_string()),
+            reason: "add patch note".to_string(),
+            input: Some(input),
+            ..Default::default()
+        },
+        Some(&lock),
+    )
+    .expect("apply_patch");
+
+    assert!(
+        crate::tools::memory_apply_patch_test_support::matches_short_sha_message(
+            &res.result,
+            "Memory apply_patch committed locally (",
+            ").",
+        ),
+        "{}",
+        res.result
+    );
+    let content = fs::read_to_string(repo.dir.join("reference/patch.md")).expect("read");
+    assert_eq!(
+        parse_memory_file(&content).expect("parse").body,
+        "written through memory"
+    );
+    assert_eq!(*lock.domains.borrow(), vec!["memory-write".to_string()]);
+}
+
+#[test]
+fn given_a_failing_patch_when_apply_patch_runs_through_the_memory_tool_then_the_error_carries_the_memory_prefix()
+ {
+    let (_temp, repo) = fixture();
+    let input =
+        "*** Begin Patch\n*** Update File: reference/missing.md\n@@\n-old\n+new\n*** End Patch";
+
+    let error = run_memory_tool(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            command: Some("apply_patch".to_string()),
+            reason: "edit missing".to_string(),
+            input: Some(input.to_string()),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .message
+            .starts_with("memory: memory_apply_patch: failed to read reference/missing.md: "),
+        "{}",
+        error.message
+    );
+}

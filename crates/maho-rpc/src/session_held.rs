@@ -10,6 +10,56 @@ use maho_core::{
 };
 /// The wire code of a session-held refusal (senpi `RPC_ERROR_SESSION_HELD`).
 pub const RPC_ERROR_SESSION_HELD: &str = "session_held";
+/// Admission is conservative: a new command must pass the guard unless it is explicitly a read or a control needed
+/// to finish or cancel an already-admitted turn (senpi `READ_ONLY_OR_CONTROL`).
+pub const READ_ONLY_OR_CONTROL: [&str; 41] = [
+    "get_state",
+    "get_snapshot",
+    "get_effect_status",
+    "get_pending_inputs",
+    "get_steering_messages",
+    "get_follow_up_messages",
+    "get_available_models",
+    "get_available_thinking_levels",
+    "get_model_thinking_level",
+    "get_fast_mode",
+    "get_session_stats",
+    "resolve_path",
+    "get_fork_messages",
+    "get_entries",
+    "get_tree",
+    "get_last_assistant_text",
+    "get_messages",
+    "get_media",
+    "get_commands",
+    "get_loaded_surfaces",
+    "get_auth_providers",
+    "get_provider_accounts",
+    "memory_report",
+    "eval_cells.list",
+    "eval_cells.peek",
+    "eval_cells.stop",
+    "export_html",
+    "export_jsonl",
+    "abort",
+    "interrupt",
+    "abort_compaction",
+    "abort_branch_summary",
+    "abort_retry",
+    "abort_bash",
+    "clear_queue",
+    "check_reload_veto",
+    "cleanup_bash_output",
+    "set_client_info",
+    "extension_ui_response",
+    "extension_ui_progress",
+    "host_response",
+];
+/// Whether a session command must pass the session-held guard before it reaches the binding (senpi
+/// `dispatchSessionBinding`): everything but a read or a control of an admitted turn.
+pub fn requires_session_held_check(command_type: &str) -> bool {
+    !READ_ONLY_OR_CONTROL.contains(&command_type)
+}
 /// Whether the host generation a holder lease names has ended: positive evidence that lets an unprovable lease
 /// be reclaimed instead of refusing (senpi `holderGenerationEnded`).
 pub fn generation_ended(
@@ -109,6 +159,19 @@ pub fn holders_detail(holders: &[SessionHolder]) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// get-snapshot.test.ts / senpi#4266: `get_snapshot` is a read, so it neither passes the held guard nor
+    /// refreshes the session's activity; a prompt does both.
+    #[test]
+    fn get_snapshot_is_a_read_for_admission_and_activity() {
+        assert!(!requires_session_held_check("get_snapshot"));
+        assert!(!requires_session_held_check("abort"));
+        assert!(requires_session_held_check("prompt"));
+        assert!(requires_session_held_check("set_model"));
+        assert!(!crate::session_command_activity::refreshes_session_activity("get_snapshot"));
+        assert!(crate::session_command_activity::refreshes_session_activity(
+            "prompt"
+        ));
+    }
     #[test]
     fn holder_detail_omits_absent_fields() {
         let detail = holders_detail(&[SessionHolder {

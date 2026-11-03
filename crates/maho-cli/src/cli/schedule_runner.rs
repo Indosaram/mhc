@@ -17,6 +17,8 @@ pub struct RunDueOptions<'a, D: Delivery + ?Sized = dyn Delivery + 'a> {
     pub delivery: &'a D,
     pub concurrency: usize,
     pub delivery_timeout_ms: u64,
+    /// Only this session's jobs: the pass a live session runs for itself.
+    pub session_id: Option<&'a str>,
 }
 fn note_next(next: &mut Option<u64>, due: u64) {
     *next = Some(next.map_or(due, |old| old.min(due)));
@@ -97,15 +99,16 @@ pub async fn run_due_jobs<D: Delivery + ?Sized>(options: &RunDueOptions<'_, D>) 
     let listing = list_scheduled_jobs(options.dir)?;
     let mut events: Vec<_> = listing.invalid.iter().map(|invalid| serde_json::json!({"event":"invalid","state":invalid.state,"file":invalid.file,"error":invalid.error})).collect();
     let mut next_due_at = None;
+    let in_scope = |job: &ScheduledJob| options.session_id.is_none_or(|id| job.session_id == id);
     if listing
         .jobs
         .iter()
-        .any(|record| record.state == ScheduledJobState::Firing)
+        .any(|record| in_scope(&record.job) && record.state == ScheduledJobState::Firing)
     {
         let runners = live_runners(options.dir, options.probes).await?;
         let own = options.probes.own_identity();
         for record in &listing.jobs {
-            if record.state != ScheduledJobState::Firing {
+            if !in_scope(&record.job) || record.state != ScheduledJobState::Firing {
                 continue;
             }
             let (Some(owner), Some(occurrence)) = (&record.owner, record.occurrence) else {
@@ -135,7 +138,7 @@ pub async fn run_due_jobs<D: Delivery + ?Sized>(options: &RunDueOptions<'_, D>) 
     prune_tombstones(options.dir, &listing, options.probes.now())?;
     let mut queues: BTreeMap<String, Vec<ScheduledJob>> = BTreeMap::new();
     for record in listing.jobs {
-        if record.state != ScheduledJobState::Pending {
+        if !in_scope(&record.job) || record.state != ScheduledJobState::Pending {
             continue;
         }
         if record.job.due_at > options.probes.now() {

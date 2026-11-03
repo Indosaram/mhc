@@ -1,10 +1,12 @@
 // Modules marked `#[cfg(feature = "omo")]` host the oh-my-openagent port (crates/omo/**,
 // LicenseRef-SUL-1.0) or are ports of its host side; the MIT profile (`--no-default-features`)
 // compiles them out. See docs/MIT-PROFILE.md.
+pub mod agent_dir_command;
 pub mod args;
 pub mod auth_check;
 pub mod auth_command;
 pub mod codemode_services;
+pub mod config_command_help;
 pub mod config_import_pi;
 pub mod credential_print;
 pub mod credentials;
@@ -49,6 +51,7 @@ pub mod host_command;
 pub mod host_handover_args;
 pub mod host_request;
 pub mod host_runtime;
+pub mod host_session_command;
 #[cfg(feature = "omo")]
 pub mod host_transport;
 pub mod initial_message;
@@ -67,6 +70,7 @@ pub mod kibitzer_coordinator;
 pub mod kibitzer_tools;
 pub mod list_models;
 pub mod list_tips;
+pub mod mcp_local_presenter;
 pub mod memory_report_build;
 pub mod memory_report_registry;
 pub mod memory_report_write;
@@ -111,3 +115,8 @@ pub mod tool_search;
 pub mod user_extensions;
 #[cfg(not(feature = "omo"))]
 pub mod usage_stats;
+// ledger sync-5152 (cli-tui): modules ported at senpi pin 903b8336.
+pub mod continue_moved;
+pub mod cross_project_session;
+pub mod print_then_exit;
+pub mod session_opening;

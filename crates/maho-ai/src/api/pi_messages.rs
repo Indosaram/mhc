@@ -16,9 +16,9 @@ use crate::utils::diagnostics::{
     AssistantMessageDiagnostic, DiagnosticCode, Thrown, append_assistant_message_diagnostic,
     create_assistant_message_diagnostic, now_ms,
 };
-use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
+#[cfg(test)]
+use crate::utils::event_stream::create_assistant_message_event_stream;
 use crate::utils::headers::{headers_to_record, provider_headers_to_record};
 use crate::utils::json_parse::{parse_streaming_json, should_reparse_streaming_json};
 use crate::utils::provider_env::get_provider_env_value;
@@ -309,6 +309,7 @@ impl EventConverter {
             model: model.clone(),
             partial: AssistantMessage {
                 failure_source: None,
+                credential_served_recently: None,
                 timing: None,
                 error_cause: None,
                 prompt_cache_breakpoint: None,
@@ -601,6 +602,7 @@ fn create_error_event(
     };
     let mut assistant_message = AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -760,7 +762,8 @@ pub fn stream(
 ) -> AssistantMessageEventStream {
     let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
     let context = &resolved_context;
-    let event_stream = create_assistant_message_event_stream();
+    let event_stream =
+        crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();

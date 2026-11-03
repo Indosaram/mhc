@@ -275,12 +275,29 @@ pub struct HostDrainingHold {
 
 /// Reads a draining hold from an error's name (and an optional nested cause name).
 pub fn read_host_draining_hold(error_name: &str, cause_name: Option<&str>) -> Option<HostDrainingHold> {
-    if error_name != "SessionHeldElsewhereError" && cause_name != Some("SessionHeldElsewhereError") {
+    if error_name != "SessionHeldElsewhereError"
+        && error_name != "session_path_in_use"
+        && cause_name != Some("SessionHeldElsewhereError")
+        && cause_name != Some("session_path_in_use")
+    {
         return None;
     }
     Some(HostDrainingHold {
         retry_after_ms: None,
     })
+}
+
+pub fn read_host_draining_hold_from_runner_error(
+    error: &crate::manager::types::ManagedRunnerError,
+) -> Option<HostDrainingHold> {
+    match error {
+        crate::manager::types::ManagedRunnerError::HostSessionOpen(
+            crate::runners::rpc_host::HostSessionOpenError::SessionPathInUse { retry_after_ms, .. },
+        ) => Some(HostDrainingHold {
+            retry_after_ms: *retry_after_ms,
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

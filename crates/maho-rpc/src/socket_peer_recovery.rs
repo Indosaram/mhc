@@ -50,7 +50,31 @@ impl SocketPeerLivenessError {
 }
 
 pub type SnapshotReader = Box<dyn Fn() -> Vec<Value> + Send>;
-pub type SnapshotFactory = Box<dyn Fn(ResyncReason) -> SnapshotReader + Send>;
+/// A shed's recovery cut (senpi `ResyncCut`): read once when the gap is delivered, released on that and
+/// on every other end (close, failure).
+pub struct ResyncCut {
+    pub read: SnapshotReader,
+    pub release: Option<Box<dyn FnOnce() + Send>>,
+}
+impl ResyncCut {
+    pub fn new(read: SnapshotReader) -> Self {
+        Self {
+            read,
+            release: None,
+        }
+    }
+    fn release(self) {
+        if let Some(release) = self.release {
+            release();
+        }
+    }
+}
+impl From<SnapshotReader> for ResyncCut {
+    fn from(read: SnapshotReader) -> Self {
+        Self::new(read)
+    }
+}
+pub type SnapshotFactory = Box<dyn Fn(ResyncReason) -> ResyncCut + Send>;
 
 /// One gap and one outstanding ping, regardless of how many events the producer emits.
 pub struct SocketPeerRecovery {
@@ -60,7 +84,7 @@ pub struct SocketPeerRecovery {
     reply_lost: bool,
     write: Box<dyn FnMut(String) + Send>,
     snapshot: SnapshotFactory,
-    read_snapshot: Option<SnapshotReader>,
+    read_snapshot: Option<ResyncCut>,
 }
 impl SocketPeerRecovery {
     /// Negotiates the heartbeat before session traffic can fill the output side.
@@ -85,6 +109,12 @@ impl SocketPeerRecovery {
         }
         self.reason = Some(reason);
         self.read_snapshot = Some((self.snapshot)(reason));
+    }
+    /// The peer closed or failed before its gap was delivered.
+    pub fn release(&mut self) {
+        if let Some(cut) = self.read_snapshot.take() {
+            cut.release();
+        }
     }
     /// A fresh `set_client_info` is the connection-scoped acknowledgement.
     pub fn acknowledge(&mut self) {
@@ -114,8 +144,9 @@ impl SocketPeerRecovery {
             records.push(json!({"type":"resync_required","reason":reason.as_str(),"replyLost":self.reply_lost}));
         }
         self.reply_lost = false;
-        if let Some(read) = snapshot {
-            records.extend(read());
+        if let Some(cut) = snapshot {
+            records.extend((cut.read)());
+            cut.release();
         }
         records
     }
@@ -134,7 +165,7 @@ mod tests {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(line)
             }),
-            Box::new(|_| Box::new(|| vec![json!({"type":"snapshot"})])),
+            Box::new(|_| ResyncCut::new(Box::new(|| vec![json!({"type":"snapshot"})]))),
         );
         (recovery, written)
     }
@@ -188,5 +219,30 @@ mod tests {
         assert!(is_correlated_reply(&json!({"type":"response","id":"1"})));
         assert!(!is_correlated_reply(&json!({"type":"response","id":1})));
         assert!(!is_correlated_reply(&json!({"type":"event","id":"1"})));
+    }
+    #[test]
+    fn a_cut_is_released_once_on_delivery_or_on_close() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let released = Arc::new(AtomicUsize::new(0));
+        let counter = released.clone();
+        let mut recovery = SocketPeerRecovery::new(
+            Box::new(|_| {}),
+            Box::new(move |_| {
+                let counter = counter.clone();
+                ResyncCut {
+                    read: Box::new(Vec::new),
+                    release: Some(Box::new(move || {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                    })),
+                }
+            }),
+        );
+        recovery.shed(ResyncReason::Stall);
+        let _ = recovery.take_snapshot();
+        assert_eq!(released.load(Ordering::SeqCst), 1);
+        recovery.shed(ResyncReason::Overflow);
+        recovery.release();
+        recovery.release();
+        assert_eq!(released.load(Ordering::SeqCst), 2);
     }
 }

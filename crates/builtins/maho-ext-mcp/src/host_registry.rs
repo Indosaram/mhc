@@ -1,53 +1,201 @@
-use std::{collections::BTreeMap,sync::{Arc,Mutex}};
-use crate::{connection::ServerConnection,errors::McpError};
 pub use crate::sharing_policy::shareable;
-#[derive(Debug,thiserror::Error)]
+use crate::{connection::ServerConnection, errors::McpError};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
+#[derive(Debug, thiserror::Error)]
 #[error("Cannot detach an unknown MCP connection owner")]
-pub struct HostMcpRegistryError {pub code:&'static str,pub key:String}
-#[derive(Debug,thiserror::Error)]
-pub enum RegistryDetachError {#[error(transparent)] Owner(#[from] HostMcpRegistryError),#[error(transparent)] Connection(#[from] McpError)}
-struct RegistryEntry {connection:Arc<ServerConnection>,shareable:bool,owners:BTreeMap<u64,usize>}
+pub struct HostMcpRegistryError {
+    pub code: &'static str,
+    pub key: String,
+}
+#[derive(Debug, thiserror::Error)]
+pub enum RegistryDetachError {
+    #[error(transparent)]
+    Owner(#[from] HostMcpRegistryError),
+    #[error(transparent)]
+    Connection(#[from] McpError),
+}
+struct RegistryEntry {
+    connection: Arc<ServerConnection>,
+    shareable: bool,
+    owners: BTreeMap<u64, usize>,
+}
 #[derive(Default)]
-pub struct HostMcpRegistry {entries:Mutex<BTreeMap<String,Vec<RegistryEntry>>>,shared:Mutex<BTreeMap<String,Arc<crate::shared_connection::SharedMcpConnection>>>}
+pub struct HostMcpRegistry {
+    entries: Mutex<BTreeMap<String, Vec<RegistryEntry>>>,
+    shared: Mutex<BTreeMap<String, Arc<crate::shared_connection::SharedMcpConnection>>>,
+}
 impl HostMcpRegistry {
-    pub fn attach_shared(&self,key:&str,owner:u64,factory:impl FnOnce()->Arc<crate::shared_connection::SharedMcpConnection>)->Result<Arc<crate::shared_lease::SharedMcpLease>,McpError> {
-        let mut shared=self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if shared.get(key).is_some_and(|connection|connection.is_disposed()){shared.remove(key);}
-        let connection=shared.entry(key.into()).or_insert_with(factory);connection.attach(owner,key.into())
+    pub fn attach_shared(
+        &self,
+        key: &str,
+        owner: u64,
+        factory: impl FnOnce() -> Arc<crate::shared_connection::SharedMcpConnection>,
+    ) -> Result<Arc<crate::shared_lease::SharedMcpLease>, McpError> {
+        self.attach_shared_with_options(key, owner, None, factory)
     }
-    pub fn attach(&self,key:&str,owner:u64,factory:impl FnOnce()->Arc<ServerConnection>,can_share:bool)->Arc<ServerConnection> {
-        let mut entries=self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entries=entries.entry(key.into()).or_default();
-        if let Some(entry)=entries.iter_mut().find(|entry|entry.owners.contains_key(&owner)) {
-            if let Some(count)=entry.owners.get_mut(&owner){*count+=1;}
+    pub fn attach_shared_with_options(
+        &self,
+        key: &str,
+        owner: u64,
+        options: Option<crate::shared_connection::SharedLeaseOptions>,
+        factory: impl FnOnce() -> Arc<crate::shared_connection::SharedMcpConnection>,
+    ) -> Result<Arc<crate::shared_lease::SharedMcpLease>, McpError> {
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shared
+            .get(key)
+            .is_some_and(|connection| connection.is_disposed())
+        {
+            shared.remove(key);
+        }
+        let connection = shared.entry(key.into()).or_insert_with(factory);
+        connection.attach_with_options(owner, key.into(), options)
+    }
+    pub fn attach(
+        &self,
+        key: &str,
+        owner: u64,
+        factory: impl FnOnce() -> Arc<ServerConnection>,
+        can_share: bool,
+    ) -> Arc<ServerConnection> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = entries.entry(key.into()).or_default();
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.owners.contains_key(&owner))
+        {
+            if let Some(count) = entry.owners.get_mut(&owner) {
+                *count += 1;
+            }
             return entry.connection.clone();
         }
-        if can_share && let Some(entry)=entries.iter_mut().find(|entry|entry.shareable) {entry.owners.insert(owner,1);return entry.connection.clone();}
-        let connection=factory();entries.push(RegistryEntry {connection:connection.clone(),shareable:can_share,owners:BTreeMap::from([(owner,1)])});connection
+        if can_share && let Some(entry) = entries.iter_mut().find(|entry| entry.shareable) {
+            entry.owners.insert(owner, 1);
+            return entry.connection.clone();
+        }
+        let connection = factory();
+        entries.push(RegistryEntry {
+            connection: connection.clone(),
+            shareable: can_share,
+            owners: BTreeMap::from([(owner, 1)]),
+        });
+        connection
     }
-    pub async fn detach(&self,key:&str,owner:u64)->Result<(),RegistryDetachError> {
-        let connection={
-            let mut all=self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let error=||HostMcpRegistryError {code:"unknown_owner",key:key.into()};
-            let entries=all.get_mut(key).ok_or_else(error)?;
-            let index=entries.iter().position(|entry|entry.owners.contains_key(&owner)).ok_or_else(error)?;
-            let entry=&mut entries[index];
-            if let Some(count)=entry.owners.get_mut(&owner) && *count>1 {*count-=1;return Ok(());}
-            entry.owners.remove(&owner);if !entry.owners.is_empty(){return Ok(());}
-            let connection=entries.remove(index).connection;
-            if entries.is_empty(){all.remove(key);}connection
+    /// Upstream `invalidateIdentity`: closes every transport admitted by this project identity now, not
+    /// when its final lease goes idle; shared pools also drop their catalog.
+    pub async fn invalidate_identity(&self, digest: &str) -> Result<(), McpError> {
+        let shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|shared| shared.connection.declaration_identity().as_deref() == Some(digest))
+            .cloned()
+            .collect::<Vec<_>>();
+        let owned = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .flatten()
+            .filter(|entry| entry.connection.declaration_identity().as_deref() == Some(digest))
+            .map(|entry| entry.connection.clone())
+            .collect::<Vec<_>>();
+        futures::future::try_join_all(shared.iter().map(|shared| shared.invalidate())).await?;
+        futures::future::try_join_all(owned.iter().map(|connection| connection.bump_generation()))
+            .await?;
+        Ok(())
+    }
+    pub async fn detach(&self, key: &str, owner: u64) -> Result<(), RegistryDetachError> {
+        let connection = {
+            let mut all = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let error = || HostMcpRegistryError {
+                code: "unknown_owner",
+                key: key.into(),
+            };
+            let entries = all.get_mut(key).ok_or_else(error)?;
+            let index = entries
+                .iter()
+                .position(|entry| entry.owners.contains_key(&owner))
+                .ok_or_else(error)?;
+            let entry = &mut entries[index];
+            if let Some(count) = entry.owners.get_mut(&owner)
+                && *count > 1
+            {
+                *count -= 1;
+                return Ok(());
+            }
+            entry.owners.remove(&owner);
+            if !entry.owners.is_empty() {
+                return Ok(());
+            }
+            let connection = entries.remove(index).connection;
+            if entries.is_empty() {
+                all.remove(key);
+            }
+            connection
         };
-        connection.dispose().await?;Ok(())
+        connection.dispose().await?;
+        Ok(())
     }
-    pub fn for_each_owner(&self,key:&str)->Vec<u64> {
-        self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(key).into_iter().flatten().flat_map(|entry|entry.owners.keys().copied()).collect()
+    pub fn for_each_owner(&self, key: &str) -> Vec<u64> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .into_iter()
+            .flatten()
+            .flat_map(|entry| entry.owners.keys().copied())
+            .collect()
     }
-    pub async fn dispose(&self)->Result<(),McpError> {
-        let shared=std::mem::take(&mut *self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        futures::future::try_join_all(shared.values().map(|connection|connection.dispose())).await?;
-        let entries=std::mem::take(&mut *self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        let connections=entries.into_values().flatten().map(|entry|entry.connection).collect::<Vec<_>>();
-        futures::future::try_join_all(connections.iter().map(|connection|connection.dispose())).await?;Ok(())
+    pub async fn dispose(&self) -> Result<(), McpError> {
+        let shared = std::mem::take(
+            &mut *self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        futures::future::try_join_all(shared.values().map(|connection| connection.dispose()))
+            .await?;
+        let entries = std::mem::take(
+            &mut *self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let connections = entries
+            .into_values()
+            .flatten()
+            .map(|entry| entry.connection)
+            .collect::<Vec<_>>();
+        futures::future::try_join_all(connections.iter().map(|connection| connection.dispose()))
+            .await?;
+        Ok(())
     }
-    pub fn size(&self)->usize {self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().filter(|connection|!connection.is_disposed()).count()+self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().map(Vec::len).sum::<usize>()}
+    pub fn size(&self) -> usize {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|connection| !connection.is_disposed())
+            .count()
+            + self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+    }
 }

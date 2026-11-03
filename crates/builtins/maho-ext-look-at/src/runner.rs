@@ -141,6 +141,7 @@ pub async fn run_look_at(
         reasoning: resolved.thinking_level,
         ..Default::default()
     };
+    options.stream.request.cwd = Some(ctx.cwd.to_string_lossy().into_owned());
     options.stream.max_tokens = Some(4096);
     options.stream.request.signal = Some(request_signal.clone());
     let response = async {

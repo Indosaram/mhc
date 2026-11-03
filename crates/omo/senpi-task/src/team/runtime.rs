@@ -102,6 +102,11 @@ pub fn create_team(
         team_run_id: &team_run_id,
         manager: deps.manager.as_ref(),
         lead_session_id: &deps.lead_session_id,
+        root_session_id: Some(
+            deps.root_session_id
+                .as_deref()
+                .unwrap_or(&deps.lead_session_id),
+        ),
         spawn_depth: deps.spawn_depth,
         max_parallel: deps.team_bounds.max_parallel_members,
         deadline_at: now().saturating_add(wall_clock_ms),

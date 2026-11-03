@@ -531,7 +531,7 @@ pub const DEFAULT_MODEL_PER_PROVIDER: &[(&str, &str)] = &[
     ("github-copilot", "gpt-5.4"),
     ("openrouter", "moonshotai/kimi-k2.6"),
     ("vercel-ai-gateway", "zai/glm-5.1"),
-    ("opengateway", "moonshotai/kimi-k3"),
+    ("opengateway", "moonshotai/kimi-k3.1-pro"),
     ("xai", "grok-4.7"),
     ("groq", "openai/gpt-oss-120b"),
     ("cerebras", "gpt-oss-120b"),
@@ -540,15 +540,15 @@ pub const DEFAULT_MODEL_PER_PROVIDER: &[(&str, &str)] = &[
     ("mistral", "devstral-medium-latest"),
     ("minimax", "MiniMax-M2.7"),
     ("minimax-cn", "MiniMax-M2.7"),
-    ("moonshotai", "kimi-k2.6"),
-    ("moonshotai-cn", "kimi-k2.6"),
+    ("moonshotai", "kimi-k3.1-pro"),
+    ("moonshotai-cn", "kimi-k3.1-pro"),
     ("huggingface", "moonshotai/Kimi-K2.6"),
     ("fireworks", "accounts/fireworks/models/kimi-k2p6"),
     ("together", "moonshotai/Kimi-K2.6"),
     ("venice", "z-ai-glm-5-3"),
     ("baseten", "zai-org/GLM-5.2"),
     ("opencode", "kimi-k2.6"),
-    ("opencode-go", "kimi-k2.6"),
+    ("opencode-go", "kimi-k3.1-pro"),
     ("kimi-coding", "kimi-for-coding"),
     ("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6"),
     (
@@ -574,15 +574,43 @@ fn preferred_available(models: &[Model], is_ambient: impl Fn(&str) -> bool) -> O
     } else {
         &configured
     };
+    let default_of = |provider: &str| {
+        let id = DEFAULT_MODEL_PER_PROVIDER
+            .iter()
+            .find(|(p, _)| *p == provider)
+            .map(|(_, id)| *id)?;
+        group
+            .iter()
+            .find(|m| m.provider == provider && m.id == id)
+            .cloned()
+    };
     DEFAULT_MODEL_PER_PROVIDER
         .iter()
-        .find_map(|(p, id)| {
-            group
+        .find_map(|(p, _)| {
+            let matched = default_of(p)?;
+            // An available subscription lane of that provider wins over its metered twin (senpi#4412).
+            let subscription = subscription_lanes(p)
                 .iter()
-                .find(|m| m.provider == *p && m.id == *id)
-                .cloned()
+                .find_map(|lane| default_of(lane));
+            Some(subscription.unwrap_or(matched))
         })
         .or_else(|| group.first().cloned())
+}
+
+/// senpi `SUBSCRIPTION_LANES`: metered API lane -> the subscription-plan lanes that sell the same vendor's
+/// models. When both are available, the automatic default takes the plan, whatever the declared order.
+fn subscription_lanes(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "openai" => &["chatgpt-subscription"],
+        "anthropic" => &["anthropic-subscription"],
+        "moonshotai" | "moonshotai-cn" => &["kimi-coding"],
+        "xiaomi" => &[
+            "xiaomi-token-plan-cn",
+            "xiaomi-token-plan-ams",
+            "xiaomi-token-plan-sgp",
+        ],
+        _ => &[],
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -965,6 +993,55 @@ mod tests {
             "amazon-bedrock"
         );
         assert!(preferred_available(&[], is_ambient).is_none());
+    }
+
+    /// senpi test/suite/regressions/4412-subscription-default-lane.test.ts.
+    #[test]
+    fn automatic_default_prefers_the_subscription_lane_over_its_metered_twin() {
+        let default = |provider: &str| {
+            DEFAULT_MODEL_PER_PROVIDER
+                .iter()
+                .find(|(p, _)| *p == provider)
+                .map(|(_, id)| *id)
+                .expect("declared default")
+        };
+        let metered = model("openai", default("openai"));
+        let plan = model("chatgpt-subscription", default("chatgpt-subscription"));
+        assert_eq!(
+            preferred_available(&[metered.clone(), plan], |_| false)
+                .expect("default")
+                .provider,
+            "chatgpt-subscription"
+        );
+        assert_eq!(
+            preferred_available(&[metered], |_| false)
+                .expect("metered only")
+                .provider,
+            "openai"
+        );
+        let moonshot = model("moonshotai", default("moonshotai"));
+        let kimi = model("kimi-coding", default("kimi-coding"));
+        assert_eq!(
+            preferred_available(&[moonshot, kimi], |_| false)
+                .expect("default")
+                .provider,
+            "kimi-coding"
+        );
+    }
+
+    /// senpi test/model-resolver.test.ts: Kimi K3.1 Pro defaults.
+    #[test]
+    fn kimi_providers_default_to_k3_1_pro() {
+        let default = |provider: &str| {
+            DEFAULT_MODEL_PER_PROVIDER
+                .iter()
+                .find(|(p, _)| *p == provider)
+                .map(|(_, id)| *id)
+        };
+        assert_eq!(default("moonshotai"), Some("kimi-k3.1-pro"));
+        assert_eq!(default("moonshotai-cn"), Some("kimi-k3.1-pro"));
+        assert_eq!(default("opengateway"), Some("moonshotai/kimi-k3.1-pro"));
+        assert_eq!(default("opencode-go"), Some("kimi-k3.1-pro"));
     }
 
     fn model(provider: &str, id: &str) -> Model {

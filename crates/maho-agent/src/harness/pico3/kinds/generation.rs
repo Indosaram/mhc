@@ -117,7 +117,7 @@ pub struct GenerationKind {
 }
 pub fn generation(sections:std::rc::Rc<super::super::system::SectionRegistry>,tool_registry:std::rc::Rc<super::super::system::ToolRegistry>) -> Result<GenerationKind> {
     Ok(GenerationKind { token:KindToken::core("pi.generation"),
-        config:KindConfig { rewindable:object(&serde_json::json!({"thinkingLevel":"off","selectedTools":[],"profile":"default"}))?,
+        config:KindConfig { rewindable:object(&serde_json::json!({"model":null,"thinkingLevel":"off","selectedTools":[],"profile":"default"}))?,
             sticky:object(&serde_json::json!({"retry":{"enabled":true,"maxRetries":3,"baseDelayMs":2000,"maxAgentDelayMs":60000}}))? },
         inflight:vec!["requesting".into()],sections,tool_registry })
 }
@@ -261,6 +261,21 @@ async fn stream(prep:&Prep,model:&Model,messages:Vec<RequestMessage>,rt:&Rt<'_>,
             } }
         };
         let Some(event)=event else { return Err(Error::InvalidShape("stream ended without terminal message".into())); };
+        let event=match event { Ok(event)=>event, Err(error)=> {
+            if ctx.is_aborted() { return Err(Error::Forbidden(error)); }
+            let mut terminal=AssistantMessage {
+                content:Vec::new(),api:model.api.clone(),provider:model.provider.clone(),model:model.id.clone(),
+                response_model:None,response_id:None,thinking_level:None,provider_thinking_level:None,diagnostics:None,
+                prompt_cache_breakpoint:None,prompt_cache_diagnostics:None,usage:maho_ai::types::Usage::default(),
+                stop_reason:StopReason::Error,stop_details:None,deferred:None,error_message:Some(error),error_cause:None,
+                provider_diagnostic:None,abort_source:None,failure_source:None,raw_stop_reason:None,end_turn:None,timing:None,credential_served_recently:None,
+                timestamp:i64::try_from(rt.now()).unwrap_or(i64::MAX),
+            };
+            // A thrown provider error never passed the stream boundary: classify and redact it the same way (senpi#4282).
+            maho_ai::utils::provider_error::sanitize_provider_error_message(&mut terminal);
+            flush_frames(rt,ctx,pending).await?;
+            return Ok(StreamResult::Message(Box::new(terminal)));
+        } };
         let frame=encoder.encode(&event).map_err(|e|Error::InvalidShape(e.to_string()))?;
         match event {
             AssistantMessageEvent::Done { message,.. } => {

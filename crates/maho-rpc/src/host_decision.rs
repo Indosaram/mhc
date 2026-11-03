@@ -14,6 +14,7 @@ pub const REQUIRED_HOST_CAPABILITIES: [&str; 4] = [
     "session_kind",
 ];
 
+#[derive(Clone)]
 pub struct HostDecisionClient {
     pub protocol_version: u32,
     pub required_capabilities: Vec<String>,
@@ -123,9 +124,9 @@ pub struct HostEnsureRefusedError {
     pub reason: HostRefusalReason,
     detail: String,
     /// The generation in the way, when its registration names one (`foreign_writer`).
-    pub holder: Option<HostHolder>,
+    pub holder: Option<Box<HostHolder>>,
 }
-fn held_by(holder: &Option<HostHolder>) -> String {
+fn held_by(holder: &Option<Box<HostHolder>>) -> String {
     holder.as_ref().map_or_else(String::new, |holder| {
         format!(" (held by {})", describe_host_holder(holder))
     })
@@ -154,7 +155,7 @@ impl HostEnsureRefusedError {
     /// Names the generation in the way; the message then ends with ` (held by <holder>)`.
     #[must_use]
     pub fn with_holder(mut self, holder: HostHolder) -> Self {
-        self.holder = Some(holder);
+        self.holder = Some(Box::new(holder));
         self
     }
     /// The refusal wording, without the socket prefix or the holder clause.
@@ -365,6 +366,7 @@ mod tests {
             engine_ordinal: Some([2026.0, 9.0, 16.0, 3.0, 0.0]),
             launch_profile: Some(profile(&["/plugin"])),
             memory_pressure: None,
+            agent_dir: None,
             handover: None,
         }
     }

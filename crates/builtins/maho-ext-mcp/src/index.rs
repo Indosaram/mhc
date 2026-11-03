@@ -29,163 +29,44 @@ pub fn register_mcp_lifecycle_with_tool_search(
     let registrar: Arc<dyn crate::tool_registrar::McpToolRegistrar> = Arc::new(
         crate::tool_registrar::SessionMcpToolRegistrar::from_api(api),
     );
-    let command_service = service.clone();
     let command_events = publish_events.clone();
-    api.register_command(
-        "mcp",
-        Some("Manage MCP servers".into()),
-        Some("status | test | reconnect | auth-start | auth-complete | logout".into()),
-        Arc::new(move |raw, ctx| {
-            let service = command_service.clone();
-            let events = command_events.clone();
-            Box::pin(async move {
-                let args = crate::commands::split_command_args(raw)
-                    .map_err(|error| ExtensionFailure::new(error.to_string()))?;
-                let subcommand = args.first().map_or("status", String::as_str);
-                let name = args.get(1).map_or("", String::as_str);
-                let mut service = service.lock().await;
-                let result: Result<String, String> = match subcommand {
-                    "status" | "list" => Ok(service.status("MCP servers").await),
-                    "test" => service
-                        .test_server(name)
-                        .await
-                        .map(|(elapsed, count)| {
-                            format!("MCP test {name} ok ({elapsed:.0}ms): {count} tools")
-                        })
-                        .map_err(|error| error.to_string()),
-                    "reconnect" => {
-                        let result = service
-                            .reconnect_server(name)
-                            .await
-                            .map(|()| format!("MCP reconnect {name} connected"))
-                            .map_err(|error| error.to_string());
-                        let snapshot = service.wire_status_snapshot().await;
-                        // A reload can invalidate this runtime while the reconnect awaits; the
-                        // stale snapshot then has no subscriber and is dropped.
-                        let _stale = publish_wire_status(&events, &snapshot);
-                        result
-                    }
-                    "auth" | "auth-start" | "auth-complete" | "logout" => {
-                        crate::auth::commands_auth_dispatch::handle_mcp_auth_command(
-                            subcommand,
-                            &args[1..],
-                            ctx.has_ui,
-                            ctx.ui.clone(),
-                            &mut service,
-                        )
-                        .await
-                    }
-                    "logs" => {
-                        if let Some(connection) = service.connections.get(name) {
-                            let entry = connection.entry.lock().await;
-                            let lines = entry
-                                .logger
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .get_ring_buffer();
-                            let lines = lines
-                                .into_iter()
-                                .rev()
-                                .take(20)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .collect::<Vec<_>>();
-                            Ok(if lines.is_empty() {
-                                format!("MCP logs for {name}: (empty)")
-                            } else {
-                                lines.join("\n")
-                            })
-                        } else {
-                            Err(format!("Unknown MCP server: {name}"))
-                        }
-                    }
-                    "add" => {
-                        if name.is_empty() || args.len() < 3 {
-                            Err("Usage: /mcp add <name> <command...|url>".into())
-                        } else if !ctx.has_ui {
-                            Err("Cannot add MCP server without UI confirmation.".into())
-                        } else if !ctx
-                            .ui
-                            .confirm(
-                                "Add MCP server?",
-                                &format!("{name}: {}", args[2..].join(" ")),
-                                Default::default(),
-                            )
-                            .await
-                        {
-                            Ok("MCP add cancelled".into())
-                        } else {
-                            let config = crate::commands::parse_server_config(&args[2..]);
-                            match crate::config_edit::add_global_mcp_server(
-                                &ctx.agent_dir,
-                                name,
-                                &config,
-                            ) {
-                                Err(error) => Err(error.to_string()),
-                                Ok(_) => {
-                                    let env = std::env::vars().collect();
-                                    service
-                                        .attach_session(
-                                            &ctx.cwd,
-                                            &ctx.agent_dir,
-                                            &env,
-                                            ctx.is_project_trusted(),
-                                            &ctx.registered_mcp_servers,
-                                        )
-                                        .await
-                                        .map(|()| format!("Added MCP server {name}"))
-                                        .map_err(|error| error.to_string())
-                                }
-                            }
-                        }
-                    }
-                    "enable" | "disable" => {
-                        match crate::config_edit::set_global_mcp_server_enabled(
-                            &ctx.agent_dir,
-                            name,
-                            subcommand == "enable",
-                        ) {
-                            Err(error) => Err(error.to_string()),
-                            Ok(false) => Err(format!(
-                                "MCP server {name} is not in the global config file"
-                            )),
-                            Ok(true) => {
-                                let env = std::env::vars().collect();
-                                service
-                                    .attach_session(
-                                        &ctx.cwd,
-                                        &ctx.agent_dir,
-                                        &env,
-                                        ctx.is_project_trusted(),
-                                        &ctx.registered_mcp_servers,
-                                    )
-                                    .await
-                                    .map(|()| {
-                                        format!(
-                                            "{} MCP server {name}",
-                                            if subcommand == "enable" {
-                                                "Enabled"
-                                            } else {
-                                                "Disabled"
-                                            }
-                                        )
-                                    })
-                                    .map_err(|error| error.to_string())
-                            }
-                        }
-                    }
-                    _ => Err(format!("Unknown MCP subcommand: {subcommand}")),
-                };
-                match result {
-                    Ok(message) => ctx
-                        .ui
-                        .notify(&message, maho_ext_api::NotificationType::Info),
-                    Err(error) => ctx.ui.notify(&error, maho_ext_api::NotificationType::Error),
+    let pending_service = service.clone();
+    let entry_api = Arc::new(ExtensionApi::new(
+        api.registered.clone(),
+        api.profile.clone(),
+        api.events.clone(),
+        api.runtime.clone(),
+    ));
+    crate::commands::register_mcp_commands(
+        api,
+        crate::commands::McpCommandHost {
+            service: service.clone(),
+            pending_attach: Arc::new(move || {
+                let service = pending_service.clone();
+                Box::pin(async move {
+                    let deferred = service.lock().await.deferred_attach();
+                    deferred
+                        .wait(std::time::Duration::from_millis(
+                            crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS,
+                        ))
+                        .await;
+                })
+            }),
+            append_entry: Some(Arc::new(move |message| {
+                if let Err(error) = entry_api.append_entry(
+                    crate::commands::MCP_AUTH_ENTRY_TYPE,
+                    Some(serde_json::Value::String(message.into())),
+                ) {
+                    maho_ext_api::diagnostic(&format!("MCP auth notice failed: {}", error.message));
                 }
-                Ok(())
-            })
-        }),
+            })),
+            after_reconnect: Some(Arc::new(move |snapshot| {
+                // A reload can invalidate this runtime while the reconnect awaits; the
+                // stale snapshot then has no subscriber and is dropped.
+                let _stale = publish_wire_status(&command_events, &snapshot);
+            })),
+            open_browser: Some(crate::auth::challenge_login::system_browser_opener()),
+        },
     );
     // The deferred attach publisher outlives `session_start`; shutdown (which precedes every reload
     // or replacement invalidation) aborts it so the old runtime's work stops with the runtime.
@@ -196,9 +77,34 @@ pub fn register_mcp_lifecycle_with_tool_search(
     let start_registrar = registrar.clone();
     let start_search = tool_search.clone();
     let start_events = publish_events.clone();
+    // The live binding, so the input hook rebinds presentation without waiting on an attach in flight.
+    let binding: Arc<std::sync::Mutex<Option<Arc<crate::service::McpSessionBinding>>>> =
+        Arc::default();
+    let input_binding = binding.clone();
+    api.on(
+        EventKind::Input,
+        Arc::new(move |_, ctx| {
+            let binding = input_binding
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Box::pin(async move {
+                // Upstream `pi.on("input")`: `service.bindMcpMrtrPresentation(pi, ctx.ui)` on every input.
+                if let Some(binding) = binding {
+                    binding.bind_presentation(&ctx.ui);
+                }
+                Ok(EventResult::None)
+            })
+        }),
+    );
     api.on(
         EventKind::SessionStart,
-        Arc::new(move |_, ctx| {
+        Arc::new(move |event, ctx| {
+            // index.ts: a sizes-only diagnostic startup skips the built-in MCP attach entirely.
+            if matches!(event, ExtensionEvent::SessionStart(start) if start.sizes_only) {
+                return Box::pin(async { Ok(EventResult::None) });
+            }
+            let start_binding = binding.clone();
             let service_handle = start.clone();
             let registrar = start_registrar.clone();
             let tool_search = start_search.clone();
@@ -212,6 +118,12 @@ pub fn register_mcp_lifecycle_with_tool_search(
                 } else {
                     None
                 });
+                service.set_session_mode(ctx.mode);
+                // Upstream `sessionManager: binding.context.sessionManager`: tools registered for
+                // this binding serve only calls from this session.
+                service
+                    .session_binding()
+                    .bind_session(ctx.session_manager.session_id());
                 // Bind the registration seam once; `attach_session` registers through it
                 // (upstream `attachSession`) and the deferred startup connects re-use it.
                 service.set_policy_notice_event(Arc::new({
@@ -233,6 +145,12 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     )
                     .await
                     .map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                // Upstream `bindMcpMrtrPresentation(pi, ctx.ui)` after attach: the binding's MRTR presentation.
+                service.bind_mcp_mrtr_presentation(&ctx.ui);
+                *start_binding
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(service.session_binding());
                 drop(service);
                 // Attach no longer completes inside session_start, so publish the session-owned snapshot on
                 // the bound runner bus once the deferred startup connect settles (pinned
@@ -311,30 +229,54 @@ pub fn register_mcp_lifecycle_with_tool_search(
                     .await;
                 let mut service = service.lock().await;
                 if !event.preview && !event.system_prompt_options.skills.is_empty() {
-                    let skills = event.system_prompt_options.skills.iter().map(|skill| crate::skills::SkillLike {
-                        name: skill.name.clone(),
-                        file_path: skill.file_path.clone().into(),
-                        base_dir: skill.base_dir.clone().into(),
-                        scope: Some(match skill.source_info.scope {
-                            maho_ext_api::SourceScope::Project => "project",
-                            _ => "user",
-                        }.into()),
-                        provenance: skill.provenance.as_ref().map(|provenance| crate::skills::SkillProvenance {
-                            kind: provenance.kind.clone(),
-                            selected_root: provenance.selected_root.clone().into(),
-                            project_root: provenance.project_root.clone().map(Into::into),
-                        }),
-                        allowed_set: skill.allowed_set.as_ref().map(|allowed| crate::skills::SkillAllowedSet {
-                            roots: allowed.roots.iter().map(|path| std::path::PathBuf::from(path.as_str())).collect(),
-                            files: allowed.files.iter().map(|path| std::path::PathBuf::from(path.as_str())).collect(),
-                            digest: allowed.digest.clone(),
-                        }),
-                    }).collect::<Vec<_>>();
+                    let skills = event
+                        .system_prompt_options
+                        .skills
+                        .iter()
+                        .map(|skill| crate::skills::SkillLike {
+                            name: skill.name.clone(),
+                            file_path: skill.file_path.clone().into(),
+                            base_dir: skill.base_dir.clone().into(),
+                            scope: Some(
+                                match skill.source_info.scope {
+                                    maho_ext_api::SourceScope::Project => "project",
+                                    _ => "user",
+                                }
+                                .into(),
+                            ),
+                            provenance: skill.provenance.as_ref().map(|provenance| {
+                                crate::skills::SkillProvenance {
+                                    kind: provenance.kind.clone(),
+                                    selected_root: provenance.selected_root.clone().into(),
+                                    project_root: provenance.project_root.clone().map(Into::into),
+                                }
+                            }),
+                            allowed_set: skill.allowed_set.as_ref().map(|allowed| {
+                                crate::skills::SkillAllowedSet {
+                                    roots: allowed
+                                        .roots
+                                        .iter()
+                                        .map(|path| std::path::PathBuf::from(path.as_str()))
+                                        .collect(),
+                                    files: allowed
+                                        .files
+                                        .iter()
+                                        .map(|path| std::path::PathBuf::from(path.as_str()))
+                                        .collect(),
+                                    digest: allowed.digest.clone(),
+                                }
+                            }),
+                        })
+                        .collect::<Vec<_>>();
                     let declarations = crate::skills::parse_skill_mcp_declarations(&skills);
                     let mut warnings = declarations.warnings.clone();
                     if !declarations.servers.is_empty() {
-                        warnings.extend(service.attach_skill_mcp_servers(&declarations).await
-                            .map_err(|error| ExtensionFailure::new(error.to_string()))?);
+                        warnings.extend(
+                            service
+                                .attach_skill_mcp_servers(&declarations)
+                                .await
+                                .map_err(|error| ExtensionFailure::new(error.to_string()))?,
+                        );
                     }
                     publish_skill_warnings(&events, &warnings);
                 }
@@ -359,9 +301,12 @@ fn publish_skill_warnings(events: &maho_ext_api::EventBus, warnings: &[String]) 
             maho_ext_api::diagnostic(warning);
         }
         if warning.starts_with("Blocked skill link") {
-            events.emit("security_notice", &serde_json::json!({
-                "category": "skill-link-blocked", "message": warning,
-            }));
+            events.emit(
+                "security_notice",
+                &serde_json::json!({
+                    "category": "skill-link-blocked", "message": warning,
+                }),
+            );
         }
     }
 }
@@ -412,7 +357,6 @@ impl maho_ext_api::Extension for McpExtension {
     }
 }
 
-
 #[cfg(test)]
 mod security_notice_tests {
     use super::*;
@@ -422,14 +366,24 @@ mod security_notice_tests {
         let events = maho_ext_api::EventBus::default();
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = captured.clone();
-        let _subscription = events.on("security_notice", Arc::new(move |value| {
-            sink.lock().unwrap().push(value.clone());
-        }));
-        publish_skill_warnings(&events, &[
-            "ordinary warning".into(), "Blocked skill link fixture".into(),
-        ]);
-        assert_eq!(*captured.lock().unwrap(), vec![serde_json::json!({
-            "category":"skill-link-blocked", "message":"Blocked skill link fixture",
-        })]);
+        let _subscription = events.on(
+            "security_notice",
+            Arc::new(move |value| {
+                sink.lock().unwrap().push(value.clone());
+            }),
+        );
+        publish_skill_warnings(
+            &events,
+            &[
+                "ordinary warning".into(),
+                "Blocked skill link fixture".into(),
+            ],
+        );
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![serde_json::json!({
+                "category":"skill-link-blocked", "message":"Blocked skill link fixture",
+            })]
+        );
     }
 }

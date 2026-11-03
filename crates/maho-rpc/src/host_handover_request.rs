@@ -60,8 +60,10 @@ fn serving_pid(socket: &str, agent_dir: &std::path::Path) -> u32 {
         .map_or(0, |registered| registered.pid)
 }
 fn begin_handover_command(
+    agent_dir: &std::path::Path,
     options: &crate::host_handoff::HandoffOptions,
     terms: &IdleHandoverTerms,
+    mcp_presenter_enforcement: bool,
 ) -> std::io::Result<Value> {
     let platform = if cfg!(windows) {
         "win32"
@@ -89,6 +91,11 @@ fn begin_handover_command(
     }
     let launch = crate::host_launch::default_host_launch(&[])?;
     let mut command = json!({"type":BEGIN_HANDOVER_COMMAND,"operation_id":terms.operation_id,"if_instance_id":terms.if_instance_id,"if_generation":terms.if_generation,"target_runtime_build_id":terms.target_runtime_build_id,"launch":{"command":launch.command,"args":launch.args},"host_args":options.host_args,"env":env});
+    // The host refuses a request naming another agent dir than its own (#3560).
+    command["agent_dir"] = agent_dir.to_string_lossy().into_owned().into();
+    if mcp_presenter_enforcement {
+        command["mcp_presenter_enforcement"] = true.into();
+    }
     if let Some(policy) = &options.policy {
         command["policy"] = json!({"coldStart":policy.cold_start,"idleExitMs":policy.idle_exit_ms});
     }
@@ -156,6 +163,25 @@ pub async fn idle_handover_outcome(
     terms: &IdleHandoverTerms,
     client_runtime_build_id: Option<&str>,
 ) -> std::io::Result<HostOutcome> {
+    idle_handover_outcome_with(
+        socket,
+        agent_dir,
+        options,
+        terms,
+        client_runtime_build_id,
+        false,
+    )
+    .await
+}
+/// `idle_handover_outcome` with the deployment's presenter enforcement opt-in, which the successor keeps.
+pub async fn idle_handover_outcome_with(
+    socket: &str,
+    agent_dir: &std::path::Path,
+    options: &crate::host_handoff::HandoffOptions,
+    terms: &IdleHandoverTerms,
+    client_runtime_build_id: Option<&str>,
+    mcp_presenter_enforcement: bool,
+) -> std::io::Result<HostOutcome> {
     let body = |reason: &str, extra: Vec<(&str, Value)>| {
         let mut body = serde_json::Map::from_iter([
             ("reason".to_owned(), reason.into()),
@@ -178,6 +204,16 @@ pub async fn idle_handover_outcome(
     let refuse = |reason: &str, extra: Vec<(&str, Value)>| {
         refusal(false, before.as_ref(), body(reason, extra))
     };
+    // A handoff never crosses agent directories (#3560): settled before anything else is compared.
+    if let Some(host) = &before
+        && let Some(detail) =
+            crate::host_handoff_agent_dir::foreign_agent_dir_refusal(socket, agent_dir, host)
+    {
+        return Ok(refuse(
+            crate::host_handoff_agent_dir::FOREIGN_AGENT_DIR,
+            vec![("detail", detail.into())],
+        ));
+    }
     if client_runtime_build_id != Some(terms.target_runtime_build_id.as_str()) {
         return Ok(refuse(
             "target_build_mismatch",
@@ -237,7 +273,7 @@ pub async fn idle_handover_outcome(
     }
     let reply = crate::host_probe::request_on_socket(
         socket,
-        &begin_handover_command(options, terms)?,
+        &begin_handover_command(agent_dir, options, terms, mcp_presenter_enforcement)?,
         BEGIN_HANDOVER_TIMEOUT_MS,
     )
     .await;
@@ -298,8 +334,10 @@ mod tests {
             host_args: vec![],
             policy: None,
             env: Default::default(),
+            expected_runtime_build_id: None,
             launch_profile_id: String::new(),
             readiness_ms: 1,
+            launch: None,
         }
     }
     fn terms() -> IdleHandoverTerms {
@@ -352,7 +390,9 @@ mod tests {
             cold_start: "transient".into(),
             idle_exit_ms: 5.,
         });
-        let command = begin_handover_command(&options, &terms()).unwrap();
+        let command =
+            begin_handover_command(std::path::Path::new("/agent"), &options, &terms(), false)
+                .unwrap();
         assert_eq!(
             (
                 command["type"].clone(),
@@ -364,5 +404,7 @@ mod tests {
         assert_eq!(command["env"]["OMO_PROBE"], "1");
         assert!(command["env"].get("PI_SESSION_ID").is_none());
         assert_eq!(command["policy"]["coldStart"], "transient");
+        assert_eq!(command["agent_dir"], "/agent");
+        assert!(command.get("mcp_presenter_enforcement").is_none());
     }
 }

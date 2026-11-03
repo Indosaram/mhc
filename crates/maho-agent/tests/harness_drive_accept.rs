@@ -6,7 +6,7 @@ use maho_agent::harness::session::{MemoryStorage, MemoryStorageOptions, StorageB
 use maho_agent::harness::session::types::*;
 
 async fn fixture() -> Result<Arc<Lane>, maho_agent::harness::session::session::SessionError> {
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
     session.attach();
     create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await?.lane("main", None, &BACKGROUND_CONTEXT).await
 }
@@ -117,7 +117,7 @@ async fn captures_eligible_tags_in_order_and_leaves_second_items() {
 
 async fn gated_fixture() -> Result<(Arc<Lane>, Arc<maho_agent::harness::session::testing::GatingStorage>), maho_agent::harness::session::session::SessionError> {
     let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, storage.clone(), StorageBackedSessionOptions::default()));
     session.attach();
     let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await?;
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await?;
@@ -423,7 +423,7 @@ async fn wait_for_idle_tracks_operation_without_installed_drive() {
 
 #[tokio::test]
 async fn close_waits_for_admitted_idle_callback() {
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "closing-idle".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "closing-idle".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
     session.attach();
     let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await.unwrap();
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
@@ -455,7 +455,7 @@ async fn acceptance_commits_exact_write_families_and_event_context() {
     use maho_agent::harness::context::{create_context_key, with_context_value};
     static KEY: std::sync::LazyLock<maho_agent::harness::context::ContextKey<String>> = std::sync::LazyLock::new(|| create_context_key("accept.context"));
     let storage = Arc::new(InstrumentedStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
-    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "instrumented-accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "instrumented-accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None, path: None }, storage.clone(), StorageBackedSessionOptions::default()));
     session.attach();
     let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await.unwrap();
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
@@ -481,4 +481,212 @@ async fn acceptance_commits_exact_write_families_and_event_context() {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.iter().map(|(event, _)| event.as_str()).collect::<Vec<_>>(), vec!["run_start", "message_start", "message_end", "entry_added", "message_start", "message_end", "entry_added"]);
     assert!(seen.iter().all(|(_, value)| value.as_deref() == Some("source")));
+}
+
+/// Pinned `lane.accept(request, context)`: the tagged entry point dispatches every request kind
+/// and returns the expected pre-acceptance errors without writing.
+#[tokio::test]
+async fn tagged_accept_dispatches_each_request_kind() {
+    use maho_agent::harness::agent_harness::OperationRequest;
+    let lane = fixture().await.unwrap();
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Prompt {
+                operation_id: None,
+                prompt: String::new(),
+                images: vec![]
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::Empty)
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Skill {
+                operation_id: None,
+                name: "missing".into(),
+                additional_instructions: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::UnknownSkill {
+            name: "missing".into()
+        })
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::PromptTemplate {
+                operation_id: None,
+                name: "missing".into(),
+                args: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::UnknownTemplate {
+            name: "missing".into()
+        })
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Compaction {
+                operation_id: None,
+                custom_instructions: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::NothingToCompact)
+    );
+    assert_eq!(
+        lane.accept(
+            OperationRequest::Navigation {
+                operation_id: None,
+                target_id: Some("missing".into()),
+                options: None
+            },
+            &BACKGROUND_CONTEXT
+        )
+        .await
+        .unwrap(),
+        Err(AdmissionError::UnknownTarget {
+            target_id: "missing".into()
+        })
+    );
+    assert!(lane.state().operation.is_none());
+    let admission = lane
+        .accept(
+            OperationRequest::Prompt {
+                operation_id: Some("op".into()),
+                prompt: "hello".into(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(admission.operation_id, "op");
+    assert_eq!(admission.kind_label(), "run");
+    assert_eq!(
+        lane.state()
+            .operation
+            .map(|operation| operation.meta.operation_id),
+        Some("op".into())
+    );
+}
+
+/// Pinned "returns Closed when acceptance starts after close": every request kind, including the
+/// structural ones whose dedicated acceptors throw, reports `Closed` through the tagged entry.
+#[tokio::test]
+async fn tagged_accept_returns_closed_for_every_kind_after_close() {
+    use maho_agent::harness::agent_harness::OperationRequest;
+    let lane = fixture().await.unwrap();
+    lane.seal(maho_agent::harness::session::session::SessionError::new(
+        maho_agent::harness::session::session::SessionErrorKind::Closed,
+        maho_agent::harness::HarnessClosed::MESSAGE,
+    ));
+    let closed = Err(AdmissionError::Closed {
+        message: maho_agent::harness::HarnessClosed::MESSAGE.into(),
+    });
+    for request in [
+        OperationRequest::Prompt {
+            operation_id: None,
+            prompt: "late".into(),
+            images: vec![],
+        },
+        OperationRequest::Compaction {
+            operation_id: None,
+            custom_instructions: None,
+        },
+        OperationRequest::Navigation {
+            operation_id: None,
+            target_id: None,
+            options: None,
+        },
+        OperationRequest::Skill {
+            operation_id: None,
+            name: "s".into(),
+            additional_instructions: None,
+        },
+    ] {
+        assert_eq!(
+            lane.accept(request, &BACKGROUND_CONTEXT).await.unwrap(),
+            closed
+        );
+    }
+}
+
+/// Pinned "does not let a lone queued write validate empty acceptance": a queued `write` inbox
+/// item is not prompt content, so an empty prompt is rejected and the write stays queued.
+#[tokio::test]
+async fn lone_queued_write_does_not_validate_empty_acceptance() {
+    use maho_agent::harness::agent_harness::OperationRequest;
+    use maho_agent::harness::runtime::lane::{CommitDecision, LaneCommand};
+    use maho_agent::harness::session::values::{pending_entry, set_value};
+    let entry_id = "queued-write";
+    let lane = fixture().await.unwrap();
+    lane.command(
+        |mut state, _| {
+            Box::pin(async move {
+                state.inbox.push(InboxItem {
+                    entry_id: entry_id.into(),
+                    kind: InboxItemKind::Write,
+                });
+                Ok(LaneCommand::Commit {
+                    decision: CommitDecision {
+                        writes: vec![Write::Value(set_value(
+                            &pending_entry(entry_id),
+                            serde_json::to_value(PendingEntry::Custom {
+                                custom_type: "queued-write".into(),
+                                payload: None,
+                            })
+                            .unwrap(),
+                        ))],
+                        materialize: Arc::new(|_| ()),
+                        events: None,
+                    },
+                    next: Box::new(state),
+                })
+            })
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .unwrap();
+
+    let result = lane
+        .accept(
+            OperationRequest::Prompt {
+                operation_id: None,
+                prompt: String::new(),
+                images: vec![],
+            },
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, Err(AdmissionError::Empty));
+    assert!(lane.state().operation.is_none());
+    assert_eq!(
+        lane.state().inbox,
+        vec![InboxItem {
+            entry_id: entry_id.into(),
+            kind: InboxItemKind::Write,
+        }]
+    );
+    assert!(
+        lane.session
+            .get_value(&pending_entry(entry_id), &BACKGROUND_CONTEXT)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }

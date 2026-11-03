@@ -3,13 +3,13 @@
     "repository": "https://github.com/code-yeongyu/senpi",
     "packagePath": "packages/senpi-codemode/src"
   },
-  "note": "Provenance of every runtime asset embedded by src/kernels/shared/runtime_asset.rs. status: verbatim = byte-identical to upstreamCommit; patched = upstreamCommit plus the described mhc change; local = mhc-only; unported = exists upstream, intentionally not shipped. Run scripts/codemode-upstream-diff.py <senpi checkout> to see upstream drift; update sha256 here when an asset changes.",
+  "note": "Provenance of every runtime asset embedded by src/kernels/shared/runtime_asset.rs. status: verbatim = byte-identical to upstreamCommit; patched = upstreamCommit plus the described mhc change; local = mhc-only; unported = exists upstream, not shipped; \"reason\" says why. A verbatim/patched entry with \"reviewedThrough\" (full upstream commit) and \"divergence\" has reviewed drift up to that commit, which the diff script reports as explained. Run scripts/codemode-upstream-diff.py <senpi checkout> to see upstream drift; update sha256 here when an asset changes.",
   "assets": [
     {
       "path": "kernels/js/display-image.js",
       "status": "verbatim",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "81485d6ff5d0b2ed8dc5935870a431ff0ea6eb9b06d4ab68374e5beb1f93df33"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "94781932baeda78d73709f4f01f72a0869aa95afe87e3c19cdf2ba17e8f669b4"
     },
     {
       "path": "kernels/js/handles.js",
@@ -22,7 +22,9 @@
       "path": "kernels/js/inline-worker-entry.js",
       "status": "verbatim",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "3cfbdf41a73b44aaac3685e5080b637c55aabf6e6411d0d1ccdcfbb015fbbf6c"
+      "sha256": "3cfbdf41a73b44aaac3685e5080b637c55aabf6e6411d0d1ccdcfbb015fbbf6c",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },
     {
       "path": "kernels/js/kernel-tools-context.js",
@@ -33,14 +35,14 @@
     {
       "path": "kernels/js/kernel-tools-define.js",
       "status": "verbatim",
-      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
-      "sha256": "2dbdd82e132d1795ac6d1109b95e2d7b5d3778522f168da77b6a6f1d41cf3134"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "4a77334aba7401ac69a08710a5c3bfe7fd9ffd9cc6d8eaa51dee11aab4d3532a"
     },
     {
       "path": "kernels/js/kernel-tools-errors.js",
       "status": "verbatim",
-      "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "sha256": "fbaa43535ed188b78ae4a2511f59ea52965a14847aeed2d13dee95ed066969ad"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "17a6d9d2c5c949156691f1bf51912b3c6abcf72b52b07a5f3e13330496b49384"
     },
     {
       "path": "kernels/js/kernel-tools-naming.js",
@@ -58,19 +60,21 @@
       "path": "kernels/js/kernel-tools-pump.js",
       "status": "verbatim",
       "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "sha256": "91de9cb9d8e28882df08aac045659000285c9914138981befba878d2ea14d731"
+      "sha256": "91de9cb9d8e28882df08aac045659000285c9914138981befba878d2ea14d731",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },
     {
       "path": "kernels/js/kernel-tools-registry.js",
       "status": "verbatim",
-      "upstreamCommit": "0330381c09f7713e670a68ac1348e38d459e2641",
-      "sha256": "9ba10399520bf6c8b05569e35b0511d7bcaa775eaeb724c7fa7fa499f98551d0"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "53089272d38b6f9088126e858d2a7e2cf4405fd0a4881460e06790ee7e40b1ab"
     },
     {
       "path": "kernels/js/kernel-tools-schema.js",
       "status": "verbatim",
-      "upstreamCommit": "48bdf145c07bb2c294fbd3a406b8769353dd6353",
-      "sha256": "6c4dbc3f06307ac0e50dfc66e7e7b44ea80659ab1af16a86c9f1d203bbd0ae34"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "289ec73dbb764c2e493923d847adf03ed7d8e32bba1a4f73c62abfbb92c7d330"
     },
     {
       "path": "kernels/js/kernel-tools-scope.js",
@@ -80,57 +84,67 @@
     },
     {
       "path": "kernels/js/process-tree.js",
-      "status": "patched",
-      "upstreamCommit": "f821f6988a50af4a61093c1675eb2fda0c63682b",
-      "sha256": "c81c5ba9f6b675440cede30f6b1a4937e56aff369a5434f4bd88f4e38a749c63",
-      "change": "process-group cleanup and guarded Windows tree termination"
+      "status": "verbatim",
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "d8528ffba3a0210c852c6c8fb91737076c653160b6bd4844285f0934de8a91a5",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "verbatim at 59d58cee5; the later initializeProcessCleanup hook is after the senpi pin 59d58cee5 (v2026.10.27-2), part of the JS eval permission core / interposition (42e0e2707c, b4e76ace01)"
     },
     {
       "path": "kernels/js/worker-core.js",
       "status": "patched",
       "upstreamCommit": "e200aa063575c12f75feae42a0bf54f487bee0af",
-      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting",
-      "sha256": "0713b0ece63ea041bdb55bc0559cce66c571737ab7201af2cfd8cad73f0d8e21"
+      "change": "bridge error.data, shell-wait and memory reporting; process-mode footprint reporting; webview-connect/webview-port bridge with installKernelWebView",
+      "sha256": "8a7e9ce84a20ca8195914b3d2d89021d3f0a6e839e634a890b67791364ae1f9d",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "port gap predating this release range (unchanged upstream between f2354d970 and 59d58cee5): upstream's cell release lifecycle (cell-ownership.js, runInCell/releaseCell: 5d68b2faf9, 14d8a35324, ae45b67537, a81a155bee), unhandled-rejection reports (rejection-reports.js, eae861282a; in mhc an unhandled rejection still ends the worker), session cwd patching (worker-cwd.js, 65b03c7410; mhc runs each kernel in its own bun relay process started in the session cwd), kernelTools.enabled=false (92eb8db6ac) and OMO_BROWSER_ENGINE (e8136d4435) are not ported; the package resolver is installed by the local-module-loader prelude instead (25d8d2d20e); mhc adds process-mode footprint memory and error.data bridging. Later upstream changes (42e0e2707c, b4e76ace01) are after the senpi pin 59d58cee5 (v2026.10.27-2)"
     },
     {
       "path": "kernels/js/worker-entry.js",
       "status": "verbatim",
       "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "f80879f6fba0ede8b767f4038540d81779c71889ee13aec8483686e1eff72339"
+      "sha256": "f80879f6fba0ede8b767f4038540d81779c71889ee13aec8483686e1eff72339",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "upstream change is after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); ported with that feature at the next pin bump"
     },
     {
       "path": "kernels/js/worker-indirect-eval.js",
       "status": "patched",
       "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "772a5a02181579051546decde882545bb6e7b03d32c84b37686a37c91213b41a",
-      "change": "use shared isKernelGlobal predicate"
+      "sha256": "5f369c2e9e135f0116e6b92c1fb4b001f337860d7d65b1a1f3df67f9fb8e5f02",
+      "change": "use shared isKernelGlobal predicate",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "port gap predating this release range: upstream's per-kernel user scope for cells that shadow a kernel global (d34a1867a3) is not ported; mhc refuses such a top-level declaration instead (pairs with worker-runtime.js). The lint comments from b621a01c25 are applied"
     },
     {
       "path": "kernels/js/worker-runtime.js",
       "status": "patched",
       "upstreamCommit": "0fade158c1adf4bc53e65ba7ccd5a9a985f7796f",
-      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting",
-      "sha256": "40e0983bde1e03491bd8f93cbd083437c06727cc97cf4b2bd5715cf05d41ad61"
+      "change": "wait/handle globals, process-group ownership, shell-wait and memory reporting; cells bound to the kernel Bun via bindKernelBun; tool.defined()/tool.undefine() wired as upstream 4998e97f58",
+      "sha256": "909b35274cf7272db1855e5c528d82ff2823d6d37b5530afe88f51aa84aa0152",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "port gap predating this release range (unchanged upstream between f2354d970 and 59d58cee5): cell require/createRequire (worker-require.js, f61208eee8), shadowed-global user scope (d34a1867a3), stable prelude source URL (b755c442d2), release() split for stopped cells (5d68b2faf9, 14d8a35324), injected process-group marker (worker-cwd.js INJECTED_GROUP, 7bb160e2bf), %load source file names (1d37a776bd), completion handles (f56aebf74f) and kernelTools.enabled=false (92eb8db6ac) are not ported; packages.install lives in the local-module-loader prelude; mhc owns worker memory collection here and adds handles.js wait()/handle(). Later upstream change b4e76ace01 is after the senpi pin 59d58cee5 (v2026.10.27-2)"
     },
     {
       "path": "kernels/js/worker-shadow-guard.js",
-      "status": "patched",
-      "upstreamCommit": "0eb6a7f5ac959c510f1059ccf739060b7e6aac2b",
-      "sha256": "528286684aec08ca458e37fa227b0f6f13fb8fc3e109531a2589a33dbafd2ce9",
-      "change": "export shared isKernelGlobal predicate"
+      "status": "verbatim",
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "528286684aec08ca458e37fa227b0f6f13fb8fc3e109531a2589a33dbafd2ce9"
     },
     {
       "path": "kernels/js/worker-shell-capture.js",
       "status": "patched",
       "upstreamCommit": "c44e259d177bc65b02e5912395dbc3f58ae5e741",
-      "sha256": "5a62792a581592bc1e69fb7f843f35410202247155404e92d903831cdfba411f",
-      "change": "track shell waits and process groups"
+      "sha256": "c23722472c34b0514ee7182efc07507d35870204a502fe5c277ab6ad227ffce2",
+      "change": "track shell waits and process groups",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "port gap predating this release range: group-signal notices (group-signal-notice.js, 7bb160e2bf) and the released-cell guard assertCellLive (14d8a35324) are not ported; mhc normalizes spawn options for its process-group tracking. The lint comment from b621a01c25 is applied"
     },
     {
       "path": "kernels/js/workpool.js",
       "status": "verbatim",
-      "upstreamCommit": "d0392b0814f3c033f58d09dc181321858be27a75",
-      "sha256": "21075bd31fe1eca2565fbe8b279987f8f6df0821517f191d3ddaf82848912b23"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "776b3a59befbb84ce5574c909f971f2542341d7ec613018596f9dd8928d514a4"
     },
     {
       "path": "skill/bun-1-4/references/breaking-changes.md",
@@ -176,10 +190,9 @@
     },
     {
       "path": "skill/bun-1-4/references/runtime-apis.md",
-      "status": "patched",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "3cd3dc2d9acb3457835d7b00c39e04d77dfe233e15cbf1453b04bb55779857f9",
-      "change": "document kernel-owned WebView lifecycle"
+      "status": "verbatim",
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "f1ef3670989673f40bde8f9f3da8525166b323069d023a40b8aa3b97ec267e46"
     },
     {
       "path": "skill/bun-1-4/references/security.md",
@@ -196,9 +209,9 @@
     {
       "path": "skill/bun-1-4/SKILL.md",
       "status": "patched",
-      "upstreamCommit": "30ec6461062ad86cff65e28d69dad7bc6782f26d",
-      "sha256": "74ce99000567fc14f8281cec7bf0f905523b12e1116d58f3b9eacde4d69a7864",
-      "change": "clarify eval-first skill loading"
+      "upstreamCommit": "59d58cee59d76bbecc83be828b59ff5420eb74df",
+      "sha256": "b41c6ca115e8ad3338f52ec63decc0efd8d6c2e1778bbead731ab7c5b27e62cc",
+      "change": "clarify eval-first skill loading; add rule 6"
     },
     {
       "path": "kernels/js/worker-global-sizes.js",
@@ -223,15 +236,17 @@
     },
     {
       "path": "kernels/js/worker-webview-client.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "verbatim",
+      "upstreamCommit": "269293392a468d22444e8508ce6a498d7356ccb6",
+      "sha256": "932b6fcefe186b25ec30136326067d8979253d5532d1dc5f53d609314030cc37"
     },
     {
       "path": "kernels/js/worker-webview.js",
-      "status": "unported",
-      "upstreamCommit": null,
-      "change": "kernel memory reporting / Bun.WebView bridge are not ported; worker-core.js and worker-runtime.js are kept without their imports"
+      "status": "verbatim",
+      "upstreamCommit": "b621a01c2527b21684923ecf3fef3f7998307731",
+      "sha256": "2a8170cba1de08be6125450f37426505fbd3fe7518d92488e35dbf5fccb45874",
+      "reviewedThrough": "63bad86b4385e0938546d9d12b4ba0e7c0fb558a",
+      "divergence": "verbatim at 59d58cee5; later changes are after the senpi pin 59d58cee5 (v2026.10.27-2): main-thread WebKit views (c253693a4d), goBack/goForward proxy (cb5e852dc5), interposition (b4e76ace01)"
     },
     {
       "path": "kernels/js/windows-tree-kill.js",
@@ -244,8 +259,8 @@
       "path": "kernels/js/process-entry.js",
       "status": "patched",
       "upstreamCommit": "903b83367545bea516f35fc7f7c7cb692847988d",
-      "change": "Bun-only direct process entry; excludes the separately unported WebView bridge",
-      "sha256": "433bc7df5bbbb0020f346ca6a02882899d4485624f82735061e757908b872ff4"
+      "change": "Bun-only direct process entry; marks process mode for the WebView bridge (native views on the child main thread)",
+      "sha256": "a787bdc152a666a25f021044e70437ed1e1f4b878ae269ba86279eac3e20fac3"
     },
     {
       "path": "kernels/js/process-drain-scan.js",
@@ -259,6 +274,290 @@
       "upstreamCommit": null,
       "change": "Bun process footprint readers matching upstream OS counters",
       "sha256": "f638a5575da1bdc682164f38c79596e4463c07998c3c4595c10c55a999e0e1d2"
+    },
+    {
+      "path": "kernels/js/cell-run-context.js",
+      "status": "verbatim",
+      "upstreamCommit": "a81a155bee82848479054e827684ed51c17fded0",
+      "sha256": "62dc3a720fa1a9908e79128d093ca86e9a99c39c7c34b0134c71de46fa9fa77c"
+    },
+    {
+      "path": "kernels/js/webview-host.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "JavaScript port of senpi kernels/js/webview-host.ts (KernelWebViewClients) and coding-agent core/webview/{webview-wire,webview-readiness,native-webview,bun-chrome,webview-client,webview-service}.ts plus the main-thread connectWebViewService route; served by the relay process main thread; Windows Chrome retirement only calls closeAll()",
+      "sha256": "6ffaf6f78b0b9f030e0f0db50e854005502767413ff8f5a686c29d015d67400d"
+    },
+    {
+      "path": "kernels/js/worker-relay.js",
+      "status": "local",
+      "upstreamCommit": null,
+      "change": "bun relay process hosting the worker thread (was an inline -e script); its main thread grants webview-connect ports and releases them on worker exit, as senpi worker-slot.ts #publish/retire",
+      "sha256": "3fe0fcec216bdc80b1657f89aff18b31de65a56d7343f3942336e081111e8490"
+    },
+    {
+      "path": "kernels/jl/globals.jl",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Julia kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/jl/handles.jl",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Julia kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/jl/prelude.jl",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Julia kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/jl/runner.jl",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Julia kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/js/cell-ownership.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (stopped-cell ownership of timers, streams, sockets: a81a155bee)"
+    },
+    {
+      "path": "kernels/js/group-signal-notice.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (group-signal warnings: 7bb160e2bf)"
+    },
+    {
+      "path": "kernels/js/interpose-bun.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-capabilities.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-code.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-fs.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-modules.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-paths.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-process.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-resources.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose-sqlite.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/interpose.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-authority.d.mts",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-authority.mjs",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-core.md",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-runtime.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-slots.d.mts",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-slots.mjs",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/permission-worker-entry.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/rejection-reports.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (unhandled rejections reported instead of ending the worker: eae861282a)"
+    },
+    {
+      "path": "kernels/js/worker-cwd.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (session cwd patching for a worker thread in a shared host: 65b03c7410; mhc starts each kernel relay process in the session cwd)"
+    },
+    {
+      "path": "kernels/js/worker-file-helpers.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2): the JS eval permission core / interposition (42e0e2707c, b4e76ace01); not in this release range"
+    },
+    {
+      "path": "kernels/js/worker-package-resolve.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "shipped outside the runtime asset table: src/kernels/js/worker-package-resolve.js is byte-identical to 59d58cee5 and is inlined by local_module_loader.rs (include_str!, data: URL). The later upstream change b4e76ace01 is after the senpi pin 59d58cee5 (v2026.10.27-2)"
+    },
+    {
+      "path": "kernels/js/worker-require.js",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "pre-range port gap: added upstream before senpi v2026.10.19 and imported only by upstream worker-core.js/worker-runtime.js; mhc's patched kernel has not ported the feature (see the divergence on worker-core.js and worker-runtime.js) (cell require/createRequire: f61208eee8)"
+    },
+    {
+      "path": "kernels/py/interpose.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/path_identity.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/path_identity_posix.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/path_identity_windows.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/permission-core.md",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/permission_bridge.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/py/prelude.py",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Python kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/rb/handles.rb",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Ruby kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/rb/paths.rb",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Ruby kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/rb/prelude.rb",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Ruby kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/rb/runner.rb",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Ruby kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/rb/workpool.rb",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "Ruby kernel; maho-codemode supports only the bun/js kernel"
+    },
+    {
+      "path": "kernels/sandbox/vendor/pi-codemode/LICENSE",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "vendored QuickJS sandbox; isolate:true sandbox cells are turned off in maho (eval_isolate_invalid)"
+    },
+    {
+      "path": "kernels/sandbox/vendor/pi-codemode/VENDORED.md",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "vendored QuickJS sandbox; isolate:true sandbox cells are turned off in maho (eval_isolate_invalid)"
+    },
+    {
+      "path": "kernels/shared/path-identity.d.mts",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2) (7e9330f865) for the permission core path checks; not in this release range"
+    },
+    {
+      "path": "kernels/shared/path-identity.mjs",
+      "status": "unported",
+      "upstreamCommit": null,
+      "reason": "added upstream after the senpi pin 59d58cee5 (v2026.10.27-2) (7e9330f865) for the permission core path checks; not in this release range"
     }
   ]
 }

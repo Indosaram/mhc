@@ -10,6 +10,7 @@ use telemetry_core::{
     clear_turn_traceparent, is_traceparent, publish_turn_traceparent,
 };
 
+use crate::pinned_model_ids::pinned_model_id;
 use crate::product_identity::mask_provider_and_model;
 
 /// The `gen_ai.provider.name` well-known values for our provider ids; an id with no well-known value keeps
@@ -43,7 +44,7 @@ fn model_attributes(model: &TurnModel) -> TurnSpanAttributes {
         ),
         (
             "omo.model_id".to_string(),
-            TurnSpanAttribute::String(model_id),
+            TurnSpanAttribute::String(pinned_model_id(&model_id).to_string()),
         ),
     ])
 }
@@ -145,7 +146,7 @@ impl OmoNativeTurnSpans {
             let (_, model_id) = mask_provider_and_model(&model.provider, &model.model_id);
             attributes.insert(
                 "gen_ai.request.model".to_string(),
-                TurnSpanAttribute::String(model_id),
+                TurnSpanAttribute::String(pinned_model_id(&model_id).to_string()),
             );
         }
         let Some(handle) = (self.options.traces)().and_then(|traces| {
@@ -182,7 +183,7 @@ impl OmoNativeTurnSpans {
                         mask_provider_and_model(&response.provider, &response.model_id);
                     attributes.insert(
                         "gen_ai.request.model".to_string(),
-                        TurnSpanAttribute::String(model_id),
+                        TurnSpanAttribute::String(pinned_model_id(&model_id).to_string()),
                     );
                 }
                 let (_, response_model) = mask_provider_and_model(
@@ -191,7 +192,7 @@ impl OmoNativeTurnSpans {
                 );
                 attributes.insert(
                     "gen_ai.response.model".to_string(),
-                    TurnSpanAttribute::String(response_model),
+                    TurnSpanAttribute::String(pinned_model_id(&response_model).to_string()),
                 );
                 open.handle.set_attributes(attributes);
             }

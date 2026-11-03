@@ -38,6 +38,7 @@ async fn queued_registry_handler_rechecks_retirement_after_lock_acquisition() {
                         let held = registry.lock().await;
                         let mut event = maho_ext_api::ExtensionEvent::SessionStart(
                             maho_ext_api::SessionStartEvent {
+                                sizes_only: false,
                                 reason: maho_ext_api::SessionReason::New,
                                 initial_model_provenance: None,
                                 previous_session_file: None,
@@ -96,6 +97,7 @@ async fn retired_account_mutations_cannot_write_after_waiting_for_store_lock() {
                 source: AccountSource::Login,
                 blocked_until: None,
                 block_reason: None,
+                ..Default::default()
             },
         )
         .expect("slot");
@@ -255,6 +257,7 @@ async fn native_builtin_command_pins_and_removes_accounts_through_bound_session(
             source: AccountSource::Login,
             blocked_until: Some(123.0),
             block_reason: Some("rate_limit".into()),
+            ..Default::default()
         },
     )
     .expect("slot");

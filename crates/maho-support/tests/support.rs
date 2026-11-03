@@ -161,6 +161,91 @@ fn contains_path_rules() {
     assert!(contains_path(&root, &root));
 }
 
+/// utils.md Delta D1 tree: `T/root/`, `T/other/x`, `T/other/sub`, `T/root/link -> T/other/sub`.
+#[cfg(unix)]
+fn delta_d1_tree() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("create isolated path fixture");
+    let root = dir.path().join("root");
+    let other = dir.path().join("other");
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    std::fs::create_dir_all(other.join("sub")).expect("create symlink target directory");
+    std::fs::write(other.join("x"), "x").expect("write outside fixture file");
+    std::os::unix::fs::symlink(other.join("sub"), root.join("link"))
+        .expect("create escaping fixture symlink");
+    (dir, root, other)
+}
+
+// utils.md Delta D1 test 1: the symlink is followed before `..`.
+#[cfg(unix)]
+#[test]
+fn delta_d1_symlink_then_parent_escapes_root() {
+    let (_dir, root, _other) = delta_d1_tree();
+    assert!(!contains_path(&root, &root.join("link/../x")));
+}
+
+// utils.md Delta D1 test 2: the same path is inside the link target's parent.
+#[cfg(unix)]
+#[test]
+fn delta_d1_symlink_then_parent_lands_in_target_parent() {
+    let (_dir, root, other) = delta_d1_tree();
+    assert!(contains_path(&other, &root.join("link/../x")));
+    assert!(is_within(&root.join("link/../x"), &other));
+}
+
+// utils.md Delta D1 test 3: `..` through a real directory.
+#[cfg(unix)]
+#[test]
+fn delta_d1_parent_through_real_directory_stays_inside() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(root.join("a")).unwrap();
+    std::fs::write(root.join("b"), "b").unwrap();
+    assert!(contains_path(&root, &root.join("a/../b")));
+}
+
+// utils.md Delta D1 test 4: a missing path below the root keeps the fallback.
+#[cfg(unix)]
+#[test]
+fn delta_d1_missing_path_under_root_is_inside() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(contains_path(&root, &root.join("new/file")));
+}
+
+// utils.md Delta D1 test 5: `..` out of the root into a sibling.
+#[cfg(unix)]
+#[test]
+fn delta_d1_parent_into_sibling_is_outside() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(dir.path().join("root2")).unwrap();
+    std::fs::write(dir.path().join("root2/f"), "f").unwrap();
+    assert!(!contains_path(&root, &root.join("../root2/f")));
+}
+
+// utils.md Delta D1 test 6: the existing prefix `link/..` resolves through the symlink.
+#[cfg(unix)]
+#[test]
+fn delta_d1_missing_leaf_after_symlink_parent_is_outside() {
+    let (_dir, root, other) = delta_d1_tree();
+    assert!(!other.join("new").exists());
+    assert!(!contains_path(&root, &root.join("link/../new")));
+}
+
+// utils.md Delta D1 test 7: `..` in the missing remainder is applied, not kept literally.
+#[cfg(unix)]
+#[test]
+fn delta_d1_parent_in_missing_remainder_is_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(!contains_path(&root, &root.join("new/../../x")));
+    let resolved = canonicalize_lenient(&root.join("new/../../x"));
+    assert_eq!(resolved, dir.path().canonicalize().unwrap().join("x"));
+}
+
 #[test]
 fn file_helpers() {
     assert!(is_markdown_file("a.md", true));

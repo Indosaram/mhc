@@ -1,5 +1,5 @@
 use maho_cli::cli::args::Args;
-use maho_cli::cli::host_runtime::{mount_agent_session_runtime, resolve_cli_initial_model, resolve_cli_path, resolve_runtime_project_trust, CliRuntimeConfiguration, CliRuntimeRequest};
+use maho_cli::cli::host_runtime::{mount_agent_session_runtime, resolve_cli_initial_model, resolve_cli_path, resolve_launch_project_trust, resolve_runtime_project_trust, CliRuntimeConfiguration, CliRuntimeRequest};
 use maho_core::project_trust::AppMode;
 
 #[tokio::test]
@@ -251,6 +251,85 @@ async fn an_unsaved_project_without_ui_stays_untrusted() {
     let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, ..Default::default() };
     assert!(!resolve_runtime_project_trust(&config, &project, AppMode::Print, false, Box::new(|_, _| None)).await);
 }
+
+/// senpi test/suite/regressions/issue-3414-full-access-project-trust.test.ts: a session opened with the
+/// `full-access` preset trusts its project without asking, for that session only.
+fn full_access_profile(cwd: &str, preset: &str) -> maho_core::agent_session_runtime::AgentSessionLaunchProfile {
+    maho_core::agent_session_runtime::AgentSessionLaunchProfile { cwd: cwd.to_owned(), permission_preset: Some(preset.to_owned()), ..Default::default() }
+}
+
+async fn launch_trust(config: &CliRuntimeConfiguration, project: &str, preset: &str) -> maho_cli::cli::host_runtime::LaunchProjectTrust {
+    resolve_launch_project_trust(config, project, AppMode::Rpc, false, Box::new(|_, _| None), Some(&full_access_profile(project, preset))).await
+}
+
+#[tokio::test]
+async fn a_full_access_session_trusts_its_project_and_saves_no_trust_decision() {
+    let (_dir, project, agent) = trust_fixture();
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent.clone(), app_mode: AppMode::Rpc, ..Default::default() };
+    let trust = launch_trust(&config, &project, "full-access").await;
+    assert!(trust.trusted);
+    assert!(trust.trust_from_full_access);
+    let settings = trust.settings_manager(&project, &agent);
+    assert!(settings.is_trust_from_full_access());
+    assert_eq!(maho_core::trust_manager::ProjectTrustStore::new(&agent).get(&project), Ok(None));
+    assert!(config.project_trust_by_cwd.lock().expect("cache").is_empty());
+}
+
+#[tokio::test]
+async fn an_ask_session_in_the_same_host_does_not_inherit_a_full_access_sessions_trust() {
+    let (_dir, project, agent) = trust_fixture();
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, app_mode: AppMode::Rpc, ..Default::default() };
+    assert!(launch_trust(&config, &project, "full-access").await.trusted);
+    let ask = launch_trust(&config, &project, "ask").await;
+    assert!(!ask.trusted);
+    assert!(!ask.trust_from_full_access);
+}
+
+#[tokio::test]
+async fn a_saved_do_not_trust_still_wins_under_full_access() {
+    let (_dir, project, agent) = trust_fixture();
+    maho_core::trust_manager::ProjectTrustStore::new(&agent).set(&project, Some(false)).expect("saved decision");
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, app_mode: AppMode::Rpc, ..Default::default() };
+    let trust = launch_trust(&config, &project, "full-access").await;
+    assert!(!trust.trusted);
+    assert!(!trust.trust_from_full_access);
+}
+
+#[tokio::test]
+async fn a_saved_trust_under_full_access_is_not_withdrawn_with_the_preset() {
+    let (_dir, project, agent) = trust_fixture();
+    maho_core::trust_manager::ProjectTrustStore::new(&agent).set(&project, Some(true)).expect("saved decision");
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, app_mode: AppMode::Rpc, ..Default::default() };
+    let trust = launch_trust(&config, &project, "full-access").await;
+    assert!(trust.trusted);
+    assert!(!trust.trust_from_full_access);
+}
+
+#[tokio::test]
+async fn the_global_full_access_preset_counts_when_the_session_names_none() {
+    let (_dir, project, agent) = trust_fixture();
+    std::fs::write(std::path::Path::new(&agent).join("settings.json"), r#"{"permissionPreset":"full-access"}"#).expect("global settings");
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, app_mode: AppMode::Rpc, ..Default::default() };
+    let trust = resolve_launch_project_trust(&config, &project, AppMode::Rpc, false, Box::new(|_, _| None), None).await;
+    assert!(trust.trusted);
+    assert!(trust.trust_from_full_access);
+}
+
+/// senpi `trustStore.get` throws on a corrupt trust.json: the launch does not trust the project, even when
+/// `defaultProjectTrust` is "always", and says why.
+#[tokio::test]
+async fn a_corrupt_trust_store_fails_closed_at_launch() {
+    let (_dir, project, agent) = trust_fixture();
+    std::fs::write(std::path::Path::new(&agent).join("settings.json"), r#"{"defaultProjectTrust":"always"}"#).expect("global settings");
+    std::fs::write(std::path::Path::new(&agent).join("trust.json"), "not json").expect("corrupt trust.json");
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, app_mode: AppMode::Interactive, ..Default::default() };
+    let trust = resolve_launch_project_trust(&config, &project, AppMode::Interactive, true, Box::new(|_, options| options.first().cloned()), None).await;
+    assert!(!trust.trusted);
+    assert!(!trust.trust_from_full_access);
+    assert!(trust.warnings.iter().any(|warning| warning.contains("trust store unreadable")));
+    assert!(config.project_trust_by_cwd.lock().expect("cache").is_empty());
+}
+
 /// Supervisor session-policy probes (`maho_cli::cli::session_policy`); the policy is enforced
 /// only by the omo build, so the MIT profile compiles none of them.
 #[cfg(feature = "omo")]
@@ -542,8 +621,14 @@ mod supervisor_policy {
     #[ignore = "runs in an isolated HOME through supervisor_tools_denied_session_refuses_prompted_commands_and_memory_file_writes"]
     async fn probe_denied_prompted_commands_and_file_writes() {
         let root = probe_root();
+        let owner_setup = mount_with_context(&root, &[], None).await.expect("owner setup mounts");
+        let (identity, paths) = bound_identity(&owner_setup);
+        memory_core::git::GitMemoryRepo::open(&paths.repo, &identity).expect("repo handle").init(None).expect("owner repository");
+        owner_setup.runtime.dispose().await;
+        drop(owner_setup);
+
         let denied = mount_with_context(&root, &[("memory_write", "deny")], None).await.expect("denied session mounts");
-        let (identity, paths) = bound_identity(&denied);
+        assert_eq!(bound_identity(&denied).1, paths, "denied session shares the identity");
         let target = paths.repo.join("system").join("x.md");
         // A prompt starting with `/name` dispatches extension commands before anything else.
         for text in [format!("/todo export {}", target.display()), "/palace".to_owned()] {

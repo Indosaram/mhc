@@ -1,8 +1,8 @@
 //! Lazy scan runtime (upstream `scan-runtime.ts`): the onboarding scan stream, its retained outcome, the apply
 //! of a retained scan, the TUI history summary, and the scan's context and inventory text.
 //!
-//! `omo setup`'s own detection and writers are not ported to Rust; they enter through [`SetupBackend`] and
-//! [`SetupPlans`]. Without a backend the scan reports only session history.
+//! `omo setup`'s own detection and writers live in [`crate::setup`]; they enter through [`SetupBackend`] and
+//! [`SetupPlans`]. Without an injected backend the scan runs [`crate::setup::stream::NativeSetupBackend`].
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -118,18 +118,21 @@ pub trait OnboardingEngineAuthStore: Send + Sync {
 pub struct OnboardingScanEnvironment {
     pub home: Option<String>,
     pub env: Option<BTreeMap<String, String>>,
+    /// The engine's agent dir; defaults to `canonicalAgentDir(env, home)`.
+    pub agent_dir: Option<String>,
     /// Session-history overrides (agent homes, omo session roots, clock); defaults read this machine.
     pub session_history: Option<SessionHistoryOptions>,
+    /// Replaces `omo setup`'s own detection; `None` runs the native one.
     pub setup: Option<Arc<dyn SetupBackend>>,
 }
 
 impl OnboardingScanEnvironment {
-    fn home_dir(&self) -> String {
+    pub(crate) fn home_dir(&self) -> String {
         self.home
             .clone()
             .unwrap_or_else(crate::session_history::project_paths::default_home_dir)
     }
-    fn env_map(&self) -> BTreeMap<String, String> {
+    pub(crate) fn env_map(&self) -> BTreeMap<String, String> {
         self.env
             .clone()
             .unwrap_or_else(|| std::env::vars().collect())
@@ -219,7 +222,11 @@ pub fn run_onboarding_scan(
     let src = OnboardingScanEventSource::Source;
     let mut results: Vec<SetupStageResult> = Vec::new();
     let mut found = 0_usize;
-    if let Some(setup) = &environment.setup {
+    let setup: Arc<dyn SetupBackend> = environment
+        .setup
+        .clone()
+        .unwrap_or_else(|| Arc::new(crate::setup::stream::NativeSetupBackend::default()));
+    {
         let mut starts = Vec::new();
         let scanned = setup.scan(
             environment,
@@ -363,15 +370,15 @@ pub fn run_onboarding_scan(
         }),
         None,
     );
-    let plans = environment.setup.as_ref().map(|setup| {
+    let plans = Some(
         setup.plans(
             &results
                 .iter()
                 .filter(|r| r.error.is_none())
                 .cloned()
                 .collect::<Vec<_>>(),
-        )
-    });
+        ),
+    );
     let digests = digest_store.list(&options.scan_id).unwrap_or_default();
     OnboardingScanOutcome {
         plans,
@@ -589,12 +596,11 @@ pub fn apply_retained_scan(
             .iter()
             .try_for_each(|item| store.add_api_key_if_absent(&item.provider, &item.key))
     };
-    let write_auth_ref: Option<WriteAuth<'_>> =
-        if store.is_some() {
-            Some(&mut write_auth)
-        } else {
-            None
-        };
+    let write_auth_ref: Option<WriteAuth<'_>> = if store.is_some() {
+        Some(&mut write_auth)
+    } else {
+        None
+    };
     let options = ApplyOnboardingScanOptions {
         write_auth: write_auth_ref,
         report: None,
@@ -891,10 +897,15 @@ mod tests {
     }
 
     #[test]
-    fn scan_without_sessions_emits_only_done() {
+    fn scan_without_sessions_runs_only_the_native_setup_sources() {
+        let home = tempfile::tempdir().expect("tempdir");
         let mut events = Vec::new();
         let outcome = run_onboarding_scan(
-            &OnboardingScanEnvironment::default(),
+            &OnboardingScanEnvironment {
+                home: Some(home.path().to_string_lossy().into_owned()),
+                env: Some(BTreeMap::new()),
+                ..Default::default()
+            },
             &OnboardingScanOptions {
                 scan_id: "s".into(),
                 include_custom_providers: true,
@@ -902,8 +913,28 @@ mod tests {
             },
             &mut |event| events.push(event),
         );
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, OnboardingScanEventKind::Done);
-        assert!(outcome.digests.is_empty() && outcome.plans.is_none());
+        let kinds: Vec<(OnboardingScanEventKind, &str)> =
+            events.iter().map(|e| (e.kind, e.source.as_str())).collect();
+        let sources = [
+            "detect",
+            "providers",
+            "credentials",
+            "assets",
+            "model-choices",
+        ];
+        let mut expected: Vec<(OnboardingScanEventKind, &str)> = sources
+            .iter()
+            .map(|s| (OnboardingScanEventKind::SourceStarted, *s))
+            .collect();
+        expected.extend(
+            sources
+                .iter()
+                .map(|s| (OnboardingScanEventKind::SourceDone, *s)),
+        );
+        expected.push((OnboardingScanEventKind::Done, "all"));
+        assert_eq!(kinds, expected);
+        let plans = outcome.plans.expect("native plans");
+        assert!(!plans.auth_writes_pending(&[OnboardingApplyStage::Credentials]));
+        assert!(outcome.digests.is_empty());
     }
 }

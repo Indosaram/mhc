@@ -52,35 +52,8 @@ impl ModelInputLimits {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CredentialSlotRef {
-    pub env: Option<String>,
-    pub value: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ModelsJsonCredentialPolicy {
-    pub rotation: Option<bool>,
-    pub affinity: Option<bool>,
-    pub cooldown_base_ms: Option<f64>,
-    pub cooldown_cap_ms: Option<f64>,
-    pub slots: Option<IndexMap<String, CredentialSlotRef>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct CredentialPolicyDefaults {
-    pub rotation: bool,
-    pub affinity: bool,
-    pub cooldown_base_ms: f64,
-    pub cooldown_cap_ms: f64,
-}
-
-pub const CREDENTIAL_POLICY_DEFAULTS: CredentialPolicyDefaults = CredentialPolicyDefaults {
-    rotation: true, affinity: true,
-    cooldown_base_ms: maho_ai::auth::pool::failover::DEFAULT_SLOT_BLOCK_MS,
-    cooldown_cap_ms: maho_ai::auth::pool::failover::MAX_SLOT_BLOCK_MS,
+pub use crate::credential_policy_schema::{
+    CREDENTIAL_POLICY_DEFAULTS, CredentialPolicyDefaults, CredentialSlotRef, ModelsJsonCredentialPolicy,
 };
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -107,7 +80,7 @@ pub struct ModelsJsonModel {
     pub cost: Option<ModelCost>,
     pub context_window: Option<f64>,
     pub max_tokens: Option<f64>,
-    pub headers: Option<BTreeMap<String, String>>,
+    pub headers: Option<BTreeMap<String, crate::config_reference_resolver::ConfigValue>>,
     pub extra_body: Option<Map<String, Value>>,
     pub sampling_params: Option<Map<String, Value>>,
     pub cache_retention: Option<CacheRetention>,
@@ -144,7 +117,7 @@ pub struct ModelsJsonModelOverride {
     pub cost: Option<PartialModelCost>,
     pub context_window: Option<f64>,
     pub max_tokens: Option<f64>,
-    pub headers: Option<BTreeMap<String, String>>,
+    pub headers: Option<BTreeMap<String, crate::config_reference_resolver::ConfigValue>>,
     pub extra_body: Option<Map<String, Value>>,
     pub sampling_params: Option<Map<String, Value>>,
     pub cache_retention: Option<CacheRetention>,
@@ -158,9 +131,9 @@ pub struct ModelsJsonProvider {
     pub name: Option<String>,
     pub disabled: Option<bool>,
     pub base_url: Option<String>,
-    pub api_key: Option<String>,
+    pub api_key: Option<crate::config_reference_resolver::ConfigValue>,
     pub api: Option<String>,
-    pub headers: Option<BTreeMap<String, String>>,
+    pub headers: Option<BTreeMap<String, crate::config_reference_resolver::ConfigValue>>,
     pub extra_body: Option<Map<String, Value>>,
     pub cache_retention: Option<CacheRetention>,
     pub compat: Option<Map<String, Value>>,
@@ -196,9 +169,10 @@ pub fn validate_models_config(value: Value) -> Result<ModelsJson, ModelsConfigVa
     for id in config.disabled_providers.iter().flatten() { nonempty(Some(id), "disabledProviders".into())?; }
     for (id, provider) in &config.providers {
         let path = format!("providers.{id}");
-        for (name, value) in [("name", &provider.name), ("baseUrl", &provider.base_url), ("apiKey", &provider.api_key), ("api", &provider.api)] {
+        for (name, value) in [("name", &provider.name), ("baseUrl", &provider.base_url), ("api", &provider.api)] {
             nonempty(value.as_deref(), format!("{path}.{name}"))?;
         }
+        nonempty(provider.api_key.as_ref().and_then(|value| value.as_str()), format!("{path}.apiKey"))?;
         for (name, values) in [("whitelist", &provider.whitelist), ("blacklist", &provider.blacklist)] {
             for value in values.iter().flatten() { nonempty(Some(value), format!("{path}.{name}"))?; }
         }
@@ -211,7 +185,7 @@ pub fn validate_models_config(value: Value) -> Result<ModelsJson, ModelsConfigVa
             for (name, slot) in policy.slots.iter().flatten() {
                 nonempty(Some(name), format!("{path}.credentials.slots"))?;
                 nonempty(slot.env.as_deref(), format!("{path}.credentials.slots.{name}.env"))?;
-                nonempty(slot.value.as_deref(), format!("{path}.credentials.slots.{name}.value"))?;
+                nonempty(slot.value.as_ref().and_then(|value| value.as_str()), format!("{path}.credentials.slots.{name}.value"))?;
             }
         }
         for (index, model) in provider.models.iter().flatten().enumerate() {
@@ -290,6 +264,24 @@ mod tests {
         assert_eq!(model.input_limits.as_ref().and_then(|value| value.images.as_ref()).and_then(|value| value.resize.as_ref()).and_then(|value| value.jpeg_quality), Some(80));
         assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","promptCache":{"short":0}}]}}})).is_err());
         assert!(validate_models_config(json!({"providers":{"openai":{"models":[{"id":"m","inputLimits":{"images":{"resize":{"jpegQuality":101}}}}]}}})).is_err());
+    }
+
+    /// senpi test/suite/regressions/3858-reference-schema.test.ts: apiKey, headers and slot values accept
+    /// references; malformed reference objects are rejected.
+    #[test]
+    fn value_slots_accept_configuration_references() {
+        let config = validate_models_config(json!({"providers":{"p":{
+            "apiKey":{"$env":"P_KEY"},
+            "headers":{"x-key":{"$file":"~/k"},"x-plain":"v"},
+            "models":[{"id":"m","headers":{"x":{"$concat":["a",{"$env":"B"}]}}}],
+            "credentials":{"slots":{"work":{"value":{"$env":"WORK_KEY"}}}}
+        }}})).expect("references accepted");
+        let provider = &config.providers["p"];
+        assert!(provider.api_key.as_ref().is_some_and(|value| value.is_reference()));
+        assert_eq!(provider.headers.as_ref().expect("headers")["x-plain"].as_str(), Some("v"));
+        assert!(validate_models_config(json!({"providers":{"p":{"apiKey":{"$cmd":"cat"}}}})).is_err());
+        assert!(validate_models_config(json!({"providers":{"p":{"apiKey":""}}})).is_err());
+        assert!(validate_models_config(json!({"providers":{"p":{"credentials":{"slots":{"w":{"value":{"$env":"1BAD"}}}}}}})).is_err());
     }
 
     #[test]

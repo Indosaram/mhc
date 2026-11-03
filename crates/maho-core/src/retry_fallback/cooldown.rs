@@ -51,6 +51,11 @@ impl SelectorCooldowns {
         false
     }
 
+    /// The injected-clock time the selector's cooldown lifts at, if one is recorded.
+    pub fn expires_at(&self, base_selector: &str) -> Option<f64> {
+        self.expires_at_by_selector.get(base_selector).copied()
+    }
+
     pub fn clear(&mut self, base_selector: &str) {
         self.expires_at_by_selector.remove(base_selector);
     }

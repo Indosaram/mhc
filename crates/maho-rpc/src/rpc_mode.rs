@@ -178,7 +178,17 @@ async fn serve(
     .await
     .with_tool_runtime(tool_runtime);
     handler.last_abort_source = last_abort_source;
+    // senpi rpc-mode.ts `ClientAdmissions.sealQueuedOnReplace` / `EffectLedger.sealOnReplace`: the stdio session's
+    // ledgers are keyed by its durable id, read as the outgoing session is replaced.
+    // The route is read as the listener runs: each replacement gives the session a new durable id.
+    let seal_session = session.weak_accessor();
+    let seal = session.on_before_session_replace(std::sync::Arc::new(move || {
+        if let Some(session) = seal_session() {
+            crate::session_registry::seal_ledgers_on_replace(session.session_id())();
+        }
+    }));
     let result = pump(&handler, input, output, &mut events, signal).await;
+    session.remove_before_session_replace(seal);
     drop(subscription);
     (handler, result)
 }
@@ -240,10 +250,25 @@ pub async fn run_rpc_mode(
     session: &maho_core::agent_session::AgentSession,
     tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
     input: impl tokio::io::AsyncRead + Unpin,
+    output: impl tokio::io::AsyncWrite + Unpin,
+) -> std::io::Result<i32> {
+    run_rpc_mode_until(session, tool_runtime, input, output, termination_signal()).await
+}
+/// [`run_rpc_mode`] ended by `termination` (the process's SIGTERM/SIGHUP outside tests).
+async fn run_rpc_mode_until(
+    session: &maho_core::agent_session::AgentSession,
+    tool_runtime: Option<crate::host_capabilities::ToolRuntimeKind>,
+    input: impl tokio::io::AsyncRead + Unpin,
     mut output: impl tokio::io::AsyncWrite + Unpin,
+    termination: impl std::future::Future<Output = i32>,
 ) -> std::io::Result<i32> {
     use tokio::io::AsyncWriteExt;
-    let mut signal = Box::pin(termination_signal());
+    // senpi's signal handler kills the tracked detached children before the shared shutdown runs.
+    let mut signal = Box::pin(async {
+        let code = termination.await;
+        maho_tools::shell::kill_tracked_detached_children();
+        code
+    });
     let (handler, result) = serve(
         session,
         env_client_capabilities(),
@@ -346,6 +371,8 @@ mod drain_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
     #[test]
     fn empty_chunks_do_not_emit_and_records_remain_individual_jsonl() {
         assert_eq!(linearize_output("\n\n").unwrap(), "");
@@ -361,5 +388,36 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert!(value.get("message").is_none());
         assert_eq!(value["assistantMessageEvent"]["delta"], "a");
+    }
+
+    /// senpi rpc-mode.ts signal handler: a termination kills the tracked detached process groups before the
+    /// shutdown, and answers 143 for SIGTERM.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_termination_kills_tracked_detached_children_before_shutdown() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        maho_tools::shell::track_detached_child_pid(pid);
+        let session = crate::connection_handler::test_support::session();
+        let (_client, input) = tokio::io::duplex(64);
+        let code = run_rpc_mode_until(&session, None, input, tokio::io::sink(), async { 143 })
+            .await
+            .unwrap();
+        assert_eq!(code, 143);
+        assert!(
+            !maho_tools::shell::list_tracked_detached_children()
+                .iter()
+                .any(|entry| entry.pid == pid)
+        );
+        // SIGKILL reached the group: the child is reaped as killed by the signal.
+        let status = child.wait().unwrap();
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(9)
+        );
     }
 }

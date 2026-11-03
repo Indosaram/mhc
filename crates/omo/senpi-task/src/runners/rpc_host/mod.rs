@@ -2,6 +2,7 @@
 pub type AdmitCallback = Arc<dyn Fn(&crate::runners::types::RpcRunnerSpec) -> Result<(), HostError> + Send + Sync>;
 pub mod durable_json;
 pub mod handle;
+pub mod handle_heartbeat;
 pub mod handle_listeners;
 pub mod handle_port;
 pub mod handle_recovery;
@@ -12,11 +13,16 @@ pub mod host_warmup;
 pub mod open_session;
 pub mod reattach_port;
 pub mod session_client_connection;
+pub mod session_client_opening;
+pub mod session_close_proof;
 pub mod session_context;
 pub mod session_open;
 pub mod session_role;
+pub mod session_wire;
 pub mod store_index;
 pub mod task_parent_wire;
+pub mod unresponsive_close;
+pub use session_open::HostSessionOpenError;
 use crate::host::HostError;
 use std::sync::Arc;
 pub type OpenHostSession = Arc<
@@ -29,7 +35,7 @@ pub type OpenHostSession = Arc<
                 open_session::OpenedHostSession,
                 Arc<dyn Fn() -> crate::runners::RunnerOutcome + Send + Sync>,
             ),
-            HostError,
+            HostSessionOpenError,
         > + Send
         + Sync,
 >;
@@ -93,9 +99,9 @@ impl RpcHostRunner {
                 open_session::OpenedHostSession,
                 std::sync::Arc<dyn Fn() -> crate::runners::RunnerOutcome + Send + Sync>,
             ),
-            HostError,
+            HostSessionOpenError,
         >,
-    ) -> Result<std::sync::Arc<handle::HostSessionHandle>, HostError> {
+    ) -> Result<std::sync::Arc<handle::HostSessionHandle>, HostSessionOpenError> {
         let (client, opened, outcome) = open(spec, session_context::build_child_context(spec))?;
         let pin = spec
             .model
@@ -106,12 +112,25 @@ impl RpcHostRunner {
             });
         let opened = open_session::open_task_host_session(client.clone(), opened, pin.as_ref())?;
         let attached = opened.attached;
-        let handle =
-            handle::create_host_session_handle(spec.task_id.clone(), client, opened, outcome);
+        let input_store = spec.task_store_dir.as_ref().map(|dir| {
+            crate::store::TaskRecordStore::new(&crate::store::StateDirConfig {
+                project_dir: std::path::PathBuf::from(&spec.cwd),
+                task_state_dir: Some(std::path::PathBuf::from(dir)),
+            })
+        });
+        let handle = handle::create_host_session_handle_with_inputs(
+            spec.task_id.clone(),
+            client,
+            opened,
+            outcome,
+            input_store,
+        );
         if attached {
             Ok(handle)
         } else {
-            self.opener.start_initial_prompt(handle, &spec.prompt)
+            self.opener
+                .start_initial_prompt(handle, &spec.prompt)
+                .map_err(HostSessionOpenError::from)
         }
     }
 

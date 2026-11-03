@@ -80,3 +80,62 @@ fn user_creation_target_is_basename_anchored() -> Result<(), Box<dyn std::error:
     assert_eq!(target.filter_globs, ["/.omo", "/.omo/omo.jsonc", "/.omo/omo.json"]);
     Ok(())
 }
+
+type Plan9Fixture = (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, BTreeMap<String, String>);
+
+fn plan9_fixture() -> Result<Plan9Fixture, Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = home.join("project");
+    let cwd = project.join("src");
+    std::fs::create_dir_all(&cwd)?;
+    std::fs::create_dir_all(project.join(".omo"))?;
+    std::fs::write(project.join(".omo/omo.jsonc"), "{}")?;
+    let env = BTreeMap::from([("SENPI_CODING_AGENT_DIR".into(), root.path().join("agent").to_string_lossy().into_owned())]);
+    Ok((root, home, project, cwd, env))
+}
+
+#[test]
+fn plan9_project_filesystem_skips_project_and_ancestor_watches_but_keeps_native_user_config() -> Result<(), Box<dyn std::error::Error>> {
+    let (_root, home, project, cwd, env) = plan9_fixture()?;
+    let user = home.join(".omo");
+    std::fs::create_dir_all(&user)?;
+    let resolution = resolve_omo_config_watch_target_resolution_with(&cwd, &home, &env, &|path| {
+        Some(if path == user { 0x0102_1994 } else { PLAN9_FILE_SYSTEM_TYPE })
+    });
+    assert!(resolution.targets.iter().any(|t| t.path == user && t.filter_globs.iter().any(|g| g == "/omo.jsonc")));
+    assert!(!resolution.targets.iter().any(|t| t.path == project.join(".omo")));
+    assert!(!resolution.targets.iter().any(|t| t.filter_globs.iter().any(|g| g == "/.omo")));
+    Ok(())
+}
+
+#[test]
+fn native_project_filesystem_preserves_project_and_ancestor_watches() -> Result<(), Box<dyn std::error::Error>> {
+    let (_root, home, project, cwd, env) = plan9_fixture()?;
+    let resolution = resolve_omo_config_watch_target_resolution_with(&cwd, &home, &env, &|_| Some(0x0102_1994));
+    assert!(resolution.targets.iter().any(|t| t.path == project.join(".omo") && t.filter_globs.iter().any(|g| g == "/omo.jsonc")));
+    assert!(resolution.targets.iter().any(|t| t.filter_globs.iter().any(|g| g == "/.omo")));
+    Ok(())
+}
+
+#[test]
+fn plan9_user_config_filesystem_skips_the_user_config_watch() -> Result<(), Box<dyn std::error::Error>> {
+    let (_root, home, _project, cwd, env) = plan9_fixture()?;
+    let user = home.join(".omo");
+    std::fs::create_dir_all(&user)?;
+    let resolution = resolve_omo_config_watch_target_resolution_with(&cwd, &home, &env, &|_| Some(PLAN9_FILE_SYSTEM_TYPE));
+    assert!(!resolution.targets.iter().any(|t| t.path == user));
+    assert!(!resolution.targets.iter().any(|t| t.filter_globs.iter().any(|g| g == "/.omo")));
+    Ok(())
+}
+
+#[test]
+fn protected_paths_reject_unanchored_and_covering_globs_but_permit_safe_anchored_globs() {
+    let agent = std::path::PathBuf::from("/home/u/.senpi/agent");
+    let protected = [agent.join("auth.json"), agent.join("sessions"), agent.join("logs")];
+    let target = |path: &str, globs: &[&str]| OmoConfigWatchTarget { path: path.into(), kind: "dir", filter_globs: globs.iter().map(|g| (*g).to_owned()).collect() };
+    assert!(is_senpi_restricted_target(&target("/home/u", &["*.jsonc"]), &protected));
+    assert!(is_senpi_restricted_target(&target("/home/u", &["/.senpi"]), &protected));
+    assert!(is_senpi_restricted_target(&target("/home/u/.senpi/agent/sessions/x", &["/omo.jsonc"]), &protected));
+    assert!(!is_senpi_restricted_target(&target("/home/u", &["/.omo", "/.omo/omo.jsonc", "/.omo/omo.json"]), &protected));
+}

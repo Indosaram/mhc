@@ -311,7 +311,7 @@ fn given_a_session_that_fails_to_construct_when_start_is_called_then_a_typed_ses
         .err()
         .expect("must fail");
     assert_eq!(error.kind(), RunnerFailureKind::SessionCreateFailed);
-    assert_eq!(error.cause, Some(cause));
+    assert_eq!(error.cause.as_deref(), Some(&cause));
 }
 
 #[test]

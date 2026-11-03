@@ -88,6 +88,7 @@ impl ExtensionUi for LifecycleUi {
     fn set_editor_text(&self, text: &str) { self.active(); self.inner.set_editor_text(text); }
     fn get_editor_text(&self) -> String { self.active(); self.inner.get_editor_text() }
     fn theme(&self) -> Theme { self.active(); self.inner.theme() }
+    fn request_render(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.inner.request_render() }
 }
 
 impl ExtensionUiFactories for LifecycleUi {

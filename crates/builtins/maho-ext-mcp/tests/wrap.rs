@@ -95,3 +95,31 @@ async fn event_subscription_dispatches_next_event_while_previous_callback_is_pen
     tokio::time::timeout(std::time::Duration::from_secs(2),subscription).await.unwrap().unwrap();
     assert_eq!(second.unwrap(),Some(2));
 }
+
+// wrap.ts (v2026.10.27-2): mcpAbortableDelay, mcpInterrupted and the injectable elapsed clock.
+#[tokio::test(start_paused = true)]
+async fn abortable_delay_resolves_on_the_clock_and_rejects_on_abort() {
+    let signal = maho_ext_api::AbortSignal::default();
+    let start = MCP_ELAPSED_CLOCK.now();
+    mcp_abortable_delay(&MCP_ELAPSED_CLOCK, 250.0, &signal).await.unwrap();
+    assert!(MCP_ELAPSED_CLOCK.now() - start >= 250.0);
+    let pending = mcp_abortable_delay(&MCP_ELAPSED_CLOCK, 60_000.0, &signal);
+    tokio::pin!(pending);
+    assert!(futures::poll!(&mut pending).is_pending());
+    signal.abort();
+    assert_eq!(pending.await, Err(McpInterrupted));
+    // An already aborted signal rejects without scheduling.
+    assert_eq!(mcp_abortable_delay(&MCP_ELAPSED_CLOCK, 0.0, &signal).await, Err(McpInterrupted));
+}
+
+#[tokio::test]
+async fn interrupted_work_rejects_with_the_abort_and_completed_work_keeps_its_value() {
+    let signal = maho_ext_api::AbortSignal::default();
+    assert_eq!(mcp_interrupted(async { 7 }, &signal).await, Ok(7));
+    let (_hold, never) = tokio::sync::oneshot::channel::<()>();
+    let pending = mcp_interrupted(never, &signal);
+    tokio::pin!(pending);
+    assert!(futures::poll!(&mut pending).is_pending());
+    signal.abort();
+    assert!(pending.await.is_err());
+}

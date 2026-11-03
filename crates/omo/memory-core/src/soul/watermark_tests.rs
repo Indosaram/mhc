@@ -385,8 +385,11 @@ fn paged_and_unbounded_scans_use_the_captured_commit() {
         install_hooks: None,
     })
     .unwrap();
-    super::write_watermark(root.path(), &"a".repeat(40)).unwrap();
-    super::consume_under_lock(&repo, root.path()).unwrap();
+    let on_warn = |message: &str, detail: Option<&str>| {
+        panic!("unexpected watermark warning: {message}: {detail:?}");
+    };
+    super::write_watermark(root.path(), &"a".repeat(40), &on_warn).unwrap();
+    super::consume_under_lock(&repo, root.path(), &on_warn).unwrap();
     let calls = calls.lock().unwrap();
     let logs: Vec<_> = calls
         .iter()
@@ -397,4 +400,61 @@ fn paged_and_unbounded_scans_use_the_captured_commit() {
         assert!(argv.contains(&format!("{}..{}", "a".repeat(40), "b".repeat(40))));
         assert!(!argv.iter().any(|arg| arg.ends_with("..HEAD")));
     }
+}
+
+#[test]
+fn a_watermark_already_at_head_is_answered_without_taking_the_notice_lock() {
+    // Given
+    let fixture = setup_fixture();
+    commit_file(&fixture.repo, "system/persona.md", "seed\n", "seed", None);
+    let options = ConsumeSoulNoticeOptions {
+        notices_dir: fixture.notices_dir.clone(),
+        locks_dir: fixture.locks_dir.clone(),
+        wait_timeout_ms: Some(2_000),
+    };
+    assert_eq!(
+        consume_soul_notice_delta(&fixture.repo, &options).expect("seed"),
+        None
+    );
+    // A locks dir that is a regular file makes every lock acquisition fail.
+    std::fs::remove_dir_all(&fixture.locks_dir).expect("remove locks dir");
+    std::fs::write(&fixture.locks_dir, "not a directory").expect("block locks dir");
+    // When
+    let unchanged = consume_soul_notice_delta(&fixture.repo, &options);
+    // Then
+    assert_eq!(unchanged.expect("optimistic path"), None);
+
+    // When: HEAD moved, so the locked path runs and reports the lock failure.
+    commit_file(&fixture.repo, "system/persona.md", "next\n", "next", None);
+    // Then
+    assert!(consume_soul_notice_delta(&fixture.repo, &options).is_err());
+}
+
+#[test]
+fn a_failed_soul_publication_surfaces_its_error_and_leaves_no_temporary() {
+    // Given: the target name is taken by a non-empty directory, so the rename fails.
+    let root = TempDir::new().expect("tempdir");
+    let notices_dir = root.path().join("notices");
+    let target = notices_dir.join(SOUL_NOTICE_WATERMARK_FILENAME);
+    std::fs::create_dir_all(target.join("occupied")).expect("occupy target");
+    let warnings = std::cell::RefCell::new(Vec::<String>::new());
+    // When
+    let result = super::write_watermark(&notices_dir, &"a".repeat(40), &|message, _| {
+        warnings.borrow_mut().push(message.to_string())
+    });
+    // Then
+    assert!(matches!(result, Err(super::WatermarkError::Io(_))));
+    let leftovers: Vec<String> = std::fs::read_dir(&notices_dir)
+        .expect("list")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert_eq!(leftovers, Vec::<String>::new());
+    assert_eq!(warnings.into_inner(), Vec::<String>::new());
 }

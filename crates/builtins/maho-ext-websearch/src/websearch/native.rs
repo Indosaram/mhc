@@ -14,30 +14,41 @@ pub async fn config_with_native_routes(mut config:super::types::WebsearchConfig,
     let Some(registry)=registry else{return Ok(config)};
     let mut models=registry.get_available();if let Some(model)=model{models.insert(0,model.clone());}
     let available=models.iter().map(model_info).collect::<Vec<_>>();let active=model.map(model_info);
-    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers:auth.auth.headers.map(|headers|headers.into_iter().filter_map(|(name,value)|value.map(|value|(name,value))).collect()),base_url:auth.auth.base_url})),None=>None}}};
+    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|{let headers=super::hosted_routes::credential_headers(model.headers.as_ref(),auth.auth.headers.as_ref());auth.auth.api_key.map(|api_key|NativeAuth{api_key,headers,base_url:auth.auth.base_url})}),None=>None}}};
     let mut entries=build_native_entries(active.as_ref(),Some(&available),Some(&auth),signal).await?;
+    // The active route searches on the resolved native search model, falling back to the session model.
+    let active_entry=active.as_ref().and_then(|active|entries.first_mut().filter(|entry|entry.config.model.as_deref()==Some(active.id.as_str())&&!entry.config.id.as_deref().is_some_and(|id|id.starts_with("native-"))));
+    if let Some(entry)=active_entry && let Some(choice)=super::search_model::resolve_native_search_model(model,&registry.get_available(),config.native_model.as_deref()) {
+        entry.config.model=Some(choice.model);entry.fallback_model=choice.fallback_model;
+    }
     if !entries.is_empty(){entries.extend(config.providers);config.providers=entries;}
     Ok(config)
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub struct NativeProviderMapping { pub provider:SearchProvider,pub resource:&'static str,pub route_label:Option<String>,pub endpoint_path:Option<&'static str> }
+pub struct NativeProviderMapping { pub provider:SearchProvider,pub resource:&'static str,pub route_label:Option<String>,pub endpoint_path:Option<&'static str>,
+    /// A hosted route's own endpoint builder (`mapping.endpoint`), used instead of `build_endpoint_url`.
+    pub hosted:Option<super::hosted_routes::HostedRouteMapping> }
+/// senpi `mappingEndpointUrl`.
+pub fn mapping_endpoint_url(mapping:&NativeProviderMapping,base_url:&str)->String {
+    match &mapping.hosted { Some(hosted)=>hosted.endpoint(base_url),None=>build_endpoint_url(base_url,mapping.resource,mapping.endpoint_path) }
+}
 pub struct NativeAuth { pub api_key:String,pub headers:Option<std::collections::BTreeMap<String,String>>,pub base_url:Option<String> }
 pub async fn build_native_entry<F,Fut>(model:Option<&NativeModelInfo>,auth:Option<&F>,id:Option<&str>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<Option<super::types::SearchProviderEntry>,maho_tools::definition::ToolError>
 where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAuth>> {
     let (Some(model),Some(auth))=(model,auth) else {return Ok(None)};
     let Some(mapping)=native_mapping(model) else {return Ok(None)};
-    let base_url=build_endpoint_url(&model.base_url,mapping.resource,mapping.endpoint_path);
+    let base_url=mapping_endpoint_url(&mapping,&model.base_url);
     if !is_allowed_provider_base_url(&base_url) {return Ok(None)}
     if let Some(signal)=signal {signal.check()?;}
     let future=auth(model.clone());
     let key=if let Some(signal)=signal {signal.check()?;tokio::select!{biased; ()=signal.cancelled()=>return Err(maho_tools::definition::ToolError::Aborted),key=future=>key}} else {future.await};
     let Some(auth)=key.filter(|auth|!auth.api_key.is_empty()) else {return Ok(None)};
-    let base_url=auth.base_url.as_deref().map(|url|build_endpoint_url(url,mapping.resource,mapping.endpoint_path)).unwrap_or(base_url);
+    let base_url=auth.base_url.as_deref().map(|url|mapping_endpoint_url(&mapping,url)).unwrap_or(base_url);
     if !is_allowed_provider_base_url(&base_url) {return Ok(None)}
     let mut config=super::types::SearchProviderConfig::new(mapping.provider);
     config.id=Some(id.map_or_else(||mapping.route_label.map_or_else(||"native".into(),|label|format!("{label}/native")),String::from));
     config.api_key=Some(auth.api_key);config.headers=auth.headers;config.base_url=Some(base_url);config.model=Some(model.id.clone());
-    Ok(Some(super::types::SearchProviderEntry{config,priority:Some(-1.),weight:None}))
+    Ok(Some(super::types::SearchProviderEntry{config,priority:Some(-1.),weight:None,fallback_model:None}))
 }
 pub async fn build_native_entries<F,Fut>(model:Option<&NativeModelInfo>,available:Option<&[NativeModelInfo]>,auth:Option<&F>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<Vec<super::types::SearchProviderEntry>,maho_tools::definition::ToolError>
 where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAuth>> {
@@ -59,9 +70,13 @@ where F:Fn(NativeModelInfo)->Fut,Fut:std::future::Future<Output=Option<NativeAut
     Ok(entries)
 }
 pub fn native_mapping(model:&NativeModelInfo)->Option<NativeProviderMapping> {
-    if model.provider=="github-copilot" && model.id.starts_with("claude-") { return Some(NativeProviderMapping{provider:SearchProvider::Anthropic,resource:"messages",route_label:Some("github-copilot".into()),endpoint_path:Some("/v1/messages")}); }
+    if let Some(hosted)=super::hosted_routes::hosted_route_mapping(&super::hosted_routes::HostedModelInfo{provider:&model.provider,id:&model.id,api:model.api.as_deref()}) {
+        let provider=match hosted.provider { "chatgpt-subscription"=>SearchProvider::ChatgptSubscription,_=>return None };
+        return Some(NativeProviderMapping{provider,resource:hosted.resource,route_label:hosted.route_label.clone(),endpoint_path:None,hosted:Some(hosted)});
+    }
+    if model.provider=="github-copilot" && model.id.starts_with("claude-") { return Some(NativeProviderMapping{provider:SearchProvider::Anthropic,resource:"messages",route_label:Some("github-copilot".into()),endpoint_path:Some("/v1/messages"),hosted:None}); }
     let openai=["gpt-4o","gpt-4.1","gpt-5"].iter().any(|prefix|model.id.starts_with(prefix)) && !model.id.contains("codex");
-    let mapped=|provider,resource,route_label,endpoint_path|Some(NativeProviderMapping{provider,resource,route_label,endpoint_path});
+    let mapped=|provider,resource,route_label,endpoint_path|Some(NativeProviderMapping{provider,resource,route_label,endpoint_path,hosted:None});
     if model.provider=="openai" && openai { return mapped(SearchProvider::Openai,"responses",None,None); }
     if model.provider!="openai" && matches!(model.api.as_deref(),Some("openai-responses"|"azure-openai-responses")) && openai { return mapped(SearchProvider::Openai,"responses",Some(model.provider.clone()),None); }
     if model.provider=="anthropic" && model.id.starts_with("claude-") { return mapped(SearchProvider::Anthropic,"messages",None,None); }
@@ -86,7 +101,7 @@ pub fn build_endpoint_url(base_url:&str,resource:&str,endpoint_path:Option<&str>
     url.set_fragment(None); url.into()
 }
 pub fn native_route_key(model:&NativeModelInfo)->Option<String> {
-    let mapping=native_mapping(model)?; let endpoint=build_endpoint_url(&model.base_url,mapping.resource,mapping.endpoint_path);
+    let mapping=native_mapping(model)?; let endpoint=mapping_endpoint_url(&mapping,&model.base_url);
     if !is_allowed_provider_base_url(&endpoint) { return None; }
     let mut url=url::Url::parse(&endpoint).ok()?; let host=url.host_str()?.strip_suffix('.').unwrap_or(url.host_str()?).to_owned(); url.set_host(Some(&host)).ok()?;
     Some(format!("{}|{url}",mapping.provider.as_str()))
@@ -207,6 +222,13 @@ mod tests {
     #[test] fn discovered_ids_use_first_sixteen_sha256_hex_characters() { assert_eq!(discovered_native_entry_id(SearchProvider::Openai,"openai|https://api.example.test/v1/responses"),"native-openai-9c901901d1756287"); }
     fn model(provider:&str,id:&str)->NativeModelInfo { NativeModelInfo{provider:provider.into(),id:id.into(),base_url:"https://api.example.test/v1/".into(),api:None} }
     #[test] fn openrouter_maps_effective_provider() { assert_eq!(native_mapping(&model("openrouter","anthropic/claude-sonnet-4")).unwrap().provider,SearchProvider::Anthropic); assert!(native_mapping(&model("openrouter","openrouter/x")).is_none()); }
+    #[test] fn codex_responses_route_maps_to_the_subscription_endpoint() {
+        let mut model=model("chatgpt-subscription","gpt-5.5"); model.api=Some("openai-codex-responses".into()); model.base_url="https://chatgpt.com/backend-api".into();
+        let mapping=native_mapping(&model).unwrap(); assert_eq!(mapping.provider,SearchProvider::ChatgptSubscription); assert_eq!(mapping.route_label,None);
+        assert_eq!(native_route_key(&model).unwrap(),"chatgpt-subscription|https://chatgpt.com/backend-api/codex/responses");
+        model.provider="proxy".into(); assert_eq!(native_mapping(&model).unwrap().route_label.as_deref(),Some("proxy"));
+        model.id="gpt-5.3-codex-spark".into(); assert!(native_mapping(&model).is_none());
+    }
     #[test] fn codex_model_is_not_discovered() { assert!(native_mapping(&model("openai","gpt-5-codex")).is_none()); assert!(native_mapping(&model("openai","gpt-5.5")).is_some()); }
     #[test] fn endpoints_preserve_query_and_drop_fragment() { assert_eq!(build_endpoint_url("https://example.test/v2/?a=1#fragment","responses",None),"https://example.test/v2/responses?a=1"); assert_eq!(build_endpoint_url("https://example.test/foo","messages",Some("/anthropic/v1/messages")),"https://example.test/anthropic/v1/messages"); }
     #[test] fn route_key_normalizes_terminal_dot_and_rejects_private_host() { let mut model=model("openai","gpt-5"); model.base_url="https://api.example.test./v1".into(); assert_eq!(native_route_key(&model).unwrap(),"openai|https://api.example.test/v1/responses"); model.base_url="https://localhost/v1".into(); assert!(native_route_key(&model).is_none()); }

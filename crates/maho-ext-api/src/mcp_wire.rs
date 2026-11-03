@@ -25,7 +25,7 @@ pub struct McpWireResourceTemplate {pub name:String,pub uri_template:String,#[se
 pub enum McpWireServerStatus {Connection(ServerConnectionState),Config(McpServerState)}
 #[derive(Debug,Clone,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct McpWireStatusServer {pub name:String,pub server_info:Option<McpWireServerInfo>,pub tools:Vec<McpWireTool>,pub resources:Vec<McpWireResource>,pub resource_templates:Vec<McpWireResourceTemplate>,pub auth_status:McpWireAuthStatus,#[serde(skip_serializing_if="Option::is_none")] pub status:Option<McpWireServerStatus>}
+pub struct McpWireStatusServer {pub name:String,pub server_info:Option<McpWireServerInfo>,#[serde(default,skip_serializing_if="Option::is_none")] pub last_error:Option<String>,pub tools:Vec<McpWireTool>,pub resources:Vec<McpWireResource>,pub resource_templates:Vec<McpWireResourceTemplate>,pub auth_status:McpWireAuthStatus,#[serde(skip_serializing_if="Option::is_none")] pub status:Option<McpWireServerStatus>}
 #[derive(Debug,Clone,Default,PartialEq,Serialize,Deserialize)]
 pub struct McpWireStatusSnapshot {pub servers:Vec<McpWireStatusServer>}
 

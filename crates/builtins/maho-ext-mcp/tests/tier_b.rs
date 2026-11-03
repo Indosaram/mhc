@@ -39,3 +39,10 @@ async fn failed_stub_promotion_does_not_execute_full_tool() {
     let result=(stub.execute)(ToolCall {id:"call",params:json!({}),signal:AbortSignal::default(),on_update:None,context:None}).await;
     assert!(result.is_err());assert_eq!(count.load(Ordering::SeqCst),0);
 }
+
+#[test]
+fn stub_render_call_marks_the_tool_deferred_without_a_result_renderer() {
+    use crate::support::{padded,render_call_lines,render_result_lines};
+    assert_eq!(render_call_lines(mcp_stub_renderers("mcp_fx_tool"),json!({"value":"x"}),40).unwrap(),vec![padded("\x1b[38;2;4;5;6mmcp_fx_tool (deferred stub)\x1b[39m","mcp_fx_tool (deferred stub)",40)]);
+    assert!(render_result_lines(mcp_stub_renderers("mcp_fx_tool"),&maho_ext_api::AgentToolResult::text("x"),false,40).is_none());
+}

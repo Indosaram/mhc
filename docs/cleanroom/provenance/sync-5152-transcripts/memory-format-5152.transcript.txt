@@ -1,0 +1,60 @@
+st_01a18d33 [completed] transcript via event-log:
+assistant: I read this as a change ask - implement the spec delta in crates/maho-memory with tests, then commit. I'll stop when the commit exists and tests pass.
+tool: bash
+tool: read
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: read
+tool: read
+tool: bash
+assistant: Now I'll edit recall.rs to add a validity-check clock (needed to test "recall at 2031-03-13T23:59:59.999Z" deterministically).
+tool: bash
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: **Ask:** implement the v5.1.52 memory-format delta in `crates/maho-memory` as clean-room work, with a test for each given/when/then case, and commit it. **For you:** it's committed as `061c73e` with the requested message. Per your correction I didn't run cargo, so the code has not been compiled and the new tests have not been run. I ran `rustfmt` only on the two changed source files. **Now:** done. **Next:** run `cargo test -p maho-memory` on the final merged tree.
+
+**What changed**
+- **`src/legacy.rs`:** `parse_expires` reads an `expires` value into a UTC instant in epoch milliseconds, following the 1.1 rules. `expiry_of` reports one of three states: no `expires` key, a readable value, or an unusable one. The importer now:
+  - sets `valid_until` on each block of a file with a readable expiry, in the store's own time format;
+  - adds `"expires": <value as written>` to each block's `metadata_json` and keeps `expires` in the preserved frontmatter;
+  - adds one warning naming the `expires` value when it can't be read, and still imports every block without an expiry;
+  - counts files in a new report field, `expired_on_import`. It appears in the JSON output and in the text summary.
+  - A new `import_at(store, options, now_millis)` takes the import time as an argument; `import` calls it with the current time. Row ids are unchanged, so a re-import after editing only `expires` skips the rows and leaves their `valid_until` alone.
+- **`src/recall.rs`:** a new `RecallOptions::valid_at: Option<String>` sets the instant that `valid_until` is checked against. It defaults to the current time, so existing behaviour is the same. I added it so the tests can recall at exact moments like `2031-03-13T23:59:59.999Z`.
+- **`PROVENANCE.md`:** appended a section for unit `memory-format-5152`, method C, spec commit `80074bfa`.
+
+**Tests added (unrun), all in `src/legacy.rs`:**
+1. `expires_date_is_midnight_utc`
+2. `expires_offset_is_normalised_to_utc`
+3. `expires_quoted_fraction_is_truncated_to_millis` (also covers double quotes with spaces and a `+HH:MM` offset)
+4. `unreadable_expires_values_mean_no_expiry` (all seven spec values, plus edge cases such as hour 24, second 60, offset +24:00 or :60, an empty fraction, a 10-digit fraction and a space separator)
+5. `free_text_expires_imports_blocks_with_one_warning`
+6. `expiring_file_is_recalled_until_the_exclusive_bound` (recalled at …23:59:59.999Z, not at 00:00:00.000Z; a re-import after an `expires` edit only adds to `skipped_existing`)
+7. `file_expired_at_import_is_kept_but_not_recalled` (`expired_on_import` is 1 for three blocks, and the field shows in JSON and text)
+8. `already_expired_rows_leave_active_counts_and_dry_run_counts_them`
+9. `tree_without_expires_reports_zero_expired`
+
+**Check:** `rg -n "ultrawork|ulw|boulder|Sisyphus|Kibitzer" crates/maho-memory` finds nothing. The commit touches only `crates/maho-memory/{PROVENANCE.md, src/legacy.rs, src/recall.rs}`.
+
+**Spec ambiguities and what I chose**
+- **Empty `expires:` and lists:** YAML reads these as null or a list. Both count as unreadable, so each adds the one warning from 1.2, the same as free text.
+- **"Already expired" uses `<=`:** a file counts when its expiry is at or before the import time, which matches the exclusive bound in 1.3.
+- **Files with no blocks:** a file is counted in `expired_on_import` only if it has at least one block, i.e. would contribute rows. It's still counted even when all its blocks are skipped as already present.
+- **Offsets:** I read the offset hour/minute ranges strictly as written, and bare `+HHMM` without the colon is rejected. Fractions are allowed only after seconds.
+- **`metadata_json.expires`:** this holds the parsed string scalar without its quotes and is added only for readable values. The raw value stays in the preserved `frontmatter` either way.
+- **`--dry-run`:** `expired_on_import` is judged against the current time, as the spec says, and nothing is written.

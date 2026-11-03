@@ -112,6 +112,24 @@ impl CredentialStore for AuthStorageCredentialStore {
         let Some(raw) = self.raw(provider_id) else {
             return Ok(None);
         };
+        // A configuration reference key resolves against the auth.json that declares it (senpi#3858).
+        if raw.get("key").is_some_and(serde_json::Value::is_object)
+            || raw
+                .get("accounts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|accounts| accounts.iter().any(|account| account.get("key").is_some_and(serde_json::Value::is_object)))
+        {
+            let auth_path = self.auth_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+            let mut resolved = crate::auth_credential_values::resolve_stored_credential(raw, provider_id, auth_path.as_deref())
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            // Pooled reference keys resolve only through `read_slot`; the flat read never carries them.
+            if let Some(accounts) = resolved.get_mut("accounts").and_then(serde_json::Value::as_array_mut) {
+                accounts.retain(|account| !account.get("key").is_some_and(serde_json::Value::is_object));
+            }
+            check_abort(&options)?;
+            return Self::decode(resolved).map(Some);
+        }
         let credential = Self::decode(raw)?;
         check_abort(&options)?;
         Ok(Some(match credential {
@@ -129,6 +147,39 @@ impl CredentialStore for AuthStorageCredentialStore {
             }
             other => other,
         }))
+    }
+
+    fn has_read_slot(&self) -> bool {
+        true
+    }
+
+    /// senpi `AuthStorage.readSlot`: a runtime key projects as the slot; otherwise only the selected slot's
+    /// reference resolves (senpi#3858).
+    async fn read_slot(
+        &self,
+        provider_id: &str,
+        slot_name: &str,
+        options: Option<AuthOperationOptions>,
+    ) -> anyhow::Result<Option<Credential>> {
+        check_abort(&options)?;
+        if let Some(key) = self.credentials.runtime_api_key(provider_id) {
+            let flat = PooledCredential::from(Credential::ApiKey(ApiKeyCredential {
+                key: Some(key),
+                env: None,
+                ..Default::default()
+            }));
+            return Ok(project_slot(Some(&flat), slot_name));
+        }
+        let raw = self.raw(provider_id);
+        check_abort(&options)?;
+        let auth_path = self.auth_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+        let flat_path = auth_path.clone();
+        let provider = provider_id.to_owned();
+        crate::auth_credential_values::resolve_stored_slot(raw, provider_id, slot_name, auth_path.as_deref(), |flat| async move {
+            crate::auth_credential_values::resolve_stored_credential(flat, &provider, flat_path.as_deref()).await
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!(error))
     }
 
     async fn list(
@@ -281,6 +332,11 @@ fn compose_provider_auth(
 }
 
 impl RuntimeAuth {
+    /// senpi `StoredProviderEnvReader` (senpi#4324): ambient auth reads another provider's stored api-key `env`
+    /// (routing metadata such as `GOOGLE_CLOUD_PROJECT`, never keys) through the auth context.
+    fn auth_context(&self) -> maho_ai::auth::context::StoredEnvAuthContext {
+        maho_ai::auth::context::StoredEnvAuthContext::new(Arc::new(DefaultAuthContext), self.store.clone())
+    }
     fn provider_auth(&self, provider: &dyn Provider) -> ProviderAuth {
         compose_provider_auth(&self.config, &self.extensions, provider)
     }
@@ -339,7 +395,7 @@ impl ModelsAuth for RuntimeAuth {
                 provider.id(),
                 &provider_auth,
                 &self.store,
-                &DefaultAuthContext,
+                &self.auth_context(),
                 Some(overrides),
                 &signal,
             )
@@ -393,7 +449,7 @@ impl ModelsAuth for RuntimeAuth {
                 id,
                 &provider_auth,
                 &self.store,
-                &DefaultAuthContext,
+                &self.auth_context(),
                 stored.as_ref(),
                 signal,
             )
@@ -444,7 +500,7 @@ impl ModelsAuth for RuntimeAuth {
                     return Ok(None);
                 };
                 return oauth
-                    .check(&DefaultAuthContext, Some(credential), signal)
+                    .check(&self.auth_context(), Some(credential), signal)
                     .await
                     .map_err(|error| check_error("OAuth", error));
             }
@@ -452,14 +508,14 @@ impl ModelsAuth for RuntimeAuth {
                 let stored = credential.as_ref().and_then(Credential::as_api_key);
                 if api_key.has_check() {
                     if let Some(check) = api_key
-                        .check(&DefaultAuthContext, stored, signal)
+                        .check(&self.auth_context(), stored, signal)
                         .await
                         .map_err(|error| check_error("API key", error))?
                     {
                         return Ok(Some(check));
                     }
                 } else if let Some(result) = api_key
-                    .resolve(&DefaultAuthContext, stored, signal)
+                    .resolve(&self.auth_context(), stored, signal)
                     .await
                     .map_err(|error| check_error("API key", error))?
                 {
@@ -472,7 +528,7 @@ impl ModelsAuth for RuntimeAuth {
             }
             match &provider_auth.oauth {
                 Some(oauth) => oauth
-                    .check(&DefaultAuthContext, None, signal)
+                    .check(&self.auth_context(), None, signal)
                     .await
                     .map_err(|error| check_error("OAuth", error)),
                 None => Ok(None),
@@ -553,6 +609,10 @@ pub struct ModelRuntime {
     outer_slot_state_retired: Arc<tokio::sync::Mutex<HashSet<String>>>,
     model_network_enabled: bool,
     model_refresh_timeout_ms: u64,
+    /// senpi `servedCredentials` (senpi#2491): marks an auth failure on a credential that just served.
+    served_credentials: Arc<crate::served_credentials::ServedCredentials>,
+    /// The extension behind each registration that named one (senpi#4328).
+    provider_extension_paths: Arc<RwLock<HashMap<String, String>>>,
 }
 
 /// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
@@ -691,6 +751,8 @@ impl ModelRuntime {
             outer_slot_state_retired: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             model_network_enabled,
             model_refresh_timeout_ms,
+            served_credentials: Default::default(),
+            provider_extension_paths: Default::default(),
             availability: Arc::new(RwLock::new(AvailabilityState::default())),
         };
         runtime.rebuild_providers();
@@ -1744,6 +1806,33 @@ impl ModelRuntime {
         }
         Ok(())
     }
+    /// senpi `getProviderOrigin` (senpi#4328).
+    pub fn get_provider_origin(&self, provider_id: &str) -> Option<crate::provider_origin::ProviderOrigin> {
+        let id = normalize_provider_id(provider_id);
+        let paths = self.provider_extension_paths.read().unwrap_or_else(|p| p.into_inner());
+        let has_models_json = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(&id).is_some();
+        let models_path = self.models_path.as_ref().map(|path| path.to_string_lossy().into_owned());
+        crate::provider_origin::provider_origin_of(crate::provider_origin::ProviderOriginFacts {
+            builtin: self.builtins.contains_key(&id),
+            native_extension: self.native.contains_key(&id),
+            extension: self.extensions.read().unwrap_or_else(|p| p.into_inner()).contains_key(&id),
+            extension_path: paths.get(&id).map(String::as_str),
+            models_json_path: if has_models_json { models_path.as_deref() } else { None },
+        })
+    }
+    /// senpi `noteExtensionPath`: `ProviderRegistrationOptions.extensionPath` of the latest registration.
+    pub fn note_extension_path(&self, provider_id: &str, extension_path: Option<&str>) {
+        let id = normalize_provider_id(provider_id);
+        let mut paths = self.provider_extension_paths.write().unwrap_or_else(|p| p.into_inner());
+        match extension_path {
+            Some(path) => {
+                paths.insert(id, path.to_owned());
+            }
+            None => {
+                paths.remove(&id);
+            }
+        }
+    }
     pub fn register_native_provider(&mut self, provider: Arc<dyn Provider>) {
         let id = normalize_provider_id(provider.id());
         self.native.insert(id.clone(), provider);
@@ -1754,6 +1843,10 @@ impl ModelRuntime {
     pub fn unregister_provider(&mut self, id: &str) {
         let id = normalize_provider_id(id);
         self.native.shift_remove(&id);
+        self.provider_extension_paths
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
         self.extensions
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1955,6 +2048,12 @@ impl ModelRuntime {
                 ));
             }
             let signal = request.signal.clone();
+            // senpi `attemptWithTokenRecovery(model, options, undefined, ...)`: `limitAccountOf(undefined)`.
+            let request = crate::subscription_limits::limit_store::with_limit_capture(
+                request,
+                &model.provider,
+                &crate::subscription_limits::limit_store::limit_account_of(None, None),
+            );
             semaphores
                 .bracket(&model.provider, signal.as_ref(), || {
                     call(CallTarget::Models(models.clone()), &model, request)
@@ -1983,6 +2082,17 @@ impl ModelRuntime {
         stream.end(Some(error));
         Some(stream)
     }
+    /// senpi `RequestCredential {provider, baseUrl, apiKey}` of one provider attempt (senpi#2491).
+    fn request_credential(
+        model: &Model,
+        request: &maho_ai::types::ProviderRequestOptions,
+    ) -> crate::served_credentials::OwnedRequestCredential {
+        crate::served_credentials::OwnedRequestCredential {
+            provider: model.provider.clone(),
+            base_url: Some(model.base_url.clone()),
+            api_key: request.api_key.clone(),
+        }
+    }
     pub fn stream(
         &self,
         model: &Model,
@@ -2001,6 +2111,7 @@ impl ModelRuntime {
         let semaphores = self.provider_semaphores.clone();
         let rotation = self.could_rotate_credentials(model, &options.request);
         let runtime = self.clone();
+        let served = self.served_credentials.clone();
         let inner = Self::lazy_request(model, async move {
             runtime.retire_outer_slot_state(&original.provider).await?;
             Self::apply_configured_headers(
@@ -2017,15 +2128,17 @@ impl ModelRuntime {
                       model: &Model,
                       request: maho_ai::types::ProviderRequestOptions| {
                     let mut options = options.clone();
+                    let credential = Self::request_credential(model, &request);
                     options.request = request;
-                    match target {
+                    let stream = match target {
                         CallTarget::Provider(provider) => {
                             provider.stream(model, &context, Some(options))
                         }
                         CallTarget::Models(models) => {
                             models.stream(model, &context, Some(options), Default::default())
                         }
-                    }
+                    };
+                    crate::served_credentials::observe_stream(served.clone(), stream, credential)
                 },
             );
             Self::rotating_stream(
@@ -2075,6 +2188,7 @@ impl ModelRuntime {
         let semaphores = self.provider_semaphores.clone();
         let rotation = self.could_rotate_credentials(model, &options.stream.request);
         let runtime = self.clone();
+        let served = self.served_credentials.clone();
         let inner = Self::lazy_request(model, async move {
             runtime.retire_outer_slot_state(&original.provider).await?;
             Self::apply_configured_headers(
@@ -2092,15 +2206,17 @@ impl ModelRuntime {
                       request: maho_ai::types::ProviderRequestOptions| {
                     let transforms = transforms.clone();
                     let mut options = options.clone();
+                    let credential = Self::request_credential(model, &request);
                     options.stream.request = request;
-                    match target {
+                    let stream = match target {
                         CallTarget::Provider(provider) => {
                             provider.stream_simple(model, &context, Some(options))
                         }
                         CallTarget::Models(models) => {
                             models.stream_simple(model, &context, Some(options), transforms)
                         }
-                    }
+                    };
+                    crate::served_credentials::observe_stream(served.clone(), stream, credential)
                 },
             );
             Self::rotating_stream(
@@ -2388,9 +2504,19 @@ async fn prepare_slot_request(
     if let Some(base_url) = resolution.auth.base_url {
         request_model.base_url = base_url;
     }
+    // senpi `attemptWithTokenRecovery`: the slot's account names the windows its response reports.
+    let account = crate::subscription_limits::limit_store::limit_account_of(
+        overrides.slot_name.as_deref(),
+        overrides.api_key.as_deref(),
+    );
     request.api_key = overrides.api_key.or(resolution.auth.api_key);
     request.headers = headers;
     request.env = env;
+    let request = crate::subscription_limits::limit_store::with_limit_capture(
+        request,
+        &request_model.provider,
+        &account,
+    );
     Ok((provider, request_model, request))
 }
 
@@ -2676,6 +2802,59 @@ mod tests {
         .expect("result");
         assert_eq!(message.stop_reason, maho_ai::types::StopReason::ToolUse);
         assert!(message.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(call) if call.name == "get_weather")));
+    }
+    /// senpi#3370: a real model-runtime request records what its response headers report, under the
+    /// provider and the `default` account (no rotation slot).
+    #[tokio::test]
+    async fn runtime_stream_records_the_limit_windows_its_response_reports() {
+        use maho_ai::providers::faux::{
+            FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message,
+            faux_provider,
+        };
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{}}"#);
+        let faux = faux_provider(RegisterFauxProviderOptions {
+            provider: Some("faux-limit-capture".into()),
+            response_headers: Some(std::collections::BTreeMap::from([
+                ("x-codex-primary-used-percent".to_owned(), "99".to_owned()),
+                ("x-codex-primary-window-minutes".to_owned(), "10080".to_owned()),
+                ("x-codex-primary-reset-at".to_owned(), "1792555751".to_owned()),
+            ])),
+            ..Default::default()
+        })
+        .expect("faux provider");
+        faux.core.set_responses(vec![
+            faux_assistant_message("ok", FauxAssistantMessageOptions::default()).into(),
+        ]);
+        runtime.register_native_provider(faux.provider.clone());
+        let model = runtime
+            .get_model("faux-limit-capture", "faux-1")
+            .expect("model");
+        let context = Context {
+            active_tool_names: None,
+            system_prompt: None,
+            messages: Vec::new(),
+            tools: None,
+        };
+        let mut options = StreamOptions::default();
+        options.request.api_key = Some("fixture-key".into());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.stream(&model, &context, Some(options)).result(),
+        )
+        .await
+        .expect("bounded stream")
+        .expect("result");
+        let recorded = crate::subscription_limits::limit_store::subscription_limits()
+            .snapshot()
+            .into_iter()
+            .find(|limits| limits.provider == "faux-limit-capture")
+            .expect("the response's windows were recorded");
+        assert_eq!(recorded.account, "default");
+        assert_eq!(recorded.windows.len(), 1);
+        assert_eq!(
+            (recorded.windows[0].id.as_str(), recorded.windows[0].used_percent),
+            ("codex:primary", 99.0)
+        );
     }
     #[tokio::test]
     async fn preaborted_configured_stream_preserves_headers_and_stops_setup() {
@@ -3383,6 +3562,89 @@ mod tests {
         let status = runtime.get_provider_auth_status("cloud-fixture");
         assert!(status.configured);
         assert!(status.ambient);
+    }
+
+    /// Ambient auth that needs another provider's stored routing metadata (senpi vertex-model-garden).
+    struct StoredEnvAmbientAuth;
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::ApiKeyAuth for StoredEnvAmbientAuth {
+        fn name(&self) -> &str {
+            "stored-env ambient"
+        }
+        async fn resolve(
+            &self,
+            ctx: &dyn maho_ai::auth::types::AuthContext,
+            _: Option<&ApiKeyCredential>,
+            _: &AbortSignal,
+        ) -> anyhow::Result<Option<maho_ai::auth::types::AuthResult>> {
+            let Some(project) = ctx
+                .stored_provider_env("google-vertex")
+                .await
+                .and_then(|env| env.get("GOOGLE_CLOUD_PROJECT").cloned())
+            else {
+                return Ok(None);
+            };
+            Ok(Some(maho_ai::auth::types::AuthResult {
+                ambient: true,
+                auth: Default::default(),
+                env: Some(maho_ai::types::ProviderEnv::from([
+                    ("GOOGLE_CLOUD_PROJECT".to_owned(), project),
+                    (
+                        "GOOGLE_CLOUD_LOCATION".to_owned(),
+                        "ambient-location".to_owned(),
+                    ),
+                ])),
+                source: Some("adc".into()),
+            }))
+        }
+    }
+
+    /// senpi test/suite/vertex-model-garden-extension.test.ts (senpi#4324): ambient auth reads another
+    /// provider's stored api-key `env` through the runtime's auth context, and the provider's own stored
+    /// env is merged over the ambient-resolved env.
+    #[tokio::test]
+    async fn ambient_auth_reads_stored_provider_env_and_own_stored_env_wins() {
+        let (_dir, mut runtime) = configured_runtime(
+            r#"{"providers":{"garden":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#,
+        );
+        runtime
+            .register_provider(
+                "garden",
+                ProviderConfigInput {
+                    ambient_auth: Some(Arc::new(StoredEnvAmbientAuth)),
+                    ..Default::default()
+                },
+            )
+            .expect("register ambient provider");
+        runtime.credentials.set(
+            "google-vertex",
+            Some(serde_json::json!({"type":"api_key","key":"vertex-key","env":{"GOOGLE_CLOUD_PROJECT":"stored-project"}})),
+        ).expect("seed sibling");
+        let auth = runtime
+            .get_auth("garden")
+            .await
+            .expect("resolve")
+            .expect("ambient auth");
+        let env = auth.env.expect("env");
+        assert_eq!(env["GOOGLE_CLOUD_PROJECT"], "stored-project");
+        assert_eq!(env["GOOGLE_CLOUD_LOCATION"], "ambient-location");
+        assert_eq!(
+            auth.auth.api_key, None,
+            "the sibling's key never crosses providers"
+        );
+        runtime.credentials.set(
+            "garden",
+            Some(serde_json::json!({"type":"api_key","env":{"GOOGLE_CLOUD_LOCATION":"stored-location"}})),
+        ).expect("seed own env");
+        let env = runtime
+            .get_auth("garden")
+            .await
+            .expect("resolve")
+            .expect("ambient auth")
+            .env
+            .expect("env");
+        assert_eq!(env["GOOGLE_CLOUD_LOCATION"], "stored-location");
+        assert_eq!(env["GOOGLE_CLOUD_PROJECT"], "stored-project");
     }
 
     #[async_trait::async_trait]

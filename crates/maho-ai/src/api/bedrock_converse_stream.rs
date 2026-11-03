@@ -148,6 +148,7 @@ fn append_bedrock_failure_diagnostic(output: &mut AssistantMessage, failure: &Be
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         error_cause: None,
         prompt_cache_breakpoint: None,
@@ -1022,7 +1023,7 @@ pub fn stream(
 ) -> AssistantMessageEventStream {
     let resolved_context = crate::types::transcript::resolve_provider_context(context, false);
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();
@@ -1752,12 +1753,38 @@ fn handle_content_block_delta(
     {
         let existing = block.thinking_signature.clone().unwrap_or_default();
         block.thinking_signature = Some(format!("{existing}{signature}"));
+        crate::utils::assistant_capture::push_assistant_progress(
+            sink,
+            crate::utils::assistant_capture::AssistantProgress::metadata(
+                crate::utils::assistant_capture::BlockMetadata {
+                    content_index: index,
+                    thinking_signature_delta: Some(signature.to_owned()),
+                    ..Default::default()
+                },
+            ),
+        );
     }
 
     if let Some(redacted) = reasoning.get("redactedContent").and_then(Value::as_str)
         && !redacted.is_empty()
     {
         if !is_redacted {
+            let had_signature = matches!(
+                output.content.get(index),
+                Some(ContentBlock::Thinking(block))
+                    if block.thinking_signature.as_deref().is_some_and(|signature| !signature.is_empty())
+            );
+            crate::utils::assistant_capture::push_assistant_progress(
+                sink,
+                crate::utils::assistant_capture::AssistantProgress::metadata(
+                    crate::utils::assistant_capture::BlockMetadata {
+                        content_index: index,
+                        redacted: Some(true),
+                        thinking_signature: had_signature.then(String::new),
+                        ..Default::default()
+                    },
+                ),
+            );
             if let Some(ContentBlock::Thinking(block)) = output.content.get_mut(index) {
                 block.redacted = Some(true);
                 block.thinking_signature = Some(String::new());

@@ -533,6 +533,7 @@ fn with_nodes(
         name: record.name.clone(),
         parent_session_id: record.parent_session_id.clone(),
         root_session_id: record.root_session_id.clone(),
+        parent_model: record.parent_model.clone(),
         definition_fingerprint: record.definition_fingerprint.clone(),
         definition: record.definition.clone(),
         status: record.status,
@@ -1947,6 +1948,7 @@ fn start_spec(
         task_summary: persisted.task_summary.clone(),
         parent_session_id: parent_session_id.clone(),
         root_session_id: Some(root_session_id),
+        parent_model: record.parent_model.clone(),
         depth: context.ancestry.map_or(0, |ancestry| ancestry.depth) + 1,
         category,
         subagent_type,
@@ -2139,13 +2141,14 @@ pub enum DagNodeControlErrorCode {
     NodeNotRetryable,
     NodeHasNoTask,
     NodeNotContinuable,
+    NodeUnresponsive,
     RunPausedByUser,
     RunNotUserPaused,
     GuidanceFrozen,
     GuidanceNotFound,
 }
 
-pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 12] = [
+pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 13] = [
     DagNodeControlErrorCode::RunNotFound,
     DagNodeControlErrorCode::RunNotOwned,
     DagNodeControlErrorCode::RunStillActive,
@@ -2154,6 +2157,7 @@ pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 12] = [
     DagNodeControlErrorCode::NodeNotRetryable,
     DagNodeControlErrorCode::NodeHasNoTask,
     DagNodeControlErrorCode::NodeNotContinuable,
+    DagNodeControlErrorCode::NodeUnresponsive,
     DagNodeControlErrorCode::RunPausedByUser,
     DagNodeControlErrorCode::RunNotUserPaused,
     DagNodeControlErrorCode::GuidanceFrozen,
@@ -2171,6 +2175,7 @@ impl DagNodeControlErrorCode {
             Self::NodeNotRetryable => "node_not_retryable",
             Self::NodeHasNoTask => "node_has_no_task",
             Self::NodeNotContinuable => "node_not_continuable",
+            Self::NodeUnresponsive => "node_unresponsive",
             Self::RunPausedByUser => "run_paused_by_user",
             Self::RunNotUserPaused => "run_not_user_paused",
             Self::GuidanceFrozen => "guidance_frozen",

@@ -26,8 +26,6 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 #[path = "api/cloudflare_workers_ai_system_one.rs"]
 pub mod cloudflare_workers_ai_system_one;
-#[path = "api/llama_cpp_classify.rs"]
-pub mod llama_cpp_classify;
 #[path = "api/system_one_shared.rs"]
 pub mod system_one_shared;
 #[path = "api/typesafe_system_one.rs"]
@@ -69,7 +67,6 @@ impl ProviderClassifier for BuiltinClassifier {
                         .base_url;
                     cloudflare_workers_ai_system_one::classify(&resolved, context, options).await
                 }
-                "llama-cpp-classify" => llama_cpp_classify::classify(model, context, options).await,
                 _ => {
                     let mut result = system_one_shared::result(model);
                     system_one_shared::fail(

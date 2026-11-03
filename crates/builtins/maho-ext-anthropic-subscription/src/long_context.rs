@@ -1,7 +1,7 @@
 //! Persisted long-context refusal state (senpi `long-context.ts`).
 use std::{
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex, PoisonError},
+    sync::{Arc, LazyLock, Mutex, PoisonError},
 };
 
 /// How long a refusal holds before the 1M window is tried again.
@@ -10,7 +10,7 @@ pub const STATE_FILE: &str = "anthropic-subscription-long-context.json";
 /// Refusals before version 2 were recorded for native-1M models too (senpi#3801); such a record is dropped on first read.
 pub const STATE_VERSION: u64 = 2;
 
-type Listener = Box<dyn Fn(bool) + Send + Sync>;
+type Listener = Arc<dyn Fn(bool) + Send + Sync>;
 
 pub struct LongContextState {
     path: Option<PathBuf>,
@@ -82,9 +82,100 @@ impl LongContextState {
     }
 }
 
-static STATE: LazyLock<Mutex<LongContextState>> =
-    LazyLock::new(|| Mutex::new(LongContextState::new(None)));
-static LISTENERS: LazyLock<Mutex<Vec<Listener>>> = LazyLock::new(Default::default);
+type Clock = Box<dyn Fn() -> u64 + Send + Sync>;
+
+/// The refusal state, its listeners and the timer that offers the 1M window again (senpi `scheduleExpiry`).
+pub struct LongContext {
+    state: Mutex<LongContextState>,
+    listeners: Mutex<Vec<Listener>>,
+    expiry: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    now: Clock,
+}
+
+impl LongContext {
+    pub fn new(path: Option<PathBuf>, now: impl Fn() -> u64 + Send + Sync + 'static) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(LongContextState::new(path)),
+            listeners: Mutex::default(),
+            expiry: Mutex::default(),
+            now: Box::new(now),
+        })
+    }
+    pub fn available(self: &Arc<Self>) -> bool {
+        let now = (self.now)();
+        let (available, refused_until) = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            (state.available(now), state.refused_until)
+        };
+        // A refusal read from disk (another process recorded it) expires here too.
+        let unscheduled = self
+            .expiry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished);
+        if !available
+            && unscheduled
+            && let Some(until) = refused_until
+        {
+            self.schedule_expiry(until.saturating_sub(now));
+        }
+        available
+    }
+    pub fn mark_refused(self: &Arc<Self>) {
+        let now = (self.now)();
+        let was_available = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .mark_refused(now);
+        self.schedule_expiry(LONG_CONTEXT_REFUSAL_TTL_MS);
+        if was_available {
+            self.notify(false);
+        }
+    }
+    pub fn on_change(&self, listener: impl Fn(bool) + Send + Sync + 'static) {
+        self.listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Arc::new(listener));
+    }
+    /// Offers the 1M window again when the refusal expires (the account may have enabled extra usage). Without a
+    /// runtime nothing is scheduled; the next `available` call inside one schedules it.
+    fn schedule_expiry(self: &Arc<Self>, delay_ms: u64) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let weak = Arc::downgrade(self);
+        let timer = runtime.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            if let Some(long_context) = weak.upgrade() {
+                long_context.notify(true);
+            }
+        });
+        if let Some(previous) = self
+            .expiry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(timer)
+        {
+            previous.abort();
+        }
+    }
+    fn notify(&self, available: bool) {
+        // Listeners run outside the lock: one may register again or read the state.
+        let listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for listener in listeners {
+            listener(available);
+        }
+    }
+}
+
+static LONG_CONTEXT: LazyLock<Arc<LongContext>> = LazyLock::new(|| LongContext::new(None, now_ms));
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -94,33 +185,16 @@ fn now_ms() -> u64 {
 
 /// Whether the subscription lane may request the 1M window.
 pub fn long_context_available() -> bool {
-    STATE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .available(now_ms())
+    LONG_CONTEXT.available()
 }
 
 pub fn mark_long_context_refused() {
-    let was_available = STATE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .mark_refused(now_ms());
-    if was_available {
-        for listener in LISTENERS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-        {
-            listener(false);
-        }
-    }
+    LONG_CONTEXT.mark_refused();
 }
 
+/// Called with `false` when the 1M window is refused and with `true` when that refusal expires.
 pub fn on_long_context_availability_change(listener: impl Fn(bool) + Send + Sync + 'static) {
-    LISTENERS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(Box::new(listener));
+    LONG_CONTEXT.on_change(listener);
 }
 
 #[cfg(test)]
@@ -157,5 +231,56 @@ mod tests {
         let mut state = LongContextState::new(Some(path.clone()));
         assert!(state.available(1));
         assert!(!path.exists());
+    }
+    /// The timer wheel rounds a deadline up to the next millisecond.
+    fn assert_expired_at_ttl(started: tokio::time::Instant) {
+        let ttl = std::time::Duration::from_millis(LONG_CONTEXT_REFUSAL_TTL_MS);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= ttl && elapsed <= ttl + std::time::Duration::from_millis(1),
+            "{elapsed:?}"
+        );
+    }
+    /// Bounds a wait on the change channel so a missing expiry timer fails the test instead of hanging it.
+    async fn next_change(changed: &mut tokio::sync::mpsc::UnboundedReceiver<bool>) -> Option<bool> {
+        let bound = std::time::Duration::from_millis(LONG_CONTEXT_REFUSAL_TTL_MS * 2);
+        tokio::time::timeout(bound, changed.recv())
+            .await
+            .expect("long-context change was not delivered")
+    }
+    #[tokio::test(start_paused = true)]
+    async fn an_expired_refusal_offers_the_long_context_window_again() {
+        let dir = tempfile::tempdir().expect("dir");
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let now = clock.clone();
+        let long_context = LongContext::new(Some(dir.path().join(STATE_FILE)), move || {
+            now.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        let (changes, mut changed) = tokio::sync::mpsc::unbounded_channel();
+        long_context.on_change(move |available| {
+            let _ = changes.send(available);
+        });
+        let started = tokio::time::Instant::now();
+        long_context.mark_refused();
+        assert_eq!(next_change(&mut changed).await, Some(false));
+        assert!(!long_context.available());
+        // Paused time auto-advances to the expiry timer and no further.
+        assert_eq!(next_change(&mut changed).await, Some(true));
+        assert_expired_at_ttl(started);
+        clock.fetch_add(
+            LONG_CONTEXT_REFUSAL_TTL_MS,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        assert!(long_context.available());
+        // A refusal recorded by another process expires in this one too.
+        let reloaded = LongContext::new(Some(dir.path().join(STATE_FILE)), || 1_000);
+        let (changes, mut changed) = tokio::sync::mpsc::unbounded_channel();
+        reloaded.on_change(move |available| {
+            let _ = changes.send(available);
+        });
+        let started = tokio::time::Instant::now();
+        assert!(!reloaded.available());
+        assert_eq!(next_change(&mut changed).await, Some(true));
+        assert_expired_at_ttl(started);
     }
 }

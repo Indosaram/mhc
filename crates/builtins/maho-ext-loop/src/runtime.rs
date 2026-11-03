@@ -58,9 +58,9 @@ impl LoopRuntime {
         let commands=api.get_commands()?;
         let Some(prepared)=self.prepare_tick(tick,file,busy,&commands) else { return Ok(()); };
         api.append_entry(crate::index::LOOP_TICK_ENTRY_TYPE,Some(serde_json::to_value(prepared.entry).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?))?;
-        self.attribution.dispatched(tick);
+        self.attribution.dispatched(tick,busy);
         crate::activation::sync_schedule_wakeup_activation(api,&self.scheduler.state)?;
-        api.send_user_message(maho_ext_api::UserMessageContent::Text(prepared.text),maho_ext_api::SendUserMessageOptions { expand_prompt_templates:true,deliver_as:busy.then_some(maho_ext_api::StreamingBehavior::FollowUp) })?;
+        api.send_user_message(maho_ext_api::UserMessageContent::Text(prepared.text),maho_ext_api::SendUserMessageOptions { expand_prompt_templates:true,deliver_as:busy.then_some(tick.deliver_as) })?;
         self.persist(reference).await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))
     }
     pub fn settled(&mut self,outcome:TickOutcome,now:f64,next_delivery:DeliveryId,wakeup:WakeupId)->Option<crate::attribution::AttributedSettlement> { self.attribution.settle(&mut self.scheduler,outcome,now,next_delivery,wakeup) }

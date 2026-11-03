@@ -44,3 +44,28 @@
   `assets/omo.schema.json` or `.omo/**`, no oh-my-openagent / OmO / lazycodex source or URL, no
   git history of removed paths, and no other machine's copy of this repository.
 - Tests were written new from the spec's numbered acceptance tests (§6); no fixtures were reused.
+
+## Unit task-5152 (omo v5.1.52 delta)
+
+- Method: **C** (clean room). Built from the `## Delta (omo v5.1.52, 2026-10-30)` section of
+  `docs/cleanroom/specs/task.md` (D1-D4, D7, D8; the APPLIES rows of its D6 table) at spec commit
+  `ac9221fa8`; unit `task-5152`.
+- Allowed inputs (and the only ones used): that spec and the deltas of `workflow-dag.md` and
+  `team.md` it routes to, this crate's existing MIT code, and the MIT crates it depends on
+  (`maho-gateway` delivery ids and `session_control_delivery` details, `maho-model-select`
+  `resolve_delegate_model`, `maho-ext-api`). No SUL, OmO or upstream source, checkout, cache or
+  web page was opened.
+- New: `src/credentials.rs` (D2 classifier, D3 remedy line), `src/steering.rs` (D7 transcript
+  admission), `MAHO_TASK_PARENT_SESSION`, `SpawnedBy`/`spawned_by_from` and `Lineage` in
+  `src/settings.rs` (D1), `RunSpec::child_env` in `src/runner.rs` (D1), `FallbackPlan` and
+  `resolve_without` in `src/models.rs` (D4), the D4 reroute and D7 settle logic in
+  `src/manager.rs`, steer ids in `src/control.rs`, and `process_info`/`is_task_child` in
+  `src/record.rs` (D8). Environment variable names and the `spawnedBy` field names are interface
+  facts from the spec.
+- Tests (`tests/delta_5152.rs` and unit tests in the files above) were written from the delta's
+  numbered tests; no fixtures were reused.
+- task-b (spec copied at 0c0e537, task.md Delta D2 "Matching rules (clarified 2026-11-01)" and
+  D4 test 7): an expiry text counts as `rejected` only when the sentence directly after it
+  mentions `/login`; "model/models" is matched as a whole word; the final background delivery
+  happens before waiters are woken. Tests `d2_test_10_*`, `d2_test_11_*` in
+  `src/credentials.rs` and the D4 test 7 assertions in `tests/delta_5152.rs` follow the spec.

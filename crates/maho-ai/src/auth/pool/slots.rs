@@ -689,10 +689,7 @@ pub struct EmptyApiKeyError;
 /// True when an API-key credential names a `key` that is blank, whitespace or empty string.
 pub fn has_blank_key(credential: &Credential) -> bool {
     match credential {
-        Credential::ApiKey(api_key) => api_key
-            .key
-            .as_deref()
-            .is_some_and(|k| k.trim().is_empty()),
+        Credential::ApiKey(api_key) => api_key.key.as_deref().is_some_and(|k| k.trim().is_empty()),
         Credential::OAuth(_) => false,
     }
 }
@@ -711,13 +708,10 @@ pub fn has_blank_pooled_key(credential: &PooledCredential) -> bool {
 /// Drops a blank or whitespace `key` from an API-key credential; used only for providers that declare `keyOptional`.
 pub fn without_blank_key(mut credential: Credential) -> Credential {
     if let Credential::ApiKey(ref mut api_key) = credential
-        && api_key
-            .key
-            .as_deref()
-            .is_some_and(|k| k.trim().is_empty())
-        {
-            api_key.key = None;
-        }
+        && api_key.key.as_deref().is_some_and(|k| k.trim().is_empty())
+    {
+        api_key.key = None;
+    }
     credential
 }
 
@@ -2250,6 +2244,146 @@ mod pool_resolution_tests {
             .expect("default slot");
         assert_eq!(default.access, Some("refreshed-r1".into()));
         assert_eq!(default.refresh, Some("r1-next".into()));
+    }
+
+    // credential-pool-resolve-slot.test.ts fixtures.
+    fn pooled_oauth_entry() -> PooledCredential {
+        PooledCredential {
+            credential_type: PooledCredentialType::OAuth,
+            access: Some("default-access".into()),
+            refresh: Some("r-default".into()),
+            expires: Some(FUTURE),
+            accounts: Some(vec![
+                login_slot("default", "default-access", "r-default", FUTURE),
+                login_slot("alt", "alt-access", "r-alt", 1.0),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    struct RecordingOAuth(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl OAuthAuth for RecordingOAuth {
+        fn name(&self) -> &str {
+            "Slot OAuth"
+        }
+        async fn login(
+            &self,
+            _interaction: &ProviderAuthInteraction,
+        ) -> anyhow::Result<OAuthCredential> {
+            unimplemented!()
+        }
+        async fn refresh(
+            &self,
+            credential: &OAuthCredential,
+            _signal: &AbortSignal,
+        ) -> anyhow::Result<OAuthCredential> {
+            self.0.lock().unwrap().push(credential.refresh.clone());
+            Ok(OAuthCredential::new(
+                format!("refreshed-{}", credential.refresh),
+                format!("{}-next", credential.refresh),
+                FUTURE,
+            ))
+        }
+        async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
+            Ok(ModelAuth {
+                api_key: Some(credential.access.clone()),
+                ..Default::default()
+            })
+        }
+    }
+
+    async fn stored_pool_of(
+        store: &Arc<dyn CredentialStore>,
+        provider_id: &str,
+    ) -> PooledCredential {
+        store
+            .read(provider_id, None)
+            .await
+            .unwrap()
+            .expect("stored credential")
+            .into()
+    }
+
+    fn slot_tokens(
+        pooled: &PooledCredential,
+        name: &str,
+    ) -> (Option<String>, Option<String>, Option<f64>) {
+        let slot = list_slots(Some(pooled))
+            .into_iter()
+            .find(|slot| slot.name == name)
+            .expect("slot");
+        (slot.access, slot.refresh, slot.expires)
+    }
+
+    #[tokio::test]
+    async fn slot_name_refreshes_only_the_named_oauth_slot_and_leaves_siblings_byte_identical() {
+        let store = seeded_store("slotoauth", &pooled_oauth_entry()).await;
+        let oauth = Arc::new(RecordingOAuth(std::sync::Mutex::new(Vec::new())));
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(oauth.clone()),
+        };
+
+        let resolved = resolve("slotoauth", &provider_auth, &store, Some("alt")).await;
+
+        assert_eq!(*oauth.0.lock().unwrap(), vec!["r-alt".to_string()]);
+        assert_eq!(
+            resolved.expect("resolved").auth.api_key.as_deref(),
+            Some("refreshed-r-alt")
+        );
+        let stored = stored_pool_of(&store, "slotoauth").await;
+        assert_eq!(
+            slot_tokens(&stored, "alt"),
+            (
+                Some("refreshed-r-alt".into()),
+                Some("r-alt-next".into()),
+                Some(FUTURE)
+            )
+        );
+        assert_eq!(
+            slot_tokens(&stored, "default"),
+            (
+                Some("default-access".into()),
+                Some("r-default".into()),
+                Some(FUTURE)
+            )
+        );
+        assert_eq!(stored.access.as_deref(), Some("default-access"));
+        assert_eq!(stored.refresh.as_deref(), Some("r-default"));
+        assert_eq!(stored.expires, Some(FUTURE));
+    }
+
+    #[tokio::test]
+    async fn refreshing_the_flat_mirrored_slot_by_name_also_rotates_the_downgrade_projection() {
+        let mut entry = pooled_oauth_entry();
+        entry.expires = Some(1.0);
+        for slot in entry.accounts.as_mut().unwrap() {
+            if slot.name == "default" {
+                slot.expires = Some(1.0);
+            }
+        }
+        let store = seeded_store("slotoauth", &entry).await;
+        let provider_auth = ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(RecordingOAuth(std::sync::Mutex::new(Vec::new())))),
+        };
+
+        let resolved = resolve("slotoauth", &provider_auth, &store, Some("default")).await;
+
+        assert_eq!(
+            resolved.expect("resolved").auth.api_key.as_deref(),
+            Some("refreshed-r-default")
+        );
+        let stored = stored_pool_of(&store, "slotoauth").await;
+        assert_eq!(stored.access.as_deref(), Some("refreshed-r-default"));
+        assert_eq!(stored.refresh.as_deref(), Some("r-default-next"));
+        assert_eq!(stored.expires, Some(FUTURE));
+        assert_eq!(
+            slot_tokens(&stored, "alt"),
+            (Some("alt-access".into()), Some("r-alt".into()), Some(1.0))
+        );
     }
 
     #[test]

@@ -54,6 +54,7 @@ fn register(path: &std::path::Path) -> (ExtensionApi, Arc<Actions>) {
 }
 async fn start_with(api: &ExtensionApi, reason: SessionReason, context: &ExtensionContext) {
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -166,6 +167,7 @@ async fn worker_startup_does_not_claim_or_inject() -> Result<(), Box<dyn std::er
     let mut api = register(root.path()).0;
     api.profile.session_kind = SessionKind::Worker;
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,

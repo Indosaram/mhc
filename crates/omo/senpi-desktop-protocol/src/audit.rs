@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::engine_schema_generated::ErrorCode;
+use crate::wire::AuditCode;
 
 /// Outcome of one audited desktop action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -31,13 +32,14 @@ pub struct AuditRecord {
     pub timestamp: String,
     pub session_id: String,
     pub run_id: String,
+    /// An `ENGINE_METHODS` name, or `"unknown"` for one this host does not know.
     pub action: String,
     pub target: String,
     /// `background` or `foreground`.
     pub delivery: String,
     pub frame_id: Option<String>,
-    /// `None` when the action succeeded.
-    pub code: Option<ErrorCode>,
+    /// `None` when the action succeeded; `"unknown"` for a code this host does not know.
+    pub code: Option<AuditCode>,
     pub status: AuditStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_error: Option<AuditPrimaryError>,

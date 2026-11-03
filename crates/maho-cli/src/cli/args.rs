@@ -39,6 +39,8 @@ pub struct Args {
     pub no_session: bool,
     pub session: Option<String>,
     pub session_id: Option<String>,
+    /// Fresh-session ancestry (`--spawned-by <json>`).
+    pub spawned_by: Option<maho_core::session_lifecycle_types::SpawnedBy>,
     pub fork: Option<String>,
     pub rebind: Option<String>,
     pub session_dir: Option<String>,
@@ -68,6 +70,9 @@ pub struct Args {
     pub project_trust_override: Option<bool>,
     pub grok_neo: bool,
     pub multi_session: bool,
+    /// `--mcp-presenter-fd 4`: the presenter bootstrap descriptor handed to the shared host.
+    pub presenter_bootstrap_fd: Option<u32>,
+    pub mcp_presenter_enforcement: bool,
     pub auto_title_sessions: bool,
     pub listen: Option<String>,
     pub session_runtime: Option<SessionRuntime>,
@@ -92,6 +97,18 @@ pub fn resolve_session_runtime(args: &Args) -> SessionRuntime {
         }
     })
 }
+/// senpi v2026.10.27-2 `createSessionManager`: ancestry applies to fresh sessions only, so a
+/// `--spawned-by` next to a resume, continue, fork or rebind is ignored with this warning.
+pub fn spawned_by_ignored_warning(args: &Args) -> Option<&'static str> {
+    (args.spawned_by.is_some()
+        && (args.session.is_some()
+            || args.resume
+            || args.continue_session
+            || args.fork.is_some()
+            || args.rebind.is_some()))
+    .then_some("--spawned-by is ignored when resuming or forking a session.")
+}
+
 pub fn is_valid_thinking_level(value: &str) -> bool {
     matches!(
         value,
@@ -148,6 +165,31 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
             "--offline" => result.offline = true,
             "--grok-neo" if grok_neo_enabled => result.grok_neo = true,
             "--multi-session" => result.multi_session = true,
+            "--mcp-presenter-fd" => {
+                if next == Some("4") {
+                    result.presenter_bootstrap_fd = Some(4);
+                } else {
+                    result.diagnostic(true, "Invalid presenter bootstrap descriptor");
+                }
+                i += 1;
+            }
+            "--mcp-presenter-enforcement" => result.mcp_presenter_enforcement = true,
+            "--spawned-by" => match next {
+                Some(value) if !value.starts_with('-') => {
+                    i += 1;
+                    match serde_json::from_str::<serde_json::Value>(value) {
+                        Ok(ancestry) => match maho_core::session_spawned_by::read_spawned_by(&ancestry) {
+                            Some(spawned_by) => result.spawned_by = Some(spawned_by),
+                            None => result.diagnostic(
+                                true,
+                                "--spawned-by requires non-empty parentSessionId, rootSessionId, and taskId strings",
+                            ),
+                        },
+                        Err(_) => result.diagnostic(true, "--spawned-by must be valid JSON"),
+                    }
+                }
+                _ => result.diagnostic(true, "--spawned-by requires a JSON object"),
+            },
             "--auto-title-sessions" => result.auto_title_sessions = true,
             "--print-prompt-sizes" => result.print_prompt_sizes = true,
             "--list-tips" => result.list_tips = true,

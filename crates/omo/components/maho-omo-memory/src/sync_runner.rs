@@ -36,6 +36,11 @@ pub const SYNC_CLOSE_WAIT_EXCEEDED: &str = "sync-close-wait-exceeded";
 /// The status code of a repo whose sync engine could not be loaded.
 pub const SYNC_UNAVAILABLE: &str = "sync-unavailable";
 const CLOSE_WAIT_MS: u64 = 10_000;
+// Deferred passes join any native read still parked behind the dialog; retries back off to five minutes.
+const DEFERRED_RETRY_MS: u64 = 15_000;
+const DEFERRED_RETRY_MAX_MS: u64 = 300_000;
+const DEFERRED_RETRY_MIN_MS: u64 = 1_000;
+const DEFERRED_STILL_WAITING_MS: u64 = 900_000;
 
 pub type SyncFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Maps a sync principal to the name the account's device list gives it.
@@ -109,6 +114,8 @@ pub struct SyncRunnerOptions {
     pub open: Option<SyncOpen>,
     /// How long an acquire waits for the repo's previous engine to close; default 10 s.
     pub close_wait: Option<Duration>,
+    /// Initial retry delay for a deferred credential read; default 15 s, doubling to a five-minute cap.
+    pub deferred_retry: Option<Duration>,
 }
 
 /// Watches `<git_dir>/logs/HEAD`; every change calls `on_change`. Returns the unwatch.
@@ -150,6 +157,8 @@ enum Outcome {
     Running,
     Idle,
     Unavailable(String),
+    /// The credential store is waiting for its approval dialog; the pass is retried later.
+    Deferred(String),
 }
 
 enum Cmd {
@@ -218,6 +227,9 @@ async fn start_engine(
             return Outcome::Idle;
         }
         Err(error) => {
+            if let Some(message) = crate::sync_session_deferred::is_sync_session_deferred(&error) {
+                return Outcome::Deferred(message.to_owned());
+            }
             cfg.logger.error(&error, &identity, "sync-session-failed");
             return Outcome::Idle;
         }
@@ -413,6 +425,8 @@ fn spawn_worker(cfg: WorkerConfig) -> std::io::Result<mpsc::UnboundedSender<Cmd>
 
 struct Held {
     users: usize,
+    /// Which launch this is: a deferred retry replaces the entry only while it is still this one.
+    launch: u64,
     ready: watch::Receiver<Option<Outcome>>,
 }
 
@@ -424,6 +438,8 @@ struct Shared {
     closing: Mutex<HashMap<PathBuf, (u64, watch::Receiver<bool>)>>,
     worker: Mutex<Option<mpsc::UnboundedSender<Cmd>>>,
     next_close: AtomicU64,
+    next_launch: AtomicU64,
+    deferred_retry_ms: u64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -437,7 +453,89 @@ async fn ready_outcome(mut ready: watch::Receiver<Option<Outcome>>) -> Outcome {
     }
 }
 
+/// One start attempt of a repo's engine; a deferred pass is replaced by a fresh one.
+struct Launch {
+    identity: String,
+    paths: MemoryIdentityPaths,
+    users: usize,
+    retry_ms: u64,
+    previous_retry_ms: u64,
+    quiet_ms: u64,
+}
+
 impl Shared {
+    /// Starts the engine for a repo. A deferred pass (the OS keychain is waiting for its approval
+    /// dialog) is replaced by a fresh one after the retry delay while the repo is still held by the
+    /// same sessions; the delay doubles up to a five-minute cap.
+    fn launch(self: Arc<Self>, launch: Launch) -> Held {
+        let id = self.next_launch.fetch_add(1, Ordering::Relaxed);
+        let (publish, ready) = watch::channel(None);
+        let held = Held {
+            users: launch.users,
+            launch: id,
+            ready,
+        };
+        let this = self;
+        tokio::spawn(async move {
+            let Launch {
+                identity,
+                paths,
+                retry_ms,
+                previous_retry_ms,
+                quiet_ms,
+                ..
+            } = launch;
+            let outcome = this
+                .request(|reply| Cmd::Start {
+                    identity: identity.clone(),
+                    paths: Box::new(paths.clone()),
+                    reply,
+                })
+                .await
+                .unwrap_or(Outcome::Idle);
+            let Outcome::Deferred(message) = outcome else {
+                let _ = publish.send(Some(outcome));
+                return;
+            };
+            let mut next_quiet_ms = 0;
+            if retry_ms != previous_retry_ms {
+                this.cfg.logger.warn(
+                    &format!("memory sync is waiting: {message} Sync retries on its own."),
+                    &identity,
+                );
+            } else {
+                // At the cap every pass is silent; one reminder per 15 minutes says the keychain is
+                // still unanswered.
+                next_quiet_ms = quiet_ms + retry_ms;
+                if next_quiet_ms >= DEFERRED_STILL_WAITING_MS {
+                    next_quiet_ms = 0;
+                    this.cfg.logger.warn(
+                        "memory sync is still waiting for keychain approval.",
+                        &identity,
+                    );
+                }
+            }
+            let _ = publish.send(Some(Outcome::Idle));
+            tokio::time::sleep(Duration::from_millis(retry_ms)).await;
+            let mut repos = lock(&this.repos);
+            let users = match repos.get(&paths.repo) {
+                Some(current) if current.launch == id => current.users,
+                _ => return,
+            };
+            let repo = paths.repo.clone();
+            let next = this.clone().launch(Launch {
+                identity,
+                paths,
+                users,
+                retry_ms: (retry_ms * 2).min(DEFERRED_RETRY_MAX_MS),
+                previous_retry_ms: retry_ms,
+                quiet_ms: next_quiet_ms,
+            });
+            repos.insert(repo, next);
+        });
+        held
+    }
+
     fn sender(&self) -> Option<mpsc::UnboundedSender<Cmd>> {
         let mut worker = lock(&self.worker);
         if worker.is_none() {
@@ -497,26 +595,17 @@ impl Shared {
                 held.users += 1;
                 return;
             }
-            let (publish, ready) = watch::channel(None);
-            repos.insert(
-                paths.repo.clone(),
-                Held {
-                    users: 1,
-                    ready: ready.clone(),
-                },
-            );
-            let this = self.clone();
-            tokio::spawn(async move {
-                let outcome = this
-                    .request(|reply| Cmd::Start {
-                        identity,
-                        paths: Box::new(paths),
-                        reply,
-                    })
-                    .await
-                    .unwrap_or(Outcome::Idle);
-                let _ = publish.send(Some(outcome));
+            let repo = paths.repo.clone();
+            let held = self.clone().launch(Launch {
+                identity,
+                paths,
+                users: 1,
+                retry_ms: self.deferred_retry_ms,
+                previous_retry_ms: 0,
+                quiet_ms: 0,
             });
+            let ready = held.ready.clone();
+            repos.insert(repo, held);
             ready
         };
         ready_outcome(ready).await;
@@ -547,7 +636,7 @@ impl Shared {
                 })
                 .await
                 .unwrap_or_else(|| Err("memory sync: the sync thread is gone".into())),
-            Outcome::Idle | Outcome::Unavailable(_) => Ok(()),
+            Outcome::Idle | Outcome::Unavailable(_) | Outcome::Deferred(_) => Ok(()),
         };
         let _ = publish.send(true);
         let mut closing = lock(&self.closing);
@@ -563,7 +652,7 @@ impl Shared {
     async fn status(self: Arc<Self>, repo: PathBuf) -> Option<SyncRepoStatus> {
         let ready = lock(&self.repos).get(&repo)?.ready.clone();
         match ready_outcome(ready).await {
-            Outcome::Idle => None,
+            Outcome::Idle | Outcome::Deferred(_) => None,
             Outcome::Unavailable(reason) => Some(SyncRepoStatus::Unavailable { reason }),
             Outcome::Running => self
                 .request(|reply| Cmd::Status { repo, reply })
@@ -627,6 +716,11 @@ pub fn create_sync_runner(options: SyncRunnerOptions) -> Arc<dyn SyncRunner> {
         closing: Mutex::default(),
         worker: Mutex::default(),
         next_close: AtomicU64::new(0),
+        next_launch: AtomicU64::new(0),
+        deferred_retry_ms: options
+            .deferred_retry
+            .map_or(DEFERRED_RETRY_MS, |retry| retry.as_millis() as u64)
+            .clamp(DEFERRED_RETRY_MIN_MS, DEFERRED_RETRY_MAX_MS),
     })))
 }
 
@@ -643,10 +737,17 @@ mod tests {
     const BOUND: Duration = Duration::from_secs(20);
 
     #[derive(Default)]
-    struct Log(Mutex<Vec<(String, String, Option<String>)>>);
+    struct Log(
+        Mutex<Vec<(String, String, Option<String>)>>,
+        Mutex<Vec<(String, tokio::time::Instant)>>,
+    );
     impl Log {
         fn lines(&self) -> Vec<(String, String, Option<String>)> {
             lock(&self.0).clone()
+        }
+        /// Each warning with the (test-runtime) time it was logged.
+        fn warns(&self) -> Vec<(String, tokio::time::Instant)> {
+            lock(&self.1).clone()
         }
     }
     impl SyncRunnerLogger for Log {
@@ -655,6 +756,7 @@ mod tests {
         }
         fn warn(&self, message: &str, _: &str) {
             lock(&self.0).push(("warn".into(), message.into(), None));
+            lock(&self.1).push((message.into(), tokio::time::Instant::now()));
         }
         fn error(&self, message: &str, _: &str, code: &str) {
             lock(&self.0).push(("error".into(), message.into(), Some(code.into())));
@@ -747,6 +849,7 @@ mod tests {
             resolve_session: resolve,
             open: None,
             close_wait,
+            deferred_retry: None,
         };
         let shared = Arc::new(Shared {
             cfg: WorkerConfig {
@@ -764,6 +867,8 @@ mod tests {
             closing: Mutex::default(),
             worker: Mutex::default(),
             next_close: AtomicU64::new(0),
+            next_launch: AtomicU64::new(0),
+            deferred_retry_ms: DEFERRED_RETRY_MIN_MS,
         });
         (Arc::new(Runner(shared.clone())), shared)
     }
@@ -793,6 +898,63 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    // Paused clock: each retry sleep fires as soon as the runtime idles, so the virtual time of every
+    // warning is exact. No `timeout` here: while the worker thread answers, auto-advance would fire it.
+    #[tokio::test(start_paused = true)]
+    async fn a_deferred_session_is_retried_and_warns_once_per_delay() {
+        const DEFERRED_PASSES: u64 = 16;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let log = Arc::new(Log::default());
+        let (attempted, mut attempts) = mpsc::unbounded_channel::<u64>();
+        let sequence = Arc::new(AtomicU64::new(0));
+        let resolve: SyncSessionResolver = Arc::new(move |_| {
+            let attempt = sequence.fetch_add(1, Ordering::SeqCst);
+            let _ = attempted.send(attempt);
+            Box::pin(async move {
+                if attempt < DEFERRED_PASSES {
+                    Err(crate::sync_session_deferred::SyncSessionDeferredError::new(
+                        "Approve the keychain.",
+                    )
+                    .to_string())
+                } else {
+                    Ok(crate::device_session::resolver::SyncSessionResolution::SignedOut)
+                }
+            })
+        });
+        let (runner, _) = runner(&log, Some(resolve), None);
+        let started = tokio::time::Instant::now();
+        runner.acquire("id", &paths, true).await;
+        // Every deferred pass is retried on its own, ending with the pass that finds a signed-out device.
+        for expected in 0..=DEFERRED_PASSES {
+            assert_eq!(attempts.recv().await, Some(expected));
+        }
+        runner.release(&paths.repo).await.unwrap();
+        let waiting = "memory sync is waiting: Approve the keychain. Sync retries on its own.";
+        let still = "memory sync is still waiting for keychain approval.";
+        let warns: Vec<(String, u64)> = log
+            .warns()
+            .into_iter()
+            .map(|(message, at)| (message, (at - started).as_millis() as u64))
+            .collect();
+        // The delay doubles from 1 s to the 300 s cap; each new delay warns once, then the cap passes
+        // stay quiet but for one reminder per 900 s of waiting (passes 12 and 15).
+        let mut expected = Vec::new();
+        let (mut at, mut delay) = (0, DEFERRED_RETRY_MIN_MS);
+        for pass in 0..DEFERRED_PASSES {
+            if pass <= 9 {
+                expected.push((waiting.to_owned(), at));
+            } else if pass == 12 || pass == 15 {
+                expected.push((still.to_owned(), at));
+            }
+            at += delay;
+            delay = (delay * 2).min(DEFERRED_RETRY_MAX_MS);
+        }
+        assert_eq!(warns, expected);
+        assert_eq!(expected[10].1 - expected[9].1, DEFERRED_STILL_WAITING_MS);
+        assert_eq!(expected[11].1 - expected[10].1, DEFERRED_STILL_WAITING_MS);
     }
 
     #[tokio::test]

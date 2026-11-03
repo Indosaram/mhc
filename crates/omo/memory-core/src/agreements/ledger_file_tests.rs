@@ -68,3 +68,163 @@ fn reads_worktree_and_revision() {
     let head = repo.head().expect("head").expect("head");
     assert_eq!(read_agreements_at(&repo, &head).expect("at"), Some(content));
 }
+
+mod committed_cache {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use pretty_assertions::assert_eq;
+
+    use super::super::read_agreements_at;
+    use crate::agreements::types::AGREEMENTS_PATH;
+    use crate::git::{GitExec, GitExecOptions, GitExecResult, GitMemoryRepo, GitMemoryRepoOptions};
+
+    const FIRST: &str = "1111111111111111111111111111111111111111";
+
+    /// The committed-ledger cache is process-wide; these tests count its git calls, so they must
+    /// not evict each other's entries.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[derive(Default)]
+    struct FakeGit {
+        calls: Mutex<Vec<Vec<String>>>,
+        contents: Mutex<Vec<(String, String)>>,
+        fail: AtomicBool,
+    }
+
+    impl GitExec for FakeGit {
+        fn run(&self, argv: &[String], _: &GitExecOptions) -> std::io::Result<GitExecResult> {
+            self.calls.lock().unwrap().push(argv.to_vec());
+            if self.fail.load(Ordering::SeqCst) {
+                return Ok(GitExecResult {
+                    code: 128,
+                    stdout: String::new(),
+                    stderr: "unavailable object".into(),
+                });
+            }
+            let revision = if argv[0] == "ls-tree" {
+                argv[4].clone()
+            } else {
+                argv[1].split(':').next().unwrap_or_default().to_string()
+            };
+            let content = self
+                .contents
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(rev, _)| *rev == revision)
+                .map(|(_, content)| content.clone());
+            let stdout = match (argv[0].as_str(), content) {
+                ("ls-tree", Some(_)) => format!("{AGREEMENTS_PATH}\0"),
+                ("ls-tree", None) => String::new(),
+                (_, content) => content.unwrap_or_default(),
+            };
+            Ok(GitExecResult {
+                code: 0,
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    fn open(dir: &std::path::Path, git: &Arc<FakeGit>) -> GitMemoryRepo {
+        GitMemoryRepo::new(GitMemoryRepoOptions {
+            dir: dir.to_path_buf(),
+            agent_id: "ledger-test".into(),
+            exec: Some(Arc::clone(git) as Arc<dyn GitExec>),
+            install_hooks: None,
+        })
+        .expect("repo")
+    }
+
+    fn calls(git: &FakeGit) -> Vec<Vec<String>> {
+        git.calls.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn a_full_object_id_is_read_once_through_a_scoped_tree_listing() {
+        let _serial = serial();
+        // Given
+        let root = tempfile::tempdir().expect("tempdir");
+        let git = Arc::new(FakeGit::default());
+        git.contents
+            .lock()
+            .unwrap()
+            .push((FIRST.into(), "first ledger\n".into()));
+        // When
+        let first = read_agreements_at(&open(root.path(), &git), FIRST).expect("first");
+        let before = calls(&git).len();
+        let again = read_agreements_at(&open(root.path(), &git), FIRST).expect("again");
+        // Then
+        assert_eq!(first.as_deref(), Some("first ledger\n"));
+        assert_eq!(again, first);
+        assert_eq!(calls(&git).len(), before, "the cached read spawns no git");
+        let listing = &calls(&git)[0];
+        assert_eq!(listing[0], "ls-tree");
+        assert_eq!(listing[listing.len() - 2..], ["--", AGREEMENTS_PATH]);
+    }
+
+    #[test]
+    fn a_mutable_revision_and_a_failed_read_are_never_cached() {
+        let _serial = serial();
+        // Given
+        let root = tempfile::tempdir().expect("tempdir");
+        let git = Arc::new(FakeGit::default());
+        git.contents
+            .lock()
+            .unwrap()
+            .push(("HEAD".into(), "before\n".into()));
+        assert_eq!(
+            read_agreements_at(&open(root.path(), &git), "HEAD").expect("before"),
+            Some("before\n".into())
+        );
+        // When
+        git.contents.lock().unwrap()[0].1 = "after\n".into();
+        // Then
+        assert_eq!(
+            read_agreements_at(&open(root.path(), &git), "HEAD").expect("after"),
+            Some("after\n".into())
+        );
+
+        // Given
+        git.fail.store(true, Ordering::SeqCst);
+        assert!(read_agreements_at(&open(root.path(), &git), FIRST).is_err());
+        // When
+        git.fail.store(false, Ordering::SeqCst);
+        git.contents
+            .lock()
+            .unwrap()
+            .push((FIRST.into(), "first ledger\n".into()));
+        // Then
+        assert_eq!(
+            read_agreements_at(&open(root.path(), &git), FIRST).expect("retry"),
+            Some("first ledger\n".into())
+        );
+    }
+
+    #[test]
+    fn an_old_object_id_is_reread_after_the_bounded_cache_evicts_it() {
+        let _serial = serial();
+        // Given
+        let root = tempfile::tempdir().expect("tempdir");
+        let git = Arc::new(FakeGit::default());
+        git.contents
+            .lock()
+            .unwrap()
+            .push((FIRST.into(), "first ledger\n".into()));
+        read_agreements_at(&open(root.path(), &git), FIRST).expect("first");
+        for index in 0..40u32 {
+            read_agreements_at(&open(root.path(), &git), &format!("{index:040x}")).expect("other");
+        }
+        let before = calls(&git).len();
+        // When
+        let value = read_agreements_at(&open(root.path(), &git), FIRST).expect("revisit");
+        // Then
+        assert_eq!(value.as_deref(), Some("first ledger\n"));
+        assert_eq!(calls(&git).len() - before, 2);
+    }
+}

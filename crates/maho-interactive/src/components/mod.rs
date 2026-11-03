@@ -41,6 +41,7 @@ pub mod loaded_resource_section;
 pub mod login_dialog;
 pub mod markdown_transform;
 pub mod mermaid;
+pub mod message_path_links;
 pub mod model_favorites;
 pub mod model_selector;
 pub mod neon_border;
@@ -71,3 +72,7 @@ pub mod user_message;
 pub mod user_message_selector;
 pub mod visual_truncate;
 pub mod write_result;
+pub mod handoff_fold; // ledger sync-5152
+pub mod themed_text; // ledger sync-5152
+pub mod tool_execution_animation; // ledger sync-5152
+pub mod remote_delivery_message; // ledger sync-5152

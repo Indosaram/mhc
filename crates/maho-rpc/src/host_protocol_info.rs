@@ -34,33 +34,56 @@ pub struct HostProtocolInfo {
     pub engine_ordinal: Option<[f64; 5]>,
     pub launch_profile: Option<RpcLaunchProfile>,
     pub memory_pressure: Option<bool>,
+    /// The agent directory the host reads and writes; absent on older hosts. Only a client of the same dir may
+    /// replace it (#3560).
+    pub agent_dir: Option<String>,
     pub handover: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostLifecycle { Ready, Stopping }
+pub enum HostLifecycle {
+    Ready,
+    Stopping,
+}
 
 pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
     let object = data.as_object()?;
     let server_version = object.get("serverVersion")?.as_str()?.to_owned();
-    let capabilities = object.get("capabilities")?.as_array()?.iter()
-        .map(|value| value.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()?;
-    let engine_ordinal = object.get("engineOrdinal").and_then(Value::as_array)
+    let capabilities = object
+        .get("capabilities")?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()?;
+    let engine_ordinal = object
+        .get("engineOrdinal")
+        .and_then(Value::as_array)
         .filter(|parts| parts.len() == 5)
         .and_then(|parts| parts.iter().map(Value::as_f64).collect::<Option<Vec<_>>>())
         .and_then(|parts| parts.try_into().ok());
     let launch_profile = object.get("launch_profile").and_then(|value| {
         let profile_id = value.get("profile_id")?.as_str()?.to_owned();
         let core = value.get("core")?.as_object()?;
-        let extensions = core.get("extensions")?.as_array()?.iter()
-            .map(|value| value.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()?;
+        let extensions = core
+            .get("extensions")?
+            .as_array()?
+            .iter()
+            .map(|value| value.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()?;
         let multi_session = core.get("multi_session")?.as_bool()?;
         let session_runtime = match core.get("session_runtime")?.as_str()? {
             "in-process" => SessionRuntimeKind::InProcess,
             "worker" => SessionRuntimeKind::Worker,
             _ => return None,
         };
-        Some(RpcLaunchProfile { profile_id, core: RpcLaunchProfileCore { extensions, multi_session, session_runtime } })
+        Some(RpcLaunchProfile {
+            profile_id,
+            core: RpcLaunchProfileCore {
+                extensions,
+                multi_session,
+                session_runtime,
+            },
+        })
     });
     Some(HostProtocolInfo {
         lifecycle: match object.get("lifecycle").and_then(Value::as_str) {
@@ -68,17 +91,36 @@ pub fn parse_host_protocol_info(data: &Value) -> Option<HostProtocolInfo> {
             Some("stopping") => Some(HostLifecycle::Stopping),
             _ => None,
         },
-        protocol_version: object.get("protocolVersion").and_then(Value::as_f64).unwrap_or(0.0),
+        protocol_version: object
+            .get("protocolVersion")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
         server_version,
         capabilities,
-        instance_id: object.get("instanceId").and_then(Value::as_str).map(str::to_owned),
-        generation: object.get("generation").and_then(Value::as_f64)
+        instance_id: object
+            .get("instanceId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        generation: object
+            .get("generation")
+            .and_then(Value::as_f64)
             .filter(|value| value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0),
-        engine_version: object.get("engineVersion").and_then(Value::as_str).map(str::to_owned),
+        engine_version: object
+            .get("engineVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         engine_ordinal,
         launch_profile,
         memory_pressure: object.get("memory_pressure").and_then(Value::as_bool),
-        handover: object.get("handover").filter(|value| value.is_object()).cloned(),
+        agent_dir: object
+            .get("agentDir")
+            .and_then(Value::as_str)
+            .filter(|dir| !dir.is_empty())
+            .map(str::to_owned),
+        handover: object
+            .get("handover")
+            .filter(|value| value.is_object())
+            .cloned(),
     })
 }
 
@@ -95,11 +137,31 @@ mod tests {
         assert_eq!(host.generation, None);
         assert_eq!(host.engine_ordinal, None);
         assert_eq!(host.launch_profile, None);
+        assert_eq!(host.agent_dir, None);
+    }
+
+    #[test]
+    fn a_non_empty_agent_dir_is_kept() {
+        let host = parse_host_protocol_info(
+            &json!({"serverVersion":"v","capabilities":[],"agentDir":"/a"}),
+        )
+        .unwrap();
+        assert_eq!(host.agent_dir.as_deref(), Some("/a"));
+        let empty =
+            parse_host_protocol_info(&json!({"serverVersion":"v","capabilities":[],"agentDir":""}))
+                .unwrap();
+        assert_eq!(empty.agent_dir, None);
     }
 
     #[test]
     fn malformed_required_fields_reject_the_reply() {
-        for data in [Value::Null, json!([]), json!({"capabilities":[]}), json!({"serverVersion":1,"capabilities":[]}), json!({"serverVersion":"old","capabilities":[1]})] {
+        for data in [
+            Value::Null,
+            json!([]),
+            json!({"capabilities":[]}),
+            json!({"serverVersion":1,"capabilities":[]}),
+            json!({"serverVersion":"old","capabilities":[1]}),
+        ] {
             assert!(parse_host_protocol_info(&data).is_none());
         }
     }
@@ -120,20 +182,27 @@ mod tests {
         let data = json!({"serverVersion":"info","protocolVersion":1,"capabilities":["multi_session"],"instanceId":"host","generation":-1,"engineVersion":"build","engineOrdinal":[2026,9,16,3,0],"launch_profile":{"profile_id":"profile","core":{"extensions":["/plugin"],"multi_session":true,"session_runtime":"worker"}}});
         let host = parse_host_protocol_info(&data).unwrap();
         assert_eq!(host.instance_id.as_deref(), Some("host"));
-        assert_eq!(host.engine_ordinal, Some([2026.0,9.0,16.0,3.0,0.0]));
-        assert_eq!(host.launch_profile.unwrap().core.session_runtime, SessionRuntimeKind::Worker);
+        assert_eq!(host.engine_ordinal, Some([2026.0, 9.0, 16.0, 3.0, 0.0]));
+        assert_eq!(
+            host.launch_profile.unwrap().core.session_runtime,
+            SessionRuntimeKind::Worker
+        );
     }
 
     #[test]
     fn unsafe_generation_is_omitted() {
         let data = json!({"serverVersion":"info","capabilities":[],"generation":9_007_199_254_740_992_u64});
-        assert_eq!(parse_host_protocol_info(&data).unwrap().generation,None);
+        assert_eq!(parse_host_protocol_info(&data).unwrap().generation, None);
     }
 
     #[test]
     fn ordinal_accepts_numeric_parts_without_integer_coercion() {
-        let data = json!({"serverVersion":"info","capabilities":[],"engineOrdinal":[2026,9,16,3,0.5]});
-        assert_eq!(parse_host_protocol_info(&data).unwrap().engine_ordinal,Some([2026.0,9.0,16.0,3.0,0.5]));
+        let data =
+            json!({"serverVersion":"info","capabilities":[],"engineOrdinal":[2026,9,16,3,0.5]});
+        assert_eq!(
+            parse_host_protocol_info(&data).unwrap().engine_ordinal,
+            Some([2026.0, 9.0, 16.0, 3.0, 0.5])
+        );
     }
 
     #[test]

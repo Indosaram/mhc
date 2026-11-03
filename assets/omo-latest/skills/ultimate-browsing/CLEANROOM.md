@@ -30,3 +30,8 @@ No file under `/workspace/work/mhcg/assets/omo-latest/` or `/workspace/work/mhc/
 - Interaction/screenshot/QA show 2a → 2b; login/account → 2b directly. ✔
 - `python -m pytest engine/tests`: **25 passed, 18 subtests passed**. ✔
 - No omo/ultrawork/ulw/Sisyphus names in new text. ✔
+
+## 2026-10-30 delta (omo v5.1.52 behaviour, rewritten in mhc words)
+- Every documented engine and cookie-extractor command passes `python3 -B`; the engine CLI `prog`, its usage docstring and the R7 API-first hint name `python3 -B -m engine`.
+- `scripts/extract_cookies.py` sets `sys.dont_write_bytecode` before importing its `cookie_crypto` sibling, so running it never writes `__pycache__` into the skill.
+- Packaging no longer ships `engine/tests/` (nested test dirs are source-only).

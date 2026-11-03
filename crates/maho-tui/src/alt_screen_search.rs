@@ -441,12 +441,13 @@ impl Component for AltScreenSearchComponent {
             format!("\u{250c}{}\u{2510}", "\u{2500}".repeat(inner_width)),
             format!("\u{2502}{content}\u{2502}"),
             format!(
-                "\u{2514}{}{}{}{}\u{2518}",
+                "\u{2514}{}{}{}{}{}\u{2518}",
                 "\u{2500}".repeat(left_rule_width),
                 if !rendered_buttons.is_empty() { " " } else { "" },
                 rendered_buttons,
-                if !rendered_buttons.is_empty() { " " } else { "" }
-            ) + &"\u{2500}".repeat(right_rule_width),
+                if !rendered_buttons.is_empty() { " " } else { "" },
+                "\u{2500}".repeat(right_rule_width)
+            ),
         ]
     }
 }

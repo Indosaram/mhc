@@ -5,6 +5,8 @@ mod support;
 mod category_routing_policy;
 mod context_overflow;
 mod context_limit_resolver;
+mod fable_55_launch;
+mod fable_55_recognition;
 mod gpt_5_6_copilot_resolution;
 mod luna_deepseek_chain_policy;
 mod model_availability;

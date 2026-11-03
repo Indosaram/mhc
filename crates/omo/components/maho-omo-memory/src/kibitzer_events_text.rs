@@ -40,7 +40,8 @@ pub struct FoldState {
 }
 
 /// memory-core masks first, then the pinned senpi `core/sensitive-output` patterns
-/// (`maho-core::sensitive_output`), matching upstream `redactSensitiveOutput(redactUrl(text))`.
+/// (`maho-core::sensitive_output`: linear env-assignment match plus the one-pass credential-shape
+/// redactor of senpi#4283), matching upstream `redactSensitiveOutput(redactUrl(text))`.
 pub fn redact_kibitzer_event_text(text: &str) -> String {
     redact_sensitive_output(&redact_url(text))
 }
@@ -116,3 +117,18 @@ pub fn escape_xml(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn credential_shapes_beyond_github_tokens_are_masked() {
+        let text = redact_kibitzer_event_text("deploy sk_live_abcdefghijklmnop1234 and AKIAABCDEFGHIJKLMNOP done");
+        assert_eq!(text, "deploy [REDACTED] and *** done");
+    }
+
+    #[test]
+    fn env_assignment_with_a_credential_word_is_masked_and_others_are_not() {
+        assert_eq!(redact_kibitzer_event_text("MY_API_KEY=abc PATH=/bin"), "MY_API_KEY=[REDACTED] PATH=/bin");
+    }
+}

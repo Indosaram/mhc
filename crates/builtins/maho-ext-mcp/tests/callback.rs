@@ -6,7 +6,7 @@ async fn valid_redirect_delivers_code_and_closes_listener() {
     let mut channel=open_callback_channel(options(),None).await.unwrap();
     let port=url::Url::parse(&channel.redirect_url).unwrap().port().unwrap();
     let response=reqwest::get(format!("{}?code=abc123&state=good",channel.redirect_url)).await.unwrap();assert_eq!(response.status(),200);
-    assert_eq!(channel.wait_for_code().await.unwrap(),CallbackResult {code:"abc123".into(),state:Some("good".into())});
+    assert_eq!(channel.wait_for_code().await.unwrap(),CallbackResult {code:"abc123".into(),state:Some("good".into()),iss:None});
     assert!(tokio::net::TcpStream::connect(("127.0.0.1",port)).await.is_err());
 }
 #[tokio::test]

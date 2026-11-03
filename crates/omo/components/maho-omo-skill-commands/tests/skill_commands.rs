@@ -285,6 +285,7 @@ async fn given_a_ui_when_the_session_starts_then_the_bare_skill_autocomplete_pro
     component(&fixture.skills).register(&mut api);
 
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -357,4 +358,106 @@ async fn given_the_real_component_order_when_a_bare_skill_is_submitted_then_ultr
     let messages = actions.0.lock().expect("messages");
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].custom_type, "omo-ultrawork:directive");
+}
+
+// `bundled-skills/invalid-override-registration.test.ts` (skill-commands cases, omo v5.1.52):
+// skill-commands resolves its packaged root through `options.env` and the component logger, so a
+// valid `OMO_BUNDLED_SKILLS_DIR` moves the bare aliases and an invalid one falls back loudly, once.
+#[derive(Default)]
+struct Errors(std::sync::Mutex<Vec<String>>);
+impl ComponentLogger for Errors {
+    fn info(&self, _: &str, _: Option<&JsonValue>) {}
+    fn warn(&self, _: &str, _: Option<&JsonValue>) {}
+    fn error(&self, message: &str, _: Option<&JsonValue>) {
+        self.0.lock().expect("errors").push(message.to_owned());
+    }
+}
+
+fn env_runner(
+    env: std::collections::BTreeMap<String, String>,
+    logger: Arc<Errors>,
+    cwd: &std::path::Path,
+) -> ExtensionRunner {
+    let runner = ExtensionRunner::from_static(
+        vec![Box::new(SkillCommandsComponent::new(
+            SkillCommandsComponentOptions {
+                skills_dir: None,
+                env: Some(env),
+                logger: Some(logger),
+            },
+        ))],
+        support::context(cwd, Arc::new(support::RecordingUi::default()), false),
+    );
+    runner
+        .bind_session_actions(Arc::new(support::FakeSessionActions {
+            commands: vec![support::command("skill:ulw-plan", None, "skill")],
+        }))
+        .expect("bind session actions");
+    runner
+}
+
+async fn submit_text(runner: &mut ExtensionRunner, text: &str) -> InputEventResult {
+    runner
+        .emit_input(InputEvent {
+            input_id: "id".to_owned(),
+            text: text.to_owned(),
+            images: None,
+            source: InputSource::Interactive,
+            streaming_behavior: None,
+        })
+        .await
+        .expect("input dispatch")
+}
+
+fn rewritten() -> InputEventResult {
+    InputEventResult::Transform {
+        text: "/skill:ulw-plan".to_owned(),
+        images: None,
+    }
+}
+
+#[tokio::test]
+async fn given_a_valid_override_in_the_component_env_when_registered_then_the_bare_aliases_come_from_it()
+ {
+    let overridden = support::skills_fixture(&["ulw-plan"]);
+    let env = std::collections::BTreeMap::from([(
+        maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV.to_owned(),
+        overridden.skills.to_string_lossy().into_owned(),
+    )]);
+    let logger = Arc::new(Errors::default());
+    let mut runner = env_runner(env, logger.clone(), &overridden.skills);
+
+    assert_eq!(submit_text(&mut runner, "/ulw-plan").await, rewritten());
+    assert!(logger.0.lock().expect("errors").is_empty());
+}
+
+#[tokio::test]
+async fn given_an_invalid_override_when_skill_commands_registers_twice_then_the_packaged_aliases_remain_and_one_error_names_the_variable()
+ {
+    let packaged = support::skills_fixture(&["ulw-plan"]);
+    let invalid = "relative/skill-commands-env-override-case";
+    let env = std::collections::BTreeMap::from([
+        (
+            maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV.to_owned(),
+            invalid.to_owned(),
+        ),
+        (
+            maho_omo_bundled_skills::BUNDLED_SKILLS_ROOT_ENV.to_owned(),
+            packaged.skills.to_string_lossy().into_owned(),
+        ),
+    ]);
+    let logger = Arc::new(Errors::default());
+    let _unpinned = env_runner(env.clone(), logger.clone(), &packaged.skills);
+    let mut pinned = env_runner(env, logger.clone(), &packaged.skills);
+
+    assert_eq!(submit_text(&mut pinned, "/ulw-plan").await, rewritten());
+    let errors = logger.0.lock().expect("errors");
+    let named: Vec<_> = errors
+        .iter()
+        .filter(|message| {
+            message.contains(maho_omo_bundled_skills::BUNDLED_SKILLS_OVERRIDE_ENV)
+                && message.contains(invalid)
+        })
+        .collect();
+    assert_eq!(named.len(), 1, "{errors:?}");
 }

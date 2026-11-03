@@ -10,6 +10,9 @@
 
 pub mod chord;
 
+#[cfg(any(test, target_os = "windows"))]
+mod pending;
+
 #[cfg(target_os = "windows")]
 mod hotkey;
 #[cfg(target_os = "windows")]

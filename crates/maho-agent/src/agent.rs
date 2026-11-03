@@ -165,6 +165,8 @@ pub struct PartialAgentState {
 /// Options for constructing an [`Agent`].
 #[derive(Default)]
 pub struct AgentOptions {
+    /// Construction-time channel for senpi's session layer only.
+    pub internal_channel: Option<crate::internal_events::InternalAgentChannel>,
     pub initial_state: Option<PartialAgentState>,
     pub convert_to_llm: Option<ConvertToLlm>,
     pub transform_context: Option<TransformContext>,
@@ -286,6 +288,33 @@ impl PendingMessageQueue {
         }
     }
 
+    /// senpi `PendingMessageQueue.remove/replace` by identity: Rust messages are values, so the `occurrence`-th
+    /// equal message stands for that object. `None` removes it; false once it was drained.
+    fn change_nth(
+        &mut self,
+        message: &AgentMessage,
+        occurrence: usize,
+        next: Option<AgentMessage>,
+    ) -> bool {
+        let Some(index) = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| *m == message)
+            .nth(occurrence)
+            .map(|(index, _)| index)
+        else {
+            return false;
+        };
+        match next {
+            Some(next) => self.messages[index] = next,
+            None => {
+                self.messages.remove(index);
+            }
+        }
+        true
+    }
+
     fn clear(&mut self) {
         self.messages.clear();
         self.clear_generation += 1;
@@ -323,6 +352,8 @@ impl AgentSubscription {
 }
 
 struct AgentInner {
+    /// Construction-only: there is no getter and no attach path.
+    internal_channel: Option<crate::internal_events::InternalAgentChannel>,
     state: Mutex<AgentState>,
     listeners: Mutex<Listeners>,
     steering_queue: Mutex<PendingMessageQueue>,
@@ -427,6 +458,7 @@ impl Agent {
 
         Self {
             inner: Arc::new(AgentInner {
+                internal_channel: options.internal_channel.clone(),
                 state: Mutex::new(state),
                 listeners: Mutex::new(Listeners {
                     next_id: 0,
@@ -646,6 +678,11 @@ impl Agent {
         steering
     }
 
+    /// Every message still waiting in `queue`, in queue order, whatever its drain mode.
+    pub fn queued_messages(&self, queue: PendingQueue) -> Vec<AgentMessage> {
+        lock(self.pending_queue(queue)).messages.clone()
+    }
+
     /// Returns true when `message` is still waiting in either pending queue.
     pub fn contains_queued_message(&self, message: &AgentMessage) -> bool {
         lock(&self.inner.steering_queue)
@@ -662,6 +699,22 @@ impl Agent {
     pub fn remove_queued_message(&self, message: &AgentMessage) -> bool {
         lock(&self.inner.steering_queue).remove(message)
             || lock(&self.inner.follow_up_queue).remove(message)
+    }
+
+    /// senpi `removeQueuedMessage` / `replaceQueuedMessage`: remove (`next: None`) or replace, keeping its place,
+    /// one queued message; false once it was drained into a turn. Replacing a message with itself is a read-only
+    /// probe of whether it is still queued.
+    ///
+    /// ADAPTATION: upstream finds the message object by identity in either queue; Rust messages are values, so
+    /// the caller names the queue and which of the equal messages in it it means (`occurrence`, 0-based).
+    pub fn change_queued_message(
+        &self,
+        queue: PendingQueue,
+        message: &AgentMessage,
+        occurrence: usize,
+        next: Option<AgentMessage>,
+    ) -> bool {
+        lock(self.pending_queue(queue)).change_nth(message, occurrence, next)
     }
 
     /// Active abort signal for the current run, if any.
@@ -945,6 +998,16 @@ impl Agent {
         };
 
         let mut config = AgentLoopConfig::new(state.model.clone(), settings.convert_to_llm.clone());
+        // A run gets a progress sink only if an internal listener exists at run start.
+        config.internal_progress_sink =
+            crate::internal_events::internal_loop_sink(self.inner.internal_channel.as_ref());
+        if config.internal_progress_sink.is_some() {
+            let agent = self.clone();
+            config.captured_event_sink = Some(Arc::new(move |event| {
+                let agent = agent.clone();
+                Box::pin(async move { agent.process_captured_events(event).await })
+            }));
+        }
         config.options = SimpleStreamOptions {
             stream: maho_ai::types::StreamOptions {
                 request: ProviderRequestOptions {
@@ -1272,8 +1335,19 @@ impl Agent {
     /// considered idle later, after all awaited listeners for `agent_end` finish
     /// and `finishRun()` clears runtime-owned state.
     async fn process_events(&self, event: AgentEvent) {
+        self.process_captured_events(maho_ai::utils::assistant_capture::Captured::bare(event))
+            .await;
+    }
+
+    /// `processEvents` for an event that may carry its assistant capture; only the internal
+    /// channel sees the capture, public listeners get the bare event.
+    async fn process_captured_events(
+        &self,
+        captured: maho_ai::utils::assistant_capture::Captured<AgentEvent>,
+    ) {
+        let event = captured.value.clone();
         match &event {
-            AgentEvent::MessageStart { message } => {
+            AgentEvent::MessageStart { message, .. } => {
                 lock(&self.inner.state).streaming_message = Some(message.clone());
             }
             AgentEvent::MessageUpdate { message, .. } => {
@@ -1318,6 +1392,12 @@ impl Agent {
             // error channel, and no loop event is ever emitted outside a run.
             return;
         };
+        if let Some(internal) = crate::internal_events::dispatch_internal_agent(
+            self.inner.internal_channel.as_ref(),
+            crate::internal_events::InternalEvent::Event(Box::new(captured)),
+        ) {
+            internal.await;
+        }
         let listeners: Vec<AgentListener> = lock(&self.inner.listeners)
             .entries
             .iter()

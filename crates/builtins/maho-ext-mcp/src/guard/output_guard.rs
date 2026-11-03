@@ -17,6 +17,9 @@ struct Payload {bytes:Vec<u8>,extension:&'static str,lines:usize,preview:String,
 pub fn apply_mcp_output_guard(content:&[Value],options:McpOutputGuardOptions<'_>)->Vec<Value> {
     let max_bytes=positive(options.output_guard.and_then(|s|s.max_bytes)).unwrap_or(51200.0);
     let max_lines=positive(options.output_guard.and_then(|s|s.max_lines)).unwrap_or(2000.0);
+    // This projection feeds providers, RPC, display and spill files; never change the wire reply.
+    let redacted=content.iter().map(maho_core::config_reference_redaction::redact_resolved_reference_data).collect::<Vec<_>>();
+    let content=redacted.as_slice();
     let payload=payload(content);
     let bytes=f64::from(u32::try_from(payload.bytes.len()).unwrap_or(u32::MAX));
     let lines=f64::from(u32::try_from(payload.lines).unwrap_or(u32::MAX));
@@ -39,7 +42,7 @@ pub fn apply_mcp_output_guard(content:&[Value],options:McpOutputGuardOptions<'_>
         Ok(path)=>format!("MCP tool output exceeded outputGuard; {}.\nFull output saved to: {}\nRead the file in chunks instead of loading the entire file at once.\nPreview:\n{preview}",payload.summary,path.display()),
         Err(error)=>format!("Warning: failed to write MCP output spill file: {error}\nMCP output truncated inline; {}.\nPreview:\n{preview}",payload.summary),
     };
-    vec![json!({"type":"text","text":text})]
+    vec![maho_core::config_reference_redaction::redact_resolved_reference_data(&json!({"type":"text","text":text}))]
 }
 fn positive(value:Option<f64>)->Option<f64> {value.filter(|n|n.is_finite() && *n>0.0).map(f64::floor)}
 fn payload(content:&[Value])->Payload {

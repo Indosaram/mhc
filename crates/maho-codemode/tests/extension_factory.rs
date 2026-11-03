@@ -62,6 +62,7 @@ async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() 
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -236,6 +237,7 @@ async fn registered_callable_enforces_configured_detached_capacity() {
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -324,6 +326,7 @@ async fn registered_callable_schema_uses_resolved_language_settings() {
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -421,6 +424,7 @@ async fn concurrent_completion_keeps_each_invocations_context() {
     .unwrap();
     let ctx = context(root.path());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -688,6 +692,7 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     let model:Model=serde_json::from_value(serde_json::json!({"id":"same","name":"same","provider":"fixture","api":"openai-responses","baseUrl":"http://localhost","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":100})).unwrap();
     ctx.model = Some(model.clone());
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -898,6 +903,7 @@ async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale
         Arc::new(move |value| captured.lock().unwrap().push(value.clone())),
     );
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Startup,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -959,4 +965,51 @@ async fn native_session_registration_runs_real_worker_and_shutdown_rejects_stale
     .await;
     assert!(result.unwrap_err().to_string().contains("disposed"));
     eprintln!("cleanup: registered session shutdown awaited manager; worker pid {pid} absent");
+}
+
+// eval-cells-rpc.ts: list/peek/stop are registered; before a session starts list is empty and peek is not found.
+#[tokio::test]
+async fn eval_cells_rpc_handlers_answer_before_session_start() {
+    let mut api = ExtensionApi::new(
+        LoadedExtension::new("codemode", "/fixture".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(),
+        EventBus::default(),
+        ExtensionRuntime::default(),
+    );
+    maho_codemode::register(
+        &mut api,
+        maho_codemode::CodemodeExtensionOptions {
+            image_sdk: Arc::new(Images),
+            complete: Arc::new(|_, _| Box::pin(async { panic!("rpc never completes") })),
+            home_dir: "/fixture/home".into(),
+            environment: Default::default(),
+            js_runtime: maho_codemode::tool::types::EvalRuntimeInfo {
+                name: "bun".into(),
+                version: "1.4.0".into(),
+                path: None,
+                isolation: None,
+            },
+            env_passthrough: None,
+        },
+    )
+    .unwrap();
+    let handlers = &api.registered.rpc_handlers;
+    assert_eq!(
+        handlers.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["eval_cells.list", "eval_cells.peek", "eval_cells.stop"]
+    );
+    assert_eq!(
+        (handlers["eval_cells.list"])(serde_json::json!({}))
+            .await
+            .unwrap(),
+        serde_json::json!([])
+    );
+    let invalid = (handlers["eval_cells.peek"])(serde_json::json!({"cellId":" "}))
+        .await
+        .unwrap_err();
+    assert_eq!(invalid.code.as_deref(), Some("invalid_eval_cell_request"));
+    let missing = (handlers["eval_cells.stop"])(serde_json::json!({"cellId":"c1"}))
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code.as_deref(), Some("eval_cell_not_found"));
 }

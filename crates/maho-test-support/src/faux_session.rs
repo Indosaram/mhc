@@ -524,7 +524,7 @@ impl NativeSession {
             provider,
             maho_core::provider_composer::ProviderConfigInput {
                 config: maho_core::model_config_schema::ModelsJsonProvider {
-                    api_key: Some(key.to_owned()),
+                    api_key: Some(maho_core::config_reference_resolver::ConfigValue::String(key.to_owned())),
                     ..Default::default()
                 },
                 ..Default::default()

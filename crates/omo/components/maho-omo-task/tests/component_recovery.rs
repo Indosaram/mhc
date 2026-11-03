@@ -949,6 +949,7 @@ async fn recovery(case: Case) {
         context.session_manager = Arc::new(PersistedSession(fixture));
     }
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::Resume,
         initial_model_provenance: None,
         previous_session_file: None,
@@ -963,6 +964,12 @@ async fn recovery(case: Case) {
         .expect("registered start deadline")
         .expect("registered start");
     }
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        component.bridge.session_start_recovered(),
+    )
+    .await
+    .expect("registered recovery deadline");
     assert_eq!(
         wake.lock().expect("wake").as_slice(),
         &[serde_json::json!({"source":"senpi-task","kind":"children","activeCount":0,"items":[],"channels":[]})],

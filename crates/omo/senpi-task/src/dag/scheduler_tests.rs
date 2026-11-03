@@ -77,6 +77,7 @@ fn record_for(input: &DagDefinition) -> DagRunRecordV1 {
         name: input.name.clone(),
         parent_session_id: PARENT_SESSION_ID.to_string(),
         root_session_id: ROOT_SESSION_ID.to_string(),
+        parent_model: None,
         definition_fingerprint: "definition-fingerprint".to_string(),
         definition: crate::dag::manager::DagPersistedDefinition {
             key: input.key.clone(),
@@ -1532,4 +1533,37 @@ fn configured_subscriber_ring_overflows_at_its_bound() {
     let (dropped, cursor) = overflow.lock().unwrap().expect("overflow");
     assert!(dropped > 0);
     assert_eq!(cursor, 1);
+}
+
+// rpc-host-spawned-by.test.ts: a workflow node's child carries ancestry that names the task the
+// manager allocated, never the workflow node id, under the run's parent and root sessions.
+#[test]
+fn given_a_workflow_node_when_launched_then_spawned_by_names_the_manager_task_id() {
+    let fixture = fixture(definition(vec![node("node", &[])]), 1);
+    let auto = auto_complete_nodes(&fixture, &["node"]);
+    let result = run_in_background(&fixture.scheduler)
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the scheduler run settled within 30s")
+        .expect("run");
+    join_all(auto);
+
+    let task_id = result.nodes[0]
+        .task_id
+        .clone()
+        .expect("node attached a task");
+    assert_ne!(task_id, "node");
+    let specs = fixture.runner.specs();
+    assert_eq!(specs.len(), 1);
+    let spawned_by = crate::runners::child_ancestry::rpc_child_ancestry(
+        &crate::manager::runner::to_rpc_spec(&specs[0]),
+    )
+    .expect("ancestry");
+    assert_eq!(
+        spawned_by,
+        crate::runners::child_ancestry::SpawnedBy {
+            parent_session_id: PARENT_SESSION_ID.to_string(),
+            root_session_id: ROOT_SESSION_ID.to_string(),
+            task_id,
+        }
+    );
 }

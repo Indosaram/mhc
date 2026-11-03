@@ -1,10 +1,11 @@
 //! Port of senpi `packages/tui/test/autocomplete-slash.test.ts`,
-//! `autocomplete-dollar.test.ts` and `dollar-skill-mentions.test.ts`.
+//! `autocomplete-dollar.test.ts`, `dollar-skill-mentions.test.ts` and `autocomplete.test.ts`.
 
 use std::collections::BTreeSet;
 
 use maho_tui::autocomplete::{
-    AutocompleteProvider, AutocompleteSignal, CombinedAutocompleteProvider, CommandSpec, SuggestionRequest,
+    AutocompleteProvider, AutocompleteSignal, CombinedAutocompleteProvider, CommandSpec,
+    SuggestionRequest,
 };
 use maho_tui::dollar_invocation_autocomplete::find_dollar_skill_mentions;
 
@@ -20,16 +21,29 @@ fn commands() -> Vec<CommandSpec> {
 fn values(provider: &mut CombinedAutocompleteProvider, line: &str) -> Vec<String> {
     provider
         .get_suggestions(&[line.to_string()], 0, line.len(), false)
-        .map(|suggestions| suggestions.items.into_iter().map(|item| item.value).collect())
+        .map(|suggestions| {
+            suggestions
+                .items
+                .into_iter()
+                .map(|item| item.value)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
-fn suggestions(provider: &mut CombinedAutocompleteProvider, line: &str) -> Option<(Vec<String>, String)> {
+fn suggestions(
+    provider: &mut CombinedAutocompleteProvider,
+    line: &str,
+) -> Option<(Vec<String>, String)> {
     provider
         .get_suggestions(&[line.to_string()], 0, line.len(), false)
         .map(|suggestions| {
             (
-                suggestions.items.into_iter().map(|item| item.value).collect(),
+                suggestions
+                    .items
+                    .into_iter()
+                    .map(|item| item.value)
+                    .collect(),
                 suggestions.prefix,
             )
         })
@@ -40,13 +54,19 @@ fn ranks_longer_prefix_matches_before_shorter_commands_when_ambiguous() {
     let mut provider = CombinedAutocompleteProvider::new(
         vec![
             CommandSpec::with_description("session", "Show session info and stats"),
-            CommandSpec::with_description("sessions", "Peek at previous session transcripts in a HUD"),
+            CommandSpec::with_description(
+                "sessions",
+                "Peek at previous session transcripts in a HUD",
+            ),
         ],
         "/tmp",
         None,
     );
 
-    assert_eq!(values(&mut provider, "/sessio"), vec!["sessions", "session"]);
+    assert_eq!(
+        values(&mut provider, "/sessio"),
+        vec!["sessions", "session"]
+    );
 }
 
 #[test]
@@ -54,13 +74,19 @@ fn keeps_exact_slash_command_matches_before_longer_commands() {
     let mut provider = CombinedAutocompleteProvider::new(
         vec![
             CommandSpec::with_description("session", "Show session info and stats"),
-            CommandSpec::with_description("sessions", "Peek at previous session transcripts in a HUD"),
+            CommandSpec::with_description(
+                "sessions",
+                "Peek at previous session transcripts in a HUD",
+            ),
         ],
         "/tmp",
         None,
     );
 
-    assert_eq!(values(&mut provider, "/session"), vec!["session", "sessions"]);
+    assert_eq!(
+        values(&mut provider, "/session"),
+        vec!["session", "sessions"]
+    );
 }
 
 #[test]
@@ -123,12 +149,16 @@ fn does_not_suggest_skill_commands_outside_an_executable_leading_run() {
         None,
     );
 
-    assert!(provider
-        .get_suggestions(&["prose /skill:se".to_string()], 0, 15, false)
-        .is_none());
-    assert!(provider
-        .get_suggestions(&["/skill:missing /skill:se".to_string()], 0, 24, false)
-        .is_none());
+    assert!(
+        provider
+            .get_suggestions(&["prose /skill:se".to_string()], 0, 15, false)
+            .is_none()
+    );
+    assert!(
+        provider
+            .get_suggestions(&["/skill:missing /skill:se".to_string()], 0, 24, false)
+            .is_none()
+    );
 }
 
 #[test]
@@ -165,11 +195,13 @@ fn inserts_canonical_slash_commands_and_bare_leading_dollar_skills() {
         description: None,
     };
 
-    let applied_command = provider.apply_completion(&["$rel".to_string()], 0, 4, &command_item, &command.1);
+    let applied_command =
+        provider.apply_completion(&["$rel".to_string()], 0, 4, &command_item, &command.1);
     assert_eq!(applied_command.lines, vec!["/reload "]);
     assert_eq!(applied_command.cursor_col, "/reload ".len());
 
-    let applied_skill = provider.apply_completion(&["$deb".to_string()], 0, 4, &skill_item, &skill.1);
+    let applied_skill =
+        provider.apply_completion(&["$deb".to_string()], 0, 4, &skill_item, &skill.1);
     assert_eq!(applied_skill.lines, vec!["$debugging "]);
     assert_eq!(applied_skill.cursor_col, "$debugging ".len());
 }
@@ -215,7 +247,10 @@ fn preserves_explicit_skill_namespace_chaining() {
 #[test]
 fn offers_skills_on_a_later_logical_editor_line() {
     let mut provider = CombinedAutocompleteProvider::new(
-        vec![CommandSpec::with_description("skill:debugging", "Debug runtime failures")],
+        vec![CommandSpec::with_description(
+            "skill:debugging",
+            "Debug runtime failures",
+        )],
         "/tmp",
         None,
     );
@@ -226,7 +261,11 @@ fn offers_skills_on_a_later_logical_editor_line() {
         .get_suggestions(&lines, 1, cursor_col, false)
         .expect("suggestions");
     assert_eq!(
-        result.items.iter().map(|item| item.value.clone()).collect::<Vec<_>>(),
+        result
+            .items
+            .iter()
+            .map(|item| item.value.clone())
+            .collect::<Vec<_>>(),
         vec!["$debugging"]
     );
     assert_eq!(result.prefix, "$");
@@ -243,9 +282,11 @@ fn offers_partial_skills_after_ordinary_prompt_text() {
     let mut provider = CombinedAutocompleteProvider::new(commands(), "/tmp", None);
 
     assert_eq!(values(&mut provider, "explain $deb"), vec!["$debugging"]);
-    assert!(provider
-        .get_suggestions(&["$deb".to_string()], 1, 4, false)
-        .is_none());
+    assert!(
+        provider
+            .get_suggestions(&["$deb".to_string()], 1, 4, false)
+            .is_none()
+    );
 }
 
 #[test]
@@ -308,12 +349,15 @@ fn leaves_shell_variables_and_positional_parameters_literal() {
 }
 
 fn known_skills() -> BTreeSet<String> {
-    ["debugging".to_string(), "frontend".to_string()].into_iter().collect()
+    ["debugging".to_string(), "frontend".to_string()]
+        .into_iter()
+        .collect()
 }
 
 #[test]
 fn finds_every_boundary_token_that_names_a_known_skill() {
-    let mentions = find_dollar_skill_mentions("fix $debugging then $frontend please", &known_skills());
+    let mentions =
+        find_dollar_skill_mentions("fix $debugging then $frontend please", &known_skills());
 
     assert_eq!(mentions.len(), 2);
     assert_eq!(mentions[0].start, 4);
@@ -378,7 +422,11 @@ fn force_suggestions(
         .get_suggestions(lines, cursor_line, cursor_col, true)
         .map(|suggestions| {
             (
-                suggestions.items.into_iter().map(|item| item.value).collect(),
+                suggestions
+                    .items
+                    .into_iter()
+                    .map(|item| item.value)
+                    .collect(),
                 suggestions.prefix,
             )
         })
@@ -388,7 +436,10 @@ fn force_suggestions(
 fn extracts_slash_from_hey_slash_when_forced() {
     let mut provider = CombinedAutocompleteProvider::new(vec![], "/tmp", None);
     let result = force_suggestions(&mut provider, &["hey /".to_string()], 0, 5);
-    assert!(result.is_some(), "should return suggestions for root directory");
+    assert!(
+        result.is_some(),
+        "should return suggestions for root directory"
+    );
     assert_eq!(result.unwrap().1, "/");
 }
 
@@ -403,16 +454,21 @@ fn extracts_slash_a_from_slash_a_when_forced() {
 #[test]
 fn does_not_trigger_for_slash_commands() {
     let mut provider = CombinedAutocompleteProvider::new(vec![], "/tmp", None);
-    assert!(provider
-        .get_suggestions(&["/model".to_string()], 0, 6, true)
-        .is_none());
+    assert!(
+        provider
+            .get_suggestions(&["/model".to_string()], 0, 6, true)
+            .is_none()
+    );
 }
 
 #[test]
 fn triggers_for_absolute_paths_after_slash_command_argument() {
     let mut provider = CombinedAutocompleteProvider::new(vec![], "/tmp", None);
     let result = force_suggestions(&mut provider, &["/command /".to_string()], 0, 10);
-    assert!(result.is_some(), "should trigger for absolute paths in command arguments");
+    assert!(
+        result.is_some(),
+        "should trigger for absolute paths in command arguments"
+    );
     assert_eq!(result.unwrap().1, "/");
 }
 
@@ -474,9 +530,16 @@ fn continues_completion_inside_quoted_paths() {
 
     let line = "\"my folder/\"";
     let (values, _prefix) =
-        force_suggestions(&mut provider, &[line.to_string()], 0, line.len() - 1).expect("suggestions");
-    assert!(values.contains(&"\"my folder/test.txt\"".to_string()), "{values:?}");
-    assert!(values.contains(&"\"my folder/other.txt\"".to_string()), "{values:?}");
+        force_suggestions(&mut provider, &[line.to_string()], 0, line.len() - 1)
+            .expect("suggestions");
+    assert!(
+        values.contains(&"\"my folder/test.txt\"".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"\"my folder/other.txt\"".to_string()),
+        "{values:?}"
+    );
 }
 
 #[test]
@@ -497,13 +560,15 @@ fn applies_quoted_completion_without_duplicating_the_closing_quote() {
         .find(|item| item.value == "\"my folder/test.txt\"")
         .expect("test.txt suggestion");
 
-    let applied = provider.apply_completion(&[line.to_string()], 0, cursor_col, item, &result.prefix);
+    let applied =
+        provider.apply_completion(&[line.to_string()], 0, cursor_col, item, &result.prefix);
     assert_eq!(applied.lines[0], "\"my folder/test.txt\"");
 }
 
 #[test]
 fn resolves_at_file_requests_off_thread_and_slash_requests_immediately() {
-    let mut provider = CombinedAutocompleteProvider::new(commands(), "/tmp", Some("fd".to_string()));
+    let mut provider =
+        CombinedAutocompleteProvider::new(commands(), "/tmp", Some("fd".to_string()));
     let signal = AutocompleteSignal::new();
     // Aborted before the worker runs, so no fd process is ever spawned.
     signal.abort();
@@ -517,7 +582,546 @@ fn resolves_at_file_requests_off_thread_and_slash_requests_immediately() {
         SuggestionRequest::Ready(_) => panic!("the @ file search must not block the caller"),
     }
     assert!(matches!(
-        provider.request_suggestions(&["/mod".to_string()], 0, 4, false, &AutocompleteSignal::new()),
+        provider.request_suggestions(
+            &["/mod".to_string()],
+            0,
+            4,
+            false,
+            &AutocompleteSignal::new()
+        ),
         SuggestionRequest::Ready(Some(_))
     ));
+}
+
+// ---------- autocomplete.test.ts: fd @ file suggestions ----------
+//
+// senpi skips this group when `fd` is not on PATH (`{ skip: !isFdInstalled }`); these tests
+// return early the same way.
+
+fn fd_path() -> Option<String> {
+    std::process::Command::new("fd")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|_| "fd".to_string())
+}
+
+struct FdFixture {
+    root: tempfile::TempDir,
+}
+
+impl FdFixture {
+    fn new() -> Self {
+        let root = temp_dir();
+        std::fs::create_dir_all(root.path().join("cwd")).expect("mkdir cwd");
+        std::fs::create_dir_all(root.path().join("outside")).expect("mkdir outside");
+        Self { root }
+    }
+
+    fn base(&self) -> std::path::PathBuf {
+        self.root.path().join("cwd")
+    }
+
+    fn outside(&self) -> std::path::PathBuf {
+        self.root.path().join("outside")
+    }
+
+    fn provider(&self, fd: &str) -> CombinedAutocompleteProvider {
+        CombinedAutocompleteProvider::new(
+            vec![],
+            &self.base().to_string_lossy(),
+            Some(fd.to_string()),
+        )
+    }
+}
+
+fn mkdirs(base: &std::path::Path, dirs: &[&str]) {
+    for dir in dirs {
+        std::fs::create_dir_all(base.join(dir)).expect("mkdir");
+    }
+}
+
+fn at_values(provider: &mut CombinedAutocompleteProvider, line: &str) -> Vec<String> {
+    values(provider, line)
+}
+
+#[test]
+fn returns_all_files_and_folders_for_empty_at_query() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    mkdirs(&fixture.base(), &["src"]);
+    write_file(&fixture.base(), "README.md", "readme");
+
+    let mut values = at_values(&mut fixture.provider(&fd), "@");
+    values.sort();
+    assert_eq!(values, vec!["@README.md", "@src/"]);
+}
+
+#[test]
+fn matches_file_with_extension_in_query() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "file.txt", "content");
+
+    let values = at_values(&mut fixture.provider(&fd), "@file.txt");
+    assert!(values.contains(&"@file.txt".to_string()), "{values:?}");
+}
+
+#[test]
+fn at_filters_are_case_insensitive() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    mkdirs(&fixture.base(), &["src"]);
+    write_file(&fixture.base(), "README.md", "readme");
+
+    assert_eq!(
+        at_values(&mut fixture.provider(&fd), "@re"),
+        vec!["@README.md"]
+    );
+}
+
+#[test]
+fn ranks_directories_before_files() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    mkdirs(&fixture.base(), &["src"]);
+    write_file(&fixture.base(), "src.txt", "text");
+
+    let values = at_values(&mut fixture.provider(&fd), "@src");
+    assert_eq!(values.first().map(String::as_str), Some("@src/"));
+    assert!(values.contains(&"@src.txt".to_string()), "{values:?}");
+}
+
+#[test]
+fn returns_nested_file_paths() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "src/index.ts", "export {};\n");
+
+    let values = at_values(&mut fixture.provider(&fd), "@index");
+    assert!(values.contains(&"@src/index.ts".to_string()), "{values:?}");
+}
+
+#[test]
+fn matches_deeply_nested_paths() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(
+        &fixture.base(),
+        "packages/tui/src/autocomplete.ts",
+        "export {};",
+    );
+    write_file(
+        &fixture.base(),
+        "packages/ai/src/autocomplete.ts",
+        "export {};",
+    );
+
+    let values = at_values(&mut fixture.provider(&fd), "@tui/src/auto");
+    assert!(
+        values.contains(&"@packages/tui/src/autocomplete.ts".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        !values.contains(&"@packages/ai/src/autocomplete.ts".to_string()),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn matches_directory_in_middle_of_path_with_full_path() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "src/components/Button.tsx", "export {};");
+    write_file(&fixture.base(), "src/utils/helpers.ts", "export {};");
+
+    let values = at_values(&mut fixture.provider(&fd), "@components/");
+    assert!(
+        values.contains(&"@src/components/Button.tsx".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        !values.contains(&"@src/utils/helpers.ts".to_string()),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn scopes_fuzzy_search_to_relative_directories_and_searches_recursively() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.outside(), "nested/alpha.ts", "export {};");
+    write_file(
+        &fixture.outside(),
+        "nested/deeper/also-alpha.ts",
+        "export {};",
+    );
+    write_file(&fixture.outside(), "nested/deeper/zzz.ts", "export {};");
+
+    let values = at_values(&mut fixture.provider(&fd), "@../outside/a");
+    assert!(
+        values.contains(&"@../outside/nested/alpha.ts".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"@../outside/nested/deeper/also-alpha.ts".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        !values.contains(&"@../outside/nested/deeper/zzz.ts".to_string()),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn ranks_shallower_same_score_at_matches_before_deeper_matches() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    mkdirs(
+        &fixture.base(),
+        &[
+            "scope/aaa/venv/lib/python3.12/site-packages/pkg/core/profile",
+            "scope/projects",
+        ],
+    );
+
+    let values = at_values(&mut fixture.provider(&fd), "@scope/pro");
+    assert_eq!(values.first().map(String::as_str), Some("@scope/projects/"));
+    assert!(
+        values.contains(
+            &"@scope/aaa/venv/lib/python3.12/site-packages/pkg/core/profile/".to_string()
+        ),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn includes_scoped_direct_children_when_recursive_at_matches_are_flooded() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    mkdirs(&fixture.base(), &["scope/projects"]);
+    for index in 1..=250 {
+        mkdirs(
+            &fixture.base(),
+            &[
+                format!("scope/a{index:03}/venv/lib/python3.12/site-packages/pkg/core/profile")
+                    .as_str(),
+            ],
+        );
+    }
+
+    let values = at_values(&mut fixture.provider(&fd), "@scope/pro");
+    assert_eq!(values.first().map(String::as_str), Some("@scope/projects/"));
+    assert!(
+        values.iter().any(|value| value.contains("/profile/")),
+        "deep fuzzy matches should follow the direct children: {values:?}"
+    );
+}
+
+#[test]
+fn includes_hidden_paths_but_excludes_dot_git() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    mkdirs(&fixture.base(), &[".pi", ".github", ".git"]);
+    write_file(&fixture.base(), ".pi/config.json", "{}");
+    write_file(&fixture.base(), ".github/workflows/ci.yml", "name: ci");
+    write_file(&fixture.base(), ".git/config", "[core]");
+
+    let values = at_values(&mut fixture.provider(&fd), "@");
+    assert!(values.contains(&"@.pi/".to_string()), "{values:?}");
+    assert!(values.contains(&"@.github/".to_string()), "{values:?}");
+    assert!(
+        !values
+            .iter()
+            .any(|value| value == "@.git" || value.starts_with("@.git/")),
+        "{values:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn follows_symlinked_directories_for_fuzzy_at_search() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "dir/some_file.txt", "real");
+    write_file(&fixture.outside(), "some_file.txt", "symlinked");
+    std::os::unix::fs::symlink("../outside", fixture.base().join("symlinked_dir"))
+        .expect("symlink");
+
+    let values = at_values(&mut fixture.provider(&fd), "@some");
+    assert!(
+        values.contains(&"@dir/some_file.txt".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"@symlinked_dir/some_file.txt".to_string()),
+        "{values:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn returns_symlinked_directories_when_matching_their_name() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.outside(), "nested/file.txt", "symlinked");
+    std::os::unix::fs::symlink("../outside", fixture.base().join("symlinked_dir"))
+        .expect("symlink");
+
+    let values = at_values(&mut fixture.provider(&fd), "@symlinked");
+    assert!(
+        values.contains(&"@symlinked_dir/".to_string()),
+        "{values:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn returns_symlinked_files_without_requiring_type_l() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "original.txt", "content");
+    std::os::unix::fs::symlink("original.txt", fixture.base().join("link.txt")).expect("symlink");
+
+    let values = at_values(&mut fixture.provider(&fd), "@link");
+    assert!(values.contains(&"@link.txt".to_string()), "{values:?}");
+}
+
+#[test]
+fn returns_the_same_at_suggestions_when_the_cwd_path_contains_the_query() {
+    let Some(fd) = fd_path() else { return };
+    let root = temp_dir();
+    let normal = root.path().join("cwd-normal");
+    let query_in_path = root.path().join("cwd-plan-repro");
+    for base in [&normal, &query_in_path] {
+        mkdirs(
+            base,
+            &["packages/coding-agent/examples/extensions/plan-mode"],
+        );
+        write_file(
+            base,
+            "packages/coding-agent/examples/extensions/plan-mode/README.md",
+            "readme",
+        );
+        write_file(base, "packages/tui/docs/plan.md", "plan");
+    }
+    let normalize = |base: &std::path::Path| -> Vec<String> {
+        let mut provider =
+            CombinedAutocompleteProvider::new(vec![], &base.to_string_lossy(), Some(fd.clone()));
+        let mut entries: Vec<String> = provider
+            .get_suggestions(&["@plan".to_string()], 0, 5, false)
+            .map(|result| result.items)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| format!("{} :: {}", item.label, item.description.unwrap_or_default()))
+            .collect();
+        entries.sort();
+        entries
+    };
+
+    let normal_entries = normalize(&normal);
+    assert_eq!(normalize(&query_in_path), normal_entries);
+    assert!(
+        normal_entries.contains(
+            &"plan-mode/ :: packages/coding-agent/examples/extensions/plan-mode".to_string()
+        ),
+        "{normal_entries:?}"
+    );
+    assert!(
+        normal_entries.contains(&"plan.md :: packages/tui/docs/plan.md".to_string()),
+        "{normal_entries:?}"
+    );
+}
+
+#[test]
+fn continues_autocomplete_inside_quoted_at_paths() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "my folder/test.txt", "content");
+    write_file(&fixture.base(), "my folder/other.txt", "content");
+
+    let line = "@\"my folder/\"";
+    let values: Vec<String> = fixture
+        .provider(&fd)
+        .get_suggestions(&[line.to_string()], 0, line.len() - 1, false)
+        .expect("suggestions for a quoted folder path")
+        .items
+        .into_iter()
+        .map(|item| item.value)
+        .collect();
+    assert!(
+        values.contains(&"@\"my folder/test.txt\"".to_string()),
+        "{values:?}"
+    );
+    assert!(
+        values.contains(&"@\"my folder/other.txt\"".to_string()),
+        "{values:?}"
+    );
+}
+
+#[test]
+fn applies_quoted_at_completion_without_duplicating_closing_quote() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "my folder/test.txt", "content");
+    let mut provider = fixture.provider(&fd);
+
+    let line = "@\"my folder/te\"";
+    let cursor_col = line.len() - 1;
+    let result = provider
+        .get_suggestions(&[line.to_string()], 0, cursor_col, false)
+        .expect("suggestions for a quoted @ path");
+    let item = result
+        .items
+        .iter()
+        .find(|item| item.value == "@\"my folder/test.txt\"")
+        .expect("test.txt suggestion");
+
+    let applied =
+        provider.apply_completion(&[line.to_string()], 0, cursor_col, item, &result.prefix);
+    assert_eq!(applied.lines[0], "@\"my folder/test.txt\" ");
+}
+
+// ---------- autocomplete.test.ts: path completion without fd ----------
+
+#[test]
+fn completes_quoted_paths_after_opening_wrappers() {
+    let dir = temp_dir();
+    write_file(dir.path(), "my dir/main.ts", "x");
+    let mut provider =
+        CombinedAutocompleteProvider::new(vec![], &dir.path().to_string_lossy(), None);
+
+    let line = "see (\"my dir/ma";
+    let (values, prefix) =
+        force_suggestions(&mut provider, &[line.to_string()], 0, line.len()).expect("suggestions");
+    assert_eq!(prefix, "\"my dir/ma");
+    assert_eq!(values, vec!["\"my dir/main.ts\""]);
+}
+
+#[test]
+fn keeps_wrappers_that_are_closed_inside_the_path() {
+    let dir = temp_dir();
+    write_file(dir.path(), "[slug]/page.tsx", "x");
+    write_file(dir.path(), "(group)/layout.tsx", "x");
+    let mut provider =
+        CombinedAutocompleteProvider::new(vec![], &dir.path().to_string_lossy(), None);
+
+    for (prefix, value) in [
+        ("[slug]/pa", "[slug]/page.tsx"),
+        ("(group)/la", "(group)/layout.tsx"),
+        ("./[slug]/pa", "./[slug]/page.tsx"),
+    ] {
+        let line = format!("see {prefix}");
+        let (values, actual_prefix) =
+            force_suggestions(&mut provider, std::slice::from_ref(&line), 0, line.len()).expect("suggestions");
+        assert_eq!(actual_prefix, prefix, "{line}");
+        assert_eq!(values, vec![value.to_string()], "{line}");
+    }
+}
+
+#[test]
+fn preserves_cjk_characters_in_unprefixed_tab_completions() {
+    let dir = temp_dir();
+    write_file(dir.path(), "文档/说明.md", "text");
+    let mut provider =
+        CombinedAutocompleteProvider::new(vec![], &dir.path().to_string_lossy(), None);
+
+    let line = "文档/说";
+    let (values, prefix) =
+        force_suggestions(&mut provider, &[line.to_string()], 0, line.len()).expect("suggestions");
+    assert_eq!(prefix, line);
+    assert_eq!(values, vec!["文档/说明.md"]);
+}
+
+// ---------- autocomplete.test.ts: dollar skill token boundaries ----------
+
+fn commit_skill_provider() -> CombinedAutocompleteProvider {
+    CombinedAutocompleteProvider::new(
+        vec![CommandSpec::with_description(
+            "skill:commit",
+            "Commit changes",
+        )],
+        "/tmp",
+        None,
+    )
+}
+
+#[test]
+fn offers_a_skill_after_ordinary_prompt_text_at_a_token_boundary() {
+    let mut provider = commit_skill_provider();
+    let line = "text $com";
+    let result = provider
+        .get_suggestions(&[line.to_string()], 0, line.len(), false)
+        .expect("a dollar skill suggestion");
+    assert_eq!(result.prefix, "$com");
+    let values: Vec<&str> = result
+        .items
+        .iter()
+        .map(|item| item.value.as_str())
+        .collect();
+    assert_eq!(values, vec!["$commit"]);
+
+    let applied = provider.apply_completion(
+        &[line.to_string()],
+        0,
+        line.len(),
+        &result.items[0],
+        &result.prefix,
+    );
+    assert_eq!(applied.lines[0], "text $commit ");
+    assert_eq!(applied.cursor_col, "text $commit ".len());
+}
+
+#[test]
+fn does_not_hijack_shell_like_dollar_syntax_or_complete_prose_words() {
+    let mut provider = commit_skill_provider();
+    assert!(
+        provider
+            .get_suggestions(&["text $HOME".to_string()], 0, 10, false)
+            .is_none()
+    );
+    assert!(
+        provider
+            .get_suggestions(&["echo $1".to_string()], 0, 7, false)
+            .is_none()
+    );
+    assert!(
+        provider
+            .get_suggestions(&["please use $commit".to_string()], 0, 18, false)
+            .is_none()
+    );
+}
+
+#[test]
+fn does_not_interpret_email_addresses_or_at_after_ascii_or_cjk_letters_as_attachment_prefixes() {
+    let Some(fd) = fd_path() else { return };
+    let fixture = FdFixture::new();
+    write_file(&fixture.base(), "README.md", "readme");
+    write_file(&fixture.base(), "example.com", "text");
+    let mut provider = fixture.provider(&fd);
+
+    for before in [
+        "user",
+        "查看",
+        "あ",
+        "カ",
+        "한",
+        "ㄅ",
+        "𠮷",
+        "か\u{3099}",
+        "禰\u{e0100}",
+        "々",
+        "Ａ",
+    ] {
+        for name in ["REA", "example.com"] {
+            let line = format!("{before}@{name}");
+            assert!(
+                provider
+                    .get_suggestions(std::slice::from_ref(&line), 0, line.len(), false)
+                    .is_none(),
+                "{line}"
+            );
+        }
+    }
 }

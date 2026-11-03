@@ -7,7 +7,6 @@ use telemetry_core::{
     record_daily_active,
 };
 pub const SENPI_TELEMETRY_EVENT_NAME: &str = "omo_senpi_daily_active";
-pub const SENPI_MACHINE_ID_PREFIX: &str = "omo-senpi:";
 #[derive(Clone, Default)]
 pub struct SenpiTelemetryOptions {
     pub env: Option<TelemetryEnv>,
@@ -38,7 +37,6 @@ pub fn create_senpi_telemetry_product_config() -> TelemetryProductConfig {
         default_api_key: DEFAULT_POSTHOG_API_KEY.into(),
         default_host: DEFAULT_POSTHOG_HOST.into(),
         event_name: SENPI_TELEMETRY_EVENT_NAME.into(),
-        machine_id_prefix: SENPI_MACHINE_ID_PREFIX.into(),
         package_name: "@oh-my-opencode/omo-senpi".into(),
         package_version: option_env!("CARGO_PKG_VERSION").unwrap_or("0.0.0").into(),
         platform: "omo-senpi".into(),
@@ -83,6 +81,23 @@ pub async fn record_senpi_daily_active(
             .state_dir
             .clone()
             .unwrap_or_else(|| get_senpi_telemetry_state_dir(&env));
+        let transport_factory = options.transport_factory.clone().unwrap_or_else(|| {
+            let consent_env = env.clone();
+            let consent_product = product.clone();
+            crate::otlp::create_senpi_telemetry_transport_factory(crate::otlp::TransportInput {
+                env: env.clone(),
+                consent: Arc::new(move || {
+                    telemetry_core::is_telemetry_client_enabled(
+                        &telemetry_core::TelemetryClientEnabledInput::for_product(
+                            Some(&consent_env),
+                            &consent_product,
+                        ),
+                    )
+                }),
+                diagnostics: options.diagnostics.clone(),
+                source: Some("senpi-extension".into()),
+            })
+        });
         let input = RecordDailyActiveInput {
             diagnostics: options.diagnostics.clone(),
             env: Some(&env),
@@ -92,7 +107,7 @@ pub async fn record_senpi_daily_active(
             reason: "session_start",
             source: "senpi-extension",
             state_dir: &state_dir,
-            transport_factory: options.transport_factory.clone(),
+            transport_factory: Some(transport_factory),
         };
         record_daily_active(&input).await
     });
@@ -214,7 +229,7 @@ mod tests {
     async fn payload_matches_imported_builder() {
         use telemetry_core::{
             CreateTelemetryClientInput, TrackActiveInput, create_telemetry_client,
-            get_telemetry_distinct_id,
+            get_telemetry_install_distinct_id,
         };
         let t = tempfile::tempdir().unwrap();
         let (o, m) = options(t.path());
@@ -234,7 +249,9 @@ mod tests {
         });
         client.track_active(&TrackActiveInput {
             day_utc: "2026-07-03".into(),
-            distinct_id: get_telemetry_distinct_id(SENPI_MACHINE_ID_PREFIX, &Os),
+            distinct_id: get_telemetry_install_distinct_id(&get_senpi_telemetry_state_dir(
+                o.env.as_ref().unwrap(),
+            )),
             reason: "session_start".into(),
         });
         client.flush().await.unwrap();
@@ -282,6 +299,7 @@ mod tests {
         let mut api = api();
         SenpiTelemetryComponent { options: o }.register(&mut api);
         let event = maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason: maho_ext_api::SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

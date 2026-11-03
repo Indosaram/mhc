@@ -459,7 +459,7 @@ impl AuthProbe for FakeProbe {
             if failing {
                 Err(ProbeError {
                     class: Some("HeaderError".into()),
-                    code: None,
+                    ..ProbeError::default()
                 })
             } else {
                 Ok(())
@@ -480,6 +480,7 @@ async fn refresh_failure_excludes_the_provider() {
             ProbeError {
                 class: Some("AuthError".into()),
                 code: Some("oauth".into()),
+                ..ProbeError::default()
             },
         )]),
         ..FakeProbe::default()

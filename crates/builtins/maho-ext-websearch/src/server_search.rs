@@ -172,6 +172,633 @@ pub(crate) fn fallback_payload(payload: &Value) -> Value {
     payload
 }
 
+// ---- Port of senpi `websearch/server-search.ts` exports (pin 903b8336) ----
+
+/// The additional in-turn server search a route supports (`AdditionalServerSearch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdditionalServerSearch {
+    Google,
+    Openrouter,
+    Perplexity,
+    Moonshot,
+    Zai,
+}
+
+/// `SERVER_SEARCH_DISABLED`: request-local marker, as the sibling native-search extensions read it.
+pub const SERVER_SEARCH_DISABLED_KEY: &str = "__senpi_server_search_disabled";
+
+fn regex(pattern: &str) -> regex::Regex {
+    regex::Regex::new(pattern).expect("server search pattern")
+}
+
+fn search_capable_gemini(id: &str) -> bool {
+    !["image", "live", "tts", "embedding", "computer-use"]
+        .iter()
+        .any(|word| id.contains(word))
+}
+
+/// `additionalServerSearch`: only a route that declares `compat.supportsWebSearch === true`.
+pub fn additional_server_search(model: Option<&Model>) -> Option<AdditionalServerSearch> {
+    let model = model?;
+    let declared = model
+        .compat
+        .as_ref()
+        .and_then(|compat| compat.get("supportsWebSearch"))
+        .and_then(Value::as_bool);
+    if declared != Some(true) {
+        return None;
+    }
+    let api = model.api.as_str();
+    let provider = model.provider.as_str();
+    if (api == "google-generative-ai" || api == "google-vertex")
+        && regex(r"^gemini-(?:2[.-]|3[.-]|flash-latest|pro-latest)").is_match(&model.id)
+        && search_capable_gemini(&model.id)
+    {
+        return Some(AdditionalServerSearch::Google);
+    }
+    if provider == "openrouter" && (api == "openai-completions" || api == "openai-responses") {
+        return Some(AdditionalServerSearch::Openrouter);
+    }
+    if api == "openai-completions" && (provider == "moonshotai" || provider == "moonshotai-cn") {
+        return Some(AdditionalServerSearch::Moonshot);
+    }
+    if api == "openai-completions" && (provider == "zai" || provider == "z-ai") {
+        return Some(AdditionalServerSearch::Zai);
+    }
+    if provider == "perplexity" && api == "openai-completions" && model.id.starts_with("sonar") {
+        return Some(AdditionalServerSearch::Perplexity);
+    }
+    None
+}
+
+/// `hasServerSearch`: the sibling Anthropic/OpenAI native search (enabled by their env switches)
+/// or an additional server search route.
+pub fn has_server_search(model: Option<&Model>) -> bool {
+    let Some(model) = model else {
+        return false;
+    };
+    let anthropic_enabled = maho_ext_anthropic_web_search::parse_enabled(
+        std::env::var("PI_ANTHROPIC_WEB_SEARCH").ok().as_deref(),
+    );
+    let openai_enabled = maho_ext_openai_web_search::parse_enabled(
+        std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref(),
+    );
+    (maho_ext_anthropic_web_search::supports_native_anthropic_web_search(Some(model))
+        && anthropic_enabled)
+        || (maho_ext_openai_web_search::supports_native_openai_web_search(Some(model))
+            && openai_enabled)
+        || additional_server_search(Some(model)).is_some()
+}
+
+fn function_name(tool: &Value) -> Option<&str> {
+    tool.get("function")
+        .filter(|function| function.is_object())
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+}
+
+fn is_moonshot_search_tool(tool: &Value) -> bool {
+    tool.is_object()
+        && (tool.get("name").and_then(Value::as_str) == Some("$web_search")
+            || function_name(tool) == Some("$web_search"))
+}
+
+fn is_client_search_tool(tool: &Value) -> bool {
+    tool.is_object()
+        && (tool.get("type").and_then(Value::as_str) == Some("function")
+            || tool.get("input_schema").is_some())
+        && (tool.get("name").and_then(Value::as_str) == Some("web_search")
+            || function_name(tool) == Some("web_search"))
+}
+
+fn is_search_tool(tool: &Value) -> bool {
+    if !tool.is_object() {
+        return false;
+    }
+    tool.get("name").and_then(Value::as_str) == Some("web_search")
+        || is_moonshot_search_tool(tool)
+        || function_name(tool) == Some("web_search")
+        || tool
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| {
+                kind == "openrouter:web_search"
+                    || kind == "web_search"
+                    || kind.starts_with("web_search_")
+            })
+}
+
+fn with_tools(
+    payload: &serde_json::Map<String, Value>,
+    tools: Vec<Value>,
+) -> serde_json::Map<String, Value> {
+    let mut result = payload.clone();
+    if tools.is_empty() {
+        result.remove("tools");
+    } else {
+        result.insert("tools".into(), Value::Array(tools));
+    }
+    result
+}
+
+fn google_tools(tools: &[Value], retain_function: bool, disabled: bool) -> Vec<Value> {
+    let mut result = Vec::new();
+    for tool in tools {
+        let Some(object) = tool.as_object() else {
+            continue;
+        };
+        if object.contains_key("googleSearch") || object.contains_key("google_search") {
+            continue;
+        }
+        let Some(declarations) = object.get("functionDeclarations").and_then(Value::as_array)
+        else {
+            result.push(tool.clone());
+            continue;
+        };
+        let kept: Vec<Value> = declarations
+            .iter()
+            .filter(|declaration| {
+                !declaration.is_object()
+                    || retain_function
+                    || declaration.get("name").and_then(Value::as_str) != Some("web_search")
+            })
+            .cloned()
+            .collect();
+        if !kept.is_empty() {
+            let mut tool = object.clone();
+            tool.insert("functionDeclarations".into(), Value::Array(kept));
+            result.push(Value::Object(tool));
+        }
+    }
+    if !retain_function && !disabled {
+        result.push(serde_json::json!({"googleSearch": {}}));
+    }
+    result
+}
+
+fn flag(payload: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|key| payload.get(*key).and_then(Value::as_bool) == Some(true))
+}
+
+/// `serverSearchPayload`: rewrites a provider payload for the route's server search. Upstream's
+/// request-local Symbol markers are JSON keys here (the `__senpi_*` keys the sibling extensions read).
+pub fn server_search_payload(model: Option<&Model>, payload: &Value, failed: bool) -> Value {
+    let Some(original) = payload.as_object() else {
+        return payload.clone();
+    };
+    let disabled = flag(
+        original,
+        &[SERVER_SEARCH_DISABLED_KEY, "server_search_disabled"],
+    );
+    let fallback = failed
+        || flag(
+            original,
+            &[
+                maho_ext_anthropic_web_search::SERVER_SEARCH_FALLBACK_KEY,
+                "server_search_fallback",
+            ],
+        );
+    let kind = additional_server_search(model);
+    let mut payload = original.clone();
+    if kind != Some(AdditionalServerSearch::Moonshot) {
+        if payload
+            .get("tool_choice")
+            .is_some_and(is_moonshot_search_tool)
+        {
+            payload.remove("tool_choice");
+        }
+        if let Some(tools) = payload.get("tools").and_then(Value::as_array) {
+            let kept: Vec<Value> = tools
+                .iter()
+                .filter(|tool| !is_moonshot_search_tool(tool))
+                .cloned()
+                .collect();
+            if kept.len() != tools.len() {
+                payload = with_tools(&payload, kept);
+            }
+        }
+        if let Some(config) = payload.get("config").and_then(Value::as_object)
+            && let Some(tools) = config.get("tools").and_then(Value::as_array)
+        {
+            let tools: Vec<Value> = tools
+                .iter()
+                .flat_map(|tool| {
+                    let Some(declarations) =
+                        tool.get("functionDeclarations").and_then(Value::as_array)
+                    else {
+                        return vec![tool.clone()];
+                    };
+                    let kept: Vec<Value> = declarations
+                        .iter()
+                        .filter(|declaration| !is_moonshot_search_tool(declaration))
+                        .cloned()
+                        .collect();
+                    if kept.is_empty() {
+                        return vec![];
+                    }
+                    let mut tool = tool.clone();
+                    tool["functionDeclarations"] = Value::Array(kept);
+                    vec![tool]
+                })
+                .collect();
+            let config = with_tools(config, tools);
+            payload.insert("config".into(), Value::Object(config));
+        }
+    }
+    let Some(model) = model else {
+        return Value::Object(payload);
+    };
+    let google = model.api == "google-generative-ai" || model.api == "google-vertex";
+    if google && (kind == Some(AdditionalServerSearch::Google) || fallback || disabled) {
+        let config = payload
+            .get("config")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let tools = config
+            .get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let config = with_tools(
+            &config,
+            google_tools(&tools, fallback || disabled, disabled),
+        );
+        payload.insert("config".into(), Value::Object(config));
+        if fallback {
+            return fallback_payload(&Value::Object(payload));
+        }
+        return Value::Object(payload);
+    }
+    if !fallback && kind.is_none() && !disabled {
+        return Value::Object(payload);
+    }
+    let mut tools: Vec<Value> = payload
+        .get("tools")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tool| {
+            if !is_search_tool(tool) {
+                return true;
+            }
+            if !disabled && !fallback {
+                return false;
+            }
+            is_client_search_tool(tool)
+        })
+        .collect();
+    if !fallback && !disabled {
+        match kind {
+            Some(AdditionalServerSearch::Openrouter) => tools.push(serde_json::json!({"type": "openrouter:web_search"})),
+            Some(AdditionalServerSearch::Moonshot) => {
+                tools.push(serde_json::json!({"type": "builtin_function", "function": {"name": "$web_search"}}))
+            }
+            Some(AdditionalServerSearch::Zai) => {
+                tools.push(serde_json::json!({"type": "web_search", "web_search": {"enable": true, "search_result": true}}))
+            }
+            _ => {}
+        }
+    }
+    let has_client_search = tools.iter().any(is_client_search_tool);
+    let mut result = with_tools(&payload, tools);
+    if fallback || disabled {
+        if let Some(include) = result.get("include").and_then(Value::as_array) {
+            let include: Vec<Value> = include
+                .iter()
+                .filter(|item| item.as_str() != Some("web_search_call.action.sources"))
+                .cloned()
+                .collect();
+            result.insert("include".into(), Value::Array(include));
+        }
+        if let Some(choice) = result.get("tool_choice")
+            && choice.is_object()
+            && is_search_tool(choice)
+            && !is_client_search_tool(choice)
+            && !(choice.get("name").and_then(Value::as_str) == Some("web_search")
+                && has_client_search)
+        {
+            result.remove("tool_choice");
+        }
+    }
+    if fallback {
+        fallback_payload(&Value::Object(result))
+    } else {
+        Value::Object(result)
+    }
+}
+
+/// `serverSearchFailure`: only search-specific errors trigger fallback; cancellation and unrelated
+/// provider failures do not. Returns the reason.
+pub fn server_search_failure(message: &AssistantMessage, model: Option<&Model>) -> Option<String> {
+    if message.stop_reason == StopReason::Aborted {
+        return None;
+    }
+    if let Some(model) = model
+        && model.provider == "perplexity"
+        && model.api == "openai-completions"
+        && model.id.starts_with("sonar")
+    {
+        return None;
+    }
+    for block in &message.content {
+        let ContentBlock::ProviderNative(block) = block else {
+            continue;
+        };
+        let raw = &block.raw;
+        if !raw.is_object() {
+            continue;
+        }
+        if raw["type"] == "web_search_call" && raw["status"] == "failed" {
+            return Some("server search result: failed".into());
+        }
+        if raw["type"] != "web_search_tool_result" || !raw["content"].is_object() {
+            continue;
+        }
+        if raw["content"]["type"] == "web_search_tool_result_error"
+            && let Some(code) = raw["content"]["error_code"].as_str()
+        {
+            let code: String = code
+                .chars()
+                .filter(|c| c.is_ascii_lowercase() || *c == '_')
+                .take(60)
+                .collect();
+            return Some(format!("server search result: {code}"));
+        }
+    }
+    if message.stop_reason != StopReason::Error {
+        return None;
+    }
+    let error = message.error_message.as_deref().unwrap_or_default();
+    if regex(r"(?i)(\b401\b|invalid[_ -]?(?:api[_ -]?)?key|authentication|unauthorized|quota|billing|insufficient)")
+        .is_match(error)
+    {
+        return None;
+    }
+    if model.is_some_and(|model| model.api == "google-generative-ai" || model.api == "google-vertex")
+        && regex(r"(?i)(multiple tools|combining.*tools|tools.*combination|tool use with function calling is unsupported)")
+            .is_match(error)
+    {
+        return Some("server search request rejected (mixed tools unsupported)".into());
+    }
+    if regex(
+        r#"(?i)(web_search_\d{8}|web_search_preview|openrouter:web_search|googleSearch|google_search|(?:tool(?:[_ -]?type)?|type)\s*[:=]?\s*["']?web_search\b)"#,
+    )
+    .is_match(error)
+    {
+        let status = regex(r"\b(400|403|429|500|502|503)\b")
+            .captures(error)
+            .map(|captures| format!(" (HTTP {})", &captures[1]))
+            .unwrap_or_default();
+        return Some(format!("server search request rejected{status}"));
+    }
+    None
+}
+
+#[cfg(test)]
+mod upstream_payload_tests {
+    use super::*;
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, faux_assistant_message};
+    use serde_json::json;
+
+    fn model(api: &str, provider: &str, id: &str, supports: Option<bool>) -> Model {
+        let mut value = json!({"id":id,"name":id,"api":api,"provider":provider,"baseUrl":"https://example.com","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100});
+        if let Some(supports) = supports {
+            value["compat"] = json!({"supportsWebSearch": supports});
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn strip_markers(value: Value) -> Value {
+        let mut value = value;
+        if let Some(object) = value.as_object_mut() {
+            object.remove("server_search_fallback");
+            object.remove("__senpi_server_search_fallback");
+        }
+        value
+    }
+
+    #[test]
+    fn uses_openrouters_own_server_tool() {
+        let route = model(
+            "openai-completions",
+            "openrouter",
+            "anthropic/claude-opus-5",
+            Some(true),
+        );
+        let payload = json!({"tools":[{"type":"function","function":{"name":"web_search"}},{"type":"function","function":{"name":"read"}}]});
+        assert_eq!(
+            server_search_payload(Some(&route), &payload, false),
+            json!({"tools":[{"type":"function","function":{"name":"read"}},{"type":"openrouter:web_search"}]})
+        );
+    }
+
+    #[test]
+    fn adds_google_grounding_alongside_non_search_declarations() {
+        let route = model(
+            "google-generative-ai",
+            "google",
+            "gemini-3-pro-preview",
+            Some(true),
+        );
+        let payload = json!({"contents":[{"role":"user","parts":[{"text":"Latest documentation?"}]}],"config":{"tools":[{"functionDeclarations":[{"name":"read"},{"name":"web_search"}]}]}});
+        assert_eq!(
+            server_search_payload(Some(&route), &payload, false),
+            json!({"contents":[{"role":"user","parts":[{"text":"Latest documentation?"}]}],"config":{"tools":[{"functionDeclarations":[{"name":"read"}]},{"googleSearch":{}}]}})
+        );
+    }
+
+    #[test]
+    fn does_not_enable_payg_tool_shapes_on_coding_plans() {
+        assert_eq!(
+            additional_server_search(Some(&model(
+                "openai-completions",
+                "deepseek",
+                "deepseek-v4-pro",
+                None
+            ))),
+            None
+        );
+        assert_eq!(
+            additional_server_search(Some(&model("openai-completions", "zai", "glm-5", None))),
+            None
+        );
+        assert!(!has_server_search(Some(&model(
+            "anthropic-messages",
+            "kimi-coding",
+            "kimi-for-coding",
+            None
+        ))));
+        assert!(!has_server_search(Some(&model(
+            "openai-completions",
+            "xai",
+            "grok-4.7",
+            None
+        ))));
+        assert_eq!(
+            additional_server_search(Some(&model(
+                "google-generative-ai",
+                "google",
+                "gemini-2.5-pro",
+                None
+            ))),
+            None
+        );
+    }
+
+    #[test]
+    fn uses_moonshot_builtin_search_on_payg() {
+        let route = model("openai-completions", "moonshotai", "kimi-k3", Some(true));
+        assert_eq!(
+            server_search_payload(
+                Some(&route),
+                &json!({"tools":[{"type":"function","function":{"name":"web_search"}}]}),
+                false
+            ),
+            json!({"tools":[{"type":"builtin_function","function":{"name":"$web_search"}}]})
+        );
+    }
+
+    #[test]
+    fn enables_zai_only_after_explicit_opt_in() {
+        let route = model("openai-completions", "zai", "glm-5", Some(true));
+        assert_eq!(
+            server_search_payload(Some(&route), &json!({"tools":[]}), false),
+            json!({"tools":[{"type":"web_search","web_search":{"enable":true,"search_result":true}}]})
+        );
+        assert!(!has_server_search(Some(&model(
+            "openai-completions",
+            "zai",
+            "glm-5",
+            Some(false)
+        ))));
+    }
+
+    #[test]
+    fn preserves_messages_history_when_falling_back() {
+        let messages = json!([{"role":"assistant","content":[{"type":"server_tool_use","id":"s","name":"web_search","input":{"query":"docs"}},{"type":"web_search_tool_result","tool_use_id":"s","content":[{"encrypted_content":"opaque=="}]}]}]);
+        let payload = json!({"messages":messages,"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"web_search","input_schema":{"type":"object"}}]});
+        let result = server_search_payload(
+            Some(&model(
+                "anthropic-messages",
+                "anthropic",
+                "claude-opus-5-5",
+                None,
+            )),
+            &payload,
+            true,
+        );
+        assert_eq!(result["messages"], messages);
+        assert_eq!(
+            strip_markers(result)["tools"],
+            json!([{"name":"web_search","input_schema":{"type":"object"}}])
+        );
+    }
+
+    #[test]
+    fn recognizes_native_search_error_objects_without_retrying_cancellation() {
+        let block = |raw: Value| {
+            serde_json::from_value::<ContentBlock>(
+                json!({"type":"providerNative","subtype":raw["type"].clone(),"raw":raw}),
+            )
+            .unwrap()
+        };
+        let mut message = faux_assistant_message(
+            vec![block(
+                json!({"type":"web_search_tool_result","content":{"type":"web_search_tool_result_error","error_code":"unavailable"}}),
+            )],
+            FauxAssistantMessageOptions::default(),
+        );
+        assert_eq!(
+            server_search_failure(&message, None).as_deref(),
+            Some("server search result: unavailable")
+        );
+        message.stop_reason = StopReason::Aborted;
+        assert_eq!(server_search_failure(&message, None), None);
+        let failed = faux_assistant_message(
+            vec![block(json!({"type":"web_search_call","status":"failed"}))],
+            FauxAssistantMessageOptions::default(),
+        );
+        assert_eq!(
+            server_search_failure(&failed, None).as_deref(),
+            Some("server search result: failed")
+        );
+    }
+
+    fn error(message: &str) -> AssistantMessage {
+        faux_assistant_message(
+            "",
+            FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error),
+                error_message: Some(message.into()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn keeps_auth_quota_and_function_schema_failures_out_of_fallback() {
+        for message in [
+            "401 invalid_api_key; request tools web_search_20250305",
+            "429 quota exceeded; body echoes web_search_preview",
+            "Invalid input_schema for function web_search",
+        ] {
+            assert_eq!(
+                server_search_failure(&error(message), None),
+                None,
+                "{message}"
+            );
+        }
+        assert_eq!(
+            server_search_failure(&error("400 tool type: web_search unsupported"), None).as_deref(),
+            Some("server search request rejected (HTTP 400)")
+        );
+    }
+
+    #[test]
+    fn does_not_convert_sonar_errors() {
+        assert_eq!(
+            server_search_failure(
+                &error("400 type: web_search unavailable"),
+                Some(&model(
+                    "openai-completions",
+                    "perplexity",
+                    "sonar-pro",
+                    None
+                ))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn gemini_2_grounding_falls_back_on_mixed_tool_rejection() {
+        let route = model(
+            "google-generative-ai",
+            "google",
+            "gemini-2.5-pro",
+            Some(true),
+        );
+        assert!(has_server_search(Some(&route)));
+        assert_eq!(
+            server_search_failure(
+                &error("Tool use with function calling is unsupported"),
+                Some(&route)
+            )
+            .as_deref(),
+            Some("server search request rejected (mixed tools unsupported)")
+        );
+        assert!(!has_server_search(Some(&model(
+            "google-generative-ai",
+            "google",
+            "gemini-2.5-flash-image",
+            Some(true)
+        ))));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

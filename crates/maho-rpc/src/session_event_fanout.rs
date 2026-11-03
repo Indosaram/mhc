@@ -23,7 +23,34 @@ pub struct SessionEventFanout {
     worker_sessions: BTreeSet<String>,
     /// What a shed `event_resync` peer's snapshot reads; shared because the actor reads it off the fanout lock.
     resync: std::sync::Arc<std::sync::Mutex<ResyncView>>,
+    /// Each routing session's acceptance lane; retired when the session is sealed or forgotten.
+    pub acceptance: SharedAcceptanceLanes,
+    /// Host-level `session_status` subscriptions (senpi `SessionEventWriter.status`); shared so a caller holding the
+    /// fanout lock can use the fanout itself as the stream's delivery.
+    pub status: std::sync::Arc<std::sync::Mutex<crate::session_status_source::SessionStatusHub>>,
+    /// senpi `onConnectionClosed`: told about every connection the fanout reaps after its queue failed. It runs
+    /// under the fanout lock, so it must not re-enter the fanout.
+    on_connection_closed: Option<ConnectionClosed>,
 }
+impl crate::session_status_stream::SessionStatusDelivery for SessionEventFanout {
+    fn enqueue(&self, connection_id: &str, line: &str) -> bool {
+        self.enqueue_line(connection_id, line)
+    }
+    fn pending_questions(&self, session_id: &str) -> usize {
+        self.pending_question_count(session_id)
+    }
+}
+/// The acceptance lanes, shared with the writer and with the recovery cuts that freeze them at a shed.
+pub type SharedAcceptanceLanes = std::sync::Arc<
+    std::sync::Mutex<
+        BTreeMap<
+            String,
+            std::sync::Arc<std::sync::Mutex<crate::session_acceptance_lane::SessionAcceptanceLane>>,
+        >,
+    >,
+>;
+/// See [`SessionEventFanout::set_on_connection_closed`].
+pub type ConnectionClosed = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 /// Per-connection attachments and each session's latest in-flight message line, kept only while some connection
 /// negotiated `event_resync` (senpi `resyncSnapshot` reads `connectionSessions` and `sessionSnapshots`).
 #[derive(Default)]
@@ -95,6 +122,7 @@ impl SessionEventFanout {
         };
         self.resync_view().recovering.insert(id.to_owned());
         let view = std::sync::Arc::clone(&self.resync);
+        let lanes = std::sync::Arc::clone(&self.acceptance);
         let connection = id.to_owned();
         actor.enable_recovery(Box::new(move |reason| {
             let attached = view
@@ -104,9 +132,30 @@ impl SessionEventFanout {
                 .get(&connection)
                 .cloned()
                 .unwrap_or_default();
+            // Frozen at the shed, before the actor awaits its drain (R3.C1.5); released by the recovery.
+            let frozen: Vec<_> = {
+                let lanes = lanes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                attached
+                    .iter()
+                    .filter_map(|session| lanes.get(session).cloned())
+                    .filter_map(|lane| {
+                        let mut guard = lane
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if guard.retired() {
+                            return None;
+                        }
+                        let root = guard.freeze();
+                        drop(guard);
+                        Some((lane, root))
+                    })
+                    .collect()
+            };
             let view = std::sync::Arc::clone(&view);
             let connection = connection.clone();
-            Box::new(move || {
+            let mut cut = crate::socket_peer_recovery::ResyncCut::new(Box::new(move || {
                 let view = view
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -135,7 +184,15 @@ impl SessionEventFanout {
                         record
                     })
                     .collect()
-            })
+            }));
+            cut.release = Some(Box::new(move || {
+                for (lane, root) in frozen {
+                    lane.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .release(&root);
+                }
+            }));
+            cut
         }));
     }
     fn disable_resync(&self, id: &str) {
@@ -161,7 +218,23 @@ impl SessionEventFanout {
         self.targets.register(id);
         self.actors.insert(id.into(), actor);
     }
+    /// senpi `onConnectionClosed`: the host's hook for connections this fanout reaps on a failed queue.
+    pub fn set_on_connection_closed(&mut self, hook: ConnectionClosed) {
+        self.on_connection_closed = Some(hook);
+    }
+    /// Unregisters a connection whose queue failed and tells the host (senpi `onConnectionClosed`).
+    fn reap(&mut self, id: &str) {
+        self.unregister(id);
+        if let Some(hook) = &self.on_connection_closed {
+            hook(id);
+        }
+    }
     pub fn unregister(&mut self, id: &str) {
+        self.status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stream
+            .drop_connection(id);
         let sessions = self.attached_connections_for(id);
         for session in sessions {
             self.attach_order.detached(&session, id);
@@ -173,6 +246,45 @@ impl SessionEventFanout {
         let mut view = self.resync_view();
         view.attached.remove(id);
         view.recovering.remove(id);
+    }
+    /// A terminal lifecycle record for the connections attached to `session` only (senpi `sealLifecycle` with
+    /// `attachedOnly`, through `deliverToSession`). With no registered connection the record is handed back for the
+    /// stdio lane.
+    pub fn deliver_to_attached(
+        &mut self,
+        session: &str,
+        mut wire: Value,
+    ) -> Result<Option<Value>, String> {
+        if let Some(object) = wire.as_object_mut() {
+            object.insert("sessionId".into(), session.into());
+        }
+        self.snapshots.forget(session);
+        self.resync_view().latest.remove(session);
+        if self.is_empty() {
+            return Ok(Some(wire));
+        }
+        let line = crate::jsonl::serialize_json_line(&wire).map_err(|error| error.to_string())?;
+        let mut failed = Vec::new();
+        for id in self.attached_connections(session) {
+            let Some(actor) = self.actors.get(&id) else {
+                continue;
+            };
+            if actor
+                .enqueue(crate::socket_event_fanout::QueueEntry {
+                    line: line.clone(),
+                    key: None,
+                    demoted_line: None,
+                    on_written: None,
+                })
+                .is_err()
+            {
+                failed.push(id);
+            }
+        }
+        for id in failed {
+            self.reap(&id);
+        }
+        Ok(None)
     }
     /// Queues one untagged control record for a registered connection (senpi `enqueueControl`);
     /// `false` when the connection has no actor and the caller must use the stdio lane.
@@ -190,6 +302,32 @@ impl SessionEventFanout {
             })
             .map_err(|error| error.to_string())?;
         Ok(true)
+    }
+    /// Queues one already-serialized line on a registered connection's FIFO (senpi `actor.enqueue(line)` for
+    /// subscription records); `false` when the connection is gone or its queue overflowed.
+    pub fn enqueue_line(&self, id: &str, line: &str) -> bool {
+        self.actors.get(id).is_some_and(|actor| {
+            actor
+                .enqueue(crate::socket_event_fanout::QueueEntry {
+                    line: line.to_owned(),
+                    key: None,
+                    demoted_line: None,
+                    on_written: None,
+                })
+                .is_ok()
+        })
+    }
+    /// The session's pending `question` frames (replayed on attach), for `session_status`.
+    pub fn pending_question_count(&self, session: &str) -> usize {
+        self.snapshots.question_count(session)
+    }
+    /// Writes one private record raw on a registered connection (senpi `connection.writeRaw`), outside the event
+    /// queue, its overflow preview and recovery shedding; `false` when the connection has no live actor.
+    pub fn enqueue_raw(&self, id: &str, value: &Value) -> bool {
+        let Some(actor) = self.actors.get(id) else {
+            return false;
+        };
+        crate::jsonl::serialize_json_line(value).is_ok_and(|line| actor.enqueue_raw(line))
     }
     pub fn broadcast_host_record(&mut self, record: &Value) -> Result<Option<Value>, String> {
         if self.actors.is_empty() {
@@ -212,7 +350,7 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         Ok(None)
     }
@@ -265,6 +403,16 @@ impl SessionEventFanout {
         }
     }
     pub fn forget_session(&mut self, session: &str) {
+        let lane = self
+            .acceptance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+        if let Some(lane) = lane {
+            lane.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retire(crate::session_acceptance_lane::RetireReason::Close);
+        }
         {
             let mut view = self.resync_view();
             view.latest.remove(session);
@@ -316,19 +464,13 @@ impl SessionEventFanout {
                 for record in self
                     .snapshots
                     .snapshots
-                    .get(&session)
+                    .get_mut(&session)
                     .into_iter()
                     .flatten()
                     .filter(|record| record.rendered)
                 {
                     let line = if placeholders {
-                        match &record.source {
-                            Some(source) => crate::jsonl::serialize_json_line(
-                                &crate::media_placeholders::omit_inline_media(source),
-                            )
-                            .map_err(|error| error.to_string())?,
-                            None => record.line.clone(),
-                        }
+                        snapshot_placeholder_line(record).map_err(|error| error.to_string())?
                     } else {
                         record.line.clone()
                     };
@@ -406,7 +548,7 @@ impl SessionEventFanout {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
         }
         if matches!(
             wire["type"].as_str(),
@@ -456,6 +598,35 @@ impl SessionEventFanout {
             object.insert("sessionId".into(), session.into());
         }
         let line = crate::jsonl::serialize_json_line(&wire).map_err(|error| error.to_string())?;
+        // Observation records are per-subscription opt-ins on the subscriber's own FIFO: never attachments, the attach
+        // replay, response broadcast, or the stdio lane, which cannot subscribe (senpi `enqueue`, #4266).
+        let kind = wire["type"].as_str().unwrap_or_default();
+        if matches!(
+            kind,
+            "snapshot_marker" | "ui_request_pending" | "ui_request_settled"
+        ) {
+            let status = std::sync::Arc::clone(&self.status);
+            let hub = status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let targets = if kind == "snapshot_marker" {
+                // A marker belongs to the connection whose `get_snapshot` captured it.
+                hub.stream
+                    .mirror_targets(&hub.source, session, kind)
+                    .into_iter()
+                    .filter(|id| Some(id.as_str()) == target)
+                    .collect()
+            } else {
+                hub.stream.dialog_targets(&hub.source, session)
+            };
+            drop(hub);
+            for id in targets {
+                self.enqueue_line(&id, &line);
+            }
+            return Ok(Vec::new());
+        }
+        let seal = crate::session_status::terminal_of_lifecycle(&wire);
+        let cause = crate::session_status::cause_of_record(&wire);
         let terminal = matches!(
             wire["type"].as_str(),
             Some("session_closed" | "session_parked")
@@ -471,14 +642,11 @@ impl SessionEventFanout {
             } else {
                 std::borrow::Cow::Borrowed(&wire)
             };
-            // `omit_inline_media` returns any other record as-is, so its placeholder replay is
-            // `line` itself; keep a source copy only for a record the snapshot list will retain.
-            let source = (crate::media_placeholders::carries_inline_media(&wire)
-                && self.snapshots.retains(session, &wire))
-            .then(|| wire.clone());
+            // `omit_inline_media` returns any other record as-is, so its placeholder replay is `line` itself.
+            let may_carry_media = crate::media_placeholders::carries_inline_media(&wire);
             self.note_latest(session, &wire, &line);
             self.snapshots
-                .remember(session, &tagged, line.clone(), None, source);
+                .remember(session, &tagged, line.clone(), None, may_carry_media);
         }
         let mut failed = Vec::new();
         let mut stdio = Vec::new();
@@ -491,9 +659,28 @@ impl SessionEventFanout {
         } else {
             wire["type"].as_str()
         };
-        let targets = self
+        let mut targets = self
             .targets
             .targets(session, target, targeted, rendered, kind);
+        // Mirroring is an explicit per-subscription opt-in; it adds destinations, never an attachment.
+        if !targeted {
+            let status = std::sync::Arc::clone(&self.status);
+            let hub = status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for id in hub.stream.mirror_targets(
+                &hub.source,
+                session,
+                wire["type"].as_str().unwrap_or_default(),
+            ) {
+                if !targets
+                    .iter()
+                    .any(|existing| existing.as_deref() == Some(id.as_str()))
+                {
+                    targets.push(Some(id));
+                }
+            }
+        }
         let last = targets.len();
         // PERF-DIVERGENCE(senpi socket-event-fanout): upstream stringifies the scrubbed/demoted record per connection; we serialize each variant once per placeholders flag and share it across targets. Bytes on the wire are identical.
         let mut variant_lines: [Option<(String, Option<String>)>; 2] = [None, None];
@@ -566,7 +753,35 @@ impl SessionEventFanout {
             }
         }
         for id in failed {
-            self.unregister(&id);
+            self.reap(&id);
+        }
+        // After the causing record is on every destination's FIFO, never before (ordering contract).
+        let by = if target.is_some() { "client" } else { "" };
+        let status = std::sync::Arc::clone(&self.status);
+        let mut guard = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let hub = &mut *guard;
+        match (seal, cause) {
+            (Some(seal), Some(cause)) if terminal => {
+                hub.stream.seal(
+                    &hub.source,
+                    &*self,
+                    session,
+                    seal,
+                    cause,
+                    if by.is_empty() { "host" } else { by },
+                );
+            }
+            (_, Some(cause)) if !targeted => hub.stream.publish(
+                &hub.source,
+                &*self,
+                session,
+                cause,
+                if by.is_empty() { "agent" } else { by },
+                false,
+            ),
+            _ => {}
         }
         Ok(stdio)
     }
@@ -714,10 +929,7 @@ impl ConnectionTargets {
     pub fn connection_has(&self, connection: &str, capability: &str) -> bool {
         self.connections.iter().any(|candidate| {
             candidate.id == connection
-                && candidate
-                    .capabilities
-                    .iter()
-                    .any(|name| name == capability)
+                && candidate.capabilities.iter().any(|name| name == capability)
         })
     }
 
@@ -726,11 +938,30 @@ impl ConnectionTargets {
         self.connections.is_empty()
     }
 }
+/// senpi `SnapshotRecord`: the frozen line, its memoized placeholder variant, and the type gate taken at
+/// acceptance. A record whose type cannot carry media replays `line` with no parse; only a media-bearing one
+/// parses its frozen line, once, on the first capable replay. No source object is retained.
 struct SnapshotRecord {
     line: String,
     placeholder_line: Option<String>,
-    source: Option<Value>,
+    may_carry_media: bool,
     rendered: bool,
+}
+/// senpi `snapshotPlaceholderLine`: the placeholder variant of a remembered record, derived and memoized on first use.
+fn snapshot_placeholder_line(record: &mut SnapshotRecord) -> Result<String, serde_json::Error> {
+    if let Some(line) = &record.placeholder_line {
+        return Ok(line.clone());
+    }
+    if !record.may_carry_media {
+        return Ok(record.line.clone());
+    }
+    let source: Value = serde_json::from_str(&record.line)?;
+    let line = match crate::media_placeholders::omit_inline_media(&source) {
+        std::borrow::Cow::Borrowed(_) => record.line.clone(),
+        std::borrow::Cow::Owned(redacted) => crate::jsonl::serialize_json_line(&redacted)?,
+    };
+    record.placeholder_line = Some(line.clone());
+    Ok(line)
 }
 /// `record` with `message` and `assistantMessageEvent.partial` nulled, built by copying the small
 /// entries instead of deep-cloning the cumulative snapshots first. Key order matches assigning
@@ -813,7 +1044,7 @@ impl SessionSnapshots {
         value: &Value,
         line: String,
         placeholder_line: Option<String>,
-        source: Option<Value>,
+        may_carry_media: bool,
     ) {
         let kind = value["type"].as_str();
         if kind == Some("session_lifecycle") {
@@ -855,7 +1086,7 @@ impl SessionSnapshots {
         let record = SnapshotRecord {
             line,
             placeholder_line,
-            source,
+            may_carry_media,
             rendered: value[RENDERED_COMPONENT_RECORD] == true,
         };
         if kind == Some("message_start")
@@ -877,30 +1108,25 @@ impl SessionSnapshots {
         placeholders: bool,
         now_ms: f64,
     ) -> Result<Vec<String>, serde_json::Error> {
+        // The remembered lifecycle is re-stamped for this delivery instead of replaying its stale `observedAt`.
         let mut lines = self
             .lifecycle
             .get(session_id)
-            .cloned()
+            .map(|line| match serde_json::from_str::<Value>(line) {
+                Ok(mut record) => {
+                    crate::lifecycle_delivery::observe_lifecycle_delivery(&mut record);
+                    crate::jsonl::serialize_json_line(&record).unwrap_or_else(|_| line.clone())
+                }
+                Err(_) => line.clone(),
+            })
             .into_iter()
             .collect::<Vec<_>>();
         for record in self.snapshots.get_mut(session_id).into_iter().flatten() {
             if record.rendered && !rendered {
                 continue;
             }
-            if placeholders && record.placeholder_line.is_none() {
-                record.placeholder_line = Some(match &record.source {
-                    Some(source) => crate::jsonl::serialize_json_line(
-                        &crate::media_placeholders::omit_inline_media(source),
-                    )?,
-                    None => record.line.clone(),
-                });
-            }
             lines.push(if placeholders {
-                record
-                    .placeholder_line
-                    .as_ref()
-                    .unwrap_or(&record.line)
-                    .clone()
+                snapshot_placeholder_line(record)?
             } else {
                 record.line.clone()
             });
@@ -920,6 +1146,11 @@ impl SessionSnapshots {
             lines.push(crate::jsonl::serialize_json_line(&frame)?);
         }
         Ok(lines)
+    }
+    pub fn question_count(&self, session_id: &str) -> usize {
+        self.questions
+            .get(session_id)
+            .map_or(0, serde_json::Map::len)
     }
     pub fn forget(&mut self, session_id: &str) {
         self.lifecycle.remove(session_id);
@@ -943,17 +1174,25 @@ mod tests {
         for seq in [1, 2] {
             let record =
                 json!({"type":"session_lifecycle","sessionId":"s","lifecycle":{"seq":seq}});
-            snapshots.remember("s", &record, record.to_string(), None, None);
+            snapshots.remember(
+                "s",
+                &record,
+                crate::jsonl::serialize_json_line(&record).unwrap(),
+                None,
+                false,
+            );
         }
         let replay = snapshots.replay("s", false, false, 0.).unwrap();
         assert_eq!(replay.len(), 1);
+        // The re-stamped lifecycle keeps its JSONL framing, or it runs into the next replayed record.
+        assert!(replay[0].ends_with('\n'));
         assert_eq!(
             serde_json::from_str::<Value>(&replay[0]).unwrap()["lifecycle"]["seq"],
             2
         );
     }
     #[test]
-    fn source_is_kept_only_for_retained_media_records() {
+    fn only_media_bearing_records_are_gated_for_a_placeholder_parse() {
         let mut fanout = SessionEventFanout::default();
         fanout
             .deliver("s", None, false, &json!({"type":"agent_end","messages":[]}))
@@ -978,13 +1217,41 @@ mod tests {
         fanout
             .deliver("s", None, false, &json!({"type":"turn_end","message":{}}))
             .unwrap();
-        let sources = fanout.snapshots.snapshots["s"]
+        let gates = fanout.snapshots.snapshots["s"]
             .iter()
-            .map(|record| record.source.is_some())
+            .map(|record| record.may_carry_media)
             .collect::<Vec<_>>();
-        assert_eq!(sources, vec![true, false, true]);
+        assert_eq!(gates, vec![true, false, true]);
         let full = fanout.snapshots.replay("s", false, false, 0.).unwrap();
         assert_eq!(fanout.snapshots.replay("s", false, true, 0.).unwrap(), full);
+        // Only the derived line is memoized; a non-media record never derives one.
+        let memoized = fanout.snapshots.snapshots["s"]
+            .iter()
+            .map(|record| record.placeholder_line.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(memoized, vec![true, false, true]);
+    }
+    #[test]
+    fn a_late_capable_replay_redacts_the_frozen_line_of_a_media_record() {
+        let mut snapshots = SessionSnapshots::default();
+        let start = json!({"type":"message_start","message":{"role":"toolResult","toolCallId":"t1","content":[
+            {"type":"image","data":"QUJD","mimeType":"image/png"}
+        ]}});
+        let line = crate::jsonl::serialize_json_line(&start).unwrap();
+        snapshots.remember("s", &start, line.clone(), None, true);
+        let plain = snapshots.replay("s", false, false, 0.).unwrap();
+        assert_eq!(plain, vec![line.clone()]);
+        let redacted = snapshots.replay("s", false, true, 0.).unwrap();
+        assert_eq!(
+            redacted,
+            vec![
+                crate::jsonl::serialize_json_line(&crate::media_placeholders::omit_inline_media(
+                    &start
+                ))
+                .unwrap()
+            ]
+        );
+        assert_ne!(redacted[0], line);
     }
     #[test]
     fn demoted_snapshot_matches_clone_then_null_bytes() {
@@ -1018,7 +1285,7 @@ mod tests {
                 &json!({"type":"extension_ui_request","method":"question","id":id}),
                 String::new(),
                 None,
-                None,
+                false,
             );
         }
         snapshots.remember(
@@ -1026,7 +1293,7 @@ mod tests {
             &json!({"type":"extension_ui_request","method":"question","id":"z","deadlineAtMs":100}),
             String::new(),
             None,
-            None,
+            false,
         );
         let frames = snapshots
             .replay("s", false, false, 0.)
@@ -1072,7 +1339,7 @@ mod tests {
     fn message_end_discards_replay_and_rendered_requires_capability() {
         let mut snapshots = SessionSnapshots::default();
         let value = json!({"type":"message_start","__senpiRenderedComponent":true});
-        snapshots.remember("s", &value, "start\n".into(), None, None);
+        snapshots.remember("s", &value, "start\n".into(), None, false);
         assert!(snapshots.replay("s", false, false, 0.).unwrap().is_empty());
         assert_eq!(
             snapshots.replay("s", true, false, 0.).unwrap(),
@@ -1083,7 +1350,7 @@ mod tests {
             &json!({"type":"message_end"}),
             "end\n".into(),
             None,
-            None,
+            false,
         );
         assert!(snapshots.replay("s", true, false, 0.).unwrap().is_empty());
     }
@@ -1095,14 +1362,14 @@ mod tests {
             &json!({"type":"extension_ui_request","method":"question","id":"q","deadlineAtMs":100}),
             String::new(),
             None,
-            None,
+            false,
         );
         snapshots.remember(
             "s",
             &json!({"type":"question_updated","id":"q","deadlineAtMs":200,"remainingMs":150}),
             String::new(),
             None,
-            None,
+            false,
         );
         let line = snapshots.replay("s", false, false, 150.).unwrap().remove(0);
         let value: Value = serde_json::from_str(&line).unwrap();
@@ -1112,7 +1379,7 @@ mod tests {
             &json!({"type":"question_resolved","id":"q"}),
             String::new(),
             None,
-            None,
+            false,
         );
         assert!(
             snapshots
@@ -1222,6 +1489,30 @@ mod tests {
         assert_eq!(stdio[0]["id"], "grant-req-3");
     }
 
+    /// dialog-observer.test.ts "keeps observation records off the stdio lane" (senpi#4266): the stdio lane cannot
+    /// subscribe, so opt-in observation records never reach it, while an ordinary record still does.
+    #[tokio::test]
+    async fn observation_records_stay_off_the_stdio_lane() {
+        let mut fanout = SessionEventFanout::default();
+        let request = json!({"type":"extension_ui_request","id":"d","method":"confirm","title":"Confirm","message":"Proceed?"});
+        let mut stdio = Vec::new();
+        for record in [
+            json!({"type":"snapshot_marker","markerId":"m"}),
+            json!({"type":"ui_request_pending","uiRequestId":"d","method":"confirm","request":request}),
+            json!({"type":"ui_request_settled","uiRequestId":"d","disposition":"cancelled"}),
+            json!({"type":"agent_start"}),
+        ] {
+            stdio.extend(fanout.deliver_owned("s", None, false, record).unwrap());
+        }
+        assert_eq!(
+            stdio
+                .iter()
+                .map(|record| record["type"].as_str())
+                .collect::<Vec<_>>(),
+            [Some("agent_start")]
+        );
+    }
+
     #[tokio::test]
     async fn security_notices_replay_and_cleanup() {
         let mut fanout = SessionEventFanout::default();
@@ -1252,6 +1543,205 @@ mod tests {
         fanout.unregister("c2");
         fanout.forget_session("s1");
         assert!(fanout.security_snapshot("s1").is_none());
+        assert!(fanout.attached_connections("s1").is_empty());
+    }
+
+    /// senpi 4272-resync-root-release-paths: one `event_resync` peer attached to `s1`, whose lane the
+    /// shed freezes. The peer's socket is never read until a test asks, so its queue overflows.
+    struct ShedRig {
+        fanout: SessionEventFanout,
+        lane: crate::session_registry::SharedAcceptanceLane,
+        reader: Option<tokio::io::DuplexStream>,
+        failed: tokio::sync::oneshot::Receiver<String>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn shed_rig() -> ShedRig {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = crate::session_acceptance_lane::SessionAcceptanceLane::new(
+            Some(crate::compact_content_store::CompactContentStoreOptions {
+                dir: dir.path().display().to_string(),
+                ..Default::default()
+            }),
+            None,
+        );
+        lane.bootstrap(Default::default(), None);
+        let lane = std::sync::Arc::new(std::sync::Mutex::new(lane));
+        let (writer, reader) = tokio::io::duplex(1);
+        let (failure, failed) = tokio::sync::oneshot::channel();
+        let failure = std::sync::Mutex::new(Some(failure));
+        let actor = crate::socket_event_fanout::SocketEventSinkActor::new(
+            writer,
+            256,
+            30_000,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::loop_blocked_time::LoopBlockedTime::default(),
+            )),
+            move |error| {
+                if let Some(failure) = failure.lock().unwrap().take() {
+                    let _ = failure.send(error);
+                }
+            },
+        );
+        let mut fanout = SessionEventFanout::default();
+        fanout
+            .acceptance
+            .lock()
+            .unwrap()
+            .insert("s1".into(), std::sync::Arc::clone(&lane));
+        fanout.register("peer", actor);
+        fanout
+            .set_capabilities(
+                "peer",
+                &[crate::socket_peer_recovery::EVENT_RESYNC_CAPABILITY.into()],
+            )
+            .unwrap();
+        fanout.attach("peer", "s1", 0.0).unwrap();
+        ShedRig {
+            fanout,
+            lane,
+            reader: Some(reader),
+            failed,
+            _dir: dir,
+        }
+    }
+
+    impl ShedRig {
+        fn live(&self) -> usize {
+            self.lane.lock().unwrap().live_roots()
+        }
+        fn retired(&self) -> bool {
+            self.lane.lock().unwrap().retired()
+        }
+        /// The actor has not run yet, so the second record overflows the 256-byte queue and sheds.
+        fn overflow(&self) {
+            let record = json!({"type":"extension_ui_request","pad":"x".repeat(200)});
+            for _ in 0..3 {
+                self.fanout.enqueue_control("peer", &record).unwrap();
+            }
+        }
+        async fn finish(self) {
+            let lane = std::sync::Arc::clone(&self.lane);
+            drop(self.fanout);
+            let mut lane = std::mem::take(&mut *lane.lock().unwrap());
+            lane.retire(crate::session_acceptance_lane::RetireReason::Close);
+            lane.idle().await;
+        }
+    }
+
+    fn within<T>(
+        what: &str,
+        future: impl std::future::Future<Output = T>,
+    ) -> impl std::future::Future<Output = T> {
+        let what = what.to_owned();
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), future)
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_delivered_resync_releases_the_root_the_shed_froze() {
+        use tokio::io::AsyncBufReadExt;
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1, "the shed froze the attached session's root");
+        let mut lines = tokio::io::BufReader::new(rig.reader.take().unwrap()).lines();
+        let delivered = within("the resync delivery", async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                if line.contains("\"sessionId\":\"s1\"") && line.contains("resync_required") {
+                    return line;
+                }
+            }
+            panic!("the peer closed before its resync");
+        })
+        .await;
+        assert!(delivered.contains("\"reason\":\"overflow\""), "{delivered}");
+        assert_eq!(rig.live(), 0, "live roots after delivery");
+        assert!(!rig.retired(), "the session is still live");
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_failing_peer_transport_releases_the_root_the_shed_froze() {
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1);
+        drop(rig.reader.take());
+        let error = within("the drain failure", &mut rig.failed).await.unwrap();
+        assert!(!error.is_empty());
+        assert_eq!(rig.live(), 0, "live roots after the drain failed");
+        assert!(!rig.retired());
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_the_peer_releases_the_root_the_shed_froze() {
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1);
+        rig.fanout.unregister("peer");
+        assert_eq!(rig.live(), 0, "live roots after the peer dropped");
+        assert!(!rig.retired(), "dropping one peer leaves the session live");
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_session_retires_its_lane_and_releases_the_shed_root() {
+        let mut rig = shed_rig();
+        rig.overflow();
+        assert_eq!(rig.live(), 1);
+        rig.fanout.forget_session("s1");
+        assert!(rig.retired(), "forget_session retires the lane");
+        assert_eq!(rig.live(), 0, "live roots after the seal");
+        assert!(rig.fanout.acceptance.lock().unwrap().is_empty());
+        // The peer's later close releases a root its retired lane no longer holds: a no-op.
+        rig.fanout.unregister("peer");
+        assert_eq!(rig.live(), 0);
+        rig.finish().await;
+    }
+
+    #[tokio::test]
+    async fn failed_enqueue_on_deliver_reaps_connection_and_revokes_grant() {
+        let mut fanout = SessionEventFanout::default();
+        let closed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = std::sync::Arc::clone(&closed);
+        fanout.set_on_connection_closed(std::sync::Arc::new(move |id: &str| {
+            seen.lock().unwrap().push(id.to_owned());
+        }));
+        let (w, _r) = tokio::io::duplex(1024);
+        // An 8-byte budget makes the first record overflow synchronously inside `enqueue`.
+        fanout.register(
+            "presenter",
+            crate::socket_event_fanout::SocketEventSinkActor::new(
+                w,
+                8,
+                30000,
+                std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::loop_blocked_time::LoopBlockedTime::default(),
+                )),
+                |_| {},
+            ),
+        );
+        fanout
+            .set_capabilities("presenter", &["grant_select".into()])
+            .unwrap();
+        fanout.attach("presenter", "s1", 0.0).unwrap();
+        let grant_dialog = json!({
+            "type": "extension_ui_request",
+            "id": "grant-req-4",
+            "method": "select",
+            "grantSelect": true,
+            "title": "Select grant"
+        });
+
+        let stdio = fanout.deliver("s1", None, false, &grant_dialog).unwrap();
+
+        assert!(stdio.is_empty());
+        assert_eq!(*closed.lock().unwrap(), vec!["presenter".to_owned()]);
+        assert!(!fanout.is_registered("presenter"));
+        assert!(fanout.grants_for_connection("presenter").is_empty());
         assert!(fanout.attached_connections("s1").is_empty());
     }
 }

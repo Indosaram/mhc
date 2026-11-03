@@ -260,6 +260,33 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
             .collect())
     }
 
+    /// Pinned `AgentHarness.lanes(context)`: every loaded lane's execution info, read through
+    /// each lane's serialized `inspectExecution`.
+    pub async fn lane_infos(
+        &self,
+        context: &Context,
+    ) -> Result<Vec<crate::harness::agent_harness::LaneInfo>, SessionError> {
+        self.assert_open()?;
+        let lanes: Vec<Arc<Lane>> = self
+            .lanes_by_name
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        let executions =
+            futures::future::try_join_all(lanes.iter().map(|lane| lane.inspect_execution(context)))
+                .await?;
+        Ok(executions
+            .into_iter()
+            .map(|execution| crate::harness::agent_harness::LaneInfo {
+                name: execution.lane,
+                tip_id: execution.tip_id,
+                operation: execution.current,
+            })
+            .collect())
+    }
+
     /// Every loaded lane's active operation, matching pinned `createAgentHarness`'s `open` list so a
     /// worker can re-drive recoveries after its services are reachable.
     pub fn open_operations(&self) -> Result<Vec<OpenOperation>, SessionError> {
@@ -828,13 +855,23 @@ fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json
     value
 }
 
-/// Pinned `resolveSystemPrompt` (`drive/generation.ts`): resolve the configured `toolContext` for
-/// each request and hand it to the typed `systemPrompt` callback. The lane config is context-free,
+/// Pinned `resolveSystemPrompt` (`drive/generation.ts`): a string prompt is returned as is;
+/// otherwise resolve the configured `toolContext` for each request and hand it to the typed
+/// `systemPrompt` callback. The lane config is context-free,
 /// so the typed callback is captured here with its tool context source.
 fn resolve_system_prompt<TContext: Clone + Send + Sync + 'static>(
-    prompt: crate::harness::agent_harness::AgentHarnessSystemPromptFn<TContext>,
+    prompt: crate::harness::agent_harness::AgentHarnessSystemPrompt<TContext>,
     source: Option<crate::harness::agent_harness::ToolContextSource<TContext>>,
 ) -> super::types::SystemPromptFn {
+    let prompt = match prompt {
+        crate::harness::agent_harness::AgentHarnessSystemPrompt::Text(text) => {
+            return Arc::new(move |_context: &Context| {
+                let text = text.clone();
+                Box::pin(async move { text })
+            });
+        }
+        crate::harness::agent_harness::AgentHarnessSystemPrompt::Resolve(prompt) => prompt,
+    };
     Arc::new(move |context: &Context| {
         let prompt = prompt.clone();
         let source = source.clone();

@@ -17,6 +17,9 @@ use maho_agent::harness::types::{
     ShellOutputCaptureOptions, ShellOutputLimits, ShellOutputRetention, ShellOutputUpdate,
     TextLineReader,
 };
+use maho_agent::harness::utils::shell_output::{
+    ShellCaptureOptions, ShellChunkHandler, execute_shell_with_capture,
+};
 use maho_ai::utils::abort::{AbortController, AbortReason};
 use serde_json::json;
 
@@ -113,9 +116,16 @@ async fn expands_home_relative_paths_and_file_urls() {
         std::path::Path::new(&home).join("x").to_string_lossy()
     );
     assert_eq!(
-        env.absolute_path(if cfg!(windows) { "file:///C:/tmp/x" } else { "file:///tmp/x" }, &context)
-            .await
-            .expect("file url"),
+        env.absolute_path(
+            if cfg!(windows) {
+                "file:///C:/tmp/x"
+            } else {
+                "file:///tmp/x"
+            },
+            &context
+        )
+        .await
+        .expect("file url"),
         std::path::Path::new(if cfg!(windows) { r"C:\tmp\x" } else { "/tmp/x" }).to_string_lossy()
     );
     assert_eq!(
@@ -758,6 +768,367 @@ async fn preserves_exact_raw_bytes_in_the_spill_while_decoding_a_bounded_text_vi
     let _ = std::fs::remove_dir_all(Path::new(&spill_path).parent().expect("spill parent"));
 }
 
+fn spill_limits() -> ShellOutputCaptureOptions {
+    ShellOutputCaptureOptions {
+        limits: ShellOutputLimits {
+            max_bytes: 10,
+            max_lines: 10,
+            retain: Some(ShellOutputRetention::Tail),
+        },
+        spill: Some(true),
+    }
+}
+
+fn ignore_updates() -> Option<maho_agent::harness::types::ShellOutputUpdateHandler> {
+    Some(std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) })))
+}
+
+#[cfg(unix)]
+fn remove_spill(path: &str) {
+    let _ = std::fs::remove_dir_all(Path::new(path).parent().expect("spill parent"));
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn applies_string_shell_environment_overrides_when_override_is_missing_empty_or_string() {
+    let cases: [(&str, Option<&str>, &str); 3] = [
+        ("missing", None, "x:/stale/parent.jsonl"),
+        ("empty", Some(""), "x:"),
+        (
+            "string",
+            Some("/sessions/current.jsonl"),
+            "x:/sessions/current.jsonl",
+        ),
+    ];
+    for (label, override_value, expected_session_file) in cases {
+        let dir = unique_dir(&format!("shellenv-{label}"));
+        let env = env_for(&dir).with_shell_env(Some(BTreeMap::from([
+            (
+                "PI_SESSION_FILE".to_string(),
+                "/stale/parent.jsonl".to_string(),
+            ),
+            ("PI_CODING_AGENT".to_string(), "true".to_string()),
+            (
+                "PI_NODE_ENV_PRESERVED_TEST".to_string(),
+                "preserved".to_string(),
+            ),
+        ])));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let observed = seen.clone();
+        let result = env
+            .exec(
+                "printf '%s:%s|%s|%s' \"${PI_SESSION_FILE+x}\" \"${PI_SESSION_FILE-}\" \"$PI_CODING_AGENT\" \"$PI_NODE_ENV_PRESERVED_TEST\"",
+                Some(ShellExecOptions {
+                    env: override_value.map(|value| {
+                        serde_json::Map::from_iter([("PI_SESSION_FILE".to_string(), json!(value))])
+                    }),
+                    on_update: Some(std::sync::Arc::new(move |update, _| {
+                        let mut view = observed.lock().expect("view poisoned");
+                        *view = Some(maho_agent::harness::utils::output_capture::apply_shell_output_update(
+                            view.as_ref(),
+                            &update,
+                        ));
+                        Box::pin(async { Ok(()) })
+                    })),
+                    ..Default::default()
+                }),
+                &bg_context(),
+            )
+            .await
+            .expect("exec");
+        assert_eq!(result.exit_code, 0);
+        let text = seen
+            .lock()
+            .expect("view poisoned")
+            .as_ref()
+            .map(|view| view.text.clone());
+        assert_eq!(
+            text.as_deref(),
+            Some(format!("{expected_session_file}|true|preserved").as_str()),
+            "{label}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[tokio::test]
+async fn returns_callback_errors_from_exec_stream_handlers() {
+    let dir = unique_dir("callbackerr");
+    let env = env_for(&dir);
+    let error = env
+        .exec(
+            "printf out",
+            Some(ShellExecOptions {
+                on_update: Some(std::sync::Arc::new(|_, _| {
+                    Box::pin(async { Err("callback failed".to_string()) })
+                })),
+                ..Default::default()
+            }),
+            &bg_context(),
+        )
+        .await
+        .expect_err("callback failure");
+    assert_eq!(error.code, ExecutionErrorCode::CallbackError);
+    assert_eq!(error.message, "callback failed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The six upstream `it.each` rows reject with a string, a plain object and an `Error`. Rust chunk
+/// handlers fail with a `String`, so each rejected value is represented by its string form and the
+/// assertion is that this exact value becomes the `callback_error` cause. An awaited `Err` cannot
+/// escape as an unhandled rejection; the bounded timeout asserts the execution still settles.
+#[tokio::test]
+async fn returns_async_on_chunk_failures_without_an_unhandled_rejection() {
+    let rows = [
+        ("stdout", "harness async stdout failed".to_string()),
+        (
+            "stdout",
+            json!({ "stream": "stdout", "failure": true }).to_string(),
+        ),
+        ("stdout", "Error: harness async stdout failed".to_string()),
+        ("stderr", "harness async stderr failed".to_string()),
+        (
+            "stderr",
+            json!({ "stream": "stderr", "failure": true }).to_string(),
+        ),
+        ("stderr", "Error: harness async stderr failed".to_string()),
+    ];
+    for (index, (stream, callback_error)) in rows.into_iter().enumerate() {
+        let dir = unique_dir(&format!("asyncchunk{index}"));
+        let env = env_for(&dir);
+        let redirect = if stream == "stderr" { " >&2" } else { "" };
+        let rejected = callback_error.clone();
+        let on_chunk: ShellChunkHandler = std::sync::Arc::new(move |_, _, _| {
+            let rejected = rejected.clone();
+            Box::pin(async move { Err(rejected) })
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            execute_shell_with_capture(
+                &env,
+                &format!("head -c 100001 /dev/zero | tr '\\0' x{redirect}"),
+                Some(ShellCaptureOptions {
+                    on_chunk: Some(on_chunk),
+                    ..Default::default()
+                }),
+                &bg_context(),
+            ),
+        )
+        .await
+        .expect("execution settles");
+        let error = result.expect_err("onChunk failure fails the execution");
+        assert_eq!(error.code, ExecutionErrorCode::CallbackError, "{stream}");
+        assert_eq!(
+            error.cause.as_deref(),
+            Some(callback_error.as_str()),
+            "{stream}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn maps_signal_killed_processes_to_a_non_zero_exit_code() {
+    let dir = unique_dir("sigkill");
+    let env = env_for(&dir);
+    let result = env
+        .exec("kill -9 $$", None, &bg_context())
+        .await
+        .expect("signal-killed shell is a completed execution");
+    assert_eq!(result.exit_code, 128 + 9);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn fails_rather_than_silently_losing_a_requested_spill() {
+    let dir = unique_dir("failingspill");
+    let missing = dir.join("missing").join("spill.log");
+    let missing = missing.to_string_lossy().into_owned();
+    // Pinned `FailingSpillExecutionEnv`: the spill temp file resolves into a missing directory.
+    let env = env_for(&dir).with_create_temp_file_hook(Some(std::sync::Arc::new(
+        move |prefix: Option<&str>,
+              created: Result<String, maho_agent::harness::types::FileError>| {
+            if prefix == Some("pi-output-") {
+                if let Ok(path) = &created {
+                    let _ = std::fs::remove_dir_all(Path::new(path).parent().expect("temp parent"));
+                }
+                return Ok(missing.clone());
+            }
+            created
+        },
+    )));
+    let error = env
+        .exec(
+            "printf 12345678901234567890",
+            Some(ShellExecOptions {
+                capture: Some(spill_limits()),
+                on_update: ignore_updates(),
+                ..Default::default()
+            }),
+            &bg_context(),
+        )
+        .await
+        .expect_err("spill failure");
+    assert_eq!(error.code, ExecutionErrorCode::Unknown);
+    assert!(
+        error
+            .message
+            .contains("Failed to preserve complete shell output"),
+        "{}",
+        error.message
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn preserves_complete_output_when_spill_stream_backpressure_pauses_a_process_that_exits_quickly()
+ {
+    let dir = unique_dir("spillbackpressure");
+    let env = env_for(&dir);
+    let size = 500_000;
+    let result = env
+        .exec(
+            &format!("head -c {size} /dev/zero | tr '\\0' x"),
+            Some(ShellExecOptions {
+                capture: Some(spill_limits()),
+                on_update: ignore_updates(),
+                ..Default::default()
+            }),
+            &bg_context(),
+        )
+        .await
+        .expect("exec");
+    let spill_path = result.spill_path.expect("spill path");
+    assert_eq!(
+        std::fs::read_to_string(&spill_path)
+            .expect("spill file")
+            .len(),
+        size
+    );
+    remove_spill(&spill_path);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn keeps_the_full_output_path_when_a_command_times_out_after_its_output_spilled() {
+    let dir = unique_dir("spilltimeout");
+    let env = env_for(&dir);
+    let size = 5000;
+    let error = env
+        .exec(
+            &format!("head -c {size} /dev/zero | tr '\\0' x; exec sleep 30"),
+            Some(ShellExecOptions {
+                timeout: Some(3.0),
+                capture: Some(spill_limits()),
+                on_update: ignore_updates(),
+                ..Default::default()
+            }),
+            &bg_context(),
+        )
+        .await
+        .expect_err("timeout");
+    assert_eq!(error.code, ExecutionErrorCode::Timeout);
+    let spill_path = error.spill_path.expect("spill path");
+    assert_eq!(
+        std::fs::read_to_string(&spill_path).expect("spill file"),
+        "x".repeat(size)
+    );
+    remove_spill(&spill_path);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn keeps_the_full_output_path_when_a_command_is_aborted_after_its_output_spilled() {
+    let dir = unique_dir("spillabort");
+    let env = env_for(&dir);
+    let size: u64 = 5000;
+    let controller = AbortController::new();
+    let context = with_abort_signal(controller.signal(), &bg_context());
+    let view = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observed = view.clone();
+    let error = env
+        .exec(
+            &format!("head -c {size} /dev/zero | tr '\\0' x; exec sleep 30"),
+            Some(ShellExecOptions {
+                capture: Some(spill_limits()),
+                on_update: Some(std::sync::Arc::new(move |update, _| {
+                    let mut current = observed.lock().expect("view poisoned");
+                    let next =
+                        maho_agent::harness::utils::output_capture::apply_shell_output_update(
+                            current.as_ref(),
+                            &update,
+                        );
+                    // Abort only once every byte has been observed and the spill exists, so the
+                    // outcome depends on event order rather than on timing.
+                    if next.spill_path.is_some() && next.truncation.total_bytes == size {
+                        controller.abort(None);
+                    }
+                    *current = Some(next);
+                    Box::pin(async { Ok(()) })
+                })),
+                ..Default::default()
+            }),
+            &context,
+        )
+        .await
+        .expect_err("aborted");
+    assert_eq!(error.code, ExecutionErrorCode::Aborted);
+    let observed_spill = view
+        .lock()
+        .expect("view poisoned")
+        .as_ref()
+        .and_then(|view| view.spill_path.clone());
+    assert_eq!(error.spill_path, observed_spill);
+    let spill_path = error.spill_path.expect("spill path");
+    assert_eq!(
+        std::fs::read_to_string(&spill_path).expect("spill file"),
+        "x".repeat(size as usize)
+    );
+    remove_spill(&spill_path);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn creates_no_spill_file_when_a_command_is_aborted_before_any_output() {
+    let dir = unique_dir("spillnone");
+    // Pinned `SpillRecordingExecutionEnv`: record every spill file `exec` creates.
+    let spill_files = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let recorded = spill_files.clone();
+    let env = env_for(&dir).with_create_temp_file_hook(Some(std::sync::Arc::new(
+        move |prefix: Option<&str>,
+              created: Result<String, maho_agent::harness::types::FileError>| {
+            if prefix == Some("pi-output-")
+                && let Ok(path) = &created
+            {
+                recorded.lock().expect("spill files").push(path.clone());
+            }
+            created
+        },
+    )));
+    let controller = AbortController::new();
+    let context = with_abort_signal(controller.signal(), &bg_context());
+    let execution = env.exec(
+        "exec sleep 30",
+        Some(ShellExecOptions {
+            capture: Some(spill_limits()),
+            on_update: ignore_updates(),
+            ..Default::default()
+        }),
+        &context,
+    );
+    controller.abort(None);
+    let error = execution.await.expect_err("aborted");
+    assert_eq!(error.code, ExecutionErrorCode::Aborted);
+    assert!(error.spill_path.is_none());
+    assert!(spill_files.lock().expect("spill files").is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // text-line-reader.test.ts
 #[tokio::test]
 async fn decodes_unicode_blank_lines_and_a_torn_final_line() {
@@ -912,5 +1283,110 @@ async fn returns_a_file_error_for_a_missing_file() {
 
     let error = expect_reader_err(env.open_text_line_reader("missing.txt", &context).await);
     assert_eq!(error.code, FileErrorCode::NotFound);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn replaces_malformed_and_incomplete_utf8() {
+    let dir = unique_dir("tlrmalformed");
+    let env = env_for(&dir);
+    let context = bg_context();
+    env.write_file("bad.txt", &[0xff, 0x0a, 0xe2, 0x82], &context)
+        .await
+        .expect("write");
+    let reader = env
+        .open_text_line_reader("bad.txt", &context)
+        .await
+        .expect("open");
+    let first = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
+    assert_eq!((first.text.as_str(), first.terminated), ("\u{fffd}", true));
+    let second = reader
+        .read_line(&context)
+        .await
+        .expect("line")
+        .expect("some");
+    assert_eq!(
+        (second.text.as_str(), second.terminated),
+        ("\u{fffd}", false)
+    );
+    assert!(reader.read_line(&context).await.expect("eof").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn does_not_consume_a_buffered_line_when_its_context_is_pre_aborted() {
+    let dir = unique_dir("tlrbuffered");
+    let env = env_for(&dir);
+    let context = bg_context();
+    env.write_file("a.txt", b"one\ntwo\n", &context)
+        .await
+        .expect("write");
+    let reader = env
+        .open_text_line_reader("a.txt", &context)
+        .await
+        .expect("open");
+    reader
+        .read_line(&context)
+        .await
+        .expect("first")
+        .expect("some");
+    let controller = AbortController::new();
+    controller.abort(Some(AbortReason::dom_default()));
+    let aborted = with_abort_signal(controller.signal(), &bg_context());
+    let error = reader.read_line(&aborted).await.expect_err("aborted");
+    assert_eq!(error.code, FileErrorCode::Aborted);
+    assert_eq!(
+        reader
+            .read_line(&context)
+            .await
+            .expect("second")
+            .expect("some")
+            .text,
+        "two"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Rust reader reads each 64 KiB chunk synchronously, so the abort lands before the pending
+/// read is first polled rather than between chunks; the retry contract (no line lost, every
+/// chunk decoded) is the same.
+#[tokio::test]
+async fn honors_cancellation_during_a_read_and_allows_retry() {
+    let dir = unique_dir("tlrretry");
+    let env = env_for(&dir);
+    let context = bg_context();
+    let long = "é".repeat(70_000);
+    env.write_file("a.txt", format!("{long}\nlast").as_bytes(), &context)
+        .await
+        .expect("write");
+    let reader = env
+        .open_text_line_reader("a.txt", &context)
+        .await
+        .expect("open");
+    let controller = AbortController::new();
+    let cancellable = with_abort_signal(controller.signal(), &bg_context());
+    let pending = reader.read_line(&cancellable);
+    controller.abort(Some(AbortReason::dom_default()));
+    assert_eq!(
+        pending.await.expect_err("aborted").code,
+        FileErrorCode::Aborted
+    );
+    let first = reader
+        .read_line(&context)
+        .await
+        .expect("first")
+        .expect("some");
+    assert_eq!(first.text, long);
+    let last = reader
+        .read_line(&context)
+        .await
+        .expect("last")
+        .expect("some");
+    assert_eq!((last.text.as_str(), last.terminated), ("last", false));
+    assert!(reader.read_line(&context).await.expect("eof").is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }

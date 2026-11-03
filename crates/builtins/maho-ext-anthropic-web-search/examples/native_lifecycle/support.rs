@@ -184,6 +184,7 @@ pub async fn run(native: bool, ui_enabled: bool) -> Result<(), Box<dyn std::erro
     let mut runner = ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, ctx);
     runner
         .emit(ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

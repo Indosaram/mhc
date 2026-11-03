@@ -126,9 +126,10 @@ impl Extension for HerdrExtension{
                     }
                 }
                 report_title(state.clone(),ctx).await;
-                let work={let mut guard=state.lock().expect("reporter lock");let mut params=guard.session_ref();params.insert("agent".into(),"pi".into());params.insert("session_start_source".into(),format!("{:?}",event.reason).to_lowercase().into());enqueue(&mut guard,HerdrMethod::ReportAgentSession,params)};
-                if let Some(work)=work{let _result=work.await;}
                 publish(state.clone()).await;
+                // Herdr accepts a resume command only after this reporter holds the pane.
+                let work={let mut guard=state.lock().expect("reporter lock");let mut params=guard.session_ref();params.insert("agent".into(),"pi".into());let resume_target=guard.bound.as_ref().map(|bound|bound.session_file().map_or_else(||bound.session_id().to_owned(),|path|path.to_string_lossy().into_owned())).unwrap_or_default();params.insert("resume_argv".into(),json!([maho_core::config::app_command(),"--session",resume_target]));params.insert("session_start_source".into(),format!("{:?}",event.reason).to_lowercase().into());enqueue(&mut guard,HerdrMethod::ReportAgentSession,params)};
+                if let Some(work)=work{let _result=work.await;}
                 let mut guard=state.lock().expect("reporter lock");
                 let poll_state=state.clone();let poll_ctx=ctx.clone();guard.poll=Some(tokio::spawn(async move{
                     let mut interval=tokio::time::interval_at(tokio::time::Instant::now()+std::time::Duration::from_secs(4),std::time::Duration::from_secs(4));

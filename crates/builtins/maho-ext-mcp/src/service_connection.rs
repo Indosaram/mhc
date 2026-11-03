@@ -18,6 +18,9 @@ pub struct McpSessionConnection {
     pub lifecycle: Option<Arc<McpConnectionLifecycle>>,
     pub reconnect: Option<Arc<McpReconnect>>,
     pub shared: Option<Arc<crate::shared_lease::SharedMcpLease>>,
+    /// Upstream `entry.credentialsCurrent`: the credential identity this connection was admitted under is still
+    /// the live one. A connection admitted without a credential check is always current.
+    pub credentials_current: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 pub struct SessionConnectionOptions<'a> {
     pub registry: &'a HostMcpRegistry,
@@ -26,8 +29,31 @@ pub struct SessionConnectionOptions<'a> {
     pub name: &'a str,
     pub config_hash: &'a str,
     pub config: McpServerConfig,
+    /// The declaration the generation `config` was resolved from (service-connection.ts `declared`); literal
+    /// secret warnings read it, never the resolved snapshot. `None` when the config declares no reference.
+    pub declared: Option<&'a McpServerConfig>,
     pub agent_dir: &'a Path,
     pub env: Option<BTreeMap<String, String>>,
+    /// The declaring session's UI: keys pooled connections by legacy-form policy (host-registry.ts).
+    pub elicitation_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// Upstream `elicitationEnabled`: false (print/json sessions) withholds the elicitation capability.
+    pub elicitation_enabled: bool,
+}
+/// host-registry.ts `attachShared`: an enforced private-form pool observes live readiness, so its key never
+/// freezes a creation-time readiness; other pools key by whether legacy forms are advertised.
+pub fn mcp_legacy_form_policy_key(
+    ui: Option<&Arc<dyn maho_ext_api::ExtensionUi>>,
+    elicitation_enabled: bool,
+) -> String {
+    let enforced = ui.and_then(crate::form_types::private_mcp_forms).is_some();
+    if enforced {
+        format!("private:{elicitation_enabled}")
+    } else {
+        format!(
+            "{}:false",
+            crate::elicitation::legacy_mcp_form_eligible(ui, elicitation_enabled)
+        )
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub enum SessionConnectionError {
@@ -58,8 +84,11 @@ fn create_session_connection(
         name,
         config_hash,
         config,
+        declared,
         agent_dir,
         env,
+        elicitation_ui,
+        elicitation_enabled,
     } = options;
     let logger = Arc::new(Mutex::new(McpLogger::new(name, agent_dir, None)?));
     let plan =
@@ -72,7 +101,9 @@ fn create_session_connection(
             on_redirect: None,
             client: reqwest::Client::new(),
         });
-    if let Ok(warnings) = crate::auth::context::detect_literal_bearer_warnings(name, &config) {
+    if let Ok(warnings) =
+        crate::auth::context::detect_literal_bearer_warnings(name, declared.unwrap_or(&config))
+    {
         for warning in warnings {
             let _ = logger
                 .lock()
@@ -81,10 +112,20 @@ fn create_session_connection(
         }
     }
     let refresh = plan.refresh.clone();
+    let policy = crate::transport::project_policy(config_hash);
+    let lease_options = crate::shared_connection::SharedLeaseOptions {
+        elicitation_ui: elicitation_ui.clone(),
+        elicitation_enabled,
+        project_policy: policy.clone(),
+    };
     let shared = shared_cwd
         .filter(|cwd| crate::sharing_policy::shareable(&config, Some(cwd)))
         .map(|_| {
-            registry.attach_shared(key, owner, || {
+            let pool_key = format!(
+                "{key}\0legacy-form:{}",
+                mcp_legacy_form_policy_key(elicitation_ui.as_ref(), elicitation_enabled)
+            );
+            registry.attach_shared_with_options(&pool_key, owner, Some(lease_options), || {
                 let connection =
                     ServerConnection::new(name, config.clone(), env.clone(), logger.clone());
                 if let Some(refresh) = refresh.clone() {
@@ -113,7 +154,11 @@ fn create_session_connection(
             false,
         ),
     };
-    if let Some(policy) = crate::transport::project_policy(config_hash) {
+    // The pool key carries elicitationEnabled, so every lease of a pooled connection agrees on it.
+    connection.set_elicitation_enabled(elicitation_enabled);
+    if shared.is_none()
+        && let Some(policy) = policy
+    {
         connection.set_project_policy(policy);
     }
     if plan.provider.is_some()
@@ -150,10 +195,13 @@ fn create_session_connection(
         known_tool_names: None,
         last_list_changed_delta: None,
         list_changed_tasks: Vec::new(),
+        dispatch_owner: maho_ext_api::ToolDispatchOwner::new(),
         list_changed_coalescer: None,
     }));
     if let Some(authority) = crate::project_skill_policy::get_project_mcp_authority(&config) {
         let weak = Arc::downgrade(&connection);
+        // host-registry.ts invalidateIdentity: a shared pool invalidates (dropping its catalog), not just bumps.
+        let shared_pool = shared.as_ref().map(|lease| Arc::downgrade(&lease.shared));
         let path = authority.store_path.clone();
         let identity = authority.identity.clone();
 
@@ -182,11 +230,14 @@ fn create_session_connection(
                         &observation.snapshot,
                         &identity,
                     ) != authority.started_grant_names())
-                    && let Err(error) = connection.bump_generation().await {
-                        maho_ext_api::diagnostic(&format!(
-                            "MCP grant invalidation failed: {error}"
-                        ));
-                    }
+                    && let Err(error) =
+                        match shared_pool.as_ref().and_then(std::sync::Weak::upgrade) {
+                            Some(shared) => shared.invalidate().await,
+                            None => connection.bump_generation().await,
+                        }
+                {
+                    maho_ext_api::diagnostic(&format!("MCP grant invalidation failed: {error}"));
+                }
             }
         });
         // Registration is synchronous; the entry is fresh and has no competing owner yet.
@@ -202,6 +253,7 @@ fn create_session_connection(
             lifecycle: None,
             reconnect: None,
             shared,
+            credentials_current: Arc::new(|| true),
         });
     }
     let lifecycle = McpConnectionLifecycle::configure(connection.clone(), config.clone());
@@ -219,6 +271,12 @@ fn create_session_connection(
                 entry.counters.reconnect_count += 1;
                 entry.cache_refreshed_after_connect = false;
                 if let Err(error) = entry.auth_plan.ensure_fresh().await {
+                    // Disabled while the refresh ran: the failure is our own teardown, not a sign-in need.
+                    if entry.connection.state()
+                        == crate::connection::ServerConnectionState::Disabled
+                    {
+                        return Ok(());
+                    }
                     return Err(crate::health::mark_mcp_connection_needs_auth(
                         &entry.connection,
                         &error,
@@ -245,6 +303,7 @@ fn create_session_connection(
         lifecycle: Some(lifecycle),
         reconnect: Some(reconnect),
         shared: None,
+        credentials_current: Arc::new(|| true),
     })
 }
 pub async fn dispose_entry_connection(

@@ -8,7 +8,7 @@ fn fixture() -> (tempfile::TempDir, DagManager, String) {
     let store = create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("DAG store");
     let manager = create_dag_manager(DagManagerOptions { store: Arc::new(store), new_run_id: Some(Arc::new(|| "run-1".into())), now: Some(Arc::new(|| 1000)), materialize_skills: None, settings: None });
     let definition = senpi_task::dag::graph::DagDefinition { key: "key".into(), name: "run".into(), nodes: vec![senpi_task::dag::graph::DagNodeInput { id: "a".into(), prompt: "work".into(), target: senpi_task::dag::types::DagNodeTarget::Category("quick".into()), label: None, depends_on: None, task_summary: None, description: None, load_skills: None }] };
-    let started = manager.start(DagStartParams { definition, parent_session_id: "parent".into(), root_session_id: "root".into() }).expect("DAG run start");
+    let started = manager.start(DagStartParams { definition, parent_session_id: "parent".into(), root_session_id: "root".into(), parent_model: None }).expect("DAG run start");
     (root, manager, started.snapshot.run_id)
 }
 fn query(manager: &DagManager, name: &str, value: Value) -> Value { query_dag_rpc(manager, Some("parent".into()), name, &value) }

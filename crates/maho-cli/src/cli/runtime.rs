@@ -152,13 +152,26 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     maho_core::timings::time("runMigrations", maho_core::timings::TimingLabel::Main);
     // senpi main.ts:1032-1034: the startup-cwd settings manager reports its diagnostics once, then is
     // used only for the sessionDir lookup and the startup selectors during session selection.
-    let startup_settings = maho_core::settings_manager::SettingsManager::create(
+    let mut startup_settings = maho_core::settings_manager::SettingsManager::create(
         &cwd_text,
         &agent_dir,
         &maho_core::config::home_dir(),
         true,
     );
     indicator.during_surface_write(|| report_startup_settings_diagnostics(&startup_settings));
+    // senpi main.ts:1320-1331: the experimental first-time setup (theme choice and analytics
+    // opt-in) runs before any runtime service is created, so the chosen settings apply everywhere.
+    if mode == AppMode::Interactive
+        && !parsed.help
+        && parsed.list_models.is_none()
+        && !parsed.list_tips
+        && super::startup_ui::should_run_first_time_setup()
+    {
+        indicator.during_surface_write(|| {
+            super::startup_ui::show_first_time_setup(&mut startup_settings)
+        })?;
+        maho_core::timings::time("firstTimeSetup", maho_core::timings::TimingLabel::Main);
+    }
     if mode == AppMode::Rpc && parsed.multi_session {
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
@@ -195,6 +208,25 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
                     .map_err(|error| error.to_string())?
             }
         };
+        // senpi v2026.10.27-2 main.ts hands `presenterBootstrapFd`/`mcpPresenterEnforcement` to
+        // `runMultiSessionHost`: enforcement is host deployment policy, and descriptor 4 is the
+        // inherited enrollment channel the socket host opens its presenter control with.
+        let core = match std::sync::Arc::try_unwrap(core) {
+            Ok(core) => std::sync::Arc::new(
+                core.with_mcp_presenter_enforcement(parsed.mcp_presenter_enforcement)
+                    .with_presenter_bootstrap_fd(parsed.presenter_bootstrap_fd.map(|fd| fd as i32)),
+            ),
+            Err(core)
+                if parsed.presenter_bootstrap_fd.is_none() && !parsed.mcp_presenter_enforcement =>
+            {
+                core
+            }
+            Err(_) => {
+                return Err(
+                    "the rpc host core is shared before its presenter policy is set".to_owned(),
+                );
+            }
+        };
         // senpi main.ts:1361-1363: the host polls subscription limits too, unless offline.
         if !(parsed.offline
             || super::shared_host::is_truthy_env_flag(
@@ -217,8 +249,13 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     // senpi main.ts:1157-1161: decide the final runtime cwd before creating cwd-bound runtime
     // services. --session and --resume may select a session from another project, so project
     // trust, settings, resources and models resolve against the target session cwd.
+    // senpi v2026.10.27-2 `createSessionManager`: ancestry applies to fresh sessions only.
+    if let Some(warning) = super::args::spawned_by_ignored_warning(&parsed) {
+        indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: {warning}\x1b[39m"));
+    }
     let identity = Some(maho_core::session_manager::NewSessionOptions {
         id: parsed.session_id.clone(),
+        spawned_by: parsed.spawned_by.clone(),
         ..Default::default()
     });
     let session_dir = resolve_session_dir(
@@ -287,7 +324,14 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     } else if let Some(id) = parsed.session_id.as_deref() {
         // senpi main.ts:537-547: an existing exact-id project session is resumed, not duplicated.
         match find_local_session_by_exact_id(id, &cwd_text, session_dir.as_deref()) {
-            Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
+            Some(path) => {
+                if parsed.spawned_by.is_some() {
+                    indicator.during_surface_write(|| {
+                        eprintln!("\x1b[33mWarning: --spawned-by is ignored when resuming an existing session.\x1b[39m")
+                    });
+                }
+                SessionManager::open(&path, session_dir.as_deref(), None, None)?
+            }
             None => {
                 indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m"));
                 SessionManager::create(&cwd_text, session_dir.as_deref(), identity)
@@ -373,23 +417,20 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
                 }
             }
         });
-    let (project_trusted, project_trust_warnings) = indicator
-        .during_prompt(
-            super::host_runtime::resolve_runtime_project_trust_with_warnings(
-                &trust_config,
-                &session_cwd,
-                trust_mode,
-                trust_mode == AppMode::Interactive,
-                selector,
-            ),
-        )
+    // senpi main.ts `createServices`: a `--permission-preset full-access` (or global `permissionPreset`)
+    // session trusts its project without asking, and leaving Full access withdraws it (senpi#3414).
+    let launch_trust = indicator
+        .during_prompt(super::host_runtime::resolve_launch_project_trust(
+            &trust_config,
+            &session_cwd,
+            trust_mode,
+            trust_mode == AppMode::Interactive,
+            selector,
+            None,
+        ))
         .await;
-    let mut settings = maho_core::settings_manager::SettingsManager::create(
-        &session_cwd,
-        &agent_dir,
-        &maho_core::config::home_dir(),
-        project_trusted,
-    );
+    let mut settings = launch_trust.settings_manager(&session_cwd, &agent_dir);
+    let project_trust_warnings = launch_trust.warnings;
     // senpi main.ts:769-775 `projectTrustDiagnostics`, then `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
     let mut runtime_diagnostics: Vec<_> = project_trust_warnings
         .into_iter()
@@ -754,6 +795,12 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     }
     let session = Arc::new(created.session);
     super::memory_report_registry::register_session(&session);
+    // senpi `projectTrustContextFactory`: a /resume or RPC switch into another project decides its trust with
+    // the launch's cache and resolution; the interactive mode may ask (hasUI true), the others never do.
+    session.set_switch_project_trust(Some(super::host_runtime::switch_project_trust(
+        &trust_config,
+        mode == AppMode::Interactive,
+    )));
     // senpi main.ts:1253: `setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides())`.
     maho_tui::terminal_image::set_capability_overrides(session.with_settings_manager(|settings| {
         settings.get_terminal_capability_overrides(&maho_core::config::current_env())
@@ -1061,6 +1108,8 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     session.emit_session_shutdown_for_quit(true).await;
     session.dispose().await;
     drop(process_lifetime);
+    // senpi's endpoint `process.once("exit", unregisterTuiEndpointSync)`: nothing is left registered.
+    maho_interactive::session_control_lifecycle::unregister_endpoints_at_exit();
     if let Some(code) = signal_code {
         std::process::exit(code);
     }

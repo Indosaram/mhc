@@ -353,3 +353,189 @@ fn test_rejects_path_traversal() {
             || err.message.contains("escapes")
     );
 }
+
+fn seed_read_only(repo: &GitMemoryRepo, path: &str, read_only: &str) {
+    let full = repo.dir.join(path);
+    fs::create_dir_all(full.parent().expect("parent")).expect("parent dir");
+    fs::write(
+        &full,
+        format!("---\ndescription: Seed\nread_only: {read_only}\n---\nbody"),
+    )
+    .expect("seed");
+    repo.commit_write(&[path], &format!("seed {path}"), &test_author())
+        .expect("seed commit");
+}
+
+fn params(command: &str, file_path: Option<&str>) -> MemoryToolParams {
+    MemoryToolParams {
+        command: Some(command.to_string()),
+        reason: command.to_string(),
+        file_path: file_path.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+// memory-validation.test.ts: read_only descendants reject a recursive directory delete.
+#[test]
+fn test_read_only_descendants_reject_recursive_delete() {
+    let (_temp, repo) = fixture();
+    seed_read_only(&repo, "reference/history/locked.md", "true");
+    let head = repo.head().expect("head");
+    let err = run_memory_tool(
+        &repo,
+        &test_author(),
+        &params("delete", Some("reference/history")),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.message.starts_with("memory: "), "{}", err.message);
+    assert!(
+        err.message.contains("locked.md is read_only"),
+        "{}",
+        err.message
+    );
+    assert_eq!(repo.head().expect("head"), head);
+}
+
+// memory-validation.test.ts: every editable mutation command rejects read_only content.
+#[test]
+fn test_every_editable_command_rejects_read_only_content() {
+    let (_temp, repo) = fixture();
+    seed_read_only(&repo, "locked.md", "true");
+    let cases = [
+        MemoryToolParams {
+            old_string: Some("body".into()),
+            new_string: Some("new".into()),
+            ..params("str_replace", Some("locked"))
+        },
+        MemoryToolParams {
+            insert_line: Some(1),
+            insert_text: Some("new".into()),
+            ..params("insert", Some("locked"))
+        },
+        params("delete", Some("locked")),
+        MemoryToolParams {
+            old_path: Some("locked".into()),
+            new_path: Some("moved".into()),
+            ..params("rename", None)
+        },
+        MemoryToolParams {
+            description: Some("New".into()),
+            ..params("update_description", Some("locked"))
+        },
+    ];
+    for case in cases {
+        let err = run_memory_tool(&repo, &test_author(), &case, None).unwrap_err();
+        assert!(
+            err.message.starts_with("memory: locked") && err.message.contains("is read_only"),
+            "{:?}: {}",
+            case.command,
+            err.message
+        );
+    }
+}
+
+// memory-validation.test.ts: byte-identical description reports no effective changes, HEAD unchanged.
+#[test]
+fn test_byte_identical_description_reports_no_effective_changes() {
+    let (_temp, repo) = fixture();
+    seed_read_only(&repo, "note.md", "false");
+    let head = repo.head().expect("head");
+    let err = run_memory_tool(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            description: Some("Seed".into()),
+            ..params("update_description", Some("note"))
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.message
+            .contains("update_description made no effective changes"),
+        "{}",
+        err.message
+    );
+    assert_eq!(repo.head().expect("head"), head);
+}
+
+// memory-validation.test.ts: an untracked empty directory delete reports made no changes.
+#[test]
+fn test_untracked_empty_directory_delete_reports_no_changes() {
+    let (_temp, repo) = fixture();
+    fs::create_dir(repo.dir.join("empty")).expect("empty dir");
+    let err = run_memory_tool(
+        &repo,
+        &test_author(),
+        &params("delete", Some("empty")),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.message.contains("delete made no changes"),
+        "{}",
+        err.message
+    );
+}
+
+// memory-validation.test.ts: unrelated dirty files make cleanCheck fail first with the porcelain listing.
+#[test]
+fn test_unrelated_dirty_files_fail_clean_check_first() {
+    let (_temp, repo) = fixture();
+    let head = repo.head().expect("head");
+    fs::write(repo.dir.join("dirty.md"), "dirty").expect("dirty");
+    let err = run_memory_tool(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            description: Some("New".into()),
+            ..params("create", Some("new"))
+        },
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.message.contains("Memory repo has uncommitted changes"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("?? dirty.md"), "{}", err.message);
+    assert_eq!(
+        fs::read_to_string(repo.dir.join("dirty.md")).expect("dirty"),
+        "dirty"
+    );
+    assert!(!repo.dir.join("new.md").exists());
+    assert_eq!(repo.head().expect("head"), head);
+}
+
+// memory-validation.test.ts: editable frontmatter with read_only false keeps body and flag through update_description.
+#[test]
+fn test_read_only_false_stays_editable_and_preserves_body_and_flag() {
+    let (_temp, repo) = fixture();
+    let full = repo.dir.join("system/note.md");
+    fs::create_dir_all(full.parent().expect("parent")).expect("parent dir");
+    fs::write(
+        &full,
+        "---\ndescription: Seed\nread_only: false\n---\nkeep body",
+    )
+    .expect("seed");
+    repo.commit_write(&["system/note.md"], "seed note", &test_author())
+        .expect("seed commit");
+    run_memory_tool(
+        &repo,
+        &test_author(),
+        &MemoryToolParams {
+            description: Some("New description".into()),
+            ..params("update_description", Some("system/note"))
+        },
+        None,
+    )
+    .expect("update_description on read_only false");
+    let parsed =
+        crate::memfs::frontmatter::parse_memory_file(&fs::read_to_string(&full).expect("read"))
+            .expect("parse");
+    assert_eq!(parsed.frontmatter.description, "New description");
+    assert_eq!(parsed.frontmatter.read_only.as_deref(), Some("false"));
+    assert_eq!(parsed.body, "keep body");
+}

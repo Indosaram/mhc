@@ -23,6 +23,7 @@ pub mod output_accumulator;
 pub mod powershell;
 pub mod read;
 pub mod read_classifiers;
+pub mod secret_output_redactor;
 pub mod shell;
 pub mod tail_window;
 pub mod tool_definition_wrapper;

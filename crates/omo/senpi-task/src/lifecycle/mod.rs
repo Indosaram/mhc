@@ -3,10 +3,14 @@
 pub mod admission_lease;
 pub mod context;
 pub mod create;
+pub mod deferred_owner_reconcile;
+pub mod deferred_revival;
 pub mod deferred_revival_reasons;
 pub mod destroy;
 pub mod errors;
+pub mod host_endpoint_reach;
 pub mod host_session_record;
+pub mod host_session_revive;
 pub mod live_parent_recovery;
 pub mod revive_detached;
 pub mod stopped_owner;
@@ -16,6 +20,7 @@ pub mod host_session_close;
 pub mod host_session_default;
 pub mod pending_cancel;
 pub mod port;
+pub mod provisional_exit;
 pub mod reconcile;
 pub mod reconcile_crashed_resident;
 pub mod reconcile_reclamation;
@@ -43,6 +48,10 @@ pub use host_session_close::{
 };
 pub use host_session_default::{
     HostTransport, NoHostTransport, default_host_session_closer, default_host_session_probe,
+};
+pub use host_session_revive::{
+    BeforeAttemptFn, DEFERRED_HOST_REASONS, HostSessionParkOptions, HostSessionParkOutcome,
+    park_host_session_on_daemon_loss, retry_deferred_host_session, retry_deferred_host_sessions,
 };
 pub use pending_cancel::finish_pending_cancel;
 pub use port::{

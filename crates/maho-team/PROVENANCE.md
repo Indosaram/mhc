@@ -50,3 +50,13 @@
   `assets/omo.schema.json` or `.omo/**`, no oh-my-openagent / OmO / lazycodex source or URL, no
   git history of removed paths, and no other machine's copy of this repository.
 - Tests were written new from the spec's numbered acceptance tests (§6); no fixtures were reused.
+
+## Unit task-5152 (omo v5.1.52 delta)
+
+- Method: **C** (clean room). Built from the `## Delta (omo v5.1.52, 2026-10-30)` section of
+  `docs/cleanroom/specs/team.md` (D1) at spec commit `ac9221fa8`; unit `task-5152`.
+- Allowed inputs (and the only ones used): that spec, `task.md` Delta D1/D5, this crate's
+  existing MIT code and `maho-task`. No SUL, OmO or upstream source, checkout, cache or web page
+  was opened.
+- Member ancestry comes from `maho-task` (`Lineage`, `MAHO_TASK_PARENT_SESSION`); this crate
+  adds `tests/ancestry.rs`, written from the delta's tests 1-3.

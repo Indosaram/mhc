@@ -57,8 +57,11 @@ pub fn reset_server_check() {
     *global() = ServerHealthState::default();
 }
 
+/// 2xx, or 401/403: a server is listening and requires auth (omo run sets a per-run password,
+/// omo#11367); this probe only asks whether the server is alive, and a sweeping process never
+/// holds another run's password.
 fn is_ok_status(status: u16) -> bool {
-    (200..300).contains(&status)
+    (200..300).contains(&status) || status == 401 || status == 403
 }
 
 /// Default fetcher with HTTPS and Fetch's limit of 20 redirects.

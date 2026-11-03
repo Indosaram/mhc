@@ -1,0 +1,25 @@
+Readability corpus oracle run (sync-5152 row crates-extensions-maho-ext-pi-webfetch-03, todo 9701)
+Date: 2026-10-31T19:19:46Z; bun 1.4.0
+Inputs: tests/evidence/readability-corpus-cases.ts (bun tests/evidence/readability-corpus-cases.ts prints the 14 inputs, url https://example.org/blog/post)
+Command: cd crates/extensions/maho-ext-pi-webfetch && bun tests/evidence/generate-readability-corpus.mjs
+Each source file is read with git show <pin>:<path> into a temp dir (node_modules symlinked from its repo), so the sha256 below is of the git-show bytes; the oracle imports content.ts under bun and prints htmlToMarkdown/htmlToText per case.
+Expectation oracle: senpi fe8c564b webfetch content.ts + parse-web-document.ts (LinkeDOM). Cross-check: pi-webfetch 8a4743da src/webfetch/content.ts (JSDOM).
+--- generator stderr ---
+senpi-linkedom fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407 packages/coding-agent/src/core/extensions/builtin/webfetch/webfetch/content.ts sha256=7479d2aca55987ed72b91ef65b94f40e14d10fe317923cbdf8ce4e1b39a39db6
+senpi-linkedom fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407 packages/coding-agent/src/core/extensions/builtin/webfetch/webfetch/parse-web-document.ts sha256=0bdf0362b7caae17045d384d6710f0ef241cb6886a54b88d8a2f57cf0a96edd7
+senpi-linkedom linkedom@0.18.13
+senpi-linkedom htmlparser2@10.1.0
+senpi-linkedom @mozilla/readability@0.6.0
+senpi-linkedom turndown@7.2.4
+senpi-linkedom oracle exit=0
+pi-webfetch-jsdom 8a4743da6a1f32a6a53f4ddae9484c32c78adcd5 src/webfetch/content.ts sha256=9960df2738bf004e48831e27abe80de17dc3a5fa8394182a875fbc86a5e00c78
+pi-webfetch-jsdom jsdom@29.1.1
+pi-webfetch-jsdom @mozilla/readability@0.6.0
+pi-webfetch-jsdom turndown@7.2.4
+pi-webfetch-jsdom oracle exit=0
+pi-webfetch-jsdom DIFF data-table-and-layout-table text
+  linkedom: "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nResults\nA\nB\n\n1\n2\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+  jsdom:    "This paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nResults\n\nA\nB\n\n1\n2\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader.\n\nThis paragraph carries enough readable words, commas, and details to be scored as article content by the reader."
+senpi-linkedom matches fixture 14/14
+pi-webfetch-jsdom matches fixture 13/14
+--- generator exit=0 ---

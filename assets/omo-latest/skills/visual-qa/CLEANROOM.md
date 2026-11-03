@@ -27,3 +27,7 @@
 
 - `.omo/evidence/<slug>/...` paths in the TUI step: base text, and mhc itself uses this path today. Rename if mhc changes its evidence directory.
 - `omowright` (browser library, MIT) and `script/qa/web-terminal-visual-qa.mjs` references kept from base.
+
+## 2026-10-30 delta (omo v5.1.52 behaviour, rewritten in mhc words)
+- Checklist: A3 measure 65-75 characters on desktop / at least 45 on a phone; new A13 (heading and group spacing ratios), B8 (type-scale floor), E7 (hued secondary text, no zero-offset glow), F8 (themed browser surfaces), F9 (no generated scaffolding), credited to Impeccable (Apache-2.0) via the `frontend` skill's ATTRIBUTION section 6.
+- Machine pre-check (mhc wording) runs the `frontend` detect SDK, which ships as an SUL-1.0 subtree (see `frontend/CLEANROOM.md`).

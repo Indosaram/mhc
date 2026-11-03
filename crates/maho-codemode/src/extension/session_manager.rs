@@ -42,13 +42,20 @@ pub struct CreateCodemodeSessionManagerOptions {
     pub complete: BridgeCompletionHandler,
 }
 
+type SharedRegistrations =
+    Arc<std::sync::Mutex<super::kernel_registration::SessionKernelRegistrations>>;
+type RawJavaScriptSlot =
+    Arc<std::sync::Mutex<Option<Arc<crate::kernels::js::context_manager::JavaScriptKernel>>>>;
+
 pub struct CodemodeSessionManager {
-    registrations: std::sync::Mutex<super::kernel_registration::SessionKernelRegistrations>,
+    registrations: SharedRegistrations,
     options: CreateCodemodeSessionManagerOptions,
     bridge: BridgeServerHandle,
-    javascript:
-        tokio::sync::Mutex<Option<Arc<crate::kernels::js::context_manager::JavaScriptKernel>>>,
-    disposed: AtomicBool,
+    /// The session's JS kernel as cells see it: wrapped by `park_when_idle` when `memory.idleParkMinutes` > 0.
+    javascript: tokio::sync::Mutex<Option<Arc<dyn EvalKernel>>>,
+    /// The JS kernel process currently backing `javascript`; empty while it is parked.
+    javascript_raw: RawJavaScriptSlot,
+    disposed: Arc<AtomicBool>,
     environments: Arc<crate::environments::js_environments::JsEnvironments>,
     javascript_shutdown: maho_ai::utils::abort::AbortController,
     dispose_result: tokio::sync::OnceCell<Result<(), String>>,
@@ -200,15 +207,16 @@ impl CodemodeSessionManager {
         })
         .await?;
         Ok(Self {
-            registrations: std::sync::Mutex::new(
+            registrations: Arc::new(std::sync::Mutex::new(
                 super::kernel_registration::SessionKernelRegistrations::new(
                     options.session_id.clone(),
                 ),
-            ),
+            )),
             options,
             bridge,
             javascript: tokio::sync::Mutex::new(None),
-            disposed: AtomicBool::new(false),
+            javascript_raw: Arc::new(std::sync::Mutex::new(None)),
+            disposed: Arc::new(AtomicBool::new(false)),
             environments,
             javascript_shutdown: maho_ai::utils::abort::AbortController::new(),
             dispose_result: tokio::sync::OnceCell::new(),
@@ -224,9 +232,21 @@ impl CodemodeSessionManager {
         Ok((self.bridge.port, &self.bridge.token))
     }
 
+    /// The session's JS kernel process, started on first use; an error while it is parked after idling.
     pub async fn get_javascript_kernel(
         &self,
     ) -> Result<Arc<crate::kernels::js::context_manager::JavaScriptKernel>, String> {
+        self.javascript_eval_kernel().await?;
+        self.javascript_raw
+            .lock()
+            .expect("javascript kernel slot")
+            .clone()
+            .ok_or_else(|| {
+                "the js kernel is parked after idling; run a cell to start a fresh kernel".into()
+            })
+    }
+
+    async fn javascript_eval_kernel(&self) -> Result<Arc<dyn EvalKernel>, String> {
         if self.disposed.load(Ordering::SeqCst) {
             return Err("codemode session manager is disposed".into());
         }
@@ -242,82 +262,60 @@ impl CodemodeSessionManager {
         super::session_cwd::assert_session_cwd_available(&self.options.cwd)
             .await
             .map_err(|error| error.to_string())?;
-        let roots = self.options.local_roots.clone().or_else(|| {
-            self.options.artifacts_dir.as_ref().map(|root| {
-                crate::bridge::protocol::LocalRoots::from([(
-                    "local".into(),
-                    root.join("local").to_string_lossy().into_owned(),
-                )])
-            })
-        });
-        let width = self.options.settings.parallel_pool_width;
-        let catalog = self.options.list_tools.clone();
-        let names = Arc::new(move || {
-            let host = catalog
-                .as_ref()
-                .map(|catalog| catalog())
-                .transpose()?
-                .unwrap_or_default()
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect();
-            Ok((host, vec![]))
-        });
-        let settings = &self.options.settings;
-        let memory = crate::bridge::protocol::KernelMemoryThresholds {
-            gc_watermark_bytes: settings.memory_gc_watermark_bytes as u64,
-            notice_bytes: settings.memory_notice_bytes as u64,
-            ceiling_bytes: settings.memory_ceiling_bytes as u64,
-        };
-        let kernel = Arc::new(
-            crate::kernels::js::context_manager::JavaScriptKernel::start_with_memory(
-                &self.options.cwd,
-                &self.options.session_id,
-                crate::kernels::js::context_manager::JavaScriptKernelStart {
-                    isolation: crate::config::feature_settings::resolve_js_isolation(
-                        settings,
-                        &maho_ext_api::process_env::vars().into_iter().collect(),
-                    ),
-                    parallel_pool_width: if width.is_finite() {
-                        width.trunc().max(1.0) as u64
-                    } else {
-                        1
-                    },
-                    session_env: self.options.session_env.clone(),
-                    connection: BridgeConnectionConfig {
-                        port: self.bridge.port,
-                        token: self.bridge.token.clone(),
-                        local_roots: roots,
-                        artifacts_dir: self
-                            .options
-                            .artifacts_dir
-                            .as_ref()
-                            .map(|path| path.to_string_lossy().into_owned()),
-                        parallel_pool_width: None,
-                    },
-                    names,
-                    shutdown: self.javascript_shutdown.clone(),
-                    memory,
-                    env_passthrough: settings.env_passthrough.clone(),
-                },
-            )
-            .await
-            .map_err(|error| error.to_string())?,
-        );
+        let launcher = self.launcher();
+        let kernel = launcher.start().await?;
         if self.disposed.load(Ordering::SeqCst) {
             kernel.close().await.map_err(|error| error.to_string())?;
             return Err("codemode session manager is disposed".into());
         }
-        self.registrations
-            .lock()
-            .expect("session registrations lock")
-            .register(
-                EvalLanguage::Js,
-                Some(super::kernel_registration::java_script_kernel_memory(
-                    kernel.clone(),
-                )),
-            );
-        *javascript = Some(kernel.clone());
+        let idle_park_minutes = self
+            .options
+            .settings
+            .memory()
+            .idle_park_minutes
+            .unwrap_or(0.0);
+        let restart: super::idle_parking_kernel::RestartParkedKernel = {
+            let registrations = self.registrations.clone();
+            let disposed = self.disposed.clone();
+            let raw = self.javascript_raw.clone();
+            Arc::new(move || -> EvalKernelFuture<'static, Arc<dyn EvalKernel>> {
+                let launcher = launcher.clone();
+                let registrations = registrations.clone();
+                let disposed = disposed.clone();
+                let raw = raw.clone();
+                Box::pin(async move {
+                    let restarted = launcher.start().await?;
+                    if disposed.load(Ordering::SeqCst) {
+                        let _ = restarted.close().await;
+                        return Err("codemode session manager is disposed".into());
+                    }
+                    register_javascript(&registrations, &restarted);
+                    *raw.lock().expect("javascript kernel slot") = Some(restarted.clone());
+                    Ok(restarted as Arc<dyn EvalKernel>)
+                })
+            })
+        };
+        let on_parked: super::idle_parking_kernel::OnParked = {
+            let registrations = self.registrations.clone();
+            let raw = self.javascript_raw.clone();
+            Arc::new(move || {
+                registrations
+                    .lock()
+                    .expect("session registrations lock")
+                    .unregister(EvalLanguage::Js);
+                *raw.lock().expect("javascript kernel slot") = None;
+            })
+        };
+        let resolved = super::idle_parking_kernel::park_when_idle(
+            EvalLanguage::Js,
+            idle_park_minutes,
+            kernel.clone(),
+            restart,
+            Some(on_parked),
+        );
+        register_javascript(&self.registrations, &kernel);
+        *self.javascript_raw.lock().expect("javascript kernel slot") = Some(kernel);
+        *javascript = Some(resolved.clone());
         // Retain ownership if cwd vanished during startup so disposal still closes it.
         super::session_cwd::assert_session_cwd_available(&self.options.cwd)
             .await
@@ -325,7 +323,22 @@ impl CodemodeSessionManager {
         if self.disposed.load(Ordering::SeqCst) {
             return Err("codemode session manager is disposed".into());
         }
-        Ok(kernel)
+        Ok(resolved)
+    }
+
+    fn launcher(&self) -> JavaScriptLauncher {
+        JavaScriptLauncher {
+            cwd: self.options.cwd.clone(),
+            session_id: self.options.session_id.clone(),
+            local_roots: self.options.local_roots.clone(),
+            artifacts_dir: self.options.artifacts_dir.clone(),
+            settings: self.options.settings.clone(),
+            list_tools: self.options.list_tools.clone(),
+            session_env: self.options.session_env.clone(),
+            port: self.bridge.port,
+            token: self.bridge.token.clone(),
+            shutdown: self.javascript_shutdown.clone(),
+        }
     }
 
     pub async fn dispose(&self) -> Result<(), String> {
@@ -335,6 +348,10 @@ impl CodemodeSessionManager {
             .get_or_init(|| async {
                 let mut failures = Vec::new();
                 let kernel = self.javascript.lock().await.take();
+                self.javascript_raw
+                    .lock()
+                    .expect("javascript kernel slot")
+                    .take();
                 self.registrations
                     .lock()
                     .expect("session registrations lock")
@@ -397,8 +414,105 @@ impl EvalKernelManager for CodemodeSessionManager {
     fn get_kernel(&self, language: EvalLanguage) -> EvalKernelFuture<'_, Arc<dyn EvalKernel>> {
         Box::pin(async move {
             match language {
-                EvalLanguage::Js => Ok(self.get_javascript_kernel().await? as Arc<dyn EvalKernel>),
+                EvalLanguage::Js => self.javascript_eval_kernel().await,
             }
         })
+    }
+}
+
+fn register_javascript(
+    registrations: &SharedRegistrations,
+    kernel: &Arc<crate::kernels::js::context_manager::JavaScriptKernel>,
+) {
+    registrations
+        .lock()
+        .expect("session registrations lock")
+        .register(
+            EvalLanguage::Js,
+            Some(super::kernel_registration::java_script_kernel_memory(
+                kernel.clone(),
+            )),
+        );
+}
+
+/// Everything a JS kernel start needs, cloneable so an idle-parked kernel can restart without the manager.
+#[derive(Clone)]
+struct JavaScriptLauncher {
+    cwd: PathBuf,
+    session_id: String,
+    local_roots: Option<crate::bridge::protocol::LocalRoots>,
+    artifacts_dir: Option<PathBuf>,
+    settings: CodemodeSettings,
+    list_tools: Option<crate::bridges::schema_bridge::EvalToolCatalog>,
+    session_env: Option<SessionEnvironment>,
+    port: u16,
+    token: String,
+    shutdown: maho_ai::utils::abort::AbortController,
+}
+
+impl JavaScriptLauncher {
+    async fn start(
+        &self,
+    ) -> Result<Arc<crate::kernels::js::context_manager::JavaScriptKernel>, String> {
+        let roots = self.local_roots.clone().or_else(|| {
+            self.artifacts_dir.as_ref().map(|root| {
+                crate::bridge::protocol::LocalRoots::from([(
+                    "local".into(),
+                    root.join("local").to_string_lossy().into_owned(),
+                )])
+            })
+        });
+        let width = self.settings.parallel_pool_width;
+        let catalog = self.list_tools.clone();
+        let names = Arc::new(move || {
+            let host = catalog
+                .as_ref()
+                .map(|catalog| catalog())
+                .transpose()?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect();
+            Ok((host, vec![]))
+        });
+        let settings = &self.settings;
+        let memory = crate::config::memory_settings::resolve_kernel_memory_thresholds(
+            Some(&settings.memory()),
+            &maho_ext_api::process_env::vars().into_iter().collect(),
+        );
+        Ok(Arc::new(
+            crate::kernels::js::context_manager::JavaScriptKernel::start_with_memory(
+                &self.cwd,
+                &self.session_id,
+                crate::kernels::js::context_manager::JavaScriptKernelStart {
+                    isolation: crate::config::feature_settings::resolve_js_isolation(
+                        settings,
+                        &maho_ext_api::process_env::vars().into_iter().collect(),
+                    ),
+                    parallel_pool_width: if width.is_finite() {
+                        width.trunc().max(1.0) as u64
+                    } else {
+                        1
+                    },
+                    session_env: self.session_env.clone(),
+                    connection: BridgeConnectionConfig {
+                        port: self.port,
+                        token: self.token.clone(),
+                        local_roots: roots,
+                        artifacts_dir: self
+                            .artifacts_dir
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().into_owned()),
+                        parallel_pool_width: None,
+                    },
+                    names,
+                    shutdown: self.shutdown.clone(),
+                    memory,
+                    env_passthrough: settings.env_passthrough.clone(),
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?,
+        ))
     }
 }

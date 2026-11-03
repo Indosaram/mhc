@@ -62,3 +62,21 @@ fn missing_watch_path_reports_error_once() {
     assert!(watch_with_error_handler(&directory.path().join("missing"), |_, _| {}, move || { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }, false).is_none());
     assert_eq!(errors.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+// senpi issue-1229-win-fswatch-noncanonical-abort.test.ts: a directory watched through a
+// non-canonical (8.3 short-name) path delivers its entry events instead of failing.
+#[cfg(windows)]
+#[tokio::test]
+async fn upstream_a_non_canonical_directory_path_still_delivers_events() {
+    let directory = tempfile::Builder::new().prefix("senpi-1229-long-directory-name-").tempdir().unwrap();
+    let long = directory.path().to_string_lossy().into_owned();
+    let output = std::process::Command::new("cmd.exe").args(["/d", "/s", "/c", &format!("for %I in (\"{long}\") do @echo %~sI")]).output().unwrap();
+    let alias = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if alias.is_empty() || alias == long {
+        return; // the volume exposes no 8.3 alias (upstream skips this case too)
+    }
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let watcher = watch_with_error_handler(std::path::Path::new(&alias), move |_, name| { let _ = sender.send(name); }, || panic!("watch error"), false).expect("watcher");
+    std::fs::write(directory.path().join("regression-write-1229.txt"), b"change").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), receiver.recv()).await.expect("event delivered").expect("open channel");
+    close_watcher(Some(watcher));
+}

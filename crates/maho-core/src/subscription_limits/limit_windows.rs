@@ -9,16 +9,19 @@ use std::collections::{BTreeSet, HashMap};
 use serde_json::Value;
 
 /// One reported limit window.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LimitWindow {
     /// Stable key within an account: `<limit>:<window>` (`codex:primary`, `claude:5h`).
     pub id: String,
     /// What the window is, as a person reads it: `5h`, `7d`, `7d opus`.
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_minutes: Option<u64>,
     /// 0-100.
     pub used_percent: f64,
     /// ISO timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
 }
 

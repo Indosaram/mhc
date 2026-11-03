@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Once;
 
 use maho_interactive::components::ask_user_async_widget::{
     build_comment_response, build_timed_out_response, render_status_line, unanswered_ids,
@@ -36,16 +35,13 @@ fn theme() -> Theme {
     Theme::builtin("dark", ColorMode::Truecolor).expect("dark theme builds")
 }
 
-static KEYBINDINGS: Once = Once::new();
-
-fn install_keybindings() {
-    KEYBINDINGS.call_once(|| {
-        let manager = maho_core::keybindings::KeybindingsManager::new(
-            maho_tui::keybindings::KeybindingsConfig::new(),
-            None,
-        );
-        maho_tui::keybindings::set_keybindings(manager.inner().clone());
-    });
+/// Installs the default coding-agent keybindings for the test's lifetime, under the shared lock.
+fn install_keybindings() -> crate::global_keybindings::GlobalKeybindings {
+    let manager = maho_core::keybindings::KeybindingsManager::new(
+        maho_tui::keybindings::KeybindingsConfig::new(),
+        None,
+    );
+    crate::global_keybindings::install_global_keybindings(manager.inner().clone())
 }
 
 fn golden(name: &str) -> Value {
@@ -65,7 +61,7 @@ fn key_string(binding: &str) -> String {
 
 #[test]
 fn ask_user_own_answer_accepts_encoded_and_batched_text() {
-    install_keybindings();
+    let _keybindings = install_keybindings();
     for (input, expected) in [
         ("\x1b[97u", "a"),
         ("\x1b[200~custom reply\x1b[201~", "custom reply"),
@@ -87,7 +83,7 @@ fn ask_user_own_answer_accepts_encoded_and_batched_text() {
 
 #[test]
 fn ask_user_option_replaces_previously_typed_answer() {
-    install_keybindings();
+    let _keybindings = install_keybindings();
     let request: QuestionRequest = serde_json::from_value(golden("task34-ask.json")["happy"]["request"].clone()).expect("request");
     let captured = Rc::new(RefCell::new(None));
     let sink = Rc::clone(&captured);
@@ -122,7 +118,7 @@ fn ask_user_component_empty_questions_does_not_panic() {
 
 #[test]
 fn ask_user_question_matches_pinned_golden() {
-    install_keybindings();
+    let _keybindings = install_keybindings();
     let fixture = golden("task34-ask.json");
 
     let request: QuestionRequest =
@@ -171,7 +167,7 @@ fn ask_user_question_matches_pinned_golden() {
 
 #[test]
 fn ask_user_timeout_and_countdown_match_pinned_golden() {
-    install_keybindings();
+    let _keybindings = install_keybindings();
     let fixture = golden("task34-ask.json");
     let request: QuestionRequest =
         serde_json::from_value(fixture["happy"]["request"].clone()).expect("request parses");
@@ -213,7 +209,7 @@ fn ask_user_timeout_and_countdown_match_pinned_golden() {
 
 #[test]
 fn tips_registry_scheduler_and_lines_match_pinned_golden() {
-    install_keybindings();
+    let _keybindings = install_keybindings();
     let fixture = golden("task34-tips.json");
 
     let ids: Vec<Value> = TIP_DEFINITIONS
@@ -321,7 +317,7 @@ fn tips_registry_scheduler_and_lines_match_pinned_golden() {
 
 #[test]
 fn grok_chrome_and_first_time_setup_render_matches_pinned_golden() {
-    install_keybindings();
+    let _keybindings = install_keybindings();
     let fixture = golden("task34-render.json");
     let theme = theme();
 

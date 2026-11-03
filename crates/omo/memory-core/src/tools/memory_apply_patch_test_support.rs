@@ -1,8 +1,12 @@
+use std::cell::RefCell;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 use crate::git::GitMemoryRepo;
 use crate::git::repo_types::GitCommitAuthor;
 
+use crate::tools::memory::{MemoryToolLock, MemoryToolResult};
 use crate::tools::memory_apply_patch::{
     MemoryApplyPatchParams, MemoryApplyPatchResult, run_memory_apply_patch,
 };
@@ -54,4 +58,58 @@ pub fn memory_apply_patch(
     params: &MemoryApplyPatchParams,
 ) -> Result<MemoryApplyPatchResult, MemoryToolError> {
     run_memory_apply_patch(repo, params, None)
+}
+
+/// Seed a fixture with raw bytes (non-UTF-8 content the `&str` seeds cannot carry).
+pub fn seed_bytes(repo: &GitMemoryRepo, rel_path: &str, bytes: &[u8]) {
+    fs::write(repo.dir.join(rel_path), bytes).expect("write bytes");
+    repo.commit_write(&[rel_path], "seed bytes", &test_author())
+        .expect("commit bytes");
+}
+
+/// Run git in `dir`, returning trimmed stdout; panics with stderr on a non-zero exit.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("spawn git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string()
+}
+
+/// True when `message` is `<prefix><7 lowercase hex><suffix>` exactly.
+pub fn matches_short_sha_message(message: &str, prefix: &str, suffix: &str) -> bool {
+    message
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .is_some_and(|sha| {
+            sha.len() == 7
+                && sha
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        })
+}
+
+/// Lock that records every domain it is asked for and runs the operation inline.
+#[derive(Default)]
+pub struct RecordingLock {
+    pub domains: RefCell<Vec<String>>,
+}
+
+impl MemoryToolLock for RecordingLock {
+    fn with_lock(
+        &self,
+        domain: &str,
+        operation: &mut dyn FnMut() -> Result<MemoryToolResult, MemoryToolError>,
+    ) -> Result<MemoryToolResult, MemoryToolError> {
+        self.domains.borrow_mut().push(domain.to_string());
+        operation()
+    }
 }

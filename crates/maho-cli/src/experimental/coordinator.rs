@@ -27,15 +27,29 @@ impl CoordinatorConnection {
     pub fn was_replaced(&self) -> bool { self.replaced }
     pub async fn next_event(&mut self) -> Result<Option<CoordinatorMessage>, String> {
         let Some(value) = self.connection.receive().await.map_err(|error| error.to_string())? else { self.replaced = true; return Ok(None); };
-        let message = serde_json::from_value(value).map_err(|_| "Coordinator sent an invalid message")?;
+        // senpi destroys the socket on an invalid or unsupported message; the disconnect marks the connection replaced.
+        let Ok(message) = serde_json::from_value::<CoordinatorMessage>(value) else { self.replaced = true; let _ = self.connection.close().await; return Err("Coordinator sent an invalid message".to_owned()); };
         match &message {
             CoordinatorMessage::PeerConnected { peer_id } => { self.peer_ids.insert(peer_id.clone()); }
             CoordinatorMessage::PeerDisconnected { peer_id } => { self.peer_ids.remove(peer_id); }
             CoordinatorMessage::ServerReplaced => { self.replaced = true; }
             CoordinatorMessage::Message { .. } => {},
-            CoordinatorMessage::ServerRegistered { .. } => return Err("Coordinator sent an unsupported message".to_owned()),
+            CoordinatorMessage::ServerRegistered { .. } => { self.replaced = true; let _ = self.connection.close().await; return Err("Coordinator sent an unsupported message".to_owned()); }
         }
         Ok(Some(message))
+    }
+    /// senpi `onEvent` listeners plus the `replaced` promise, pulled: the next peer/message event, or `None` once the
+    /// connection was replaced, closed, or broken (when `was_replaced()` is true, upstream's `replaced` has resolved).
+    pub async fn next_connection_event(&mut self) -> Option<CoordinatorConnectionEvent> {
+        loop {
+            match self.next_event().await {
+                Ok(Some(CoordinatorMessage::PeerConnected { peer_id })) => return Some(CoordinatorConnectionEvent::PeerConnected { peer_id }),
+                Ok(Some(CoordinatorMessage::PeerDisconnected { peer_id })) => return Some(CoordinatorConnectionEvent::PeerDisconnected { peer_id }),
+                Ok(Some(CoordinatorMessage::Message { from, payload })) => return Some(CoordinatorConnectionEvent::Message { from, payload }),
+                Ok(Some(CoordinatorMessage::ServerRegistered { .. })) => continue,
+                Ok(Some(CoordinatorMessage::ServerReplaced) | None) | Err(_) => { self.replaced = true; return None; }
+            }
+        }
     }
     pub async fn send(&mut self, peer_id: &str, payload: serde_json::Value) -> Result<(), String> {
         self.write(serde_json::json!({"type":"send", "to":peer_id, "payload":payload})).await
@@ -48,6 +62,43 @@ impl CoordinatorConnection {
     pub async fn close(&mut self) -> Result<(), String> { self.peer_ids.clear(); self.connection.close().await.map_err(|error| error.to_string()) }
 }
 pub const COORDINATOR_PROTOCOL_VERSION: u32 = 3;
+/// senpi `coordinator-entry.ts`: the entry consumes the internal role (so descendants do not inherit it) and refuses
+/// anything but an internal coordinator invocation.
+pub fn require_coordinator_role(role: Option<crate::experimental::process::InternalProcessRole>) -> Result<(), String> {
+    if role == Some(crate::experimental::process::InternalProcessRole::Coordinator) { Ok(()) } else { Err("Coordinator entrypoint requires an internal coordinator invocation".to_owned()) }
+}
+/// senpi `runCoordinatorProcess(args)`: both socket paths are required; runs until SIGINT/SIGTERM, which shut the
+/// coordinator down and remove its sockets.
+#[cfg(unix)]
+pub async fn run_coordinator_process(args: &[String]) -> Result<(), String> {
+    let [public, control, ..] = args else { return Err("Coordinator requires public and control socket paths".to_owned()); };
+    let shutdown = maho_ai::utils::abort::AbortController::new();
+    let signal = shutdown.signal();
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|error| error.to_string())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|error| error.to_string())?;
+    let coordinator = run_coordinator(std::path::Path::new(public), std::path::Path::new(control), &signal);
+    tokio::pin!(coordinator);
+    tokio::select! { result = &mut coordinator => result, _ = interrupt.recv() => { shutdown.abort(None); coordinator.await }, _ = terminate.recv() => { shutdown.abort(None); coordinator.await } }
+}
+/// senpi `coordinator-entry.ts` as one call: consume the role from the process environment, require `coordinator`,
+/// then run the coordinator on its own runtime.
+#[cfg(unix)]
+pub fn run_coordinator_entry(args: &[String]) -> Result<(), String> {
+    require_coordinator_role(crate::experimental::process::consume_process_internal_role()?)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+    runtime.block_on(run_coordinator_process(args))
+}
+#[cfg(not(unix))]
+pub fn run_coordinator_entry(_args: &[String]) -> Result<(), String> {
+    Err("Coordinator named-pipe transport has not been ported on this platform".to_owned())
+}
+/// senpi `CoordinatorConnectionEvent`: what a registered server observes from its peers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CoordinatorConnectionEvent {
+    PeerConnected { peer_id: String },
+    PeerDisconnected { peer_id: String },
+    Message { from: String, payload: serde_json::Value },
+}
 #[cfg(unix)]
 pub struct CoordinatorStartupLease(tokio::net::UnixStream);
 #[cfg(unix)]

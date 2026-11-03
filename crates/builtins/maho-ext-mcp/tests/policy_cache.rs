@@ -76,7 +76,7 @@ fn invalid_tools_invalidate_server_entry() {
 #[test]
 fn atomic_cache_write_round_trips_catalog() {
     let root = tempfile::tempdir().unwrap();
-    let server = McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:1000.0,tools:vec![json!({"name":"tool","inputSchema":{}})],resources:vec![],prompts:vec![],instructions:None};
+    let server = McpCachedServerCatalog {modern:false,credential_identity:None,config_hash:"hash".into(),fetched_at:1000.0,tools:vec![json!({"name":"tool","inputSchema":{}})],resources:vec![],prompts:vec![],instructions:None};
     write_mcp_cached_server(root.path(),"fx",server.clone()).unwrap();
     assert_eq!(read_mcp_catalog_cache(root.path()).servers["fx"],server);
 }

@@ -35,7 +35,7 @@ pub fn widen_to_repository_root(project_root: Option<PathBuf>, home_dir: &Path) 
  loop {
   if current == home { return Some(project_root); }
   if current.join(".git").exists() { return Some(current); }
-  let parent = current.parent()?;
+  let Some(parent) = current.parent() else { return Some(project_root); };
   if parent == current { return Some(project_root); }
   current = parent.to_path_buf();
  }

@@ -183,7 +183,9 @@ fn a_refused_delete_says_could_not_let_go() {
 #[test]
 fn friendly_failure_rewrites_the_known_refusals() {
     assert_eq!(
-        friendly_failure("memory: str_replace: old_string was not found in the target memory block"),
+        friendly_failure(
+            "memory: str_replace: old_string was not found in the target memory block"
+        ),
         "The text to replace was not in that memory."
     );
     assert_eq!(
@@ -307,6 +309,129 @@ fn gather_write_notice_reads_the_committed_affected_files() {
 
 #[test]
 fn remembered_title_joins_the_detail() {
-    assert_eq!(remembered_title(Some("4th entry today")), format!("● Remembered{}4th entry today", " · "));
+    assert_eq!(
+        remembered_title(Some("4th entry today")),
+        format!("● Remembered{}4th entry today", " · ")
+    );
     assert_eq!(remembered_title(None), "● Remembered");
+}
+
+fn bound_context(root: &std::path::Path) -> crate::context::MemoryIdentityContext {
+    crate::context::MemoryIdentityContext::new(
+        "notice-agent".into(),
+        memory_core::identity::layout::build_identity_paths(root, "notice-agent"),
+        crate::binding::MemorySessionBinding {
+            identity: "notice-agent".into(),
+            repo_path_hash: "hash".into(),
+            bound_at: 0.0,
+        },
+    )
+}
+
+fn committed_write(
+    context: &crate::context::MemoryIdentityContext,
+) -> (memory_core::git::GitMemoryRepo, String) {
+    let engine = crate::engine_session::prepare_memory_engine_session(
+        &context.identity,
+        &context.identity_paths,
+        Default::default(),
+    )
+    .expect("engine");
+    std::fs::create_dir_all(engine.repo.dir.join("knowledge")).expect("mkdir");
+    std::fs::write(
+        engine.repo.dir.join("knowledge/deploy.md"),
+        "---\ndescription: How deploys run.\n---\nline one\nline two\nline three\n",
+    )
+    .expect("write");
+    let commit = engine
+        .repo
+        .commit_write(
+            &["knowledge/deploy.md"],
+            "Track the deploy runbook",
+            &engine.author,
+        )
+        .expect("commit");
+    (engine.repo, commit.sha)
+}
+
+/// Pin tools-write-notice.test.ts: a committed write with a bound session carries size and timeline.
+#[test]
+fn a_bound_session_write_carries_size_and_timeline() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let context = bound_context(root.path());
+    let (repo, sha) = committed_write(&context);
+    let journal = context
+        .identity_paths
+        .transcripts
+        .join("session-write-notice");
+    std::fs::create_dir_all(&journal).expect("mkdir");
+    std::fs::write(
+        journal.join("state.json"),
+        r#"{"steps_since_last_successful_reflection":7}"#,
+    )
+    .expect("journal");
+    let completions = context.identity_paths.reflection.join("completions");
+    std::fs::create_dir_all(&completions).expect("mkdir");
+    std::fs::write(
+        completions.join("run-1.json"),
+        r#"{"runId":"run-1","outcome":"merged","finishedAt":"2026-08-13T12:00:00.000Z"}"#,
+    )
+    .expect("completion");
+
+    let notice = gather_write_notice_for_session(
+        &context,
+        &repo,
+        &sha,
+        "Track the deploy runbook",
+        Some("session-write-notice"),
+    );
+    assert_eq!(notice.identity, "notice-agent");
+    assert_eq!(
+        notice.affected,
+        vec![MemoryWriteAffectedFile {
+            path: "knowledge/deploy.md".into(),
+            insertions: 6,
+            deletions: 0,
+        }]
+    );
+    let size = notice.size.expect("size");
+    assert!(size.file_count > 0 && size.total_bytes > 0);
+    assert!(size.total_bytes >= size.system_bytes);
+    assert!(notice.timeline.entries_today.expect("entries today") >= 1);
+    assert!(notice.timeline.previous_entry_at_iso.is_some());
+    assert_eq!(
+        notice.timeline.last_consolidation_at_iso.as_deref(),
+        Some("2026-08-13T12:00:00.000Z")
+    );
+    assert_eq!(notice.timeline.unreflected_steps, Some(7));
+}
+
+/// Pin: a missing completions directory and a corrupt journal each omit only their own field; no
+/// session omits size and timeline altogether.
+#[test]
+fn degraded_sources_omit_only_their_own_field() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let context = bound_context(root.path());
+    let (repo, sha) = committed_write(&context);
+    let journal = context.identity_paths.transcripts.join("s");
+    std::fs::create_dir_all(&journal).expect("mkdir");
+    std::fs::write(journal.join("state.json"), "{not json at all").expect("journal");
+    let _ = std::fs::remove_dir_all(context.identity_paths.reflection.join("completions"));
+
+    let notice = gather_write_notice_for_session(&context, &repo, &sha, "x", Some("s"));
+    assert!(notice.size.is_some());
+    assert!(notice.timeline.last_consolidation_at_iso.is_none());
+    assert!(notice.timeline.unreflected_steps.is_none());
+    assert!(notice.timeline.entries_today.is_some());
+
+    let unbound = gather_write_notice_for_session(&context, &repo, &sha, "x", None);
+    assert!(unbound.size.is_none());
+    assert_eq!(unbound.timeline, MemoryWriteNoticeTimeline::default());
+    assert_eq!(unbound.affected.len(), 1);
+
+    let ghost = gather_write_notice_for_session(&context, &repo, &"0".repeat(40), "x", Some("s"));
+    assert!(
+        ghost.affected.is_empty(),
+        "git failing on line counts empties only affected"
+    );
 }

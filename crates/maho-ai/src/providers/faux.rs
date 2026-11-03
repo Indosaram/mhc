@@ -178,6 +178,7 @@ pub fn faux_assistant_message(
         end_turn: None,
         timestamp: options.timestamp.unwrap_or_else(now_ms),
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -506,6 +507,7 @@ fn create_deferred_message(model: &Model, handle: &DeferredHandle) -> AssistantM
         end_turn: None,
         timestamp: now_ms(),
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -540,6 +542,7 @@ fn create_error_message(
         end_turn: None,
         timestamp: now_ms(),
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
     }
 }
@@ -714,11 +717,15 @@ async fn stream_with_deltas(
                         deltas.abort_now(&partial);
                         return Ok(());
                     }
-                    stream.push(AssistantMessageEvent::ToolcallDelta {
-                        content_index: index,
-                        delta: chunk,
-                        partial: partial.clone(),
-                    });
+                    // Faux never parses its generated chunks; only the end installs the arguments.
+                    stream.push_with_hint(
+                        AssistantMessageEvent::ToolcallDelta {
+                            content_index: index,
+                            delta: chunk,
+                            partial: partial.clone(),
+                        },
+                        crate::utils::assistant_capture::CaptureHint::parsed_through(0),
+                    );
                 }
                 if let Some(ContentBlock::ToolCall(block)) = partial.content.get_mut(index) {
                     block.arguments = call.arguments.clone();
@@ -862,6 +869,7 @@ impl FauxCore {
         deferred: Option<crate::types::DeferredOption>,
     ) -> AssistantMessageEventStream {
         let outer = create_assistant_message_event_stream();
+        crate::utils::assistant_capture::enable_assistant_capture(&outer);
         let simple = SimpleStreamOptions {
             stream: options.clone(),
             deferred,
@@ -1013,6 +1021,7 @@ impl FauxCore {
         options: Option<DeferredFetchOptions>,
     ) -> AssistantMessageEventStream {
         let outer = create_assistant_message_event_stream();
+        crate::utils::assistant_capture::enable_assistant_capture(&outer);
         {
             let mut inner = self.lock();
             inner.state.deferred_fetch_count += 1;
@@ -1856,5 +1865,146 @@ mod registry_tests {
             ));
         })
         .expect("scope entered before close");
+    }
+}
+
+/// Port of senpi packages/ai/test/faux-producer-capture.test.ts.
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    use crate::utils::assistant_capture::{Record, assistant_records, get_assistant_capture};
+
+    async fn capture() -> Vec<crate::utils::assistant_capture::AssistantRecord> {
+        let core = create_faux_core(&RegisterFauxProviderOptions {
+            api: Some("faux-capture".into()),
+            token_size: Some(FauxTokenSize {
+                min: Some(1),
+                max: Some(1),
+            }),
+            scheduler_hook: Some(Arc::new(|| Box::pin(async {}))),
+            ..Default::default()
+        });
+        let mut arguments = Map::new();
+        arguments.insert("text".into(), Value::from("a b"));
+        core.set_responses(vec![
+            faux_assistant_message(
+                vec![
+                    faux_thinking("ponder"),
+                    faux_text("hello"),
+                    faux_tool_call("echo", arguments, Some("call_1")),
+                ],
+                FauxAssistantMessageOptions {
+                    stop_reason: Some(StopReason::ToolUse),
+                    timestamp: Some(1),
+                    ..Default::default()
+                },
+            )
+            .into(),
+        ]);
+        let model = core.get_model(None).expect("model");
+        let stream = faux_streams(core).stream_simple(&model, &Context::default(), None);
+        // Attached before the spawned producer's first push, so capture is on for this stream.
+        let records = assistant_records(&stream);
+        tokio::time::timeout(Duration::from_secs(5), records.collect())
+            .await
+            .expect("records deadline")
+            .expect("records")
+    }
+
+    fn kind(record: &crate::utils::assistant_capture::AssistantRecord) -> String {
+        let Record::Event(event) = record else {
+            return "progress".into();
+        };
+        let value = serde_json::to_value(&event.value).expect("event json");
+        let name = value["type"].as_str().unwrap_or_default().to_owned();
+        match value.get("contentIndex").and_then(Value::as_u64) {
+            Some(index) => format!("{name}:{index}"),
+            None => name,
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_the_parsed_seed_until_the_end_installs_arguments() {
+        let records = capture().await;
+        assert_eq!(
+            records.iter().map(kind).collect::<Vec<_>>(),
+            [
+                "start",
+                "thinking_start:0",
+                "thinking_delta:0",
+                "thinking_delta:0",
+                "thinking_end:0",
+                "text_start:1",
+                "text_delta:1",
+                "text_delta:1",
+                "text_end:1",
+                "toolcall_start:2",
+                "toolcall_delta:2",
+                "toolcall_delta:2",
+                "toolcall_delta:2",
+                "toolcall_delta:2",
+                "toolcall_end:2",
+                "done",
+            ]
+        );
+        let captures: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Event(event) => Some((kind(record), get_assistant_capture(event))),
+                Record::Progress(_) => None,
+            })
+            .collect();
+        let start = captures
+            .iter()
+            .find(|(kind, _)| kind == "toolcall_start:2")
+            .and_then(|(_, capture)| *capture)
+            .expect("toolcall start capture");
+        assert_eq!(
+            start.block.as_deref(),
+            Some(&ContentBlock::ToolCall(ToolCall {
+                id: "call_1".into(),
+                name: "echo".into(),
+                ..ToolCall::default()
+            }))
+        );
+        assert_eq!(start.raw_argument_prefix.as_deref(), Some(""));
+        assert_eq!(
+            (start.parsed_through, start.covered_code_units),
+            (Some(0), Some(0))
+        );
+        // Faux never parses its generated chunks, so the frontier stays at the seed on every delta.
+        let deltas = |name: &str| -> Vec<(Option<usize>, Option<usize>)> {
+            captures
+                .iter()
+                .filter(|(kind, _)| kind.starts_with(name))
+                .map(|(_, capture)| {
+                    let capture = capture.expect("delta capture");
+                    (capture.offset, capture.parsed_through)
+                })
+                .collect()
+        };
+        assert_eq!(
+            deltas("toolcall_delta"),
+            [
+                (Some(0), Some(0)),
+                (Some(4), Some(0)),
+                (Some(8), Some(0)),
+                (Some(12), Some(0))
+            ]
+        );
+        assert_eq!(deltas("thinking_delta"), [(Some(0), None), (Some(4), None)]);
+    }
+
+    #[tokio::test]
+    async fn keeps_the_public_bytes_recorded_before_capture() {
+        let records = capture().await;
+        let Some(Record::Event(done)) = records.last() else {
+            panic!("done event");
+        };
+        let AssistantMessageEvent::Done { message, .. } = &done.value else {
+            panic!("done event");
+        };
+        assert_eq!(message.stop_reason, StopReason::ToolUse);
+        assert!(records.iter().all(|record| matches!(record, Record::Event(_))));
     }
 }

@@ -1,0 +1,137 @@
+st_01a192f8 [completed] transcript via event-log:
+assistant: I read this as a clean-room implementation task in /home/projects/mhc-wt/sync5152-clean - implement 5 spec deltas with tests, one commit each. I'll stop when all 5 units are committed and I can report the shas, files, and spec mapping.
+tool: bash
+tool: read
+tool: grep
+assistant: Start with unit 1 (lsp).
+tool: bash
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: edit
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Unit 1 committed. Now utils.
+tool: read
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Unit 2 done. Now config-keys D2.
+tool: bash
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Unit 3 done. Model-selection D7.
+tool: bash
+tool: read
+tool: read
+tool: bash
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Unit 4 done. Now task-b.
+tool: read
+tool: bash
+tool: read
+tool: bash
+tool: read
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: edit
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+tool: bash
+assistant: Ask: implement five clean-room spec deltas (lsp, utils, config-keys D2, model-selection D7, task D2/D4) with tests, one commit per unit, in `/home/projects/mhc-wt/sync5152-clean`. Wanted: the commit sha for each unit, the files it touches, and which spec section each test covers.
+
+For you: all 5/5 units are committed on top of `0c0e537`. None of the new code or tests has been compiled or run, because cargo was not allowed here. I checked them by reading the code and ran rustfmt on every changed `.rs` file.
+
+I worked only from `docs/cleanroom/specs/*.md` and the MIT code in this tree, and changed only `crates/maho-*`. The diff contains none of the forbidden names and no sleeps. Every `.unwrap()` in it is in test code. Each crate's `PROVENANCE.md` has a note on what changed.
+
+**1. lsp — `25997c4`** (`crates/maho-lsp/src/servers.rs`, `src/config.rs`, `PROVENANCE.md`)
+- **Code:** the built-in `typescript` server now has default initialization options (D1). A config entry for a built-in id that leaves out `command` or `extensions` takes the missing field from the built-in. Its options are merged shallowly over the defaults, with the entry winning on shared keys. An entry with its own `command` gets only its own `initialization` (D2).
+- **Tests** in `config.rs`, mapped to lsp.md D3:
+  - `builtin_typescript_carries_default_options_and_deno_none`: test 1
+  - `entry_without_command_adds_keys_to_builtin_defaults`: test 2
+  - `entry_value_wins_on_shared_key`: test 3
+  - `merge_is_shallow`: test 4
+  - `entry_with_own_command_uses_only_its_options`: test 5
+  - `project_entry_with_only_extensions_keeps_builtin_command_and_options`: test 6
+  - `unknown_id_without_command_is_skipped`: test 7
+  - `initialize_sends_builtin_typescript_options`: test 8. It uses an in-memory fake server and checks the `initializationOptions` in the `initialize` request.
+
+**2. utils — `c62f542`** (`crates/maho-support/src/paths.rs`, `tests/support.rs`, `PROVENANCE.md`)
+- **Code:** `canonicalize_lenient` no longer cleans up `..` as text first, so the OS follows symlinks before applying `..`. For a path that doesn't exist yet, it finds the deepest prefix that does exist and resolves that. In the missing part, `.` is dropped and each `..` removes the last component built so far.
+- **Tests** in `tests/support.rs`: `delta_d1_*`, one per numbered test (D1 tests 1-7).
+
+**3. config-keys-b — `f9c2c8f`** (`crates/maho-config/src/schema.rs`, `tests/load.rs`, `PROVENANCE.md`)
+- **Code:** a new optional `model_pad.labels.{daily,geeky,normal,heavy}` key. Both objects are strict, the labels are strings, and there are no defaults. It is accepted at top level, inside `[native]`, `[senpi]` and `[codex]`, and inside `profiles.<name>`.
+- **Tests** in `tests/load.rs`: one per D2 test, eight in total:
+  - `model_pad_labels_are_kept_without_defaults`
+  - `model_pad_unknown_label_is_removed`
+  - `model_pad_unknown_key_is_removed`
+  - `model_pad_non_string_label_is_pruned`
+  - `model_pad_in_native_block_reaches_the_view`
+  - `model_pad_in_active_profile_reaches_the_view`
+  - `file_without_model_pad_has_no_model_pad_in_view`
+  - `schema_model_pad_is_strict_with_string_labels_and_no_defaults`
+
+**4. model-selection-d7 — `d478e67`** (`crates/maho-model-select/src/delegate.rs`, `src/lib.rs`, `tests/delta_5152_d7.rs`, `PROVENANCE.md`)
+- **Code:** a new `resolve_delegate_model_gated(input, released)`. The existing `resolve_delegate_model` calls it with the shipped release flag, which is off. With the flag off, an empty model cache and a known list of connected providers, two things are now skipped and logged:
+  - a category default that names the gated id and was not set by the user (step 3b);
+  - a chain rung that names the gated id (step 5).
+- **Tests** in `tests/delta_5152_d7.rs`, mapped to D7:
+  - `gated_builtin_category_default_is_skipped_on_cold_cache`: test 1
+  - `user_configured_gated_category_default_is_returned_as_written`: test 2
+  - `gated_chain_rung_is_skipped_on_cold_cache_with_connected_providers`: test 3
+  - `warm_cache_still_matches_the_gated_id`: test 4
+  - `cold_cache_without_connected_list_defers`: test 5
+  - `released_flag_keeps_the_gated_rung_and_shipped_flag_gates`: covers "with the flag on, nothing changes"
+
+**5. task-b — `64fbf3f`** (`crates/maho-task/src/credentials.rs`, `src/manager.rs`, `tests/delta_5152.rs`, `PROVENANCE.md`)
+- **Where the code differed from the spec, and what changed:**
+  - **`/login` rule:** "session expired" now counts as `rejected` only when the sentence directly after it mentions `/login`. Before, a `/login` anywhere in the text was enough.
+  - **Whole word "model":** "model"/"models" is now matched as a whole word, the way the spec words it. Before, any text containing those letters counted, so "remodeling" would have matched.
+  - **Delivery order:** the background delivery now happens before anyone waiting on the task is woken. Before, a waiter could see the task settled before it had been reported. This is a race fix needed to check D4 test 7 reliably; the spec does not ask for it.
+- **Already matched the spec:** whole-word and plural matching of the account words.
+- **Tests:**
+  - `d2_test_10_account_words_are_whole_words` in `credentials.rs`: D2 test 10
+  - `d2_test_11_expiry_needs_login_in_the_next_sentence`: D2 test 11, plus the positive case where `/login` does directly follow
+  - `model_is_matched_as_a_word`: D2 rule that only the word model/models counts
+  - `d4_retry_keeps_messages_queued_before_the_first_run` in `tests/delta_5152.rs`: D4 test 7. It now also asserts a fresh session, exactly three runs, the message appearing once in the retry's prompt, one background delivery, and no further run started.
+
+Now: nothing left; all five units are committed.
+Next: compile and run the tests where cargo is allowed: `cargo test -p maho-lsp -p maho-support -p maho-config -p maho-model-select -p maho-task`.

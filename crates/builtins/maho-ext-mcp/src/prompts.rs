@@ -4,7 +4,9 @@ use serde_json::{Map,Value,json};
 use crate::connection::ServerConnection;
 
 #[derive(Clone)]
-pub struct McpPromptServer {pub server:String,pub connection:Arc<ServerConnection>,pub request_timeout:Duration,pub prompts:Vec<Value>}
+pub struct McpPromptServer {pub server:String,pub connection:Arc<ServerConnection>,pub request_timeout:Duration,pub prompts:Vec<Value>,
+    pub request_origin:Option<crate::request_origin::McpRequestOriginFactory>,pub ensure_fresh:Option<crate::catalog::McpCatalogCallback>,
+    pub bind_presentation:Option<crate::service_register::McpBindPresentation>}
 pub fn register_mcp_prompt_commands(api:&mut ExtensionApi,servers:&[McpPromptServer],registered:&mut BTreeSet<String>)->Vec<String> {
     let mut added=Vec::new();
     for server in servers {
@@ -18,9 +20,14 @@ pub fn register_mcp_prompt_commands(api:&mut ExtensionApi,servers:&[McpPromptSer
             api.register_command(&command,Some(description),None,Arc::new(move |_,ctx|{
                 let server=server.clone();let prompt=prompt.clone();let name=name.clone();
                 Box::pin(async move {
+                    if let Some(bind)=&server.bind_presentation {bind(&ctx.ui);}
                     let args=prompt.get("arguments").and_then(Value::as_array).map_or(&[][..],Vec::as_slice);
                     let Some(collected)=collect_prompt_arguments(args,ctx.ui.as_ref()).await else{return Ok(());};
-                    let result=async {server.connection.client()?.request("prompts/get",json!({"name":name,"arguments":collected}),server.request_timeout).await}.await;
+                    let result=async {
+                        if server.request_origin.is_some() {crate::health::ensure_mcp_tool_call_connection(&server.connection,server.ensure_fresh.as_ref()).await?;}
+                        let options=crate::request_origin::mcp_request_options(server.request_origin.as_ref().and_then(|origin|origin()),None);
+                        server.connection.client()?.request_with_options("prompts/get",json!({"name":name,"arguments":collected}),server.request_timeout,&options).await
+                    }.await;
                     match result {
                         Ok(result)=>ctx.ui.set_editor_text(&flatten_prompt_messages(result.get("messages").and_then(Value::as_array).map_or(&[],Vec::as_slice))),
                         Err(error)=>ctx.ui.notify(&format!("MCP prompt {name} failed: {error}"),NotificationType::Error),

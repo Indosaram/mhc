@@ -1,21 +1,75 @@
-use std::{collections::{BTreeMap, BTreeSet, VecDeque}, path::{Path, PathBuf}};
-use super::{cache, constants::PROJECT_SINGLE_FILES, finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates}, formatter::{FormatOptions, format_static_block, format_dynamic_block}, matcher::{MatcherCache, MatcherInput, hash_content}, ordering::sort_candidates, parser::parse_rule, project_root::find_project_root, types::*};
+use super::{
+    cache,
+    constants::PROJECT_SINGLE_FILES,
+    finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates},
+    formatter::{FormatOptions, format_dynamic_block, format_static_block},
+    matcher::{MatcherCache, MatcherInput, hash_content},
+    ordering::sort_candidates,
+    parser::parse_rule,
+    project_root::find_project_root,
+    types::*,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    path::{Path, PathBuf},
+};
 
-pub struct LoadResult { pub rules: Vec<LoadedRule>, pub diagnostics: Vec<RuleDiagnostic> }
+pub struct LoadResult {
+    pub rules: Vec<LoadedRule>,
+    pub diagnostics: Vec<RuleDiagnostic>,
+}
 pub trait EngineDeps: Send + Sync {
-    fn find_candidates(&self, options: FinderOptions<'_>, cache: &mut RuleDiscoveryCache) -> Vec<RuleCandidate> { find_rule_candidates(options, cache) }
-    fn read_file(&self, path: &Path) -> Option<String> { std::fs::read_to_string(path).ok() }
-    fn find_project_root(&self, path: &Path) -> Option<PathBuf> { find_project_root(path, None) }
-    fn match_rule(&self, cache: &mut MatcherCache, input: MatcherInput<'_>) -> Result<super::matcher::MatchResult, super::matcher::MatcherError> { cache.match_rule(input) }
+    fn find_candidates(
+        &self,
+        options: FinderOptions<'_>,
+        cache: &mut RuleDiscoveryCache,
+    ) -> Vec<RuleCandidate> {
+        find_rule_candidates(options, cache)
+    }
+    fn read_file(&self, path: &Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
+    fn find_project_root(&self, path: &Path) -> Option<PathBuf> {
+        find_project_root(path, None)
+    }
+    fn match_rule(
+        &self,
+        cache: &mut MatcherCache,
+        input: MatcherInput<'_>,
+    ) -> Result<super::matcher::MatchResult, super::matcher::MatcherError> {
+        cache.match_rule(input)
+    }
     fn file_fingerprint(&self, path: &Path) -> String {
         #[cfg(unix)]
         {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}:{}", i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec()), i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec()), stat.len()))
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(path).map_or_else(
+                |_| "missing".into(),
+                |stat| {
+                    format!(
+                        "{}:{}:{}",
+                        i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec()),
+                        i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec()),
+                        stat.len()
+                    )
+                },
+            )
         }
         #[cfg(not(unix))]
         {
-            std::fs::metadata(path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}", stat.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |time| time.as_nanos()), stat.len()))
+            std::fs::metadata(path).map_or_else(
+                |_| "missing".into(),
+                |stat| {
+                    format!(
+                        "{}:{}",
+                        stat.modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map_or(0, |time| time.as_nanos()),
+                        stat.len()
+                    )
+                },
+            )
         }
     }
 }
@@ -27,19 +81,50 @@ struct LoadCaches {
     membership: BTreeMap<(Option<PathBuf>, String), bool>,
     real_paths: BTreeMap<PathBuf, PathBuf>,
 }
-pub struct DynamicTargetFingerprint { pub target_path: PathBuf, pub cache_key: String, pub fingerprint: String }
-pub struct Engine { pub state: SessionState, pub config: PiRulesConfig, home_dir: PathBuf, matcher: MatcherCache, dynamic_matches: VecDeque<(String, Option<MatchReason>)>, deps: Box<dyn EngineDeps> }
+pub struct DynamicTargetFingerprint {
+    pub target_path: PathBuf,
+    pub cache_key: String,
+    pub fingerprint: String,
+}
+pub struct Engine {
+    pub state: SessionState,
+    pub config: PiRulesConfig,
+    home_dir: PathBuf,
+    matcher: MatcherCache,
+    dynamic_matches: VecDeque<(String, Option<MatchReason>)>,
+    deps: Box<dyn EngineDeps>,
+}
 impl Engine {
-    pub fn new(config: PiRulesConfig, home_dir: PathBuf) -> Self { Self::with_deps(config, home_dir, Box::new(NativeEngineDeps)) }
-    pub fn with_deps(config: PiRulesConfig, home_dir: PathBuf, deps: Box<dyn EngineDeps>) -> Self { Self { state: SessionState::default(), config, home_dir, matcher: MatcherCache::default(), dynamic_matches: VecDeque::new(), deps } }
+    pub fn new(config: PiRulesConfig, home_dir: PathBuf) -> Self {
+        Self::with_deps(config, home_dir, Box::new(NativeEngineDeps))
+    }
+    pub fn with_deps(config: PiRulesConfig, home_dir: PathBuf, deps: Box<dyn EngineDeps>) -> Self {
+        Self {
+            state: SessionState::default(),
+            config,
+            home_dir,
+            matcher: MatcherCache::default(),
+            dynamic_matches: VecDeque::new(),
+            deps,
+        }
+    }
     pub fn reset_session(&mut self, cwd: Option<&str>) {
         cache::clear_session(&mut self.state);
         self.dynamic_matches.clear();
-        if let Some(cwd) = cwd { self.state.cwd = Some(cwd.into()); }
+        if let Some(cwd) = cwd {
+            self.state.cwd = Some(cwd.into());
+        }
     }
     fn disabled_sources(&self) -> BTreeSet<String> {
-        let EnabledSources::Explicit(enabled) = &self.config.enabled_sources else { return BTreeSet::new(); };
-        super::constants::SOURCE_PRIORITY.iter().map(|(source, _)| *source).filter(|source| !enabled.iter().any(|entry| entry == source)).map(str::to_owned).collect()
+        let EnabledSources::Explicit(enabled) = &self.config.enabled_sources else {
+            return BTreeSet::new();
+        };
+        super::constants::SOURCE_PRIORITY
+            .iter()
+            .map(|(source, _)| *source)
+            .filter(|source| !enabled.iter().any(|entry| entry == source))
+            .map(str::to_owned)
+            .collect()
     }
     fn store(&mut self, result: LoadResult) -> LoadResult {
         self.state.loaded_rules = result.rules.clone();
@@ -48,98 +133,352 @@ impl Engine {
     }
     pub fn load_static_rules(&mut self, cwd: &Path) -> LoadResult {
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
-        let mut result = LoadResult { rules: Vec::new(), diagnostics: Vec::new() };
-        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Dynamic) { return self.store(result); }
+        let mut result = LoadResult {
+            rules: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Dynamic) {
+            return self.store(result);
+        }
         let root = self.deps.find_project_root(cwd);
         let disabled = self.disabled_sources();
-        let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: None, home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut RuleDiscoveryCache::default());
+        let candidates = self.deps.find_candidates(
+            FinderOptions {
+                project_root: root.as_deref(),
+                target_file: None,
+                home_dir: &self.home_dir,
+                disabled_sources: &disabled,
+                skip_user_home: false,
+            },
+            &mut RuleDiscoveryCache::default(),
+        );
         let mut selected_root_single = false;
         for candidate in sort_candidates(&candidates) {
-            let root_single = candidate.distance == 0 && candidate.is_single_file && PROJECT_SINGLE_FILES.contains(&candidate.source.as_str()) && !candidate.source.contains('/');
-            if root_single && selected_root_single { continue; }
-            let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut LoadCaches::default(), self.deps.as_ref()) else { continue; };
-            rule.match_reason = if rule.frontmatter.always_apply == Some(true) { MatchReason::AlwaysApply } else if rule.candidate.is_single_file { MatchReason::SingleFile } else { continue; };
-            if root_single { selected_root_single = true; }
+            let root_single = is_root_single_file(&candidate);
+            if root_single && selected_root_single {
+                continue;
+            }
+            let Some(mut rule) = load_candidate_cached(
+                candidate,
+                root.as_deref(),
+                &mut result.diagnostics,
+                &mut LoadCaches::default(),
+                self.deps.as_ref(),
+            ) else {
+                continue;
+            };
+            rule.match_reason = if rule.frontmatter.always_apply == Some(true) {
+                MatchReason::AlwaysApply
+            } else if rule.candidate.is_single_file {
+                MatchReason::SingleFile
+            } else {
+                continue;
+            };
+            if root_single {
+                selected_root_single = true;
+            }
             result.rules.push(rule);
         }
         self.store(result)
     }
-    pub fn load_dynamic_rules(&mut self, cwd: &Path, targets: &[PathBuf]) -> Result<LoadResult, super::matcher::MatcherError> {
+    pub fn load_dynamic_rules(
+        &mut self,
+        cwd: &Path,
+        targets: &[PathBuf],
+    ) -> Result<LoadResult, super::matcher::MatcherError> {
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
-        let mut result = LoadResult { rules: Vec::new(), diagnostics: Vec::new() };
-        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Ok(self.store(result)); }
+        let mut result = LoadResult {
+            rules: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) {
+            return Ok(self.store(result));
+        }
         let disabled = self.disabled_sources();
         let mut discovery = RuleDiscoveryCache::default();
         let mut seen_targets = BTreeSet::new();
         let mut seen_rules = BTreeSet::new();
         let mut caches = LoadCaches::default();
         let mut candidate_sets = BTreeMap::new();
+        let mut root_single_selections: BTreeSet<PathBuf> = BTreeSet::new();
         for target in targets {
-            if !seen_targets.insert(target) { continue; }
+            if !seen_targets.insert(target) {
+                continue;
+            }
             let discovery_target = canonicalize_path(target);
-            let directory = discovery_target.parent().map(Path::to_path_buf).unwrap_or_default();
-            let root = self.deps.find_project_root(discovery_target.parent().unwrap_or(&discovery_target));
-            let candidates = candidate_sets.entry((root.clone(), directory)).or_insert_with(|| self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(&discovery_target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery));
+            let directory = discovery_target
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            // Workspaces nest project markers, so widen to the enclosing git repository root (upstream widenToRepositoryRoot).
+            let root = super::project_root::widen_to_repository_root(
+                self.deps
+                    .find_project_root(discovery_target.parent().unwrap_or(&discovery_target)),
+                &self.home_dir,
+            );
+            let candidates = candidate_sets
+                .entry((root.clone(), directory))
+                .or_insert_with(|| {
+                    self.deps.find_candidates(
+                        FinderOptions {
+                            project_root: root.as_deref(),
+                            target_file: Some(&discovery_target),
+                            home_dir: &self.home_dir,
+                            disabled_sources: &disabled,
+                            skip_user_home: false,
+                        },
+                        &mut discovery,
+                    )
+                });
             for candidate in sort_candidates(candidates) {
-                let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut caches, self.deps.as_ref()) else { continue; };
-                let basename = discovery_target.file_name().unwrap_or_default().to_string_lossy();
-                let relative = root.as_deref().map(|root| relative_path(root, &discovery_target)).unwrap_or_else(|| basename.to_string());
-                let scope = if rule.candidate.is_global { None } else if rule.candidate.is_single_file { Path::new(&rule.candidate.path).parent().map(Path::to_path_buf) } else {
-                    root.as_ref().map(|root| rule.candidate.relative_path.find(&rule.candidate.source).map_or_else(|| root.clone(), |index| root.join(rule.candidate.relative_path[..index].trim_end_matches('/'))))
+                // One root AGENTS.md/CLAUDE.md-style file per project root across all targets (rootSingleFileSelectionKeyFor).
+                let root_single_key = root
+                    .as_ref()
+                    .filter(|_| is_root_single_file(&candidate))
+                    .cloned();
+                if root_single_key
+                    .as_ref()
+                    .is_some_and(|key| root_single_selections.contains(key))
+                {
+                    continue;
+                }
+                let Some(mut rule) = load_candidate_cached(
+                    candidate,
+                    root.as_deref(),
+                    &mut result.diagnostics,
+                    &mut caches,
+                    self.deps.as_ref(),
+                ) else {
+                    continue;
                 };
-                let scope_relative = scope.as_deref().map(|scope| relative_path(scope, &discovery_target));
-                let key = [root.as_ref().map_or_else(String::new, |root| root.to_string_lossy().into_owned()), super::finder::absolute(target).to_string_lossy().replace('\\', "/"), rule.candidate.real_path.clone(), rule.candidate.relative_path.clone(), rule.candidate.source.clone(), if rule.candidate.is_global { "global" } else { "project" }.into(), if rule.candidate.is_single_file { "single" } else { "multi" }.into(), rule.candidate.distance.to_string(), rule.content_hash.clone()].join("\0");
-                let reason = if let Some(index) = self.dynamic_matches.iter().position(|(cached, _)| cached == &key) {
-                    let cached = self.dynamic_matches.remove(index).unwrap_or_else(||unreachable!("existing cache index"));
+                let basename = discovery_target
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                let relative = root
+                    .as_deref()
+                    .map(|root| relative_path(root, &discovery_target))
+                    .unwrap_or_else(|| basename.to_string());
+                let scope = if rule.candidate.is_global {
+                    None
+                } else if rule.candidate.is_single_file {
+                    Path::new(&rule.candidate.path)
+                        .parent()
+                        .map(Path::to_path_buf)
+                } else {
+                    root.as_ref().map(|root| {
+                        rule.candidate
+                            .relative_path
+                            .find(&rule.candidate.source)
+                            .map_or_else(
+                                || root.clone(),
+                                |index| {
+                                    root.join(
+                                        rule.candidate.relative_path[..index].trim_end_matches('/'),
+                                    )
+                                },
+                            )
+                    })
+                };
+                let scope_relative = scope
+                    .as_deref()
+                    .map(|scope| relative_path(scope, &discovery_target));
+                let key = [
+                    root.as_ref()
+                        .map_or_else(String::new, |root| root.to_string_lossy().into_owned()),
+                    super::finder::absolute(target)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    rule.candidate.real_path.clone(),
+                    rule.candidate.relative_path.clone(),
+                    rule.candidate.source.clone(),
+                    if rule.candidate.is_global {
+                        "global"
+                    } else {
+                        "project"
+                    }
+                    .into(),
+                    if rule.candidate.is_single_file {
+                        "single"
+                    } else {
+                        "multi"
+                    }
+                    .into(),
+                    rule.candidate.distance.to_string(),
+                    rule.content_hash.clone(),
+                ]
+                .join("\0");
+                let reason = if let Some(index) = self
+                    .dynamic_matches
+                    .iter()
+                    .position(|(cached, _)| cached == &key)
+                {
+                    let cached = self
+                        .dynamic_matches
+                        .remove(index)
+                        .unwrap_or_else(|| unreachable!("existing cache index"));
                     let reason = cached.1.clone();
                     self.dynamic_matches.push_back(cached);
                     reason
                 } else {
-                    let matched = self.deps.match_rule(&mut self.matcher, MatcherInput { frontmatter: &rule.frontmatter, is_single_file: rule.candidate.is_single_file, project_relative: &relative, scope_relative: scope_relative.as_deref(), basename: &basename })?;
+                    let matched = self.deps.match_rule(
+                        &mut self.matcher,
+                        MatcherInput {
+                            frontmatter: &rule.frontmatter,
+                            is_single_file: rule.candidate.is_single_file,
+                            project_relative: &relative,
+                            scope_relative: scope_relative.as_deref(),
+                            basename: &basename,
+                        },
+                    )?;
                     let reason = matched.matched.then_some(matched.reason);
-                    if self.dynamic_matches.len() >= 4096 { self.dynamic_matches.pop_front(); }
+                    if self.dynamic_matches.len() >= 4096 {
+                        self.dynamic_matches.pop_front();
+                    }
                     self.dynamic_matches.push_back((key, reason.clone()));
                     reason
                 };
-                let Some(reason) = reason else { continue; };
-                if !seen_rules.insert(format!("{}::{}", rule.candidate.real_path, rule.content_hash)) { continue; }
+                let Some(reason) = reason else {
+                    continue;
+                };
+                if let Some(key) = root_single_key {
+                    root_single_selections.insert(key);
+                }
+                if !seen_rules.insert(format!(
+                    "{}::{}",
+                    rule.candidate.real_path, rule.content_hash
+                )) {
+                    continue;
+                }
                 rule.match_reason = reason;
                 result.rules.push(rule);
             }
         }
-        result.rules.sort_by(|a, b| super::ordering::compare_candidates(&a.candidate, &b.candidate));
+        result
+            .rules
+            .sort_by(|a, b| super::ordering::compare_candidates(&a.candidate, &b.candidate));
         Ok(self.store(result))
     }
-    pub fn fingerprint_dynamic_targets(&mut self, cwd: &Path, targets: &[PathBuf]) -> Vec<DynamicTargetFingerprint> {
+    pub fn fingerprint_dynamic_targets(
+        &mut self,
+        cwd: &Path,
+        targets: &[PathBuf],
+    ) -> Vec<DynamicTargetFingerprint> {
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
-        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Vec::new(); }
+        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) {
+            return Vec::new();
+        }
         let disabled = self.disabled_sources();
         let mut discovery = RuleDiscoveryCache::default();
         let mut seen = BTreeSet::new();
         let mut result = Vec::new();
+        let cwd_root = self.deps.find_project_root(cwd);
         for target in targets {
-            if !seen.insert(target) { continue; }
+            if !seen.insert(target) {
+                continue;
+            }
             let discovery_target = canonicalize_path(target);
-            let root = self.deps.find_project_root(discovery_target.parent().unwrap_or(&discovery_target));
-            let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(&discovery_target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
-            let candidate_fingerprints = sort_candidates(&candidates).into_iter().map(|candidate| {
-                let stat = self.deps.file_fingerprint(Path::new(&candidate.path));
-                [candidate.real_path, candidate.relative_path, candidate.source, if candidate.is_global { "global" } else { "project" }.into(), if candidate.is_single_file { "single" } else { "multi" }.into(), candidate.distance.to_string(), stat].join("\0")
-            }).collect::<Vec<_>>().join("\u{1}");
-            let cache_key = super::finder::absolute(target).to_string_lossy().replace('\\', "/");
-            let sources = match &self.config.enabled_sources { EnabledSources::Auto => "auto".into(), EnabledSources::Explicit(sources) => sources.join(",") };
-            let fingerprint = hash_content(&["v1".into(), sources, root.map_or_else(String::new, |root| root.to_string_lossy().into_owned()), cache_key.clone(), candidate_fingerprints].join("\0"));
-            result.push(DynamicTargetFingerprint { target_path: target.clone(), cache_key, fingerprint });
+            let marker_root = match &cwd_root {
+                Some(cwd_root) if discovery_target.starts_with(cwd_root) => Some(cwd_root.clone()),
+                _ => self
+                    .deps
+                    .find_project_root(discovery_target.parent().unwrap_or(&discovery_target)),
+            };
+            let root = super::project_root::widen_to_repository_root(marker_root, &self.home_dir);
+            let candidates = self.deps.find_candidates(
+                FinderOptions {
+                    project_root: root.as_deref(),
+                    target_file: Some(&discovery_target),
+                    home_dir: &self.home_dir,
+                    disabled_sources: &disabled,
+                    skip_user_home: false,
+                },
+                &mut discovery,
+            );
+            let candidate_fingerprints = sort_candidates(&candidates)
+                .into_iter()
+                .map(|candidate| {
+                    let stat = self.deps.file_fingerprint(Path::new(&candidate.path));
+                    [
+                        candidate.real_path,
+                        candidate.relative_path,
+                        candidate.source,
+                        if candidate.is_global {
+                            "global"
+                        } else {
+                            "project"
+                        }
+                        .into(),
+                        if candidate.is_single_file {
+                            "single"
+                        } else {
+                            "multi"
+                        }
+                        .into(),
+                        candidate.distance.to_string(),
+                        stat,
+                    ]
+                    .join("\0")
+                })
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            let cache_key = super::finder::absolute(target)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let sources = match &self.config.enabled_sources {
+                EnabledSources::Auto => "auto".into(),
+                EnabledSources::Explicit(sources) => sources.join(","),
+            };
+            let fingerprint = hash_content(
+                &[
+                    "v1".into(),
+                    sources,
+                    root.map_or_else(String::new, |root| root.to_string_lossy().into_owned()),
+                    cache_key.clone(),
+                    candidate_fingerprints,
+                ]
+                .join("\0"),
+            );
+            result.push(DynamicTargetFingerprint {
+                target_path: target.clone(),
+                cache_key,
+                fingerprint,
+            });
         }
         result
     }
-    pub fn is_dynamic_target_fingerprint_current(&self, target: &DynamicTargetFingerprint) -> bool { self.state.dynamic_target_fingerprints.get(&target.cache_key) == Some(&target.fingerprint) }
-    pub fn commit_dynamic_target_fingerprints(&mut self, targets: &[DynamicTargetFingerprint]) {
-        for target in targets { self.state.dynamic_target_fingerprints.insert(target.cache_key.clone(), target.fingerprint.clone()); }
+    pub fn is_dynamic_target_fingerprint_current(&self, target: &DynamicTargetFingerprint) -> bool {
+        self.state
+            .dynamic_target_fingerprints
+            .get(&target.cache_key)
+            == Some(&target.fingerprint)
     }
-    pub fn format_static(&self, rules: &[LoadedRule]) -> String { format_static_block(rules, &self.format_options()) }
-    pub fn format_dynamic(&self, rules: &[LoadedRule], target: &str) -> String { format_dynamic_block(rules, target, &self.format_options()) }
-    fn format_options(&self) -> FormatOptions { FormatOptions { max_rule_chars: self.config.max_rule_chars, max_result_chars: self.config.max_result_chars } }
+    pub fn commit_dynamic_target_fingerprints(&mut self, targets: &[DynamicTargetFingerprint]) {
+        for target in targets {
+            self.state
+                .dynamic_target_fingerprints
+                .insert(target.cache_key.clone(), target.fingerprint.clone());
+        }
+    }
+    pub fn format_static(&self, rules: &[LoadedRule]) -> String {
+        format_static_block(rules, &self.format_options())
+    }
+    pub fn format_dynamic(&self, rules: &[LoadedRule], target: &str) -> String {
+        format_dynamic_block(rules, target, &self.format_options())
+    }
+    fn format_options(&self) -> FormatOptions {
+        FormatOptions {
+            max_rule_chars: self.config.max_rule_chars,
+            max_result_chars: self.config.max_result_chars,
+        }
+    }
+}
+/// `isRootSingleFile`: a project single file (no `/` in its source) sitting at the root it was found from.
+fn is_root_single_file(candidate: &RuleCandidate) -> bool {
+    candidate.is_single_file
+        && PROJECT_SINGLE_FILES.contains(&candidate.source.as_str())
+        && !candidate.source.contains('/')
+        && candidate.relative_path == candidate.source
 }
 fn drive_prefix(path: &Path) -> Option<String> {
     for c in path.components() {
@@ -174,8 +513,19 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     }
     let base: Vec<_> = base.components().collect();
     let target: Vec<_> = target.components().collect();
-    let shared = base.iter().zip(&target).take_while(|(base, target)| base == target).count();
-    std::iter::repeat_n("..".to_owned(), base.len() - shared).chain(target[shared..].iter().map(|component| component.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")
+    let shared = base
+        .iter()
+        .zip(&target)
+        .take_while(|(base, target)| base == target)
+        .count();
+    std::iter::repeat_n("..".to_owned(), base.len() - shared)
+        .chain(
+            target[shared..]
+                .iter()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join("/")
 }
 fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
@@ -194,16 +544,62 @@ fn canonicalize_path(path: &Path) -> PathBuf {
     let p = std::fs::canonicalize(path).unwrap_or_else(|_| super::finder::absolute(path));
     strip_verbatim_prefix(p)
 }
-fn load_candidate_cached(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>, caches: &mut LoadCaches, deps: &dyn EngineDeps) -> Option<LoadedRule> {
+fn load_candidate_cached(
+    candidate: RuleCandidate,
+    root: Option<&Path>,
+    diagnostics: &mut Vec<RuleDiagnostic>,
+    caches: &mut LoadCaches,
+    deps: &dyn EngineDeps,
+) -> Option<LoadedRule> {
     let key = (root.map(Path::to_path_buf), candidate.real_path.clone());
-    let within = candidate.is_global || *caches.membership.entry(key).or_insert_with(|| root.is_some_and(|root| {
-        let root = caches.real_paths.entry(root.into()).or_insert_with(|| canonicalize_path(root));
-        let candidate_path = canonicalize_path(Path::new(&candidate.real_path));
-        candidate_path.strip_prefix(root).is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))
-    }));
-    if !within { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Rule file resolves outside project root".into() }); return None; }
-    let loaded = caches.contents.entry(candidate.real_path.clone()).or_insert_with(|| deps.read_file(Path::new(&candidate.path)).map(|content| (parse_rule(&content), hash_content(&content))));
-    let Some((parsed, content_hash)) = loaded else { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Unable to read rule file".into() }); return None; };
-    if let Some(message) = &parsed.diagnostic { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: message.clone() }); }
-    Some(LoadedRule { candidate, frontmatter: parsed.frontmatter.clone(), body: parsed.body.clone(), content_hash: content_hash.clone(), match_reason: MatchReason::NoMatch })
+    let within = candidate.is_global
+        || *caches.membership.entry(key).or_insert_with(|| {
+            root.is_some_and(|root| {
+                let root = caches
+                    .real_paths
+                    .entry(root.into())
+                    .or_insert_with(|| canonicalize_path(root));
+                let candidate_path = canonicalize_path(Path::new(&candidate.real_path));
+                candidate_path
+                    .strip_prefix(root)
+                    .is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))
+            })
+        });
+    if !within {
+        diagnostics.push(RuleDiagnostic {
+            severity: "warning".into(),
+            source: candidate.path.clone(),
+            message: "Rule file resolves outside project root".into(),
+        });
+        return None;
+    }
+    let loaded = caches
+        .contents
+        .entry(candidate.real_path.clone())
+        .or_insert_with(|| {
+            deps.read_file(Path::new(&candidate.path))
+                .map(|content| (parse_rule(&content), hash_content(&content)))
+        });
+    let Some((parsed, content_hash)) = loaded else {
+        diagnostics.push(RuleDiagnostic {
+            severity: "warning".into(),
+            source: candidate.path.clone(),
+            message: "Unable to read rule file".into(),
+        });
+        return None;
+    };
+    if let Some(message) = &parsed.diagnostic {
+        diagnostics.push(RuleDiagnostic {
+            severity: "warning".into(),
+            source: candidate.path.clone(),
+            message: message.clone(),
+        });
+    }
+    Some(LoadedRule {
+        candidate,
+        frontmatter: parsed.frontmatter.clone(),
+        body: parsed.body.clone(),
+        content_hash: content_hash.clone(),
+        match_reason: MatchReason::NoMatch,
+    })
 }

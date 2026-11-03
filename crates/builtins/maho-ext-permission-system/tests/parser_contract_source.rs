@@ -1,23 +1,57 @@
+//! Port of senpi test/permission/parser-contracts.test.ts: the real tool schemas still name the
+//! fields the builtin parsers read, and schema-shaped inputs produce the expected requests.
 use maho_ext_permission_system::parsers::{PermissionRequest, create_builtin_parser_registry};
 use serde_json::json;
 use std::path::Path;
 
 #[test]
 fn real_tool_definitions_preserve_permission_parser_field_contracts() {
-    let tools = maho_tools::index::create_all_tool_definitions(Path::new("/workspace/project"), Default::default());
+    let tools = maho_tools::index::create_all_tool_definitions(
+        Path::new("/workspace/project"),
+        Default::default(),
+    );
     for (tool, fields) in [
-        ("bash", vec![("command",Some("string"))]),
-        ("edit", vec![("path",Some("string")),("edits",Some("array"))]),
-        ("write", vec![("path",Some("string")),("content",Some("string"))]),
-        ("read", vec![("path",Some("string")),("offset",Some("number")),("limit",Some("number"))]),
-        ("grep", vec![("pattern",Some("string")),("path",None)]),
-        ("find", vec![("pattern",Some("string")),("path",Some("string")),("limit",Some("number"))]),
-        ("ls", vec![("path",Some("string")),("limit",Some("number"))]),
+        ("bash", vec![("command", Some("string"))]),
+        (
+            "edit",
+            vec![("path", Some("string")), ("edits", Some("array"))],
+        ),
+        (
+            "write",
+            vec![("path", Some("string")), ("content", Some("string"))],
+        ),
+        (
+            "read",
+            vec![
+                ("path", Some("string")),
+                ("offset", Some("number")),
+                ("limit", Some("number")),
+            ],
+        ),
+        ("grep", vec![("pattern", Some("string")), ("path", None)]),
+        (
+            "find",
+            vec![
+                ("pattern", Some("string")),
+                ("path", Some("string")),
+                ("limit", Some("number")),
+            ],
+        ),
+        (
+            "ls",
+            vec![("path", Some("string")), ("limit", Some("number"))],
+        ),
     ] {
-        let properties = tools[tool].parameters["properties"].as_object().expect("real tool properties");
+        let properties = tools[tool].parameters["properties"]
+            .as_object()
+            .expect("real tool properties");
         for (field, kind) in fields {
-            let schema = properties.get(field).unwrap_or_else(|| panic!("{tool} lacks permission field {field}"));
-            if let Some(kind) = kind { assert_eq!(schema["type"],kind,"{tool}.{field}"); }
+            let schema = properties
+                .get(field)
+                .unwrap_or_else(|| panic!("{tool} lacks permission field {field}"));
+            if let Some(kind) = kind {
+                assert_eq!(schema["type"], kind, "{tool}.{field}");
+            }
         }
     }
 }
@@ -27,24 +61,138 @@ fn schema_shaped_inputs_produce_complete_permission_requests() {
     let registry = create_builtin_parser_registry();
     let cwd = Path::new("/workspace/project");
     for (tool, input, permission, pattern, always) in [
-        ("bash",json!({"command":"git status"}),"bash","git status",vec!["git status","git status *"]),
-        ("bash",json!({"command":"sleep 5","timeout":10}),"bash","sleep",vec!["sleep","sleep *"]),
-        ("edit",json!({"path":"src/index.ts","edits":[{"oldText":"foo","newText":"bar"}]}),"edit","src/index.ts",vec!["src/index.ts"]),
-        ("write",json!({"path":"src/new-file.ts","content":"export const x = 1;"}),"edit","src/new-file.ts",vec!["src/new-file.ts"]),
-        ("read",json!({"path":"README.md"}),"read","README.md",vec!["README.md"]),
-        ("read",json!({"path":"large-file.txt","offset":100,"limit":50}),"read","large-file.txt",vec!["large-file.txt"]),
-        ("grep",json!({"pattern":"function"}),"grep","function",vec!["*"]),
-        ("grep",json!({"pattern":"class","path":"src"}),"grep","src",vec!["*"]),
-        ("find",json!({"pattern":"**/*.ts","path":"src"}),"list","src",vec!["src"]),
-        ("ls",json!({"path":"packages","limit":20}),"list","packages",vec!["packages"]),
-        ("ls",json!({}),"list",".",vec!["."]),
-        ("apply_patch",json!({"file_path":"src/patched.ts"}),"edit","src/patched.ts",vec!["src/patched.ts"]),
-        ("apply_patch",json!({}),"edit","*",vec!["*"]),
-        ("multiedit",json!({"file_path":"src/multi.ts"}),"edit","src/multi.ts",vec!["src/multi.ts"]),
-        ("multiedit",json!({}),"edit","*",vec!["*"]),
-        ("unknown_tool",json!({"someField":"someValue"}),"unknown_tool","*",vec!["*"]),
-        ("new_upstream_tool",json!({"command":"do something"}),"new_upstream_tool","do something",vec!["do something"]),
+        (
+            "bash",
+            json!({"command":"git status"}),
+            "bash",
+            "git status",
+            vec!["git status", "git status *"],
+        ),
+        (
+            "bash",
+            json!({"command":"sleep 5","timeout":10}),
+            "bash",
+            "sleep",
+            vec!["sleep", "sleep *"],
+        ),
+        (
+            "edit",
+            json!({"path":"src/index.ts","edits":[{"oldText":"foo","newText":"bar"}]}),
+            "edit",
+            "src/index.ts",
+            vec!["src/index.ts"],
+        ),
+        (
+            "write",
+            json!({"path":"src/new-file.ts","content":"export const x = 1;"}),
+            "edit",
+            "src/new-file.ts",
+            vec!["src/new-file.ts"],
+        ),
+        (
+            "read",
+            json!({"path":"README.md"}),
+            "read",
+            "README.md",
+            vec!["README.md"],
+        ),
+        (
+            "read",
+            json!({"path":"large-file.txt","offset":100,"limit":50}),
+            "read",
+            "large-file.txt",
+            vec!["large-file.txt"],
+        ),
+        (
+            "grep",
+            json!({"pattern":"function"}),
+            "grep",
+            "function",
+            vec!["*"],
+        ),
+        (
+            "grep",
+            json!({"pattern":"class","path":"src"}),
+            "grep",
+            "src",
+            vec!["*"],
+        ),
+        (
+            "find",
+            json!({"pattern":"**/*.ts","path":"src"}),
+            "list",
+            "src",
+            vec!["src"],
+        ),
+        (
+            "ls",
+            json!({"path":"packages","limit":20}),
+            "list",
+            "packages",
+            vec!["packages"],
+        ),
+        ("ls", json!({}), "list", ".", vec!["."]),
+        (
+            "apply_patch",
+            json!({"file_path":"src/patched.ts"}),
+            "edit",
+            "src/patched.ts",
+            vec!["src/patched.ts"],
+        ),
+        ("apply_patch", json!({}), "edit", "*", vec!["*"]),
+        (
+            "multiedit",
+            json!({"file_path":"src/multi.ts"}),
+            "edit",
+            "src/multi.ts",
+            vec!["src/multi.ts"],
+        ),
+        ("multiedit", json!({}), "edit", "*", vec!["*"]),
+        (
+            "unknown_tool",
+            json!({"someField":"someValue"}),
+            "unknown_tool",
+            "*",
+            vec!["*"],
+        ),
+        (
+            "new_upstream_tool",
+            json!({"command":"do something"}),
+            "new_upstream_tool",
+            "do something",
+            vec!["do something"],
+        ),
     ] {
-        assert_eq!(registry.parse(tool,&input,(cwd,Path::new("/home/user"))),vec![PermissionRequest {permission:permission.into(),patterns:vec![pattern.into()],always:always.into_iter().map(str::to_owned).collect()}],"{tool} {input}");
+        assert_eq!(
+            registry.parse(tool, &input, (cwd, Path::new("/home/user"))),
+            vec![PermissionRequest {
+                permission: permission.into(),
+                patterns: vec![pattern.into()],
+                always: always.into_iter().map(str::to_owned).collect(),
+                ..PermissionRequest::default()
+            }],
+            "{tool} {input}"
+        );
+    }
+}
+
+/// "schema drift detection": the field each parser keys on is still a string in the real schema.
+#[test]
+fn schema_drift_detection_keeps_parser_key_fields() {
+    let tools = maho_tools::index::create_all_tool_definitions(
+        Path::new("/workspace/project"),
+        Default::default(),
+    );
+    for (tool, field) in [
+        ("bash", "command"),
+        ("edit", "path"),
+        ("read", "path"),
+        ("grep", "pattern"),
+        ("find", "pattern"),
+    ] {
+        assert_eq!(
+            tools[tool].parameters["properties"][field]["type"], "string",
+            "{tool}.{field} changed upstream"
+        );
     }
 }

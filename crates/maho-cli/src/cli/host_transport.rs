@@ -199,8 +199,8 @@ async fn daemon_reachable(socket: &str) -> bool {
     maho_rpc::host_probe::probe_socket_reachable(socket, BUSY_CONNECT_TIMEOUT_MS).await
 }
 
-/// `liveness.liveSessionPaths`: asked on the wire, never through `RpcClient::list_sessions` (that
-/// sends a bare `list_sessions` and drops `include_workers`, so every task child would read as gone
+/// `liveness.liveSessionPaths`: asked on the wire with `include_workers` (a bare `list_sessions`
+/// drops task children, so every task child would read as gone
 /// and be claimed by the next reconciling session - #8932). An unanswered or malformed listing is an
 /// ERROR, never an empty list: "could not ask" must stay distinguishable from "holds nothing"
 /// (omo#9450).

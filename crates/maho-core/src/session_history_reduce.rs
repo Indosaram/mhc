@@ -25,8 +25,8 @@ pub trait HistorySource {
     fn count(&self) -> usize;
     /// The entries appended after the first `count`, or `None` when the mirror cannot supply them.
     fn appended_since(&self, count: usize) -> Option<Vec<Value>>;
-    /// The whole history, materialized for this one read and not kept.
-    fn read_all(&self) -> Vec<Value>;
+    /// Visits the whole history in order, each entry materialized only for its own visit.
+    fn visit_all(&self, visit: &mut dyn FnMut(Value));
 }
 
 struct Reduction {
@@ -91,9 +91,7 @@ impl HistoryReductions {
             }
         }
         let mut state = (reducer.initial)();
-        for entry in &source.read_all() {
-            (reducer.add)(&mut state, entry);
-        }
+        source.visit_all(&mut |entry| (reducer.add)(&mut state, &entry));
         self.store(key, generation, count, &state);
         state
     }
@@ -144,9 +142,9 @@ mod tests {
                 .get()
                 .then(|| self.entries.borrow()[count..].to_vec())
         }
-        fn read_all(&self) -> Vec<Value> {
+        fn visit_all(&self, visit: &mut dyn FnMut(Value)) {
             self.read_all_calls.set(self.read_all_calls.get() + 1);
-            self.entries.borrow().clone()
+            self.entries.borrow().iter().cloned().for_each(visit);
         }
     }
 

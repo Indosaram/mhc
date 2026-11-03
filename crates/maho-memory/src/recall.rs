@@ -32,6 +32,8 @@ pub struct RecallOptions {
     pub update_recall_counts: bool,
     pub source: Option<String>,
     pub memory_type: Option<String>,
+    /// ISO time against which `valid_until` is checked; `None` uses the current clock.
+    pub valid_at: Option<String>,
 }
 
 impl Default for RecallOptions {
@@ -49,6 +51,7 @@ impl Default for RecallOptions {
             update_recall_counts: true,
             source: None,
             memory_type: None,
+            valid_at: None,
         }
     }
 }
@@ -174,6 +177,10 @@ fn veracity_weight(label: &str) -> f64 {
     }
 }
 
+fn valid_at(options: &RecallOptions) -> String {
+    options.valid_at.clone().unwrap_or_else(now_iso)
+}
+
 fn tier_weight(tier: i64) -> f64 {
     match tier {
         1 => 1.0,
@@ -188,7 +195,7 @@ impl Store {
             format!("({prefix}valid_until IS NULL OR {prefix}valid_until > ?)"),
             format!("{prefix}superseded_by IS NULL"),
         ];
-        let mut values = vec![SqlValue::Text(now_iso())];
+        let mut values = vec![SqlValue::Text(valid_at(options))];
         if !options.ignore_session_scope {
             clauses.push(format!(
                 "({prefix}session_id = ? OR {prefix}scope = 'global')"
@@ -213,6 +220,7 @@ impl Store {
         query: &str,
         limit: usize,
         use_synonyms: bool,
+        valid_at: &str,
     ) -> HashMap<String, f64> {
         let sql = match tier {
             Tier::Working => {
@@ -231,7 +239,7 @@ impl Store {
         let rows: Vec<(String, f64)> = (|| -> rusqlite::Result<Vec<(String, f64)>> {
             let mut statement = self.conn.prepare(sql)?;
             let rows = statement.query_map(
-                rusqlite::params![fts_query(query, use_synonyms), now_iso(), limit as i64],
+                rusqlite::params![fts_query(query, use_synonyms), valid_at, limit as i64],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
             )?;
             rows.collect()
@@ -344,9 +352,10 @@ impl Store {
         let groups = expanded_token_groups(query, options.use_synonyms);
         let limit = (top_k * 3).max(50);
 
+        let valid_at = valid_at(options);
         let mut candidates = Vec::new();
         for tier in [Tier::Working, Tier::Episodic] {
-            let hits = self.fts_hits(tier, query, limit, options.use_synonyms);
+            let hits = self.fts_hits(tier, query, limit, options.use_synonyms, &valid_at);
             if hits.is_empty() {
                 candidates.extend(self.candidates(tier, None, options)?);
             } else {

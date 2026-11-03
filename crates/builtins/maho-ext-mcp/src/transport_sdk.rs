@@ -1,115 +1,766 @@
+use crate::{
+    errors::{McpError, McpErrorKind},
+    log::McpLogger,
+};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::{process::Stdio,sync::{Arc,Mutex,atomic::{AtomicU64,Ordering}},time::Duration};
-use serde_json::{Value,json};
-use tokio::{io::{AsyncBufReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStdin,Command},sync::{broadcast,oneshot},task::JoinHandle};
-use crate::{errors::{McpError,McpErrorKind},log::McpLogger};
+use std::{
+    process::Stdio,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, Command},
+    sync::{broadcast, oneshot},
+    task::JoinHandle,
+};
 #[derive(Clone)]
 pub enum McpTransportSpec {
-    Stdio {command:String,args:Vec<String>,cwd:Option<String>,env:BTreeMap<String,String>},
-    Http {url:url::Url,headers:BTreeMap<String,String>},
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        env: BTreeMap<String, String>,
+    },
+    Http {
+        url: url::Url,
+        headers: BTreeMap<String, String>,
+    },
 }
-type Reply=oneshot::Sender<Result<Value,McpError>>;
+type Reply = oneshot::Sender<Result<Value, McpError>>;
 pub struct McpClient {
-    server:String,io:ClientTransport,pending:Arc<Mutex<BTreeMap<u64,Reply>>>,next_id:AtomicU64,
-    pub notifications:broadcast::Sender<Value>,pub closed:tokio::sync::watch::Sender<bool>,pub root_pid:Option<u32>,
-    pub server_capabilities:tokio::sync::RwLock<Value>,pub server_info:tokio::sync::RwLock<Value>,pub instructions:tokio::sync::RwLock<Option<String>>,
+    server: String,
+    io: ClientTransport,
+    pending: Arc<Mutex<BTreeMap<u64, Reply>>>,
+    next_id: AtomicU64,
+    pub notifications: broadcast::Sender<Value>,
+    pub closed: tokio::sync::watch::Sender<bool>,
+    pub root_pid: Option<u32>,
+    pub server_capabilities: tokio::sync::RwLock<Value>,
+    pub server_info: tokio::sync::RwLock<Value>,
+    pub instructions: tokio::sync::RwLock<Option<String>>,
     /// Upstream `StreamableHTTPClientTransport._protocolVersion`: unset until `initialize` negotiates it,
     /// then sent as `mcp-protocol-version` on every later HTTP request.
-    protocol_version:std::sync::RwLock<Option<String>>,
-    auth:tokio::sync::RwLock<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
-    auth_challenge_handler:tokio::sync::RwLock<Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>>,
-    http_stream:Mutex<Option<JoinHandle<()>>>,
-    pub resource_subscriptions:tokio::sync::Mutex<std::collections::BTreeSet<String>>,
+    protocol_version: std::sync::RwLock<Option<String>>,
+    auth: tokio::sync::RwLock<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
+    auth_challenge_handler:
+        tokio::sync::RwLock<Option<Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>>>,
+    http_stream: Mutex<Option<JoinHandle<()>>>,
+    pub resource_subscriptions: tokio::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Upstream `ModernProtocolState`, one per physical client.
+    pub protocol: crate::modern::request::ModernProtocolState,
+    /// Upstream `legacyOperations`: private legacy form ownership per physical client.
+    pub legacy_operations: Mutex<Vec<crate::request_origin::LegacyMcpOperation>>,
+    modern: Arc<std::sync::OnceLock<ModernRoute>>,
+    probe: Arc<Mutex<ProbeSlot>>,
+    local_initialize: Mutex<Option<Value>>,
+    this: std::sync::Weak<Self>,
+}
+/// The negotiated modern route: every later request carries per-request `_meta` at `version`.
+pub struct ModernRoute {
+    pub version: String,
+    pub client_info: crate::modern::wire::ModernClientInfo,
+    pub client_capabilities: Value,
+    pub http: Option<crate::modern::transport::ModernHttpTransport>,
+    pub subscriptions: Arc<crate::modern::subscriptions::ModernSubscriptions>,
+}
+#[derive(Default)]
+struct ProbeSlot {
+    waiting: Option<(String, oneshot::Sender<Value>)>,
+    late: Option<crate::modern::era::DiscoveryResult>,
+    silent: bool,
+}
+pub const MCP_CLIENT_NAME: &str = "senpi-mcp-client";
+pub fn mcp_client_info() -> crate::modern::wire::ModernClientInfo {
+    crate::modern::wire::ModernClientInfo {
+        name: MCP_CLIENT_NAME.into(),
+        version: "0.0.0".into(),
+    }
+}
+/// Upstream dispatch `probeOptions`: empty client capabilities, only the modern version.
+pub fn mcp_probe_options() -> crate::modern::era::ProbeOptions {
+    crate::modern::era::ProbeOptions {
+        client_info: mcp_client_info(),
+        client_capabilities: json!({}),
+        supported_versions: vec![crate::modern::wire::MODERN_PROTOCOL_VERSION.into()],
+    }
+}
+/// One modern stdio message from the child: subscription routing, then the privacy filter.
+fn modern_incoming(route: &ModernRoute, value: Value) -> Option<Value> {
+    if !route.subscriptions.incoming(&value) {
+        return None;
+    }
+    crate::modern::diagnostics::sanitize_modern_message(&value)
+        .ok()
+        .flatten()
+        .map(crate::modern::sdk_bridge::normalize_modern_result)
+}
+/// Upstream `pipeStderr`: a stdio child's stderr, logged line by line. Arbitrary server text may echo private
+/// messages, so under private forms only allowlisted system error codes survive; an unclassified child's text is
+/// held (up to 512 KiB) until the era is known, then released for legacy or discarded for modern.
+pub struct StderrDiagnostics {
+    logger: Arc<Mutex<McpLogger>>,
+    state: Mutex<StderrState>,
+    drained: tokio::sync::watch::Sender<bool>,
+}
+#[derive(Default)]
+struct StderrState {
+    pending: String,
+    undecided: String,
+    ended: bool,
+}
+const STDERR_UNDECIDED_LIMIT: usize = 512 * 1024;
+impl StderrDiagnostics {
+    pub fn new(logger: Arc<Mutex<McpLogger>>) -> Arc<Self> {
+        Arc::new(Self {
+            logger,
+            state: Mutex::new(StderrState::default()),
+            drained: tokio::sync::watch::channel(false).0,
+        })
+    }
+    /// Resolves once the child's stderr reached EOF and its exit decision was applied.
+    pub async fn drained(&self) {
+        let _ = self.drained.subscribe().wait_for(|drained| *drained).await;
+    }
+    fn log_line(&self, protocol: &crate::modern::request::ModernProtocolState, line: &str) {
+        let private = protocol.private_forms.load(Ordering::Acquire);
+        let text = if private {
+            let code=regex::Regex::new(r"\b(?:EACCES|ENOENT|EPIPE|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOSPC|ENOMEM|EMFILE)\b").ok().and_then(|pattern|pattern.find(line).map(|found|found.as_str().to_owned()));
+            format!(
+                "[private MCP stderr redacted]{}",
+                code.map_or_else(String::new, |code| format!(" {code}"))
+            )
+        } else {
+            line.to_owned()
+        };
+        let _ = self
+            .logger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .log("info", &text, None, Some("stderr"));
+    }
+    fn append(
+        &self,
+        protocol: &crate::modern::request::ModernProtocolState,
+        state: &mut StderrState,
+        text: &str,
+    ) {
+        state.pending.push_str(text);
+        let mut lines = state
+            .pending
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+            .collect::<Vec<_>>();
+        state.pending = lines.pop().unwrap_or_default();
+        for line in lines.iter().filter(|line| !line.is_empty()) {
+            self.log_line(protocol, line);
+        }
+    }
+    /// One stderr chunk from the child.
+    pub fn data(&self, protocol: &crate::modern::request::ModernProtocolState, text: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let private = protocol.private_forms.load(Ordering::Acquire);
+        if protocol.version().is_some() && !private {
+            state.pending.clear();
+            state.undecided.clear();
+            return;
+        }
+        if !protocol.legacy.load(Ordering::Acquire) && !private {
+            // Release only after legacy classification or an unclassified child's exit.
+            let room = STDERR_UNDECIDED_LIMIT.saturating_sub(state.undecided.len());
+            let mut end = room.min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            state.undecided.push_str(&text[..end]);
+            return;
+        }
+        self.append(protocol, &mut state, text);
+    }
+    /// The child closed its stderr.
+    pub fn end(&self, protocol: &crate::modern::request::ModernProtocolState) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.ended = true;
+        let legacy = protocol.legacy.load(Ordering::Acquire);
+        if (protocol.private_forms.load(Ordering::Acquire)
+            || (legacy && protocol.version().is_none()))
+            && !state.pending.is_empty()
+        {
+            let pending = std::mem::take(&mut state.pending);
+            self.log_line(protocol, &pending);
+        }
+        state.pending.clear();
+        // A crashed probe is classified after EOF; only that decision may release or discard its buffer.
+        if legacy || protocol.version().is_some() {
+            state.undecided.clear();
+        }
+    }
+    /// Upstream `resolveStdioDiagnostics`: the era decision releases (legacy, or any private-forms child) or
+    /// discards (modern) the held text.
+    pub fn resolve(&self, protocol: &crate::modern::request::ModernProtocolState, modern: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let private = protocol.private_forms.load(Ordering::Acquire);
+        if !modern || private {
+            let undecided = std::mem::take(&mut state.undecided);
+            self.append(protocol, &mut state, &undecided);
+            if state.ended && !state.pending.is_empty() {
+                let pending = std::mem::take(&mut state.pending);
+                self.log_line(protocol, &pending);
+            }
+        }
+        state.undecided.clear();
+        if modern && !private {
+            state.pending.clear();
+        }
+    }
 }
 enum ClientTransport {
-    Stdio {input:tokio::sync::Mutex<Option<ChildStdin>>,child:Box<tokio::sync::Mutex<Child>>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
-    Http {client:reqwest::Client,url:url::Url,headers:BTreeMap<String,String>,session:tokio::sync::RwLock<Option<String>>},
+    Stdio {
+        input: tokio::sync::Mutex<Option<ChildStdin>>,
+        child: Box<tokio::sync::Mutex<Child>>,
+        reader: JoinHandle<()>,
+        stderr: JoinHandle<()>,
+    },
+    Http {
+        client: reqwest::Client,
+        url: url::Url,
+        headers: BTreeMap<String, String>,
+        session: tokio::sync::RwLock<Option<String>>,
+    },
 }
-fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool,first_line:&mut bool)->Option<String> {
-    if *skip_lf && !buffer.is_empty(){if buffer[0]==b'\n'{buffer.remove(0);}*skip_lf=false;}
-    let end=buffer.iter().position(|byte|matches!(*byte,b'\n'|b'\r'))?;
-    *skip_lf=buffer[end]==b'\r';
-    let line=buffer.drain(..=end).collect::<Vec<_>>();
-    let mut line=String::from_utf8_lossy(&line[..line.len()-1]).into_owned();
-    if std::mem::take(first_line) && line.starts_with('\u{feff}') {line.remove(0);}
+fn take_sse_line(
+    buffer: &mut Vec<u8>,
+    skip_lf: &mut bool,
+    first_line: &mut bool,
+) -> Option<String> {
+    if *skip_lf && !buffer.is_empty() {
+        if buffer[0] == b'\n' {
+            buffer.remove(0);
+        }
+        *skip_lf = false;
+    }
+    let end = buffer
+        .iter()
+        .position(|byte| matches!(*byte, b'\n' | b'\r'))?;
+    *skip_lf = buffer[end] == b'\r';
+    let line = buffer.drain(..=end).collect::<Vec<_>>();
+    let mut line = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
+    if std::mem::take(first_line) && line.starts_with('\u{feff}') {
+        line.remove(0);
+    }
     Some(line)
 }
 /// Step-up attempts (reauthorize + renew cycles) one logical HTTP request may spend across renewed clients.
-const STEP_UP_ATTEMPTS:u32=3;
-fn net_text(error:&reqwest::Error)->String {crate::log::redact_urls_in_text(&error.to_string())}
-fn failure(server:&str,kind:McpErrorKind,message:impl Into<String>,phase:&str)->McpError {
-    let mut error=McpError::new(kind,message);error.server_name=Some(server.into());error.phase=Some(phase.into());error
+const STEP_UP_ATTEMPTS: u32 = 3;
+fn net_text(error: &reqwest::Error) -> String {
+    crate::log::redact_urls_in_text(&error.to_string())
+}
+fn failure(server: &str, kind: McpErrorKind, message: impl Into<String>, phase: &str) -> McpError {
+    let mut error = McpError::new(kind, message);
+    error.server_name = Some(server.into());
+    error.phase = Some(phase.into());
+    error
 }
 impl McpClient {
-    pub async fn materialize_stdio(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
-        Self::materialize_stdio_with_policy(server,spec,logger,false).await
+    pub async fn materialize_stdio(
+        server: &str,
+        spec: &McpTransportSpec,
+        logger: Arc<Mutex<McpLogger>>,
+    ) -> Result<Arc<Self>, McpError> {
+        Self::materialize_stdio_with_policy(server, spec, logger, false).await
     }
-    pub async fn materialize_stdio_with_policy(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>,project_policy:bool)->Result<Arc<Self>,McpError> {
-        let McpTransportSpec::Stdio {command,args,cwd,env}=spec else{return Err(failure(server,McpErrorKind::Connect,"HTTP transport not materialized","create"));};
-        let mut process=Command::new(command);process.args(args).env_clear();
-        if !project_policy {for key in ["HOME","LOGNAME","PATH","SHELL","TERM","USER","USERPROFILE","SystemRoot","ComSpec","PATHEXT","TEMP","TMP","USERNAME"] {if let Some(value)=std::env::var_os(key) && !value.to_string_lossy().starts_with("()"){process.env(key,value);}}}
-        process.envs(env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        if let Some(cwd)=cwd {process.current_dir(cwd);}
-        let mut child=process.spawn().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;let root_pid=child.id();
-        let input=child.stdin.take().ok_or_else(||failure(server,McpErrorKind::Connect,"stdio input unavailable","create"))?;
-        let output=child.stdout.take().ok_or_else(||failure(server,McpErrorKind::Connect,"stdio output unavailable","create"))?;
-        let errors=child.stderr.take().ok_or_else(||failure(server,McpErrorKind::Connect,"stdio stderr unavailable","create"))?;
-        let pending:Arc<Mutex<BTreeMap<u64,Reply>>>=Arc::new(Mutex::new(BTreeMap::new()));let replies=pending.clone();
-        let (notifications,_)=broadcast::channel(256);let events=notifications.clone();let name=server.to_owned();
-        let (closed,_)=tokio::sync::watch::channel(false);let close_signal=closed.clone();
-        let reader=tokio::spawn(async move {
-            let mut lines=BufReader::new(output).lines();
-            while let Ok(Some(line))=lines.next_line().await {
-                let Ok(value)=serde_json::from_str::<Value>(&line) else{continue;};
-                if value.get("id").is_some() && value.get("method").is_some(){let _=events.send(value);continue;}
-                if let Some(id)=value.get("id").and_then(Value::as_u64) {
-                    if let Some(sender)=replies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) {
-                        let result=if let Some(error)=value.get("error") {let mut failure=failure(&name,McpErrorKind::Protocol,error.get("message").and_then(Value::as_str).unwrap_or("MCP protocol error"),"request");failure.cause=Some(Box::new(error.clone()));Err(failure)}else{Ok(value.get("result").cloned().unwrap_or(Value::Null))};
-                        let _=sender.send(result);
-                    }else if value.get("method").is_some(){let _=events.send(value);}
-                }else if value.get("method").is_some(){let _=events.send(value);}
+    pub async fn materialize_stdio_with_policy(
+        server: &str,
+        spec: &McpTransportSpec,
+        logger: Arc<Mutex<McpLogger>>,
+        project_policy: bool,
+    ) -> Result<Arc<Self>, McpError> {
+        let McpTransportSpec::Stdio {
+            command,
+            args,
+            cwd,
+            env,
+        } = spec
+        else {
+            return Err(failure(
+                server,
+                McpErrorKind::Connect,
+                "HTTP transport not materialized",
+                "create",
+            ));
+        };
+        let mut process = Command::new(command);
+        process.args(args).env_clear();
+        if !project_policy {
+            for key in [
+                "HOME",
+                "LOGNAME",
+                "PATH",
+                "SHELL",
+                "TERM",
+                "USER",
+                "USERPROFILE",
+                "SystemRoot",
+                "ComSpec",
+                "PATHEXT",
+                "TEMP",
+                "TMP",
+                "USERNAME",
+            ] {
+                if let Some(value) = std::env::var_os(key)
+                    && !value.to_string_lossy().starts_with("()")
+                {
+                    process.env(key, value);
+                }
             }
-            for (_,sender) in std::mem::take(&mut *replies.lock().unwrap_or_else(std::sync::PoisonError::into_inner)) {let _=sender.send(Err(failure(&name,McpErrorKind::Connect,format!("MCP server {name} transport closed"),"close")));}
+        }
+        process
+            .envs(env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(cwd) = cwd {
+            process.current_dir(cwd);
+        }
+        let mut child = process
+            .spawn()
+            .map_err(|e| failure(server, McpErrorKind::Connect, e.to_string(), "create"))?;
+        let root_pid = child.id();
+        let input = child.stdin.take().ok_or_else(|| {
+            failure(
+                server,
+                McpErrorKind::Connect,
+                "stdio input unavailable",
+                "create",
+            )
+        })?;
+        let output = child.stdout.take().ok_or_else(|| {
+            failure(
+                server,
+                McpErrorKind::Connect,
+                "stdio output unavailable",
+                "create",
+            )
+        })?;
+        let errors = child.stderr.take().ok_or_else(|| {
+            failure(
+                server,
+                McpErrorKind::Connect,
+                "stdio stderr unavailable",
+                "create",
+            )
+        })?;
+        let pending: Arc<Mutex<BTreeMap<u64, Reply>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let replies = pending.clone();
+        let (notifications, _) = broadcast::channel(256);
+        let events = notifications.clone();
+        let name = server.to_owned();
+        let (closed, _) = tokio::sync::watch::channel(false);
+        let close_signal = closed.clone();
+        let modern: Arc<std::sync::OnceLock<ModernRoute>> = Arc::default();
+        let probe: Arc<Mutex<ProbeSlot>> = Arc::default();
+        let (reader_modern, reader_probe) = (modern.clone(), probe.clone());
+        let reader = tokio::spawn(async move {
+            let mut lines = BufReader::new(output).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if value.get("id").is_some() && value.get("method").is_some() {
+                    let _ = events.send(value);
+                    continue;
+                }
+                if let Some(id) = value.get("id").and_then(Value::as_str) {
+                    // Discovery replies never reach the request table; a late one may still upgrade the stream.
+                    if id.starts_with(crate::modern::era::STDIO_PROBE_ID) {
+                        let mut slot = reader_probe
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if slot
+                            .waiting
+                            .as_ref()
+                            .is_some_and(|(waiting, _)| waiting == id)
+                        {
+                            if let Some((_, sender)) = slot.waiting.take() {
+                                let _ = sender.send(value);
+                            }
+                        } else if slot.late.is_none() {
+                            slot.late = crate::modern::era::discovery_reply(
+                                &value,
+                                &Value::String(id.into()),
+                            );
+                        }
+                        continue;
+                    }
+                    if let Some(route) = reader_modern.get() {
+                        route.subscriptions.incoming(&value);
+                    }
+                    continue;
+                }
+                let value = match reader_modern.get() {
+                    Some(route) => match modern_incoming(route, value) {
+                        Some(value) => value,
+                        None => continue,
+                    },
+                    None => value,
+                };
+                if let Some(id) = value.get("id").and_then(Value::as_u64) {
+                    if let Some(sender) = replies
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&id)
+                    {
+                        let result = if let Some(error) = value.get("error") {
+                            let mut failure = failure(
+                                &name,
+                                McpErrorKind::Protocol,
+                                error
+                                    .get("message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("MCP protocol error"),
+                                "request",
+                            );
+                            failure.cause = Some(Box::new(error.clone()));
+                            Err(failure)
+                        } else {
+                            Ok(value.get("result").cloned().unwrap_or(Value::Null))
+                        };
+                        let _ = sender.send(result);
+                    } else if value.get("method").is_some() {
+                        let _ = events.send(value);
+                    }
+                } else if value.get("method").is_some() {
+                    let _ = events.send(value);
+                }
+            }
+            for (_, sender) in std::mem::take(
+                &mut *replies
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ) {
+                let _ = sender.send(Err(failure(
+                    &name,
+                    McpErrorKind::Connect,
+                    format!("MCP server {name} transport closed"),
+                    "close",
+                )));
+            }
             close_signal.send_replace(true);
         });
-        let stderr=tokio::spawn(async move {
-            let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
-        });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:Box::new(tokio::sync::Mutex::new(child)),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),auth_challenge_handler:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+        let diagnostics = StderrDiagnostics::new(logger);
+        Ok(Arc::new_cyclic(|this: &std::sync::Weak<Self>| {
+            let weak = this.clone();
+            let reader_diagnostics = diagnostics.clone();
+            let stderr = tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut errors = errors;
+                let mut buffer = vec![0u8; 8192];
+                let mut carry = Vec::new();
+                loop {
+                    let read = errors.read(&mut buffer).await.unwrap_or(0);
+                    let Some(client) = weak.upgrade() else {
+                        return;
+                    };
+                    if read == 0 {
+                        if !carry.is_empty() {
+                            reader_diagnostics.data(
+                                &client.protocol,
+                                &String::from_utf8_lossy(&std::mem::take(&mut carry)),
+                            );
+                        }
+                        reader_diagnostics.end(&client.protocol);
+                        // An unclassified child that exits is decided legacy for diagnostics (upstream onclose).
+                        if client.protocol.version().is_none() {
+                            client.protocol.resolve_stdio_diagnostics(false);
+                        }
+                        reader_diagnostics.drained.send_replace(true);
+                        return;
+                    }
+                    carry.extend_from_slice(&buffer[..read]);
+                    // Keep an incomplete UTF-8 tail for the next chunk.
+                    let valid = match std::str::from_utf8(&carry) {
+                        Ok(_) => carry.len(),
+                        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                        Err(_) => carry.len(),
+                    };
+                    let chunk = carry.drain(..valid).collect::<Vec<_>>();
+                    reader_diagnostics.data(&client.protocol, &String::from_utf8_lossy(&chunk));
+                }
+            });
+            let protocol = crate::modern::request::ModernProtocolState::default();
+            *protocol
+                .stdio_diagnostics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(diagnostics);
+            Self {
+                server: server.into(),
+                io: ClientTransport::Stdio {
+                    input: tokio::sync::Mutex::new(Some(input)),
+                    child: Box::new(tokio::sync::Mutex::new(child)),
+                    reader,
+                    stderr,
+                },
+                pending,
+                next_id: AtomicU64::new(1),
+                notifications,
+                closed,
+                root_pid,
+                server_capabilities: tokio::sync::RwLock::new(Value::Null),
+                server_info: tokio::sync::RwLock::new(Value::Null),
+                instructions: tokio::sync::RwLock::new(None),
+                protocol_version: std::sync::RwLock::new(None),
+                auth: tokio::sync::RwLock::new(None),
+                auth_challenge_handler: tokio::sync::RwLock::new(None),
+                http_stream: Mutex::new(None),
+                resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
+                protocol,
+                legacy_operations: Mutex::default(),
+                modern,
+                probe,
+                local_initialize: Mutex::new(None),
+                this: this.clone(),
+            }
+        }))
     }
-    pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
-        Self::materialize_with_policy(server,spec,logger,false).await
+    pub async fn materialize(
+        server: &str,
+        spec: &McpTransportSpec,
+        logger: Arc<Mutex<McpLogger>>,
+    ) -> Result<Arc<Self>, McpError> {
+        Self::materialize_with_policy(server, spec, logger, false).await
     }
-    pub async fn materialize_with_policy(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>,project_policy:bool)->Result<Arc<Self>,McpError> {
+    pub async fn materialize_with_policy(
+        server: &str,
+        spec: &McpTransportSpec,
+        logger: Arc<Mutex<McpLogger>>,
+        project_policy: bool,
+    ) -> Result<Arc<Self>, McpError> {
         match spec {
-            McpTransportSpec::Stdio {..}=>Self::materialize_stdio_with_policy(server,spec,logger,project_policy).await,
-            McpTransportSpec::Http {url,headers}=>{
-                let client=reqwest::Client::builder().build().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;
-                let (notifications,_)=broadcast::channel(256);
-                let (closed,_)=tokio::sync::watch::channel(false);
-                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),protocol_version:std::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),auth_challenge_handler:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+            McpTransportSpec::Stdio { .. } => {
+                Self::materialize_stdio_with_policy(server, spec, logger, project_policy).await
+            }
+            McpTransportSpec::Http { url, headers } => {
+                let client = reqwest::Client::builder()
+                    .build()
+                    .map_err(|e| failure(server, McpErrorKind::Connect, e.to_string(), "create"))?;
+                let (notifications, _) = broadcast::channel(256);
+                let (closed, _) = tokio::sync::watch::channel(false);
+                Ok(Arc::new_cyclic(|this| Self {
+                    server: server.into(),
+                    io: ClientTransport::Http {
+                        client,
+                        url: url.clone(),
+                        headers: headers.clone(),
+                        session: tokio::sync::RwLock::new(None),
+                    },
+                    pending: Arc::new(Mutex::new(BTreeMap::new())),
+                    next_id: AtomicU64::new(1),
+                    notifications,
+                    closed,
+                    root_pid: None,
+                    server_capabilities: tokio::sync::RwLock::new(Value::Null),
+                    server_info: tokio::sync::RwLock::new(Value::Null),
+                    instructions: tokio::sync::RwLock::new(None),
+                    protocol_version: std::sync::RwLock::new(None),
+                    auth: tokio::sync::RwLock::new(None),
+                    auth_challenge_handler: tokio::sync::RwLock::new(None),
+                    http_stream: Mutex::new(None),
+                    resource_subscriptions: tokio::sync::Mutex::new(Default::default()),
+                    protocol: Default::default(),
+                    legacy_operations: Mutex::default(),
+                    modern: Arc::default(),
+                    probe: Arc::default(),
+                    local_initialize: Mutex::new(None),
+                    this: this.clone(),
+                }))
             }
         }
     }
-    pub async fn request(&self,method:&str,params:Value,timeout:Duration)->Result<Value,McpError> {
-        self.request_inner(method,params,timeout,None).await
+    /// Every request: once negotiation selects modern (or private forms are enforced) it runs the MRTR engine
+    /// without a request origin, exactly like upstream's patched `client.request`.
+    pub async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
+        self.request_with_options(
+            method,
+            params,
+            timeout,
+            &crate::request_origin::McpRequestOptions::default(),
+        )
+        .await
     }
-    pub async fn request_with_signal(&self,method:&str,params:Value,timeout:Duration,signal:&maho_ext_api::AbortSignal)->Result<Value,McpError> {
-        self.request_inner(method,params,timeout,Some(signal)).await
+    pub async fn request_with_signal(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        signal: &maho_ext_api::AbortSignal,
+    ) -> Result<Value, McpError> {
+        self.request_with_options(
+            method,
+            params,
+            timeout,
+            &crate::request_origin::mcp_request_options(None, Some(signal.clone())),
+        )
+        .await
     }
-    async fn request_inner(&self,method:&str,params:Value,timeout:Duration,signal:Option<&maho_ext_api::AbortSignal>)->Result<Value,McpError> {
-        let id=self.next_id.fetch_add(1,Ordering::Relaxed);let (sender,receiver)=oneshot::channel();
-        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id,sender);
-        struct PendingRequest {pending:Arc<Mutex<BTreeMap<u64,Reply>>>,id:u64}
-        impl Drop for PendingRequest {fn drop(&mut self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.id);}}
-        let _pending=PendingRequest {pending:self.pending.clone(),id};
-        let result=async {
-            let message=json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-            if matches!(self.io,ClientTransport::Http {..}) {return self.http_send(&message).await;}
-            self.send(&message).await?;
-            receiver.await.map_err(|_|failure(&self.server,McpErrorKind::Connect,"transport closed","request"))?
+    pub async fn request_with_options(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        options: &crate::request_origin::McpRequestOptions,
+    ) -> Result<Value, McpError> {
+        match self.this.upgrade() {
+            Some(this) if method != "initialize" && this.protocol.requests_active() => {
+                Box::pin(crate::modern::request::mcp_request(
+                    &this, method, params, timeout, options,
+                ))
+                .await
+            }
+            _ => {
+                self.request_inner(method, params, timeout, options.signal.as_ref(), None)
+                    .await
+            }
+        }
+    }
+    /// One wire attempt; the MRTR engine's dispatch guard runs at the network boundary.
+    pub async fn request_guarded(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        signal: Option<&maho_ext_api::AbortSignal>,
+        guard: Option<crate::modern::request::DispatchGuard>,
+    ) -> Result<Value, McpError> {
+        self.request_inner(method, params, timeout, signal, guard)
+            .await
+    }
+    /// Upstream `modernCredentialSnapshot(authProvider.tokens())`.
+    pub fn credential_snapshot(&self) -> Option<String> {
+        let auth = self.auth.try_read().ok()?.clone()?;
+        let tokens = auth
+            .provider()
+            .tokens(chrono::Utc::now().timestamp_millis() as f64)
+            .ok()
+            .flatten();
+        crate::modern::transport::modern_credential_snapshot(tokens.as_ref())
+    }
+    /// The snapshot after the provider's own freshness check, so a proactive refresh is not a context change.
+    pub async fn fresh_credential_snapshot(&self) -> Option<String> {
+        let auth = self.auth.read().await.clone()?;
+        let tokens = auth.ensure_fresh().await.ok().flatten();
+        crate::modern::transport::modern_credential_snapshot(tokens.as_ref())
+    }
+    pub fn modern_route(&self) -> Option<&ModernRoute> {
+        self.modern.get()
+    }
+    /// The negotiated wire version: the modern version, else the one `initialize` agreed.
+    pub fn negotiated_version(&self) -> Option<String> {
+        self.modern
+            .get()
+            .map(|route| route.version.clone())
+            .or_else(|| {
+                self.protocol_version
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+    }
+    async fn request_inner(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        signal: Option<&maho_ext_api::AbortSignal>,
+        guard: Option<crate::modern::request::DispatchGuard>,
+    ) -> Result<Value, McpError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, sender);
+        struct PendingRequest {
+            pending: Arc<Mutex<BTreeMap<u64, Reply>>>,
+            id: u64,
+        }
+        impl Drop for PendingRequest {
+            fn drop(&mut self) {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&self.id);
+            }
+        }
+        let _pending = PendingRequest {
+            pending: self.pending.clone(),
+            id,
         };
-        let result=tokio::select! {
+        let result = async {
+            let message = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+            if let Some(route) = self.modern.get() {
+                route.subscriptions.outgoing(&message);
+                let sent = self.modern_send(route, &message, guard.as_ref()).await;
+                let reply = match sent {
+                    Ok(reply) => reply,
+                    Err(error) => {
+                        route.subscriptions.failed_send(&message);
+                        return Err(error);
+                    }
+                };
+                return match reply {
+                    Some(reply) => {
+                        route.subscriptions.incoming(&reply);
+                        self.http_reply(
+                            crate::modern::sdk_bridge::normalize_modern_result(reply),
+                            message.get("id"),
+                        )
+                    }
+                    None => receiver.await.map_err(|_| {
+                        failure(
+                            &self.server,
+                            McpErrorKind::Connect,
+                            "transport closed",
+                            "request",
+                        )
+                    })?,
+                };
+            }
+            if let Some(guard) = &guard {
+                guard(None)?;
+            }
+            if matches!(self.io, ClientTransport::Http { .. }) {
+                return self.http_send(&message).await;
+            }
+            self.send(&message).await?;
+            receiver.await.map_err(|_| {
+                failure(
+                    &self.server,
+                    McpErrorKind::Connect,
+                    "transport closed",
+                    "request",
+                )
+            })?
+        };
+        let result = tokio::select! {
             biased;
             ()=async {match signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending().await}}=>{
                 self.send(&json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"Request cancelled"}})).await?;
@@ -117,204 +768,827 @@ impl McpClient {
             }
             result=tokio::time::timeout(timeout,result)=>result.unwrap_or_else(|_|Err(failure(&self.server,McpErrorKind::Timeout,format!("MCP request {method} timed out"),"request"))),
         };
-        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);result
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+        result
     }
-    pub async fn set_auth(&self,refresh:Arc<crate::auth::oauth_refresh::McpRefreshManager>) {*self.auth.write().await=Some(refresh);}
-    pub async fn set_auth_challenge_handler(&self,handler:Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>) {*self.auth_challenge_handler.write().await=Some(handler);}
-    async fn send(&self,value:&Value)->Result<(),McpError> {
-        let ClientTransport::Stdio {input,..}=&self.io else{self.http_send(value).await?;return Ok(());};
-        let mut text=value.to_string();text.push('\n');let mut input=input.lock().await;let Some(input)=input.as_mut() else{return Err(failure(&self.server,McpErrorKind::Connect,"stdio input closed","request"));};
-        input.write_all(text.as_bytes()).await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
-        input.flush().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))
+    pub async fn set_auth(&self, refresh: Arc<crate::auth::oauth_refresh::McpRefreshManager>) {
+        *self.auth.write().await = Some(refresh);
     }
-    fn with_protocol_version(&self,request:reqwest::RequestBuilder)->reqwest::RequestBuilder {
-        match self.protocol_version.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref() {Some(version)=>request.header("mcp-protocol-version",version),None=>request}
+    pub async fn set_auth_challenge_handler(
+        &self,
+        handler: Arc<dyn crate::auth::challenge::McpAuthChallengeHandler>,
+    ) {
+        *self.auth_challenge_handler.write().await = Some(handler);
     }
-    async fn http_request(&self,value:&Value)->Result<reqwest::Response,McpError> {
-        let ClientTransport::Http {client,url,headers,session}=&self.io else{return Err(failure(&self.server,McpErrorKind::Protocol,"not HTTP","request"));};
-        let mut request=self.with_protocol_version(client.post(url.clone()).header("accept","application/json, text/event-stream")).json(value);
-        for (name,value) in headers {request=request.header(name,value);}
-        if let Some(refresh)=self.auth.read().await.as_ref() {
-            let tokens=refresh.ensure_fresh().await.map_err(|error|{let terminal=crate::needs_auth::is_oauth_needs_auth_error(&error);let mut result=failure(&self.server,if terminal{McpErrorKind::Auth}else{McpErrorKind::Connect},error.to_string(),"request");result.retriable = !terminal;result})?;
-            let tokens=tokens.ok_or_else(||failure(&self.server,McpErrorKind::Auth,format!("MCP server {} requires authorization",self.server),"request"))?;
-            request=request.bearer_auth(tokens.access_token);
-        }
-        if let Some(id)=session.read().await.as_ref(){request=request.header("mcp-session-id",id);}
-        request.send().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,net_text(&e),"request"))
-    }
-    fn http_status_error(&self,status:u16,www_authenticate:Option<&str>)->McpError {
-        let mut error=failure(&self.server,if status==401{McpErrorKind::Auth}else{McpErrorKind::Protocol},format!("HTTP {status}"),"request");
-        let mut cause=json!({"status":status});
-        if let Some(raw)=www_authenticate {
-            cause["wwwAuthenticate"]=Value::String(raw.into());
-            if let Some(challenge)=crate::auth::challenge::parse_www_authenticate(raw) && !challenge.scopes.is_empty() {cause["requiredScopes"]=json!(challenge.scopes);}
-        }
-        error.cause=Some(Box::new(cause));error
-    }
-    async fn http_send(&self,value:&Value)->Result<Value,McpError> {self.http_send_budgeted(value,STEP_UP_ATTEMPTS).await}
-    /// `budget` is the number of step-up cycles still available to this logical request; it is shared
-    /// with every renewed client the request is retried on.
-    fn http_send_budgeted<'a>(&'a self,value:&'a Value,budget:u32)->futures::future::BoxFuture<'a,Result<Value,McpError>> {Box::pin(async move {
-        let ClientTransport::Http {session,..}=&self.io else{return Err(failure(&self.server,McpErrorKind::Protocol,"not HTTP","request"));};
-        let mut stepped=false;let mut forced=false;
-        let mut response=loop {
-            let response=self.http_request(value).await?;
-            if response.status().is_success() {break response;}
-            let status=response.status().as_u16();
-            let www=response.headers().get("www-authenticate").and_then(|v|v.to_str().ok()).map(str::to_owned);
-            drop(response);
-            let auth=self.auth.read().await.clone();
-            if let Some(challenge)=crate::auth::challenge::step_up_required(status,www.as_deref()) && !stepped {
-                stepped=true;
-                let required=match &auth {
-                    Some(auth)=>{
-                        let provider=auth.provider();
-                        provider.escalate_scopes(&challenge.scopes);
-                        provider.effective_scopes().unwrap_or_else(||challenge.scopes.clone())
-                    }
-                    None=>challenge.scopes.clone(),
-                };
-                let handler=self.auth_challenge_handler.read().await.clone();
-                match handler {
-                    Some(handler)=>{
-                        if budget>0 && handler.reauthorize(required).await.is_ok() && let Ok(renewed)=handler.renew().await {
-                            return renewed.http_send_budgeted(value,budget-1).await;
-                        }
-                    }
-                    None if auth.is_some()=>continue,
-                    None=>(),
+    /// Modern wire: HTTP POSTs through the stateless transport (its reply returns here); stdio writes the
+    /// modernized line and the reader answers through the pending table (`Ok(None)`).
+    async fn modern_send(
+        &self,
+        route: &ModernRoute,
+        message: &Value,
+        guard: Option<&crate::modern::request::DispatchGuard>,
+    ) -> Result<Option<Value>, McpError> {
+        if let Some(http) = &route.http {
+            let (subscriptions, notifications) =
+                (route.subscriptions.clone(), self.notifications.clone());
+            let deliver = move |value: Value| {
+                if subscriptions.incoming(&value) {
+                    let _ = notifications
+                        .send(crate::modern::sdk_bridge::normalize_modern_result(value));
                 }
-            }
-            if matches!(status,401|403) && !forced && let Some(auth)=&auth {
-                forced=true;
-                if auth.force_refresh().await.is_ok() {continue;}
-            }
-            return Err(self.http_status_error(status,www.as_deref()));
+            };
+            return http.send(message, guard, &deliver).await;
+        }
+        if let Some(guard) = guard {
+            guard(None)?;
+        }
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            self.write_line(message).await?;
+            return Ok(None);
         };
-        if let Some(id)=response.headers().get("mcp-session-id").and_then(|v|v.to_str().ok()) {*session.write().await=Some(id.into());}
-        if response.status()==reqwest::StatusCode::ACCEPTED || response.status()==reqwest::StatusCode::NO_CONTENT {return Ok(Value::Null);}
-        let is_sse=response.headers().get("content-type").and_then(|v|v.to_str().ok()).is_some_and(|s|s.starts_with("text/event-stream"));
-        if !is_sse {
-            let reply=response.json::<Value>().await.map_err(|e|failure(&self.server,McpErrorKind::Protocol,net_text(&e),"request"))?;
-            return self.http_reply(reply,value.get("id"));
+        if method == "notifications/cancelled" {
+            let id = message
+                .get("params")
+                .and_then(|params| params.get("requestId"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            self.write_line(&json!({"jsonrpc":"2.0","method":method,"params":{"requestId":id,"reason":"MCP request canceled"}})).await?;
+            return Ok(None);
         }
-        let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
-        while let Some(chunk)=response.chunk().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,net_text(&e),"request"))? {
-            buffer.extend_from_slice(&chunk);
-            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
-                if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
-                if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
-                if line=="event" {event_type.clear();}
-                if line.is_empty() {
-                    let is_message=event_type.is_empty() || event_type=="message";event_type.clear();
-                    if !is_message || data.is_empty(){data.clear();continue;}
-                    let parsed=serde_json::from_str::<Value>(&data);data.clear();
-                    let event=match parsed {Ok(event)=>event,Err(error)=>{maho_ext_api::diagnostic(&format!("MCP {} SSE message parse failed: {error}",self.server));continue;}};
-                    if event.get("id")==value.get("id") && event.get("method").is_none(){return self.http_reply(event,value.get("id"));}
-                    let _=self.notifications.send(event);
-                }
-            }
+        let mut request = crate::modern::wire::modernize_request(
+            message.get("id").cloned().unwrap_or(Value::from(0)),
+            method,
+            &route.client_info,
+            &route.client_capabilities,
+            &route.version,
+            message.get("params"),
+        );
+        if message.get("id").is_none()
+            && let Some(object) = request.as_object_mut()
+        {
+            object.remove("id");
         }
-        Err(failure(&self.server,McpErrorKind::Connect,"SSE transport closed before response","request"))
-    })}
-    fn http_reply(&self,reply:Value,id:Option<&Value>)->Result<Value,McpError> {
-        if reply.get("id")!=id{return Err(failure(&self.server,McpErrorKind::Protocol,"MCP response id mismatch","request"));}
-        if let Some(error)=reply.get("error") {let mut result=failure(&self.server,McpErrorKind::Protocol,error.get("message").and_then(Value::as_str).unwrap_or("MCP protocol error"),"request");result.cause=Some(Box::new(error.clone()));Err(result)}else{Ok(reply.get("result").cloned().unwrap_or(Value::Null))}
+        self.write_line(&request)
+            .await
+            .map_err(|_| {
+                McpError::from(crate::modern::errors::McpMrtrError::new(
+                    crate::modern::errors::McpMrtrErrorCode::TransportFailed,
+                ))
+            })
+            .map(|()| None)
     }
-    pub async fn initialize(self:&Arc<Self>,timeout:Duration)->Result<(),McpError> {
-        let response=self.request("initialize",json!({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},"clientInfo":{"name":"senpi-mcp-client","version":"0.0.0"}}),timeout).await?;
-        *self.server_capabilities.write().await=response.get("capabilities").cloned().unwrap_or(Value::Null);
-        *self.server_info.write().await=response.get("serverInfo").cloned().unwrap_or(Value::Null);
-        *self.instructions.write().await=response.get("instructions").and_then(Value::as_str).map(str::to_owned);
-        *self.protocol_version.write().unwrap_or_else(std::sync::PoisonError::into_inner)=response.get("protocolVersion").and_then(Value::as_str).map(str::to_owned);
-        self.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await?;
-        if matches!(self.io,ClientTransport::Http {..}) {self.start_http_notifications();}
+    /// Subscription streams: no reply is awaited; for HTTP the future ends with the SSE stream.
+    async fn modern_stream(&self, message: Value) -> Result<(), McpError> {
+        let Some(route) = self.modern.get() else {
+            return Err(failure(
+                &self.server,
+                McpErrorKind::Connect,
+                "MCP modern route closed",
+                "request",
+            ));
+        };
+        // A response ends the long-lived request; it retires the stream before the send settles.
+        if let Some(reply) = self.modern_send(route, &message, None).await? {
+            route.subscriptions.incoming(&reply);
+        }
         Ok(())
     }
-    fn start_http_notifications(self:&Arc<Self>) {
-        let mut stream=self.http_stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if stream.is_some(){return;}
-        let weak=Arc::downgrade(self);
-        *stream=Some(tokio::spawn(async move {
-            let mut last_event_id=None;let mut retry_ms=1000u64;let mut failed_attempts=0u32;
-            loop {
-                let Some(owner)=weak.upgrade() else{return;};
-                let ClientTransport::Http {client,url,headers,session}=&owner.io else{return;};
-                let mut request=owner.with_protocol_version(client.get(url.clone()).header("accept","text/event-stream"));
-                for (name,value) in headers {request=request.header(name,value);}
-                if let Some(id)=session.read().await.as_ref(){request=request.header("mcp-session-id",id);}
-                if let Some(id)=&last_event_id {request=request.header("last-event-id",id);}
-                if let Some(refresh)=owner.auth.read().await.as_ref() {
-                    match refresh.ensure_fresh().await {
-                        Ok(Some(tokens))=>request=request.bearer_auth(tokens.access_token),
-                        _=>return,
+    async fn send(&self, value: &Value) -> Result<(), McpError> {
+        if let Some(route) = self.modern.get() {
+            route.subscriptions.outgoing(value);
+            return self.modern_send(route, value, None).await.map(|_| ());
+        }
+        self.write_line(value).await
+    }
+    async fn write_line(&self, value: &Value) -> Result<(), McpError> {
+        let ClientTransport::Stdio { input, .. } = &self.io else {
+            self.http_send(value).await?;
+            return Ok(());
+        };
+        let mut text = value.to_string();
+        text.push('\n');
+        let mut input = input.lock().await;
+        let Some(input) = input.as_mut() else {
+            return Err(failure(
+                &self.server,
+                McpErrorKind::Connect,
+                "stdio input closed",
+                "request",
+            ));
+        };
+        input.write_all(text.as_bytes()).await.map_err(|e| {
+            failure(
+                &self.server,
+                McpErrorKind::Connect,
+                e.to_string(),
+                "request",
+            )
+        })?;
+        input.flush().await.map_err(|e| {
+            failure(
+                &self.server,
+                McpErrorKind::Connect,
+                e.to_string(),
+                "request",
+            )
+        })
+    }
+    fn with_protocol_version(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self
+            .protocol_version
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+        {
+            Some(version) => request.header("mcp-protocol-version", version),
+            None => request,
+        }
+    }
+    async fn http_request(&self, value: &Value) -> Result<reqwest::Response, McpError> {
+        let ClientTransport::Http {
+            client,
+            url,
+            headers,
+            session,
+        } = &self.io
+        else {
+            return Err(failure(
+                &self.server,
+                McpErrorKind::Protocol,
+                "not HTTP",
+                "request",
+            ));
+        };
+        let mut request = self
+            .with_protocol_version(
+                client
+                    .post(url.clone())
+                    .header("accept", "application/json, text/event-stream"),
+            )
+            .json(value);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        if let Some(refresh) = self.auth.read().await.as_ref() {
+            let tokens = refresh.ensure_fresh().await.map_err(|error| {
+                let terminal = crate::needs_auth::is_oauth_needs_auth_error(&error);
+                let mut result = failure(
+                    &self.server,
+                    if terminal {
+                        McpErrorKind::Auth
+                    } else {
+                        McpErrorKind::Connect
+                    },
+                    error.to_string(),
+                    "request",
+                );
+                result.retriable = !terminal;
+                result
+            })?;
+            let tokens = tokens.ok_or_else(|| {
+                failure(
+                    &self.server,
+                    McpErrorKind::Auth,
+                    format!("MCP server {} requires authorization", self.server),
+                    "request",
+                )
+            })?;
+            request = request.bearer_auth(tokens.access_token);
+        }
+        if let Some(id) = session.read().await.as_ref() {
+            request = request.header("mcp-session-id", id);
+        }
+        request
+            .send()
+            .await
+            .map_err(|e| failure(&self.server, McpErrorKind::Connect, net_text(&e), "request"))
+    }
+    fn http_status_error(&self, status: u16, www_authenticate: Option<&str>) -> McpError {
+        let mut error = failure(
+            &self.server,
+            if status == 401 {
+                McpErrorKind::Auth
+            } else {
+                McpErrorKind::Protocol
+            },
+            format!("HTTP {status}"),
+            "request",
+        );
+        let mut cause = json!({"status":status});
+        if let Some(raw) = www_authenticate {
+            cause["wwwAuthenticate"] = Value::String(raw.into());
+            if let Some(challenge) = crate::auth::challenge::parse_www_authenticate(raw)
+                && !challenge.scopes.is_empty()
+            {
+                cause["requiredScopes"] = json!(challenge.scopes);
+            }
+        }
+        error.cause = Some(Box::new(cause));
+        error
+    }
+    async fn http_send(&self, value: &Value) -> Result<Value, McpError> {
+        self.http_send_budgeted(value, STEP_UP_ATTEMPTS).await
+    }
+    /// `budget` is the number of step-up cycles still available to this logical request; it is shared
+    /// with every renewed client the request is retried on.
+    fn http_send_budgeted<'a>(
+        &'a self,
+        value: &'a Value,
+        budget: u32,
+    ) -> futures::future::BoxFuture<'a, Result<Value, McpError>> {
+        Box::pin(async move {
+            let ClientTransport::Http { session, .. } = &self.io else {
+                return Err(failure(
+                    &self.server,
+                    McpErrorKind::Protocol,
+                    "not HTTP",
+                    "request",
+                ));
+            };
+            let mut stepped = false;
+            let mut forced = false;
+            let mut response = loop {
+                let response = self.http_request(value).await?;
+                if response.status().is_success() {
+                    break response;
+                }
+                let status = response.status().as_u16();
+                let www = response
+                    .headers()
+                    .get("www-authenticate")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                drop(response);
+                let auth = self.auth.read().await.clone();
+                if let Some(challenge) =
+                    crate::auth::challenge::step_up_required(status, www.as_deref())
+                    && !stepped
+                {
+                    stepped = true;
+                    let required = match &auth {
+                        Some(auth) => {
+                            let provider = auth.provider();
+                            provider.escalate_scopes(&challenge.scopes);
+                            provider
+                                .effective_scopes()
+                                .unwrap_or_else(|| challenge.scopes.clone())
+                        }
+                        None => challenge.scopes.clone(),
+                    };
+                    let handler = self.auth_challenge_handler.read().await.clone();
+                    match handler {
+                        Some(handler) => {
+                            if budget > 0
+                                && handler.reauthorize(required).await.is_ok()
+                                && let Ok(renewed) = handler.renew().await
+                            {
+                                return renewed.http_send_budgeted(value, budget - 1).await;
+                            }
+                        }
+                        None if auth.is_some() => continue,
+                        None => (),
                     }
                 }
-                let notifications=owner.notifications.clone();drop(owner);
+                if matches!(status, 401 | 403)
+                    && !forced
+                    && let Some(auth) = &auth
+                {
+                    forced = true;
+                    if auth.force_refresh().await.is_ok() {
+                        continue;
+                    }
+                }
+                return Err(self.http_status_error(status, www.as_deref()));
+            };
+            if let Some(id) = response
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+            {
+                *session.write().await = Some(id.into());
+            }
+            if response.status() == reqwest::StatusCode::ACCEPTED
+                || response.status() == reqwest::StatusCode::NO_CONTENT
+            {
+                return Ok(Value::Null);
+            }
+            let is_sse = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|s| s.starts_with("text/event-stream"));
+            if !is_sse {
+                let reply = response.json::<Value>().await.map_err(|e| {
+                    failure(
+                        &self.server,
+                        McpErrorKind::Protocol,
+                        net_text(&e),
+                        "request",
+                    )
+                })?;
+                return self.http_reply(reply, value.get("id"));
+            }
+            let mut buffer = Vec::new();
+            let mut data = String::new();
+            let mut event_type = String::new();
+            let mut skip_lf = false;
+            let mut first_line = true;
+            while let Some(chunk) = response.chunk().await.map_err(|e| {
+                failure(&self.server, McpErrorKind::Connect, net_text(&e), "request")
+            })? {
+                buffer.extend_from_slice(&chunk);
+                while let Some(line) = take_sse_line(&mut buffer, &mut skip_lf, &mut first_line) {
+                    if let Some(part) = line.strip_prefix("data:") {
+                        if !data.is_empty() {
+                            data.push('\n');
+                        }
+                        data.push_str(part.strip_prefix(' ').unwrap_or(part));
+                    }
+                    if let Some(kind) = line.strip_prefix("event:") {
+                        event_type = kind.strip_prefix(' ').unwrap_or(kind).into();
+                    }
+                    if line == "event" {
+                        event_type.clear();
+                    }
+                    if line.is_empty() {
+                        let is_message = event_type.is_empty() || event_type == "message";
+                        event_type.clear();
+                        if !is_message || data.is_empty() {
+                            data.clear();
+                            continue;
+                        }
+                        let parsed = serde_json::from_str::<Value>(&data);
+                        data.clear();
+                        let event = match parsed {
+                            Ok(event) => event,
+                            Err(error) => {
+                                maho_ext_api::diagnostic(&format!(
+                                    "MCP {} SSE message parse failed: {error}",
+                                    self.server
+                                ));
+                                continue;
+                            }
+                        };
+                        if event.get("id") == value.get("id") && event.get("method").is_none() {
+                            return self.http_reply(event, value.get("id"));
+                        }
+                        let _ = self.notifications.send(event);
+                    }
+                }
+            }
+            Err(failure(
+                &self.server,
+                McpErrorKind::Connect,
+                "SSE transport closed before response",
+                "request",
+            ))
+        })
+    }
+    fn http_reply(&self, reply: Value, id: Option<&Value>) -> Result<Value, McpError> {
+        if reply.get("id") != id {
+            return Err(failure(
+                &self.server,
+                McpErrorKind::Protocol,
+                "MCP response id mismatch",
+                "request",
+            ));
+        }
+        if let Some(error) = reply.get("error") {
+            let mut result = failure(
+                &self.server,
+                McpErrorKind::Protocol,
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("MCP protocol error"),
+                "request",
+            );
+            result.cause = Some(Box::new(error.clone()));
+            Err(result)
+        } else {
+            Ok(reply.get("result").cloned().unwrap_or(Value::Null))
+        }
+    }
+    /// Upstream `createMcpRequestClient`: record the form policy before the first request.
+    pub fn configure_requests(&self, private_forms: bool, legacy_form_eligible: bool) {
+        self.protocol
+            .private_forms
+            .store(private_forms, Ordering::Release);
+        self.protocol.set_legacy_form_eligible(legacy_form_eligible);
+    }
+    /// Stdio discovery exchange on the started child: the reply never reaches the request table.
+    pub async fn probe_exchange(
+        &self,
+        request: Value,
+        wait: Duration,
+    ) -> Result<Value, crate::modern::era::ProbeSendError> {
+        use crate::modern::era::ProbeSendError;
+        let id = request
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let (sender, receiver) = oneshot::channel();
+        self.probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .waiting = Some((id, sender));
+        struct Waiting(Arc<Mutex<ProbeSlot>>);
+        impl Drop for Waiting {
+            fn drop(&mut self) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .waiting = None;
+            }
+        }
+        let _waiting = Waiting(self.probe.clone());
+        let mut closed = self.closed.subscribe();
+        if *closed.borrow_and_update() {
+            return Err(ProbeSendError::Closed(
+                "MCP stdio closed during discovery".into(),
+            ));
+        }
+        self.write_line(&request)
+            .await
+            .map_err(|error| ProbeSendError::Closed(error.message))?;
+        tokio::select! {
+            reply=receiver=>reply.map_err(|_|ProbeSendError::Closed("MCP stdio closed during discovery".into())),
+            _=closed.changed()=>Err(ProbeSendError::Closed("MCP stdio closed during discovery".into())),
+            ()=tokio::time::sleep(wait)=>Err(ProbeSendError::Silence),
+        }
+    }
+    /// A silent probe keeps the process for the legacy handshake; a late discovery may still upgrade it.
+    pub fn await_late_discovery(&self) {
+        self.probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .silent = true;
+    }
+    /// Switch to the modern wire: `initialize` is answered locally from discovery from now on.
+    pub fn speak_modern(
+        &self,
+        discovery: &crate::modern::era::DiscoveryResult,
+        version: &str,
+        http: Option<crate::modern::transport::ModernHttpTransport>,
+    ) -> Result<(), McpError> {
+        let initialize = crate::modern::sdk_bridge::modern_initialize_result(discovery, version)
+            .map_err(|error| failure(&self.server, McpErrorKind::Connect, error.0, "connect"))?;
+        let weak = self.this.clone();
+        let send: crate::modern::subscriptions::SubscriptionSend = Arc::new(
+            move |message: Value| -> futures::future::BoxFuture<'static, Result<(), String>> {
+                let weak = weak.clone();
+                Box::pin(async move {
+                    match weak.upgrade() {
+                        Some(client) => client
+                            .modern_stream(message)
+                            .await
+                            .map_err(|error| error.message),
+                        None => Err("MCP client closed".into()),
+                    }
+                })
+            },
+        );
+        let capabilities = discovery
+            .get("capabilities")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let completes = http.is_some();
+        let route = ModernRoute {
+            version: version.into(),
+            client_info: mcp_client_info(),
+            client_capabilities: json!({}),
+            http,
+            subscriptions: crate::modern::subscriptions::ModernSubscriptions::new(
+                send,
+                capabilities,
+                completes,
+            ),
+        };
+        if self.modern.set(route).is_err() {
+            return Err(failure(
+                &self.server,
+                McpErrorKind::Connect,
+                "Modern MCP bridge has already initialized",
+                "connect",
+            ));
+        }
+        self.protocol.set_version(version);
+        *self
+            .local_initialize
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(initialize);
+        Ok(())
+    }
+    pub async fn initialize(self: &Arc<Self>, timeout: Duration) -> Result<(), McpError> {
+        let local = self
+            .local_initialize
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let response = match local {
+            Some(local) => local,
+            None => {
+                let capabilities = crate::elicitation::mcp_client_capabilities(
+                    self.protocol.legacy_form_eligible().unwrap_or(true),
+                );
+                match self.request_inner("initialize",json!({"protocolVersion":crate::modern::era::LATEST_PROTOCOL_VERSION,"capabilities":capabilities,"clientInfo":{"name":MCP_CLIENT_NAME,"version":"0.0.0"}}),timeout,None,None).await {
+                    Ok(response)=>{
+                        // stdio-probe.ts `onLegacy`: a silent child that answered initialize is legacy.
+                        let silent=std::mem::take(&mut self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).silent);
+                        if silent {self.protocol.legacy.store(true,Ordering::Release);self.protocol.resolve_stdio_diagnostics(false);}
+                        response
+                    }
+                    Err(error)=>{
+                        // A complete discovery that arrived after the probe window upgrades a stream whose server
+                        // rejects initialize: a legacy server cannot produce a complete discovery.
+                        let (was_silent,late)={let mut slot=self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let silent=std::mem::take(&mut slot.silent);(silent,if silent{slot.late.take()}else{None})};
+                        let Some(late)=late.filter(|late|late.get("supportedVersions").and_then(Value::as_array).is_some_and(|versions|versions.iter().any(|version|version.as_str()==Some(crate::modern::wire::MODERN_PROTOCOL_VERSION)))) else{
+                            if was_silent {self.protocol.legacy.store(true,Ordering::Release);self.protocol.resolve_stdio_diagnostics(false);}
+                            return Err(error);
+                        };
+                        self.speak_modern(&late,crate::modern::wire::MODERN_PROTOCOL_VERSION,None)?;
+                        self.protocol.resolve_stdio_diagnostics(true);
+                        self.local_initialize.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or(Value::Null)
+                    }
+                }
+            }
+        };
+        let modern = self.modern.get().is_some();
+        *self.server_capabilities.write().await =
+            response.get("capabilities").cloned().unwrap_or(Value::Null);
+        *self.server_info.write().await =
+            response.get("serverInfo").cloned().unwrap_or(Value::Null);
+        *self.instructions.write().await = response
+            .get("instructions")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        *self
+            .protocol_version
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = response
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if modern {
+            return Ok(());
+        }
+        self.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await?;
+        if matches!(self.io, ClientTransport::Http { .. }) {
+            self.start_http_notifications();
+        }
+        Ok(())
+    }
+    fn start_http_notifications(self: &Arc<Self>) {
+        let mut stream = self
+            .http_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if stream.is_some() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        *stream = Some(tokio::spawn(async move {
+            let mut last_event_id = None;
+            let mut retry_ms = 1000u64;
+            let mut failed_attempts = 0u32;
+            loop {
+                let Some(owner) = weak.upgrade() else {
+                    return;
+                };
+                let ClientTransport::Http {
+                    client,
+                    url,
+                    headers,
+                    session,
+                } = &owner.io
+                else {
+                    return;
+                };
+                let mut request = owner.with_protocol_version(
+                    client
+                        .get(url.clone())
+                        .header("accept", "text/event-stream"),
+                );
+                for (name, value) in headers {
+                    request = request.header(name, value);
+                }
+                if let Some(id) = session.read().await.as_ref() {
+                    request = request.header("mcp-session-id", id);
+                }
+                if let Some(id) = &last_event_id {
+                    request = request.header("last-event-id", id);
+                }
+                if let Some(refresh) = owner.auth.read().await.as_ref() {
+                    match refresh.ensure_fresh().await {
+                        Ok(Some(tokens)) => request = request.bearer_auth(tokens.access_token),
+                        _ => return,
+                    }
+                }
+                let notifications = owner.notifications.clone();
+                drop(owner);
                 match request.send().await {
-                    Ok(response) if response.status()==reqwest::StatusCode::METHOD_NOT_ALLOWED=>return,
-                    Ok(mut response) if response.status().is_success()=>{
-                        failed_attempts=0;
-                        let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
-                        while let Ok(Some(chunk))=response.chunk().await {
+                    Ok(response)
+                        if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED =>
+                    {
+                        return;
+                    }
+                    Ok(mut response) if response.status().is_success() => {
+                        failed_attempts = 0;
+                        let mut buffer = Vec::new();
+                        let mut data = String::new();
+                        let mut event_type = String::new();
+                        let mut skip_lf = false;
+                        let mut first_line = true;
+                        while let Ok(Some(chunk)) = response.chunk().await {
                             buffer.extend_from_slice(&chunk);
-                            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
-                                if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
-                                if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
-                                if line=="event" {event_type.clear();}
-                                if let Some(id)=line.strip_prefix("id:"){last_event_id=Some(id.trim_start_matches(' ').to_owned());}
-                                if let Some(retry)=line.strip_prefix("retry:").and_then(|retry|retry.trim().parse::<u64>().ok()){retry_ms=retry;}
+                            while let Some(line) =
+                                take_sse_line(&mut buffer, &mut skip_lf, &mut first_line)
+                            {
+                                if let Some(part) = line.strip_prefix("data:") {
+                                    if !data.is_empty() {
+                                        data.push('\n');
+                                    }
+                                    data.push_str(part.strip_prefix(' ').unwrap_or(part));
+                                }
+                                if let Some(kind) = line.strip_prefix("event:") {
+                                    event_type = kind.strip_prefix(' ').unwrap_or(kind).into();
+                                }
+                                if line == "event" {
+                                    event_type.clear();
+                                }
+                                if let Some(id) = line.strip_prefix("id:") {
+                                    last_event_id = Some(id.trim_start_matches(' ').to_owned());
+                                }
+                                if let Some(retry) = line
+                                    .strip_prefix("retry:")
+                                    .and_then(|retry| retry.trim().parse::<u64>().ok())
+                                {
+                                    retry_ms = retry;
+                                }
                                 if line.is_empty() {
-                                    if (event_type.is_empty() || event_type=="message") && !data.is_empty() && let Ok(value)=serde_json::from_str::<Value>(&data){let _=notifications.send(value);}
-                                    data.clear();event_type.clear();
+                                    if (event_type.is_empty() || event_type == "message")
+                                        && !data.is_empty()
+                                        && let Ok(value) = serde_json::from_str::<Value>(&data)
+                                    {
+                                        let _ = notifications.send(value);
+                                    }
+                                    data.clear();
+                                    event_type.clear();
                                 }
                             }
                         }
                     }
-                    _=>{failed_attempts+=1;if failed_attempts>2{return;}}
+                    _ => {
+                        failed_attempts += 1;
+                        if failed_attempts > 2 {
+                            return;
+                        }
+                    }
                 }
-                let delay=retry_ms.saturating_mul(3u64.saturating_pow(failed_attempts))/2u64.saturating_pow(failed_attempts);
+                let delay = retry_ms.saturating_mul(3u64.saturating_pow(failed_attempts))
+                    / 2u64.saturating_pow(failed_attempts);
                 tokio::time::sleep(Duration::from_millis(delay.min(30000))).await;
             }
         }));
     }
-    pub fn install_elicitation(self:&Arc<Self>,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>)->tokio::task::JoinHandle<()> {
-        let mut requests=self.notifications.subscribe();let weak=Arc::downgrade(self);
-        tokio::spawn(async move {loop {
-            let value=match requests.recv().await {Ok(value)=>value,Err(broadcast::error::RecvError::Lagged(_))=>continue,Err(_)=>return};
-            let (Some(id),Some(method))=(value.get("id"),value.get("method").and_then(Value::as_str)) else{continue;};
-            let Some(client)=weak.upgrade() else{return;};
-            let response=if method=="elicitation/create" {
-                let result=crate::elicitation::handle_mcp_elicitation(ui.as_deref(),value.get("params").unwrap_or(&Value::Null),Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS)).await;
-                json!({"jsonrpc":"2.0","id":id,"result":result})
-            }else{json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})};
-            if let Err(error)=client.send(&response).await {maho_ext_api::diagnostic(&format!("MCP server request response failed: {error}"));}
-        }})
+    pub fn install_elicitation(
+        self: &Arc<Self>,
+        ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    ) -> tokio::task::JoinHandle<()> {
+        let mut requests = self.notifications.subscribe();
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let value = match requests.recv().await {
+                    Ok(value) => value,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return,
+                };
+                let (Some(id), Some(method)) =
+                    (value.get("id"), value.get("method").and_then(Value::as_str))
+                else {
+                    continue;
+                };
+                let Some(client) = weak.upgrade() else {
+                    return;
+                };
+                let response = if client.modern.get().is_some() {
+                    // Modern servers ask for input through MRTR results, never server-to-client requests.
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Unsupported MCP method."}})
+                } else if method == "elicitation/create" {
+                    match crate::elicitation::handle_client_elicitation(
+                        &client,
+                        ui.as_ref(),
+                        value.get("params").unwrap_or(&Value::Null),
+                        id,
+                        Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS),
+                    )
+                    .await
+                    {
+                        Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
+                        Err(rejection) => {
+                            json!({"jsonrpc":"2.0","id":id,"error":rejection.to_json()})
+                        }
+                    }
+                } else {
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})
+                };
+                if let Err(error) = client.send(&response).await {
+                    maho_ext_api::diagnostic(&format!(
+                        "MCP server request response failed: {error}"
+                    ));
+                }
+            }
+        })
     }
-    pub async fn close(&self)->Result<(),McpError> {
-        if let Some(task)=self.http_stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
-        let ClientTransport::Stdio {input,child,..}=&self.io else{
-            if let ClientTransport::Http {client,url,headers,session}=&self.io && let Some(id)=session.write().await.take() {
-                let mut request=self.with_protocol_version(client.delete(url.clone()).header("mcp-session-id",id));for (name,value) in headers {request=request.header(name,value);}let _=request.timeout(Duration::from_millis(400)).send().await;
+    pub async fn close(&self) -> Result<(), McpError> {
+        // SDK `Client.close()` fires `onclose` for every transport: close observers (`on_mcp_client_close`) end.
+        self.closed.send_replace(true);
+        // sdk-bridge.ts close(): dispose the subscriptions (aborting listen streams) before closing the transport.
+        if let Some(route) = self.modern.get() {
+            route.subscriptions.dispose();
+        }
+        if let Some(task) = self
+            .http_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            task.abort();
+        }
+        let ClientTransport::Stdio { input, child, .. } = &self.io else {
+            if let ClientTransport::Http {
+                client,
+                url,
+                headers,
+                session,
+            } = &self.io
+                && let Some(id) = session.write().await.take()
+            {
+                let mut request = self
+                    .with_protocol_version(client.delete(url.clone()).header("mcp-session-id", id));
+                for (name, value) in headers {
+                    request = request.header(name, value);
+                }
+                let _ = request.timeout(Duration::from_millis(400)).send().await;
             }
             return Ok(());
         };
         // Dropping the pipe is what delivers EOF; shutdown() on a ChildStdin only flushes.
-        if let Some(mut stdin)=input.lock().await.take(){let _=stdin.shutdown().await;drop(stdin);}
-        let mut child=child.lock().await;
-        match tokio::time::timeout(Duration::from_secs(2),child.wait()).await {
-            Ok(result)=>{result.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
-            Err(_)=>{
+        if let Some(mut stdin) = input.lock().await.take() {
+            let _ = stdin.shutdown().await;
+            drop(stdin);
+        }
+        let mut child = child.lock().await;
+        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(result) => {
+                result.map_err(|e| {
+                    failure(&self.server, McpErrorKind::Connect, e.to_string(), "close")
+                })?;
+            }
+            Err(_) => {
                 #[cfg(unix)]
-                {if let Some(pid)=child.id().and_then(|pid|i32::try_from(pid).ok()).and_then(rustix::process::Pid::from_raw){let _=rustix::process::kill_process(pid,rustix::process::Signal::TERM);}}
-                if tokio::time::timeout(Duration::from_secs(2),child.wait()).await.is_err(){let _=child.start_kill();}
-                child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;
+                {
+                    if let Some(pid) = child
+                        .id()
+                        .and_then(|pid| i32::try_from(pid).ok())
+                        .and_then(rustix::process::Pid::from_raw)
+                    {
+                        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+                    }
+                }
+                if tokio::time::timeout(Duration::from_secs(2), child.wait())
+                    .await
+                    .is_err()
+                {
+                    let _ = child.start_kill();
+                }
+                child.wait().await.map_err(|e| {
+                    failure(&self.server, McpErrorKind::Connect, e.to_string(), "close")
+                })?;
             }
         }
         Ok(())
     }
 }
-impl Drop for McpClient {fn drop(&mut self){
-    if let Some(task)=self.http_stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
-    if let ClientTransport::Stdio {reader,stderr,..}=&self.io{reader.abort();stderr.abort();}
-}}
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        if let Some(task) = self
+            .http_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            task.abort();
+        }
+        if let ClientTransport::Stdio { reader, stderr, .. } = &self.io {
+            reader.abort();
+            stderr.abort();
+        }
+    }
+}

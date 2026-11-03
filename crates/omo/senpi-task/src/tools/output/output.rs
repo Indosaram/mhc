@@ -266,6 +266,13 @@ fn status_text(snapshot: &TaskSnapshot) -> String {
         snapshot.status.as_str(),
         task_output_model_text(snapshot)
     );
+    if let Some(liveness) = snapshot
+        .host_liveness
+        .filter(|liveness| !liveness.is_running())
+    {
+        text.push('\n');
+        text.push_str(&crate::state::host_liveness::host_liveness_text(liveness));
+    }
     if let Some(suspended) = &snapshot.suspended {
         text.push('\n');
         text.push_str(&suspended.explanation);

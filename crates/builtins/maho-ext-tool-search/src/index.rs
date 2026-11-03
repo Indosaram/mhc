@@ -1,160 +1,634 @@
-use crate::engine::document::{ToolSearchDocument,ToolSearchSource};
-type ToolSearchStateSnapshot=std::sync::Arc<dyn Fn()->(Vec<ToolSearchDocument>,Vec<String>,bool)+Send+Sync>;
-pub struct ToolSearchExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub mcp_native_enabled:std::sync::Arc<dyn Fn()->bool+Send+Sync>}
+use crate::engine::document::{ToolSearchDocument, ToolSearchSource};
+type ToolSearchStateSnapshot =
+    std::sync::Arc<dyn Fn() -> (Vec<ToolSearchDocument>, Vec<String>, bool) + Send + Sync>;
+pub struct ToolSearchExtension {
+    pub actions: std::sync::Arc<dyn maho_ext_api::ExtensionActions>,
+    pub mcp_native_enabled: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+}
 impl maho_ext_api::Extension for ToolSearchExtension {
-    fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
-        let service=std::sync::Arc::new(tokio::sync::Mutex::new(crate::service::ToolSearchService::new(api.runtime.clone(),self.actions.clone())));
-        self.register_with_service(api,service);
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        let service = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::service::ToolSearchService::new(api.runtime.clone(), self.actions.clone()),
+        ));
+        self.register_with_service(api, service);
     }
 }
 impl ToolSearchExtension {
-    pub fn register_with_service(&self,api:&mut maho_ext_api::ExtensionApi,service:std::sync::Arc<tokio::sync::Mutex<crate::service::ToolSearchService>>) {
+    pub fn register_with_service(
+        &self,
+        api: &mut maho_ext_api::ExtensionApi,
+        service: std::sync::Arc<tokio::sync::Mutex<crate::service::ToolSearchService>>,
+    ) {
         use std::sync::Arc;
-        let registration=Arc::new(std::sync::Mutex::new(maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone())));
-        let weak=Arc::downgrade(&service);let registered=Arc::new(std::sync::atomic::AtomicBool::new(false));
-        service.try_lock().unwrap_or_else(|_|std::panic::panic_any(maho_ext_api::ExtensionFailure::new("Tool-search service is busy at registration"))).bind_tool_registrar(Arc::new(move ||{
-            if registered.load(std::sync::atomic::Ordering::SeqCst){return Ok(());}
-            let service=weak.upgrade().ok_or_else(||maho_ext_api::ExtensionFailure::new("Tool-search service disposed"))?;
-            registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).register_tool_with_renderers(crate::tool::create_tool_search_tool(service),crate::tool::renderers())?;
-            registered.store(true,std::sync::atomic::Ordering::SeqCst);Ok(())
+        let registration = Arc::new(std::sync::Mutex::new(maho_ext_api::ExtensionApi::new(
+            api.registered.clone(),
+            api.profile.clone(),
+            api.events.clone(),
+            api.runtime.clone(),
+        )));
+        let weak = Arc::downgrade(&service);
+        let registered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        service
+            .try_lock()
+            .unwrap_or_else(|_| {
+                std::panic::panic_any(maho_ext_api::ExtensionFailure::new(
+                    "Tool-search service is busy at registration",
+                ))
+            })
+            .bind_tool_registrar(Arc::new(move || {
+                if registered.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(());
+                }
+                let service = weak.upgrade().ok_or_else(|| {
+                    maho_ext_api::ExtensionFailure::new("Tool-search service disposed")
+                })?;
+                registration
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .register_tool_with_renderers(
+                        crate::tool::create_tool_search_tool(service),
+                        crate::tool::renderers(),
+                    )?;
+                registered.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }));
+        register_session_hooks(api, service.clone());
+        // A retired generation's activator declines, so the current generation's activator answers.
+        let lazy = service.clone();
+        api.register_lazy_tool_activator(Arc::new(move |name| {
+            let mut service = lazy.try_lock().unwrap_or_else(|_| {
+                std::panic::panic_any(maho_ext_api::ExtensionFailure::new(
+                    "Tool-search service is busy",
+                ))
+            });
+            !service.is_disposed()
+                && service
+                    .activate_tool(name)
+                    .unwrap_or_else(|error| std::panic::panic_any(error))
         }));
-        register_session_hooks(api,service.clone());
-        let lazy=service.clone();api.register_lazy_tool_activator(Arc::new(move |name|lazy.try_lock().unwrap_or_else(|_|std::panic::panic_any(maho_ext_api::ExtensionFailure::new("Tool-search service is busy"))).activate_tool(name).unwrap_or_else(|error|std::panic::panic_any(error))));
-        let catalog_service=service.clone();
+        let catalog_service = service.clone();
         // One catalog/active-set/definition snapshot per provider request: `enabled` runs first in
         // `apply_before_request_with_deps` and refreshes it; the per-document lookups reuse it.
-        type RequestSnapshot=(Vec<ToolSearchDocument>,Vec<String>,bool,std::collections::HashMap<String,crate::native_search::NativeToolDefinition>);
-        let snapshot:Arc<std::sync::Mutex<Option<RequestSnapshot>>>=Arc::new(std::sync::Mutex::new(None));
-        let catalog_snapshot=snapshot.clone();
-        let get_catalog:Arc<dyn Fn()->Vec<ToolSearchDocument>+Send+Sync>=Arc::new(move ||{
-            if let Some((catalog,..))=catalog_snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){return catalog.clone();}
-            catalog_service.try_lock().map(|mut service|service.get_catalog().unwrap_or_default()).unwrap_or_default()
+        type RequestSnapshot = (
+            Vec<ToolSearchDocument>,
+            Vec<String>,
+            bool,
+            std::collections::HashMap<String, crate::native_search::NativeToolDefinition>,
+        );
+        let snapshot: Arc<std::sync::Mutex<Option<RequestSnapshot>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let catalog_snapshot = snapshot.clone();
+        let get_catalog: Arc<dyn Fn() -> Vec<ToolSearchDocument> + Send + Sync> =
+            Arc::new(move || {
+                if let Some((catalog, ..)) = catalog_snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                {
+                    return catalog.clone();
+                }
+                catalog_service
+                    .try_lock()
+                    .map(|mut service| service.get_catalog().unwrap_or_default())
+                    .unwrap_or_default()
+            });
+        let definition_actions = self.actions.clone();
+        let definition_snapshot = snapshot.clone();
+        let get_tool_definition: crate::native_search::NativeToolDefinitionGetter =
+            Arc::new(move |name| {
+                if let Some((.., definitions)) = definition_snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                {
+                    return definitions.get(name).map(|definition| {
+                        crate::native_search::NativeToolDefinition {
+                            description: definition.description.clone(),
+                            parameters: definition.parameters.clone(),
+                        }
+                    });
+                }
+                definition_actions
+                    .get_all_tools()
+                    .ok()
+                    .and_then(|tools| tools.into_iter().find(|tool| tool.name == name))
+                    .map(|tool| crate::native_search::NativeToolDefinition {
+                        description: Some(tool.description),
+                        parameters: Some(tool.parameters),
+                    })
+            });
+        let state_service = service.clone();
+        let state_runtime = api.runtime.clone();
+        let state_mcp = self.mcp_native_enabled.clone();
+        let state: ToolSearchStateSnapshot = Arc::new(move || {
+            let catalog = state_service
+                .try_lock()
+                .map(|mut service| service.get_catalog().unwrap_or_default())
+                .unwrap_or_default();
+            let active = state_runtime
+                .session_actions()
+                .ok()
+                .and_then(|actions| actions.get_active_tools().ok())
+                .unwrap_or_default();
+            (catalog, active, (state_mcp)())
         });
-        let definition_actions=self.actions.clone();let definition_snapshot=snapshot.clone();
-        let get_tool_definition:crate::native_search::NativeToolDefinitionGetter=Arc::new(move |name|{
-            if let Some((..,definitions))=definition_snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){return definitions.get(name).map(|definition|crate::native_search::NativeToolDefinition {description:definition.description.clone(),parameters:definition.parameters.clone()});}
-            definition_actions.get_all_tools().ok().and_then(|tools|tools.into_iter().find(|tool|tool.name==name)).map(|tool|crate::native_search::NativeToolDefinition {description:Some(tool.description),parameters:Some(tool.parameters)})
-        });
-        let state_service=service.clone();let state_runtime=api.runtime.clone();let state_mcp=self.mcp_native_enabled.clone();
-        let state:ToolSearchStateSnapshot=Arc::new(move ||{
-            let catalog=state_service.try_lock().map(|mut service|service.get_catalog().unwrap_or_default()).unwrap_or_default();
-            let active=state_runtime.session_actions().ok().and_then(|actions|actions.get_active_tools().ok()).unwrap_or_default();
-            (catalog,active,(state_mcp)())
-        });
-        let is_deferrable:Arc<dyn Fn(&str)->bool+Send+Sync>={let state=state.clone();let snapshot=snapshot.clone();Arc::new(move |name|{
-            if let Some((catalog,active,mcp,_))=snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){return is_deferrable(name,catalog,active,*mcp);}
-            let (catalog,active,mcp)=state();is_deferrable(name,&catalog,&active,mcp)
-        })};
-        let enabled:Arc<dyn Fn()->bool+Send+Sync>={let state=state.clone();let definition_actions=self.actions.clone();Arc::new(move ||{
-            let (catalog,active,mcp)=state();let enabled=native_search_enabled(&catalog,&active,mcp);
-            let definitions=if enabled {definition_actions.get_all_tools().unwrap_or_default().into_iter().rev().map(|tool|(tool.name,crate::native_search::NativeToolDefinition {description:Some(tool.description),parameters:Some(tool.parameters)})).collect()} else {Default::default()};
-            *snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=enabled.then_some((catalog,active,mcp,definitions));
-            enabled
-        })};
-        let fallback_service=service.clone();
-        let take_service=service.clone();
-        api.register_native_tool_search_injection_failure_source(Arc::new(move ||take_service.try_lock().ok().and_then(|mut service|service.take_native_injection_failure())));
-        let on_fallback:crate::native_search::NativeFallbackNotifier=Some(Arc::new(move |reason|{if let Ok(mut service)=fallback_service.try_lock(){service.note_native_injection_failure(reason.to_owned());}}));
-        let adapter=Arc::new(std::sync::Mutex::new(crate::native_search::AnthropicNativeToolSearchAdapter::new(crate::native_search::AnthropicNativeAdapterDeps {search_tool_name:Some(crate::tool::TOOL_SEARCH_TOOL_NAME.to_owned()),is_deferrable,get_catalog,get_tool_definition,enabled,on_fallback})));
-        let request_adapter=adapter.clone();
-        api.on(maho_ext_api::EventKind::BeforeProviderRequest,Arc::new(move |event,ctx|{
-            let adapter=request_adapter.clone();
-            Box::pin(async move {
-                let maho_ext_api::ExtensionEvent::BeforeProviderRequest {payload,model,..}=event else{return Ok(maho_ext_api::EventResult::None);};
-                let model=model.as_ref().or(ctx.model.as_ref());let target=model.map(|model|crate::native_support::AnthropicToolSearchTarget::Model {api:&model.api,id:&model.id,provider:&model.provider,supports_tool_references:model.compat.as_ref().and_then(|compat|compat.get("supportsToolReferences")).and_then(serde_json::Value::as_bool)});
-                let next=adapter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).apply_before_request_with_deps_if_changed(target.as_ref(),payload);
-                Ok(next.map_or(maho_ext_api::EventResult::None,maho_ext_api::EventResult::ProviderPayload))
+        let is_deferrable: Arc<dyn Fn(&str) -> bool + Send + Sync> = {
+            let state = state.clone();
+            let snapshot = snapshot.clone();
+            Arc::new(move |name| {
+                if let Some((catalog, active, mcp, _)) = snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                {
+                    return is_deferrable(name, catalog, active, *mcp);
+                }
+                let (catalog, active, mcp) = state();
+                is_deferrable(name, &catalog, &active, mcp)
             })
-        }));
-        api.on(maho_ext_api::EventKind::AfterProviderResponse,Arc::new(move |event,_|{
-            let adapter=adapter.clone();Box::pin(async move {
-                if let maho_ext_api::ExtensionEvent::AfterProviderResponse {status,..}=event{let _=adapter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).note_response_status(*status);}
-                Ok(maho_ext_api::EventResult::None)
+        };
+        let enabled: Arc<dyn Fn() -> bool + Send + Sync> = {
+            let state = state.clone();
+            let definition_actions = self.actions.clone();
+            Arc::new(move || {
+                let (catalog, active, mcp) = state();
+                let enabled = native_search_enabled(&catalog, &active, mcp);
+                let definitions = if enabled {
+                    definition_actions
+                        .get_all_tools()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .rev()
+                        .map(|tool| {
+                            (
+                                tool.name,
+                                crate::native_search::NativeToolDefinition {
+                                    description: Some(tool.description),
+                                    parameters: Some(tool.parameters),
+                                },
+                            )
+                        })
+                        .collect()
+                } else {
+                    Default::default()
+                };
+                *snapshot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    enabled.then_some((catalog, active, mcp, definitions));
+                enabled
             })
+        };
+        let fallback_service = service.clone();
+        let take_service = service.clone();
+        api.register_native_tool_search_injection_failure_source(Arc::new(move || {
+            take_service
+                .try_lock()
+                .ok()
+                .and_then(|mut service| service.take_native_injection_failure())
         }));
+        let on_fallback: crate::native_search::NativeFallbackNotifier =
+            Some(Arc::new(move |reason| {
+                if let Ok(mut service) = fallback_service.try_lock() {
+                    service.note_native_injection_failure(reason.to_owned());
+                }
+            }));
+        let adapter = Arc::new(std::sync::Mutex::new(
+            crate::native_search::AnthropicNativeToolSearchAdapter::new(
+                crate::native_search::AnthropicNativeAdapterDeps {
+                    search_tool_name: Some(crate::tool::TOOL_SEARCH_TOOL_NAME.to_owned()),
+                    is_deferrable,
+                    get_catalog,
+                    get_tool_definition,
+                    enabled,
+                    on_fallback,
+                },
+            ),
+        ));
+        let request_adapter = adapter.clone();
+        api.on(
+            maho_ext_api::EventKind::BeforeProviderRequest,
+            Arc::new(move |event, ctx| {
+                let adapter = request_adapter.clone();
+                Box::pin(async move {
+                    let maho_ext_api::ExtensionEvent::BeforeProviderRequest {
+                        payload, model, ..
+                    } = event
+                    else {
+                        return Ok(maho_ext_api::EventResult::None);
+                    };
+                    let model = model.as_ref().or(ctx.model.as_ref());
+                    let target = model.map(|model| {
+                        crate::native_support::AnthropicToolSearchTarget::Model {
+                            api: &model.api,
+                            id: &model.id,
+                            provider: &model.provider,
+                            supports_tool_references: model
+                                .compat
+                                .as_ref()
+                                .and_then(|compat| compat.get("supportsToolReferences"))
+                                .and_then(serde_json::Value::as_bool),
+                        }
+                    });
+                    let next = adapter
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .apply_before_request_with_deps_if_changed(target.as_ref(), payload);
+                    Ok(next.map_or(
+                        maho_ext_api::EventResult::None,
+                        maho_ext_api::EventResult::ProviderPayload,
+                    ))
+                })
+            }),
+        );
+        api.on(
+            maho_ext_api::EventKind::AfterProviderResponse,
+            Arc::new(move |event, _| {
+                let adapter = adapter.clone();
+                Box::pin(async move {
+                    if let maho_ext_api::ExtensionEvent::AfterProviderResponse { status, .. } =
+                        event
+                    {
+                        let _ = adapter
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .note_response_status(*status);
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }),
+        );
     }
 }
-pub fn register_session_hooks(api:&mut maho_ext_api::ExtensionApi,service:std::sync::Arc<tokio::sync::Mutex<crate::service::ToolSearchService>>) {
-    let start_service=service.clone();
-    api.on(maho_ext_api::EventKind::SessionStart,std::sync::Arc::new(move |_event,ctx| {
-        let service=start_service.clone();
-        Box::pin(async move {
-            let mut service=service.lock().await;
-            service.begin_session()?;
-            let entries=ctx.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
-            service.maybe_rehydrate_from_history(&entries)?;
-            Ok(maho_ext_api::EventResult::None)
-        })
-    }));
-    api.on(maho_ext_api::EventKind::Context,std::sync::Arc::new(move |event,_ctx| {
-        let service=service.clone();
-        Box::pin(async move {
-            if let maho_ext_api::ExtensionEvent::Context{messages,..}=event {
-                let mut service=service.lock().await;
+pub fn register_session_hooks(
+    api: &mut maho_ext_api::ExtensionApi,
+    service: std::sync::Arc<tokio::sync::Mutex<crate::service::ToolSearchService>>,
+) {
+    let start_service = service.clone();
+    api.on(
+        maho_ext_api::EventKind::SessionStart,
+        std::sync::Arc::new(move |_event, ctx| {
+            let service = start_service.clone();
+            Box::pin(async move {
+                let mut service = service.lock().await;
+                service.begin_session()?;
+                // PERF-DIVERGENCE(senpi mcp service): upstream copies every session entry and then
+                // keeps the marker candidates; this visits the entries one at a time and keeps only
+                // the candidates. Same candidates, same restored tools.
                 if service.needs_history_scan()? {
-                    let messages=messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                    service.maybe_rehydrate_from_history(&messages)?;
+                    let mut candidates = Vec::new();
+                    ctx.session_manager.for_each_entry(&mut |entry| {
+                        if crate::engine::marker_candidates::may_hold_activation_marker(&entry.data) {
+                            candidates.push(entry.data);
+                        }
+                    });
+                    service.maybe_rehydrate_from_history(&candidates)?;
                 }
-            }
+                Ok(maho_ext_api::EventResult::None)
+            })
+        }),
+    );
+    // senpi agent-session `_adoptToolSearchService` / `_releaseToolSearchService`: the session retires
+    // this load's service when it is replaced by a reload or the session ends.
+    let shutdown_service = service.clone();
+    api.on(maho_ext_api::EventKind::SessionShutdown,std::sync::Arc::new(move |event,ctx| {
+        let service=shutdown_service.clone();
+        Box::pin(async move {
+            let reason=if matches!(event,maho_ext_api::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::SessionReason::Reload) {"replaced by a reload"} else {"session disposed"};
+            service.lock().await.dispose(ctx.session_manager.session_id(),reason);
             Ok(maho_ext_api::EventResult::None)
         })
     }));
+    // `{ mutatesMessages: false }`: the replay only reads the context, so the host may skip the copy.
+    api.on_with_options(
+        maho_ext_api::EventKind::Context,
+        std::sync::Arc::new(move |event, _ctx| {
+            let service = service.clone();
+            Box::pin(async move {
+                if let maho_ext_api::ExtensionEvent::Context { messages, .. } = event {
+                    let mut service = service.lock().await;
+                    if service.needs_history_scan()? {
+                        let messages = messages
+                            .iter()
+                            .map(serde_json::to_value)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|error| {
+                                maho_ext_api::ExtensionFailure::new(error.to_string())
+                            })?;
+                        service.maybe_rehydrate_from_history(&messages)?;
+                    }
+                }
+                Ok(maho_ext_api::EventResult::None)
+            })
+        }),
+        maho_ext_api::ExtensionHandlerOptions {
+            mutates_messages: Some(false),
+            ..Default::default()
+        },
+    );
 }
-pub fn native_search_enabled(catalog:&[ToolSearchDocument],active:&[String],mcp_native_enabled:bool)->bool { catalog.iter().any(|document|match document.source { ToolSearchSource::Extension=>!active.contains(&document.name),ToolSearchSource::Mcp=>mcp_native_enabled }) }
-pub fn is_deferrable(name:&str,catalog:&[ToolSearchDocument],active:&[String],mcp_native_enabled:bool)->bool { catalog.iter().find(|document|document.name==name).is_some_and(|document|match document.source { ToolSearchSource::Mcp=>mcp_native_enabled,ToolSearchSource::Extension=>!active.iter().any(|active|active==name) }) }
+pub fn native_search_enabled(
+    catalog: &[ToolSearchDocument],
+    active: &[String],
+    mcp_native_enabled: bool,
+) -> bool {
+    catalog.iter().any(|document| match document.source {
+        ToolSearchSource::Extension => !active.contains(&document.name),
+        ToolSearchSource::Mcp => mcp_native_enabled,
+    })
+}
+pub fn is_deferrable(
+    name: &str,
+    catalog: &[ToolSearchDocument],
+    active: &[String],
+    mcp_native_enabled: bool,
+) -> bool {
+    catalog
+        .iter()
+        .find(|document| document.name == name)
+        .is_some_and(|document| match document.source {
+            ToolSearchSource::Mcp => mcp_native_enabled,
+            ToolSearchSource::Extension => !active.iter().any(|active| active == name),
+        })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     struct EmptyActions;
     impl maho_ext_api::ExtensionActions for EmptyActions {
-        fn send_message(&self,_:maho_ext_api::CustomMessage,_:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn send_user_message(&self,_:maho_ext_api::UserMessageContent,_:maho_ext_api::SendUserMessageOptions)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn append_entry(&self,_:&str,_:Option<serde_json::Value>)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,maho_ext_api::ExtensionFailure>{Ok(vec![])}
+        fn send_message(
+            &self,
+            _: maho_ext_api::CustomMessage,
+            _: maho_ext_api::SendMessageOptions,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn send_user_message(
+            &self,
+            _: maho_ext_api::UserMessageContent,
+            _: maho_ext_api::SendUserMessageOptions,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn append_entry(
+            &self,
+            _: &str,
+            _: Option<serde_json::Value>,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn get_all_tools(
+            &self,
+        ) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
+            Ok(vec![])
+        }
     }
     #[test]
     fn full_extension_registers_lazy_activation_and_provider_events_without_eager_search() {
-        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),Default::default());
-        maho_ext_api::Extension::register(&ToolSearchExtension {actions:std::sync::Arc::new(EmptyActions),mcp_native_enabled:std::sync::Arc::new(||false)},&mut api);
-        assert!(api.registered.tools.is_empty());assert_eq!(api.registered.lazy_tool_activators.len(),1);
-        for kind in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::Context,maho_ext_api::EventKind::BeforeProviderRequest,maho_ext_api::EventKind::AfterProviderResponse]{assert_eq!(api.registered.handlers[&kind].len(),1);}
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new(
+                "tool-search",
+                Default::default(),
+                maho_ext_api::SourceInfo {
+                    source: "builtin".into(),
+                    ..Default::default()
+                },
+            ),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        maho_ext_api::Extension::register(
+            &ToolSearchExtension {
+                actions: std::sync::Arc::new(EmptyActions),
+                mcp_native_enabled: std::sync::Arc::new(|| false),
+            },
+            &mut api,
+        );
+        assert!(api.registered.tools.is_empty());
+        assert_eq!(api.registered.lazy_tool_activators.len(), 1);
+        for kind in [
+            maho_ext_api::EventKind::SessionStart,
+            maho_ext_api::EventKind::Context,
+            maho_ext_api::EventKind::BeforeProviderRequest,
+            maho_ext_api::EventKind::AfterProviderResponse,
+        ] {
+            assert_eq!(api.registered.handlers[&kind].len(), 1);
+        }
+        assert_eq!(
+            api.registered.handler_options[&maho_ext_api::EventKind::Context][0].mutates_messages,
+            Some(false)
+        );
     }
-    fn document(source:ToolSearchSource)->ToolSearchDocument { ToolSearchDocument{name:"read".into(),label:"Read".into(),aliases:vec![],description:None,search_text:None,keywords:vec![],source,group:"test".into(),owner_label:"test".into(),registration_id:"test".into()} }
+    fn document(source: ToolSearchSource) -> ToolSearchDocument {
+        ToolSearchDocument {
+            name: "read".into(),
+            label: "Read".into(),
+            aliases: vec![],
+            description: None,
+            search_text: None,
+            keywords: vec![],
+            source,
+            group: "test".into(),
+            owner_label: "test".into(),
+            registration_id: "test".into(),
+        }
+    }
     #[derive(Default)]
     struct SessionActions(std::sync::Mutex<Vec<String>>);
     impl maho_ext_api::ExtensionSessionActions for SessionActions {
-        fn set_session_name(&self,_:&str)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn get_session_name(&self)->Result<Option<String>,maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn set_label(&self,_:&str,_:Option<&str>)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a>{panic!("not used")}
-        fn get_active_tools(&self)->Result<Vec<String>,maho_ext_api::ExtensionFailure>{Ok(self.0.lock().unwrap().clone())}
-        fn set_active_tools(&self,names:Vec<String>)->Result<(),maho_ext_api::ExtensionFailure>{*self.0.lock().unwrap()=names;Ok(())}
-        fn refresh_tools(&self)->Result<(),maho_ext_api::ExtensionFailure>{Ok(())}
-        fn register_removed_tool_hint(&self,_:&str,_:&str)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn register_lazy_tool_activator(&self,_:maho_ext_api::LazyToolActivator)->Result<(),maho_ext_api::ExtensionFailure>{Ok(())}
-        fn get_commands(&self)->Result<Vec<maho_ext_api::SlashCommandInfo>,maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn set_model(&self,_:maho_ai::types::Model)->maho_ext_api::ExtensionFuture<'_,bool>{panic!("not used")}
-        fn get_thinking_level(&self)->Result<maho_ai::types::ThinkingLevel,maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn set_thinking_level(&self,_:maho_ai::types::ThinkingLevel)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn set_session_model(&self,_:maho_ai::types::Model)->maho_ext_api::ExtensionFuture<'_,bool>{panic!("not used")}
-        fn set_session_thinking_level(&self,_:maho_ai::types::ThinkingLevel)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn set_session_fast_mode(&self,_:bool)->Result<(),maho_ext_api::ExtensionFailure>{panic!("not used")}
-        fn exec<'a>(&'a self,_:&'a str,_:&'a [String],_:&'a std::path::Path,_:maho_ext_api::ExecOptions)->maho_ext_api::ExtensionFuture<'a,maho_ext_api::ExecResult>{panic!("not used")}
+        fn set_session_name(&self, _: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn get_session_name(&self) -> Result<Option<String>, maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn set_label(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn execute_tool<'a>(
+            &'a self,
+            _: &'a str,
+            _: serde_json::Value,
+            _: maho_ext_api::ExecuteToolOptions,
+        ) -> maho_ext_api::ExecuteToolFuture<'a> {
+            panic!("not used")
+        }
+        fn get_active_tools(&self) -> Result<Vec<String>, maho_ext_api::ExtensionFailure> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn set_active_tools(
+            &self,
+            names: Vec<String>,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            *self.0.lock().unwrap() = names;
+            Ok(())
+        }
+        fn refresh_tools(&self) -> Result<(), maho_ext_api::ExtensionFailure> {
+            Ok(())
+        }
+        fn register_removed_tool_hint(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn register_lazy_tool_activator(
+            &self,
+            _: maho_ext_api::LazyToolActivator,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            Ok(())
+        }
+        fn get_commands(
+            &self,
+        ) -> Result<Vec<maho_ext_api::SlashCommandInfo>, maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn set_model(&self, _: maho_ai::types::Model) -> maho_ext_api::ExtensionFuture<'_, bool> {
+            panic!("not used")
+        }
+        fn get_thinking_level(
+            &self,
+        ) -> Result<maho_ai::types::ThinkingLevel, maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn set_thinking_level(
+            &self,
+            _: maho_ai::types::ThinkingLevel,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn set_session_model(
+            &self,
+            _: maho_ai::types::Model,
+        ) -> maho_ext_api::ExtensionFuture<'_, bool> {
+            panic!("not used")
+        }
+        fn set_session_thinking_level(
+            &self,
+            _: maho_ai::types::ThinkingLevel,
+        ) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn set_session_fast_mode(&self, _: bool) -> Result<(), maho_ext_api::ExtensionFailure> {
+            panic!("not used")
+        }
+        fn exec<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [String],
+            _: &'a std::path::Path,
+            _: maho_ext_api::ExecOptions,
+        ) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ExecResult> {
+            panic!("not used")
+        }
     }
     #[test]
     fn feed_registers_search_tool_while_service_lock_is_held() {
-        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),Default::default());
-        api.runtime.bind_session_actions(std::sync::Arc::new(SessionActions::default()));
-        let service=std::sync::Arc::new(tokio::sync::Mutex::new(crate::service::ToolSearchService::new(api.runtime.clone(),std::sync::Arc::new(EmptyActions))));
-        ToolSearchExtension {actions:std::sync::Arc::new(EmptyActions),mcp_native_enabled:std::sync::Arc::new(||false)}.register_with_service(&mut api,service.clone());
-        let mut service_guard=service.try_lock().expect("service lock is held by the registration caller");
-        let doc=ToolSearchDocument{name:"mcp_fixture".into(),label:"fixture".into(),aliases:vec![],description:None,search_text:None,keywords:vec![],source:ToolSearchSource::Mcp,group:"fixture".into(),owner_label:"fixture".into(),registration_id:"fixture".into()};
-        service_guard.feed(vec![doc],std::sync::Arc::new(|_|Ok(()))).expect("registrar must not reacquire the held service lock");
-        assert_eq!(api.runtime.live_tools("tool-search").unwrap().iter().filter(|tool|tool.definition.name==crate::tool::TOOL_SEARCH_TOOL_NAME).count(),1);
-        assert!(api.runtime.session_actions().unwrap().get_active_tools().unwrap().contains(&crate::tool::TOOL_SEARCH_TOOL_NAME.to_owned()));
-        service_guard.feed(vec![ToolSearchDocument{name:"mcp_fixture_2".into(),label:"fixture 2".into(),aliases:vec![],description:None,search_text:None,keywords:vec![],source:ToolSearchSource::Mcp,group:"fixture".into(),owner_label:"fixture".into(),registration_id:"fixture_2".into()}],std::sync::Arc::new(|_|Ok(()))).expect("subsequent feeds keep the resident tool registered");
-        assert_eq!(api.runtime.live_tools("tool-search").unwrap().iter().filter(|tool|tool.definition.name==crate::tool::TOOL_SEARCH_TOOL_NAME).count(),1);
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new(
+                "tool-search",
+                Default::default(),
+                maho_ext_api::SourceInfo {
+                    source: "builtin".into(),
+                    ..Default::default()
+                },
+            ),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        api.runtime
+            .bind_session_actions(std::sync::Arc::new(SessionActions::default()));
+        let service = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::service::ToolSearchService::new(
+                api.runtime.clone(),
+                std::sync::Arc::new(EmptyActions),
+            ),
+        ));
+        ToolSearchExtension {
+            actions: std::sync::Arc::new(EmptyActions),
+            mcp_native_enabled: std::sync::Arc::new(|| false),
+        }
+        .register_with_service(&mut api, service.clone());
+        let mut service_guard = service
+            .try_lock()
+            .expect("service lock is held by the registration caller");
+        let doc = ToolSearchDocument {
+            name: "mcp_fixture".into(),
+            label: "fixture".into(),
+            aliases: vec![],
+            description: None,
+            search_text: None,
+            keywords: vec![],
+            source: ToolSearchSource::Mcp,
+            group: "fixture".into(),
+            owner_label: "fixture".into(),
+            registration_id: "fixture".into(),
+        };
+        service_guard
+            .feed(vec![doc], std::sync::Arc::new(|_| Ok(())))
+            .expect("registrar must not reacquire the held service lock");
+        assert_eq!(
+            api.runtime
+                .live_tools("tool-search")
+                .unwrap()
+                .iter()
+                .filter(|tool| tool.definition.name == crate::tool::TOOL_SEARCH_TOOL_NAME)
+                .count(),
+            1
+        );
+        assert!(
+            api.runtime
+                .session_actions()
+                .unwrap()
+                .get_active_tools()
+                .unwrap()
+                .contains(&crate::tool::TOOL_SEARCH_TOOL_NAME.to_owned())
+        );
+        service_guard
+            .feed(
+                vec![ToolSearchDocument {
+                    name: "mcp_fixture_2".into(),
+                    label: "fixture 2".into(),
+                    aliases: vec![],
+                    description: None,
+                    search_text: None,
+                    keywords: vec![],
+                    source: ToolSearchSource::Mcp,
+                    group: "fixture".into(),
+                    owner_label: "fixture".into(),
+                    registration_id: "fixture_2".into(),
+                }],
+                std::sync::Arc::new(|_| Ok(())),
+            )
+            .expect("subsequent feeds keep the resident tool registered");
+        assert_eq!(
+            api.runtime
+                .live_tools("tool-search")
+                .unwrap()
+                .iter()
+                .filter(|tool| tool.definition.name == crate::tool::TOOL_SEARCH_TOOL_NAME)
+                .count(),
+            1
+        );
     }
-    #[test] fn extension_deferral_requires_inactive_tool() { let catalog=[document(ToolSearchSource::Extension)]; assert!(native_search_enabled(&catalog,&[],false)); assert!(!native_search_enabled(&catalog,&["read".into()],true)); assert!(!is_deferrable("missing",&catalog,&[],true)); }
-    #[test] fn mcp_deferral_uses_native_setting_not_active_set() { let catalog=[document(ToolSearchSource::Mcp)]; assert!(!is_deferrable("read",&catalog,&[],false)); assert!(is_deferrable("read",&catalog,&["read".into()],true)); }
+    #[test]
+    fn extension_deferral_requires_inactive_tool() {
+        let catalog = [document(ToolSearchSource::Extension)];
+        assert!(native_search_enabled(&catalog, &[], false));
+        assert!(!native_search_enabled(&catalog, &["read".into()], true));
+        assert!(!is_deferrable("missing", &catalog, &[], true));
+    }
+    #[test]
+    fn mcp_deferral_uses_native_setting_not_active_set() {
+        let catalog = [document(ToolSearchSource::Mcp)];
+        assert!(!is_deferrable("read", &catalog, &[], false));
+        assert!(is_deferrable("read", &catalog, &["read".into()], true));
+    }
 }

@@ -155,7 +155,13 @@ impl FooterDataProvider {
     }
 
     pub fn clear_extension_statuses(&self) {
-        Self::lock(&self.extension_statuses).clear();
+        self.clear_extension_statuses_keeping(&std::collections::BTreeSet::new());
+    }
+
+    /// senpi `clearExtensionStatuses(keep)`: clear extension statuses, keeping the host-owned keys in `keep`
+    /// (the lifecycle status survives an extension UI reset, senpi#3864).
+    pub fn clear_extension_statuses_keeping(&self, keep: &std::collections::BTreeSet<String>) {
+        Self::lock(&self.extension_statuses).retain(|key, _| keep.contains(key));
         *Self::lock(&self.subagent_cost) = None;
     }
 
@@ -359,5 +365,25 @@ mod subagent_cost_tests {
         provider.set_subagent_cost(Some(0.38));
         provider.clear_extension_statuses();
         assert_eq!(provider.subagent_cost(), None);
+    }
+}
+
+#[cfg(test)]
+mod status_keep_tests {
+    use super::*;
+
+    /// senpi test/suite/regressions/3864-tui-lifecycle-ownership.test.ts: host-owned keys survive a reset.
+    #[test]
+    fn clearing_keeps_host_owned_status_keys() {
+        let provider = FooterDataProvider::new("/tmp");
+        provider.set_extension_status("lifecycle", Some("running"));
+        provider.set_extension_status("ext", Some("busy"));
+        provider.clear_extension_statuses_keeping(&["lifecycle".to_string()].into());
+        assert_eq!(
+            provider.extension_statuses().into_keys().collect::<Vec<_>>(),
+            vec!["lifecycle".to_string()]
+        );
+        provider.clear_extension_statuses();
+        assert!(provider.extension_statuses().is_empty());
     }
 }

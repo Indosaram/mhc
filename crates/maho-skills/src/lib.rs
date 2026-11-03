@@ -14,12 +14,16 @@
 
 mod extension;
 mod prompt;
-mod root;
+pub mod root;
 mod tool;
 
 pub use extension::SkillsExtension;
 pub use prompt::filter_prompt;
-pub use root::{SKILLS_ROOT_ENV, bundled_skills_root, bundled_skills_root_from};
+pub use root::{
+    InvalidRoot, LEGACY_SKILLS_ROOT_ENV, NoticeContext, NoticeLedger, RootResolver,
+    SKILLS_ROOT_ENV, bundled_skills_root, bundled_skills_root_from, invalid_root_message,
+    validate_root,
+};
 pub use tool::{
     MAX_FILE_BYTES, SkillToolOutcome, TOOL_NAME, detail_text, list_text, run_skill_tool,
     strip_front_matter,

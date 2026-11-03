@@ -248,3 +248,45 @@ async fn native_session_combines_a_native_extension_with_settings_fallback() {
     let messages = result["messages"].as_array().expect("messages");
     assert_eq!(messages.last().and_then(|message| message["model"].as_str()), Some("faux-2"));
 }
+
+/// The AgentStart arm writes the run's opening lifecycle record while it holds the session state lock; the
+/// write gate must not lock state again (std Mutex is not reentrant). A self-deadlock blocks the runtime
+/// thread, so `tokio::time::timeout` inside it could never fire: the session runs on its own thread and the
+/// test waits for its result with a bounded receive.
+#[test]
+fn a_prompt_reaches_agent_end_and_writes_the_opening_lifecycle_record() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = runtime
+            .block_on(
+                FauxSession::new(FauxScript {
+                    name: "native-agent-start".to_owned(),
+                    prompt: "hi".to_owned(),
+                    responses: vec![FauxResponse {
+                        content: "hello".to_owned(),
+                        stop_reason: "stop".to_owned(),
+                    }],
+                })
+                .run_native(),
+            )
+            .map_err(|error| error.to_string());
+        let _ = sender.send(result);
+    });
+    let result = receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("prompt must reach agent_end without deadlocking")
+        .expect("native session");
+    let events = result["events"].as_array().expect("events");
+    assert_eq!(events.first().expect("start")["type"], "agent_start");
+    assert_eq!(events.last().expect("end")["type"], "agent_end");
+    let entries = result["entries"].as_array().expect("entries");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["type"] == "custom" && entry["customType"] == "session-lifecycle")
+    );
+}

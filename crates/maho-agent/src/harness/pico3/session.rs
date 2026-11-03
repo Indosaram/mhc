@@ -57,7 +57,9 @@ impl Defaults {
                 let name = key.as_str().ok_or_else(|| Error::InvalidShape("config key must be Unicode".into()))?;
                 self.route.insert(name.into(), doc);
                 self.owners.insert(name.into(), kind.token.clone());
-                match doc { DocKind::Rewindable => &mut self.rewindable, DocKind::Sticky => &mut self.sticky, DocKind::Session => unreachable!() }.insert(key.clone(), value.clone());
+                if !matches!(value, JsonValue::Null) {
+                    match doc { DocKind::Rewindable => &mut self.rewindable, DocKind::Sticky => &mut self.sticky, DocKind::Session => unreachable!() }.insert(key.clone(), value.clone());
+                }
             }
         }
         Ok(())

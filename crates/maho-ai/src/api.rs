@@ -10,8 +10,12 @@ pub mod azure_openai_responses;
 pub mod azure_openai_responses_lazy;
 pub mod bedrock_converse_stream;
 pub mod bedrock_converse_stream_lazy;
+#[cfg(test)]
+mod bedrock_producer_capture_tests;
+pub mod chatgpt_usage_limit;
 pub mod cloudflare;
 pub mod cloudflare_ai_binding;
+pub mod cloudflare_workers_ai_system_one_lazy;
 pub mod constrained_sampling;
 pub mod context_room;
 pub mod cursor_agent;
@@ -20,15 +24,25 @@ pub mod cursor_conversation_rotation;
 pub mod cursor_task_args;
 pub mod devin_agent;
 pub mod devin_agent_lazy;
+#[cfg(test)]
+mod devin_agent_producer_capture_tests;
+pub mod github_copilot_endpoint;
 pub mod github_copilot_headers;
 pub mod google_generative_ai;
 pub mod google_generative_ai_lazy;
+#[cfg(test)]
+mod google_interleave_capture_tests;
+#[cfg(test)]
+mod google_producer_capture_tests;
 pub mod google_shared;
 pub mod google_vertex;
+pub mod google_vertex_env;
 pub mod google_vertex_lazy;
 pub mod lazy;
 pub mod mistral_conversations;
 pub mod mistral_conversations_lazy;
+#[cfg(test)]
+mod mistral_producer_capture_tests;
 pub mod openai_client_auth;
 pub mod openai_codex_responses;
 pub mod openai_codex_responses_lazy;
@@ -50,9 +64,16 @@ pub mod openrouter_images;
 pub mod openrouter_images_lazy;
 pub mod pi_messages;
 pub mod pi_messages_lazy;
+#[cfg(test)]
+mod pi_messages_producer_capture_tests;
+#[cfg(test)]
+mod producer_capture_native_tests;
+#[cfg(test)]
+mod producer_capture_tests;
 pub mod responses_completion_grace;
 pub mod simple_options;
 pub mod transform_messages;
+pub mod typesafe_system_one_lazy;
 pub mod warm_prompt_cache;
 pub mod websocket_liveness;
 pub mod websocket_transport_failure;

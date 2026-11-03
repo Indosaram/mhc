@@ -20,7 +20,20 @@ fn assert_disconnected(result: std::io::Result<usize>) {
     }
 }
 
-struct BodyPhaseSubscriber(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+/// Fires once per URL when the fetcher enters its body phase (the `pi_webfetch` trace event after `reading_body`
+/// is set). Installed as the global default: a scoped dispatch loses the callsite whenever a parallel test registers
+/// it first on a thread without a subscriber (tracing-core then caches `Interest::never`).
+struct BodyPhaseSubscriber(
+    Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+);
+struct UrlField(Option<String>);
+impl tracing::field::Visit for UrlField {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "url" {
+            self.0 = Some(format!("{value:?}"));
+        }
+    }
+}
 impl tracing::Subscriber for BodyPhaseSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         metadata.target() == "pi_webfetch"
@@ -31,24 +44,47 @@ impl tracing::Subscriber for BodyPhaseSubscriber {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        if event.metadata().target() == "pi_webfetch"
-            && let Some(sender) = self.0.lock().expect("body phase signal").take()
-        {
-            sender.send(()).expect("body phase receiver");
+        let mut url = UrlField(None);
+        event.record(&mut url);
+        if let Some(sender) = url.0.and_then(|url| {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&url)
+        }) {
+            let _ = sender.send(());
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
 }
 
-#[tokio::test]
-async fn registered_cancellation_after_headers_normalizes_reason() {
-    use tracing::instrument::WithSubscriber;
+fn body_phase(url: &str) -> tokio::sync::oneshot::Receiver<()> {
+    static SUBSCRIBER: std::sync::OnceLock<Arc<BodyPhaseSubscriber>> = std::sync::OnceLock::new();
+    let subscriber = SUBSCRIBER.get_or_init(|| {
+        let subscriber = Arc::new(BodyPhaseSubscriber(Mutex::default()));
+        tracing::subscriber::set_global_default(Arc::clone(&subscriber))
+            .expect("the body phase subscriber is the only global default in this binary");
+        // A callsite registered concurrently with the install may have cached `never`; re-evaluate them all.
+        tracing::callsite::rebuild_interest_cache();
+        subscriber
+    });
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    subscriber
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(url.to_owned(), sender);
+    receiver
+}
+
+/// One request: headers promise 100 bytes, one arrives, then the fixture waits for the client to disconnect.
+async fn stalled_body_server() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("fixture listener");
     let address = listener.local_addr().expect("fixture address");
-    let mut server = tokio::spawn(async move {
+    let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("fixture accept");
         let mut bytes = [0; 4096];
         assert!(socket.read(&mut bytes).await.expect("fixture request") > 0);
@@ -56,57 +92,91 @@ async fn registered_cancellation_after_headers_normalizes_reason() {
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
             .await
             .expect("fixture headers");
-        assert_eq!(socket.read(&mut bytes).await.expect("disconnect"), 0);
+        assert_disconnected(socket.read(&mut bytes).await);
     });
-    let (sender, body_started) = tokio::sync::oneshot::channel();
+    (format!("http://{address}"), server)
+}
+
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+// upstream fetcher.ts `readResponseBody`: once the body is being read, an abort surfaces as
+// WebfetchAbortError("Request aborted") whatever the signal's reason; before that the reason itself surfaces
+// (`registered_custom_abort_reason`). The registered extension executor hands the host signal to the fetcher.
+#[tokio::test]
+async fn registered_cancellation_after_headers_normalizes_reason() {
+    let (url, server) = stalled_body_server().await;
+    let body_started = body_phase(&url);
     let controller = maho_ai::utils::abort::AbortController::new();
-    let mut request = tokio::spawn(
-        (support::registered_tool().execute)(
-            "qa".into(),
-            json!({"url":format!("http://{address}"),"timeout":5}),
-            Some(controller.signal()),
-            None,
-        )
-        .with_subscriber(BodyPhaseSubscriber(Mutex::new(Some(sender)))),
-    );
-    let body_phase = tokio::time::timeout(std::time::Duration::from_secs(5), body_started).await;
+    let request = tokio::spawn((support::registered_tool().execute)(
+        "qa".into(),
+        json!({"url":url,"timeout":5}),
+        Some(controller.signal()),
+        None,
+    ));
+    tokio::time::timeout(DEADLINE, body_started)
+        .await
+        .expect("body phase deadline")
+        .expect("body phase event");
     controller.abort(Some(maho_ai::utils::abort::AbortReason::new(
         "Error",
         "custom body cancellation",
     )));
-    let request_result =
-        tokio::time::timeout(std::time::Duration::from_secs(5), &mut request).await;
-    let request_cleanup = if request_result.is_err() {
-        request.abort();
-        Some(request.await)
-    } else {
-        None
-    };
-    let server_result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await;
-    let server_cleanup = if server_result.is_err() {
-        server.abort();
-        Some(server.await)
-    } else {
-        None
-    };
-    if let Some(cleanup) = request_cleanup {
-        assert!(cleanup.is_err_and(|error| error.is_cancelled()));
-    }
-    if let Some(cleanup) = server_cleanup {
-        assert!(cleanup.is_err_and(|error| error.is_cancelled()));
-    }
-    body_phase
-        .expect("body phase deadline")
-        .expect("body phase event");
-    let result = request_result
+    let result = tokio::time::timeout(DEADLINE, request)
+        .await
         .expect("registered request deadline")
         .expect("registered request");
-    server_result
+    tokio::time::timeout(DEADLINE, server)
+        .await
         .expect("disconnect deadline")
         .expect("fixture server");
-    assert!(std::net::TcpListener::bind(address).is_ok());
     assert_eq!(text(&result), "Request aborted");
     assert_eq!(result.is_error, Some(true));
+}
+
+// upstream tool.ts passes the execute `signal` to `fetchUrl`: the plain definition body (the in-process dispatch
+// and tool-child path) threads its reasonless signal into the fetcher, so a pre-request abort carries the DOM
+// default reason and a body-phase abort is normalized to "Request aborted".
+#[tokio::test]
+async fn definition_threads_the_abort_signal_into_the_fetcher() {
+    let execute = maho_ext_pi_webfetch::webfetch::tool::definition().execute;
+    let signal = maho_ext_api::AbortSignal::default();
+    signal.abort();
+    let refused = execute(maho_ext_api::ToolCall {
+        id: "qa",
+        params: json!({"url":"http://127.0.0.1:1"}),
+        signal,
+        on_update: None,
+        context: None,
+    })
+    .await
+    .expect_err("an aborted signal refuses the request");
+    assert_eq!(refused.to_string(), "This operation was aborted");
+
+    let (url, server) = stalled_body_server().await;
+    let body_started = body_phase(&url);
+    let signal = maho_ext_api::AbortSignal::default();
+    let request = tokio::spawn(execute(maho_ext_api::ToolCall {
+        id: "qa",
+        params: json!({"url":url,"timeout":5}),
+        signal: signal.clone(),
+        on_update: None,
+        context: None,
+    }));
+    tokio::time::timeout(DEADLINE, body_started)
+        .await
+        .expect("body phase deadline")
+        .expect("body phase event");
+    signal.abort();
+    let error = tokio::time::timeout(DEADLINE, request)
+        .await
+        .expect("definition request deadline")
+        .expect("definition request")
+        .expect_err("a body-phase abort fails the call");
+    assert_eq!(error.to_string(), "Request aborted");
+    tokio::time::timeout(DEADLINE, server)
+        .await
+        .expect("disconnect deadline")
+        .expect("fixture server");
 }
 
 async fn fixture(response: String) -> (String, tokio::task::JoinHandle<String>) {
@@ -744,6 +814,7 @@ async fn extension_lifecycle_clears_ui_only_interactively() {
             (
                 maho_ext_api::EventKind::SessionStart,
                 maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,

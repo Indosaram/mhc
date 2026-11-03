@@ -29,6 +29,7 @@ pub mod engine_store_chain;
 pub mod engine;
 pub mod engine_runners;
 pub mod eval_handle_host;
+pub mod host_liveness_notice;
 pub mod host_prewarm;
 pub mod memory_reporter;
 pub mod own_task_identity;

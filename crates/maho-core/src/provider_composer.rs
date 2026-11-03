@@ -897,7 +897,7 @@ impl Provider for ComposedProvider {
 pub struct ComposedOAuthAuth {
     provider_id: String,
     oauth: Arc<dyn maho_ai::auth::types::OAuthAuth>,
-    raw_headers: Option<std::collections::HashMap<String, String>>,
+    raw_headers: Option<std::collections::HashMap<String, crate::config_reference_resolver::ConfigValue>>,
     auth_header: bool,
 }
 
@@ -974,7 +974,7 @@ impl maho_ai::auth::types::OAuthAuth for ComposedOAuthAuth {
                     .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned())))
                     .collect()
             });
-        let headers = crate::resolve_config_value::resolve_headers_or_throw(
+        let headers = crate::resolve_config_value::resolve_config_headers_or_throw(
             self.raw_headers.as_ref(),
             &format!("provider \"{}\"", self.provider_id),
             env.as_ref(),
@@ -1100,6 +1100,7 @@ pub async fn resolve_compatibility_request_headers(
     extension: Option<&ProviderConfigInput>,
     env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Option<maho_ai::types::ProviderHeaders>, String> {
+    crate::provider_api_key_auth::assert_configured_header_authority(config, extension.map(|e| &e.config))?;
     let mut headers =
         crate::provider_api_key_auth::configured_headers(config, extension.map(|e| &e.config))
             .unwrap_or_default();
@@ -1122,7 +1123,7 @@ pub async fn resolve_compatibility_request_headers(
     {
         headers.extend(value.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
-    let resolved = crate::resolve_config_value::resolve_headers_or_throw(
+    let resolved = crate::resolve_config_value::resolve_config_headers_or_throw(
         Some(&headers),
         &format!("model \"{}/{}\"", model.provider, model.id),
         env,

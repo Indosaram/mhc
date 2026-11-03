@@ -131,6 +131,10 @@ impl ModelRegistry {
     pub fn unregister_provider(&mut self, id: &str) {
         self.model_runtime.unregister_provider(id)
     }
+    /// senpi `ModelRegistry.getProviderOrigin` (senpi#4328).
+    pub fn get_provider_origin(&self, provider: &str) -> Option<crate::provider_origin::ProviderOrigin> {
+        self.model_runtime.get_provider_origin(provider)
+    }
     pub fn get_upstream_model_id(&self, model: &Model) -> Option<String> {
         self.model_runtime
             .get_compatibility_request_config(model)
@@ -274,6 +278,14 @@ impl ModelRegistry {
                 blocked: account.blocked,
                 pinned: account.pinned,
                 unused: account.unused,
+                blocked_models: account
+                    .blocked_models
+                    .into_iter()
+                    .map(|block| maho_ext_api::CredentialAccountBlockedModel {
+                        model: block.model,
+                        until: block.until,
+                    })
+                    .collect(),
                 source: match account.source {
                     crate::credential_accounts::CredentialAccountSource::Login => {
                         maho_ext_api::CredentialAccountSource::Login
@@ -344,6 +356,28 @@ impl ModelRegistry {
         )
         .await
         .map(|_| ())
+    }
+    /// senpi `orderCredentialAccounts`: sets the provider's account order (`None` clears it) under the same
+    /// account mutation a pin or remove holds.
+    pub async fn order_credential_accounts(
+        &self,
+        provider: &str,
+        names: Option<&[String]>,
+        agent_dir: &str,
+    ) -> Result<(), String> {
+        let _mutation = self.auth_storage.account_mutation.lock().await;
+        let repository = crate::credential_pool::state_store::CredentialSlotRepository::new(
+            &crate::credential_pool::state_store::credential_pool_state_path(agent_dir),
+        );
+        crate::credential_account_order::order_credential_accounts(
+            &self.auth_storage,
+            provider,
+            names,
+            &|key| std::env::var(key).ok(),
+            &repository,
+            maho_ai::utils::diagnostics::now_ms().max(0) as u64,
+        )
+        .await
     }
     pub async fn remove_credential_account(
         &self,

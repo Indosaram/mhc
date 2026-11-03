@@ -427,6 +427,25 @@ pub fn purge_opted_out_storage(
     );
 }
 
+/// The persisted-opt-out half of the OTLP cleanup: this lightweight path, never the OTLP exporter.
+pub fn purge_senpi_otlp_spool_on_opt_out(
+    env: &telemetry_core::TelemetryEnv,
+    is_pid_alive: Option<crate::session_summary_liveness::PidProbe>,
+    diagnostics: Option<TelemetryDiagnostics>,
+) {
+    let spool_root = crate::index::get_senpi_agent_dir(env);
+    telemetry_core::purge_idle_otlp_spool(&telemetry_core::PurgeIdleOtlpSpoolInput {
+        opt_out: telemetry_core::PurgeOptOutInput {
+            diagnostics,
+            source: None,
+            spool_dir: spool_root.join("omo-senpi").join("otlp"),
+            spool_root,
+        },
+        is_pid_alive,
+        now_ms: None,
+    });
+}
+
 /// The recorder's whole recovery side, built once on first use.
 pub struct RecoveryRuntime {
     pub recovery: Arc<SummaryRecovery>,

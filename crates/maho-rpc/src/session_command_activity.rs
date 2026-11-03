@@ -2,6 +2,7 @@ pub fn refreshes_session_activity(command: &str) -> bool {
     !matches!(
         command,
         "get_state"
+            | "get_snapshot"
             | "get_effect_status"
             | "get_pending_inputs"
             | "get_messages"

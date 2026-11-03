@@ -69,6 +69,7 @@ async fn session_start_returns_before_sweep_finishes_and_reports_failure() {
         },
     );
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent {
+        sizes_only: false,
         reason: SessionReason::New,
         initial_model_provenance: None,
         previous_session_file: None,

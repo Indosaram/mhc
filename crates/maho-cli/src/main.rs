@@ -157,6 +157,16 @@ fn run() -> Result<(), String> {
     // resolve the brand before scrubbing it, mark the agent, and enter offline mode.
     let _ = maho_core::brand::brand_profile();
     let startup_env = maho_core::config::current_env();
+    // senpi cli.ts `dispatchAgentDirectoryCommand`: answered before settings, migrations, extensions
+    // or hosts, and before the process env is rewritten.
+    if let Some((record, code)) = maho_cli::cli::agent_dir_command::agent_directory_command_output(
+        &argv,
+        &startup_env,
+        &maho_core::config::home_dir(),
+    ) {
+        output(&record)?;
+        std::process::exit(code);
+    }
     maho_process_env::apply(
         &startup_env,
         &maho_cli::cli::setup::startup_process_env(&argv, &startup_env),

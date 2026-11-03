@@ -31,8 +31,9 @@ pub use mutate::{
     apply_agreement_records, apply_agreement_records_with_receipts, drop_agreement,
 };
 pub use notice_watermark::{
-    AGREEMENTS_NOTICE_WATERMARK_FILENAME, AgreementsNoticeError, ConsumeAgreementsNoticeOptions,
-    consume_agreements_notice_delta,
+    AGREEMENTS_NOTICE_WATERMARK_FILENAME, AgreementsNoticeError, AgreementsWarnSink,
+    ConsumeAgreementsNoticeOptions, consume_agreements_notice_delta,
+    consume_agreements_notice_delta_with_warn,
 };
 pub use record::{
     AgreementRecordValidationError, agreement_text_problem, clean_agreement_text,

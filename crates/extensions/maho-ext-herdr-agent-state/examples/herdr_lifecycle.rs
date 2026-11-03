@@ -160,6 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     runner
         .emit(ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::Startup,
             initial_model_provenance: None,
             previous_session_file: None,

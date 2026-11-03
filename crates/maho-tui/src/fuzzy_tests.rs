@@ -66,6 +66,24 @@ fn matches_adjacent_swapped_alpha_numeric_characters() {
 }
 
 #[test]
+fn fuzzymatchlower_scores_pre_lowered_inputs_exactly_like_fuzzymatch() {
+    let pairs = [
+        ("ABC", "xAbC"),
+        ("Resume", "Senpi RESUME faster"),
+        ("Codex52", "GPT-5.2-Codex"),
+        ("gpt5A", "GPT-A5"),
+        ("Test", "test"),
+        ("zzz", "ABC"),
+    ];
+    for (query, text) in pairs {
+        assert_eq!(
+            fuzzy_match_lower(&query.to_lowercase(), &text.to_lowercase()),
+            fuzzy_match(query, text)
+        );
+    }
+}
+
+#[test]
 fn empty_query_returns_all_items_unchanged() {
     let items = ["apple", "banana", "cherry"];
     assert_eq!(fuzzy_filter(&items, "", identity), items);

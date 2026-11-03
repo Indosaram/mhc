@@ -9,6 +9,7 @@ pub mod tool_adapter;
 pub mod lifecycle_adapter;
 pub mod command;
 pub mod stop_adapter;
+pub mod stop_lifecycle;
 pub mod index;
 pub use index::HooksExtension;
 pub mod handler;

@@ -469,7 +469,29 @@ fn guide_command(
     })
 }
 
+/// The slice of the host tool context the workflow tool reads: the model the parent session runs now.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DagToolContext {
+    pub model: Option<DagToolModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DagToolModel {
+    pub provider: String,
+    pub id: String,
+}
+
 pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResult, ToolError> {
+    run_dag_tool_in_context(deps, input, None)
+}
+
+/// `runDagTool(deps, params, context)`: start captures the parent model as the run's
+/// `parentModel`, so every category node keeps it as its last fallback rung (#10783).
+pub fn run_dag_tool_in_context(
+    deps: &DagToolDeps,
+    input: DagToolInput,
+    context: Option<&DagToolContext>,
+) -> Result<ToolResult, ToolError> {
     if input.action == "start" {
         let Some(definition) = input.definition else {
             return Ok(failure(
@@ -494,6 +516,9 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
             },
             parent_session_id: (deps.parent_session_id)(),
             root_session_id: (deps.root_session_id)(),
+            parent_model: context
+                .and_then(|context| context.model.as_ref())
+                .map(|model| format!("{}/{}", model.provider, model.id)),
         }) {
             Ok(result) => result,
             Err(error) => return Ok(manager_failure(error)),
@@ -982,6 +1007,15 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
             let deps = deps.clone();
             Box::pin(async move {
                 let input: DagToolInput = serde_json::from_value(call.params)?;
+                let context = DagToolContext {
+                    model: call
+                        .context
+                        .and_then(|context| context.model())
+                        .map(|model| DagToolModel {
+                            provider: model.provider.clone(),
+                            id: model.id.clone(),
+                        }),
+                };
                 // TS awaits these actions; `wait` (and scheduler bookkeeping) block on condvars here, so run
                 // them off the async executor. Blocking a current-thread runtime stalls its I/O driver,
                 // which the in-process children's provider streams depend on, and deadlocks the run.
@@ -994,7 +1028,9 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
                 if call.signal.is_aborted() { cancellation.cancel(); }
                 let worker_cancellation = cancellation.clone();
                 let mut worker = tokio::task::spawn_blocking(move || {
-                    senpi_task::dag::handle::with_dag_wait_cancellation(worker_cancellation, || run_dag_tool(&deps, input))
+                    senpi_task::dag::handle::with_dag_wait_cancellation(worker_cancellation, || {
+                        run_dag_tool_in_context(&deps, input, Some(&context))
+                    })
                 });
                 let result = tokio::select! {
                     result = &mut worker => result,

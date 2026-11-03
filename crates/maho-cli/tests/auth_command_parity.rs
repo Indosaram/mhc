@@ -22,3 +22,29 @@ fn credential_commands_parse_and_reject_invalid_arguments() {
     assert!(parse_auth_command(&args(&["auth", "print-api-key", "--min-expiry", "30m"])).is_err());
     assert!(validate_auth_command_args(&parse_args(&[], false).expect("args"), AuthCommandKind::ApiKey).is_err());
 }
+
+// senpi credential-print.test.ts and auth-check.test.ts parseAuthCommand / isAuthCommandHelp cases.
+#[test]
+fn upstream_bearer_min_expiry_check_flags_and_help_recognition() {
+    use maho_cli::cli::auth_command::is_auth_command_help;
+    let args = |values: &[&str]| values.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+    let bearer = parse_auth_command(&args(&["auth", "print-bearer-token"])).expect("parse").expect("command");
+    assert!(bearer.kind == AuthCommandKind::BearerToken);
+    assert_eq!(bearer.min_expiry_ms, None);
+    let expiring = parse_auth_command(&args(&["auth", "print-bearer-token", "--min-expiry", "30m"])).expect("parse").expect("command");
+    assert!(expiring.args.is_empty());
+    assert_eq!(expiring.min_expiry_ms, Some(30 * 60_000));
+    let error = parse_auth_command(&args(&["auth", "print-api-key", "--min-expiry", "30m"])).err().expect("refused");
+    assert!(error.contains("only supported by print-bearer-token"), "{error}");
+    let check = parse_auth_command(&args(&["auth", "check", "--provider", "openai"])).expect("parse").expect("command");
+    assert!(check.kind == AuthCommandKind::Check);
+    assert_eq!(check.args, args(&["--provider", "openai"]));
+    assert!(!check.json && !check.credentials && !check.no_refresh);
+    let flagged = parse_auth_command(&args(&["auth", "check", "--json", "--credentials", "--no-refresh", "--provider", "openai"])).expect("parse").expect("command");
+    assert_eq!(flagged.args, args(&["--provider", "openai"]));
+    assert!(flagged.json && flagged.credentials && flagged.no_refresh);
+    for help in [&["auth", "--help"][..], &["auth", "print-api-key", "--help"], &["auth", "print-bearer-token", "-h"], &["auth", "check", "--help"]] {
+        assert!(is_auth_command_help(&args(help)), "{help:?}");
+    }
+    assert!(parse_auth_command(&args(&["login"])).expect("not auth").is_none());
+}

@@ -1,6 +1,7 @@
 [
   {
-    "kind": "call",
+    "name": "complete",
+    "kind": "result",
     "width": 20,
     "args": {
       "language": "js",
@@ -18,14 +19,130 @@
       "isError": false,
       "now": 2000
     },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
     "lines": [
-      "eval js",
-      "compute a value",
-      "print(41)",
-      "42"
+      "╶─ ✓ com… · eval js",
+      "   done"
     ]
   },
   {
+    "name": "complete",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s"
+    ]
+  },
+  {
+    "name": "complete",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s"
+    ]
+  },
+  {
+    "name": "complete",
     "kind": "result",
     "width": 20,
     "args": {
@@ -39,7 +156,7 @@
         "summary": "compute a value",
         "code": "print(41)\n42"
       },
-      "expanded": false,
+      "expanded": true,
       "hasResult": false,
       "isError": false,
       "now": 2000
@@ -80,8 +197,117 @@
     ]
   },
   {
-    "kind": "call",
+    "name": "complete",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete",
+    "kind": "result",
     "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete-throughput",
+    "kind": "result",
+    "width": 20,
     "args": {
       "language": "js",
       "summary": "compute a value",
@@ -98,14 +324,87 @@
       "isError": false,
       "now": 2000
     },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ],
+        "toolCallCount": 3,
+        "wallDurationMs": 1500
+      }
+    },
     "lines": [
-      "eval js",
-      "compute a value",
-      "print(41)",
-      "42"
+      "╶─ ✓ com… · eval js",
+      "   done"
     ]
   },
   {
+    "name": "complete-throughput",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ],
+        "toolCallCount": 3,
+        "wallDurationMs": 1500
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done"
+    ]
+  },
+  {
+    "name": "complete-throughput",
     "kind": "result",
     "width": 80,
     "args": {
@@ -144,6 +443,3532 @@
             "status": "complete",
             "durationMs": 1000
           }
+        ],
+        "toolCallCount": 3,
+        "wallDurationMs": 1500
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 3 calls · 2.00 calls/s · 1s"
+    ]
+  },
+  {
+    "name": "complete-throughput",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ],
+        "toolCallCount": 3,
+        "wallDurationMs": 1500
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ ·",
+      "│  3 calls · 2.00",
+      "│  calls/s · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete-throughput",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ],
+        "toolCallCount": 3,
+        "wallDurationMs": 1500
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 3 calls · 2.00",
+      "│  calls/s · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete-throughput",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ],
+        "toolCallCount": 3,
+        "wallDurationMs": 1500
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 3 calls · 2.00 calls/s · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete-reset-timeout",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 30
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 30
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ com… · eval js",
+      "   done"
+    ]
+  },
+  {
+    "name": "complete-reset-timeout",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 30
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 30
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s"
+    ]
+  },
+  {
+    "name": "complete-reset-timeout",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 30
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 30
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s · reset · timeout 30s"
+    ]
+  },
+  {
+    "name": "complete-reset-timeout",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 30
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 30
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ ·",
+      "│  reset · timeout",
+      "│  30s · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete-reset-timeout",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 30
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 30
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · reset · timeout 30s",
+      "│  · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "complete-reset-timeout",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 30
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 30
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · reset · timeout 30s · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "error",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: boom"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "Error: boom",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✗ com… · eval js",
+      "   error"
+    ]
+  },
+  {
+    "name": "error",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: boom"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "Error: boom",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✗ compute a value · eval js error"
+    ]
+  },
+  {
+    "name": "error",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: boom"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "Error: boom",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✗ compute a value · eval js error · 1s"
+    ]
+  },
+  {
+    "name": "error",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: boom"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "Error: boom",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js error ✗ ·",
+      "│  1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ Error: boom",
+      "╰─"
+    ]
+  },
+  {
+    "name": "error",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: boom"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "Error: boom",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js error ✗ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ Error: boom",
+      "╰─"
+    ]
+  },
+  {
+    "name": "error",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Error: boom"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "Error: boom",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js error ✗ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ Error: boom",
+      "╰─"
+    ]
+  },
+  {
+    "name": "cancelled-nosummary",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "output": "",
+            "status": "cancelled",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ × pri… · eval js",
+      "   cancelled"
+    ]
+  },
+  {
+    "name": "cancelled-nosummary",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "output": "",
+            "status": "cancelled",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ × print(41) · eval js cancelled · 1s"
+    ]
+  },
+  {
+    "name": "cancelled-nosummary",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "output": "",
+            "status": "cancelled",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ × print(41) · eval js cancelled · 1s"
+    ]
+  },
+  {
+    "name": "cancelled-nosummary",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "output": "",
+            "status": "cancelled",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js cancelled",
+      "│  × · 1s",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "cancelled-nosummary",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "output": "",
+            "status": "cancelled",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js cancelled × · 1s",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "cancelled-nosummary",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "output": "",
+            "status": "cancelled",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js cancelled × · 1s",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-empty",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ↗ com… · eval js",
+      "   detached"
+    ]
+  },
+  {
+    "name": "detached-empty",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ↗ compute a value · eval js detached"
+    ]
+  },
+  {
+    "name": "detached-empty",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ↗ compute a value · eval js detached · 1s"
+    ]
+  },
+  {
+    "name": "detached-empty",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value",
+      "│  · eval js",
+      "│  detached · 1s",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-empty",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value · eval js detached",
+      "│  · 1s",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-empty",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value · eval js detached · 1s",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-output",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ com… · eval js",
+      "│  detached",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 4 earlier output",
+      "│ lines",
+      "│ line 4",
+      "│ line 5",
+      "│ line 6",
+      "│ line 7",
+      "│ line 8",
+      "│ line 9",
+      "│ line 10",
+      "│ line 11",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-output",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value · eval js detached",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 4 earlier output lines",
+      "│ line 4",
+      "│ line 5",
+      "│ line 6",
+      "│ line 7",
+      "│ line 8",
+      "│ line 9",
+      "│ line 10",
+      "│ line 11",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-output",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value · eval js detached · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 4 earlier output lines",
+      "│ line 4",
+      "│ line 5",
+      "│ line 6",
+      "│ line 7",
+      "│ line 8",
+      "│ line 9",
+      "│ line 10",
+      "│ line 11",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-output",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value",
+      "│  · eval js",
+      "│  detached · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ line 0",
+      "│ line 1",
+      "│ line 2",
+      "│ line 3",
+      "│ line 4",
+      "│ line 5",
+      "│ line 6",
+      "│ line 7",
+      "│ line 8",
+      "│ line 9",
+      "│ line 10",
+      "│ line 11",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-output",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value · eval js detached",
+      "│  · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ line 0",
+      "│ line 1",
+      "│ line 2",
+      "│ line 3",
+      "│ line 4",
+      "│ line 5",
+      "│ line 6",
+      "│ line 7",
+      "│ line 8",
+      "│ line 9",
+      "│ line 10",
+      "│ line 11",
+      "╰─"
+    ]
+  },
+  {
+    "name": "detached-output",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "status": "detached",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ↗ compute a value · eval js detached · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ line 0",
+      "│ line 1",
+      "│ line 2",
+      "│ line 3",
+      "│ line 4",
+      "│ line 5",
+      "│ line 6",
+      "│ line 7",
+      "│ line 8",
+      "│ line 9",
+      "│ line 10",
+      "│ line 11",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "step(0)\nstep(1)\nstep(2)\nstep(3)\nstep(4)\nstep(5)\nstep(6)\nstep(7)\nstep(8)",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ com… · eval js",
+      "│  running",
+      "│ 4 earlier code",
+      "│ lines",
+      "│ step(4)",
+      "│ step(5)",
+      "│ step(6)",
+      "│ step(7)",
+      "│ step(8)",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "step(0)\nstep(1)\nstep(2)\nstep(3)\nstep(4)\nstep(5)\nstep(6)\nstep(7)\nstep(8)",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a v… · eval js running · 1s",
+      "│ 4 earlier code lines",
+      "│ step(4)",
+      "│ step(5)",
+      "│ step(6)",
+      "│ step(7)",
+      "│ step(8)",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "step(0)\nstep(1)\nstep(2)\nstep(3)\nstep(4)\nstep(5)\nstep(6)\nstep(7)\nstep(8)",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running · 1s",
+      "│ 4 earlier code lines",
+      "│ step(4)",
+      "│ step(5)",
+      "│ step(6)",
+      "│ step(7)",
+      "│ step(8)",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "step(0)\nstep(1)\nstep(2)\nstep(3)\nstep(4)\nstep(5)\nstep(6)\nstep(7)\nstep(8)",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value",
+      "│  · eval js running",
+      "│  · 1s",
+      "│ step(0)",
+      "│ step(1)",
+      "│ step(2)",
+      "│ step(3)",
+      "│ step(4)",
+      "│ step(5)",
+      "│ step(6)",
+      "│ step(7)",
+      "│ step(8)",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "step(0)\nstep(1)\nstep(2)\nstep(3)\nstep(4)\nstep(5)\nstep(6)\nstep(7)\nstep(8)",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running ·",
+      "│  1s",
+      "│ step(0)",
+      "│ step(1)",
+      "│ step(2)",
+      "│ step(3)",
+      "│ step(4)",
+      "│ step(5)",
+      "│ step(6)",
+      "│ step(7)",
+      "│ step(8)",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "step(0)\nstep(1)\nstep(2)\nstep(3)\nstep(4)\nstep(5)\nstep(6)\nstep(7)\nstep(8)",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running · 1s",
+      "│ step(0)",
+      "│ step(1)",
+      "│ step(2)",
+      "│ step(3)",
+      "│ step(4)",
+      "│ step(5)",
+      "│ step(6)",
+      "│ step(7)",
+      "│ step(8)",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-output",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a\nb\nc\nd\ne"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "a\nb\nc\nd\ne",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ com… · eval js",
+      "│  running",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "├─ output",
+      "│ 4 earlier output",
+      "│ lines",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-output",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a\nb\nc\nd\ne"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "a\nb\nc\nd\ne",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a v… · eval js running · 1s",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "├─ output",
+      "│ 4 earlier output lines",
+      "│ e",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-output",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a\nb\nc\nd\ne"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "a\nb\nc\nd\ne",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running · 1s",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "├─ output",
+      "│ 4 earlier output lines",
+      "│ e",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-output",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a\nb\nc\nd\ne"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "a\nb\nc\nd\ne",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value",
+      "│  · eval js running",
+      "│  · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ a",
+      "│ b",
+      "│ c",
+      "│ d",
+      "│ e",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-output",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a\nb\nc\nd\ne"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "a\nb\nc\nd\ne",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running ·",
+      "│  1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ a",
+      "│ b",
+      "│ c",
+      "│ d",
+      "│ e",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-output",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a\nb\nc\nd\ne"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "a\nb\nc\nd\ne",
+            "status": "running",
+            "startedAt": 500
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ a",
+      "│ b",
+      "│ c",
+      "│ d",
+      "│ e",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-status",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500,
+            "statusEvents": [
+              {
+                "op": "log",
+                "message": "one"
+              },
+              {
+                "op": "log",
+                "message": "two"
+              },
+              {
+                "op": "phase",
+                "title": "three"
+              },
+              {
+                "op": "log",
+                "message": "four"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ com… · eval js",
+      "│  running",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "├─ status",
+      "│ ├ … 3 earlier",
+      "│ └ • log four",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-status",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500,
+            "statusEvents": [
+              {
+                "op": "log",
+                "message": "one"
+              },
+              {
+                "op": "log",
+                "message": "two"
+              },
+              {
+                "op": "phase",
+                "title": "three"
+              },
+              {
+                "op": "log",
+                "message": "four"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a v… · eval js running · 1s",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "├─ status",
+      "│ ├ … 3 earlier status events",
+      "│ └ • log four",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-status",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500,
+            "statusEvents": [
+              {
+                "op": "log",
+                "message": "one"
+              },
+              {
+                "op": "log",
+                "message": "two"
+              },
+              {
+                "op": "phase",
+                "title": "three"
+              },
+              {
+                "op": "log",
+                "message": "four"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running · 1s",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "├─ status",
+      "│ ├ … 3 earlier status events",
+      "│ └ • log four",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-status",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500,
+            "statusEvents": [
+              {
+                "op": "log",
+                "message": "one"
+              },
+              {
+                "op": "log",
+                "message": "two"
+              },
+              {
+                "op": "phase",
+                "title": "three"
+              },
+              {
+                "op": "log",
+                "message": "four"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value",
+      "│  · eval js running",
+      "│  · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ status",
+      "│ ├ • log one",
+      "│ ├ • log two",
+      "│ ├ ◆ phase three",
+      "│ └ • log four",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-status",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500,
+            "statusEvents": [
+              {
+                "op": "log",
+                "message": "one"
+              },
+              {
+                "op": "log",
+                "message": "two"
+              },
+              {
+                "op": "phase",
+                "title": "three"
+              },
+              {
+                "op": "log",
+                "message": "four"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running ·",
+      "│  1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ status",
+      "│ ├ • log one",
+      "│ ├ • log two",
+      "│ ├ ◆ phase three",
+      "│ └ • log four",
+      "╰─"
+    ]
+  },
+  {
+    "name": "running-status",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "running",
+            "startedAt": 500,
+            "statusEvents": [
+              {
+                "op": "log",
+                "message": "one"
+              },
+              {
+                "op": "log",
+                "message": "two"
+              },
+              {
+                "op": "phase",
+                "title": "three"
+              },
+              {
+                "op": "log",
+                "message": "four"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ⠴ compute a value · eval js running · 1s",
+      "│ print(41)",
+      "│ 42",
+      "├─ status",
+      "│ ├ • log one",
+      "│ ├ • log two",
+      "│ ├ ◆ phase three",
+      "│ └ • log four",
+      "╰─"
+    ]
+  },
+  {
+    "name": "queued",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "queued",
+            "queuedBehind": [
+              "c1"
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ○ com… · eval js",
+      "│  queued",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "│ ",
+      "│ ",
+      "│ ",
+      "╰─"
+    ]
+  },
+  {
+    "name": "queued",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "queued",
+            "queuedBehind": [
+              "c1"
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ○ compute a value · eval js queued",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "│ ",
+      "│ ",
+      "│ ",
+      "╰─"
+    ]
+  },
+  {
+    "name": "queued",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "queued",
+            "queuedBehind": [
+              "c1"
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ○ compute a value · eval js queued · queued behind c1",
+      "│ print(41)",
+      "│ 42",
+      "│ ",
+      "│ ",
+      "│ ",
+      "│ ",
+      "╰─"
+    ]
+  },
+  {
+    "name": "queued",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "queued",
+            "queuedBehind": [
+              "c1"
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ○ compute a value",
+      "│  · eval js queued",
+      "│  · queued behind",
+      "│  c1",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "queued",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "queued",
+            "queuedBehind": [
+              "c1"
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ○ compute a value · eval js queued ·",
+      "│  queued behind c1",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "queued",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "",
+            "status": "queued",
+            "queuedBehind": [
+              "c1"
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ ○ compute a value · eval js queued · queued behind c1",
+      "│ print(41)",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "name": "two-cells",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          },
+          {
+            "index": 1,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "second",
+            "output": "bad",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ],
+        "jsonOutputs": [
+          {
+            "a": 1
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ com… · eval js",
+      "   done",
+      "",
+      "╶─ ✗ sec… · eval js",
+      "   error",
+      "",
+      "display[1]",
+      "└─ • a: 1"
+    ]
+  },
+  {
+    "name": "two-cells",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          },
+          {
+            "index": 1,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "second",
+            "output": "bad",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ],
+        "jsonOutputs": [
+          {
+            "a": 1
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s",
+      "",
+      "╶─ ✗ second · eval js error · 1s",
+      "",
+      "display[1]",
+      "└─ • a: 1"
+    ]
+  },
+  {
+    "name": "two-cells",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          },
+          {
+            "index": 1,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "second",
+            "output": "bad",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ],
+        "jsonOutputs": [
+          {
+            "a": 1
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s",
+      "",
+      "╶─ ✗ second · eval js error · 1s",
+      "",
+      "display[1]",
+      "└─ • a: 1"
+    ]
+  },
+  {
+    "name": "two-cells",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          },
+          {
+            "index": 1,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "second",
+            "output": "bad",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ],
+        "jsonOutputs": [
+          {
+            "a": 1
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ ·",
+      "│  1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─",
+      "",
+      "╭─ eval js error ✗ ·",
+      "│  1s",
+      "│ second",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ bad",
+      "╰─",
+      "",
+      "display[1]",
+      "└─ • a: 1"
+    ]
+  },
+  {
+    "name": "two-cells",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          },
+          {
+            "index": 1,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "second",
+            "output": "bad",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ],
+        "jsonOutputs": [
+          {
+            "a": 1
+          }
         ]
       }
     },
@@ -155,7 +3980,786 @@
       "├─ output",
       "│ 41",
       "│ 42",
-      "╰─"
+      "╰─",
+      "",
+      "╭─ eval js error ✗ · 1s",
+      "│ second",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ bad",
+      "╰─",
+      "",
+      "display[1]",
+      "└─ • a: 1"
+    ]
+  },
+  {
+    "name": "two-cells",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          },
+          {
+            "index": 1,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "second",
+            "output": "bad",
+            "status": "error",
+            "durationMs": 1000
+          }
+        ],
+        "jsonOutputs": [
+          {
+            "a": 1
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─",
+      "",
+      "╭─ eval js error ✗ · 1s",
+      "│ second",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ bad",
+      "╰─",
+      "",
+      "display[1]",
+      "└─ • a: 1"
+    ]
+  },
+  {
+    "name": "complete-agent",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000,
+            "statusEvents": [
+              {
+                "op": "agent",
+                "id": "scout",
+                "status": "completed",
+                "durationMs": 2000
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ com… · eval js",
+      "   done",
+      "└ ✓ scout done · 2s"
+    ]
+  },
+  {
+    "name": "complete-agent",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000,
+            "statusEvents": [
+              {
+                "op": "agent",
+                "id": "scout",
+                "status": "completed",
+                "durationMs": 2000
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s",
+      "└ ✓ scout done · 2s"
+    ]
+  },
+  {
+    "name": "complete-agent",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000,
+            "statusEvents": [
+              {
+                "op": "agent",
+                "id": "scout",
+                "status": "completed",
+                "durationMs": 2000
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╶─ ✓ compute a value · eval js done · 1s",
+      "└ ✓ scout done · 2s"
+    ]
+  },
+  {
+    "name": "complete-agent",
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000,
+            "statusEvents": [
+              {
+                "op": "agent",
+                "id": "scout",
+                "status": "completed",
+                "durationMs": 2000
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ ·",
+      "│  1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─",
+      "└ ✓ scout done · 2s"
+    ]
+  },
+  {
+    "name": "complete-agent",
+    "kind": "result",
+    "width": 40,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000,
+            "statusEvents": [
+              {
+                "op": "agent",
+                "id": "scout",
+                "status": "completed",
+                "durationMs": 2000
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─",
+      "└ ✓ scout done · 2s"
+    ]
+  },
+  {
+    "name": "complete-agent",
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "js",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "js",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000,
+            "statusEvents": [
+              {
+                "op": "agent",
+                "id": "scout",
+                "status": "completed",
+                "durationMs": 2000
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval js done ✓ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─",
+      "└ ✓ scout done · 2s"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 5
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 5
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js reset",
+      "timeout 5s",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 5
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 5
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js reset timeout 5s",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 5
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 5
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js reset",
+      "timeout 5s",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "summary": "compute a value",
+      "code": "print(41)\n42",
+      "reset": true,
+      "timeout": 5
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "summary": "compute a value",
+        "code": "print(41)\n42",
+        "reset": true,
+        "timeout": 5
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js reset timeout 5s",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "name": "call",
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "js",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "js",
+        "code": "print(41)\n42"
+      },
+      "expanded": true,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval js",
+      "print(41)",
+      "42"
     ]
   }
 ]

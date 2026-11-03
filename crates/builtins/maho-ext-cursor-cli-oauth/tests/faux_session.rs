@@ -507,6 +507,7 @@ async fn native_startup_probes_account_home_and_replaces_offline_catalog() {
                         );
                         let mut start = maho_ext_api::ExtensionEvent::SessionStart(
                             maho_ext_api::SessionStartEvent {
+                                sizes_only: false,
                                 reason: maho_ext_api::SessionReason::Reload,
                                 initial_model_provenance: None,
                                 previous_session_file: None,

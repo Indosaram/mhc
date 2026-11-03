@@ -188,12 +188,11 @@ impl MemoryRuntime {
                             &settings,
                             Some(&identity.identity),
                         )?;
-                    let runtime = maho_omo_memory::identity_runtime::MemoryIdentityRuntime {
-                        identity,
-                        store: worker.store.clone(),
-                        runner: Default::default(),
-                        sandbox: Default::default(),
-                    };
+                    let runtime =
+                        maho_omo_memory::identity_runtime::MemoryIdentityRuntime::with_store(
+                            identity,
+                            worker.store.clone(),
+                        );
                     let mut launch = |run| this.launch(worker.clone(), run, false);
                     let aborted = || {
                         signal
@@ -868,6 +867,12 @@ impl MemoryRuntime {
                 identity_str,
             )
         });
+        let this = self.clone();
+        let write_notice_session: maho_omo_memory::tools::WriteNoticeSessionResolver =
+            Arc::new(move || {
+                this.context()
+                    .map(|context| context.session_manager.session_id().to_owned())
+            });
         let cwd = self.host.cwd.clone();
         let resolve_cwd = Arc::new(move || cwd.clone());
         let this = self.clone();
@@ -973,6 +978,7 @@ impl MemoryRuntime {
             resolve_context: resolve,
             resolve_tool_context: tools,
             write_notice: Some(write_notice),
+            write_notice_session: Some(write_notice_session),
             tool_exposure,
             resolve_cwd: resolve_cwd.clone(),
             captured_tools: self.host.captured_tools.clone(),
@@ -1959,6 +1965,7 @@ mod tests {
         {
             (handler)(
                 &mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,
@@ -2056,6 +2063,7 @@ mod tests {
         {
             (handler)(
                 &mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,
@@ -2117,6 +2125,7 @@ mod tests {
         {
             (handler)(
                 &mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                    sizes_only: false,
                     reason: maho_ext_api::SessionReason::Startup,
                     initial_model_provenance: None,
                     previous_session_file: None,
@@ -2192,7 +2201,7 @@ mod tests {
         assert!(registered);
         let context = test_context(session, &project_dir, &agent_dir);
         for handler in api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).expect("SessionStart handlers") {
-            (handler)(&mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None, attended: None }), &context).await.expect("session start dispatch");
+            (handler)(&mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { sizes_only: false, reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None, attended: None }), &context).await.expect("session start dispatch");
         }
         runtime.capture_context(&context);
         assert_eq!(runtime.identity(session).expect("bound identity").memory_write_denied, denied);

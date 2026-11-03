@@ -1,5 +1,6 @@
 //! In-memory and filesystem abstractions for memory-core.
 
+pub mod expiry;
 pub mod frontmatter;
 pub mod frontmatter_entries;
 pub mod frontmatter_scalar;
@@ -14,6 +15,7 @@ pub mod memory_hook_git;
 pub mod normalize;
 pub mod paths;
 
+pub use expiry::{is_memory_expired, memory_expires_at_ms};
 pub use frontmatter::{
     FrontmatterError, MemoryFrontmatter, ParsedMemoryFile, parse_memory_file, render_memory_file,
     sanitize_frontmatter_value,

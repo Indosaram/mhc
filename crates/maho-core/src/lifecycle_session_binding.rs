@@ -10,6 +10,10 @@ use std::sync::{
 pub trait LifecycleBindingHost: Send + Sync {
     fn event(&self, name: &str, data: Value);
     fn facts_failed(&self, error: String);
+    /// Binding restore, before any queued delivery is re-sent: the owner forwards this to
+    /// `SessionLifecycleController::mark_interrupted_from_custody(delivered)` so consumed work holds the reopened
+    /// session for a person (senpi#4204). `delivered` reports whether the transcript already holds a ticket's delivery.
+    fn mark_interrupted_from_custody(&self, _delivered: &dyn Fn(&str) -> bool) {}
 }
 pub struct LifecycleSessionBinding {
     pub session_id: String,
@@ -21,6 +25,8 @@ pub struct LifecycleSessionBinding {
     refresh_generation: AtomicU64,
     restored: bool,
     next_run_origin: Option<String>,
+    /// After `dispose` nothing is written or emitted: the session file is no longer this session's (senpi#4149).
+    disposed: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Drop for LifecycleSessionBinding {
     fn drop(&mut self) {
@@ -30,8 +36,11 @@ impl Drop for LifecycleSessionBinding {
 impl LifecycleSessionBinding {
     pub fn new(session: Arc<AgentSession>, host: Arc<dyn LifecycleBindingHost>) -> Self {
         let session_id = session.session_id();
+        let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let event_host = host.clone();
+        let event_disposed = disposed.clone();
         let session_subscription = session.subscribe(Arc::new(move |event| match event {
+            _ if event_disposed.load(Ordering::SeqCst) => {}
             maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentStart) => {
                 event_host.event("start_run", Value::Null)
             }
@@ -41,8 +50,13 @@ impl LifecycleSessionBinding {
             _ => {}
         }));
         let human_host = host.clone();
+        let human_disposed = disposed.clone();
         let unsubscribe_human = Some(Box::new(session.on_human_input_admitted(Arc::new(
-            move |event| human_host.event("human_input", json!({"at":event.at})),
+            move |event| {
+                if !human_disposed.load(Ordering::SeqCst) {
+                    human_host.event("human_input", json!({"at":event.at}))
+                }
+            },
         ))) as Box<dyn FnOnce() + Send>);
         let mut binding = Self {
             session_id,
@@ -54,6 +68,7 @@ impl LifecycleSessionBinding {
             refresh_generation: AtomicU64::new(0),
             restored: false,
             next_run_origin: None,
+            disposed,
         };
         binding.bind_fact_events();
         binding
@@ -69,6 +84,7 @@ impl LifecycleSessionBinding {
         ] {
             let host = self.host.clone();
             let session_id = self.session_id.clone();
+            let disposed = self.disposed.clone();
             self.subscriptions.push(self.session.on_extension_event(
                 channel,
                 Arc::new(move |data| {
@@ -86,6 +102,9 @@ impl LifecycleSessionBinding {
                     {
                         return;
                     }
+                    if disposed.load(Ordering::SeqCst) {
+                        return;
+                    }
                     host.event(channel, data.clone());
                 }),
             ));
@@ -98,12 +117,16 @@ impl LifecycleSessionBinding {
         self.restored
     }
     pub fn start_run(&mut self) {
-        self.host
-            .event("start_run", json!({"origin":self.next_run_origin.take()}));
+        let origin = self.next_run_origin.take();
+        if self.writable() {
+            self.host.event("start_run", json!({"origin":origin}));
+        }
     }
     pub fn refresh_facts(&self, facts: Value) {
         self.refresh_generation.fetch_add(1, Ordering::SeqCst);
-        self.host.event("goal_facts", facts);
+        if self.writable() {
+            self.host.event("goal_facts", facts);
+        }
     }
     pub fn consumed_entry(&self, message: &Value) -> Option<String> {
         if message["role"] != "custom" {
@@ -112,7 +135,7 @@ impl LifecycleSessionBinding {
         let ticket = message.pointer("/details/ticketId")?.as_str()?;
         self.session.with_session_manager(|manager| {
             manager
-                .entries()
+                .entries_of_types(&["custom_message"])
                 .iter()
                 .find(|entry| {
                     entry["type"] == "custom_message"
@@ -122,13 +145,18 @@ impl LifecycleSessionBinding {
                 .and_then(|entry| entry["id"].as_str().map(str::to_owned))
         })
     }
+    /// senpi `write(record)`: the single gate every write this binding makes passes; a disposed binding writes
+    /// nothing.
+    fn writable(&self) -> bool {
+        !self.disposed.load(Ordering::SeqCst)
+    }
     pub fn consume(&self, message: &Value, run_id: &str) -> Option<String> {
-        if message["role"] != "custom" {
+        if !self.writable() || message["role"] != "custom" {
             return None;
         }
         let ticket = message.pointer("/details/ticketId")?.as_str()?;
         self.session.with_session_manager_mut(|manager| {
-            let entries = manager.entries();
+            let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let record = entries.iter().rev().find(|entry| {
                 entry["customType"] == "work-custody"
                     && entry.pointer("/data/ticketId").and_then(Value::as_str) == Some(ticket)
@@ -165,15 +193,26 @@ impl LifecycleSessionBinding {
         })
     }
     pub fn idle(&self) {
-        self.host.event("idle", Value::Null);
+        if self.writable() {
+            self.host.event("idle", Value::Null);
+        }
     }
     /// Recover consumed deliveries without executing any tool a second time.
     pub async fn restore(&mut self) -> Result<(), String> {
-        if self.restored {
+        if self.restored || !self.writable() {
             return Ok(());
         }
+        let delivered: std::collections::HashSet<String> = self.session.with_session_manager(|manager| {
+            manager
+                .entries()
+                .iter()
+                .filter(|entry| entry["type"] == "custom_message")
+                .filter_map(|entry| entry.pointer("/details/ticketId").and_then(Value::as_str).map(str::to_owned))
+                .collect()
+        });
+        self.host.mark_interrupted_from_custody(&|ticket| delivered.contains(ticket));
         self.session.with_session_manager_mut(|manager| {
-            let entries = manager.entries();
+            let entries = manager.entries_of_types(&["custom", "custom_message"]);
             let mut custody = std::collections::BTreeMap::new();
             for entry in &entries {
                 if entry["customType"] == "work-custody" && entry.pointer("/data/sessionId").and_then(Value::as_str) == Some(self.session_id.as_str())
@@ -194,7 +233,7 @@ impl LifecycleSessionBinding {
         self.host.event("restore_complete", Value::Null);
         let queued = self.session.with_session_manager(|manager| {
             let mut records = std::collections::BTreeMap::new();
-            for entry in manager.entries() {
+            for entry in manager.entries_of_types(&["custom"]) {
                 if entry["customType"] == "work-custody"
                     && entry.pointer("/data/sessionId").and_then(Value::as_str)
                         == Some(self.session_id.as_str())
@@ -208,6 +247,10 @@ impl LifecycleSessionBinding {
                 .collect::<Vec<_>>()
         });
         for record in queued {
+            // dispose() may land while a recovered delivery is re-sent; a disposed binding restores nothing.
+            if !self.writable() {
+                return Ok(());
+            }
             let message = &record["payload"]["message"];
             let content = serde_json::from_value(message["content"].clone())
                 .map_err(|error| error.to_string())?;
@@ -238,6 +281,7 @@ impl LifecycleSessionBinding {
         Ok(())
     }
     pub fn dispose(&mut self) {
+        self.disposed.store(true, Ordering::SeqCst);
         self.refresh_generation.fetch_add(1, Ordering::SeqCst);
         self.subscriptions.clear();
         self.session_subscription.take();

@@ -10,5 +10,10 @@ maho-ai = { path = "../../maho-ai" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-core = { path = "../../maho-core" }
 
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true

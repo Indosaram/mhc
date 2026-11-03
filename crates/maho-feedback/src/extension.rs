@@ -7,8 +7,10 @@ use crate::reports::{
     ConfigLoader, Host, HttpRequest, HttpResponse, LiveSession, PrepareRequest, Redacted, Redactor,
     Reports, Store, Transport, shared_store,
 };
+use crate::signin::SignInStore;
 use maho_ext_api::{
-    EventKind, EventResult, Extension, ExtensionApi, ExtensionContext, ExtensionEvent,
+    ComponentLogger, EventKind, EventResult, Extension, ExtensionApi, ExtensionContext,
+    ExtensionEvent,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,6 +31,9 @@ pub struct FeedbackExtension {
     pub store: Arc<Store>,
     /// Intake transport; [`http_transport`] by default.
     pub transport: Transport,
+    /// Stored CLI sign-in of the service API origin. `None` (the MIT profile) keeps the
+    /// caller-supplied token or none.
+    pub sign_in: Option<Arc<dyn SignInStore>>,
 }
 
 impl std::fmt::Debug for FeedbackExtension {
@@ -47,6 +52,7 @@ impl Default for FeedbackExtension {
             product_version: env!("CARGO_PKG_VERSION").into(),
             store: shared_store(),
             transport: http_transport(),
+            sign_in: None,
         }
     }
 }
@@ -76,6 +82,11 @@ pub fn http_transport() -> Transport {
             let client = reqwest::Client::new();
             let mut builder = client.post(&request.url).body(request.body);
             for (name, value) in &request.headers {
+                // reqwest sets `content-length` from these same body bytes; adding it again
+                // would send the header twice.
+                if name.eq_ignore_ascii_case("content-length") {
+                    continue;
+                }
                 builder = builder.header(name.as_str(), value.as_str());
             }
             let response = builder.send().await.map_err(|error| error.to_string())?;
@@ -142,7 +153,12 @@ impl Shared {
         }))
     }
 
-    fn reports(&self, cwd: Option<&Path>, agent_dir: Option<&Path>) -> Reports {
+    fn reports(
+        &self,
+        cwd: Option<&Path>,
+        agent_dir: Option<&Path>,
+        logger: Option<Arc<dyn ComponentLogger>>,
+    ) -> Reports {
         let agent_dir = self
             .config
             .agent_dir
@@ -174,6 +190,7 @@ impl Shared {
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             kernel: crate::collect::kernel_release(),
+            logger,
         };
         Reports::new(host, Arc::clone(&self.config.store))
     }
@@ -201,11 +218,16 @@ fn register_command(api: &mut ExtensionApi, shared: &Arc<Shared>, kind: ReportKi
             let shared = Arc::clone(&shared);
             Box::pin(async move {
                 let backend = ReportsBackend {
-                    reports: shared.reports(Some(ctx.cwd.as_path()), Some(ctx.agent_dir.as_path())),
+                    reports: shared.reports(
+                        Some(ctx.cwd.as_path()),
+                        Some(ctx.agent_dir.as_path()),
+                        ctx.logger.clone(),
+                    ),
                     request: PrepareRequest {
                         session: Some(live_session(ctx)),
                         ..PrepareRequest::default()
                     },
+                    sign_in: shared.config.sign_in.clone(),
                 };
                 flow::run(kind, args, &SessionUi(ctx.ui.as_ref()), &backend).await;
                 Ok(())
@@ -236,7 +258,7 @@ impl Extension for FeedbackExtension {
             PREPARE_RPC,
             Arc::new(move |input| {
                 let shared = Arc::clone(&prepare);
-                Box::pin(async move { Ok(shared.reports(None, None).prepare_json(&input)) })
+                Box::pin(async move { Ok(shared.reports(None, None, None).prepare_json(&input)) })
             }),
         ) {
             maho_ext_api::diagnostic(&format!("feedback: {}", error.message));
@@ -247,7 +269,9 @@ impl Extension for FeedbackExtension {
             SUBMIT_RPC,
             Arc::new(move |input| {
                 let shared = Arc::clone(&submit);
-                Box::pin(async move { Ok(shared.reports(None, None).submit_json(&input).await) })
+                Box::pin(
+                    async move { Ok(shared.reports(None, None, None).submit_json(&input).await) },
+                )
             }),
         ) {
             maho_ext_api::diagnostic(&format!("feedback: {}", error.message));

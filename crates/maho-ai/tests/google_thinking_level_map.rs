@@ -324,3 +324,102 @@ async fn uses_mapped_google_vertex_levels_for_token_budgets() {
         json!({ "includeThoughts": true, "thinkingBudget": 4321 })
     );
 }
+
+fn map_less(api: &str, provider: &str, id: &str) -> Model {
+    let mut model = model_with(api, provider, id);
+    model.reasoning = true;
+    model.thinking_level_map = None;
+    model
+}
+
+const ADAPTERS: [(&str, &str); 2] = [
+    ("google-generative-ai", "test-google"),
+    ("google-vertex", "test-vertex"),
+];
+
+#[test]
+fn offers_only_low_medium_and_high_for_a_map_less_gemini_4_argon() {
+    for (api, provider) in ADAPTERS {
+        assert_eq!(
+            maho_ai::models::get_supported_thinking_levels(&map_less(
+                api,
+                provider,
+                "gemini-4-argon"
+            )),
+            vec![
+                ModelThinkingLevel::Low,
+                ModelThinkingLevel::Medium,
+                ModelThinkingLevel::High
+            ],
+            "{api}"
+        );
+    }
+}
+
+#[test]
+fn keeps_off_and_minimal_for_a_map_less_gemini_2_5_flash() {
+    for (api, provider) in ADAPTERS {
+        let levels = maho_ai::models::get_supported_thinking_levels(&map_less(
+            api,
+            provider,
+            "gemini-2.5-flash",
+        ));
+        assert_eq!(
+            levels[..2],
+            [ModelThinkingLevel::Off, ModelThinkingLevel::Minimal],
+            "{api}"
+        );
+    }
+}
+
+#[test]
+fn treats_generation_4_and_later_ids_as_generation_4_or_later() {
+    use maho_ai::models::google_thinking_generation::is_google_generation_4_or_later_model_id;
+    for id in [
+        "gemini-4",
+        "gemini-4-argon",
+        "gemini-4.5-pro",
+        "models/gemini-4-argon",
+        "gemini-10-x",
+    ] {
+        assert!(is_google_generation_4_or_later_model_id(id), "{id}");
+    }
+}
+
+#[test]
+fn does_not_treat_other_ids_as_generation_4_or_later() {
+    use maho_ai::models::google_thinking_generation::is_google_generation_4_or_later_model_id;
+    for id in [
+        "xgemini-4-argon",
+        "gemini-40b",
+        "gemini-embedding-4-001",
+        "gemini-2.5-pro",
+    ] {
+        assert!(!is_google_generation_4_or_later_model_id(id), "{id}");
+    }
+}
+
+#[tokio::test]
+async fn disables_gemini_2_5_thinking_when_reasoning_is_omitted_on_google_generative_ai() {
+    let model = thinking_model(
+        "google-generative-ai",
+        "test-google",
+        "gemini-2.5-flash",
+        &[],
+    );
+    let payload = capture_google_payload(&model, ModelThinkingLevel::Off, None).await;
+    assert_eq!(
+        payload["config"]["thinkingConfig"],
+        json!({ "thinkingBudget": 0 })
+    );
+}
+
+#[tokio::test]
+async fn disables_gemini_2_5_thinking_when_reasoning_is_omitted_on_google_vertex() {
+    let model = thinking_model("google-vertex", "test-vertex", "gemini-2.5-flash", &[]);
+    let payload = capture_vertex_payload(&model, ModelThinkingLevel::Off, None).await;
+    assert_eq!(
+        payload["config"]["thinkingConfig"],
+        json!({ "thinkingBudget": 0 })
+    );
+}

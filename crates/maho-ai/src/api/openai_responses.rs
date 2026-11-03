@@ -49,9 +49,9 @@ use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::error_body::{
     SdkErrorShape, ThrownProviderError, format_provider_error, normalize_provider_error,
 };
-use crate::utils::event_stream::{
-    AssistantMessageEventStream, create_assistant_message_event_stream,
-};
+use crate::utils::event_stream::AssistantMessageEventStream;
+#[cfg(test)]
+use crate::utils::event_stream::create_assistant_message_event_stream;
 use crate::utils::headers::headers_to_record;
 use crate::utils::lazy::error_stream;
 use crate::utils::pi_user_agent::get_pi_user_agent;
@@ -146,7 +146,7 @@ pub(crate) fn apply_responses_failure(output: &mut AssistantMessage, error: &Res
             ..
         } => {
             output.provider_diagnostic = diagnostic.clone();
-            output.error_cause = *error_cause;
+            output.error_cause = error_cause.clone();
         }
         ResponsesApiError::Http { status_code, body }
         | ResponsesApiError::HttpWithHeaders {
@@ -568,6 +568,7 @@ pub fn format_openai_responses_error(error: &ResponsesApiError, provider: &str) 
 fn create_output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         prompt_cache_breakpoint: None,
         prompt_cache_diagnostics: None,
@@ -1840,7 +1841,7 @@ pub fn stream(
         }),
     );
     let context = &resolved_context;
-    let stream = create_assistant_message_event_stream();
+    let stream = crate::utils::event_stream::AssistantMessageEventStream::with_capture_blocks(true);
     let model = model.clone();
     let context = context.clone();
     let options = options.unwrap_or_default();

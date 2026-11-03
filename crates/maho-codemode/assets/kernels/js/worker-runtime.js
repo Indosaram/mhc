@@ -9,6 +9,7 @@ import { createWorkerMemory } from "./worker-memory.js";
 import { awaitMaybePromise, indirectEval, wrapUserCode } from "./worker-indirect-eval.js";
 import { installShellCapture } from "./worker-shell-capture.js";
 import { createWorkpool } from "./workpool.js";
+import { bindKernelBun } from "./worker-webview.js";
 import { createHandleHelpers } from "./handles.js";
 import { inKernelToolInvoke } from "./kernel-tools-context.js";
 import { kernelToolError } from "./kernel-tools-errors.js";
@@ -77,7 +78,7 @@ export class JsWorkerRuntime {
 				({ prelude, code: cellCode } = prepared);
 			}
 			if (prelude) indirectEval(prelude, `${cellId}:prelude`);
-			const value = await awaitMaybePromise(indirectEval(wrapUserCode(cellCode), cellId));
+			const value = await awaitMaybePromise(indirectEval(bindKernelBun(wrapUserCode(cellCode)), cellId));
 			await this.#drainPendingDisplays();
 			this.#lastMemoryReport = { memory: this.#memory?.afterCell() };
 			return value;
@@ -160,6 +161,7 @@ export class JsWorkerRuntime {
 		globalThis.tool = createToolNamespace(
 			(fn, metadata) => this.#tools.define(fn, metadata),
 			async (name, args) => await this.#callTool(name, args),
+			{ defined: () => this.#tools.defined(), undefine: (name) => this.#tools.undefine(name) },
 		);
 		globalThis.tools = globalThis.tool;
 		const originalLog = console.log.bind(console);

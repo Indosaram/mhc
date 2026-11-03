@@ -10,7 +10,10 @@ use crate::skills::{FileReadTool, Skill, format_skills_for_prompt};
 pub struct ContextFile {
     pub path: String,
     pub content: String,
+    /// `Some(User)` for the user's own standing instruction files (senpi `ContextFile.scope`).
+    pub scope: Option<ContextFileScope>,
 }
+pub use maho_ext_api::ContextFileScope;
 
 /// `BuildSystemPromptOptions`.
 #[derive(Debug, Clone, Default)]
@@ -266,7 +269,7 @@ mod tests {
 
     #[test]
     fn context_files_and_appends_land_in_both_branches() {
-        let context = vec![ContextFile { path: "/work/AGENTS.md".to_string(), content: "rules".to_string() }];
+        let context = vec![ContextFile { path: "/work/AGENTS.md".to_string(), content: "rules".to_string(), scope: None }];
         let prompt = build_system_prompt(&BuildSystemPromptOptions {
             cwd: "/work".to_string(),
             context_files: Some(context.clone()),

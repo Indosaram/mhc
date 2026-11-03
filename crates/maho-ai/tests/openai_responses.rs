@@ -144,6 +144,7 @@ fn azure_model() -> Model {
 fn output(model: &Model) -> AssistantMessage {
     AssistantMessage {
         failure_source: None,
+        credential_served_recently: None,
         timing: None,
         thinking_level: None,
         provider_diagnostic: None,

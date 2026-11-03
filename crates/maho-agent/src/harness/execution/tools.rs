@@ -95,7 +95,16 @@ pub struct FinalizedToolCall {
 }
 
 pub fn create_error_tool_result(message: &str) -> AgentToolResult {
-    AgentToolResult::text(message)
+    AgentToolResult {
+        content: vec![ContentBlock::text(message)],
+        details: Value::Null,
+        structured_content: None,
+        usage: None,
+        nested_calls: None,
+        added_tool_names: None,
+        terminate: None,
+        is_error: None,
+    }
 }
 
 fn immediate_error(tool_call: ToolCall, message: &str, terminate: bool) -> ImmediateToolOutcome {
@@ -232,8 +241,9 @@ pub async fn execute_tool_call<TContext: Clone>(
     .await;
     accepting_updates.store(false, std::sync::atomic::Ordering::SeqCst);
     Ok(match result {
-        Ok(result) => {
-            ExecutedToolCall { result, is_error: false }
+        Ok(result) => ExecutedToolCall {
+            result,
+            is_error: false,
         },
         Err(error) => ExecutedToolCall {
             result: create_error_tool_result(&error),
@@ -280,7 +290,7 @@ pub fn finalize_tool_call<TContext>(
 pub fn tool_result_from_message(message: &ToolResultMessage, terminate: bool) -> AgentToolResult {
     AgentToolResult {
         content: message.content.clone(),
-        details: message.details.clone().unwrap_or(Value::Object(Map::new())),
+        details: message.details.clone().unwrap_or(Value::Null),
         structured_content: None,
         usage: message.usage,
         nested_calls: message.nested_calls.clone(),
@@ -295,7 +305,11 @@ pub fn create_tool_result_message(call: &FinalizedToolCall) -> ToolResultMessage
         tool_call_id: call.tool_call.id.clone(),
         tool_name: call.tool_call.name.clone(),
         content: call.result.content.clone(),
-        details: Some(call.result.details.clone()),
+        details: if call.result.details.is_null() {
+            None
+        } else {
+            Some(call.result.details.clone())
+        },
         usage: call.result.usage,
         added_tool_names: None,
         nested_calls: call.result.nested_calls.clone(),
@@ -400,5 +414,385 @@ mod tests {
         };
         assert_eq!(outcome.args, call.arguments);
         assert_eq!(outcome.tool_call, call);
+    }
+
+    // Port of senpi packages/agent/test/harness/execution-tools.test.ts.
+    mod execution_tools {
+        use super::super::*;
+        use crate::harness::context::BACKGROUND_CONTEXT;
+        use crate::harness::execution::effect_gate::{Cancellation, create_gate};
+        use serde_json::json;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        type Execute = AgentHarnessToolExecute<()>;
+        use crate::harness::types::AgentHarnessToolExecute;
+
+        fn echo_execute() -> Execute {
+            Arc::new(|_, args, _, _, _, _| {
+                Box::pin(async move {
+                    let value = args["value"].as_str().unwrap_or_default().to_owned();
+                    Ok(AgentToolResult {
+                        details: json!({ "value": value }),
+                        ..AgentToolResult::text(value)
+                    })
+                })
+            })
+        }
+
+        fn echo(
+            prepare: Option<crate::types::ToolArgumentShim>,
+            execute: Option<Execute>,
+        ) -> Arc<AgentHarnessTool<()>> {
+            Arc::new(AgentHarnessTool {
+                label: "Echo".into(),
+                prepare_arguments: prepare,
+                execute: execute.unwrap_or_else(echo_execute),
+                replay: None,
+                tool: serde_json::from_value(json!({
+                    "name": "echo",
+                    "description": "Echo input",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "value": { "type": "string" } },
+                        "required": ["value"]
+                    }
+                }))
+                .expect("tool"),
+            })
+        }
+
+        fn call(arguments: Value) -> ToolCall {
+            serde_json::from_value(
+                json!({ "id": "call-1", "name": "echo", "arguments": arguments }),
+            )
+            .expect("tool call")
+        }
+
+        fn text(result: &AgentToolResult) -> String {
+            result
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text(text) => Some(text.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn prepared(tool: Arc<AgentHarnessTool<()>>) -> PreparedToolCall<()> {
+            match prepare_tool_call(call(json!({ "value": "input" })), &[tool]) {
+                ToolCallPreparation::Prepared(prepared) => prepared,
+                ToolCallPreparation::Immediate(_) => panic!("expected prepared call"),
+            }
+        }
+
+        fn cleared(tool: Arc<AgentHarnessTool<()>>) -> ClearedToolCall<()> {
+            match apply_before_tool_decision(prepared(tool), None) {
+                ClearToolCallOutcome::Cleared(cleared) => cleared,
+                ClearToolCallOutcome::Immediate(_) => panic!("expected cleared call"),
+            }
+        }
+
+        fn immediate(outcome: ToolCallPreparation<()>) -> ImmediateToolOutcome {
+            match outcome {
+                ToolCallPreparation::Immediate(outcome) => outcome,
+                ToolCallPreparation::Prepared(_) => panic!("expected immediate outcome"),
+            }
+        }
+
+        struct Invocation;
+        impl AgentHarnessToolInvocation for Invocation {
+            fn invocation_id(&self) -> &str {
+                "result-1"
+            }
+            fn operation_id(&self) -> &str {
+                "operation-1"
+            }
+            fn turn_id(&self) -> &str {
+                "turn-1"
+            }
+            fn get_memo<'a>(
+                &'a self,
+                _: &'a str,
+            ) -> maho_ai::types::BoxFuture<'a, Option<JsonValue>> {
+                Box::pin(async { None })
+            }
+            fn set_memo<'a>(
+                &'a self,
+                _: &'a str,
+                _: Option<JsonValue>,
+            ) -> maho_ai::types::BoxFuture<'a, ()> {
+                Box::pin(async {})
+            }
+        }
+
+        fn ignore_updates() -> AgentHarnessToolUpdateCallback {
+            Arc::new(|_, _| {})
+        }
+
+        #[test]
+        fn prepares_arguments_before_validation_and_preserves_the_provider_call() {
+            let provider_call = call(json!({ "legacy": "prepared" }));
+            let prepare: crate::types::ToolArgumentShim =
+                Arc::new(|args| Ok(json!({ "value": args["legacy"].clone() })));
+            let ToolCallPreparation::Prepared(prepared) =
+                prepare_tool_call(provider_call.clone(), &[echo(Some(prepare), None)])
+            else {
+                panic!("expected prepared call");
+            };
+            assert_eq!(prepared.tool_call, provider_call);
+            assert_eq!(Value::Object(prepared.args), json!({ "value": "prepared" }));
+            assert_eq!(
+                Value::Object(provider_call.arguments),
+                json!({ "legacy": "prepared" })
+            );
+        }
+
+        #[test]
+        fn returns_immediate_errors_for_unknown_tools_preparation_throws_and_invalid_arguments() {
+            let unknown = immediate(prepare_tool_call(call(json!({ "value": "input" })), &[]));
+            let failing: crate::types::ToolArgumentShim =
+                Arc::new(|_| Err("cannot prepare".into()));
+            let preparation_failure = immediate(prepare_tool_call(
+                call(json!({ "value": "input" })),
+                &[echo(Some(failing), None)],
+            ));
+            let invalid = immediate(prepare_tool_call(call(json!({})), &[echo(None, None)]));
+            assert_eq!(text(&unknown.result), "Tool \"echo\" is unavailable");
+            assert_eq!(text(&preparation_failure.result), "cannot prepare");
+            assert!(text(&invalid.result).contains("Validation failed for tool \"echo\""));
+        }
+
+        #[test]
+        fn blocks_calls_and_revalidates_replacement_arguments() {
+            let blocked = apply_before_tool_decision(
+                prepared(echo(None, None)),
+                Some(BeforeToolDecision {
+                    args: None,
+                    block: Some(BlockDecision {
+                        reason: "denied".into(),
+                        terminate: Some(true),
+                    }),
+                }),
+            );
+            let ClearToolCallOutcome::Immediate(blocked) = blocked else {
+                panic!("expected blocked call");
+            };
+            assert!(blocked.is_error && blocked.terminate);
+            assert_eq!(text(&blocked.result), "denied");
+            let replaced = apply_before_tool_decision(
+                prepared(echo(None, None)),
+                Some(BeforeToolDecision {
+                    args: json!({ "value": "replacement" }).as_object().cloned(),
+                    block: None,
+                }),
+            );
+            let ClearToolCallOutcome::Cleared(replaced) = replaced else {
+                panic!("expected replacement");
+            };
+            assert_eq!(
+                Value::Object(replaced.args),
+                json!({ "value": "replacement" })
+            );
+            let invalid = apply_before_tool_decision(
+                prepared(echo(None, None)),
+                Some(BeforeToolDecision {
+                    args: Some(Map::new()),
+                    block: None,
+                }),
+            );
+            assert!(matches!(invalid, ClearToolCallOutcome::Immediate(_)));
+        }
+
+        #[tokio::test]
+        async fn executes_with_updates_passes_the_signal_and_ignores_late_updates() {
+            let (gate, _control) = create_gate();
+            let gate_signal = gate.signal();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let late: Arc<Mutex<Option<AgentHarnessToolUpdateCallback>>> =
+                Arc::new(Mutex::new(None));
+            let (counter, late_slot) = (calls.clone(), late.clone());
+            let execute: Execute = Arc::new(move |_, args, on_update, _, _, context| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let signal = context.abort_signal().expect("admitted signal");
+                assert!(signal.same_signal(&gate_signal));
+                on_update(
+                    AgentToolResult {
+                        details: json!({ "value": args["value"] }),
+                        ..AgentToolResult::text("partial")
+                    },
+                    None,
+                );
+                *late_slot.lock().expect("late") = Some(on_update);
+                Box::pin(async { Ok(AgentToolResult::text("done")) })
+            });
+            let updates = Arc::new(Mutex::new(Vec::new()));
+            let record = updates.clone();
+            let result = execute_tool_call(
+                cleared(echo(None, Some(execute))),
+                &gate,
+                Arc::new(move |update, _| record.lock().expect("updates").push(update)),
+                (),
+                Arc::new(Invocation),
+                BACKGROUND_CONTEXT.clone(),
+            )
+            .await
+            .expect("admitted");
+            let late_update = late.lock().expect("late").take().expect("late callback");
+            late_update(AgentToolResult::text("late"), None);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(!result.is_error);
+            assert_eq!(text(&result.result), "done");
+            let updates = updates.lock().expect("updates");
+            assert_eq!(updates.len(), 1);
+            assert_eq!(text(&updates[0]), "partial");
+        }
+
+        /// The TS sync/async throw pair collapses to one Rust case: a tool reports failure only
+        /// through its `Err` result (a panic is not a supported tool failure channel).
+        #[tokio::test]
+        async fn converts_tool_throws_to_error_output() {
+            let (gate, _control) = create_gate();
+            let execute: Execute =
+                Arc::new(|_, _, _, _, _, _| Box::pin(async { Err("tool failed".to_owned()) }));
+            let result = execute_tool_call(
+                cleared(echo(None, Some(execute))),
+                &gate,
+                ignore_updates(),
+                (),
+                Arc::new(Invocation),
+                BACKGROUND_CONTEXT.clone(),
+            )
+            .await
+            .expect("admitted");
+            assert!(result.is_error);
+            assert_eq!(text(&result.result), "tool failed");
+        }
+
+        #[tokio::test]
+        async fn lets_abort_first_gate_refusal_escape_without_invoking_the_tool() {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counter = calls.clone();
+            let execute: Execute = Arc::new(move |_, _, _, _, _, _| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(AgentToolResult::text("ran")) })
+            });
+            let (gate, control) = create_gate();
+            control.begin_abort(Cancellation::new());
+            let refusal = execute_tool_call(
+                cleared(echo(None, Some(execute))),
+                &gate,
+                ignore_updates(),
+                (),
+                Arc::new(Invocation),
+                BACKGROUND_CONTEXT.clone(),
+            )
+            .await
+            .expect_err("abort-first refusal");
+            assert!(matches!(refusal, GateRefusal::Abort(_)));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+
+        fn usage(input: u64, total: u64) -> Usage {
+            Usage {
+                input,
+                output: 2,
+                total_tokens: total,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn applies_patches_field_by_field_and_constructs_the_tool_result_message() {
+            let call = cleared(echo(None, None));
+            let executed = ExecutedToolCall {
+                result: AgentToolResult {
+                    details: json!({ "original": true }),
+                    usage: Some(usage(1, 3)),
+                    ..AgentToolResult::text("original")
+                },
+                is_error: true,
+            };
+            let finalized = finalize_tool_call(
+                &call,
+                executed,
+                Some(AfterToolPatch {
+                    content: Some(vec![ContentBlock::text("patched")]),
+                    details: Some(json!({ "patched": true })),
+                    usage: Some(usage(5, 7)),
+                    is_error: Some(false),
+                    terminate: Some(true),
+                }),
+            );
+            let before = now_ms();
+            let message = create_tool_result_message(&finalized);
+            assert!(!finalized.is_error && finalized.terminate);
+            assert_eq!(text(&finalized.result), "patched");
+            assert_eq!(finalized.result.details, json!({ "patched": true }));
+            assert_eq!(finalized.result.usage, Some(usage(5, 7)));
+            assert_eq!(finalized.result.terminate, Some(true));
+            assert_eq!(message.tool_call_id, "call-1");
+            assert_eq!(message.tool_name, "echo");
+            assert_eq!(message.content, vec![ContentBlock::text("patched")]);
+            assert_eq!(message.details, Some(json!({ "patched": true })));
+            assert_eq!(message.usage, Some(usage(5, 7)));
+            assert!(!message.is_error);
+            assert!(message.timestamp >= before);
+        }
+
+        #[test]
+        fn preserves_unusual_json_object_keys_in_tool_result_details() {
+            let call = cleared(echo(None, None));
+            let details: Value =
+                serde_json::from_str(r#"{"__proto__":{"preserved":true}}"#).expect("details");
+            let finalized = finalize_tool_call(
+                &call,
+                ExecutedToolCall {
+                    result: AgentToolResult {
+                        content: Vec::new(),
+                        details: details.clone(),
+                        ..AgentToolResult::text("")
+                    },
+                    is_error: false,
+                },
+                None,
+            );
+            let message = create_tool_result_message(&finalized);
+            assert!(
+                message
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.get("__proto__"))
+                    .is_some()
+            );
+            assert_eq!(message.details, Some(details));
+        }
+
+        /// `content: undefined` cannot be constructed in Rust; the closest untyped-tool shape is a
+        /// JSON result without `content`, which must normalize to an empty list.
+        #[test]
+        fn normalizes_missing_content_from_untyped_tools() {
+            let call = cleared(echo(None, None));
+            let untyped: Result<AgentToolResult, _> =
+                serde_json::from_value(json!({ "details": {} }));
+            let result = untyped.unwrap_or_else(|_| AgentToolResult {
+                content: Vec::new(),
+                ..AgentToolResult::text("")
+            });
+            let finalized = finalize_tool_call(
+                &call,
+                ExecutedToolCall {
+                    result,
+                    is_error: false,
+                },
+                None,
+            );
+            assert_eq!(
+                create_tool_result_message(&finalized).content,
+                Vec::<ContentBlock>::new()
+            );
+        }
     }
 }

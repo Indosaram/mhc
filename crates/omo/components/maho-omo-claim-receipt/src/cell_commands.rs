@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::invocations::{invoked_kinds, InvokedKind};
+use crate::invocations::{InvokedKind, invoked_kinds};
 
 /// The check kinds a cell can run: [`InvokedKind`] without the lookup kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -149,9 +149,10 @@ fn list_words(list: &str) -> Vec<String> {
         if let Some(found) = STRING_LITERAL.find(trimmed) {
             let literal = found.as_str();
             if let Some(prefix) = trimmed.strip_suffix(literal)
-                && LITERAL_PREFIX.is_match(prefix) {
-                    word = unquote(literal);
-                }
+                && LITERAL_PREFIX.is_match(prefix)
+            {
+                word = unquote(literal);
+            }
         }
         words.push(word);
     }
@@ -162,7 +163,7 @@ fn list_words(list: &str) -> Vec<String> {
 // element is itself a command line (`for c in ["bun test x", "tsgo"]: sh(c)`) every element is a
 // command line, and a [name, command] pair (`["typecheck", "bun run typecheck"]`) contributes its
 // command; a message argument inside an argv is never read.
-fn list_kinds(list: &str) -> Vec<CellCheckKind> {
+fn list_kinds(list: &str, nested_pair: bool) -> Vec<CellCheckKind> {
     let words = list_words(list);
     let first = words.first().cloned().unwrap_or_default();
     let second = words.get(1).cloned().unwrap_or_default();
@@ -171,7 +172,8 @@ fn list_kinds(list: &str) -> Vec<CellCheckKind> {
     }
     let quoted: Vec<String> = words.iter().map(|word| shell_quote(word)).collect();
     let mut kinds = check_kinds(&quoted.join(" "));
-    if words.len() == 2
+    if nested_pair
+        && words.len() == 2
         && WORD_CHARS.is_match(&first)
         && second.chars().any(char::is_whitespace)
     {
@@ -207,7 +209,10 @@ pub fn cell_invoked_kinds(code: &str) -> CellInvokedKinds {
                 &mut kinds,
                 &mut offset,
                 found_list.start(),
-                &list_kinds(found_list.as_str()),
+                &list_kinds(
+                    found_list.as_str(),
+                    NESTED_PAIR.is_match(before(code, found_list.start())),
+                ),
             );
         }
     }
@@ -245,14 +250,38 @@ mod tests {
     #[test]
     fn command_positions_count_and_text_positions_do_not() {
         assert_eq!(kinds("await sh(`bun test x`)"), vec!["test"]);
-        assert_eq!(kinds("await tool.bash({ command: 'bun test x' })"), vec!["test"]);
-        assert_eq!(kinds("const p = Bun.spawn(['gh', 'pr', 'checks', String(n)])"), vec!["test"]);
+        assert_eq!(
+            kinds("await tool.bash({ command: 'bun test x' })"),
+            vec!["test"]
+        );
+        assert_eq!(
+            kinds("const p = Bun.spawn(['gh', 'pr', 'checks', String(n)])"),
+            vec!["test"]
+        );
         assert_eq!(kinds("await sh(`cd ${WT} && bun test x`)"), vec!["test"]);
-        assert_eq!(kinds("print(\"run bun test later\")"), Vec::<&'static str>::new());
-        assert_eq!(kinds("await sh(`grep -c vitest log.txt`)"), Vec::<&'static str>::new());
+        assert_eq!(
+            kinds("print(\"run bun test later\")"),
+            Vec::<&'static str>::new()
+        );
+        assert_eq!(
+            kinds("await sh(`grep -c vitest log.txt`)"),
+            Vec::<&'static str>::new()
+        );
         assert_eq!(
             kinds("log(\"bun test passed\")\nconst label = \"tsc --noEmit\""),
             Vec::<&'static str>::new()
+        );
+    }
+
+    #[test]
+    fn a_two_element_runner_argv_is_not_a_nested_pair() {
+        assert_eq!(
+            kinds("Bun.spawn([\"typecheck\", \"bun run typecheck\"])"),
+            Vec::<&'static str>::new()
+        );
+        assert_eq!(
+            kinds("const steps = [[\"typecheck\", \"bun run typecheck\"]]"),
+            vec!["typecheck"]
         );
     }
 

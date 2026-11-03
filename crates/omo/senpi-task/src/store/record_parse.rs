@@ -133,6 +133,7 @@ pub fn parse_task_record(
         child_session_id,
         final_response,
         error_message,
+        provisional_exit: super::provisional_exit_parse::parse_optional_provisional_exit(record)?,
         killed,
         run_stats,
         isolation,
@@ -159,6 +160,12 @@ pub fn parse_task_record(
         revival_deferred_reason: read_optional_string(record, "revival_deferred_reason")?,
         recovery_deadline_at: read_optional_number(record, "recovery_deadline_at")?,
         residency_claim: read_optional_string(record, "residency_claim")?,
+        effect_seq: read_optional_count(record, "effect_seq")?,
+        last_effect_id: read_optional_string(record, "last_effect_id")?,
+        uncertain_inputs: super::input_effects_parse::parse_uncertain_inputs(
+            record.get("uncertain_inputs"),
+        )?,
+        host_liveness: None,
     })
 }
 

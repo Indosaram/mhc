@@ -33,27 +33,60 @@ pub fn get_release_changelog_url(version: &str, channel_url: Option<&str>) -> St
 pub struct LatestRelease { pub version: String, pub package_name: Option<String>, pub note: Option<String> }
 #[derive(Default)]
 pub struct VersionCheckOptions { pub timeout_ms: Option<u64>, pub retry: bool }
+/// One registry request of the version check (senpi `fetch(url, { headers })`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionFetchRequest { pub url: String, pub user_agent: String, pub accept: String }
+pub struct VersionFetchResponse { pub status: u16, pub body: Vec<u8> }
+/// The HTTP seam under `getLatestPiRelease` (upstream tests stub the global `fetch`): one attempt per
+/// call, the bounded retry runs above it.
+pub trait VersionFetch: Send + Sync {
+    fn fetch(&self, request: VersionFetchRequest) -> futures::future::BoxFuture<'_, Result<VersionFetchResponse, String>>;
+}
+/// Production fetch: one reqwest attempt.
+pub struct ReqwestVersionFetch;
+impl VersionFetch for ReqwestVersionFetch {
+    fn fetch(&self, request: VersionFetchRequest) -> futures::future::BoxFuture<'_, Result<VersionFetchResponse, String>> {
+        Box::pin(async move {
+            let response = reqwest::Client::new().get(&request.url).header("User-Agent", request.user_agent).header("accept", request.accept).send().await.map_err(|error| error.to_string())?;
+            let status = response.status().as_u16();
+            let body = response.bytes().await.map_err(|error| error.to_string())?.to_vec();
+            Ok(VersionFetchResponse { status, body })
+        })
+    }
+}
+/// What the version check reads from its surroundings: the HTTP seam, the brand's update channel and
+/// the environment (`envValue`).
+pub struct VersionCheckIo<'a> { pub fetch: &'a dyn VersionFetch, pub channel: Option<maho_core::brand::BrandUpdateChannel>, pub env: std::collections::HashMap<String, String> }
+fn process_io() -> VersionCheckIo<'static> {
+    VersionCheckIo { fetch: &ReqwestVersionFetch, channel: maho_core::brand::brand_profile().update, env: maho_core::config::current_env() }
+}
 pub async fn get_latest_release(current_version: &str, options: VersionCheckOptions) -> Result<Option<LatestRelease>, String> {
-    if maho_core::brand::env_value("OFFLINE", &maho_core::config::current_env()).is_some_and(|value| !value.is_empty()) { return Ok(None); }
-    let brand = maho_core::brand::brand_profile();
-    let Some(channel) = brand.update else { return Ok(None); };
+    get_latest_release_with(&process_io(), current_version, options).await
+}
+pub async fn get_latest_release_with(io: &VersionCheckIo<'_>, current_version: &str, options: VersionCheckOptions) -> Result<Option<LatestRelease>, String> {
+    if maho_core::brand::env_value("OFFLINE", &io.env).is_some_and(|value| !value.is_empty()) { return Ok(None); }
+    let Some(channel) = io.channel.clone() else { return Ok(None); };
     let encoded: String = channel.package_name.bytes().map(|byte| {
         if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) { (byte as char).to_string() } else { format!("%{byte:02X}") }
     }).collect();
-    let client = reqwest::Client::new();
-    let request = client.get(format!("https://registry.npmjs.org/-/package/{encoded}/dist-tags"))
-        .header("User-Agent", super::pi_user_agent::get_pi_user_agent(current_version)).header("accept", "application/json").build().map_err(|error| error.to_string())?;
-    let response = super::management_http::fetch_with_retry(&client, request, None, super::management_http::FetchRetryOptions {
+    let request = VersionFetchRequest { url: format!("https://registry.npmjs.org/-/package/{encoded}/dist-tags"), user_agent: super::pi_user_agent::get_pi_user_agent(current_version), accept: "application/json".to_owned() };
+    let response = super::management_http::retry_attempts(None, super::management_http::FetchRetryOptions {
         max_retries: if options.retry { 2 } else { 0 }, timeout_ms: Some(options.timeout_ms.unwrap_or(10000)), ..Default::default()
-    }).await?;
-    if !response.status().is_success() { return Ok(None); }
-    let payload = response.json().await.map_err(|error| error.to_string())?;
+    }, |response: &VersionFetchResponse| response.status, || io.fetch.fetch(request.clone())).await?;
+    if !(200..300).contains(&response.status) { return Ok(None); }
+    let payload: serde_json::Value = serde_json::from_slice(&response.body).map_err(|error| error.to_string())?;
     Ok(read_available_version(&payload, Some(&channel.dist_tag)).map(|version| LatestRelease { version, package_name: Some(channel.package_name), note: None }))
 }
 pub async fn get_latest_version(current_version: &str, options: VersionCheckOptions) -> Result<Option<String>, String> {
-    Ok(get_latest_release(current_version, options).await?.map(|release| release.version))
+    get_latest_version_with(&process_io(), current_version, options).await
+}
+pub async fn get_latest_version_with(io: &VersionCheckIo<'_>, current_version: &str, options: VersionCheckOptions) -> Result<Option<String>, String> {
+    Ok(get_latest_release_with(io, current_version, options).await?.map(|release| release.version))
 }
 pub async fn check_for_new_version(current_version: &str) -> Option<LatestRelease> {
-    if maho_core::brand::env_value("SKIP_VERSION_CHECK", &maho_core::config::current_env()).is_some_and(|value| !value.is_empty()) { return None; }
-    get_latest_release(current_version, Default::default()).await.ok().flatten().filter(|release| is_newer_package_version(&release.version, current_version))
+    check_for_new_version_with(&process_io(), current_version).await
+}
+pub async fn check_for_new_version_with(io: &VersionCheckIo<'_>, current_version: &str) -> Option<LatestRelease> {
+    if maho_core::brand::env_value("SKIP_VERSION_CHECK", &io.env).is_some_and(|value| !value.is_empty()) { return None; }
+    get_latest_release_with(io, current_version, Default::default()).await.ok().flatten().filter(|release| is_newer_package_version(&release.version, current_version))
 }

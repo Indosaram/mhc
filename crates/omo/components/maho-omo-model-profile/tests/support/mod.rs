@@ -86,6 +86,8 @@ pub struct TestRegistry {
     pub broken_models: BTreeMap<String, ExtensionFailure>,
     pub accounts: BTreeMap<String, Vec<CredentialAccountSummary>>,
     pub auth_status: BTreeMap<String, ProviderAuthStatus>,
+    /// Selectors listed as available but no longer returned by `find` (a registry that dropped them).
+    pub dropped_from_find: Vec<String>,
     pub calls: Mutex<Vec<String>>,
 }
 
@@ -128,6 +130,7 @@ pub fn account(name: &str, pinned: bool) -> CredentialAccountSummary {
         source: maho_ext_api::CredentialAccountSource::Login,
         blocked: false,
         pinned,
+        blocked_models: Vec::new(),
         unused: false,
     }
 }
@@ -187,6 +190,11 @@ impl TestRegistry {
         self
     }
 
+    pub fn dropped_from_find(mut self, provider: &str, id: &str) -> Self {
+        self.dropped_from_find.push(selector(provider, id));
+        self
+    }
+
     pub fn calls(&self) -> Vec<String> {
         self.calls
             .lock()
@@ -203,6 +211,9 @@ impl ModelRegistry for TestRegistry {
         self.models.clone()
     }
     fn find(&self, provider: &str, id: &str) -> Option<Model> {
+        if self.dropped_from_find.contains(&selector(provider, id)) {
+            return None;
+        }
         self.models
             .iter()
             .find(|model| model.provider == provider && model.id == id)
@@ -410,6 +421,8 @@ impl ExtensionSessionActions for RecordingSessionActions {
 #[derive(Default)]
 pub struct RecordingActions {
     pub messages: Mutex<Vec<CustomMessage>>,
+    /// Session entries (`append_entry`): where a profile outcome is recorded.
+    pub entries: Mutex<Vec<(String, Option<JsonValue>)>>,
 }
 impl ExtensionActions for RecordingActions {
     fn send_message(
@@ -430,15 +443,26 @@ impl ExtensionActions for RecordingActions {
     ) -> Result<(), ExtensionFailure> {
         Err("unused".into())
     }
-    fn append_entry(&self, _: &str, _: Option<JsonValue>) -> Result<(), ExtensionFailure> {
-        Err("unused".into())
+    fn append_entry(
+        &self,
+        custom_type: &str,
+        data: Option<JsonValue>,
+    ) -> Result<(), ExtensionFailure> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((custom_type.to_owned(), data));
+        Ok(())
     }
     fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> {
         Ok(Vec::new())
     }
 }
 
-struct TestUi;
+#[derive(Default)]
+pub struct TestUi {
+    pub notices: Mutex<Vec<(String, NotificationType)>>,
+}
 impl ExtensionUi for TestUi {
     fn select<'a>(
         &'a self,
@@ -464,7 +488,12 @@ impl ExtensionUi for TestUi {
     ) -> UiFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
-    fn notify(&self, _: &str, _: NotificationType) {}
+    fn notify(&self, message: &str, kind: NotificationType) {
+        self.notices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((message.to_owned(), kind));
+    }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
     fn set_header(&self, _: Option<ComponentFactory>) {}
@@ -519,6 +548,7 @@ impl RecordingLogger {
 pub struct Harness {
     pub api: ExtensionApi,
     pub ctx: ExtensionContext,
+    pub ui: Arc<TestUi>,
     pub registry: Arc<TestRegistry>,
     pub session_actions: Arc<RecordingSessionActions>,
     pub actions: Arc<RecordingActions>,
@@ -535,8 +565,28 @@ pub fn context_with(
     agent_dir: PathBuf,
     logger: Arc<RecordingLogger>,
 ) -> ExtensionContext {
+    context_with_ui(
+        registry,
+        session_id,
+        mode,
+        cwd,
+        agent_dir,
+        logger,
+        Arc::new(TestUi::default()),
+    )
+}
+
+pub fn context_with_ui(
+    registry: Arc<TestRegistry>,
+    session_id: &str,
+    mode: ExtensionMode,
+    cwd: &str,
+    agent_dir: PathBuf,
+    logger: Arc<RecordingLogger>,
+    ui: Arc<TestUi>,
+) -> ExtensionContext {
     ExtensionContext {
-        ui: Arc::new(TestUi),
+        ui,
         mode,
         has_ui: false,
         cwd: cwd.into(),
@@ -594,17 +644,20 @@ pub fn harness(
     use maho_ext_api::Extension;
     component.register(&mut api);
     let logger = Arc::new(RecordingLogger::default());
-    let ctx = context_with(
+    let ui = Arc::new(TestUi::default());
+    let ctx = context_with_ui(
         registry.clone(),
         session_id,
         mode,
         cwd,
         agent_dir.clone(),
         logger.clone(),
+        ui.clone(),
     );
     Harness {
         api,
         ctx,
+        ui,
         registry,
         session_actions,
         actions,
@@ -631,6 +684,7 @@ pub fn harness_in(
 impl Harness {
     pub async fn start(&self, reason: SessionReason, provenance: Option<&str>) -> EventResult {
         let mut event = ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            sizes_only: false,
             reason,
             initial_model_provenance: provenance.map(str::to_owned),
             previous_session_file: None,
@@ -665,12 +719,34 @@ impl Harness {
             .clone()
     }
 
+    /// Profile outcomes as recorded session entries, shaped like the messages they replaced. A
+    /// outcome never goes through `send_message`: that would hand it to the model as input.
     pub fn messages(&self) -> Vec<CustomMessage> {
+        assert!(
+            self.actions
+                .messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "a profile outcome must not be sent into the model input"
+        );
         self.actions
-            .messages
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .iter()
+            .map(|(custom_type, data)| CustomMessage {
+                custom_type: custom_type.clone(),
+                content: vec![maho_ext_api::ToolContent::text(
+                    data.as_ref()
+                        .and_then(|data| data.get("content"))
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default(),
+                )],
+                display: true,
+                details: data.as_ref().and_then(|data| data.get("details")).cloned(),
+            })
+            .collect()
     }
 
     pub fn first_details(&self) -> JsonValue {
@@ -678,6 +754,14 @@ impl Harness {
             .first()
             .and_then(|message| message.details.clone())
             .unwrap_or(JsonValue::Null)
+    }
+
+    pub fn notices(&self) -> Vec<(String, NotificationType)> {
+        self.ui
+            .notices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn first_custom_type(&self) -> String {

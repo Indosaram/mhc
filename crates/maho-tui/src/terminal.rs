@@ -29,6 +29,7 @@ use crate::stdin_buffer::{
 use crate::tmux_cursor_query::{
     TmuxCursorQuery, TmuxExecFile, finish_tmux_cursor_query, query_tmux_cursor_position,
 };
+use crate::wsl_session::is_wsl_session;
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS: u64 = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE: &str = "\x1b]9;4;3\x07";
@@ -44,8 +45,10 @@ const EPIPE_ERRNO: i32 = 32;
 const KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS: u64 = 150;
 const CURSOR_QUERY_TIMEOUT_MS: u64 = 750;
 const STDIN_ERROR_HANDLER_GRACE_MS: u64 = 250;
-const DEFAULT_ESCAPE_TIMEOUT_MS: f64 = 10.0;
-const DEFAULT_SSH_ESCAPE_TIMEOUT_MS: f64 = 100.0;
+const DEFAULT_ESCAPE_TIMEOUT_MS: f64 = 50.0;
+const DEFAULT_REMOTE_ESCAPE_TIMEOUT_MS: f64 = 100.0;
+const DEFAULT_BURST_WINDOW_MS: f64 = 20.0;
+const DEFAULT_SSH_BURST_WINDOW_MS: f64 = 100.0;
 
 static KITTY_KEYBOARD_PROTOCOL_QUERY: LazyLock<String> =
     LazyLock::new(|| format!("\x1b[>{DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS}u\x1b[?u\x1b[c"));
@@ -274,18 +277,41 @@ fn js_number(value: &str) -> f64 {
 }
 
 /// How long to wait for the rest of an escape sequence before dispatching a lone ESC.
-/// Legacy Alt+key input is ESC plus another byte, so high-latency transports wait longer.
-pub fn resolve_escape_timeout_ms(env: &Env) -> f64 {
+/// Legacy Alt+key input is ESC plus another byte, so high-latency transports (SSH, the WSL
+/// interop pipe) need a longer reassembly window. `platform` uses Node's names.
+pub fn resolve_escape_timeout_ms(env: &Env, platform: &str) -> f64 {
     let configured = env
         .get("PI_TUI_ESC_TIMEOUT")
         .map_or(f64::NAN, |v| js_number(v));
     if configured.is_finite() && configured > 0.0 {
         return configured;
     }
-    if process_env::truthy(env, "SSH_CONNECTION") || process_env::truthy(env, "SSH_TTY") {
-        return DEFAULT_SSH_ESCAPE_TIMEOUT_MS;
+    if process_env::truthy(env, "SSH_CONNECTION")
+        || process_env::truthy(env, "SSH_TTY")
+        || is_wsl_session(env, platform, Path::new("/proc/version"))
+    {
+        return DEFAULT_REMOTE_ESCAPE_TIMEOUT_MS;
     }
     DEFAULT_ESCAPE_TIMEOUT_MS
+}
+
+/// How long a line break that ends a read with text is held as a possible paste fragment
+/// when the terminal sends no bracketed-paste markers. Paste chunks over SSH arrive further
+/// apart, so the default window is longer there. `PI_TUI_BURST_WINDOW_MS=0` never holds a
+/// line break.
+pub fn resolve_burst_window_ms(env: &Env) -> f64 {
+    if let Some(raw) = env.get("PI_TUI_BURST_WINDOW_MS").map(|v| v.trim())
+        && !raw.is_empty()
+    {
+        let configured = js_number(raw);
+        if configured.is_finite() && configured >= 0.0 {
+            return configured;
+        }
+    }
+    if process_env::truthy(env, "SSH_CONNECTION") || process_env::truthy(env, "SSH_TTY") {
+        return DEFAULT_SSH_BURST_WINDOW_MS;
+    }
+    DEFAULT_BURST_WINDOW_MS
 }
 
 /// Node-style error carried by terminal io failures (\`code\`, \`errno\`, \`message\`).
@@ -460,6 +486,10 @@ impl TerminalIo for ProcessIo {
     fn size(&self) -> Option<(u16, u16)> {
         #[cfg(unix)]
         {
+            // While fd 1 is redirected to the log, read the size from the saved terminal duplicate.
+            if let Some(size) = crate::fd_redirect::redirected_terminal_size() {
+                return Some(size);
+            }
             let size = rustix::termios::tcgetwinsize(rustix::stdio::stdout()).ok()?;
             Some((size.ws_col, size.ws_row))
         }
@@ -555,7 +585,9 @@ fn wait_for_console_input(timeout: std::time::Duration) -> Result<bool, Terminal
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
     // u32::MAX is INFINITE; every caller passes a bounded budget.
-    let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1).min(u32::MAX - 1);
+    let millis = u32::try_from(timeout.as_millis())
+        .unwrap_or(u32::MAX - 1)
+        .min(u32::MAX - 1);
     // SAFETY: GetStdHandle has no preconditions. The handle belongs to the process and is not
     // closed here.
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
@@ -698,6 +730,7 @@ pub struct ProcessTerminal {
     kitty_protocol_active: bool,
     modify_other_keys_active: bool,
     keyboard_protocol_pushed: bool,
+    pending_keyboard_protocol_device_attributes: u32,
     keyboard_protocol_negotiation_buffer: String,
     discarding_private_response: bool,
     keyboard_protocol_buffer_flush_due: Option<u64>,
@@ -760,6 +793,7 @@ impl ProcessTerminal {
             kitty_protocol_active: false,
             modify_other_keys_active: false,
             keyboard_protocol_pushed: false,
+            pending_keyboard_protocol_device_attributes: 0,
             keyboard_protocol_negotiation_buffer: String::new(),
             discarding_private_response: false,
             keyboard_protocol_buffer_flush_due: None,
@@ -910,12 +944,14 @@ impl ProcessTerminal {
     }
 
     fn setup_stdin_buffer(&mut self) {
-        let escape_timeout = resolve_escape_timeout_ms(&process_env::current());
+        let env = process_env::current();
+        let escape_timeout = resolve_escape_timeout_ms(&env, node_platform());
+        let burst_window = resolve_burst_window_ms(&env);
         let options = StdinBufferOptions {
             timeout: None,
             // setTimeout truncates fractional delays.
             escape_timeout: Some(escape_timeout as u64),
-            burst_window_ms: None,
+            burst_window_ms: Some(burst_window as u64),
         };
         self.stdin_buffer = Some(StdinBuffer::with_clock(options, Arc::clone(&self.clock)));
     }
@@ -930,6 +966,7 @@ impl ProcessTerminal {
             self.enable_modify_other_keys();
         }
         self.keyboard_protocol_pushed = true;
+        self.pending_keyboard_protocol_device_attributes += 1;
         self.clear_keyboard_protocol_negotiation_buffer();
         let query = KITTY_KEYBOARD_PROTOCOL_QUERY.clone();
         self.raw_write(&query);
@@ -986,17 +1023,21 @@ impl ProcessTerminal {
                 // Wait briefly for the rest of a split Kitty response.
                 self.schedule_keyboard_protocol_negotiation_buffer_flush();
             }
-            NegotiationRead::Sequence(negotiation) => {
-                self.handle_keyboard_protocol_negotiation_sequence(negotiation)
+            NegotiationRead::Sequence(negotiation, full) => {
+                if !self.handle_keyboard_protocol_negotiation_sequence(negotiation) {
+                    self.forward_input_sequence(&full);
+                }
             }
             NegotiationRead::None => self.forward_input_sequence(sequence),
         }
     }
 
+    /// Returns false when the reply is not part of the keyboard negotiation (a DA1 that answers
+    /// another query), so the caller forwards it as input.
     fn handle_keyboard_protocol_negotiation_sequence(
         &mut self,
         negotiation: KeyboardProtocolNegotiationSequence,
-    ) {
+    ) -> bool {
         self.clear_keyboard_protocol_negotiation_buffer();
         match negotiation {
             KeyboardProtocolNegotiationSequence::CursorPosition(position) => {
@@ -1007,7 +1048,7 @@ impl ProcessTerminal {
                 {
                     self.settle_cursor_query(Some(position));
                 }
-                return;
+                return true;
             }
             KeyboardProtocolNegotiationSequence::KittyFlags { flags } => {
                 self.keyboard_negotiation_settled = true;
@@ -1021,9 +1062,13 @@ impl ProcessTerminal {
                 } else {
                     self.enable_modify_other_keys();
                 }
-                return;
+                return true;
             }
             KeyboardProtocolNegotiationSequence::DeviceAttributes => {
+                if self.pending_keyboard_protocol_device_attributes == 0 {
+                    return false;
+                }
+                self.pending_keyboard_protocol_device_attributes -= 1;
                 self.keyboard_negotiation_settled = true;
                 self.issue_cursor_query();
             }
@@ -1031,6 +1076,7 @@ impl ProcessTerminal {
         if !self.kitty_protocol_active {
             self.enable_modify_other_keys();
         }
+        true
     }
 
     fn read_keyboard_protocol_negotiation_sequence(&mut self, sequence: &str) -> NegotiationRead {
@@ -1038,7 +1084,7 @@ impl ProcessTerminal {
             let buffered = format!("{}{sequence}", self.keyboard_protocol_negotiation_buffer);
             if let Some(negotiation) = parse_keyboard_protocol_negotiation_sequence(&buffered) {
                 self.clear_keyboard_protocol_negotiation_buffer();
-                return NegotiationRead::Sequence(negotiation);
+                return NegotiationRead::Sequence(negotiation, buffered);
             }
             if is_keyboard_protocol_negotiation_sequence_prefix(&buffered) {
                 self.set_keyboard_protocol_negotiation_buffer(buffered);
@@ -1047,7 +1093,7 @@ impl ProcessTerminal {
             self.flush_keyboard_protocol_negotiation_buffer_as_input(false);
         }
         if let Some(negotiation) = parse_keyboard_protocol_negotiation_sequence(sequence) {
-            return NegotiationRead::Sequence(negotiation);
+            return NegotiationRead::Sequence(negotiation, sequence.to_string());
         }
         if is_keyboard_protocol_negotiation_sequence_prefix(sequence) {
             self.set_keyboard_protocol_negotiation_buffer(sequence.to_string());
@@ -1267,7 +1313,7 @@ enum DueTimer {
 }
 
 enum NegotiationRead {
-    Sequence(KeyboardProtocolNegotiationSequence),
+    Sequence(KeyboardProtocolNegotiationSequence, String),
     Pending,
     None,
 }

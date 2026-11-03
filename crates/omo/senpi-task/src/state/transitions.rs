@@ -262,6 +262,12 @@ pub fn transition_task_record(
         };
     }
     let mut next = apply_transition_fields(record, transition);
+    // A confirmed terminal status or a new run carries no evidence about the old exit.
+    if (next_status.is_terminal() && !record.status.is_terminal())
+        || matches!(transition, TaskTransition::Start { .. })
+    {
+        next.provisional_exit = None;
+    }
     next.status = next_status;
     next.residency_state = transition_residency(transition, record.residency_state);
     next.updated_at = transition.timestamp().to_string();
@@ -307,6 +313,7 @@ pub fn mark_record_lost_for_reconciliation(
         return ignored;
     }
     let mut next = record.clone();
+    next.provisional_exit = None;
     next.status = TaskStatus::Lost;
     if !record.status.is_terminal() {
         next.terminal_at = Some(timestamp.to_string());

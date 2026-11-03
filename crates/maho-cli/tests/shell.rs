@@ -39,3 +39,28 @@ fn upstream_sanitization_removes_disallowed_controls() {
 fn upstream_sanitization_removes_format_characters() {
     assert_eq!(sanitize_binary_output("before\u{fff9}hidden\u{fffb}after"), "beforehiddenafter");
 }
+// senpi suite/shell-config-kind.test.ts
+#[test]
+fn upstream_classifies_shell_kinds_from_the_executable_name() {
+    assert_eq!(resolve_shell_kind("C:\\Windows\\System32\\cmd.exe"), ShellKind::Cmd);
+    assert_eq!(resolve_shell_kind("C:\\Program Files\\PowerShell\\7\\pwsh.exe"), ShellKind::Powershell);
+    assert_eq!(resolve_shell_kind("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"), ShellKind::Powershell);
+    assert_eq!(resolve_shell_kind("/usr/bin/bash"), ShellKind::Bash);
+    assert_eq!(resolve_shell_kind("/bin/sh"), ShellKind::Sh);
+}
+#[tokio::test]
+async fn upstream_explicit_shell_paths_resolve_by_kind() {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, kind, args) in [
+        ("cmd.exe", ShellKind::Cmd, &["/c"][..]),
+        ("pwsh.exe", ShellKind::Powershell, &["-NoProfile", "-Command"]),
+        ("bash.exe", ShellKind::Bash, &["-c"]),
+    ] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, b"").unwrap();
+        let config = get_shell_config(Some(path.to_str().unwrap())).await.unwrap();
+        assert_eq!(config.kind, Some(kind), "{name}");
+        assert_eq!(config.args, args, "{name}");
+        assert_eq!(config.command_transport.unwrap_or("argv"), "argv", "{name}");
+    }
+}

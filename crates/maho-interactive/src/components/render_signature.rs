@@ -10,6 +10,9 @@ const SIGNATURE_STRING_SAMPLE_WINDOW_LENGTH: usize = 64;
 const SIGNATURE_ARRAY_ITEM_LIMIT: usize = 40;
 const SIGNATURE_OBJECT_KEY_LIMIT: usize = 80;
 const SIGNATURE_DEPTH_LIMIT: usize = 8;
+const SIGNATURE_OMITTED_VALUE_DEPTH: usize = 1;
+const SIGNATURE_HASH_OFFSET_BASIS: u32 = 0x811c_9dc5;
+const SIGNATURE_HASH_PRIME: u32 = 0x0100_0193;
 
 pub fn create_bounded_render_signature(value: &Value) -> String {
     serialize_bounded_render_summary(&summarize_value(value, 0))
@@ -58,13 +61,20 @@ fn sample_signature_string(units: &[u16]) -> String {
     [head, quarter, middle, three_quarter, tail].join("\u{0}")
 }
 
-fn hash_signature_string(source: &str) -> String {
-    let mut hash: u32 = 0x811c_9dc5;
+fn update_signature_hash(mut hash: u32, source: &str) -> u32 {
     for unit in source.encode_utf16() {
         hash ^= u32::from(unit);
-        hash = hash.wrapping_mul(0x0100_0193);
+        hash = hash.wrapping_mul(SIGNATURE_HASH_PRIME);
     }
+    hash
+}
+
+fn format_signature_hash(hash: u32) -> String {
     to_base36(hash)
+}
+
+fn hash_signature_string(source: &str) -> String {
+    format_signature_hash(update_signature_hash(SIGNATURE_HASH_OFFSET_BASIS, source))
 }
 
 fn to_base36(mut value: u32) -> String {
@@ -81,8 +91,30 @@ fn to_base36(mut value: u32) -> String {
     String::from_utf8(out).unwrap_or_else(|_| String::from("0"))
 }
 
-fn hash_signature_value(value: &Value) -> String {
-    hash_signature_string(&create_bounded_render_signature(value))
+/// One omitted entry, summarized at the fixed omitted depth and folded into `hash` without
+/// materializing the rest of the tail (#4415). JSON values carry no `toJSON`, so upstream's
+/// `serializerKey` has no Rust counterpart.
+fn hash_signature_entry(hash: u32, key: &str, value: &Value) -> u32 {
+    let summarized = summarize_value(value, SIGNATURE_OMITTED_VALUE_DEPTH);
+    let entry = Value::Array(vec![Value::String(key.to_owned()), summarized]);
+    update_signature_hash(hash, &serialize_bounded_render_summary(&entry))
+}
+
+fn hash_signature_array_tail(tail: &[Value]) -> String {
+    let mut hash = SIGNATURE_HASH_OFFSET_BASIS;
+    for (offset, item) in tail.iter().enumerate() {
+        let key = (SIGNATURE_ARRAY_ITEM_LIMIT + offset).to_string();
+        hash = hash_signature_entry(hash, &key, item);
+    }
+    format_signature_hash(hash)
+}
+
+fn hash_signature_entries(entries: &[(&String, &Value)]) -> String {
+    let mut hash = SIGNATURE_HASH_OFFSET_BASIS;
+    for (key, value) in entries {
+        hash = hash_signature_entry(hash, key, value);
+    }
+    format_signature_hash(hash)
 }
 
 fn summarize_value(value: &Value, depth: usize) -> Value {
@@ -99,11 +131,12 @@ fn summarize_value(value: &Value, depth: usize) -> Value {
                 .map(|item| summarize_value(item, depth + 1))
                 .collect();
             if items.len() > SIGNATURE_ARRAY_ITEM_LIMIT {
-                let tail_hash = hash_signature_value(&Value::Array(items[SIGNATURE_ARRAY_ITEM_LIMIT..].to_vec()));
+                let tail = &items[SIGNATURE_ARRAY_ITEM_LIMIT..];
+                let tail_hash = hash_signature_array_tail(tail);
                 let mut out = summarized;
                 out.push(Value::String(format!(
                     "[+{} items hash={}]",
-                    items.len() - SIGNATURE_ARRAY_ITEM_LIMIT,
+                    tail.len(),
                     tail_hash
                 )));
                 return Value::Array(out);
@@ -121,20 +154,136 @@ fn summarize_value(value: &Value, depth: usize) -> Value {
                 summarized.insert((*key).clone(), summarize_value(item, depth + 1));
             }
             if entries.len() > SIGNATURE_OBJECT_KEY_LIMIT {
-                let mut omitted = Map::new();
-                for (key, item) in entries.iter().skip(SIGNATURE_OBJECT_KEY_LIMIT) {
-                    omitted.insert((*key).clone(), (*item).clone());
-                }
+                let omitted = &entries[SIGNATURE_OBJECT_KEY_LIMIT..];
                 summarized.insert(
                     String::from("__truncatedKeys"),
                     Value::String(format!(
                         "[+{} keys hash={}]",
-                        entries.len() - SIGNATURE_OBJECT_KEY_LIMIT,
-                        hash_signature_value(&Value::Object(omitted))
+                        omitted.len(),
+                        hash_signature_entries(omitted)
                     )),
                 );
             }
             Value::Object(summarized)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn depth_boundary_value(marker: &str) -> Value {
+        let mut value = json!({ "marker": marker });
+        for _ in 0..6 {
+            value = json!({ "nested": value });
+        }
+        value
+    }
+
+    fn keyed(count: usize, width: usize) -> Map<String, Value> {
+        (0..count)
+            .map(|index| (format!("key-{index:0width$}"), json!(index)))
+            .collect()
+    }
+
+    // Hashes pinned from senpi v2026.10.27-2 `createBoundedRenderSignature`.
+    #[test]
+    fn omitted_tails_hash_entry_by_entry_like_senpi() {
+        let object = Value::Object(keyed(90, 3));
+        assert!(create_bounded_render_signature(&object).contains("[+10 keys hash=h6jhph]"));
+        let mut items: Vec<Value> = (0..40).map(|i| json!(format!("prefix-{i}"))).collect();
+        items.push(depth_boundary_value("depth-old"));
+        items.push(json!({ "a": [1, 2, { "b": "c" }] }));
+        assert!(
+            create_bounded_render_signature(&Value::Array(items))
+                .contains("[+2 items hash=jn01me]")
+        );
+        let mut deep = keyed(80, 3);
+        deep.insert("zz-tail".into(), depth_boundary_value("depth-old"));
+        assert!(
+            create_bounded_render_signature(&Value::Object(deep))
+                .contains("[+1 keys hash=1kc3j3v]")
+        );
+    }
+
+    #[test]
+    fn a_change_in_a_wide_array_tail_is_detected() {
+        let mut values: Vec<Value> = (0..4_000).map(|i| json!(i)).collect();
+        let before = create_bounded_render_signature(&Value::Array(values.clone()));
+        values[3_999] = json!(-1);
+        assert_ne!(
+            create_bounded_render_signature(&Value::Array(values)),
+            before
+        );
+
+        let prefix: Vec<Value> = (0..40).map(|i| json!(format!("prefix-{i}"))).collect();
+        let mut previous = prefix.clone();
+        previous.push(json!("tail-old"));
+        let mut next = prefix;
+        next.push(json!("tail-new"));
+        assert_ne!(
+            create_bounded_render_signature(&Value::Array(next)),
+            create_bounded_render_signature(&Value::Array(previous))
+        );
+    }
+
+    #[test]
+    fn a_change_after_the_object_key_limit_is_detected() {
+        let previous = keyed(81, 3);
+        let mut next = previous.clone();
+        next.insert("key-080".into(), json!("changed"));
+        assert_ne!(
+            create_bounded_render_signature(&Value::Object(next)),
+            create_bounded_render_signature(&Value::Object(previous))
+        );
+
+        let mut wide = keyed(4_000, 6);
+        let before = create_bounded_render_signature(&Value::Object(wide.clone()));
+        wide.insert("key-003999".into(), json!(-1));
+        assert_ne!(
+            create_bounded_render_signature(&Value::Object(wide)),
+            before
+        );
+    }
+
+    #[test]
+    fn deeply_nested_omitted_values_keep_the_prior_depth_budget() {
+        let prefix: Vec<Value> = (0..40).map(|i| json!(format!("prefix-{i}"))).collect();
+        let with = |marker: &str| {
+            let mut items = prefix.clone();
+            items.push(depth_boundary_value(marker));
+            json!({ "content": items })
+        };
+        assert_ne!(
+            create_bounded_render_signature(&with("depth-new")),
+            create_bounded_render_signature(&with("depth-old"))
+        );
+
+        let object_with = |marker: &str| {
+            let mut details = keyed(80, 3);
+            details.insert("zz-tail".into(), depth_boundary_value(marker));
+            json!({ "details": details })
+        };
+        assert_ne!(
+            create_bounded_render_signature(&object_with("depth-new")),
+            create_bounded_render_signature(&object_with("depth-old"))
+        );
+    }
+
+    #[test]
+    fn large_strings_have_bounded_samples_and_detect_sampled_changes() {
+        let text = "a".repeat(64 * 1024);
+        let units: Vec<u16> = text.encode_utf16().collect();
+        assert_eq!(sample_signature_string(&units).encode_utf16().count(), 324);
+        let before = create_bounded_render_signature(&json!({"content": text}));
+        assert!(before.len() < SIGNATURE_STRING_MAX_LENGTH);
+        for index in [0, (units.len() - 64) / 4, (units.len() - 64) / 2,
+            (units.len() - 64) * 3 / 4, units.len() - 1] {
+            let mut changed = text.clone();
+            changed.replace_range(index..=index, "b");
+            assert_ne!(create_bounded_render_signature(&json!({"content": changed})), before);
         }
     }
 }

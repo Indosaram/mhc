@@ -780,6 +780,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &api,
         EventKind::SessionStart,
         &mut ExtensionEvent::SessionStart(SessionStartEvent {
+            sizes_only: false,
             reason: SessionReason::New,
             initial_model_provenance: None,
             previous_session_file: None,

@@ -72,8 +72,11 @@ pub struct MemoryRpcBridge {
     session_id: Option<String>,
     last_snapshot: Option<String>,
     disposed: bool,
+    /// Bumped by every attach/detach: a snapshot built for an older binding is never published.
+    binding_generation: u64,
     repos: BTreeMap<std::path::PathBuf, GitMemoryRepo>,
     token_estimates: BTreeMap<String, usize>,
+    tree_stats: BTreeMap<String, crate::memory_rpc_snapshot_state::MemoryTreeStats>,
 }
 impl MemoryRpcBridge {
     pub fn attach(&mut self, session: &str) {
@@ -82,6 +85,7 @@ impl MemoryRpcBridge {
         }
         self.session_id = Some(session.into());
         self.last_snapshot = None;
+        self.binding_generation += 1;
     }
     pub fn bound_session(&self) -> Option<String> {
         if self.disposed {
@@ -93,6 +97,7 @@ impl MemoryRpcBridge {
     pub fn detach(&mut self) {
         self.session_id = None;
         self.last_snapshot = None;
+        self.binding_generation += 1;
     }
     pub fn dispose(&mut self) {
         self.disposed = true;
@@ -118,9 +123,10 @@ impl MemoryRpcBridge {
                 GitMemoryRepoOptions::new(&context.identity_paths.repo, "omo-memory-rpc"),
             )?),
         };
-        let repo_state = crate::memory_rpc_snapshot_state::read_memory_rpc_repo_state(
+        let repo_state = crate::memory_rpc_snapshot_state::read_memory_rpc_repo_state_with(
             repo,
             &mut self.token_estimates,
+            &mut self.tree_stats,
         )?;
         let journal =
             crate::memory_rpc_snapshot_state::read_memory_rpc_journal_state(context, session);
@@ -138,6 +144,11 @@ impl MemoryRpcBridge {
         }
         if let Some(fingerprint) = health.get("fingerprint") {
             reflection["lastFailureFingerprint"] = fingerprint.clone();
+        }
+        if let Some(consolidation) =
+            crate::memory_rpc_snapshot_state::read_last_consolidation_at(context)
+        {
+            reflection["lastConsolidationAtISO"] = consolidation.into();
         }
         let mut snapshot = serde_json::json!({"schemaVersion":1,"identity":context.identity,"repo":repo_state,"reflection":reflection,"journal":{"sessionId":session,"totalSteps":journal.total_steps,"reflectedSteps":journal.reflected_steps}});
         if let Some(status) = self
@@ -169,6 +180,37 @@ impl MemoryRpcBridge {
         emitter.emit(MEMORY_UPDATED_RPC_EVENT, &snapshot);
         Ok(())
     }
+    /// `sync(signal)`: skips when aborted, disposed, or the binding generation changed while the
+    /// snapshot was built.
+    pub fn sync_with_signal(
+        &mut self,
+        deps: &dyn MemoryRpcBridgeDeps,
+        emitter: Option<&mut dyn MemoryRpcEmitter>,
+        now: i64,
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<(), GitError> {
+        let aborted = || signal.is_some_and(maho_ext_api::AbortSignal::is_aborted);
+        let Some(emitter) = emitter else {
+            return Ok(());
+        };
+        if self.disposed || aborted() {
+            return Ok(());
+        }
+        let generation = self.binding_generation;
+        let Some(snapshot) = self.build_snapshot(deps, now)? else {
+            return Ok(());
+        };
+        if aborted() || self.disposed || generation != self.binding_generation {
+            return Ok(());
+        }
+        let fingerprint = snapshot.to_string();
+        if self.last_snapshot.as_ref() == Some(&fingerprint) {
+            return Ok(());
+        }
+        self.last_snapshot = Some(fingerprint);
+        emitter.emit(MEMORY_UPDATED_RPC_EVENT, &snapshot);
+        Ok(())
+    }
     pub fn status(
         &mut self,
         deps: &dyn MemoryRpcBridgeDeps,
@@ -184,12 +226,31 @@ impl MemoryRpcBridge {
         api: &maho_ext_api::ExtensionApi,
         now: i64,
     ) -> Result<(), String> {
+        self.sync_native_with_signal(deps, api, now, None)
+    }
+    /// `sync(signal)` for the native emitter: skips when aborted, disposed, or the binding generation
+    /// changed while the snapshot was built.
+    pub fn sync_native_with_signal(
+        &mut self,
+        deps: &dyn MemoryRpcBridgeDeps,
+        api: &maho_ext_api::ExtensionApi,
+        now: i64,
+        signal: Option<&maho_ext_api::AbortSignal>,
+    ) -> Result<(), String> {
+        let aborted = || signal.is_some_and(maho_ext_api::AbortSignal::is_aborted);
+        if self.disposed || aborted() {
+            return Ok(());
+        }
+        let generation = self.binding_generation;
         let Some(snapshot) = self
             .build_snapshot(deps, now)
             .map_err(|error| error.to_string())?
         else {
             return Ok(());
         };
+        if aborted() || self.disposed || generation != self.binding_generation {
+            return Ok(());
+        }
         let fingerprint = snapshot.to_string();
         if self.last_snapshot.as_ref() == Some(&fingerprint) {
             return Ok(());
@@ -249,6 +310,24 @@ mod tests {
         bridge.sync(&deps, Some(&mut emitter), 0).unwrap();
         assert_eq!(emitter.0.len(), 2);
         assert_eq!(emitter.0[1]["journal"]["sessionId"], "two");
+    }
+    #[test]
+    fn an_aborted_sync_publishes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let deps = deps(root.path());
+        let mut bridge = MemoryRpcBridge::default();
+        let mut emitter = Emitter::default();
+        bridge.attach("one");
+        let signal = maho_ext_api::AbortSignal::default();
+        signal.abort();
+        bridge
+            .sync_with_signal(&deps, Some(&mut emitter), 0, Some(&signal))
+            .unwrap();
+        assert!(emitter.0.is_empty());
+        bridge
+            .sync_with_signal(&deps, Some(&mut emitter), 0, None)
+            .unwrap();
+        assert_eq!(emitter.0.len(), 1);
     }
     #[test]
     fn detached_pull_is_unavailable_without_reading_repository() {

@@ -12,3 +12,6 @@ crate-type = ["rlib"]
 parking_lot = "=0.12.5"
 senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
 thiserror.workspace = true
+
+[dev-dependencies]
+senpi-desktop-backend-fake = { package = "maho-senpi-desktop-backend-fake", path = "../senpi-desktop-backend-fake" }

@@ -8,6 +8,8 @@ async fn health_fixture()->(String,Arc<AtomicUsize>,tokio::sync::oneshot::Sender
     let app=Router::new().route("/mcp",post(move|Json(request):Json<Value>|{let observed=observed.clone();async move {
         if request.get("id").is_none(){return StatusCode::ACCEPTED.into_response();}
         let method=request["method"].as_str().unwrap_or_default();if method=="ping"{observed.fetch_add(1,Ordering::SeqCst);}
+        // A legacy server does not know modern discovery: a generic JSON-RPC error selects the legacy era.
+        if method=="server/discover"{return Json(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Method not found"}})).into_response();}
         let result=match method {"initialize"=>json!({"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"health","version":"1"}}),_=>json!({})};
         Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result})).into_response()
     }}));
@@ -52,6 +54,7 @@ fn native_health_stdio_peer(){
     for line in std::io::stdin().lock().lines(){
         let request:Value=serde_json::from_str(&line.unwrap()).unwrap();
         if request.get("id").is_none(){continue;}
+        if request["method"]=="server/discover"{writeln!(output,"{}",json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Method not found"}})).unwrap();output.flush().unwrap();continue;}
         let result=if request["method"]=="initialize"{json!({"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"health-stdio","version":"1"}})}else{json!({})};
         writeln!(output,"{}",json!({"jsonrpc":"2.0","id":request["id"],"result":result})).unwrap();
         output.flush().unwrap();

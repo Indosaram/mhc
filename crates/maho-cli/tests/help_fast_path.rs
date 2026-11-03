@@ -95,3 +95,25 @@ fn help_test_fails_naming_missing_entry() {
         );
     }
 }
+
+// senpi help-fast-path.ts `resolveHelpProjectTrust` / `helpFlagsScope`: a help screen trusts a
+// project without trust-requiring resources, otherwise only a RECORDED decision lets it in.
+#[test]
+fn help_trust_reads_only_a_recorded_decision_and_the_scope_mirrors_the_launch() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("project");
+    let agent = root.path().join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(cwd.join(maho_core::config::config_dir_name()).join("extensions")).unwrap();
+    let (cwd_text, agent_text) = (cwd.to_str().unwrap(), agent.to_str().unwrap());
+    let args = Args { help: true, extensions: vec!["./ext.js".to_owned()], ..Default::default() };
+    assert!(!resolve_help_project_trust(&args, cwd_text, agent_text).unwrap(), "unrecorded project stays untrusted");
+    maho_core::trust_manager::ProjectTrustStore::new(agent_text).set(cwd_text, Some(true)).unwrap();
+    assert!(resolve_help_project_trust(&args, cwd_text, agent_text).unwrap(), "a recorded trust lets it in");
+    let override_args = Args { project_trust_override: Some(false), ..args.clone() };
+    assert!(!resolve_help_project_trust(&override_args, cwd_text, agent_text).unwrap(), "the explicit override wins");
+    let scope = help_flags_scope(&args, &cwd, &agent, true);
+    assert_eq!(scope.cli_extension_paths, vec![std::path::PathBuf::from("./ext.js")]);
+    assert!(!scope.no_extensions && scope.project_trusted);
+    assert_eq!((scope.cwd, scope.agent_dir), (cwd.clone(), agent.clone()));
+}

@@ -34,6 +34,8 @@ pub const MAX_MONITOR_WAKES_PER_HOUR: f64 = 3600.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTerminalSettings {
+    /// `tools.bash.redactSecretsInOutput` (settings-manager `getBashRedactSecretsInOutput`), default false.
+    pub redact_secrets_in_output: bool,
     pub default_cols: f64,
     pub default_rows: f64,
     pub scrollback: f64,
@@ -46,10 +48,11 @@ pub struct ResolvedTerminalSettings {
 }
 
 pub const TERMINAL_SETTINGS_DEFAULTS: ResolvedTerminalSettings = ResolvedTerminalSettings {
-    default_cols: 120.0,
-    default_rows: 40.0,
-    scrollback: 10_000.0,
-    max_sessions: 32.0,
+    redact_secrets_in_output: false,
+    default_cols: crate::shared::DEFAULT_COLS as f64,
+    default_rows: crate::shared::DEFAULT_ROWS as f64,
+    scrollback: crate::shared::DEFAULT_SCROLLBACK as f64,
+    max_sessions: crate::shared::DEFAULT_MAX_SESSIONS as f64,
     timeout_action: TimeoutAction::Background,
     notify: NotifyMode::Wake,
     monitor: MonitorDeliverySettings {
@@ -90,6 +93,7 @@ pub fn resolve_terminal_settings(raw: Option<&Value>) -> ResolvedTerminalSetting
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     let defaults = &TERMINAL_SETTINGS_DEFAULTS;
     ResolvedTerminalSettings {
+        redact_secrets_in_output: defaults.redact_secrets_in_output,
         default_cols: positive_int(
             raw.get("defaultCols"),
             defaults.default_cols,
@@ -192,18 +196,48 @@ pub fn load_session_settings(
         &home,
         ctx.is_project_trusted(),
     );
-    let terminal = load_terminal_settings(
-        settings.get_global().get("terminal"),
-        settings.get_project().get("terminal"),
-    );
+    let terminal = load_manager_terminal_settings(&settings);
     let shell = settings.get_shell_path();
     Ok((terminal, shell))
+}
+
+/// Upstream `loadTerminalSettings(settingsManager)`: the merged `terminal` block plus the bash
+/// tool's opt-in `redactSecretsInOutput`.
+pub fn load_manager_terminal_settings(
+    settings: &maho_core::settings_manager::SettingsManager,
+) -> ResolvedTerminalSettings {
+    ResolvedTerminalSettings {
+        redact_secrets_in_output: settings.get_bash_redact_secrets_in_output(),
+        ..load_terminal_settings(
+            settings.get_global().get("terminal"),
+            settings.get_project().get("terminal"),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// terminal-output-redaction.test.ts "loads the opt-in setting and defaults to off".
+    #[test]
+    fn loads_the_redaction_opt_in_and_defaults_to_off() {
+        use maho_core::settings_manager::SettingsManager;
+        let settings = |value: Value| value.as_object().cloned().unwrap_or_default();
+        assert!(
+            !load_manager_terminal_settings(&SettingsManager::in_memory(settings(json!({})), true))
+                .redact_secrets_in_output
+        );
+        assert!(
+            load_manager_terminal_settings(&SettingsManager::in_memory(
+                settings(json!({"tools":{"bash":{"redactSecretsInOutput":true}}})),
+                true
+            ))
+            .redact_secrets_in_output
+        );
+        const { assert!(!TERMINAL_SETTINGS_DEFAULTS.redact_secrets_in_output); }
+    }
 
     #[test]
     fn absent_block_fills_defaults() {

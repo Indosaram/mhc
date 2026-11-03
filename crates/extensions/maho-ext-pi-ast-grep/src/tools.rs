@@ -28,7 +28,7 @@ fn tool_definition(
         "pattern":{"type":"string","description":if replace { "AST pattern to match" } else { "AST pattern with meta-variables ($VAR, $$$). Must be a complete AST node." }},
         "lang":{"type":"string","enum":CLI_LANGUAGES,"description":"Target language"},
         "paths":{"type":"array","items":{"type":"string"},"description":if replace { "Paths to search" } else { "Paths to search (default: current working directory)" }},
-        "globs":{"type":"array","items":{"type":"string"},"description":"Include/exclude globs (prefix ! to exclude)"}
+        "globs":{"type":"array","items":{"type":"string"},"description":if replace { "Include/exclude globs" } else { "Include/exclude globs (prefix ! to exclude)" }}
     });
     if replace {
         properties["rewrite"] = json!({"type":"string","description":"Replacement pattern (can use $VAR from pattern)"});
@@ -56,16 +56,30 @@ fn tool_definition(
             let binary = binary.clone();
             let resolver = resolver.clone();
             Box::pin(async move {
-                let language = call
-                    .params
-                    .get("lang")
-                    .and_then(Value::as_str)
-                    .unwrap_or("undefined");
-                if !CLI_LANGUAGES.contains(&language) {
-                    return Ok(ToolResult::text(format!(
-                        "Unsupported language: {language}"
-                    )));
-                }
+                let language = match call.params.get("lang") {
+                    Some(Value::String(language)) if CLI_LANGUAGES.contains(&language.as_str()) => {
+                        language.as_str()
+                    }
+                    // Upstream `String(language)`: absent -> "undefined", null -> "null", other JSON as text.
+                    other => {
+                        let shown = match other {
+                            None => "undefined".to_owned(),
+                            Some(Value::String(value)) => value.clone(),
+                            Some(Value::Array(values)) => values
+                                .iter()
+                                .map(|value| match value {
+                                    Value::String(text) => text.clone(),
+                                    Value::Null => String::new(),
+                                    other => other.to_string(),
+                                })
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            Some(Value::Object(_)) => "[object Object]".to_owned(),
+                            Some(value) => value.to_string(),
+                        };
+                        return Ok(ToolResult::text(format!("Unsupported language: {shown}")));
+                    }
+                };
                 let pattern = call
                     .params
                     .get("pattern")
@@ -195,9 +209,30 @@ mod tests {
         }
     }
     #[test]
+    fn search_description_mentions_meta_variables() {
+        let definition = tool(false, "sg".into());
+        for expected in ["AST", "$VAR", "$$$"] {
+            assert!(definition.description.contains(expected));
+        }
+    }
+    #[test]
+    fn optional_parameters_are_not_required() {
+        for replace in [false, true] {
+            let definition = tool(replace, "sg".into());
+            let required = definition.parameters["required"]
+                .as_array()
+                .expect("required list");
+            for key in ["paths", "globs", "dryRun", "context"] {
+                assert!(!required.contains(&json!(key)));
+            }
+            assert_eq!(definition.parameters["type"], json!("object"));
+        }
+    }
+    #[test]
     fn replace_metadata() {
         let definition = tool(true, "sg".into());
         assert_eq!(definition.name, "ast_grep_replace");
+        assert_eq!(definition.label, "AST Grep Replace");
         assert_eq!(
             definition.execution_mode,
             Some(ToolExecutionMode::Sequential)

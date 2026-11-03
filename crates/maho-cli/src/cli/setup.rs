@@ -33,6 +33,29 @@ pub fn bootstrap_http_proxy_env(argv: &[String], cwd: &str, agent_dir: &str, hom
     Ok(next)
 }
 
+/// senpi `setupCli` `process.title = APP_NAME`: the name `ps`/`top` show. Linux sets the main thread's comm name
+/// (`prctl(PR_SET_NAME)`, truncated to 15 bytes by the kernel); other platforms have no safe equivalent, so it is a
+/// no-op there. Returns whether the title was applied.
+pub fn set_process_title(title: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(name) = std::ffi::CString::new(process_title_bytes(title)) else { return false; };
+        nix::sys::prctl::set_name(&name).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = title;
+        false
+    }
+}
+
+/// The comm name the kernel keeps: at most 15 bytes, cut on a char boundary.
+pub fn process_title_bytes(title: &str) -> &str {
+    let mut end = title.len().min(15);
+    while !title.is_char_boundary(end) { end -= 1; }
+    &title[..end]
+}
+
 pub fn register_builtin_apis() {
     maho_ai::compat::register_builtin_api_providers();
     maho_ai::providers::images::register_builtins::register_built_in_images_api_providers();
@@ -61,6 +84,24 @@ mod tests {
         let next = startup_process_env(&["--offline".to_owned()], &HashMap::new());
         assert_eq!(next.get("PI_OFFLINE").map(String::as_str), Some("1"));
         assert_eq!(next.get("PI_SKIP_VERSION_CHECK").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn process_title_is_cut_to_the_kernel_comm_length_on_a_char_boundary() {
+        assert_eq!(process_title_bytes("maho"), "maho");
+        assert_eq!(process_title_bytes("a-very-long-product-name"), "a-very-long-pro");
+        assert_eq!(process_title_bytes("ééééééééé"), "ééééééé");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_title_sets_the_calling_threads_comm_name() {
+        // A dedicated thread: PR_SET_NAME names the calling thread, so the test runner's threads are untouched.
+        std::thread::spawn(|| {
+            assert!(set_process_title("maho-title-test"));
+            let comm = std::fs::read_to_string("/proc/thread-self/comm").expect("comm");
+            assert_eq!(comm.trim_end(), "maho-title-test");
+        }).join().expect("title thread");
     }
 
     #[test]

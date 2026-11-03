@@ -135,7 +135,7 @@ pub fn wrap_registered_tool_with_invocation(
                 })
         })
     });
-    let mut tool = wrap_tool_definition(definition, None);
+    let mut tool = wrap_tool_definition(definition, None, None);
     let execute = Arc::clone(&tool.execute);
     tool.execute = Arc::new(move |id, params, signal, on_update| {
         let execute = Arc::clone(&execute);

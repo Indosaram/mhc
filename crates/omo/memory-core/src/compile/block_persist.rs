@@ -1,4 +1,5 @@
 //! Repository-local derived string cache. Never stores data in the working tree.
+use super::stored_block::{StoredBlock, decode_stored_block, encode_stored_block};
 use crate::fs::resilient as fs;
 use crate::recall::bm25_persist_gate::{is_recall_term_save_excluded, track_recall_term_save};
 use crate::support::sha256::sha256_hex;
@@ -55,6 +56,13 @@ impl CompiledBlockStore {
                 None
             }
         }
+    }
+    /// The compiled block stored under `key`; its codec ships here, in the store, not the entry.
+    pub fn get_block(&self, key: &str) -> Option<StoredBlock> {
+        decode_stored_block(&self.get(key)?)
+    }
+    pub fn put_block(&self, key: String, block: &StoredBlock) {
+        self.put(key, encode_stored_block(block));
     }
     pub fn put(&self, key: String, value: String) {
         if is_recall_term_save_excluded(&self.dir) {

@@ -3,12 +3,13 @@ use pretty_assertions::assert_eq;
 use crate::support::entry;
 
 #[test]
-fn visual_engineering_prioritizes_fable_opus_then_kimi() {
+fn visual_engineering_prioritizes_fable_opus_then_kimi_k3_1_pro_and_kimi_k3() {
     assert_eq!(CATEGORY_MODEL_REQUIREMENTS["visual-engineering"].fallback_chain, vec![
         entry(&["google","google-vertex","opencode"],"gemini-4-argon",Some("low")),
         entry(&["anthropic","anthropic-api","github-copilot","opencode"],"claude-fable-5-1",Some("max")),
         entry(&["anthropic","anthropic-api","github-copilot","opencode"],"claude-opus-5-5",Some("max")),
-        entry(&["kimi-for-coding","moonshotai","opencode-go","opencode"],"kimi-k3",Some("max")),
+        entry(&["kimi-for-coding","moonshotai","opencode-go"],"kimi-k3.1-pro",Some("max")),
+        entry(&["opencode"],"kimi-k3",Some("max")),
     ]);
 }
 #[test]
@@ -55,8 +56,9 @@ fn unspecified_low_uses_the_selected_ten_rung_chain() {
 #[test]
 fn high_artistry_and_writing_follow_selected_chains() {
     let providers=&["anthropic","anthropic-api","github-copilot","opencode"];
-    let kimi=&["kimi-for-coding","moonshotai","opencode-go","opencode"];
-    assert_eq!(CATEGORY_MODEL_REQUIREMENTS["unspecified-high"].fallback_chain,vec![entry(providers,"claude-opus-5-5",Some("medium")),entry(&["zai-coding-plan","opencode-go"],"glm-5.3",Some("max")),entry(kimi,"kimi-k3",Some("max"))]);
-    assert_eq!(CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,vec![entry(providers,"claude-fable-5-1",Some("max")),entry(providers,"claude-opus-5-5",Some("max")),entry(kimi,"kimi-k3",Some("max"))]);
+    let kimi=&["kimi-for-coding","moonshotai","opencode-go"];
+    let kimi_k3=entry(&["opencode"],"kimi-k3",Some("max"));
+    assert_eq!(CATEGORY_MODEL_REQUIREMENTS["unspecified-high"].fallback_chain,vec![entry(providers,"claude-opus-5-5",Some("medium")),entry(&["zai-coding-plan","opencode-go"],"glm-5.3",Some("max")),entry(kimi,"kimi-k3.1-pro",Some("max")),kimi_k3.clone()]);
+    assert_eq!(CATEGORY_MODEL_REQUIREMENTS["artistry"].fallback_chain,vec![entry(providers,"claude-fable-5-1",Some("max")),entry(providers,"claude-opus-5-5",Some("max")),entry(kimi,"kimi-k3.1-pro",Some("max")),kimi_k3.clone()]);
     assert_eq!(CATEGORY_MODEL_REQUIREMENTS["writing"].fallback_chain,vec![entry(&["google","google-vertex","opencode"],"gemini-4-argon",Some("low")),entry(providers,"claude-opus-5-5",Some("low")),entry(providers,"claude-opus-4-6",Some("max"))]);
 }

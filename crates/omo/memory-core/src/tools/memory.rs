@@ -88,6 +88,12 @@ pub struct MemoryToolProvenanceInput {
 pub struct MemoryToolCommit {
     pub sha: String,
     pub committed_at: String,
+    /// First line of the commit reason (pin `memory.ts:48-53`).
+    #[serde(default)]
+    pub subject: String,
+    /// Repository-relative paths the commit touched.
+    #[serde(default)]
+    pub affected_paths: Vec<String>,
 }
 
 /// Provenance metadata tracking author attribution and transaction details.
@@ -233,10 +239,24 @@ fn run_memory_tool_inner(
                 provenance: params.provenance.clone(),
             },
             None,
-        )?;
+        )
+        .map_err(|error| {
+            // Pin `memory.ts` runMemoryTool: every failure surfaces as a `memory:` tool error
+            // (`MemoryToolError` only skips the prefix when the message already carries it).
+            if error.message.starts_with("memory:") {
+                error
+            } else {
+                err(error.message)
+            }
+        })?;
+        // Pin `memory.ts` successLabel `Memory ${command}`.
+        let message = match result.message.strip_prefix("memory_apply_patch committed") {
+            Some(rest) => format!("Memory apply_patch committed{rest}"),
+            None => result.message,
+        };
         let sha = result.commit.as_ref().map(|commit| commit.sha.clone());
         return Ok(MemoryToolResult {
-            result: result.message,
+            result: message,
             commit: result.commit,
             provenance: MemoryToolProvenance {
                 agent_id: author.agent_id.clone(),
@@ -499,6 +519,11 @@ fn run_memory_tool_inner(
         return Err(rolled_back(repo, &affected_relative_paths, error));
     }
 
+    // Pin `memory.ts:71-73`: a command that touched no tracked path is refused before commit.
+    if affected_relative_paths.is_empty() {
+        return Err(err(format!("{command_str} made no changes")));
+    }
+
     if writer == MemoryWriter::MemoryTool
         && let Some(violation) = refuse_agreements_violation(repo, &affected_relative_paths)
             .map_err(|e| err(e.to_string()))?
@@ -557,6 +582,15 @@ fn run_memory_tool_inner(
         commit: Some(MemoryToolCommit {
             sha: commit_info.sha.clone(),
             committed_at: timestamp.clone(),
+            subject: params
+                .reason
+                .trim()
+                .split('\n')
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('\r')
+                .to_string(),
+            affected_paths: affected_relative_paths.clone(),
         }),
         provenance: MemoryToolProvenance {
             agent_id: author.agent_id.clone(),
@@ -634,7 +668,8 @@ fn assert_not_readonly(
     frontmatter: &MemoryFrontmatter,
     display_path: &str,
 ) -> Result<(), MemoryToolError> {
-    if frontmatter.read_only.is_some() {
+    // Pin `memory.ts:192`: only the literal "true" locks a block; `read_only: false` stays editable.
+    if frontmatter.read_only.as_deref() == Some("true") {
         return Err(err(format!(
             "{display_path} is read_only and cannot be modified"
         )));

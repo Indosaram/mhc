@@ -40,3 +40,21 @@ fn auto_exposure_never_selects_proxy() {
     let policy = maho_ext_mcp::expose::policy::compute_mcp_exposure_policy(&vec![Entry;40], &McpServerConfig {exposure: Some(Exposure::Auto), ..Default::default()}, &McpSettings::default());
     assert_ne!(policy.mode, Exposure::Proxy);
 }
+
+#[test]
+fn proxy_gateway_renderers_match_upstream_call_and_result_lines() {
+    use crate::support::{padded, render_call_lines, render_result_lines};
+    let title = |visible: &str| padded(&format!("\x1b[38;2;1;2;3m\x1b[1m{visible}\x1b[22m\x1b[39m"), visible, 50);
+    let output = |visible: &str| vec![padded(&format!("\x1b[38;2;4;5;6m{visible}\x1b[39m"), visible, 50)];
+    assert_eq!(render_call_lines(mcp_proxy_renderers("mcp_fx"), json!({"op": "search", "query": "weather"}), 50).unwrap(), vec![title("mcp_fx search weather")]);
+    assert_eq!(render_call_lines(mcp_proxy_renderers("mcp_fx"), json!({"op": "call", "tool": "echo", "args": "{}"}), 50).unwrap(), vec![title("mcp_fx call echo")]);
+    // A missing detail trims away; a missing op interpolates as `undefined`.
+    assert_eq!(render_call_lines(mcp_proxy_renderers("mcp_fx"), json!({"op": "describe"}), 50).unwrap(), vec![title("mcp_fx describe")]);
+    assert_eq!(render_call_lines(mcp_proxy_renderers("mcp_fx"), json!({}), 50).unwrap(), vec![title("mcp_fx undefined")]);
+    let mut result = maho_ext_api::AgentToolResult::text("Tools on 'fx':");
+    result.details = json!({"preview": "Tools on 'fx':", "server": "fx", "tool": "proxy"});
+    assert_eq!(render_result_lines(mcp_proxy_renderers("mcp_fx"), &result, true, 50).unwrap(), output("mcp_fx: running"));
+    assert_eq!(render_result_lines(mcp_proxy_renderers("mcp_fx"), &result, false, 50).unwrap(), output("mcp_fx: Tools on 'fx':"));
+    result.details = serde_json::Value::Null;
+    assert_eq!(render_result_lines(mcp_proxy_renderers("mcp_fx"), &result, false, 50).unwrap(), output("mcp_fx: done"));
+}

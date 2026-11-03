@@ -27,8 +27,17 @@
     start token, liveness check) → `src/owner.rs`;
   - `packages/coding-agent/src/task/settings.ts` (`task.isolation.{enabled,apply,merge,commits}`,
     `isolation.backend` values) → `src/settings.rs`.
-- Not ported: copy-on-write backends (APFS, btrfs, ZFS, reflink, overlayfs, ProjFS, block clone),
-  git-dir detaching and submodule handling, nested repositories, AI commit messages, kept-alive
+- Copy-on-write backends (markers-11, sync 5.1.52): `can1357/oh-my-pi` `crates/pi-iso` @
+  `3a2758b68f7c8e6bdf22c3a76b86c8675e5e0c9e` (read from `~/agent-parity-facts/oh-my-pi`;
+  `crates/pi-iso/LICENSE` MIT, Copyright 2025-2026 Can Bölük, 2026 Stencil Labs, Inc., checked
+  before reading): `src/lib.rs` → `src/iso/mod.rs`, `src/cow.rs`, `src/apfs.rs`, `src/btrfs.rs`,
+  `src/zfs.rs`, `src/linux_reflink.rs`, `src/overlayfs.rs`, `src/windows_block_clone.rs`,
+  `src/projfs.rs`, `src/tree.rs` → the same names under `src/iso/`; `src/rcopy.rs` →
+  `src/iso/rcopy.rs` (dispatch onto `src/backend.rs`); `packages/coding-agent/src/task/worktree.ts`
+  `parseIsolationBackend`/`formatIsolationBackend` and the `ensureIsolation` candidate fallback →
+  `src/backend.rs`, `src/settings.rs`. Adapted: no `async_trait`/`diff.rs` (the lifecycle captures
+  snapshot trees), `std::sync::Mutex` instead of `parking_lot`.
+- Not ported: git-dir detaching and submodule handling, nested repositories, AI commit messages, kept-alive
   children, the `worktree` CLI.
 - No SUL source (`crates/omo/**`, in particular `isolation-core`, `senpi-task`, `team-core`; the
   omo-gated `maho-cli` modules; OmO/COMP sources) was opened.

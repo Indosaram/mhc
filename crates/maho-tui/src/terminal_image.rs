@@ -135,6 +135,29 @@ static KITTY_IMAGE_METADATA: LazyLock<Mutex<KittyRegistry>> =
     LazyLock::new(|| Mutex::new(KittyRegistry::default()));
 static IMAGE_ID_COUNTER: LazyLock<Mutex<u64>> = LazyLock::new(|| Mutex::new(seed_image_id_state()));
 
+thread_local! {
+    /// Capabilities pinned for the current thread by [`with_capabilities`]; while set,
+    /// [`get_capabilities`] and [`set_capabilities`] read and write this value instead of the
+    /// process-wide cache.
+    static SCOPED_CAPABILITIES: std::cell::Cell<Option<TerminalCapabilities>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with `caps` as this thread's terminal capabilities (senpi tests call
+/// `setCapabilities(...)` and `resetCapabilitiesCache()` around a case). Capability reads and
+/// writes inside `f` stay on this thread, so parallel tests that read the shared cache never
+/// observe them.
+pub fn with_capabilities<R>(caps: TerminalCapabilities, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<TerminalCapabilities>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCOPED_CAPABILITIES.with(|scoped| scoped.set(self.0));
+        }
+    }
+    let _restore = Restore(SCOPED_CAPABILITIES.with(|scoped| scoped.replace(Some(caps))));
+    f()
+}
+
 #[derive(Default)]
 struct CapabilityCache {
     cached: Option<TerminalCapabilities>,
@@ -278,7 +301,7 @@ fn detect_capabilities_from_environment(
         return plain(None, true, true);
     }
 
-    if term_program == "alacritty" || term_program == "vscode" || term_program == "zed" {
+    if term_program == "alacritty" || term_program == "zed" {
         return plain(None, true, true);
     }
 
@@ -294,6 +317,11 @@ fn detect_capabilities_from_environment(
             image_probe: probed.is_none().then_some(ImageProbe::Kitty),
             ..plain(probed, has_true_color_hint, false)
         };
+    }
+
+    // After every other terminal: the VS Code marker is inherited by terminals started from VS Code (#2826).
+    if terminal_capabilities::is_vs_code_terminal(env) {
+        return plain(None, true, true);
     }
 
     if is_windows_console {
@@ -471,6 +499,9 @@ fn to_capabilities(detected: DetectedTerminalCapabilities) -> TerminalCapabiliti
 }
 
 pub fn get_capabilities() -> TerminalCapabilities {
+    if let Some(scoped) = SCOPED_CAPABILITIES.with(std::cell::Cell::get) {
+        return scoped;
+    }
     install_tmux_image_detector();
     if let Some(cached) = read_lock(&CAPABILITY_STATE).cached {
         return cached;
@@ -521,6 +552,10 @@ pub fn set_capability_overrides(overrides: CapabilityOverrides) {
 }
 
 pub fn set_capabilities(caps: TerminalCapabilities) {
+    if SCOPED_CAPABILITIES.with(|scoped| scoped.get().is_some()) {
+        SCOPED_CAPABILITIES.with(|scoped| scoped.set(Some(caps)));
+        return;
+    }
     write_lock(&CAPABILITY_STATE).cached = Some(caps);
 }
 

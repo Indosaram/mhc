@@ -44,3 +44,10 @@ Source files:
 - `src/auth/challenge_login.rs` (new)
 
 Tests (new): `tests/transport_step_up.rs`, `tests/transport_refresh_rejection.rs`, `tests/transport_redaction.rs`, `tests/stdio_env_filter.rs`, `tests/log_sink_retry.rs`, `tests/challenge_login.rs`, fixture `tests/fixtures/env-report.mjs`; registered in `tests/main.rs`.
+
+## sync-5152 (senpi v2026.10.27-2)
+
+`src/auth/oauth_issuer.rs`, `src/auth/catalog_identity.rs` and the issuer/credential-identity changes to
+`oauth.rs`, `oauth_provider.rs`, `oauth_refresh.rs`, `token_store.rs`, `callback.rs` and `context.rs` were
+ported from MIT senpi (`packages/coding-agent/src/core/extensions/builtin/mcp/auth/*`, f2354d970..v2026.10.27-2)
+and RFC 8414 / RFC 9207. No other source was used; the clean-room units above keep their behaviour.

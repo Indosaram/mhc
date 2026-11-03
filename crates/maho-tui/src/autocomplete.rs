@@ -16,12 +16,10 @@ use crate::dollar_invocation_autocomplete::{
     known_skill_names,
 };
 use crate::slash_command_autocomplete::get_slash_command_suggestions;
+use crate::utils::is_autocomplete_separator;
 
 const PATH_DELIMITERS: [char; 5] = [' ', '\t', '"', '\'', '='];
 
-fn is_autocomplete_separator(ch: char) -> bool {
-    matches!(ch, '，' | '．' | '。' | '、' | '；' | '：' | '！' | '？' | '）' | '】' | '》' | '」' | '』' | '〉' | '〕' | '｝' | '］' | '｠' | '“' | '”' | '‘' | '’' | '…' | '—' | '»')
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AutocompleteItem {
@@ -250,11 +248,11 @@ fn build_fd_path_query(query: &str) -> String {
     pattern
 }
 
-fn find_last_delimiter(text: &str) -> Option<usize> {
+fn find_last_delimiter_end(text: &str) -> Option<usize> {
     text.char_indices()
         .rev()
         .find(|(_, ch)| PATH_DELIMITERS.contains(ch) || is_autocomplete_separator(*ch))
-        .map(|(index, _)| index)
+        .map(|(index, ch)| index + ch.len_utf8())
 }
 
 fn find_unclosed_quote_start(text: &str) -> Option<usize> {
@@ -609,10 +607,7 @@ impl CombinedAutocompleteProvider {
             return Some(quoted);
         }
 
-        let token_start = match find_last_delimiter(text) {
-            Some(index) => index + 1,
-            None => 0,
-        };
+        let token_start = find_last_delimiter_end(text).unwrap_or_default();
 
         let token = &text[token_start..];
         if token.starts_with('@') {
@@ -627,8 +622,8 @@ impl CombinedAutocompleteProvider {
             return Some(quoted);
         }
 
-        let path_prefix = match find_last_delimiter(text) {
-            Some(index) => text[index + 1..].to_string(),
+        let path_prefix = match find_last_delimiter_end(text) {
+            Some(index) => text[index..].to_string(),
             None => text.to_string(),
         };
 

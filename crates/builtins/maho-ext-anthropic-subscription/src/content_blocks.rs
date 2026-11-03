@@ -1,5 +1,8 @@
 use serde_json::{Value,json};
 
+/// `isSdkImageMediaType`: the image media types the SDK accepts, so replay selects only images the mapper sends.
+pub fn is_sdk_image_media_type(value:&str)->bool { matches!(value,"image/jpeg"|"image/png"|"image/gif"|"image/webp") }
+
 pub fn append_sdk_content_blocks(blocks:&mut Vec<Value>,content:&Value) -> bool {
     if let Some(text)=content.as_str() {
         if !text.is_empty() { blocks.push(json!({"type":"text","text":text})); }
@@ -26,7 +29,7 @@ fn append_entry(blocks:&mut Vec<Value>,entry:&Value) -> bool {
         blocks.push(json!({"type":"text","text":text}));return !text.trim().is_empty();
     }
     if entry["type"]=="image" && let (Some(media),Some(data))=(entry["mimeType"].as_str(),entry["data"].as_str())
-        && ["image/jpeg","image/png","image/gif","image/webp"].contains(&media) {
+        && is_sdk_image_media_type(media) {
         blocks.push(json!({"type":"image","source":{"type":"base64","media_type":media,"data":data}}));return false;
     }
     blocks.push(json!({"type":"text","text":placeholder(entry)}));true
@@ -34,6 +37,11 @@ fn append_entry(blocks:&mut Vec<Value>,entry:&Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sdk_image_media_types_are_the_four_base64_formats() {
+        for media in ["image/jpeg","image/png","image/gif","image/webp"] { assert!(is_sdk_image_media_type(media),"{media}"); }
+        for media in ["image/svg+xml","image/PNG","image/jpg",""] { assert!(!is_sdk_image_media_type(media),"{media}"); }
+    }
     #[test]
     fn raw_strings_are_text() {
         let mut blocks=Vec::new();assert!(append_sdk_content_blocks(&mut blocks,&json!([{"type":"text","text":"ok"},"\n(OmO) auto-formatted file"])));

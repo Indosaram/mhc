@@ -410,6 +410,8 @@ pub type ProviderTelemetryContext = std::sync::Arc<dyn std::any::Any + Send + Sy
 #[derive(Clone, Default)]
 pub struct ProviderRequestOptions {
     pub signal: Option<crate::utils::abort::AbortSignal>,
+    /// Originating session working directory for subprocess-backed providers.
+    pub cwd: Option<String>,
     pub abort_server_side_fallback: Option<bool>,
     pub telemetry_context: Option<ProviderTelemetryContext>,
     pub api_key: Option<String>,
@@ -1152,11 +1154,15 @@ pub enum UsageLimitScope {
     Model,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Redaction-safe cause: a provider limit projected as user-facing advice, or a model id its route
+/// does not serve (`model_config`, never retried or fallen back).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AssistantErrorCause {
     #[serde(rename = "usage_limit")]
     UsageLimit { scope: UsageLimitScope },
+    #[serde(rename = "model_config")]
+    ModelConfig { model: String },
 }
 
 /// When the agent loop asked for a response and when it streamed (Unix ms), stamped on the final
@@ -1222,6 +1228,11 @@ pub struct AssistantMessage {
     /// fallback must not act on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_source: Option<AssistantFailureSource>,
+    /// Set by the model runtime on a failed response when the same credential (provider, endpoint
+    /// and key) served a response moments before: an `auth` failure then means the provider
+    /// refused this request, not the key. TS `credentialServedRecently?: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_served_recently: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1258,7 +1269,7 @@ fn serialize_optional<S: serde::ser::SerializeStruct, T: Serialize + ?Sized>(
 impl Serialize for AssistantMessage {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("AssistantMessage", 25)?;
+        let mut state = serializer.serialize_struct("AssistantMessage", 26)?;
         state.serialize_field("role", "assistant")?;
         state.serialize_field("content", &self.content)?;
         state.serialize_field("api", &self.api)?;
@@ -1295,6 +1306,11 @@ impl Serialize for AssistantMessage {
         serialize_optional(&mut state, "stopDetails", self.stop_details.as_ref())?;
         serialize_optional(&mut state, "abortSource", self.abort_source.as_ref())?;
         serialize_optional(&mut state, "failureSource", self.failure_source.as_ref())?;
+        serialize_optional(
+            &mut state,
+            "credentialServedRecently",
+            self.credential_served_recently.as_ref(),
+        )?;
         serialize_optional(&mut state, "endTurn", self.end_turn.as_ref())?;
         serialize_optional(&mut state, "responseModel", self.response_model.as_ref())?;
         serialize_optional(&mut state, "diagnostics", self.diagnostics.as_ref())?;
@@ -1580,6 +1596,7 @@ pub enum AssistantMessageEvent {
     #[serde(rename = "toolcall_end")]
     ToolcallEnd {
         content_index: usize,
+        #[serde(with = "tool_call_with_type")]
         tool_call: ToolCall,
         partial: AssistantMessage,
     },
@@ -1591,6 +1608,41 @@ pub enum AssistantMessageEvent {
         reason: ErrorReason,
         error: AssistantMessage,
     },
+}
+
+pub(crate) mod tool_call_with_type {
+    use super::ToolCall;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Tagged<'a> {
+        r#type: &'static str,
+        #[serde(flatten)]
+        tool_call: &'a ToolCall,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Untagged {
+        #[serde(default)]
+        #[allow(dead_code)]
+        r#type: Option<String>,
+        #[serde(flatten)]
+        tool_call: ToolCall,
+    }
+
+    pub fn serialize<S: Serializer>(call: &ToolCall, s: S) -> Result<S::Ok, S::Error> {
+        Tagged {
+            r#type: "toolCall",
+            tool_call: call,
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ToolCall, D::Error> {
+        Untagged::deserialize(d).map(|u| u.tool_call)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -485,7 +485,7 @@ fn fallback_chain_lengths_match_transcription() {
         .collect();
     assert_eq!(
         lengths,
-        vec![("explore", 6), ("librarian", 6), ("plan-consultant", 3), ("plan-reviewer", 8)]
+        vec![("explore", 6), ("librarian", 6), ("plan-consultant", 4), ("plan-reviewer", 8)]
     );
 }
 
@@ -508,7 +508,8 @@ fn fallback_chain_table_is_pinned() {
             vec![
                 entry(&claude, "claude-fable-5-1", Some("max")),
                 entry(&claude, "claude-opus-5-5", Some("max")),
-                entry(&["opencode-go", "kimi-for-coding", "moonshotai", "opencode"], "kimi-k3", Some("max")),
+                entry(&["opencode-go", "kimi-for-coding", "moonshotai"], "kimi-k3.1-pro", Some("max")),
+                entry(&["opencode"], "kimi-k3", Some("max")),
             ],
         ),
         (

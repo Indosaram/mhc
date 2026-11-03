@@ -177,6 +177,8 @@ mod tests {
             browser_engine: Some("builtin".into()),
             retry_fallback: None,
             holder_endpoint: None,
+            spawned_by: None,
+            session_start_reason: None,
         }
     }
 
